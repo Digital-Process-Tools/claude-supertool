@@ -834,9 +834,11 @@ def parse_args(argv: list) -> tuple:
     friction #941 reports is a join done in the reader's head, and a suffix
     only helps the reader who already knows the suffix exists — which is not
     the one reaching for this board at speed. The cost is bounded and stated:
-    exactly one `gh` call per run, whatever the tree count, on a short timeout,
-    and a call that fails degrades to `PR unknown` rather than to a wrong
-    answer or a slower op.
+    **two** `gh` calls per run, whatever the tree count — the open-PR index and,
+    since #1229, the merged-PR lookup, which cannot ride the first because that
+    one is `--state open` — both on a short timeout, and a call that fails
+    degrades to `PR unknown` / `merge unknown` rather than to a wrong answer or
+    a slower op.
     """
     path = ""
     want_pr = (os.environ.get("SUPERTOOL_WORKTREE_PR", "").strip().lower()

@@ -71,7 +71,7 @@ def _run(args, cwd: Path) -> str:
 
 def _git(args, cwd: Path) -> str:
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True,
-                          text=True, encoding="utf-8").stdout
+                          text=True, encoding="utf-8", errors="replace").stdout
 
 
 def _committed(cwd: Path):
@@ -206,7 +206,8 @@ def test_naming_a_path_during_a_conflicted_merge_still_commits(
     subprocess.run(["git", "commit", "-qam", "theirs"], cwd=work, check=True)
     subprocess.run(["git", "checkout", "-q", "main"], cwd=work, check=True)
     subprocess.run(["git", "merge", "side", "-m", "m"], cwd=work,
-                   capture_output=True, text=True)
+                   capture_output=True, text=True, encoding="utf-8",
+                   errors="replace")
     (work / "mine.txt").write_text("resolved" + chr(10), encoding="utf-8")
 
     out = _run(["git-commit:::resolve the merge:::mine.txt"], cwd=work)
@@ -234,6 +235,60 @@ def test_named_paths_holding_nothing_are_refused_even_when_the_index_is_dirty(
 
     assert "ERROR: nothing staged" in out, out
     assert "held no changes to stage" in out, out
+
+
+def test_all_includes_what_is_already_staged(tmp_path: Path) -> None:
+    """`--all` resolved to `git status`'s dirty lists, and those are not everything.
+
+    A path that is staged and whose worktree matches the index is invisible to
+    the unstaged column, so it was absent from the expansion. Before #1228
+    that did not show: the commit was unscoped and swept the index in anyway.
+    Scoping made the omission real — `--all` would have committed the modified
+    path and silently left the staged one behind, which is the opposite of
+    what the token means.
+    """
+    work = _repo(tmp_path)
+    (work / "theirs.txt").write_text("staged" + chr(10), encoding="utf-8")
+    subprocess.run(["git", "add", "theirs.txt"], cwd=work, check=True)
+    (work / "mine.txt").write_text("unstaged" + chr(10), encoding="utf-8")
+
+    out = _run(["git-commit:::subject:::" + "--all"], cwd=work)
+
+    assert _committed(work) == ["mine.txt", "theirs.txt"], out
+    assert _staged(work) == [], out
+
+
+def test_all_names_every_path_it_chose_even_when_they_were_already_staged(
+        tmp_path: Path) -> None:
+    """`--all`'s receipt is uncapped, and that has to survive a staged tree.
+
+    An expansion that came back empty left `paths` empty, so `all_used` was
+    False and the receipt fell back to the 20-path cap — under a token whose
+    contract is that the caller typed nothing, so the receipt is the only
+    record of what was chosen and a capped one is a subset presented as the
+    whole (#1137).
+    """
+    work = _repo(tmp_path)
+    for n in range(25):
+        (work / f"f{n:02d}.txt").write_text("x" + chr(10), encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=work, check=True)
+
+    out = _run(["git-commit:::subject:::" + "--all"], cwd=work)
+
+    assert "more" not in out.split("Files committed:")[-1], out
+    assert "f24.txt" in out, out
+    assert len(_committed(work)) == 25, out
+
+
+def test_all_still_refuses_a_clean_tree_with_an_empty_index(
+        tmp_path: Path) -> None:
+    """Widening `--all` must not turn "nothing to do" into an empty commit."""
+    work = _repo(tmp_path)
+
+    out = _run(["git-commit:::subject:::" + "--all"], cwd=work)
+
+    assert "ERROR: nothing staged" in out, out
+    assert "working tree is clean" in out, out
 
 
 def test_the_change_is_findable() -> None:

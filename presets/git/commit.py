@@ -361,13 +361,27 @@ def _all_ambiguous_refusal(modified, untracked, unknown):
 
 
 def _expand_all():
-    """Resolve `--all` to the concrete dirty set, or say why it could not.
+    """Resolve `--all` to the concrete set it commits, or say why it could not.
 
     Returns `(paths, refusal_lines)`. `refusal_lines` non-empty means nothing
     was resolved and the caller must print them and stop — a `git status` that
     did not answer produces two empty lists here, and staging those would be
     an empty commit dressed as a deliberate one (docs/validators.md,
     "Declining instead of guessing").
+
+    **The index is part of the answer, not just the working tree** (#1228).
+    `git status`'s unstaged column cannot see a path that is staged and whose
+    worktree matches the index, so a fully-staged tree resolved to an EMPTY
+    list here — and an empty list left `paths` empty, which under #1228's
+    scoping is the *pathless* call: an unscoped `git commit` that swept the
+    whole index in with no disclosure at all. That is the defect #1228 exists
+    to remove, reachable through the one spelling that promises the opposite
+    ("the receipt names every one"). Including the index makes the set
+    explicit, so it is scoped, listed, and checkable.
+
+    The index read is required rather than best-effort for the same reason:
+    under `--all` the caller typed no list, so a silently short one is a
+    receipt that claims completeness it does not have.
     """
     modified, untracked, unknown = _worktree_changes()
     if unknown:
@@ -377,7 +391,20 @@ def _expand_all():
             "  What is dirty is UNKNOWN, so there is no list to accept.",
             "  Name the paths explicitly: git-commit:::MESSAGE:::PATHS",
         ]
-    return modified + untracked, []
+    idx = _git(["diff", "--cached", "--name-only", "-z"])
+    if idx.returncode != 0:
+        said = " ".join((idx.stderr or "").split())[:120]
+        return [], [
+            "ERROR: %s could not be resolved — the index could not be read "
+            "(%s). Nothing staged, nothing committed."
+            % (_ALL_TOKEN, said or "exit %d" % idx.returncode),
+            "  Already-staged paths are part of what %s means, so the list "
+            "would be incomplete." % (_ALL_TOKEN,),
+            "  Name the paths explicitly: git-commit:::MESSAGE:::PATHS",
+        ]
+    # dict.fromkeys rather than a set: the receipt lists these in order and
+    # under `--all` the receipt is the only record of what was chosen.
+    return list(dict.fromkeys(modified + untracked + _z_paths(idx.stdout))), []
 
 
 def _worktree_changes(git_fn=None):
