@@ -10,7 +10,8 @@
     "xml",
     "mcp",
     "watch",
-    "dashboard"
+    "dashboard",
+    "claims"
   ],
   "mcp": {
     "py-lsp": {
