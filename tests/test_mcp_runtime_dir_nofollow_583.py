@@ -53,6 +53,8 @@ from pathlib import Path
 
 import pytest
 
+from _symlink import require_symlink
+
 import supertool  # noqa: F401  (ensures the repo root is importable, as siblings do)
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "presets" / "mcp"))
@@ -98,6 +100,7 @@ def linked(tmp_path, monkeypatch, loose_umask):
     account. `evil` is `0o777` — the state the mode check exists to refuse —
     which is what makes a redirect onto it visible rather than merely different.
     """
+    require_symlink()
     good = tmp_path / "good"
     good.mkdir(mode=0o700)
     evil = tmp_path / "evil"

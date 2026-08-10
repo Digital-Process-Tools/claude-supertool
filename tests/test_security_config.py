@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from _symlink import require_symlink
+
 import supertool
 
 
@@ -248,6 +250,7 @@ def test_symlinked_config_to_etc_passwd_errors_cleanly(
     if not Path("/etc/passwd").exists():
         pytest.skip("/etc/passwd not available on this platform")
 
+    require_symlink()
     link = tmp_path / ".supertool.json"
     link.symlink_to("/etc/passwd")
     monkeypatch.chdir(tmp_path)

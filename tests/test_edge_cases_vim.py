@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from _symlink import require_symlink
+
 import supertool
 
 
@@ -219,6 +221,7 @@ def test_symlink_path_edits_target_and_preserves_symlink(tmp_path: Path) -> None
     """
     target = tmp_path / "real.txt"
     target.write_text("original content\n")
+    require_symlink()
     link = tmp_path / "link.txt"
     link.symlink_to(target)
 

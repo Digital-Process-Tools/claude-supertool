@@ -34,6 +34,8 @@ from pathlib import Path
 
 import pytest
 
+from _symlink import require_symlink
+
 import supertool
 
 
@@ -151,7 +153,13 @@ def test_ordinary_project_root_is_untouched(tmp_path, monkeypatch):
 
 
 def test_same_checkout_is_not_a_mix(tmp_path, monkeypatch):
-    """Running from inside the checkout the binary belongs to — the correct call."""
+    """Running from inside the checkout the binary belongs to — the correct call.
+
+    The symlink is not scaffolding here: the guard's whole discriminator is
+    `realpath` equality, so a copy of `supertool.py` would be a different tree
+    and would test the opposite arm. There is no symlink-free restructuring.
+    """
+    require_symlink()
     root = _project_root(tmp_path, "same_checkout", _probe_cmd("ran.txt", "PROBE-OK"))
     os.symlink(os.path.realpath(supertool.__file__), root / "supertool.py")
     _stand_in(monkeypatch, root)

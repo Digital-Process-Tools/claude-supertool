@@ -27,6 +27,8 @@ from unittest.mock import patch
 
 import pytest
 
+from _symlink import require_symlink
+
 import supertool
 
 
@@ -47,6 +49,7 @@ def test_paste_symlink_follows_to_target(tmp_path: Path) -> None:
     real = tmp_path / "real.txt"
     _write(real, "original\n")
 
+    require_symlink()
     link = tmp_path / "link.txt"
     link.symlink_to(real)
 
@@ -66,6 +69,7 @@ def test_paste_symlink_target_updated_not_replaced(tmp_path: Path) -> None:
     real = tmp_path / "data.txt"
     _write(real, "before\n")
 
+    require_symlink()
     link = tmp_path / "alias.txt"
     link.symlink_to(real)
 
@@ -270,6 +274,7 @@ def test_paste_toctou_tmp_replaced_with_symlink(tmp_path: Path) -> None:
     behaviour and verifies that at minimum the original target path is written,
     so the attack vector is visible in the test output.
     """
+    require_symlink()
     real_target = tmp_path / "safe.txt"
     _write(real_target, "safe\n")
 

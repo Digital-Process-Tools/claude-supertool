@@ -318,6 +318,7 @@ def test_path_meta_suffix_stale_mtime_months(tmp_path: Path) -> None:
 
 
 def test_path_meta_suffix_broken_symlink(tmp_path: Path) -> None:
+    _symlink.require_symlink()
     link = tmp_path / "dangling"
     link.symlink_to(tmp_path / "nope")
     out = supertool._path_meta_suffix(str(link))

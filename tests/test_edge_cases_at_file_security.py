@@ -26,6 +26,8 @@ from unittest.mock import patch
 
 import pytest
 
+from _symlink import require_symlink
+
 # Ensure the repo root is importable regardless of how pytest is invoked.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import supertool  # noqa: E402
@@ -131,6 +133,7 @@ class TestSymlinkedAtFile:
 
     def test_symlink_to_nonexistent_target_errors_cleanly(self, tmp_path: Path) -> None:
         """Dangling symlink → file not found → clean ERROR."""
+        require_symlink()
         link = tmp_path / "link.json"
         link.symlink_to(tmp_path / "does_not_exist.json")
         out = _dispatch_reset(f"edit:@{link}")
@@ -147,6 +150,7 @@ class TestSymlinkedAtFile:
         target = tmp_path / "target.txt"
         target.write_text("hello world\n")
         real.write_text(json.dumps({"old": "hello world", "new": "replaced", "path": str(target)}))
+        require_symlink()
         link = tmp_path / "link_to_payload.json"
         link.symlink_to(real)
 
@@ -164,6 +168,7 @@ class TestSymlinkedAtFile:
         """
         secret = tmp_path / "secret.txt"
         secret.write_text("top secret content\n")
+        require_symlink()
         link = tmp_path / "link_to_secret.json"
         link.symlink_to(secret)
 

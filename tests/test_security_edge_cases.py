@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from _symlink import require_symlink
+
 import supertool
 
 
@@ -63,6 +65,7 @@ def test_edit_on_symlink_clobbers_link_with_regular_file(tmp_path: Path) -> None
     """
     real = tmp_path / "real.txt"
     real.write_text("hello\n")
+    require_symlink()
     link = tmp_path / "via.txt"
     link.symlink_to(real)
 

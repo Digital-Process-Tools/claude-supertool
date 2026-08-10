@@ -41,6 +41,8 @@ from pathlib import Path
 
 import pytest
 
+from _symlink import require_symlink
+
 REPO = Path(__file__).resolve().parents[1]
 for _dir in (str(REPO / "presets" / "watch"), str(REPO / "presets"), str(REPO / "tests")):
     if _dir not in sys.path:
@@ -89,6 +91,7 @@ def _hostile_symlink(tmp_path: Path) -> Path:
     succeeds — which is the whole failure: the read works, and answers about
     a file this slot never wrote.
     """
+    require_symlink()
     target = tmp_path / "elsewhere.pid"
     target.write_text(f"{ELSEWHERE_PID}\n", encoding="utf-8")
     path = _pid_file(tmp_path)

@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from _symlink import require_symlink
+
 PRESET_DIR = Path(__file__).resolve().parent.parent / "presets" / "claude-log"
 sys.path.insert(0, str(PRESET_DIR))
 
@@ -534,6 +536,7 @@ class TestSymlinkInProjectsDir:
         _write_jsonl(external, [_user_text("SYMLINK_CONTENT")])
 
         # Create symlink inside the project dir pointing to the external file
+        require_symlink()
         link = proj_dir / "symlinked-uuid.jsonl"
         link.symlink_to(external)
 
@@ -571,6 +574,7 @@ class TestSymlinkInProjectsDir:
         my_proj.mkdir(parents=True)
 
         # Symlink a project directory to the external real_proj
+        require_symlink()
         link_proj = projects_root / "-external-proj-link"
         link_proj.symlink_to(real_proj)
 

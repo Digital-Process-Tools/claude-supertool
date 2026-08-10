@@ -357,6 +357,7 @@ def test_symlink_to_valid_xml_reads_through(tmp_path: Path, capsys) -> None:
     assert "item" in out, "symlink read-through behavior changed (was: works)"
 
 
+@requires_symlink
 def test_symlink_to_nonxml_file_clean_error(tmp_path: Path, capsys) -> None:
     """SEVERITY: LOW — symlink to a non-XML file must give a clean parse error, not crash."""
     real = tmp_path / "binary.bin"

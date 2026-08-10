@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from _symlink import require_symlink
+
 import supertool
 
 
@@ -50,6 +52,7 @@ class TestSafePathBasics:
     def test_symlink_crossing_rejected(self, strict_mode, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         # Create a symlink inside cwd that points outside
+        require_symlink()
         link = tmp_path / "outside-link.txt"
         link.symlink_to("/etc/hosts")
         with pytest.raises(supertool.SecurityError, match="escapes cwd"):
