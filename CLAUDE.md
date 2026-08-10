@@ -76,12 +76,7 @@ Three rules for what goes in one:
 - **Carry the number that made you write it.** A rule with its evidence stripped is folklore, and folklore is what this tool exists to replace.
 - **Keep it short.** The file is injected in full on every match, so its length is a cost paid every time, forever. A table of replacement ops, the measurement that justified the rule, and stop.
 
-Two constraints on the `match` column, both measured 2026-08-10:
-
-- **The matcher is awk, so `\s`/`\d`/`\w` are not character classes** — macOS ships the one-true-awk, which drops the undefined escape, so `gh\s+pr` compiles to `ghs+pr` and matches nothing. Two of six tool rules were dead this way, both `block`, one of them for however long `merged-is-not-ancestry.md` had existed. Use `[[:space:]]`. `\n` *is* a valid escape and does survive.
-- **`^` anchors the whole command, not each line.** `full_command` is the entire string, so a rule anchored `(^|[;&|] *)` never sees an invocation on the second line of a multi-line script. Put `\n` in the separator class.
-
-A rule that never matches and a rule that never runs look identical everywhere, including the hook's own log, which shows `(none) [shown:0]` for both. After indexing one, run the command it forbids and check it is refused.
+**A rule that never matches and a rule that never runs look identical everywhere**, including the hook's own log. So after indexing one, run the command it forbids and check it is refused — two of six tool rules turned out to be dead on 2026-08-10, both `block`, both from a `match` written in PCRE for a matcher that is awk. The `match`-column traps are in `.claude/jit-context/paths/00-manual/jit-context.md`, which fires when you edit one.
 
 ## The defect this codebase keeps having
 
