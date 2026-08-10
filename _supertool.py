@@ -2050,6 +2050,9 @@ def _extract_env_prefix(cmd: str) -> Tuple[Dict[str, str], str]:
     # with a newline *inside* it matched nothing at all, so the whole token
     # fell through as argv[0] and the env was never set; POSIX sets it. Both
     # are the same character deciding where a value ends (#1188).
+    # anchored-ok: DOTALL is the point. `(.*)` is meant to reach the true end
+    # and keep a newline the caller quoted, so the `\Z` is not the #1241 no-op
+    # it reads as -- it states the intent the flag already carries.
     _kv = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)\Z", re.DOTALL)
     while idx < len(tokens):
         m = _kv.match(tokens[idx])

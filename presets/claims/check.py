@@ -90,19 +90,22 @@ _FENCE = re.compile(r"^\s{0,3}(?:```|~~~)")
 
 _EXTS = ("py|md|json|toml|yml|yaml|sh|bash|cfg|ini|txt|tsv|xml|html|js|ts|"
          "jsx|tsx|rs|php|rb|go|sql|css|lock|env|service")
-# Same reasoning as `_OP_TOK`, and the same anchor. #1188's guard does not see
-# this one — it reads string literals, and this pattern is assembled by
-# concatenation — but a whole-value test on author-controlled bytes does not
-# stop being one because the check cannot read it.
+# Same reasoning as `_OP_TOK`, and the same anchor. #1188's guard could not see
+# this one until #1241 taught it to read a `+` splice: a whole-value test on
+# author-controlled bytes does not stop being one because the check cannot read
+# it, and for a while this sat three lines from a twin the guard did flag.
 _PATH_TOK = re.compile(
     r"^([A-Za-z0-9_.][A-Za-z0-9_./+-]*\.(?:" + _EXTS + r"))(?::(\d+))?\Z")
 
-# `\Z`, and deliberately not a #1188 waiver. This decides whether a backticked
-# token is read as an op reference, and its input is a code span's contents —
-# bytes the document's author wrote, not a line this op sliced out of a larger
-# text. `_CODE_SPAN` already excludes U+000A and `_op_findings` rejects any
-# token holding whitespace, so nothing exploits the old `$` today; the anchor
-# is what makes that true of the pattern rather than of its two callers.
+# `\Z`, and deliberately not an `anchored-ok` waiver -- writing that sentence
+# used to trip the guard itself, which demanded a reason for an exit nobody had
+# taken; #1241 made the token count only when it opens a comment. This decides
+# whether a backticked token is read as an op reference, and its input is the
+# contents of a code span — bytes the document's author wrote, not a line this
+# op sliced out of a larger text. `_CODE_SPAN` already excludes U+000A and
+# `_op_findings` rejects any token holding whitespace, so nothing exploited the
+# old `$`; the anchor is what makes that true of the pattern rather than of its
+# two callers.
 _OP_TOK = re.compile(r"^([a-z][a-z0-9_-]*):(\S.*)\Z")
 
 _CITATION = re.compile(
