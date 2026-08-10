@@ -28,6 +28,7 @@ a style choice:
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -40,16 +41,22 @@ m = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(m)
 
 
+#: The PR head this file's PRs point at. Every delete below is gated on the
+#: ref reading back at it (#1281) — a name alone stopped being enough.
+HEAD_OID = "0123456789abcdef0123456789abcdef01234567"
+
+
 class _Calls:
     """Records every outward command the cleanup arm issues."""
 
     def __init__(self, *, worktrees=None, state="idle", git_rc=None,
-                 gh_rc=0, branch_exists=True):
+                 gh_rc=0, branch_exists=True, ref_sha=HEAD_OID):
         self.worktrees = worktrees if worktrees is not None else []
         self.state = state
         self.git_rc = git_rc or {}
         self.gh_rc = gh_rc
         self.branch_exists = branch_exists
+        self.ref_sha = ref_sha
         self.git_calls: list = []
         self.gh_calls: list = []
 
@@ -63,8 +70,16 @@ class _Calls:
 
     def gh(self, args, timeout=30):
         self.gh_calls.append(list(args))
+        if "DELETE" not in args:
+            # The read-back added by #1281: the ref has to be shown to be this
+            # PR's head before the DELETE below is allowed to name it.
+            body = json.dumps({"object": {"sha": self.ref_sha}})
+            return subprocess.CompletedProcess(args, 0, body, "")
         return subprocess.CompletedProcess(
             args, self.gh_rc, "", "" if self.gh_rc == 0 else "404 Not Found")
+
+    def deletes(self):
+        return [c for c in self.gh_calls if "DELETE" in c]
 
     def worktrees_for(self, branch):
         return list(self.worktrees)
@@ -86,6 +101,20 @@ def _row(rows, item):
         if name == item:
             return (state, detail)
     raise AssertionError(f"no {item!r} row in {rows}")
+
+
+def _cleanup(head, **kw):
+    """`run_cleanup` carrying the provenance a same-repo PR carries (#1281).
+
+    These three keywords default to *unestablished* in the op, and an
+    unestablished head refuses every arm — which is the point of them. Stating
+    them here keeps this file about what #1256 pinned; the guards themselves
+    are pinned in `test_gh_pr_merge_cleanup_containment_1280_1281_1282.py`.
+    """
+    kw.setdefault("cross_repo", False)
+    kw.setdefault("default_branch", "master")
+    kw.setdefault("head_oid", HEAD_OID)
+    return m.run_cleanup(head, **kw)
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +153,7 @@ def test_the_method_survives_a_piped_token_list() -> None:
 def test_an_unconfirmed_merge_skips_all_three_and_runs_nothing(monkeypatch):
     c = _Calls(worktrees=["/w/944"])
     _install(monkeypatch, c)
-    rows = m.run_cleanup("fix/924", merged=False)
+    rows = _cleanup("fix/924", merged=False)
     assert [s for _i, s, _d in rows] == [m.CLEAN_SKIPPED] * 3
     for _i, _s, detail in rows:
         assert "not confirmed" in detail
@@ -138,18 +167,22 @@ def test_an_unconfirmed_merge_skips_all_three_and_runs_nothing(monkeypatch):
 def test_the_remote_branch_is_deleted_through_the_api(monkeypatch):
     c = _Calls()
     _install(monkeypatch, c)
-    rows = m.run_cleanup("fix/924", merged=True)
+    rows = _cleanup("fix/924", merged=True)
     state, detail = _row(rows, "remote branch")
     assert state == m.CLEAN_DONE, detail
-    assert c.gh_calls == [["api", "-X", "DELETE",
-                           "repos/{owner}/{repo}/git/refs/heads/fix/924"]]
+    assert c.deletes() == [["api", "-X", "DELETE",
+                            "repos/{owner}/{repo}/git/refs/heads/fix/924"]]
+    # And the read-back came first, so the name was established before it was
+    # used (#1281): a DELETE is never this op's first word about a ref.
+    assert c.gh_calls[0] == ["api",
+                             "repos/{owner}/{repo}/git/ref/heads/fix/924"]
 
 
 def test_no_command_anywhere_pushes_a_deletion(monkeypatch):
     """The pre-push hook runs the entire suite per deletion (~3h for 96)."""
     c = _Calls(worktrees=["/w/944"])
     _install(monkeypatch, c)
-    m.run_cleanup("fix/924", merged=True)
+    _cleanup("fix/924", merged=True)
     for call in c.git_calls:
         assert "push" not in call, call
         assert "--delete" not in call, call
@@ -158,7 +191,7 @@ def test_no_command_anywhere_pushes_a_deletion(monkeypatch):
 def test_a_failing_api_delete_is_refused_with_its_reason(monkeypatch):
     c = _Calls(gh_rc=1)
     _install(monkeypatch, c)
-    state, detail = _row(m.run_cleanup("fix/924", merged=True), "remote branch")
+    state, detail = _row(_cleanup("fix/924", merged=True), "remote branch")
     assert state == m.CLEAN_REFUSED
     assert "404" in detail
 
@@ -171,7 +204,7 @@ def test_a_failing_api_delete_is_refused_with_its_reason(monkeypatch):
 def test_a_worktree_that_is_not_idle_is_refused_not_removed(monkeypatch, state):
     c = _Calls(worktrees=["/w/944"], state=state)
     _install(monkeypatch, c)
-    verdict, detail = _row(m.run_cleanup("fix/924", merged=True),
+    verdict, detail = _row(_cleanup("fix/924", merged=True),
                            "local worktree")
     assert verdict == m.CLEAN_REFUSED
     assert state in detail
@@ -181,7 +214,7 @@ def test_a_worktree_that_is_not_idle_is_refused_not_removed(monkeypatch, state):
 def test_an_idle_worktree_is_removed_without_force(monkeypatch):
     c = _Calls(worktrees=["/w/944"], state="idle")
     _install(monkeypatch, c)
-    verdict, detail = _row(m.run_cleanup("fix/924", merged=True),
+    verdict, detail = _row(_cleanup("fix/924", merged=True),
                            "local worktree")
     assert verdict == m.CLEAN_DONE, detail
     assert ["worktree", "remove", "/w/944"] in c.git_calls
@@ -192,7 +225,7 @@ def test_an_idle_worktree_is_removed_without_force(monkeypatch):
 def test_no_worktree_is_a_skip_naming_that_nothing_was_there(monkeypatch):
     c = _Calls(worktrees=[])
     _install(monkeypatch, c)
-    verdict, detail = _row(m.run_cleanup("fix/924", merged=True),
+    verdict, detail = _row(_cleanup("fix/924", merged=True),
                            "local worktree")
     assert verdict == m.CLEAN_SKIPPED
     assert "no worktree" in detail
@@ -201,7 +234,7 @@ def test_no_worktree_is_a_skip_naming_that_nothing_was_there(monkeypatch):
 def test_several_worktrees_on_one_branch_are_refused(monkeypatch):
     c = _Calls(worktrees=["/w/a", "/w/b"], state="idle")
     _install(monkeypatch, c)
-    verdict, detail = _row(m.run_cleanup("fix/924", merged=True),
+    verdict, detail = _row(_cleanup("fix/924", merged=True),
                            "local worktree")
     assert verdict == m.CLEAN_REFUSED
     assert "/w/a" in detail and "/w/b" in detail
@@ -212,7 +245,7 @@ def test_a_failing_removal_is_refused_with_gits_own_reason(monkeypatch):
     c = _Calls(worktrees=["/w/944"], state="idle",
                git_rc={"worktree remove": (1, "contains modified files")})
     _install(monkeypatch, c)
-    verdict, detail = _row(m.run_cleanup("fix/924", merged=True),
+    verdict, detail = _row(_cleanup("fix/924", merged=True),
                            "local worktree")
     assert verdict == m.CLEAN_REFUSED
     assert "modified files" in detail
@@ -223,7 +256,7 @@ def test_the_worktree_is_removed_before_the_branch_is_deleted(monkeypatch):
     order is load-bearing rather than incidental."""
     c = _Calls(worktrees=["/w/944"], state="idle")
     _install(monkeypatch, c)
-    m.run_cleanup("fix/924", merged=True)
+    _cleanup("fix/924", merged=True)
     verbs = [call[:2] for call in c.git_calls]
     assert verbs.index(["worktree", "remove"]) < verbs.index(["branch", "-d"])
 
@@ -235,7 +268,7 @@ def test_the_worktree_is_removed_before_the_branch_is_deleted(monkeypatch):
 def test_the_local_branch_is_deleted_with_lowercase_d(monkeypatch):
     c = _Calls()
     _install(monkeypatch, c)
-    verdict, detail = _row(m.run_cleanup("fix/924", merged=True),
+    verdict, detail = _row(_cleanup("fix/924", merged=True),
                            "local branch")
     assert verdict == m.CLEAN_DONE, detail
     assert ["branch", "-d", "fix/924"] in c.git_calls
@@ -250,7 +283,7 @@ def test_a_squash_merge_that_d_cannot_confirm_is_a_finding_not_a_force(
     c = _Calls(git_rc={"branch -d": (1, "error: the branch 'fix/924' is not "
                                         "fully merged")})
     _install(monkeypatch, c)
-    verdict, detail = _row(m.run_cleanup("fix/924", merged=True),
+    verdict, detail = _row(_cleanup("fix/924", merged=True),
                            "local branch")
     assert verdict == m.CLEAN_REFUSED
     assert "not fully merged" in detail
@@ -261,7 +294,7 @@ def test_a_squash_merge_that_d_cannot_confirm_is_a_finding_not_a_force(
 def test_an_absent_local_branch_is_a_skip(monkeypatch):
     c = _Calls(branch_exists=False)
     _install(monkeypatch, c)
-    verdict, detail = _row(m.run_cleanup("fix/924", merged=True),
+    verdict, detail = _row(_cleanup("fix/924", merged=True),
                            "local branch")
     assert verdict == m.CLEAN_SKIPPED
     assert "no local branch" in detail
@@ -276,7 +309,7 @@ def test_a_repo_target_skips_the_local_half(monkeypatch):
     c = _Calls(worktrees=["/w/944"], state="idle")
     _install(monkeypatch, c)
     monkeypatch.setenv("SUPERTOOL_REPO", "other/repo")
-    rows = m.run_cleanup("fix/924", merged=True)
+    rows = _cleanup("fix/924", merged=True)
     for item in ("local worktree", "local branch"):
         verdict, detail = _row(rows, item)
         assert verdict == m.CLEAN_SKIPPED
@@ -292,7 +325,7 @@ def test_a_repo_target_skips_the_local_half(monkeypatch):
 def test_an_extraordinary_branch_name_refuses_every_item(monkeypatch):
     c = _Calls(worktrees=["/w/944"], state="idle")
     _install(monkeypatch, c)
-    rows = m.run_cleanup("-D;rm -rf /", merged=True)
+    rows = _cleanup("-D;rm -rf /", merged=True)
     assert [s for _i, s, _d in rows] == [m.CLEAN_REFUSED] * 3
     assert c.git_calls == [] and c.gh_calls == []
 
