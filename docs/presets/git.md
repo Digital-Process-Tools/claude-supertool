@@ -160,6 +160,66 @@ Files committed: 1
 
 The same gap made one refusal wrong in the same direction: with a foreign path staged and a clean worktree, `nothing staged — the working tree is clean` was printed over a non-empty index. That arm now names how many other paths are staged, and points at the pathless call.
 
+### The header echoes the message, and stops once the commit lands
+
+Every op's receipt opens with `--- <the argument you sent> ---`. For
+`git-commit` that argument is the commit message, so a long one is printed in
+full above a nine-line receipt — the message paid for twice, once to send and
+once to read back ([#946](https://github.com/Digital-Process-Tools/claude-supertool/issues/946), [#1235](https://github.com/Digital-Process-Tools/claude-supertool/issues/1235)).
+
+**On a successful commit the header is now a summary**, because `git log -1`
+holds the message and the receipt underneath is what proves the commit landed:
+
+```
+--- git-commit: "feat(git): rework the receipt" +11 more message lines → 2 path(s): presets/git/commit.py, tests/test_x.py ---
+```
+
+**On a refusal it stays verbatim, and that is deliberate.** Nothing was
+committed, so the header is the only surviving copy of a message the caller
+composed — eliding it there would cause exactly the loss #1235 was filed
+about. The summary is gated on the op having succeeded. Short arguments
+(under 160 characters) keep their verbatim header either way, as every other
+op does.
+
+**A refusal with a multi-line message used to exit 0.** The marker that turns
+a `FAIL` receipt into a non-zero process exit was anchored to the line after
+the header and could not cross a newline — and the header contains the
+message. So `git-commit:::subject` refused and exited 1, while the identical
+refusal with one body line added exited 0: a refusal that a hook or a `&&`
+chain reads as a success, on exactly the multi-line messages this repo's
+conventions ask for. Fixed for every op, not just this one.
+
+### A `:::` inside the message: two readings, both named
+
+`git-commit:::MSG:::PATH` splits on `:::`, so a `:::` *inside* MSG makes the
+tail of the message arrive as a PATH. The op already refused that rather than
+guessing — but the repair it suggested rebuilt the message by rejoining on a
+single `:`, whatever had split it. Pasting the suggestion committed a message
+the caller never wrote, under a refusal that was otherwise correct.
+
+The refusal now leads with the `@-` payload route carrying the message
+**byte for byte**, and offers the single-colon reading underneath, saying that
+it rewrites the separator:
+
+```
+  Your message contains ':::', this op's own field separator, so
+  no colon form can carry it unchanged. The payload route can —
+  it takes the message as bytes:
+    ./supertool 'git-commit:@-' <<'EOF'
+    message = '''fix(x): thing a::: and more prose'''
+    paths = ["a.txt"]
+    EOF
+  If you meant a single ':' there, this commits 'fix(x): thing a: and more prose'
+  — note that the ':::' becomes ':':
+    ./supertool 'git-commit:::fix(x): thing a: and more prose:::a.txt'
+```
+
+On the **payload** route the same check can fire — a `paths` entry that is not
+a path — and there the refusal no longer claims anything was split, because
+nothing was: the fields arrived structured. It says which entries are not
+paths, leaves the message intact, and declines to guess where the stray text
+belongs.
+
 ### What `git-commit` did not do
 
 Two renders on this op used to stop one line short of the thing the reader needed, both in the direction where silence reads as completeness.

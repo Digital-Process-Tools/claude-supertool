@@ -125,6 +125,16 @@ Built-in ops → custom ops (including preset ops) → aliases. Built-ins always
 
 ### Extra config keys as environment variables
 
+**`SUPERTOOL_ARG_SEP` is set on every preset subprocess, whatever the config
+says.** It holds how *this call's* fields were separated — `:::`, `:`, or the
+empty string when they arrived structured through an `@payload` and nothing
+was tokenized at all. A preset that reconstructs the caller's input for an
+error message needs it: `git-commit` rejoined a split-up message on `:` no
+matter what had split it, so a `:::` inside a message came back as a `:` and
+the suggested repair, pasted, committed bytes the caller never wrote (#946).
+The three states are the point — a payload's fields were never split, and an
+error that says they were is a claim about a parse that did not run.
+
 Any key in an op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`, `restartMcp`) is passed to the subprocess as a `SUPERTOOL_`-prefixed environment variable:
 
 ```json

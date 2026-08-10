@@ -149,12 +149,77 @@ def _spilled_message_paths(paths, staged_deletions):
     ]
 
 
-def _colon_split_refusal(msg, paths, spilled):
+def _arg_separator():
+    """What split this call's fields: ':::', ':', or '' for a payload (#946).
+
+    Set by the core as SUPERTOOL_ARG_SEP. Unset means an older core or a
+    direct invocation of this script, and ':' is what the refusal below
+    assumed unconditionally before this existed — so the default preserves
+    the old behaviour rather than inventing a fourth state for it.
+    """
+    return os.environ.get("SUPERTOOL_ARG_SEP", ":")
+
+
+def _payload_fields_refusal(msg, paths, spilled, rest):
+    """`paths = [...]` held something that is not a path — and nothing split.
+
+    The colon refusal below cannot be reused here even though the test that
+    fired is identical. It states that the message "was split on ':'", and
+    then rebuilds a message by FUSING the message with the offending entries.
+    On the payload route no tokenizer ran: both are assertions about a parse
+    that did not happen, and the rebuilt string is a message the caller never
+    wrote, handed back under a refusal's authority (#946).
+
+    So this reports what is actually true — the message is intact, some
+    `paths` entries are not paths — and declines to guess where they belong.
+    """
+    lines = [
+        "ERROR: %d of %d `paths` entries are not paths — nothing staged, "
+        "nothing committed." % (len(spilled), len(paths)),
+        "  Nothing was split: the payload route takes its fields as given.",
+        "  Parsed as: message=%r (intact)" % (msg,),
+    ]
+    for p in paths:
+        why = " (not a path, and unknown to git)" if p in spilled else ""
+        lines.append("             path=%r%s" % (p, why))
+    lines += [
+        "  `paths` holds pathspecs only. If part of the message ended up",
+        "  there, put it back in `message` — this op will not guess which:",
+        "    ./supertool 'git-commit:@-' <<'EOF'",
+        "    message = " + _TRIPLE + msg + _TRIPLE,
+        "    paths = ["
+        + ", ".join(_toml_basic(p) for p in rest or ["path/to/file"])
+        + "]",
+        "    EOF",
+    ]
+    return lines
+
+
+def _colon_split_refusal(msg, paths, spilled, sep=":"):
     """The error printed instead of guessing what the caller meant (#751).
 
     Reconstructs the message the caller almost certainly typed — the leading
-    run of spilled segments, rejoined on ':' — and hands back both routes that
-    carry a ':' intact. Nothing is staged and nothing is committed.
+    run of spilled segments, rejoined **on the separator that split them** —
+    and hands back the routes that carry it intact. Nothing is staged and
+    nothing is committed.
+
+    *sep* is not decoration. This rejoined on ':' whatever the route, so a
+    message containing ':::' — split by the triple-colon CLI into a message
+    plus prose "paths" — came back with its ':::' rewritten to ':'. Both
+    suggested repairs carried the rewrite, so pasting either committed bytes
+    the caller never wrote, under a refusal that was otherwise correct
+    (#946). A refusal whose remedy corrupts the thing it is repairing is
+    worse than a refusal carrying no remedy at all.
+
+    When the faithful rebuild contains ':::' there is no colon spelling that
+    can carry it — the separator wins — so the payload route leads, because
+    it is the one that survives arbitrary content. The single-colon reading
+    is still offered under it, because a ':::' typed where a ':' was meant is
+    a real and common way to land here (#963 pins that the offered form,
+    pasted, commits the subject the caller wanted). What changed is that it
+    now SAYS it is rewriting the separator. The defect was never that the
+    single-colon reading was offered; it was that it was offered as if it
+    were the message that had been typed.
 
     Both routes are quoted by the helpers rather than by hand. The subject
     here is the caller's own prose, so an apostrophe in it is ordinary
@@ -166,24 +231,27 @@ def _colon_split_refusal(msg, paths, spilled):
     head = []
     while rest and rest[0] in spilled:
         head.append(rest.pop(0))
-    rebuilt = ":".join([msg] + head)
 
-    suggestion = "git-commit:::" + rebuilt
-    if rest:
-        suggestion += ":::" + ":::".join(rest)
+    if not sep:
+        return "\n".join(_payload_fields_refusal(msg, paths, spilled, rest))
+
+    rebuilt = sep.join([msg] + head)
 
     lines = [
-        "ERROR: commit message was split on ':' — nothing staged, nothing committed.",
+        "ERROR: commit message was split on %r — nothing staged, nothing "
+        "committed." % (sep,),
         "  Parsed as: message=%r" % (msg,),
     ]
     for p in paths:
         why = " (not a path, and unknown to git)" if p in spilled else ""
         lines.append("             path=%r%s" % (p, why))
-    lines += [
-        "  supertool's single-colon CLI splits on every ':', so a Conventional",
-        "  Commits subject cannot survive it. Use a route that does not tokenize:",
-        "    ./supertool " + _sh_quote(suggestion),
-        "  or, for paths with spaces or a multi-line body:",
+    def _colon_form(text):
+        out = "git-commit:::" + text
+        if rest:
+            out += ":::" + ":::".join(rest)
+        return "    ./supertool " + _sh_quote(out)
+
+    payload = [
         "    ./supertool 'git-commit:@-' <<'EOF'",
         "    message = " + _TRIPLE + rebuilt + _TRIPLE,
         "    paths = ["
@@ -191,6 +259,33 @@ def _colon_split_refusal(msg, paths, spilled):
         + "]",
         "    EOF",
     ]
+
+    if ":::" in rebuilt:
+        lines += [
+            "  Your message contains ':::', this op's own field separator, so",
+            "  no colon form can carry it unchanged. The payload route can —",
+            "  it takes the message as bytes:",
+        ]
+        lines += payload
+        # The single-colon reading, named as a reading rather than handed back
+        # as the message. `alt` differs from `rebuilt` only when this call was
+        # split on ':::', which is exactly when the rewrite needs disclosing.
+        alt = ":".join([msg] + head)
+        if alt != rebuilt:
+            lines += [
+                "  If you meant a single ':' there, this commits %r" % (alt,),
+                "  — note that the ':::' becomes ':':",
+                _colon_form(alt),
+            ]
+    else:
+        lines += [
+            "  supertool's CLI splits this call on %r, so a Conventional" % (sep,),
+            "  Commits subject cannot survive it. Use a route that does not",
+            "  tokenize:",
+            _colon_form(rebuilt),
+            "  or, for paths with spaces or a multi-line body:",
+        ]
+        lines += payload
     return "\n".join(lines)
 
 
@@ -896,7 +991,8 @@ def main() -> int:
         # under a mangled subject and prints a success receipt for it.
         spilled = _spilled_message_paths(paths, staged_deletions)
         if spilled:
-            print(_colon_split_refusal(msg, paths, spilled))
+            print(_colon_split_refusal(msg, paths, spilled,
+                                       _arg_separator()))
             return 1
         to_add = [p for p in paths if p not in staged_deletions]
         if to_add:

@@ -617,6 +617,13 @@ RESET_GLOBALS = (
     # later test recreates at the same tmp_path with different contents.
     "_PATH_META_ROOT_CACHE",
     "_MUTATION_ATTEMPTS",
+    # Both per-invocation scratch, written by dispatch before the op runs and
+    # read within the same frame (#946). Stale across tests they would be
+    # worse than absent: `_ARG_SEP` would tell a preset the previous call's
+    # route, and `_CUSTOM_OP_OK` would report the previous op's exit status
+    # for one that never ran.
+    "_ARG_SEP",
+    "_CUSTOM_OP_OK",
     "_REPO_ROOT_WALK_CACHE",
     "_TS_GRAMMAR_FAILED",
     "_VALIDATOR_DEFER_QUEUE",
