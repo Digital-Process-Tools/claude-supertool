@@ -361,13 +361,27 @@ def _all_ambiguous_refusal(modified, untracked, unknown):
 
 
 def _expand_all():
-    """Resolve `--all` to the concrete dirty set, or say why it could not.
+    """Resolve `--all` to the concrete set it commits, or say why it could not.
 
     Returns `(paths, refusal_lines)`. `refusal_lines` non-empty means nothing
     was resolved and the caller must print them and stop — a `git status` that
     did not answer produces two empty lists here, and staging those would be
     an empty commit dressed as a deliberate one (docs/validators.md,
     "Declining instead of guessing").
+
+    **The index is part of the answer, not just the working tree** (#1228).
+    `git status`'s unstaged column cannot see a path that is staged and whose
+    worktree matches the index, so a fully-staged tree resolved to an EMPTY
+    list here — and an empty list left `paths` empty, which under #1228's
+    scoping is the *pathless* call: an unscoped `git commit` that swept the
+    whole index in with no disclosure at all. That is the defect #1228 exists
+    to remove, reachable through the one spelling that promises the opposite
+    ("the receipt names every one"). Including the index makes the set
+    explicit, so it is scoped, listed, and checkable.
+
+    The index read is required rather than best-effort for the same reason:
+    under `--all` the caller typed no list, so a silently short one is a
+    receipt that claims completeness it does not have.
     """
     modified, untracked, unknown = _worktree_changes()
     if unknown:
@@ -377,7 +391,20 @@ def _expand_all():
             "  What is dirty is UNKNOWN, so there is no list to accept.",
             "  Name the paths explicitly: git-commit:::MESSAGE:::PATHS",
         ]
-    return modified + untracked, []
+    idx = _git(["diff", "--cached", "--name-only", "-z"])
+    if idx.returncode != 0:
+        said = " ".join((idx.stderr or "").split())[:120]
+        return [], [
+            "ERROR: %s could not be resolved — the index could not be read "
+            "(%s). Nothing staged, nothing committed."
+            % (_ALL_TOKEN, said or "exit %d" % idx.returncode),
+            "  Already-staged paths are part of what %s means, so the list "
+            "would be incomplete." % (_ALL_TOKEN,),
+            "  Name the paths explicitly: git-commit:::MESSAGE:::PATHS",
+        ]
+    # dict.fromkeys rather than a set: the receipt lists these in order and
+    # under `--all` the receipt is the only record of what was chosen.
+    return list(dict.fromkeys(modified + untracked + _z_paths(idx.stdout))), []
 
 
 def _worktree_changes(git_fn=None):
@@ -602,6 +629,62 @@ def _left_behind_lines(git_fn=None):
     return lines
 
 
+def _staged_elsewhere(git_fn=None):
+    """Everything in the index, whoever staged it — `[]` when it could not read.
+
+    Used by the pre-commit refusal only, to add a disclosure to a message it is
+    already printing. A failed read therefore costs a line of detail and never
+    invents one: the refusal itself is correct either way.
+
+    `_still_staged_lines` deliberately does NOT go through this. It is the
+    whole of what it prints, so a failed read there has to be loud, and it
+    checks the return code itself.
+    """
+    run = _git if git_fn is None else git_fn
+    res = run(["diff", "--cached", "--name-only", "-z"])
+    if res.returncode != 0:
+        return []
+    return _z_paths(res.stdout)
+
+
+def _still_staged_lines(git_fn=None):
+    """What was staged and is NOT in the commit — read from the index (#1228).
+
+    The one check in this file computed against the commit rather than against
+    the working tree, and the only one that can see a staged-only path: a file
+    staged by another process and never touched in the worktree is invisible
+    to `git status`'s unstaged column, so `_left_behind_lines` cannot report
+    it and never could.
+
+    Silence here means the index came back empty, which after a commit is the
+    receipt of a complete one. A read that failed is therefore said out loud
+    rather than returned as `[]` — the same rule as every other check in this
+    file, and the reason the #1228 incident was survivable at all was that a
+    receipt contradicted itself out loud.
+    """
+    run = _git if git_fn is None else git_fn
+    left = run(["diff", "--cached", "--name-only", "-z"])
+    if left.returncode != 0:
+        said = " ".join((left.stderr or "").split())[:120]
+        return [
+            "⚠ Still-staged check SKIPPED — `git diff --cached` did not answer "
+            f"({said or 'exit ' + str(left.returncode)}).",
+            "  This receipt does not say whether anything stayed in the index.",
+        ]
+    paths = _z_paths(left.stdout)
+    if not paths:
+        return []
+    lines = [
+        f"⚠ {len(paths)} path(s) were already staged and are NOT in this commit:"
+    ]
+    lines += _sample(paths)
+    lines.append("  git-commit commits the paths you name and leaves the rest "
+                 "of the index alone.")
+    lines.append("  They are still staged. To commit them too:")
+    lines += _colon_remedy(paths[:_LIST_CAP], len(paths))
+    return lines
+
+
 def _nothing_staged_lines(named=0):
     """The refusal, with the list the op was already holding (#1003).
 
@@ -631,6 +714,29 @@ def _nothing_staged_lines(named=0):
             f"`git status` did not answer ({unknown}).",
             "  Stage explicitly: git-commit:::MESSAGE:::PATHS",
         ]
+    # #1228 — this arm exists because the scoped check above made it reachable.
+    # A path staged by another process with a clean worktree is invisible to
+    # `git status`'s unstaged column, so every list below is empty and the
+    # refusal read "the working tree is clean, so there is nothing to commit"
+    # over a non-empty index. That is this repo's standing defect: an absence
+    # produced by where the tool looked, printed as an absence in the world.
+    elsewhere = _staged_elsewhere()
+    if named and elsewhere:
+        lines = [
+            f"ERROR: nothing staged — the {named} path(s) you named held no "
+            f"changes to stage.",
+            f"  {len(elsewhere)} other path(s) ARE staged, and git-commit "
+            "commits only the paths you name:",
+        ]
+        lines += _sample(elsewhere)
+        lines.append("  To commit the index exactly as it stands, name no "
+                     "paths at all:")
+        lines.append("    ./supertool " + _sh_quote("git-commit:::MESSAGE"))
+        if modified or untracked:
+            lines.append("  Or name what you meant:")
+            shown = modified[:_LIST_CAP] + untracked[:_LIST_CAP]
+            lines += _colon_remedy(shown, len(modified) + len(untracked))
+        return lines
     if not modified and not untracked:
         return [
             ("ERROR: nothing staged — the working tree is clean, so there is "
@@ -703,16 +809,21 @@ def main() -> int:
     head_before = _head_sha()
     branch = _git(["rev-parse", "--abbrev-ref", "HEAD"]).stdout.strip()
 
-    if no_edit:
-        gd = git_dir_res.stdout.strip()
-        in_merge = bool(gd) and (
-            os.path.exists(os.path.join(gd, "MERGE_HEAD"))
-            or os.path.exists(os.path.join(gd, "CHERRY_PICK_HEAD"))
-        )
-        if not in_merge:
-            print("ERROR: --no-edit requires a merge or cherry-pick in progress "
-                  "(no MERGE_HEAD/CHERRY_PICK_HEAD found).")
-            return 1
+    # Computed unconditionally now, not only under --no-edit: #1228 scopes the
+    # commit to a pathspec, `git commit -- PATH` is a *partial* commit, and git
+    # refuses those outright mid-merge (`fatal: cannot do a partial commit
+    # during a merge`, exit 128). A merge commit is whole-index by
+    # construction, so the scoping stands down there rather than turning a
+    # working call into a fatal one.
+    _gd = git_dir_res.stdout.strip()
+    in_merge = bool(_gd) and (
+        os.path.exists(os.path.join(_gd, "MERGE_HEAD"))
+        or os.path.exists(os.path.join(_gd, "CHERRY_PICK_HEAD"))
+    )
+    if no_edit and not in_merge:
+        print("ERROR: --no-edit requires a merge or cherry-pick in progress "
+              "(no MERGE_HEAD/CHERRY_PICK_HEAD found).")
+        return 1
 
     print(f"# git-commit on {branch}")
     # Printed before anything is staged, so it is on the receipt whether the
@@ -803,18 +914,36 @@ def main() -> int:
     # and does not paste back as one. That was survivable while the caller
     # had typed the list; under `--all` they typed nothing and this listing
     # is the only record of what was committed (#1137).
-    staged = _git(["diff", "--cached", "--name-only", "-z"])
+    # #1228 — scoped to the paths that were named, for the same reason the
+    # commit below is. Unscoped, a foreign staged path makes the index look
+    # non-empty when the caller's own paths hold nothing, so this op's refusal
+    # ("the N path(s) you named held no changes to stage") is replaced by
+    # git's `nothing added to commit`, exit 1, under a header that has already
+    # printed `Staged: 1 path(s)`.
+    scope = ["--"] + paths if (paths and not in_merge) else []
+    staged = _git(["diff", "--cached", "--name-only", "-z"] + scope)
     if staged.returncode != 0 or not staged.stdout.strip():
         for line in _nothing_staged_lines(named):
             print(line)
         return 1
     staged_files = _z_paths(staged.stdout)
 
-    # Commit
+    # Commit — with the pathspec, so the commit is the paths that were named
+    # and nothing else (#1228). Without it, `git commit` takes the WHOLE index:
+    # on 2026-08-09 a staged revert left by a review agent rode into commit
+    # 3123343 and silently un-did 139 lines of a production fix, while the
+    # worktree still held the correct file and the tests still passed against
+    # the worktree. A commit that removes the fix and keeps the tests green is
+    # the one shape nothing downstream can catch.
+    #
+    # The pathless call is deliberately left alone: `git-commit:::MESSAGE` with
+    # no PATHS is the spelling that means "commit what I staged by hand", and
+    # it still does. What changes is that naming paths now means what the
+    # signature always said it meant.
     if no_edit:
         result = _git(["commit", "--no-edit"], timeout=_COMMIT_TIMEOUT)
     else:
-        result = _git(["commit", "-m", _with_coauthor(msg)],
+        result = _git(["commit", "-m", _with_coauthor(msg)] + scope,
                       timeout=_COMMIT_TIMEOUT)
     head_after = _head_sha()
 
@@ -839,6 +968,16 @@ def main() -> int:
         # #1016 — the tick above argues nothing was left out. Say so only when
         # that is established, and say the opposite when it is not.
         for line in _left_behind_lines():
+            print(line)
+        # #1228's second half. The block above is computed against the WORKING
+        # TREE, and that is why the original incident printed a receipt naming
+        # the two files it had just committed: the worktree still held the
+        # correct content, so they read as uncommitted. Scoping the commit
+        # fixes the lie in that direction and opens a new one — a staged-only
+        # path is now correctly excluded and was, until this line, excluded
+        # silently. This is computed against the COMMIT: whatever is still in
+        # the index afterwards is exactly what did not go in.
+        for line in _still_staged_lines():
             print(line)
         # Next-step hint
         upstream_res = _git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])

@@ -283,7 +283,7 @@ def test_render_prints_state_and_evidence_per_row() -> None:
             wt.Assessment(wt.STATE_UNKNOWN, ["lsof not installed (win32)"]),
         ),
     ]
-    text = wt.render(rows, merged=None, merged_why="skipped — no base ref")
+    text = wt.render(rows)
     assert "occupied" in text and "cannot tell" in text
     assert "pid 51234" in text and "lsof not installed" in text
     assert "fix/860" in text and "/w/860" in text
@@ -291,7 +291,7 @@ def test_render_prints_state_and_evidence_per_row() -> None:
 
 def test_render_footer_says_cannot_tell_is_not_free() -> None:
     rows = [({"path": "/w/1", "branch": "b"}, wt.Assessment(wt.STATE_UNKNOWN, ["x"]))]
-    text = wt.render(rows, merged=None, merged_why="skipped")
+    text = wt.render(rows)
     assert "cannot tell" in text
     assert "not" in text.lower().split("[result]")[-1]
 
@@ -300,7 +300,7 @@ def test_render_never_prints_a_removal_command() -> None:
     """Inspection only. A destructive suggestion in an ambiguous report is how
     an occupied tree gets removed."""
     rows = [({"path": "/w/1", "branch": "b"}, wt.Assessment(wt.STATE_IDLE, ["x"]))]
-    text = wt.render(rows, merged=set(), merged_why="")
+    text = wt.render(rows)
     assert "worktree remove" not in text
 
 

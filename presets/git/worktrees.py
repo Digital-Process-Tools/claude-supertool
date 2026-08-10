@@ -62,6 +62,7 @@ if os.path.dirname(_HERE) not in sys.path:
 
 from _git_common import (  # noqa: E402
     _git, use_utf8_stdout, query_open_prs_by_branch,
+    query_merged_prs_for_branches,
 )
 from _env import env_int  # noqa: E402
 import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
@@ -164,6 +165,111 @@ class Tracker:
 
     def __repr__(self) -> str:
         return f"Tracker({self.state!r}, {self.token!r}, {self.detail!r})"
+
+
+#: Merge states. Three, plus `n/a` for a tree with no branch to ask about.
+#:
+#: `MERGED_NO` and `MERGED_UNKNOWN` are the pair that must never merge, and
+#: until #1229 there was no pair at all: a row that did not earn `[merged]`
+#: simply carried nothing, and plain absence reads as unmerged work in the op
+#: a maintainer uses to decide which tree is safe to reap. Measured on the live
+#: fleet 2026-08-10 — 24 worktree branches, 8 tagged by ancestry, 16 with a
+#: merged PR — the silent rows were wrong 16 times, every one in the direction
+#: that keeps a stale tree alive.
+MERGED_YES = "merged"
+MERGED_NO = "not-merged"
+MERGED_UNKNOWN = "unknown"
+MERGED_NA = "n/a"
+
+
+class Merged:
+    """Whether this branch's work is in the base — and by which method.
+
+    The method is part of the answer, not decoration. Ancestry and the merged
+    PR page disagree by construction on every squash merge, so a row that says
+    `merged` without saying how cannot be checked by the reader who doubts it.
+    """
+
+    __slots__ = ("state", "token", "detail")
+
+    def __init__(self, state: str, token: str, detail: str) -> None:
+        self.state = state
+        self.token = token
+        self.detail = detail
+
+    def __repr__(self) -> str:
+        return f"Merged({self.state!r}, {self.token!r}, {self.detail!r})"
+
+
+def merged_for(branch: str, ancestors, merged_prs, ancestors_why: str = "",
+               base: str = "master") -> Merged:
+    """Which of the four answers holds for this worktree's branch (#1229).
+
+    Two signals, deliberately asymmetric:
+
+    * **Ancestry** (`for-each-ref --merged`) is consulted first and is used as
+      a **positive only**. A branch that is an ancestor of the base has every
+      one of its commits on the base — certain, local, free, and true even
+      with `nopr` and no network. As a *negative* it is worthless here: a
+      squash merge writes a commit with no parent link to the branch, so a
+      fully-merged branch is not an ancestor, which is the whole defect.
+    * **The merged-PR lookup** answers the squash case, and only it can. It is
+      a network read, so its failure is a third state and never a `no`. Its
+      own cap arrives here as a failure with the cap named, rather than as an
+      answered map that is quietly short — see
+      `query_merged_prs_for_branches`.
+
+    Folding the two rather than dropping ancestry is the call this makes, and
+    the reason is the offline op: with `nopr` the merged page is never fetched,
+    and an ancestry-free implementation could then say `merged` about nothing
+    at all. The two cannot disagree in the direction that matters, because
+    ancestry is only ever read as `yes`.
+
+    `ancestors is None` means the local read itself failed, and that is
+    `unknown` even when the PR page answered — a branch absent from the merged
+    page is only `not merged` if ancestry also had its say.
+    """
+    if not branch:
+        return Merged(MERGED_NA, "merge n/a",
+                      "merged: n/a — no branch checked out here (detached or "
+                      "bare), so there is nothing to measure against " + base)
+
+    if ancestors is not None and branch in ancestors:
+        return Merged(MERGED_YES, "merged",
+                      f"merged: yes — every commit is already an ancestor of "
+                      f"{base} (local, no network)")
+
+    if merged_prs is not None and merged_prs.answered:
+        pr = merged_prs.get(branch)
+        if pr is not None:
+            return Merged(MERGED_YES, "merged",
+                          f"merged: yes — PR #{pr.get('number', '?')} is merged. "
+                          f"Not an ancestor of {base}: a squash merge leaves no "
+                          "ancestry, which is why the local check cannot see it")
+
+    if ancestors is None:
+        return Merged(MERGED_UNKNOWN, "merge unknown",
+                      "merged: UNKNOWN — the local ancestry check did not answer "
+                      f"({ancestors_why or 'not run'}). This is the tool failing "
+                      "to look, NOT a finding that the work is unmerged")
+
+    if merged_prs is None:
+        return Merged(MERGED_UNKNOWN, "merge unknown",
+                      f"merged: UNKNOWN — not an ancestor of {base}, and the "
+                      "merged-PR page was not looked up (nopr / "
+                      "SUPERTOOL_WORKTREE_PR=0). A squash merge is invisible to "
+                      "ancestry, so this is not a finding that the work is unmerged")
+
+    if not merged_prs.answered:
+        return Merged(MERGED_UNKNOWN, "merge unknown",
+                      f"merged: UNKNOWN — not an ancestor of {base}, and the "
+                      f"merged-PR lookup did not answer ({merged_prs.reason}). "
+                      "A squash merge is invisible to ancestry, so nothing here "
+                      "establishes that the work is unmerged")
+
+    return Merged(MERGED_NO, "not merged",
+                  f"merged: no — not an ancestor of {base}, and no merged PR "
+                  "has this branch as its head")
 
 
 class Assessment:
@@ -605,7 +711,7 @@ def tracker_for(branch: str, index, remote_branches, remote_why: str = "") -> Tr
 
 # ── rendering ────────────────────────────────────────────────────────────
 
-def render(rows: list, merged=None, merged_why: str = "") -> str:
+def render(rows: list) -> str:
     """The board, and the guarantee it makes about its own shape.
 
     **A row is one line plus one line per piece of evidence, whatever it is
@@ -632,10 +738,14 @@ def render(rows: list, merged=None, merged_why: str = "") -> str:
     for row in rows:
         entry, verdict = row[0], row[1]
         tracker = row[2] if len(row) > 2 else None
+        merge = row[3] if len(row) > 3 else None
         branch = entry.get("branch") or ("(detached)" if entry.get("detached") else "?")
         tags = []
-        if merged is not None and entry.get("branch") in merged:
-            tags.append("merged")
+        # Every state prints, including `not merged`. The absent tag was the
+        # #1229 defect: a row carrying nothing reads as unmerged work, and it
+        # was wrong that way on 16 of 24 rows on the live fleet.
+        if merge is not None and merge.state != MERGED_NA:
+            tags.append(merge.token)
         if entry.get("prunable"):
             tags.append("prunable")
         suffix = f"  [{', '.join(tags)}]" if tags else ""
@@ -646,28 +756,40 @@ def render(rows: list, merged=None, merged_why: str = "") -> str:
             out.append(f"             · {flat(str(item))}")
         if tracker is not None:
             out.append(f"             · {flat(tracker.detail)}")
+        if merge is not None:
+            out.append(f"             · {flat(merge.detail)}")
         out.append("")
 
-    if merged is None:
-        out.append(f"merged-into-base: unknown — {merged_why or 'not checked'}")
-        out.append("")
+    # The whole-board `merged-into-base: unknown — <why>` line is gone with
+    # #1229: it was the third state applied once, to every row at once, and
+    # the per-row states supersede it. Two mechanisms for one fact is where a
+    # board drifts from what it is measuring.
 
     tally = {STATE_OCCUPIED: 0, STATE_IDLE: 0, STATE_UNKNOWN: 0}
     unknown_trackers = 0
+    unknown_merges = 0
     for row in rows:
         verdict = row[1]
         tally[verdict.state] = tally.get(verdict.state, 0) + 1
         tracker = row[2] if len(row) > 2 else None
         if tracker is not None and tracker.state == TRACKER_UNKNOWN:
             unknown_trackers += 1
+        merge = row[3] if len(row) > 3 else None
+        if merge is not None and merge.state == MERGED_UNKNOWN:
+            unknown_merges += 1
     # The tracker count rides the one line that survives `| tail -1`. A row
     # whose PR state was never read has to be visible from there, or the
     # summary is the place the missing answer disappears.
     tracker_part = (f", {unknown_trackers} tracker unknown"
                     if unknown_trackers else "")
+    # Same reasoning as the tracker count, and the same line: a row whose merge
+    # state was never established must be visible from `| tail -1`, or the
+    # summary is where the missing answer disappears (#1229).
+    merge_part = (f", {unknown_merges} merge unknown" if unknown_merges else "")
     out.append(
         f"[result] {tally[STATE_OCCUPIED]} occupied, {tally[STATE_IDLE]} idle, "
-        f"{tally[STATE_UNKNOWN]} cannot tell{tracker_part} — 'cannot tell' is NOT "
+        f"{tally[STATE_UNKNOWN]} cannot tell{tracker_part}{merge_part} — "
+        "'cannot tell' is NOT "
         "'idle': nothing answered, so treat that tree as occupied until something does"
         + (" · a tracker 'unknown' is the lookup failing, not an absent PR"
            if unknown_trackers else "")
@@ -676,14 +798,25 @@ def render(rows: list, merged=None, merged_why: str = "") -> str:
 
 
 def _merged_branches():
+    """Branches that are ANCESTORS of the base — `(set|None, why, base)`.
+
+    Renamed in meaning by #1229 rather than in code: this was the whole of the
+    `[merged]` decision and is now one half of it, read as a positive only.
+    `--merged` is an ancestry test, and this repo squash-merges, so its `no` is
+    not a finding. `merged_for` owns what the row says; this owns the local
+    half of the evidence, and now returns the base it measured against so the
+    row can name it.
+    """
     for base in ("master", "main"):
         if _git(["rev-parse", "--verify", "--quiet", base]).returncode != 0:
             continue
         res = _git(["for-each-ref", "--format=%(refname:short)", "--merged", base, "refs/heads"])
         if res.returncode != 0:
-            return None, f"git for-each-ref --merged {base} exited {res.returncode}"
-        return set(res.stdout.split()), ""
-    return None, "neither master nor main resolves here — no base to measure against"
+            return None, f"git for-each-ref --merged {base} exited {res.returncode}", base
+        return set(res.stdout.split()), "", base
+    return (None,
+            "neither master nor main resolves here — no base to measure against",
+            "master")
 
 
 #: Tokens that are flags rather than a PATH.
@@ -701,9 +834,11 @@ def parse_args(argv: list) -> tuple:
     friction #941 reports is a join done in the reader's head, and a suffix
     only helps the reader who already knows the suffix exists — which is not
     the one reaching for this board at speed. The cost is bounded and stated:
-    exactly one `gh` call per run, whatever the tree count, on a short timeout,
-    and a call that fails degrades to `PR unknown` rather than to a wrong
-    answer or a slower op.
+    **two** `gh` calls per run, whatever the tree count — the open-PR index and,
+    since #1229, the merged-PR lookup, which cannot ride the first because that
+    one is `--state open` — both on a short timeout, and a call that fails
+    degrades to `PR unknown` / `merge unknown` rather than to a wrong answer or
+    a slower op.
     """
     path = ""
     want_pr = (os.environ.get("SUPERTOOL_WORKTREE_PR", "").strip().lower()
@@ -742,16 +877,27 @@ def main() -> int:
                   "nothing was inspected, so nothing is claimed")
             return EXIT_UNKNOWN
 
-    merged, merged_why = _merged_branches()
+    ancestors, ancestors_why, base = _merged_branches()
     index = query_open_prs_by_branch() if want_pr else None
+    # The second `gh` call, and it has to be a second one: the index above is
+    # `--state open`, and a merged PR is absent from it by construction (#1229).
+    # It is scoped to the branches this board holds rather than paging the
+    # repo's merged history — that history only grows, so any page size is a
+    # cap the repo passes and never comes back under. It rides the same
+    # `want_pr` switch, so `nopr` stays fully offline — and offline the merge
+    # column answers `merged` from ancestry or `unknown`, never `not merged`.
+    merged_prs = (query_merged_prs_for_branches(
+        [e.get("branch") or "" for e in entries]) if want_pr else None)
     remote_names, remote_why = remote_branch_names() if want_pr else (None, "")
     memo: dict = {}
     rows = [(entry,
              assess(entry, scan=_cwd_scan(entry["path"], memo)),
              tracker_for(entry.get("branch") or "", index, remote_names, remote_why)
-             if want_pr else None)
+             if want_pr else None,
+             merged_for(entry.get("branch") or "", ancestors, merged_prs,
+                        ancestors_why=ancestors_why, base=base))
             for entry in entries]
-    print(render(rows, merged=merged, merged_why=merged_why))
+    print(render(rows))
 
     if wanted and len(rows) == 1:
         state = rows[0][1].state

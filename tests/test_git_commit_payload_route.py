@@ -151,7 +151,14 @@ def test_payload_trailer_already_present_is_not_duplicated(tmp_path: Path) -> No
 
 
 def test_payload_route_stages_the_listed_paths(tmp_path: Path) -> None:
-    """`paths` is variadic: every listed path lands in the commit."""
+    """`paths` is variadic: every listed path lands in the commit — and only those.
+
+    This assertion used to read `["a.txt", "b.txt", "c.txt"]`. `a.txt` is
+    staged by `_repo` and named by nothing here, so what it pinned was the
+    #1228 defect: `git-commit` committed the whole index rather than the paths
+    it was given. The payload names two paths; two paths are committed, and
+    `a.txt` stays staged exactly where the fixture left it.
+    """
     work = _repo(tmp_path)
     (work / "b.txt").write_text("b\n")
     (work / "c.txt").write_text("c\n")
@@ -165,7 +172,12 @@ def test_payload_route_stages_the_listed_paths(tmp_path: Path) -> None:
         ["git", "show", "--name-only", "--format=", "HEAD"],
         cwd=work, capture_output=True, text=True, check=True, encoding="utf-8", errors="replace",
     ).stdout.split()
-    assert sorted(committed) == ["a.txt", "b.txt", "c.txt"]
+    assert sorted(committed) == ["b.txt", "c.txt"]
+    still_staged = subprocess.run(
+        ["git", "diff", "--cached", "--name-only"],
+        cwd=work, capture_output=True, text=True, check=True, encoding="utf-8", errors="replace",
+    ).stdout.split()
+    assert still_staged == ["a.txt"], out
 
 
 def test_colon_route_single_line_is_unchanged(tmp_path: Path) -> None:

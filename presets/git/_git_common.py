@@ -377,6 +377,70 @@ def _run_gh_pr_list(args: list) -> subprocess.CompletedProcess:
                           errors="replace")
 
 
+#: Only the head ref is needed to answer "was this branch merged", plus the
+#: number so the row can cite the PR it was decided by. Asking for the check
+#: rollup here would multiply the payload by the number of legs for a column
+#: nobody renders.
+MERGED_PR_FIELDS = "number,headRefName"
+
+#: How many branches go into one `--search` query. GitHub ORs repeated `head:`
+#: qualifiers, so N branches cost one call rather than N — but an unbounded
+#: query is an unbounded URL, and a fleet is a couple of dozen worktrees, so
+#: this only ever chunks in an implausible case.
+MERGED_PR_CHUNK = 30
+
+
+def query_merged_prs_for_branches(branches, runner=None) -> PrIndex:
+    """Merged PRs whose head is one of `branches` — keyed by head branch.
+
+    This exists because `git for-each-ref --merged` is an ancestry test and a
+    squash merge leaves no ancestry: the squashed commit has no parent link to
+    the branch it came from, so a fully-merged branch is not an ancestor of
+    the base and reads as unmerged forever (#1229).
+
+    **Scoped by `--search head:…`, not paged.** The obvious implementation is
+    `gh pr list --state merged --limit N` and it does not work here: merged
+    PRs accumulate forever, so N is a cap the repo grows past and never comes
+    back under. Measured 2026-08-10 — 632 merged PRs against a first attempt
+    at `--limit 400`, which made every unmerged branch render `merge unknown`
+    permanently. That is honest and useless: a third state that is always the
+    answer has replaced the wrong answer with no answer.
+
+    Scoping inverts the arithmetic. The query asks about the branches we hold
+    — a couple of dozen — so the result set is bounded by the question rather
+    than by the repository's history, and the cap stops growing. It is also
+    faster: 0.7s against 3.9s for the 800-item page.
+
+    A chunk that fails or hits its own limit declines for the **whole** board
+    rather than returning what the other chunks found. A partial map is
+    indistinguishable from a complete one at every call site, which is the
+    defect this whole class of three-state contract exists to prevent.
+    """
+    names = [b for b in dict.fromkeys(branches) if b]
+    if not names:
+        return PrIndex({}, limit=0)
+    found: dict = {}
+    last_limit = 0
+    for start in range(0, len(names), MERGED_PR_CHUNK):
+        chunk = names[start:start + MERGED_PR_CHUNK]
+        # Headroom over the branch count: one branch can carry several merged
+        # PRs, and a result set that exactly fills the limit cannot be told
+        # from one that was cut.
+        limit = max(2 * len(chunk), 20)
+        last_limit = limit
+        idx = _pr_index(
+            ["pr", "list", "--state", "merged", "--json", MERGED_PR_FIELDS,
+             "--search", " ".join("head:" + b for b in chunk),
+             "--limit", str(limit)], limit, runner)
+        if not idx.answered:
+            return idx
+        if idx.truncated:
+            return PrIndex(None, f"the merged-PR search hit its {limit}-item "
+                           "cap, so its answer is incomplete", limit=limit)
+        found.update(idx.by_branch or {})
+    return PrIndex(found, limit=last_limit)
+
+
 def query_open_prs_by_branch(limit: int = PR_INDEX_LIMIT, runner=None) -> PrIndex:
     """Every open PR of this repo, keyed by head branch, in **one** call.
 
@@ -389,9 +453,21 @@ def query_open_prs_by_branch(limit: int = PR_INDEX_LIMIT, runner=None) -> PrInde
     is not the JSON array it should be. None of them return an empty map,
     because an empty map is a claim.
     """
+    return _pr_index(["pr", "list", "--state", "open", "--json",
+                      PR_INDEX_FIELDS, "--limit", str(limit)], limit, runner)
+
+
+def _pr_index(args: list, limit: int, runner=None) -> PrIndex:
+    """Run one `gh pr list` and key it by head ref — or decline, with a reason.
+
+    Shared by the open and the merged lookups (#1229). Both need the identical
+    seven failure routes and the identical `truncated` rule, and the second
+    copy of them is where the two would drift: an added route on one side is
+    silently a missing one on the other, and a missing route here returns an
+    empty map, which is a claim.
+    """
     run = runner or _run_gh_pr_list
-    args = ["pr", "list", "--state", "open", "--json", PR_INDEX_FIELDS,
-            "--limit", str(limit)] + _repo_target_args()
+    args = list(args) + _repo_target_args()
     try:
         res = run(args)
     except subprocess.TimeoutExpired:

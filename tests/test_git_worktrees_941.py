@@ -241,7 +241,7 @@ def _row(branch: str, tracker, path: str = "/tmp/st-wt/941"):
 
 def test_the_board_prints_the_pr_on_the_row() -> None:
     tracker = wt.tracker_for("fix/941", _answered(_pr(941, "fix/941")), {"fix/941"})
-    out = wt.render([_row("fix/941", tracker)], merged=set())
+    out = wt.render([_row("fix/941", tracker)])
     assert "#941" in out
     assert any("#941" in line for line in out.splitlines()
                if line.startswith("cannot tell")), out
@@ -252,7 +252,7 @@ def test_the_board_footer_counts_the_rows_whose_tracker_did_not_answer() -> None
     declined = _declined("network is unreachable")
     rows = [_row("fix/941", wt.tracker_for("fix/941", declined, set())),
             _row("fix/936", wt.tracker_for("fix/936", declined, set()))]
-    out = wt.render(rows, merged=set())
+    out = wt.render(rows)
     result = [l for l in out.splitlines() if l.startswith("[result]")]
     assert result, out
     assert "2 tracker unknown" in result[0], result[0]
@@ -260,7 +260,7 @@ def test_the_board_footer_counts_the_rows_whose_tracker_did_not_answer() -> None
 
 def test_a_board_with_every_tracker_answered_says_nothing_about_unknowns() -> None:
     tracker = wt.tracker_for("fix/941", _answered(_pr(941, "fix/941")), {"fix/941"})
-    out = wt.render([_row("fix/941", tracker)], merged=set())
+    out = wt.render([_row("fix/941", tracker)])
     result = [l for l in out.splitlines() if l.startswith("[result]")][0]
     assert "tracker unknown" not in result, result
 
@@ -274,7 +274,7 @@ def test_a_newline_in_the_lookup_reason_cannot_forge_a_row() -> None:
     forged = "idle         evil          /tmp/evil"
     index = _declined("gh exploded\n" + forged)
     tracker = wt.tracker_for("fix/941", index, {"fix/941"})
-    out = wt.render([_row("fix/941", tracker)], merged=set())
+    out = wt.render([_row("fix/941", tracker)])
     assert not any(line.startswith("idle ") for line in out.splitlines()), out
     assert "evil" in out
 
@@ -297,7 +297,7 @@ def test_the_env_knob_turns_the_lookup_off(monkeypatch) -> None:
 
 
 def test_suppressed_tracker_is_absent_from_the_row_not_rendered_as_no_pr() -> None:
-    out = wt.render([_row("fix/941", None)], merged=set())
+    out = wt.render([_row("fix/941", None)])
     assert "no open PR" not in out
     assert "PR unknown" not in out
 
