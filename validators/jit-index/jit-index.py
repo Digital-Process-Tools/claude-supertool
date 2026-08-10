@@ -264,7 +264,8 @@ def _case_findings(line, pattern):
 def _awk_version(awk):
     try:
         proc = subprocess.run([awk, "--version"], capture_output=True,
-                              text=True, timeout=TIMEOUT_S)
+                              text=True, encoding="utf-8", errors="replace",
+                              timeout=TIMEOUT_S)
     except (OSError, subprocess.SubprocessError):
         return "awk"          # TimeoutExpired included: it subclasses SubprocessError
     blob = (proc.stdout or proc.stderr or "").strip().splitlines()
@@ -287,7 +288,8 @@ def _awk_run(awk, patterns):
         proc = subprocess.run(
             [awk, AWK_PROGRAM],
             input="".join(p + "\n" for p in patterns),
-            capture_output=True, text=True, timeout=TIMEOUT_S)
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=TIMEOUT_S)
     except subprocess.TimeoutExpired:
         return None, "awk did not answer within {0}s".format(TIMEOUT_S)
     except (OSError, subprocess.SubprocessError) as exc:

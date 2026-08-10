@@ -61,7 +61,8 @@ def _run(target, env_path=None):
         env["PATH"] = env_path
     proc = subprocess.run(
         [sys.executable, str(ADAPTER), str(target)],
-        capture_output=True, text=True, env=env)
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        env=env)
     assert proc.stdout.strip(), "adapter emitted nothing (stderr: {0})".format(proc.stderr)
     return json.loads(proc.stdout)
 
