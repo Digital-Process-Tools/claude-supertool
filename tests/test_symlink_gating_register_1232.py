@@ -107,15 +107,37 @@ class _Visitor(ast.NodeVisitor):
                 text += " " + value
         return text
 
-    def _mechanism(self):
+    @staticmethod
+    def _called_before(name, scope, lineno):
+        """Is there a real CALL to `name` in `scope`, above line `lineno`?
+
+        Both halves are load-bearing, and a substring search over
+        `ast.unparse(scope)` fails both. It certifies a `require_symlink()`
+        that appears only in a docstring, and it certifies one written BELOW
+        the `symlink_to` it is supposed to guard -- where the `OSError` fires
+        first and the gate never runs. Neither is hypothetical: this is a
+        register whose whole claim is that the label is derived rather than
+        believed, so the derivation has to be about calls and about order.
+        """
+        for node in ast.walk(scope):
+            if not isinstance(node, ast.Call) or node.lineno >= lineno:
+                continue
+            func = node.func
+            if isinstance(func, ast.Name) and func.id == name:
+                return True
+            if isinstance(func, ast.Attribute) and func.attr == name:
+                return True
+        return False
+
+    def _mechanism(self, lineno):
         for node in self._scope:
             if "requires_symlink" in self._decorator_source(node):
                 return A
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                body = ast.unparse(node)
-                if "require_symlink()" in body:
+                if self._called_before("require_symlink", node, lineno):
                     return B
-                if "_can_symlink(" in body and "pytest.skip" in body:
+                if (self._called_before("_can_symlink", node, lineno)
+                        and self._called_before("skip", node, lineno)):
                     return D
         for handlers in self._trys:
             if any(h == "bare" or "OSError" in h for h in handlers):
@@ -133,25 +155,35 @@ class _Visitor(ast.NodeVisitor):
         if creates:
             key = "{0}::{1}".format(
                 self._rel, ".".join(n.name for n in self._scope) or "<module>")
-            self._found.setdefault(key, []).append((node.lineno, self._mechanism()))
+            self._found.setdefault(key, []).append(
+                (node.lineno, self._mechanism(node.lineno)))
         self.generic_visit(node)
+
+
+def _sites_in_source(rel, source, found=None):
+    """One file's sites. Split out so the classifier can be tested on strings."""
+    found = {} if found is None else found
+    module = ast.parse(source)
+    assigns = {}
+    for node in module.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assigns[target.id] = ast.unparse(node.value)
+    mod_platform = any(
+        tok in assigns.get("pytestmark", "") for tok in PLATFORM_TOKENS)
+    _Visitor(rel, assigns, mod_platform, found).visit(module)
+    return found
 
 
 def _call_sites():
     """`tests/file.py::enclosing.def` -> [(lineno, mechanism), ...]."""
     found = {}
     for path in sorted(TESTS.rglob("*.py")):
-        rel = path.relative_to(ROOT).as_posix()
-        module = ast.parse(path.read_text(encoding="utf-8"))
-        assigns = {}
-        for node in module.body:
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name):
-                        assigns[target.id] = ast.unparse(node.value)
-        mod_platform = any(
-            tok in assigns.get("pytestmark", "") for tok in PLATFORM_TOKENS)
-        _Visitor(rel, assigns, mod_platform, found).visit(module)
+        _sites_in_source(
+            path.relative_to(ROOT).as_posix(),
+            path.read_text(encoding="utf-8"),
+            found)
     return found
 
 
@@ -262,6 +294,11 @@ def test_no_symlink_call_site_is_left_ungated() -> None:
         "`require_symlink()` from `tests/_symlink.py`, or "
         "`@requires_symlink`: " + repr(sorted(ungated.items()))
     )
+    # Checked here rather than in a test of its own: a loop over a dict that is
+    # deliberately empty is a test that passes without executing, which is the
+    # shape this whole file exists to refuse.
+    for key, reason in UNGATED_BY_DESIGN.items():
+        assert len(reason) > 40, (key, reason)
 
 
 def test_the_gate_turns_a_failure_into_a_skip_for_real(tmp_path) -> None:
@@ -348,6 +385,26 @@ def test_the_recorded_mechanism_is_still_the_one_in_the_code() -> None:
         "(recorded, actual): " + repr(drifted))
 
 
-def test_every_by_design_exception_states_a_reason() -> None:
-    for key, reason in UNGATED_BY_DESIGN.items():
-        assert len(reason) > 40, (key, reason)
+def test_the_classifier_refuses_a_gate_that_would_not_have_fired() -> None:
+    """The register is only worth its assertion if the derivation is honest.
+
+    Two shapes a substring search over the unparsed body certifies and must
+    not: a `require_symlink()` that is only mentioned in prose, and one written
+    BELOW the call it claims to guard, where the `OSError` is raised first.
+    Both were reachable until the ordering check went in.
+    """
+    gate = "    require_symlink()"
+    call = "    (tmp_path / 'l').symlink_to(tmp_path)"
+    prose = '    """mentions require_symlink() and nothing else."""'
+
+    def mech(*body):
+        src = chr(10).join(["def test_x(tmp_path):"] + list(body)) + chr(10)
+        sites = _sites_in_source("tests/synthetic.py", src)
+        return sites["tests/synthetic.py::test_x"][0][1]
+
+    assert mech(gate, call) == B, "a real gate above the call must certify"
+    assert mech(call, gate) == UNGATED, (
+        "a gate BELOW the symlink call was certified -- at runtime the OSError "
+        "fires first and the gate never runs")
+    assert mech(prose, call) == UNGATED, (
+        "a docstring mentioning require_symlink() was read as a call")
