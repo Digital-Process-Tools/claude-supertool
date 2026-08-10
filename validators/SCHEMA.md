@@ -26,9 +26,23 @@ Universal JSON. Every adapter emits this shape. Validator core never parses tool
 | `errors`      | array of objects | yes*     | `[]` when ok. Each: `{line, col, severity, code, msg}`. *Absent on a `skipped` result. |
 | `duration_ms` | int              | yes      | Wall time. For perf tuning.                                           |
 | `metrics`     | object           | no       | Tool-specific counters (`tests_total`, `tests_passed`, etc.). Numeric values. Used by renderer for before/after diff on metric keys even when `count` is unchanged. |
-
 | `diff`        | string           | no       | Unified diff produced by the tool (e.g. rector). Rendered as a fenced block below all errors in verbose mode. Ignored in default mode. |
 | `skipped`     | string           | no       | Reason the validator declined to analyse the file (scope allowlist, tool absent, ...). Its presence — not its value — marks the result as a third state. |
+
+A blank line between two rows ends a Markdown table, and every row after it renders as a paragraph of literal pipe characters. One sat after `metrics` from #411 until #1042, which left `diff` and `skipped` — the third state — outside the rendered field table. `tests/test_schema_contract_drift_1042.py::test_no_field_row_falls_outside_its_table` now fails on it.
+
+### Core-only fields
+
+The keys the **core** stamps on a result. An adapter may never send one: `_validator_strip_core_keys` drops each from every adapter payload — fresh or replayed from cache — before any decision reads it, so setting one is neither refused nor honoured, it is simply not there.
+
+| Field         | Type             | Set by   | Notes                                                                 |
+|---------------|------------------|----------|-----------------------------------------------------------------------|
+| `no_verdict`  | bool             | core     | The core watched this adapter break down — no output, non-JSON, a crash, or a reply carrying neither `ok` nor `skipped`. Distinct from a healthy adapter declining on its own terms; under `$SUPERTOOL_REQUIRE_VALIDATORS` the first exits 1 and the second does not (#975). |
+| `timeout`     | bool             | core     | The subprocess exceeded its budget. Whether an adapter answered inside its budget is observed by the process holding the budget, never reported by the process being timed. |
+| `elapsed_s`   | float            | core     | Wall time as the core measured it. Re-stamped on a cache hit from the run in hand — the elapsed time of a lookup is the lookup. |
+| `resolved_to` | string           | core     | The target `resolve` mapped the edited file to. Re-stamped on a cache hit for the same reason. |
+
+This table is the doc's half of a contract whose other half is `_VALIDATOR_CORE_ONLY_KEYS` in the core. Neither is generated from the other, so `tests/test_schema_contract_drift_1042.py` compares them in both directions and fails if either side names a field the other does not (#1042). Do not add a row here without adding the key there.
 
 ### Skipped: the third state
 
@@ -59,7 +73,7 @@ Emit it whenever the tool's output does not confirm it looked at the file. Where
 
 **The prohibition is on the whole class, not on that one key (#1036).** `no_verdict` was the only core-internal field named here, and the sentence was read as covering the boundary rather than one instance of it — so `timeout`, which the core stamps on the result it fabricates when a subprocess exceeds its budget and which `rollback_on_fail` reads as "nothing checked this file", stayed unmentioned and unenforced. An adapter that printed `"timeout": true` beside a real finding therefore turned off the rollback guard: the row said `NOT CHECKED`, the edit that broke the file survived, and the adapter's own sentence was printed under the `orchestrator` provenance column, which exists to mark text the core wrote.
 
-The rule: **an adapter's fields are the ones in the table above, and nothing else.** The core's timeout and an adapter's claim of one are different facts, and only the first is evidence — whether an adapter answered inside its budget is observed by the process holding the budget, never reported by the process being timed. The core now drops `no_verdict`, `timeout`, `elapsed_s` and `resolved_to` from every adapter payload before any decision reads it, so setting one is neither refused nor honoured; it is simply not there. Refusing the result outright would have handed the same adapter the same bypass through the other door, since a refused result is a skip and a skip never rolls back either. An adapter's own verdict — `ok`, `count`, `errors` — is untouched.
+The rule: **an adapter's fields are the ones in the table above, and nothing else.** The core's timeout and an adapter's claim of one are different facts, and only the first is evidence — whether an adapter answered inside its budget is observed by the process holding the budget, never reported by the process being timed. The core now drops every field in the "Core-only fields" table above from each adapter payload before any decision reads it, so setting one is neither refused nor honoured; it is simply not there. That table is the enumeration — re-listing the keys in this sentence made a second hand-maintained copy of the same set, which is #1042. Refusing the result outright would have handed the same adapter the same bypass through the other door, since a refused result is a skip and a skip never rolls back either. An adapter's own verdict — `ok`, `count`, `errors` — is untouched.
 
 **The cache is the same payload, so it is the same boundary (#1044).** A cached result is an adapter payload that outlived the run which parsed it, and the core reads one back through a different `return` than the fresh path. Entries written before the drop existed still carry the forged key — they are signed with this machine's own secret so they verify, and (until #1048) no part of the key described the build that wrote them, so an upgrade did not retire them. Both paths drop the core's keys now, and the key carries a meaning version derived from this file's content and the core-only key set, so a later change to what a stored field *means* misses rather than being read under the new rules. `elapsed_s` and `resolved_to` are then re-stamped from the run in hand rather than replayed: the elapsed time of a cache hit is the lookup, and the resolved target is the one this call resolved.
 
