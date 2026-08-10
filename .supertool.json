@@ -325,7 +325,7 @@
     },
     "html-check": {
       "cmd": "{python} {supertool_dir}/validators/html-check/html-check.py {file}",
-      "match": "*.html",
+      "match": "*.{html,htm}",
       "hooks_into": [
         "edit",
         "replace",

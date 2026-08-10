@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from _adapter_verdict import assert_ok, assert_declined
 from _winenv import empty_path_env
 
@@ -212,7 +214,7 @@ def test_close_inside_a_js_string_is_a_close_because_the_tokenizer_says_so(tmp_p
     ends at `</script` followed by whitespace, a slash, or `>`; it has no
     concept of JS string literals, which is why the only way to carry that
     text in a script is to escape the slash. Measured against the stdlib
-    tokenizer, which is spec-conformant here, the page below emits the data
+    tokenizer -- where it is spec-conformant, see #1236 -- the page below emits the data
     `const s = "` and then an end tag -- so the script a browser actually runs
     is a truncated, unterminated string, and reporting a syntax error is the
     correct answer rather than an over-match. Pinned because it is the first
@@ -655,3 +657,303 @@ def test_output_contains_required_fields(tmp_path: Path) -> None:
     out = _run(str(f))
     for key in ("tool", "file", "ok", "count", "errors", "duration_ms"):
         assert key in out
+
+# ---------------------------------------------------------------------------
+# #1182 -- the end tag is walked too, because `>` hides in a quoted value at
+# both ends of the block. `[^>]*` stopped at the first `>` in the source.
+# ---------------------------------------------------------------------------
+
+def _load_adapter():
+    """Import html-check.py as a module. The hyphen rules out a plain import."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_html_check_adapter", ADAPTER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _script_data_per_block(markup: str) -> list:
+    """What *this machine's* `html.parser` says each script block's data is.
+
+    Deliberately no longer the assertion's reference. `html.parser` is a second
+    implementation with its own version skew, and reading it live imported that
+    skew into our CI matrix -- see `SPEC_END_TAG_FORMS` below for the whole
+    story. It is kept as a corroborating witness, consulted only where the
+    stdlib is new enough to be spec-conformant.
+    """
+    from html.parser import HTMLParser
+
+    class _Reader(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.bodies = []
+            self._open = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "script":
+                self._open = True
+
+        def handle_endtag(self, tag):
+            if tag == "script":
+                self._open = False
+
+        def handle_data(self, data):
+            if self._open:
+                self.bodies.append(data)
+
+    reader = _Reader()
+    reader.feed(markup)
+    reader.close()
+    return reader.bodies
+
+
+# The expected answers are FROZEN here, against the WHATWG spec, and are not
+# read out of `html.parser` at run time. That is a correction (#1236), and the
+# reason is worth the paragraph.
+#
+# These seven forms were originally asserted against whatever `html.parser` the
+# runner happened to ship. Five of them then went red on 8 of 20 CI legs --
+# every macOS leg and windows 3.9 -- while ubuntu stayed green, which is the
+# reverse of this repo's usual platform story and was nothing to do with the
+# platform. CPython rewrote `HTMLParser.parse_endtag` to follow the spec's "End
+# tag open state" and backported it into later patch releases of the older
+# branches. Measured here, on this machine:
+#
+#   3.11.11  `</script bar>`  -> no end tag, and the script body is DROPPED
+#   3.13.2   `</script bar>`  -> the same
+#   3.14.6   `</script bar>`  -> end tag, body `const z = 1;`
+#
+# The split is by stdlib patch level, not by OS, and the two 3.9 legs prove it
+# outright: ubuntu 3.9 is 3.9.25 and passed, windows 3.9 is 3.9.13 (read off
+# the pythonLocation in job #93294247016) and failed. Same minor version, two
+# patch levels, opposite results. A live oracle therefore makes the assertion a
+# function of the runner image, and it would keep breaking on image updates
+# with no change to our code.
+#
+# **Which one is right matters more than the red, and it is not the old
+# stdlib.** WHATWG 13.2.5.17 "Script data end tag name state": on whitespace,
+# switch to before-attribute-name state; on `/`, to self-closing start tag
+# state; on `>`, emit the end tag. All three close the element, and
+# before-attribute-name state is where quoted values live -- which is the whole
+# of #1182. The old `html.parser` closed on none of them and silently threw the
+# script body away, which is not a defensible reading of the spec and is a bug
+# CPython has since fixed. Our walker was right; the oracle was wrong.
+#
+# So: freeze, do not relax. Restricting the corpus to forms every stdlib agrees
+# on would leave `bare` and `trailing-space`, exactly the two the pre-#1182
+# regex already handled. Skipping the five on old interpreters would delete the
+# coverage on 8 of 20 legs. Frozen expectations run everywhere; the live parser
+# is kept below as a cross-check where it is conformant, so these numbers
+# cannot drift from a fixed stdlib either.
+#
+# **What this corpus does and does not prove, measured rather than assumed.**
+# Re-running these seven against the old `[^>]*>` close: six still pass and only
+# `script-tag-inside-a-value` fails (it raises `UnclosedBlock`). So the corpus
+# is a *breadth* check on where the boundary lands, and exactly one of its rows
+# is load-bearing against a revert of #1182. The rest of #1182's pin is the
+# three verdict tests below -- `gt_inside_a_quoted_end_tag_value...`,
+# `unterminated_end_tag_value...` and `truncated_end_tag...` -- which all three
+# went red before the fix and assert refusals rather than bodies. Do not read
+# seven green rows as seven guarantees.
+#
+# Ids are given rather than derived: pytest builds one from the markup itself,
+# which puts `<`, `>` and `"` into every junit.xml test name CI reads back.
+SPEC_END_TAG_FORMS = [
+    ("bare", "<script>const z = 1;</script>TAIL",
+     ["const z = 1;"], "13.2.5.17 on `>` -- emit the end tag"),
+    ("trailing-space", "<script>const z = 1;</script >TAIL",
+     ["const z = 1;"], "13.2.5.17 on whitespace -- before attribute name state"),
+    ("solidus", "<script>const z = 1;</script/>TAIL",
+     ["const z = 1;"], "13.2.5.17 on `/` -- self-closing start tag state"),
+    ("junk-attribute", "<script>const z = 1;</script bar>TAIL",
+     ["const z = 1;"], "attributes on an end tag are a parse error, not a non-close"),
+    ("gt-is-the-whole-value", '<script>const z = 1;</script foo=">">TAIL',
+     ["const z = 1;"], "13.2.5.36 attribute value (double-quoted) -- `>` is data"),
+    ("gt-inside-a-value", '<script>const z = 1;</script data-t="a > b">TAIL',
+     ["const z = 1;"], "13.2.5.36 -- the tag ends at the second `>`, not the first"),
+    ("script-tag-inside-a-value",
+     '<script>const z = 1;</script data-t="x > <script>const q = 2;</script">TAIL',
+     ["const z = 1;"],
+     "13.2.5.36 -- the contents of a value are never markup"),
+]
+
+
+@pytest.mark.parametrize(
+    "markup,expected",
+    [(m, e) for _id, m, e, _why in SPEC_END_TAG_FORMS],
+    ids=[i for i, _m, _e, _why in SPEC_END_TAG_FORMS])
+def test_end_tag_boundary_matches_the_spec(markup: str, expected: list) -> None:
+    """Where the spec closes the block is where this adapter closes it.
+
+    Not "a better regex until the reported case passes": #1153 replaced the
+    start tag with a walker because the tag grammar is a small state machine
+    and a pattern ending at the first `>` is wrong in both directions. The end
+    tag reaches the same state, so it gets the same walker and is held to the
+    same standard -- the spec, now stated rather than sampled from the stdlib.
+    """
+    adapter = _load_adapter()
+    extracted = [body for _line, body in adapter.extract_js_blocks(markup)]
+    assert extracted == expected, markup
+
+
+def test_the_frozen_corpus_still_covers_the_forms_1182_was_about() -> None:
+    """A corpus quietly trimmed to the easy cases is the failure mode here.
+
+    The tempting repair for #1236 was to drop the five forms old stdlibs
+    disagree on. Measured against the old `[^>]*>` close, six of the seven rows
+    pass anyway and `script-tag-inside-a-value` is the one that does not -- so
+    that row specifically must survive any future trim, or this file goes green
+    on a revert of #1182. The other four are named too because they are the
+    forms the old stdlib disagrees about, and re-deriving that costs a CI matrix.
+    """
+    ids = {i for i, _m, _e, _why in SPEC_END_TAG_FORMS}
+    assert "script-tag-inside-a-value" in ids, (
+        "the one row that fails against the pre-#1182 close is gone; what is "
+        "left cannot tell the fix from the bug. Present: %s" % sorted(ids))
+    assert {"solidus", "junk-attribute", "gt-is-the-whole-value",
+            "gt-inside-a-value", "script-tag-inside-a-value"} <= ids, sorted(ids)
+    for _id, _markup, expected, why in SPEC_END_TAG_FORMS:
+        assert expected == ["const z = 1;"], (_id, expected)
+        assert why, _id
+
+
+HTML_PARSER_TOKEN = "html-parser-endtag-conformance(#1236)"
+
+
+def _html_parser_is_spec_conformant():
+    """(available, reason) -- does this stdlib close `</script bar>`?
+
+    Probed by behaviour, not by `sys.version_info`. The fix was backported into
+    patch releases, so a version comparison would need a table of per-branch
+    patch numbers that is wrong the moment a branch cuts another release. The
+    property is one feed away; ask for it.
+
+    Reason is empty when available and never empty when not, so a `False` here
+    can always say which absence it is.
+    """
+    probe = "<script>x</script bar>"
+    closed = _script_data_per_block(probe) == ["x"]
+    if closed:
+        return True, ""
+    return False, (
+        "this stdlib's html.parser does not close `</script bar>` (it predates "
+        "the CPython parse_endtag rewrite and drops the script body instead), "
+        "so it cannot corroborate the frozen expectations -- it is the thing "
+        "they were frozen against. Python %s" % sys.version.split()[0])
+
+
+def test_a_conformant_html_parser_confirms_the_frozen_expectations() -> None:
+    """The frozen numbers are checked against a real tokenizer where there is one.
+
+    Freezing expectations trades a moving reference for a stale one, and this
+    is what pays that back: on any interpreter whose `html.parser` implements
+    the spec's end-tag states, every frozen answer above must equal what it
+    produces. A wrong constant cannot sit here indefinitely.
+
+    Where the stdlib is older this declines and says so, rather than passing.
+    The frozen assertions above still run on that leg; what is unavailable is
+    the second opinion, not the coverage.
+    """
+    available, why = _html_parser_is_spec_conformant()
+    if not available:
+        pytest.skip(HTML_PARSER_TOKEN + ": " + why)
+    disagreements = [
+        (form_id, expected, _script_data_per_block(markup))
+        for form_id, markup, expected, _why in SPEC_END_TAG_FORMS
+        if _script_data_per_block(markup) != expected
+    ]
+    assert not disagreements, (
+        "a spec-conformant html.parser disagrees with the frozen expectations "
+        "-- (form, frozen, stdlib): %s" % disagreements)
+
+
+def test_gt_inside_a_quoted_end_tag_value_does_not_invent_a_second_block(
+    tmp_path: Path,
+) -> None:
+    """The false-positive direction, and it is not verdict-neutral.
+
+    `[^>]*` ends the close at the `>` inside `data-t`'s value, so the rest of
+    that quoted value is then read as markup. When the value contains the text
+    `<script>`, a block that exists only inside a string is extracted; the
+    trailing `</script"` is not a close (no whitespace, slash or `>` follows
+    `</script`), so nothing closes it and the adapter refuses the whole file --
+    `skipped`, "NO inline <script> block in this file was checked" -- about a
+    page html.parser reads as one clean script followed by text.
+    """
+    f = tmp_path / "endgt.html"
+    f.write_text(
+        "<html><body>\n"
+        "<script>\n"
+        "const a = 1;\n"
+        '</script data-t="x > <script>const q = ;</script">\n'
+        "</body></html>\n"
+    )
+    out = _run(str(f))
+    assert "skipped" not in out, (
+        "the adapter refused a file whose one script block is valid, because "
+        "the `>` inside the end tag's quoted value cut the close short and "
+        "the value's own text was then read as markup: %s" % out)
+    assert_ok(out)
+    assert out["count"] == 0
+
+
+def test_unterminated_end_tag_value_is_skipped_not_ok(tmp_path: Path) -> None:
+    """The false-`ok` direction -- the one the contract calls unacceptable.
+
+    `</script data-t="oops>` is EOF-in-tag: html.parser emits no end tag at
+    all, so this element never closes and #1185's rule applies. `[^>]*>`
+    instead ran through to the `>` *inside* the unterminated value, invented a
+    close there, and reported `ok: true` about a file the tokenizer cannot
+    finish reading.
+
+    A quoted value with no closing quote is already `skipped` on the *start*
+    tag (`test_unterminated_attribute_value_is_skipped_not_ok`). One rule
+    applied to half the cases is exactly what #1182 is.
+    """
+    f = tmp_path / "endunterminated.html"
+    f.write_text(
+        "<html><body>\n"
+        "<script>\n"
+        "const a = 1;\n"
+        '</script data-t="oops>\n'
+        "</body></html>\n"
+    )
+    out = _run(str(f))
+    assert "skipped" in out, f"expected the third state, got {out}"
+    assert "ok" not in out
+    assert "count" not in out
+    assert "errors" not in out
+    reason = out["skipped"]
+    assert "4" in reason, f"the reason must name the end tag's line: {reason}"
+    assert "end tag" in reason, (
+        "the reason must say it is the END tag that could not be delimited -- "
+        "a reader sent to the start tag on line 2 finds nothing wrong there: "
+        "%s" % reason)
+
+
+def test_truncated_end_tag_is_not_reported_as_a_missing_end_tag(tmp_path: Path) -> None:
+    """A truncated close and an absent close send the reader to different places.
+
+    With `[^>]*>` a file that stops inside its end tag matched nothing at all,
+    fell through to `UnclosedBlock`, and the refusal said the element "has no
+    closing tag anywhere after it", naming the line of the *opening* tag.
+    There is a closing tag; it is on line 4 and it is truncated. The next
+    action is "finish this tag", not "add one" -- the same distinction that
+    made `UndelimitedTag` and `UnclosedBlock` two types rather than one.
+    """
+    f = tmp_path / "endtruncated.html"
+    f.write_text(
+        "<html><body>\n"
+        "<script>\n"
+        "const a = 1;\n"
+        "</script data-t"
+    )
+    out = _run(str(f))
+    assert "skipped" in out, f"expected the third state, got {out}"
+    reason = out["skipped"]
+    assert "4" in reason, f"the reason must name the truncated end tag: {reason}"
+    assert "no closing tag anywhere" not in reason, (
+        "there IS a closing tag on line 4 and it is truncated; sending the "
+        "reader to add one is the wrong next action: %s" % reason)
+    assert "quote" not in reason.lower(), (
+        "no quote is involved in this file: %s" % reason)
