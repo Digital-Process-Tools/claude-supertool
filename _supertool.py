@@ -1782,10 +1782,15 @@ def _unknown_op_message(op: str) -> str:
 # which force-pushes a merge train. Hence the class.
 #
 # Declared, never inferred. `_PARALLEL_SAFE_OPS` looks like a ready-made
-# read-only set and is not one: it carries `format_staged`, which runs
-# formatters over every staged file and writes them. Deriving "read-only" from
-# it would render a mutating op probe-safe — an error in the one direction that
-# costs something.
+# read-only set and is not one — it is a dispatch-safety set, and until #1244
+# it carried `format_staged`, which runs formatters over every staged file and
+# writes them. Deriving "read-only" from it here would have rendered a mutating
+# op probe-safe: an error in the one direction that costs something.
+#
+# The two agree as of #1244 and a test now holds them together, so this is no
+# longer a live contradiction. The rule survives the repair anyway: a class
+# read off another set's membership is only ever as right as that set's last
+# edit, and this table is the declaration site.
 #
 # "acts" is about consequence, not about spawning: nearly every preset op runs
 # a python subprocess. `*_status_since` is the case that proves it — it reads a
@@ -1824,13 +1829,34 @@ _OP_SAFETY_BUILTIN: Dict[str, str] = {
 }
 
 
-# Read-only built-in ops — safe to run in parallel across a batch.
-# Excludes mutating ops (replace, edit, replace_lines) and custom ops
-# (could shell out to anything). `between` is included — pure file read.
+# Read-only built-in ops. Two consumers, one predicate, because they ask the
+# same question: `_main`'s ThreadPool gate, and the `_path_meta_bulk_drop()` in
+# `dispatch`'s `finally` that keeps the repo-wide `git status` snapshot from
+# outliving a write. Excludes mutating ops (replace, edit, replace_lines) and
+# custom ops (could shell out to anything). `between` is included — pure file
+# read.
+#
+# "Read-only" is the contract, not a description of whoever is currently in the
+# set, and the difference cost something. Until #1244 this carried
+# `format_staged`, which shells formatters over every staged file and rewrites
+# them. Under SUPERTOOL_PARALLEL, `supertool 'format_staged' 'read:f.txt'`
+# rendered the *pre*-format bytes — under `[complete file — no more lines]`,
+# a positive completeness claim — while the post-format bytes were already on
+# disk. The same call sequentially was right, so the answer depended on a
+# performance switch.
+#
+# "Safe to run concurrently" was the tempting weaker reading and it is not
+# available: parallel safety is a property of the whole set of ops in one call,
+# and a writer is unsafe beside any reader of the same path. Membership is
+# read-only or nothing.
+#
+# `_OP_SAFETY_BUILTIN` above declares the same fact for `ops` output, and
+# tests/test_parallel_safe_writes_1244.py asserts the two cannot drift apart
+# again — two sources for one truth is what filed this.
 _PARALLEL_SAFE_OPS = {
     "read", "grep", "glob", "ls", "head", "tail", "wc", "stat",
     "map", "tree", "around", "around_line", "between", "diff", "blame",
-    "version", "validate", "validate_staged", "format_staged", "workspace",
+    "version", "validate", "validate_staged", "workspace",
     "resolve", "diag", "hover", "help",
 }
 
@@ -1840,6 +1866,10 @@ def _is_parallel_safe(arg: str) -> bool:
 
     Detects op name from `op:...` or `op:::...` prefix. Anything else —
     custom ops, mutating ops, malformed args — is treated as unsafe.
+
+    Callers use it for two different-looking questions — may these ops share a
+    thread pool, and may the status snapshot survive this op — which are the
+    same question about whether the op writes.
     """
     m = re.match(r"^([a-zA-Z_][a-zA-Z0-9_-]*)(:::|:|$)", arg)
     if not m:
@@ -5895,6 +5925,15 @@ def _between_numeric_hint(parts: List[str]) -> str:
     if len(parts) not in (3, 4):
         return ""
     nums = parts[2:]
+    # `read:` takes both `PATH:OFFSET:LIMIT` and `PATH:START-END`, so both
+    # spellings arrive here from the same muscle memory. Only the colon one used
+    # to be caught; the dash one fell through to `file not found: '1-30'` — a
+    # filesystem complaint about a line range, which is the exact mis-split this
+    # hint exists to translate, one spelling later (#1234).
+    if len(nums) == 1 and nums[0].count("-") == 1 and not os.path.exists(nums[0]):
+        _a, _b = nums[0].split("-")
+        if _a.isdigit() and _b.isdigit():
+            nums = [_a, _b]
     if not all(t.isdigit() and not os.path.exists(t) for t in nums):
         return ""
     path = parts[1]
@@ -5907,7 +5946,7 @@ def _between_numeric_hint(parts: List[str]) -> str:
         return ""
     lines = [
         f"ERROR: between does not take line ranges — it is between:SYMBOL:PATH"
-        f" (or between:re:START:END:PATH), and {nums[-1]!r} was read as the"
+        f" (or between:re:START:END:PATH), and {parts[-1]!r} was read as the"
         f" path.",
     ]
     if len(nums) == 2:
@@ -20486,7 +20525,10 @@ def _main(argv: List[str]) -> int:
         and all(_is_parallel_safe(a) for a in argv)
     )
     # Defer formatters for multi-op sequential invocations (mutating ops).
-    # Parallel path is read-only — no formatters fire there anyway.
+    # Parallel path is read-only — no formatters fire there anyway. That was
+    # false while `format_staged` sat in the safe set, which is one of the two
+    # things #1244 fixed; it is a claim about the set, so it stays true only as
+    # long as the set does.
     global _DEFER_FORMATTERS, _FORMAT_QUEUE, _VALIDATOR_DEFER_QUEUE, _VALIDATOR_DEFER_SEEN
     defer = len(argv) > 1 and not parallel_path
     if defer:
@@ -20512,11 +20554,17 @@ def _main(argv: List[str]) -> int:
         if defer:
             _DEFER_FORMATTERS = False
 
+    refused = 0
+    # `any_failure` has more than one source, and the tally below must not
+    # attribute all of it to the ops it counted. See the three counter checks
+    # further down.
+    counter_failure = False
     for body in bodies:
         sys.stdout.write(body)
         total_out_bytes += len(body.encode("utf-8"))
         if _body_indicates_failure(body):
             any_failure = True
+            refused += 1
 
     # Drain deferred formatters now that every op has landed.
     if defer:
@@ -20536,6 +20584,7 @@ def _main(argv: List[str]) -> int:
     # counter is the authority here precisely because it does not read prose.
     if _SKIP_COUNT[0] > _skips_at_entry:
         any_failure = True
+        counter_failure = True
 
     # A reverted write is the same hazard one step later (#952): the op wrote,
     # a validator rejected it, the file was restored — and `batch:@ops &&
@@ -20545,6 +20594,7 @@ def _main(argv: List[str]) -> int:
     # of every later call in the same worker.
     if _ROLLBACK_COUNT[0] > _rollbacks_at_entry:
         any_failure = True
+        counter_failure = True
 
     # A validator the operator required, that could not run, is a failure of
     # the same kind (#665): the op wrote and the gate did not run. Setting
@@ -20558,10 +20608,64 @@ def _main(argv: List[str]) -> int:
     # louder one rather than fixing it.
     if len(_NOT_CHECKED) > _not_checked_at_entry:
         any_failure = True
+        counter_failure = True
     del _NOT_CHECKED[_not_checked_at_entry:]
     # Informational only — the count line discloses a skip, it does not gate on
     # one (#990). Truncated for the same warm-daemon reason as the list above.
     del _VALIDATED_FILES[_validated_at_entry:]
+
+    # The exit code is one bit for a call that ran N ops, and from the caller's
+    # seat that bit is indistinguishable from "the batch did not run" (#1234).
+    # It was filed as a refusal *suppressing* its siblings; reproduced at
+    # 0.32.0 it does not — every op runs and every op renders — but a shell
+    # `&&`, a pre-commit hook, or an agent harness that reframes any non-zero
+    # command as an error block has nothing in the output to tell it otherwise.
+    # So this discloses the mismatch rather than changing the behaviour: a
+    # batch was never all-or-nothing and must not start being one.
+    #
+    # Only on a multi-op call, and only when the exit code is about to be 1 —
+    # with one op there is no sibling to have lost, and on a clean batch the
+    # line is noise on every call forever.
+    _other = ("a skipped write, a rolled-back edit or a validator that could "
+              "not run")
+    if len(bodies) > 1 and any_failure:
+        if counter_failure and refused:
+            # Both kinds of failure at once, and this is the branch that has to
+            # say the least. `refused` counts first-line ERROR/FAIL markers;
+            # the counters catch the failures that render as ordinary prose —
+            # `replace`'s `(0 occurrences ...)`, an edit a validator reverted.
+            # An op can therefore be outside `refused` and still not have
+            # landed, so "the other N answers are complete" would be a positive
+            # claim about output this line has not checked. It is withheld.
+            tally = (
+                f"[batch] {len(bodies)} ops ran — {refused} refused, and "
+                f"{_other} also failed this call (above). More than one thing "
+                f"went wrong: read the per-op receipts, not these counts."
+                + chr(10)
+            )
+        elif refused == len(bodies):
+            # No sibling survived, so there is no "the rest is fine" to make.
+            # Still worth the count: it says every op was reached and answered,
+            # which is the thing the exit code alone does not settle.
+            tally = (
+                f"[batch] {len(bodies)} ops ran — all {len(bodies)} refused."
+                + chr(10)
+            )
+        elif refused:
+            tally = (
+                f"[batch] {len(bodies)} ops ran — {len(bodies) - refused} ok, "
+                f"{refused} refused. Exit 1 flags the refusal; the other "
+                f"{len(bodies) - refused} answers above are complete." + chr(10)
+            )
+        else:
+            # None of which is an op refusing. Saying "0 refused" beside exit 1
+            # would send the reader hunting for an op that did not fail.
+            tally = (
+                f"[batch] {len(bodies)} ops ran — all {len(bodies)} rendered an "
+                f"answer. Exit 1 is {_other} (above), not an op." + chr(10)
+            )
+        sys.stdout.write(tally)
+        total_out_bytes += len(tally.encode("utf-8"))
 
     log_call(argv, total_out_bytes)
     return 1 if any_failure else 0
