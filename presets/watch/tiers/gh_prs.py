@@ -283,10 +283,21 @@ def scope_label(filters: dict[str, str], repo: str) -> str:
     An unlabelled board spells both "this is the default population" and
     "nobody said which population this is", and the filter does not survive an
     invocation.
+
+    The default population is the repo (#1230). It read `author=@me (default)`
+    until then, and that was accurate about a board it should not have been
+    building: `gh-prs` dropped the implicit author filter in #1207 and this
+    tier kept it, so the op a maintainer tick opens with excluded every
+    dependabot and outside-contributor PR — three green ones, unseen for
+    between five hours and a day on 2026-08-09, found by a human opening
+    GitHub in a browser (#1071). Disclosure was already the argument that lost
+    there, and it loses harder here: this board is a *delta*, so a PR that was
+    never in the population cannot appear as a change, and there is not even a
+    row next to which to read the scope line.
     """
     spelled = filter_string(filters)
     if not spelled:
-        return f"scope author=@me (default) on {repo}"
+        return f"scope every author (default) on {repo}"
     return f"scope {spelled} on {repo}"
 
 
@@ -315,6 +326,13 @@ def repo_name() -> str:
 
 def live_open_prs(filters: dict[str, str]) -> list[dict]:
     """Every open PR the filter describes, annotated. `RadarError`, never [].
+
+    The filter is the caller's alone — `_build_list_cmd` adds no role of its
+    own since #1230, so `radar` and `gh-prs` answer over one population. One
+    live poller is spawned per row, so widening the board widens the fleet;
+    that is bounded by the page (`per_page`, 50 by default) exactly as it was
+    before, and `DEATH_RESPAWN_LIMIT` is a per-slot respawn cap rather than a
+    fleet size, so nothing here caps a wide board that did not cap a narrow one.
 
     One `gh pr list` call: unlike GitLab, the rollup and the review decision
     ride on the list response, so the board costs one request. Review-thread
@@ -560,7 +578,17 @@ def snap_entry(p: dict) -> dict[str, Any]:
 
 def snapshot_key(filters: dict[str, str], repo: str) -> str:
     """Filter *and* repo. The same filter over two repos is two populations,
-    and sharing one file would report each one's PRs as the other's churn."""
+    and sharing one file would report each one's PRs as the other's churn.
+
+    Deliberately unchanged by #1230, which widened what an empty filter means.
+    A snapshot taken under the narrow default is therefore reused once — and
+    that is the wanted behaviour, not a hazard: widening only *adds* members,
+    so the old snapshot cannot manufacture a departure, and the PRs it never
+    held print as new rows on the first wide tick, which is the announcement
+    this board owes. Adding a scope token to the key instead would cold-start
+    every board, discarding the `_since` stamps every staleness verdict
+    (#1025) is measured from, to buy a full board this path already prints.
+    """
     return snapshot.key({"repo": repo, "filters": dict(sorted(filters.items()))})
 
 
@@ -890,7 +918,8 @@ def radar_state(options: dict | None = None) -> list[str]:
     target = _repo_target.target()
     repo = str(target) if target else "(the cwd's clone — not resolved here, "\
                                      "that would be a call)"
-    out.append(f"  filter    : {filter_string(filters) or 'author=@me (default)'}")
+    out.append(f"  filter    : "
+               f"{filter_string(filters) or 'none — every author (default)'}")
     out.append(f"  repo      : {repo}")
 
     raw_ref = options.get("default_branch")

@@ -55,9 +55,14 @@ def test_parse_args_returns_an_unknown_bare_token() -> None:
 # _build_list_cmd
 # ---------------------------------------------------------------------------
 
-def test_build_cmd_defaults_to_author_me() -> None:
+def test_build_cmd_adds_no_role_filter_of_its_own() -> None:
+    """This asserted `--author @me` until #1230, and kept passing for a
+    release after #1207 had made the op itself repo-wide — because the op
+    passed `any_author=True` and only the vestigial parameter default was
+    under test. Radar's tier called the same helper positionally and got the
+    board this test was green about."""
     cmd = prs._build_list_cmd({}, 50)
-    assert "--author" in cmd and "@me" in cmd
+    assert "--author" not in cmd
     assert cmd[:4] == ["gh", "pr", "list", "--json"]
     assert cmd[cmd.index("--limit") + 1] == "50"
 

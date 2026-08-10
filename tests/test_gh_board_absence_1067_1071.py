@@ -148,13 +148,13 @@ def test_the_default_author_filter_can_be_suppressed() -> None:
         "gh-prs needs a flag that suppresses the implicit author=@me; "
         f"flags are {sorted(prs._FLAGS)!r}"
     )
-    cmd = prs._build_list_cmd({}, 50, any_author=True)
+    cmd = prs._build_list_cmd({}, 50)
     assert "--author" not in cmd, (
         f"anyauthor must not send --author; got {cmd!r}"
     )
-    assert "--author" in prs._build_list_cmd({}, 50), (
-        "the default is unchanged when the flag is absent"
-    )
+    # The `any_author=True` argument this used to pass is gone with the
+    # implicit filter it opted out of (#1230): the bare argv is the whole repo,
+    # so `anyauthor` names what it already does rather than changing it.
 
 
 def test_anyauthor_and_an_explicit_author_are_refused_together(

@@ -22,7 +22,7 @@ gh issue list --state open --limit 200 --json number,title
 supertool 'gh-issues:per=100'
 supertool 'gh-issues:nomilestone'
 supertool 'gh-issues:label=cohort-3,per=100'
-supertool 'gh-prs:anyauthor,state=open'
+supertool 'gh-prs:state=open'
 ```
 
-`gh-prs` defaults to `author=@me` and discloses it in the footer — pass `anyauthor` or dependabot and outside contributors are invisible. That is how three green PRs sat unseen for five hours on 2026-08-09.
+**Neither `gh-prs` nor `radar` filters by author any more** — bare is the whole repo (#1207, then #1230 for radar's tier, which had kept the default the op dropped). This line said the opposite until 2026-08-10; adding `anyauthor` widens nothing. `gl-mrs` is the one that still narrows — see `op-defaults-that-narrow.md`.

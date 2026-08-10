@@ -236,7 +236,7 @@ Observed live on the GitHub tier: three rendered rows under `6 open | 2 failing 
 **Rendered rows plus elided rows equal the population the footer prints.** The footer carries the missing token, so the arithmetic is checkable on the board itself:
 
 ```
-scope author=@me (default) on Digital-Process-Tools/claude-supertool | 6 open |
+scope every author (default) on Digital-Process-Tools/claude-supertool | 6 open |
 3 unchanged not shown | 2 failing | 4 running | 6 watched | 2 left this board |
 discovery: radar ticks only
 ```
@@ -486,7 +486,7 @@ radar: cold start — no prior snapshot, full board
 👁 ● running          27m 1170Δ  #940    fix/864-875 -> master  [healed]
         fix(gh-issues): refuse an unrecognised token instead of returning the whole board (#864, #875)
 
-scope author=@me (default) on Digital-Process-Tools/claude-supertool | 4 open | 1 failing |
+scope every author (default) on Digital-Process-Tools/claude-supertool | 4 open | 1 failing |
 3 running | 4 watched | 4 healed | discovery: radar ticks only
 ```
 
@@ -563,7 +563,7 @@ The case that cost the most was not a PR: `master` sat red after a squash landed
 gh-prs:
   module    : /path/to/presets/watch/tiers/gh_prs.py
   quiet ok  : False
-  filter    : author=@me (default)
+  filter    : none — every author (default)
   repo      : (the cwd's clone — not resolved here, that would be a call)
   default br: (resolved at report time)
   snapshot  : under /tmp/supertool-radar-gh-prs.*.snapshot.json — the exact key needs the repo

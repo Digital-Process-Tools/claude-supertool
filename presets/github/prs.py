@@ -41,9 +41,10 @@ genuinely nothing open. The count for the middle state costs one extra
 `gh pr list`, fired only over an empty board; a probe that could not run
 reports UNKNOWN rather than `excluded none`.
 
-`radar`'s GitHub tier is **not** covered by this: it calls `_build_list_cmd`
-with two positional arguments and keeps the old default deliberately — see that
-function.
+`radar`'s GitHub tier was **not** covered by this for a release, and that was
+the bug (#1230): it calls `_build_list_cmd` positionally, and #1207 flipped the
+op at its own call sites rather than in the helper. The helper now adds no role
+filter at all, so both boards answer over one population.
 """
 from __future__ import annotations
 
@@ -168,33 +169,27 @@ def _bad_values(filters: dict[str, str]) -> list[tuple[str, str, str]]:
     return _filter_tokens.bad_values(filters, _VALUE_DOMAINS)
 
 
-def _build_list_cmd(filters: dict[str, str], per_page: int,
-                    any_author: bool = False) -> list[str]:
+def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
     """Build the `gh pr list ... --json` argv from parsed filters.
 
-    Defaults to author=@me when no role filter is given so the bare `gh-prs`
-    means 'mine'. state=open is gh's default (no flag emitted). reviewer has
-    no list flag on gh, so it routes through --search review-requested:USER.
+    **No role filter is ever added here.** The argv narrows only by what the
+    caller wrote. state=open is gh's default (no flag emitted). reviewer has no
+    list flag on gh, so it routes through --search review-requested:USER.
 
-    `any_author` is the opt-out (#1071), and since #1207 the **op passes it by
-    default**: `gh-prs` is the board, and the rows `author=@me` removes — a
-    dependency bump, an outside contributor's PR — are exactly the ones needing
-    a decision from someone other than their author.
+    There used to be an implicit `author=@me` and an `any_author` opt-out
+    (#1071). #1207 flipped the op to the whole repo — but by passing
+    `any_author=True` at the op's two call sites and leaving the *parameter*
+    default `False`. `watch/tiers/gh_prs.py` calls this with two positional
+    arguments, so radar's GitHub tier kept the narrow board after the op
+    dropped it, and a maintainer tick opened on a board that excluded every
+    dependabot and outside-contributor PR while rendering as healthy (#1230).
 
-    The parameter's own default stays `False`, and that is not an oversight.
-    `watch/tiers/gh_prs.py` calls this with two positional arguments, and radar
-    keys its departure snapshot on the filter *string* (`snapshot_key`), which
-    an unfiltered board spells identically to today's. Flipping here would
-    reuse a snapshot taken under the narrow scope and render every
-    previously-hidden PR as newly arrived, once, on every watcher — and the
-    tier's own `scope author=@me (default)` label would become false. Radar's
-    half of #1207 is a change in `presets/watch/`, with its own snapshot key.
+    So the parameter is gone rather than flipped. A default that no caller in
+    the tree wants is not a default, it is the next inheritance of this bug;
+    with the narrowing removed there is nothing left here to inherit.
     """
-    has_role = any(k in filters for k in ("author", "assignee", "reviewer"))
     cmd = (["gh", "pr", "list", "--json", _LIST_FIELDS, "--limit", str(per_page)]
            + _repo_target.gh_args())
-    if not has_role and not any_author:
-        cmd += ["--author", "@me"]
     for key, val in filters.items():
         if not val:
             continue
@@ -487,7 +482,7 @@ def _probe_population(filters: dict[str, str], per_page: int
     """
     widened = {k: v for k, v in filters.items()
                if k not in ("author", "assignee", "reviewer")}
-    cmd = _build_list_cmd(widened, per_page, any_author=True)
+    cmd = _build_list_cmd(widened, per_page)
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
                                 encoding="utf-8", errors="replace")
@@ -596,12 +591,11 @@ def main_with_args(arg_str: str) -> int:
         )
         return 1
 
-    # #1207: the board is the repo unless the caller narrowed it. `anyauthor`
-    # is now what the bare op already does; it stays accepted because it was
+    # #1207: the board is the repo unless the caller narrowed it — which is
+    # now `_build_list_cmd`'s only behaviour, so nothing is passed to select
+    # it. `anyauthor` stays accepted because it was
     # documented and shipped, and a flag that starts refusing is a break for
     # every script that adopted it.
-    any_author = not role
-
     cfg = _get_config()
     per_page = cfg["per_page"]
     if "per" in filters:
@@ -609,7 +603,7 @@ def main_with_args(arg_str: str) -> int:
 
     try:
         result = subprocess.run(
-            _build_list_cmd(filters, per_page, any_author=any_author),
+            _build_list_cmd(filters, per_page),
             capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
