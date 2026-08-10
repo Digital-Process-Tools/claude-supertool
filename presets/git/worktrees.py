@@ -899,13 +899,23 @@ def main() -> int:
             for entry in entries]
     print(render(rows))
 
-    if wanted and len(rows) == 1:
-        state = rows[0][1].state
-        # The exit code stays a statement about *occupancy* only. A tracker
-        # that did not answer says nothing about whether the tree is safe to
-        # enter, and folding it in here would make `git-worktrees:PATH` refuse
-        # a free worktree because GitHub was down.
-        return {STATE_IDLE: EXIT_IDLE, STATE_OCCUPIED: EXIT_OCCUPIED}.get(state, EXIT_UNKNOWN)
+    if wanted:
+        if len(rows) == 1:
+            state = rows[0][1].state
+            # The exit code stays a statement about *occupancy* only. A tracker
+            # that did not answer says nothing about whether the tree is safe
+            # to enter, and folding it in here would make `git-worktrees:PATH`
+            # refuse a free worktree because GitHub was down.
+            return {STATE_IDLE: EXIT_IDLE,
+                    STATE_OCCUPIED: EXIT_OCCUPIED}.get(state, EXIT_UNKNOWN)
+        # More than one row: the filter above is ancestor-or-descendant, so a
+        # nested layout pulls in the trees above and below the named one and
+        # the board is no longer about it. Returning the idle code here printed
+        # `0 idle` and exited 0 at the same time (#1282) — and gh-pr-merge's
+        # cleanup arm read that code as permission to delete the directory.
+        # `cannot tell` is the only honest answer for a board of many, and it
+        # is what the render already says.
+        return EXIT_UNKNOWN
     return EXIT_IDLE
 
 

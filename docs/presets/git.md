@@ -437,6 +437,10 @@ So the verdict has three states and the third one is the point:
 
 **Exit codes carry the same three states.** With a `PATH`: `0` for `idle` and only `idle`, `1` for `occupied`, `2` for `cannot tell`. A caller that tests `== 0` therefore gets the safe reading of an undecided answer. Without a `PATH` it lists every worktree and exits `0` — the tally is in the `[result]` line, which says in words that `cannot tell` is not `idle`.
 
+**A `PATH` that matches more than one worktree exits `2`, not `0`** ([#1282](https://github.com/Digital-Process-Tools/claude-supertool/issues/1282)). The filter is ancestor-or-descendant, so naming a nested tree pulls in the ones above and below it; the board then says nothing about the tree that was asked for. Until this was fixed it printed `3 occupied, 0 idle` and exited `0` at the same time — and `gh-pr-merge`'s `cleanup` arm was reading that code as permission to remove a directory.
+
+**Do not read this exit code as an authorization.** It is a compression of a board with three states into one integer, and the compression is where the meaning goes. `gh-pr-merge` now reads the `[result]` line instead and treats only `0 occupied, 1 idle, 0 cannot tell` as `idle`. Any consumer standing to act irreversibly on the answer should do the same.
+
 ## The tracker column has four states, and `unknown` is one of them
 
 The board told you who was *in* a worktree and never what that worktree's work was *worth* — so deciding where to act next meant running `git-worktrees`, then `gh-prs`, then `gh-pr:N:status` twice, and joining branch → path → PR number → check tally in your head ([#941](https://github.com/Digital-Process-Tools/claude-supertool/issues/941)). Every one of those joins is a fact the tool held on both sides.

@@ -61,6 +61,11 @@ def _pr(**over) -> dict:
         "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
         "reviewDecision": "APPROVED", "baseRefName": "master",
         "headRefName": "fix/924", "headRefOid": "c" * 40,
+        # An ordinary same-repo PR. Stated rather than omitted: an absent
+        # field is `not established` and refuses every delete and every
+        # printed delete command (#1281), which is a different case with its
+        # own tests below.
+        "isCrossRepository": False,
         "url": f"https://github.com/{REPO}/pull/944",
         "body": "Closes #924",
         "statusCheckRollup": [_leg("tests"), _leg("lint")],
@@ -452,6 +457,58 @@ def test_cleanup_is_named_after_a_verified_merge_and_never_run(monkeypatch,
     assert "Cleanup — not run by this op" in out
     assert "fix/924" in out
     assert "Deliberately not chained" in out
+
+
+# ---------------------------------------------------------------------------
+# #1281 also reaches the commands this op *prints* — the default path
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("over,expect", [
+    ({"isCrossRepository": True}, "is true"),
+    ({}, "did not come back"),
+])
+def test_a_head_not_in_this_repository_gets_no_printed_delete_command(
+        monkeypatch, capsys, over, expect):
+    """A printed command is run by the reader, so it is the same delete.
+
+    Without `|cleanup` the op prints `gh api -X DELETE …/refs/heads/<head>`
+    and `git branch -d <head>` for the reader to paste. Both name the head
+    branch against **this** repository, so a fork PR whose branch is called
+    `master` handed over the incident by copy-paste rather than by the arm
+    that #1281 was filed about.
+    """
+    pr = _pr()
+    if not over:
+        pr.pop("isCrossRepository")
+    else:
+        pr.update(over)
+    h = _Harness(pr)
+    _install(monkeypatch, h, argv=["944"])
+    m.main()
+    out = capsys.readouterr().out
+    assert "gh api -X DELETE" not in out
+    assert "git branch -d" not in out
+    assert expect in out
+
+
+def test_a_head_named_after_the_default_branch_gets_no_printed_command(
+        monkeypatch, capsys):
+    h = _Harness(_pr(headRefName="master"))
+    _install(monkeypatch, h, argv=["944"])
+    m.main()
+    out = capsys.readouterr().out
+    assert "gh api -X DELETE" not in out
+    assert "git branch -d" not in out
+    assert "default branch" in out
+
+
+def test_an_ordinary_same_repo_head_still_gets_its_commands(
+        monkeypatch, capsys):
+    h = _Harness(_pr())
+    _install(monkeypatch, h, argv=["944"])
+    m.main()
+    out = capsys.readouterr().out
+    assert "gh api -X DELETE" in out and "git branch -d fix/924" in out
 
 
 def test_cleanup_is_withheld_when_the_merge_is_not_confirmed(monkeypatch,

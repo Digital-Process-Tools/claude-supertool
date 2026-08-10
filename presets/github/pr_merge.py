@@ -46,6 +46,7 @@ existing env/`.supertool.json` opt-outs are honoured rather than re-invented.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -94,9 +95,15 @@ UNVERIFIED = "unverified"
 # value joins them: an unknown state is not permission.
 _MERGE_STATE_OK = frozenset({"CLEAN", "HAS_HOOKS"})
 
+#: `isCrossRepository` is here for the cleanup arm, and it is the field whose
+#: absence cost #1281: the head branch of a PR is named by whoever opened it,
+#: opening one from a fork needs no permission on this repo, and every delete
+#: downstream lands on the **base** repo. Without this field nothing in the op
+#: could tell a branch of ours from a fork branch wearing its name.
 _PR_FIELDS = (
     "number,title,state,isDraft,mergeable,mergeStateStatus,reviewDecision,"
-    "baseRefName,headRefName,headRefOid,url,body,statusCheckRollup"
+    "baseRefName,headRefName,headRefOid,isCrossRepository,url,body,"
+    "statusCheckRollup"
 )
 
 
@@ -503,12 +510,23 @@ CLEAN_SKIPPED = "skipped"
 
 _CLEAN_ITEMS = ("local worktree", "local branch", "remote branch")
 
-#: `git-worktrees`' own exit contract: 0 is the only answer safe to act on, and
-#: `cannot tell` has its own code precisely so a caller cannot collapse it into
-#: either neighbour. Read here rather than re-derived — a second occupancy
-#: heuristic in this file would be the second copy of a contract, which is the
-#: defect #1239 is about, wearing a different surface.
-_WORKTREE_STATE_BY_EXIT = {0: "idle", 1: "occupied", 2: "cannot tell"}
+#: `git-worktrees`' own three-state tally, read off the render.
+#:
+#: It used to be read off the exit code, which is one integer standing in for a
+#: board with three states — and #1282 is where that collapse became a delete
+#: gate. `git-worktrees:PATH` matches every worktree above and below the path,
+#: so a nested layout printed `3 occupied, 0 idle` and still exited 0, which
+#: this consumer read as `idle` and as permission to remove the directory.
+#:
+#: This is not a second occupancy heuristic — the thing #1239 is about, and the
+#: reason the exit code was read here in the first place. No state is computed
+#: here; the op's own verdict is read at full width instead of through a lossy
+#: channel. Anchored at column 0, where no flattened branch name can reach.
+_TALLY_RE = re.compile(
+    r"^\[result\] (\d+) occupied, (\d+) idle, (\d+) cannot tell")
+
+#: How many of a tree's undeletable files to name in a refusal before counting.
+_DIRT_SHOWN = 5
 
 _WORKTREES_PY = Path(__file__).resolve().parent.parent / "git" / "worktrees.py"
 
@@ -570,6 +588,11 @@ def _worktree_state(path: str) -> str:
 
     A probe that did not run answers `cannot tell`, never `idle`: "no evidence
     of an agent" is exactly what the check that caused #860 already said.
+
+    `idle` needs a board of **exactly one** row, and that row idle. The op's
+    path filter is ancestor-or-descendant, so a nested worktree pulls in the
+    trees above and below it; a board of three says nothing about the one that
+    was asked for, and before #1282 that board exited 0 and was read as `idle`.
     """
     try:
         r = subprocess.run([sys.executable, str(_WORKTREES_PY), path, "nopr"],
@@ -577,11 +600,64 @@ def _worktree_state(path: str) -> str:
                            encoding="utf-8", errors="replace")
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
         return f"cannot tell (the occupancy probe did not run: {e})"
-    return _WORKTREE_STATE_BY_EXIT.get(
-        r.returncode, f"cannot tell (git-worktrees exited {r.returncode})")
+    for line in _untrusted.split_lines(r.stdout or ""):
+        hit = _TALLY_RE.match(line)
+        if not hit:
+            continue
+        occupied, idle, unknown = (int(g) for g in hit.groups())
+        total = occupied + idle + unknown
+        if (occupied, idle, unknown) == (0, 1, 0):
+            return "idle"
+        if occupied:
+            return (f"occupied ({occupied} of {total} worktrees under this "
+                    f"path are occupied per git-worktrees)")
+        return (f"cannot tell (git-worktrees answered about {total} worktrees "
+                f"under this path — {occupied} occupied, {idle} idle, "
+                f"{unknown} cannot tell — and only a board of exactly one "
+                f"idle tree says anything about this one)")
+    return (f"cannot tell (git-worktrees printed no [result] tally, so nothing "
+            f"was established about {_untrusted.flat(path)}; it exited "
+            f"{r.returncode})")
+
+
+def _worktree_dirt(path: str) -> tuple[List[str], str]:
+    """`(paths, error)` — everything in the tree a removal would destroy.
+
+    `--ignored` is the whole point. `git worktree remove` without `--force`
+    declines a tree holding **modified or untracked** files, and that is the
+    entire scope of the flag: an **ignored** file is deleted either way
+    (#1280). Nothing recovers one — not the index, not a stash, not the remote,
+    which is what ignoring it meant. A local env file, a virtualenv and a
+    scratch database are the three that turn up.
+    """
+    try:
+        r = _git(["-C", path, "status", "--porcelain", "--ignored"])
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+        return ([], f"git status could not be run: {e}")
+    if r.returncode != 0:
+        return ([], ((r.stderr or r.stdout) or "").strip()
+                or f"git status exited {r.returncode}")
+    found: List[str] = []
+    for line in _untrusted.split_lines(r.stdout or ""):
+        # `XY path`: two status columns and a space. Anything shorter is not a
+        # porcelain record, and an empty list here is about to authorise a
+        # deletion — so a line that cannot be read is dropped rather than
+        # turned into a path.
+        if len(line) > 3:
+            found.append(line[3:].strip())
+    return (found, "")
 
 
 def _cleanup_worktree(head: str) -> tuple[str, str, str]:
+    """Remove the branch's worktree, once its contents have been established.
+
+    Two gates, and they answer different questions: `git-worktrees` says
+    whether an agent is alive in the tree, and `git status --ignored` says
+    whether removing it destroys anything. Only the first existed before #1280,
+    and the refusal text justified the second on the grounds that no `--force`
+    is passed — the one sentence that is not true. A wrong safety claim is
+    worse than no claim, because it ends the next reader's search.
+    """
     item = "local worktree"
     paths = _worktrees_for_branch(head)
     if not paths:
@@ -600,12 +676,31 @@ def _cleanup_worktree(head: str) -> tuple[str, str, str]:
                 f"{_untrusted.flat(path)} is `{state}` per git-worktrees, not "
                 f"`idle` — and `cannot tell` is treated as occupied, because an "
                 f"agent can be alive in a tree that looks finished")
+    dirt, dirt_err = _worktree_dirt(path)
+    if dirt_err:
+        return (item, CLEAN_REFUSED,
+                f"what {_untrusted.flat(path)} holds could not be read "
+                f"({_untrusted.flat(dirt_err)}) — a tree whose contents were "
+                f"never established is not a tree to delete")
+    if dirt:
+        shown = ", ".join(_untrusted.flat(p) for p in dirt[:_DIRT_SHOWN])
+        more = (f" and {len(dirt) - _DIRT_SHOWN} more"
+                if len(dirt) > _DIRT_SHOWN else "")
+        return (item, CLEAN_REFUSED,
+                f"{_untrusted.flat(path)} holds {len(dirt)} file(s) git is not "
+                f"tracking ({shown}{more}). `git worktree remove` deletes "
+                f"**ignored** files whatever flags it is given, and an ignored "
+                f"file is in no index, no stash and no remote — remove the "
+                f"tree by hand once you have looked at those")
     rc, msg = _git_rc(["worktree", "remove", path])
     if rc != 0:
         return (item, CLEAN_REFUSED,
                 f"git declined to remove {_untrusted.flat(path)}: "
-                f"{_untrusted.flat(msg)} (no --force is ever passed here)")
-    return (item, CLEAN_DONE, f"removed {_untrusted.flat(path)}")
+                f"{_untrusted.flat(msg)}")
+    return (item, CLEAN_DONE,
+            f"removed {_untrusted.flat(path)} — `git status --ignored` found "
+            f"nothing untracked or ignored in it first, so the removal "
+            f"destroyed nothing that was not committed")
 
 
 def _cleanup_local_branch(head: str) -> tuple[str, str, str]:
@@ -627,9 +722,60 @@ def _cleanup_local_branch(head: str) -> tuple[str, str, str]:
             f"never run here; confirm against the PR and delete by hand")
 
 
-def _cleanup_remote_branch(head: str) -> tuple[str, str, str]:
+def _remote_ref_sha(head: str) -> tuple[str, str]:
+    """`(sha, error)` for what `refs/heads/<head>` points at **in this repo**.
+
+    `git/ref/heads/X` — singular `ref` — is the exact-match read; the plural
+    `git/refs/heads/X` is a prefix search and answers with a list. A list here
+    would mean the name did not identify one ref, which is not something to
+    delete.
+    """
+    data, err = _gh_json(["api", _repo_target.api_path("git/ref/heads/" + head)])
+    if err:
+        return ("", err)
+    if isinstance(data, list):
+        return ("", f"the name matched {len(data)} refs, not one")
+    if not isinstance(data, dict):
+        return ("", "the API returned no ref object")
+    obj = data.get("object")
+    sha = str(obj.get("sha") or "") if isinstance(obj, dict) else ""
+    if not sha:
+        return ("", "the API returned a ref with no object sha")
+    return (sha, "")
+
+
+def _cleanup_remote_branch(head: str, head_oid: str) -> tuple[str, str, str]:
+    """Delete the head ref — after something establishes that it *is* the head.
+
+    The DELETE lands on the **base** repository, and `headRefName` is a name
+    chosen by whoever opened the PR. Before #1281 that was the whole of it: a
+    contributor whose fork branch was called `master` deleted ours, under a
+    receipt reading `recoverable: GitHub keeps refs/pull/N/head` — false in
+    precisely that case, because the ref deleted is not that PR's head.
+
+    Reading the ref back and comparing it to `headRefOid` is what makes that
+    sentence true, and it subsumes the name-shaped version of the question:
+    `develop`, `release/1.0` and every other ref of ours fails it, because
+    they do not point at this PR's head. It also declines a branch someone
+    pushed to after the merge, which is the same defect one commit smaller.
+    """
     item = "remote branch"
     safe = _untrusted.flat(head)
+    if not head_oid:
+        return (item, CLEAN_REFUSED,
+                f"the PR carried no headRefOid, so nothing establishes that "
+                f"`{safe}` in this repository is this PR's head rather than a "
+                f"ref of ours wearing the same name")
+    sha, read_err = _remote_ref_sha(head)
+    if read_err:
+        return (item, CLEAN_REFUSED,
+                f"`{safe}` could not be read back before deleting it "
+                f"({_untrusted.flat(read_err)}) — an unread ref is not deleted")
+    if sha != head_oid:
+        return (item, CLEAN_REFUSED,
+                f"`{safe}` in this repository points at {sha[:7]}, not at this "
+                f"PR's head {head_oid[:7]} — the same name, a different ref. "
+                f"Deleting it would destroy a branch this PR never owned")
     ref_path = _repo_target.api_path("git/refs/heads/" + head)
     try:
         r = _gh(["api", "-X", "DELETE", ref_path])
@@ -640,12 +786,25 @@ def _cleanup_remote_branch(head: str) -> tuple[str, str, str]:
         return (item, CLEAN_REFUSED,
                 f"the API refused the delete: {_untrusted.flat(msg)}")
     return (item, CLEAN_DONE,
-            f"deleted `{safe}` on the remote via the API (recoverable: GitHub "
-            f"keeps refs/pull/N/head)")
+            f"deleted `{safe}` on the remote via the API — it was read back at "
+            f"{head_oid[:7]}, this PR's own head, so it is recoverable from "
+            f"refs/pull/N/head")
 
 
-def run_cleanup(head: str, *, merged: bool) -> List[tuple[str, str, str]]:
+def run_cleanup(head: str, *, merged: bool, cross_repo: bool | None = None,
+                default_branch: str = "",
+                head_oid: str = "") -> List[tuple[str, str, str]]:
     """`(item, state, detail)` per item — done, refused, or skipped, never two.
+
+    Four things have to be established before anything here is deleted, and
+    before #1281 only the first was: that the merge happened, that the head
+    branch lives in **this** repository, that it is not the default branch, and
+    that the ref about to go is the one the PR names.
+
+    The three added keywords default to their *unestablished* values on
+    purpose. `cross_repo=None` means the field did not come back, and that is a
+    refusal rather than an assumption — a caller who forgets to answer gets a
+    refusal it can read instead of a delete it cannot undo.
 
     Gated on the merge that was **read back off the remote**, which is the gate
     the 2026 incident lacked: there, a delete chained with `&&` ran after a
@@ -668,6 +827,28 @@ def run_cleanup(head: str, *, merged: bool) -> List[tuple[str, str, str]]:
                   f"refused rather than passed to a delete. Use the PR page")
         return [(i, CLEAN_REFUSED, reason) for i in _CLEAN_ITEMS]
 
+    if cross_repo is not False:
+        where = "is true" if cross_repo else "did not come back"
+        reason = (f"the head branch is not established to be in this "
+                  f"repository (`isCrossRepository` {where}) — "
+                  f"`{_untrusted.flat(head)}` then names a **fork's** branch "
+                  f"while every arm below acts on this repository, so each of "
+                  f"them would hit a ref of ours that happens to share the "
+                  f"name. Delete the fork's branch from the PR page")
+        return [(i, CLEAN_REFUSED, reason) for i in _CLEAN_ITEMS]
+
+    if not default_branch:
+        reason = ("this repository's default branch could not be read, so "
+                  "nothing here can tell whether the cleanup is about to "
+                  "delete it")
+        return [(i, CLEAN_REFUSED, reason) for i in _CLEAN_ITEMS]
+
+    if head == default_branch:
+        reason = (f"`{_untrusted.flat(head)}` is this repository's default "
+                  f"branch. A head branch with that name is never a branch to "
+                  f"clean up, whoever opened the PR and wherever it lives")
+        return [(i, CLEAN_REFUSED, reason) for i in _CLEAN_ITEMS]
+
     rows: List[tuple[str, str, str]] = []
     target = _repo_target.target()
     if target:
@@ -682,7 +863,7 @@ def run_cleanup(head: str, *, merged: bool) -> List[tuple[str, str, str]]:
         # refuses for a reason that is this op's own doing.
         rows.append(_cleanup_worktree(head))
         rows.append(_cleanup_local_branch(head))
-    rows.append(_cleanup_remote_branch(head))
+    rows.append(_cleanup_remote_branch(head, head_oid))
     return rows
 
 
@@ -1002,10 +1183,20 @@ def main() -> int:
     print()
 
     # ---- cleanup ---------------------------------------------------------
+    # A missing or non-boolean `isCrossRepository` becomes None, not False:
+    # "the field did not come back" and "the head is ours" are different
+    # facts, and only one of them authorises a delete — or the printing of a
+    # delete command, which is the same decision made by the reader.
+    x_repo_raw = pr.get("isCrossRepository")
+    x_repo = x_repo_raw if isinstance(x_repo_raw, bool) else None
+
     if do_cleanup:
         print("## Cleanup — run by this op (`cleanup`)")
         for line in render_cleanup(
-                run_cleanup(head, merged=(m_state == MERGED and bool(head)))):
+                run_cleanup(head, merged=(m_state == MERGED and bool(head)),
+                            cross_repo=x_repo,
+                            default_branch=default_branch,
+                            head_oid=str(pr.get("headRefOid") or ""))):
             print(line)
         print()
         print(result_line(m_state, issue_overall, branch_state))
@@ -1032,6 +1223,28 @@ def main() -> int:
               "a command that is safe to paste would no longer name this "
               "branch. Delete it from the PR page, or by hand after reading "
               "the name above.")
+    elif x_repo is not False or head == default_branch:
+        # The same establishment #1281 put in front of `cleanup`, in front of
+        # the printed commands — because these are the *default* path and a
+        # reader runs them. Quoting was the only thing between a fork branch
+        # called `master` and `gh api -X DELETE …/refs/heads/master` aimed at
+        # this repository, and quoting makes a wrong command safe to paste
+        # rather than making it right. Both facts are local: no extra call.
+        print(f"  Head branch {_untrusted.flat(_refname.shell_ref(head))} "
+              f"still exists.")
+        if head == default_branch:
+            why = (f"it is this repository's default branch, so a delete "
+                   f"command naming it would be aimed at `{default_branch}` "
+                   f"here")
+        else:
+            why = ("the head is not established to be in this repository "
+                   "(`isCrossRepository` "
+                   + ("is true" if x_repo else "did not come back")
+                   + "), so a command naming it would be aimed at a ref of "
+                     "ours that happens to share the name")
+        print(f"  No delete command is printed for it: {why}. Delete the "
+              f"branch from the PR page, which knows which repository it is "
+              f"in.")
     else:
         safe_head = _refname.shell_ref(head)
         ref_path = _refname.shell_ref(
