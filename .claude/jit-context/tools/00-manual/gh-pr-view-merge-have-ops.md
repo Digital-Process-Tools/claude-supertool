@@ -1,7 +1,7 @@
 ---
 title: "`gh pr view` and `gh pr merge` are hand-rolled renders of ops this repo ships"
 tool: Bash
-match: ~(^|[;&|] *)(rtk +)?gh[[:space:]]+pr[[:space:]]+(view|merge)
+match: ~(^|[;&|\n] *)(rtk +)?gh[[:space:]]+pr[[:space:]]+(view|merge)
 mode: block
 ---
 
