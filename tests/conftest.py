@@ -678,6 +678,10 @@ RESET_EXEMPT_GLOBALS = (
     # mutating in place, gated by the same _AT_FILE_REGISTRY_BUILT flag.
     "_AT_FILE_DROPPED_ROUTES",
     "_AROUND_DIR_SKIP",
+    # The entry-point shim and the sibling holding the code it stands for
+    # (#1259). A fact about how this tool is laid out on disk, fixed at
+    # import and only ever read — same lifetime as _BUILTIN_OPS.
+    "_SHIM_CORE",
     "_AT_FILE_BUILTIN_DEFAULTS",
     "_READ_OP_AT_FIELDS",
     "_BATCH_POSITIONAL_FIELDS",
