@@ -20581,22 +20581,61 @@ def _main(argv: List[str]) -> int:
 # or a `&&` chain reads as a success, on exactly the multi-line messages this
 # repo's commit conventions ask for.
 #
-# Still anchored, and still to the line after the header: the close is ` ---`
-# ending a line, followed by FAIL/ERROR. Non-greedy, so the first candidate
-# close wins; a body line of the caller's own ending in ` ---` and followed by
-# `ERROR: ` would match early, which errs toward reporting a failure that is
-# not one rather than the reverse.
-_FAIL_MARKER = re.compile(r"^--- [\s\S]*? ---\n(FAIL\b|ERROR:\s)", re.MULTILINE)
+# Kept exactly as it was, and it still searches: a `batch:` body carries its
+# sub-ops' headers deeper in, and a failing sub-op has flipped the exit code
+# since long before #1235. Linear, and unchanged in behaviour.
+_FAIL_MARKER = re.compile(r"^---[^\n]*\n(FAIL\b|ERROR:\s)", re.MULTILINE)
+
+# The verdict word, once the header's own close has been located by hand.
+_FAIL_AFTER_HEADER = re.compile(r"(FAIL\b|ERROR:\s)")
+
+# `--- {arg} ---\n`. Found with `str.find` rather than a lazy regex, and this
+# is the whole of why the multi-line case is not a second regex:
+#
+#  - a lazy `[\s\S]*?` under `re.search` retries from every line beginning
+#    `--- `, which is O(n²). A `git-diff` receipt is thousands of `--- a/path`
+#    hunk headers: measured on a 255KB diff-shaped body with 3000 of them, the
+#    searched form took 4.0s against 0.0013s for the single-line one, and
+#    doubling the line count quadrupled it. This runs on every dispatch body.
+#  - even anchored at position 0 the lazy form BACKTRACKS past the real close
+#    when what follows it is not a verdict, so a `--- … ---` block deeper in
+#    an op's own OUTPUT — a grep hit, a quoted receipt, a diff — flipped the
+#    exit code of a call that had succeeded. That reach is surface the old
+#    pattern never had, because it could not cross a newline at all.
+_HEADER_CLOSE = " ---\n"
 
 
 def _body_indicates_failure(body: str) -> bool:
     """True iff the dispatch body's first content line starts with FAIL or ERROR:.
 
-    Intentionally narrow: only the line immediately after the '--- header ---'
+    Intentionally narrow: only the line immediately after a '--- header ---'
     counts. Deeper FAIL/ERROR strings are user content and must not flip the
     process exit code.
+
+    A header is not always one line. `--- {arg} ---` holds whatever the caller
+    typed, and a multi-line commit message puts newlines inside it — so the
+    single-line pattern never matched and every failing op with a newline in
+    its argument exited 0 (#1235). The second arm below answers that: the
+    header is the first thing in the body and its close is the FIRST
+    `" ---\n"`, both of which are facts rather than searches.
+
+    **The residual, stated rather than hidden.** An argument whose own text
+    contains a line ending in ` ---` moves that first close earlier, and this
+    would then read the wrong line and report a refusal as a success. That is
+    the same direction as the bug being fixed, and it is accepted here because
+    the alternative — scanning on for a later close — is what let an op's
+    OUTPUT flip the exit code, and output is far more reachable than an
+    argument: every `grep` over this repo's own docs contains such a line.
+    Narrow false negative, or wide false positive; this takes the narrow one.
     """
-    return _FAIL_MARKER.search(body) is not None
+    if _FAIL_MARKER.search(body) is not None:
+        return True
+    if not body.startswith("--- "):
+        return False
+    close = body.find(_HEADER_CLOSE)
+    if close < 0:
+        return False
+    return _FAIL_AFTER_HEADER.match(body, close + len(_HEADER_CLOSE)) is not None
 
 
 def _cli() -> int:

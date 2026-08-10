@@ -25,10 +25,14 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 REPO = Path(__file__).parent.parent
 SUPERTOOL = REPO / "supertool.py"
+
+sys.path.insert(0, str(REPO))
+import supertool  # noqa: E402
 
 COAUTHOR = "Test Bot <bot@example.invalid>"
 Q1 = "'"
@@ -194,3 +198,65 @@ def test_a_short_message_keeps_its_verbatim_header(tmp_path: Path) -> None:
     code, out = _run(["git-commit:::fix: short one:::a.txt"], cwd=work)
     assert code == 0, out
     assert _header(out).startswith("--- git-commit:::fix: short one:::a.txt")
+
+
+# --- the exit-code marker the two above are built on -----------------------
+
+
+def test_a_refusal_with_a_newline_in_its_argument_exits_non_zero(
+    tmp_path: Path,
+) -> None:
+    """The single-line and multi-line spellings of one refusal must agree.
+
+    `[^\\n]*` for the header could not cross a newline and the header holds
+    the caller's argument, so the same refusal exited 1 with a one-line
+    message and 0 with a two-line one — read by a hook or a `&&` chain as a
+    success.
+    """
+    work = _repo(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "--", "a.txt"], cwd=work,
+                   check=True)
+    one, _ = _run(["git-commit:::subject"], cwd=work)
+    two, out = _run(["git-commit:::subject\nbody line"], cwd=work)
+    assert one == 1, one
+    assert two == one, out
+
+
+def test_a_multi_line_decoy_in_an_ops_own_output_is_not_a_failure(
+    tmp_path: Path,
+) -> None:
+    """Widening the marker must not widen what counts as this call failing.
+
+    The marker is anchored to the call's own header, which is at position 0.
+    A `--- … ---` block followed by `ERROR: ` deeper inside an op's OUTPUT is
+    the caller's content — a grep hit, a quoted receipt, a diff — and the old
+    pattern could not reach it because it could not cross a newline. The
+    fix must not hand that reach over as a side effect.
+    """
+    body = (
+        "--- read:notes.md ---\n"
+        "PASS (0.01s)\n"
+        "--- a quoted header\n"
+        "spanning two lines ---\n"
+        "ERROR: this is quoted text, not this call's verdict\n"
+    )
+    assert supertool._body_indicates_failure(body) is False, body
+    real = "--- git-commit:::subject\nbody ---\nERROR: nothing staged\n"
+    assert supertool._body_indicates_failure(real) is True, real
+
+
+def test_the_marker_does_not_rescan_from_every_diff_hunk_header() -> None:
+    """A `git-diff` receipt is thousands of lines starting `--- a/path`.
+
+    A lazily-quantified `re.search` retries from each of them, which is
+    quadratic: measured at 4.0s on a 3000-hunk body against 0.0013s before,
+    on every dispatch body. The bound is three orders of magnitude above the
+    anchored cost so a slow runner cannot redden this, and three orders below
+    the searching form's.
+    """
+    body = "--- diff:a:b ---\nPASS (0.1s)\n" + (
+        "--- a/src/file.py\n+++ b/src/file.py\n@@ -1 +1 @@\n-x\n+y\n" * 4000
+    )
+    start = time.monotonic()
+    assert supertool._body_indicates_failure(body) is False
+    assert time.monotonic() - start < 2.0
