@@ -819,6 +819,19 @@
       "rollback_on_fail": false,
       "timeout": 45
     },
+    "jit-index": {
+      "cmd": "{python} {supertool_dir}/validators/jit-index/jit-index.py {file}",
+      "match": "*00-manual/00-index.tsv",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": true,
+      "timeout": 20
+    },
     "changelog-fragment": {
       "cmd": "{python} {supertool_dir}/validators/changelog-fragment/changelog-fragment.py {file}",
       "match": "*changelog.d/*.md",
