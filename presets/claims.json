@@ -3,6 +3,7 @@
   "requires": "python",
   "ops": {
     "claims": {
+      "safety": "read-only",
       "cmd": "{python} {path}claims/check.py {args}",
       "timeout": 120,
       "hint": true,
