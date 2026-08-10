@@ -26,18 +26,22 @@ a trailing newline changes nothing a caller can act on.
 
 **The limit, stated -- and stated per site, not only here.** This reads the
 first argument of a call spelled `re.<something>`: a string literal, or a `+`
-splice whose first and last pieces are literals, which is all the anchor
-question needs. Anything else -- a bare name, a call result, an f-string --
-is *declined by name*, and a pattern whose head says `^` and whose tail cannot
-be read is a **failure**, not a skip. That is the whole point: a scanner that
-read 80% of the patterns and reported clean is what let `_PATH_TOK` sit three
-lines from a flagged twin, spliced with `+` and invisible (#1241).
+splice whose first and last pieces are literals. Head and tail settle *which
+anchor* ends the pattern; they do not on their own settle whether the run in
+front of it swallows a newline, so a splice whose last literal is only the
+anchor is reported as undecided rather than clean. Anything else -- a bare
+name, a call result, an f-string -- is *declined by name*, and a pattern whose
+head says `^` and whose tail cannot be read is a **failure**, not a skip.
+
+That is the whole point: a scanner that read 80% of the patterns and reported
+clean is what let `_PATH_TOK` sit three lines from a flagged twin, spliced
+with `+` and invisible (#1241).
 
 Measured on the tree at the time of writing: 111 calls in scope, 1 spliced and
-read, 50 declined with a reason, 14 waived, 0 half-read. Still open by
-construction: a pattern held in a dict and compiled elsewhere, and one reached
-through an aliased import (`from re import compile as _c`). This narrows the
-class; it does not close it.
+read, 50 declined with a reason, 14 waived, 0 half-read, 0 with an undecidable
+trailing run. Still open by construction: a pattern held in a dict and compiled
+elsewhere, and one reached through an aliased import (`from re import compile
+as _c`). This narrows the class; it does not close it.
 
 `fullmatch` is deliberately **not** in the call list. `re.fullmatch(r"^x$", s)`
 requires the whole string, so it has never had this bug, and flagging one would
@@ -101,10 +105,13 @@ _NO_OP_ADVICE = (
     r"the characters actually meant, `[ \t]*` rather than `\s*`."
 )
 
-#: A quantified atom at the very end of the pattern body.
+#: An atom at the very end of the pattern body, quantified or not. The
+#: quantifier is optional because `\s\Z` eats a trailing newline exactly as
+#: `\s*\Z` does -- the `*` was never the defect. The `\]?` is Python's rule
+#: that a `]` immediately after `[` or `[^` is a literal member, not the close.
 _TRAILING_RUN = re.compile(
-    r"(\\[sSwWdD]|\[\^?(?:[^\]\\]|\\.)*\]|\.)"
-    r"(?:[*+]|\{\d*,\d*\})\??\Z")
+    r"(\\[sSwWdD]|\[\^?\]?(?:[^\]\\]|\\.)*\]|\.)"
+    r"(?:[*+]|\{\d*,\d*\})?\??\Z")
 
 #: Escapes that match U+000A, and the classes that contain one.
 _NEWLINE_ESCAPES = ("\\s", "\\W", "\\D", "\\n", "\\r")
@@ -121,6 +128,7 @@ class _Site(NamedTuple):
     lineno: int
     text: Optional[str]       # whole pattern, when every piece is a literal
     spliced: bool             # not whole, but head and tail both read
+    swallow_known: bool       # `swallows` is a verdict, not an assumption
     head_anchored: bool       # the readable head starts with `^`
     anchor: Optional[str]     # `"$"`, `"\\Z"`, or None when unreadable
     swallows: bool            # the run before the anchor can eat a newline
@@ -221,20 +229,28 @@ def _atom_swallows(atom: str, dotall: bool) -> bool:
     return listed
 
 
-def _swallows_newline(body: str, dotall: bool) -> bool:
-    r"""Can the run at the end of `body` match U+000A on its own?
+def _swallows_newline(body: str, dotall: bool) -> tuple[bool, bool]:
+    r"""`(swallows, decided)` for the run at the end of `body`.
 
     Trailing group closers are peeled, because `(.*)\Z` is the same defect as
     `.*\Z` and writing the capture around it must not hide it.
+
+    `decided` exists for a spliced pattern whose last literal is only the
+    anchor: the run in front of it lives in a piece this scan cannot read, and
+    answering "no" there would be a definitive clean verdict over bytes never
+    examined. A "yes" is always sound -- a swallowing run that is visible is
+    real whatever precedes it. The residual limit, stated: a splice whose last
+    literal is a fragment of a run started in an unreadable piece (`... + r"s*"`
+    after a piece ending in a backslash) is read as the fragment.
     """
     while True:
         hit = _TRAILING_RUN.search(body)
         if hit and _atom_swallows(hit.group(1), dotall):
-            return True
+            return True, True
         if body.endswith(")") and _backslash_run(body, len(body) - 1) % 2 == 0:
             body = body[:-1]
             continue
-        return False
+        return False, bool(body)
 
 
 def _scan_source(source: str) -> list[_Site]:
@@ -274,14 +290,16 @@ def _scan_source(source: str) -> list[_Site]:
         anchor = _trailing_anchor(tail) if tail is not None else None
         decline = (None if head is not None and tail is not None
                    else _decline_reason(leaves))
-        swallows = bool(anchor) and _swallows_newline(
-            tail[:len(tail) - len(anchor)], dotall)
+        swallows, decided = (
+            _swallows_newline(tail[:len(tail) - len(anchor)], dotall)
+            if anchor else (False, True))
         above = node.lineno - 1
         while above in own_line:
             above -= 1
         span = range(above + 1, (node.end_lineno or node.lineno) + 1)
         reason = next((waivers[n] for n in span if n in waivers), None)
-        sites.append(_Site(node.lineno, text, text is None and decline is None,
+        spliced = text is None and decline is None
+        sites.append(_Site(node.lineno, text, spliced, decided or not spliced,
                            head is not None, anchor, swallows, reason, decline))
     return sites
 
@@ -324,6 +342,23 @@ def test_no_no_op_trailing_anchor() -> None:
         "These patterns end in \\Z, and the run in front of it swallows a "
         "trailing newline anyway, so the anchor is decoration:\n"
         + "\n".join(offenders) + "\n\n" + _NO_OP_ADVICE
+    )
+
+
+def test_no_undecidable_trailing_run() -> None:
+    """A splice whose last literal is only the anchor answers nothing.
+
+    `swallows=False` there would be a clean verdict over bytes the scan never
+    read -- narrower than the old blindness and worse, because being absent
+    from a scan at least never claimed anything (#1241).
+    """
+    offenders = [f"{rel}:{site.lineno}" for rel, site in _scan_tree()
+                 if site.anchor and not site.swallow_known and not site.waiver]
+    assert not offenders, (
+        "These patterns are spliced and end in a literal that is only the "
+        "anchor, so what precedes it was never read:\n" + "\n".join(offenders)
+        + "\n\nMove the trailing run into the last literal of the splice, or "
+        "append `# anchored-ok: <why>`.\n\n" + _NO_OP_ADVICE
     )
 
 
@@ -434,17 +469,23 @@ X = re.compile(r'^[a-z]+\Z')
 
 
 def test_a_waiver_has_to_open_its_comment() -> None:
-    """Mid-comment prose about a waiver must not grant one."""
+    """Mid-comment prose about a waiver must not grant one, or demand one.
+
+    The second assertion is the one #1241 was filed for: the old check said
+    `"anchored-ok" in line`, so this line was a waiver with no reason after
+    the colon and the guard asked the author to justify an exit not taken.
+    """
     source = r"""import re
 X = re.compile(r'^[a-z]+$')  # not an anchored-ok: excuse, just prose
 """
     assert _one(source).waiver is None
+    assert _silent_waivers(source) == []
 
 
 def test_anchored_ok_inside_a_string_is_not_a_waiver() -> None:
+    """On the call's own line, where a line-based reader cannot tell them apart."""
     source = r"""import re
-X = re.compile(r'^[a-z]+$')
-S = '# anchored-ok:'
+S = '# anchored-ok: a fake'; X = re.compile(r'^[a-z]+$')
 """
     assert _silent_waivers(source) == []
     assert _one(source).waiver is None
@@ -531,6 +572,46 @@ X = re.compile(r'^a(.*)\Z')
 """
     assert _one(dotall).swallows is True
     assert _one(plain).swallows is False
+
+
+def test_an_unquantified_swallowing_atom_is_refused() -> None:
+    r"""`\s\Z` eats the newline exactly as `\s*\Z` does; the `*` is not the bug."""
+    assert _one(r"""import re
+X = re.compile(r'^abc\s\Z')
+""").swallows is True
+
+
+def test_a_class_opening_with_a_bracket_is_read() -> None:
+    """`[^]abc]` is a legal class whose first literal member is `]`."""
+    assert _one(r"""import re
+X = re.compile(r'^abc[^]abc]*\Z')
+""").swallows is True
+
+
+def test_a_splice_whose_tail_is_only_the_anchor_gives_no_verdict() -> None:
+    """The run before the anchor is in a piece this scan cannot read.
+
+    Reporting `swallows=False` here would be a definitive clean verdict over
+    bytes never examined -- narrower than the old blindness, and worse, because
+    absent from the scan at least never claimed anything.
+    """
+    site = _one(r"""import re
+V = 'x'
+X = re.compile(r'^abc' + V + r'\Z')
+""")
+    assert site.spliced is True
+    assert site.swallow_known is False
+
+
+def test_a_splice_whose_tail_carries_the_run_still_decides() -> None:
+    """`_PATH_TOK`'s shape: the trailing run is inside the last literal."""
+    site = _one(r"""import re
+E = 'py|md'
+X = re.compile(r'^([a-z]*\.(?:' + E + r'))(?::(\d+))?\Z')
+""")
+    assert site.spliced is True
+    assert site.swallow_known is True
+    assert site.swallows is False
 
 
 def test_the_no_op_anchor_is_measured_not_quoted() -> None:
