@@ -74,6 +74,14 @@ Three rules for what goes in one:
 - **Point at the op. Never teach a way around it.** If the entry you are about to write explains how to get an answer by hand, the thing to change is the op that should have answered. A draft of `merged-is-not-ancestry.md` was 39 lines of `git cat-file` and `gh pr list | intersect` recipes for a question `git-worktrees` already owns and answers wrongly on one line. Documenting the detour makes it permanent and leaves the defect. Fix the op; the note then shrinks to a pointer.
 - **A `block` must anchor on the invocation, not on a word.** `supertool-no-cut.md` matches `~supertool[^|]*\|[^|]*(head|tail|…)`, and the word it matches is usually the **directory name** — every command run from this repo contains it. On 2026-08-09 it blocked a plain `git status | head`, a `pytest | tail`, a `venv` under a scratchpad path, and a `gh-job:N:grep:A|B` whose `|` was inside the op's own pattern. A blocking rule that fires on commands it was not written for teaches people to route around the block.
 - **Carry the number that made you write it.** A rule with its evidence stripped is folklore, and folklore is what this tool exists to replace.
+- **Keep it short.** The file is injected in full on every match, so its length is a cost paid every time, forever. A table of replacement ops, the measurement that justified the rule, and stop.
+
+Two constraints on the `match` column, both measured 2026-08-10:
+
+- **The matcher is awk, so `\s`/`\d`/`\w` are not character classes** — macOS ships the one-true-awk, which drops the undefined escape, so `gh\s+pr` compiles to `ghs+pr` and matches nothing. Two of six tool rules were dead this way, both `block`, one of them for however long `merged-is-not-ancestry.md` had existed. Use `[[:space:]]`. `\n` *is* a valid escape and does survive.
+- **`^` anchors the whole command, not each line.** `full_command` is the entire string, so a rule anchored `(^|[;&|] *)` never sees an invocation on the second line of a multi-line script. Put `\n` in the separator class.
+
+A rule that never matches and a rule that never runs look identical everywhere, including the hook's own log, which shows `(none) [shown:0]` for both. After indexing one, run the command it forbids and check it is refused.
 
 ## The defect this codebase keeps having
 
