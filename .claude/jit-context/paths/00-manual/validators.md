@@ -34,18 +34,31 @@ call touching `validators/` after all 13 were fixed.
 
 # `skipped` and rollback
 
-A `skipped` never rolls back (`docs/validators.md:681`, "No verdict never rolls back an edit") —
+A `skipped` never rolls back (`docs/validators.md:724`, "No verdict never rolls back an edit") —
 so turning `ok:true` into `skipped` changes rollback reachability. Don't do it casually.
+(Read `:681` until #1042. Kept as line+quote rather than a heading because it is *not* a heading —
+it is a bolded lead-in — and `claims:PATH` verifies a quote against its line, so this citation is
+checked on every run rather than remembered.)
 
 # Schema fields — `validators/SCHEMA.md`
 
-- `:37` — a skip **omits** `ok`, `count`, `errors` entirely. Only `tool`, `file`, `duration_ms`,
-  `skipped` (reason string) survive. `ok:true` on a skip is exactly the misread the third state
-  exists to prevent.
-- `:79-84` — cargo-check precedent for a mixed payload: a diagnostic about *another* file in the
-  same crate keeps `ok:false` + the real error, but `line/col:null`, `code:"adapter"`,
-  `source_context` absent. Don't fold a whole-crate error into `skipped` — that drops `errors`
-  entirely, which is worse.
+Cited by **heading**, not by line. Both of these were line numbers until #1042, and #1042 —
+which inserted a table near the top of that file — moved `:37` to 51 and `:79-84` to 93-96
+without touching a word either entry describes. A line citation into a live document decays on
+every edit above it, silently, in a file that is injected verbatim on every call touching
+`validators/`.
+
+- §"Skipped: the third state" — a skip **omits** `ok`, `count`, `errors` entirely. Only `tool`,
+  `file`, `duration_ms`, `skipped` (reason string) survive. `ok:true` on a skip is exactly the
+  misread the third state exists to prevent.
+- §"A located diagnostic still has to be about *this* file (#754)" — cargo-check precedent for a
+  mixed payload: a diagnostic about *another* file in the same crate keeps `ok:false` + the real
+  error, but `line/col:null`, `code:"adapter"`, `source_context` absent. Don't fold a whole-crate
+  error into `skipped` — that drops `errors` entirely, which is worse.
+- §"Core-only fields" — the four keys the core stamps and strips from every adapter payload
+  (`no_verdict`, `timeout`, `elapsed_s`, `resolved_to`). Compared against the core's own set in
+  both directions by `tests/test_schema_contract_drift_1042.py`; add to one and the guard makes
+  you add to the other.
 
 # #1203 is CLOSED
 
