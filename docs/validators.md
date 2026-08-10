@@ -208,8 +208,42 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | PHP — mess, warm  | `phpmd-mcp`   | `mcp-phpmd-warm` on PATH (`MCP_PHPMD_BIN` to override)   | Warm-daemon twin of `phpmd` |
 | PHP — tests, warm | `phpunit-mcp` | `mcp-phpunit-warm` on PATH (`MCP_PHPUNIT_BIN` to override) | Runs the file's tests through a prewarmed bootstrap. `warm_unsafe` declares tests the warm runner cannot answer for. See [README](../validators/phpunit-mcp/README.md) |
 | PHP — refactor, warm | `rector-mcp` | `mcp-rector-warm` on PATH (`MCP_RECTOR_BIN` to override) | Rector suggestions through a long-lived daemon. See [README](../validators/rector-mcp/README.md) |
+| jit-context index | `jit-index` | stdlib only; `awk` for the second half | Keyed on a path glob, not a language. Refuses a `**/00-manual/00-index.tsv` rule whose regex column the hook's awk cannot honour. Two checks: a **structural** one that needs no awk and gives the same verdict everywhere, and a **compile** one against the installed awk. `skipped` when the file is not a jit-context index, or when awk is absent *and* the structural half was clean — a half-run check is not a pass. See below |
 | Changelog fragment | `changelog-fragment` | the **project's own** `assemble_changelog.py` (plus its `markdown-it-py`) | Keyed on a path glob, not a language. States no rules of its own — it calls the release script's `parse_fragment_name` / `scan_fragment_body` and republishes their messages verbatim, so the write-time verdict and the CI verdict cannot drift. `skipped` when no such script sits above the file, so it is inert in projects with no `changelog.d/` convention. `$SUPERTOOL_CHANGELOG_ASSEMBLER` overrides where it looks (default `.github/scripts/assemble_changelog.py`) |
 
+
+### `jit-index` — a rule that reads as enforced and never fires (#1254)
+
+A `.claude/jit-context/**/00-index.tsv` row is written by an ordinary `paste` or `edit`, and its
+`match` column is compiled by **awk**, not PCRE — `pre-tool-hook.sh:80` for the tools family,
+`pre-path-hook.sh:105` for paths. macOS ships the one-true-awk, whose regex lexer drops an escape it
+does not define, so `gh\s+pr` compiles to `ghs+pr` and matches nothing. On 2026-08-10 two `block`
+rules were dead exactly this way, one of which had never fired since the day it was written. A rule
+that never matches and a rule that never runs render identically — in the
+index, in a directory listing, and in the hook's own log, which shows `(none) [shown:0]` for both.
+
+**awk does not fail to compile `\s`.** It compiles it, silently, into the wrong thing and exits 0. So
+an adapter that merely hands each pattern to the local awk and reads the exit status returns a clean
+verdict on the very row that produced the issue. That is why the load-bearing half is structural and
+awk-independent: an escaped ASCII letter or digit that awk does not define is dropped, and the
+pattern matches the bare character. The rule catches `\s`, `\d` and `\w` and equally the construct
+nobody has listed yet, and it answers the same on every platform — deliberately, because a pattern
+has to survive the most conservative POSIX awk. Compiling under gawk is not a licence to write `\s`
+for a hook that fires on somebody's Mac.
+
+The compile half answers a different question, and only a real engine can. A genuinely malformed
+pattern (`gh[a`) is a **fatal** awk error, and both hooks are invoked as `bash "$S" || true`, so one
+unbalanced bracket does not disable one row — it silences every rule in the file, quietly.
+
+Two further constructs are refused for the same reason they are dead rather than for the reason they
+are listed. `\b` is a backspace to awk, not PCRE's word boundary, so it is *not* dropped and still
+matches nothing; and the tools matcher lowercases the command before matching, so an uppercase
+literal outside a bracket expression can never match. A bracket expression is left alone, since
+`[A-Za-z]` still matches through its lower half.
+
+Row shape decides which column is a regex, so the adapter asserts no directory layout: a six-field
+tools row exposes column 2, and only when it opens with `~`; a two-field paths row exposes column 1,
+which is *always* a regex — calling it a "prefix" is what made that easy to miss.
 
 ### `html-check` — script extraction, not HTML well-formedness (#833)
 

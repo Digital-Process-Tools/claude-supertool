@@ -4,12 +4,13 @@ match: .claude/jit-context/
 mode: remind
 ---
 
-- **The `.md` is inert.** `00-index.tsv` in the same directory is what the hook reads. Tools: `tool⇥match⇥file⇥mode⇥keyword⇥` (6 fields, trailing tab). Paths: `prefix⇥file` (2 fields). No row = a rule that never runs, which reads exactly like a rule that never matches.
+- **The `.md` is inert.** `00-index.tsv` in the same directory is what the hook reads. Tools: `tool⇥match⇥file⇥mode⇥keyword⇥` (6 fields, trailing tab); column 2 is a regex only when it opens with `~`, otherwise a lowercased substring. Paths: `pattern⇥file` (2 fields); column 1 is **always** a regex (`match()`, `pre-path-hook.sh:105`) — not a literal prefix. No row = a rule that never runs, which reads exactly like a rule that never matches.
 - **Verify by running the forbidden command.** Nothing else distinguishes the two. The hook logs to `.discovery/logs/hooks.log`; a non-firing rule shows `(none) [shown:0]` on the very command it was written for.
 - **Keep it short.** Injected in full on every match — length is a cost paid forever. Table of replacement ops, the measurement, stop.
 - **Point at the op, never at a way around it.** If the entry explains how to get the answer by hand, fix the op instead.
 
-Two `match` traps, measured 2026-08-10:
+Three `match` traps, measured 2026-08-10. The `jit-index` validator now refuses the first two at write time (#1254), so you should meet them as a rolled-back edit rather than as a rule that never fires:
 
-- **awk, not PCRE.** macOS ships one-true-awk (`match(tolower(full_command), ...)`, `pre-tool-hook.sh:80`), which drops `\s`/`\d`/`\w` as undefined escapes — `gh\s+pr` compiles to `ghs+pr` and matches nothing. Two of six tool rules were dead this way, both `block`. Use `[[:space:]]`. `\n` is a valid escape and does survive.
-- **`^` anchors the whole command, not each line**, and the match runs against the entire string — so anchor `(^|[;&|\n] *)`, or a rule misses line 3 of a heredoc and fires on a mere mention of the command inside a payload.
+- **awk, not PCRE.** macOS ships one-true-awk (`match(tolower(full_command), ...)`, `pre-tool-hook.sh:80`), which drops `\s`/`\d`/`\w` as undefined escapes — `gh\s+pr` compiles to `ghs+pr` and matches nothing. Two `block` rules were dead this way, one never fired at all. Use `[[:space:]]`. `\n` survives; `\b` is a backspace, not a word boundary.
+- **The tools subject is lowercased before matching**, so an uppercase literal in a `~` pattern can never match.
+- **`^` anchors the whole command, not each line**, and the match runs against the entire string — so anchor `(^|[;&|\n] *)`, or a rule misses line 3 of a heredoc and fires on a mere mention of the command inside a payload. Not checkable at write time: verify by running the command the rule forbids.
