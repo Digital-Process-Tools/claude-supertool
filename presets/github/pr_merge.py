@@ -489,6 +489,212 @@ def _gh_json(args: List[str], timeout: int = 30) -> tuple[object, str]:
         return (None, "gh returned invalid JSON")
 
 
+# ---------------------------------------------------------------------------
+# cleanup (#1256) — three states per item, and `idle` has to be earned
+# ---------------------------------------------------------------------------
+
+CLEAN_DONE = "done"
+CLEAN_REFUSED = "refused"
+CLEAN_SKIPPED = "skipped"
+
+_CLEAN_ITEMS = ("local worktree", "local branch", "remote branch")
+
+#: `git-worktrees`' own exit contract: 0 is the only answer safe to act on, and
+#: `cannot tell` has its own code precisely so a caller cannot collapse it into
+#: either neighbour. Read here rather than re-derived — a second occupancy
+#: heuristic in this file would be the second copy of a contract, which is the
+#: defect #1239 is about, wearing a different surface.
+_WORKTREE_STATE_BY_EXIT = {0: "idle", 1: "occupied", 2: "cannot tell"}
+
+_WORKTREES_PY = Path(__file__).resolve().parent.parent / "git" / "worktrees.py"
+
+
+def _git(args: List[str], timeout: int = 30):
+    return subprocess.run(["git"] + args, capture_output=True, text=True,
+                          timeout=timeout, encoding="utf-8", errors="replace")
+
+
+def _git_rc(args: List[str], timeout: int = 30) -> tuple[int, str]:
+    """`(returncode, message)`, with a spawn failure as a *reason*, not a raise.
+
+    Windows raises `FileNotFoundError [WinError 2]` where POSIX may not fail at
+    all, and an uncaught one here would escape the cleanup arm entirely — the
+    #997 shape, where a new subprocess call skipped its own "the tool failed"
+    branch and the original defect came back.
+    """
+    try:
+        r = _git(args, timeout=timeout)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+        return (127, f"git could not be run: {e}")
+    if r.returncode == 0:
+        return (0, "")
+    msg = ((r.stderr or r.stdout) or "").strip()
+    return (r.returncode, msg or f"git exited {r.returncode}")
+
+
+def _worktrees_for_branch(branch: str) -> List[str]:
+    """Every worktree of this repository with `branch` checked out.
+
+    A list rather than one path: two worktrees can hold the same branch only in
+    unusual states, and picking the first of them would be a guess about which
+    one to delete.
+    """
+    try:
+        r = _git(["worktree", "list", "--porcelain"])
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return []
+    if r.returncode != 0:
+        return []
+    paths: List[str] = []
+    current = ""
+    for line in (r.stdout or "").splitlines():
+        if line.startswith("worktree "):
+            current = line[len("worktree "):].strip()
+        elif line.startswith("branch "):
+            ref = line[len("branch "):].strip()
+            if ref == f"refs/heads/{branch}" and current:
+                paths.append(current)
+    return paths
+
+
+def _worktree_state(path: str) -> str:
+    """`idle` / `occupied` / `cannot tell` for one worktree, via `git-worktrees`.
+
+    A probe that did not run answers `cannot tell`, never `idle`: "no evidence
+    of an agent" is exactly what the check that caused #860 already said.
+    """
+    try:
+        r = subprocess.run([sys.executable, str(_WORKTREES_PY), path, "nopr"],
+                           capture_output=True, text=True, timeout=90,
+                           encoding="utf-8", errors="replace")
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+        return f"cannot tell (the occupancy probe did not run: {e})"
+    return _WORKTREE_STATE_BY_EXIT.get(
+        r.returncode, f"cannot tell (git-worktrees exited {r.returncode})")
+
+
+def _cleanup_worktree(head: str) -> tuple[str, str, str]:
+    item = "local worktree"
+    paths = _worktrees_for_branch(head)
+    if not paths:
+        return (item, CLEAN_SKIPPED,
+                f"no worktree of this checkout has `{_untrusted.flat(head)}` "
+                f"checked out")
+    if len(paths) > 1:
+        shown = ", ".join(_untrusted.flat(p) for p in paths)
+        return (item, CLEAN_REFUSED,
+                f"{len(paths)} worktrees hold this branch ({shown}) — removing "
+                f"one of them would be a guess about which")
+    path = paths[0]
+    state = _worktree_state(path)
+    if not state.startswith("idle"):
+        return (item, CLEAN_REFUSED,
+                f"{_untrusted.flat(path)} is `{state}` per git-worktrees, not "
+                f"`idle` — and `cannot tell` is treated as occupied, because an "
+                f"agent can be alive in a tree that looks finished")
+    rc, msg = _git_rc(["worktree", "remove", path])
+    if rc != 0:
+        return (item, CLEAN_REFUSED,
+                f"git declined to remove {_untrusted.flat(path)}: "
+                f"{_untrusted.flat(msg)} (no --force is ever passed here)")
+    return (item, CLEAN_DONE, f"removed {_untrusted.flat(path)}")
+
+
+def _cleanup_local_branch(head: str) -> tuple[str, str, str]:
+    item = "local branch"
+    safe = _untrusted.flat(head)
+    rc, _msg = _git_rc(["rev-parse", "--verify", "--quiet",
+                        f"refs/heads/{head}"])
+    if rc != 0:
+        return (item, CLEAN_SKIPPED,
+                f"no local branch `{safe}` in this checkout")
+    rc, msg = _git_rc(["branch", "-d", head])
+    if rc == 0:
+        return (item, CLEAN_DONE, f"deleted local `{safe}`")
+    return (item, CLEAN_REFUSED,
+            f"`git branch -d {safe}` declined: {_untrusted.flat(msg)}. That is "
+            f"expected after a squash: `-d` cannot see the branch's commits in "
+            f"the squashed commit, so it correctly says it cannot confirm the "
+            f"merge — observed on fix/1207, whose PR #1212 had merged. `-D` is "
+            f"never run here; confirm against the PR and delete by hand")
+
+
+def _cleanup_remote_branch(head: str) -> tuple[str, str, str]:
+    item = "remote branch"
+    safe = _untrusted.flat(head)
+    ref_path = _repo_target.api_path("git/refs/heads/" + head)
+    try:
+        r = _gh(["api", "-X", "DELETE", ref_path])
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+        return (item, CLEAN_REFUSED, f"gh could not be run: {e}")
+    if r.returncode != 0:
+        msg = ((r.stderr or r.stdout) or "").strip() or f"gh exited {r.returncode}"
+        return (item, CLEAN_REFUSED,
+                f"the API refused the delete: {_untrusted.flat(msg)}")
+    return (item, CLEAN_DONE,
+            f"deleted `{safe}` on the remote via the API (recoverable: GitHub "
+            f"keeps refs/pull/N/head)")
+
+
+def run_cleanup(head: str, *, merged: bool) -> List[tuple[str, str, str]]:
+    """`(item, state, detail)` per item — done, refused, or skipped, never two.
+
+    Gated on the merge that was **read back off the remote**, which is the gate
+    the 2026 incident lacked: there, a delete chained with `&&` ran after a
+    merge had failed on a conflict. Nothing here runs on an unverified merge.
+
+    The remote branch goes through `gh api -X DELETE`, never `git push
+    --delete`: the pre-push hook runs the entire suite per deletion, and 96
+    branches that way is about three hours of pytest whose output looks like
+    progress.
+    """
+    if not merged:
+        return [(i, CLEAN_SKIPPED,
+                 "the merge is not confirmed, so nothing about this branch is "
+                 "safe to delete") for i in _CLEAN_ITEMS]
+
+    if not _refname.ordinary(head):
+        reason = (f"the branch name is not an ordinary ref "
+                  f"({_untrusted.flat(_refname.shell_ref(head))}) — a name "
+                  f"carrying a leading dash or a character a shell acts on is "
+                  f"refused rather than passed to a delete. Use the PR page")
+        return [(i, CLEAN_REFUSED, reason) for i in _CLEAN_ITEMS]
+
+    rows: List[tuple[str, str, str]] = []
+    target = _repo_target.target()
+    if target:
+        why = (f"a repo target is set ({_untrusted.flat(target)}), so this "
+               f"checkout is not that PR's repository — deleting a local "
+               f"branch of the same name here would hit the wrong repo")
+        rows.append(("local worktree", CLEAN_SKIPPED, why))
+        rows.append(("local branch", CLEAN_SKIPPED, why))
+    else:
+        # Order is load-bearing: `git branch -d` cannot delete a branch that is
+        # checked out in a worktree, so the tree goes first or the branch row
+        # refuses for a reason that is this op's own doing.
+        rows.append(_cleanup_worktree(head))
+        rows.append(_cleanup_local_branch(head))
+    rows.append(_cleanup_remote_branch(head))
+    return rows
+
+
+def render_cleanup(rows: Sequence[tuple[str, str, str]]) -> List[str]:
+    """The section body. A tally in three counts, because a cleanup that could
+    not run must not render as a cleanup that had nothing to do."""
+    tally = {CLEAN_DONE: 0, CLEAN_REFUSED: 0, CLEAN_SKIPPED: 0}
+    out: List[str] = []
+    for item, state, detail in rows:
+        tally[state] = tally.get(state, 0) + 1
+        out.append(f"  {item:<15} {state:<8} {detail}")
+    left = tally[CLEAN_REFUSED] + tally[CLEAN_SKIPPED]
+    out.append(f"  [cleanup] {tally[CLEAN_DONE]} done, "
+               f"{tally[CLEAN_REFUSED]} refused, {tally[CLEAN_SKIPPED]} skipped"
+               + (f" — {left} item(s) are still there, named above; a refused "
+                  f"cleanup is not a failed merge and does not move the exit "
+                  f"code" if left else ""))
+    return out
+
+
 def _bound_refs(number: str, repo: str) -> Sequence[str] | None:
     """GitHub's own `closingIssuesReferences`, or None when it did not answer."""
     owner, name = _declared_legs.owner_repo(repo)
@@ -628,37 +834,52 @@ def _repo_identity() -> tuple[str, str, str]:
 # ---------------------------------------------------------------------------
 
 def _usage() -> str:
-    return ("ERROR: usage: gh-pr-merge:NUMBER[:squash|:merge|:rebase][|force]. "
-            "Without |force it previews the gate and merges nothing.")
+    return ("ERROR: usage: "
+            "gh-pr-merge:NUMBER[:squash|:merge|:rebase][|force][|cleanup]. "
+            "Without |force it previews the gate and merges nothing. "
+            "|cleanup deletes the head branch and an idle worktree AFTER the "
+            "merge is read back as MERGED, three states per item.")
+
+
+def parse_argv(argv: Sequence[str]) -> tuple[str, str, bool, bool, str]:
+    """`(number, method, force, cleanup, error)`.
+
+    Tokens are split on `|` wherever they appear rather than matched as a
+    suffix: supertool hands `gh-pr-merge:940:squash|force|cleanup` over as one
+    argument, and the old `endswith("|force")` test saw `squash|force|cleanup`
+    as a single unrecognised token.
+    """
+    tokens: List[str] = []
+    for a in argv:
+        for piece in str(a).split("|"):
+            if piece:
+                tokens.append(piece)
+
+    if not tokens or not tokens[0].isdigit():
+        return ("", "squash", False, False, _usage())
+
+    number, method, force, cleanup = tokens[0], "squash", False, False
+    for tok in tokens[1:]:
+        if tok == "force":
+            force = True
+        elif tok == "cleanup":
+            cleanup = True
+        elif tok in MERGE_METHODS:
+            method = tok
+        else:
+            return (number, method, force, cleanup,
+                    f"ERROR: unrecognised token {tok!r}. "
+                    f"Merge methods: {', '.join(MERGE_METHODS)}. "
+                    f"Other tokens: force, cleanup. {_usage()}")
+    return (number, method, force, cleanup, "")
 
 
 def main() -> int:
-    argv = [a for a in sys.argv[1:] if a != ""]
-    force = False
-    cleaned: List[str] = []
-    for a in argv:
-        if a.endswith("|force"):
-            force = True
-            a = a[:-len("|force")]
-        if a == "force":
-            force = True
-            continue
-        if a:
-            cleaned.append(a)
-
-    if not cleaned or not cleaned[0].isdigit():
-        print(_usage())
+    number, method, force, do_cleanup, parse_err = parse_argv(
+        [a for a in sys.argv[1:] if a != ""])
+    if parse_err:
+        print(parse_err)
         return 1
-
-    number = cleaned[0]
-    method = "squash"
-    for a in cleaned[1:]:
-        if a in MERGE_METHODS:
-            method = a
-        else:
-            print(f"ERROR: unrecognised token {a!r}. "
-                  f"Merge methods: {', '.join(MERGE_METHODS)}. {_usage()}")
-            return 1
 
     repo, default_branch, ident_err = _repo_identity()
     if ident_err and not repo:
@@ -772,7 +993,17 @@ def main() -> int:
         print(line)
     print()
 
-    # ---- cleanup, named and NOT run -------------------------------------
+    # ---- cleanup ---------------------------------------------------------
+    if do_cleanup:
+        print("## Cleanup — run by this op (`cleanup`)")
+        for line in render_cleanup(
+                run_cleanup(head, merged=(m_state == MERGED and bool(head)))):
+            print(line)
+        print()
+        print(result_line(m_state, issue_overall, branch_state))
+        return 0 if (m_state == MERGED and
+                     issue_overall in (ALL_CLOSED, NONE_DECLARED)) else 1
+
     print("## Cleanup — not run by this op")
     if m_state != MERGED or not head:
         print("  Skipped — the merge is not confirmed, so nothing about this "
@@ -801,9 +1032,11 @@ def main() -> int:
               f"Delete it when you are done: gh api -X DELETE {ref_path}")
         print(f"  Local worktree, if any: git worktree remove <path> && "
               f"git branch -d {safe_head}")
-        print("  Deliberately not chained: a merge and a delete in one command "
-              "once deleted the branch and auto-closed the PR after the merge "
-              "had failed on a conflict.")
+        print("  Deliberately not chained by default: a merge and a delete in "
+              "one command once deleted the branch and auto-closed the PR "
+              "after the merge had failed on a conflict.")
+        print(f"  To have this op do it instead, gated on the MERGED it just "
+              f"read back: gh-pr-merge:{number}:{method}|force|cleanup")
     print()
 
     print(result_line(m_state, issue_overall, branch_state))
