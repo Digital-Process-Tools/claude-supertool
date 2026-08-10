@@ -165,8 +165,42 @@ Zero of the maintainer's original 15 are flagged — the op declines them.
 ## Scope
 
 Fenced code is skipped entirely; an unclosed fence swallows the rest of the
-file rather than guessing where it ended. Nothing is written, nothing is
-mutated, and the op never reaches outside the repository root.
+file rather than guessing where it ended. Nothing is written and nothing is
+mutated.
 
 It reads the tracker only for citations under an open-defects heading, so a
 document without one costs no network at all.
+
+## The boundary, and which one it is
+
+**`PATH` must resolve inside the repository root.** Anything else is refused —
+exit 2, one `ERROR:` line, nothing rendered. This sentence read "the op never
+reaches outside the repository root" from the day the op shipped until #1283,
+and it was simply not true: an absolute `claims:/etc/hosts` was resolved
+directly and a `claims:../../elsewhere.md` against the toplevel, with no check
+of either. `read:/etc/hosts` refused the same path in the same call.
+
+The boundary is the **repo root**, and the core's is the **cwd**. They differ
+whenever you call `claims` from a subdirectory, where a root-relative argument
+is the documented way to name a document. Root is what the op's own path lens
+has always enforced on the paths a document *cites* (`path leaves the
+repository root`); #1283 applied it to the path the op *reads from*. The core's
+cwd rule stays underneath as defence in depth — a domain-specific boundary is
+enforced by the op that owns it, and the chokepoint does not yet reach preset
+ops at all.
+
+Resolved rather than spelled: a symlink inside the repo pointing at a file
+outside it is refused on where its bytes are.
+
+The check runs before the file is opened *and before existence is tested*, so
+an out-of-boundary path that exists and one that does not get the same answer.
+`no such file` for one and a render for the other is itself a read.
+
+Both of the core's opt-outs are honoured, because the refusal names them:
+`SUPERTOOL_ALLOW_OUTSIDE_CWD=1`, or `"allow_outside_cwd": true` in
+`.supertool.json`. A `.supertool.json` that cannot be parsed is not an opt-out.
+
+**What this does not close.** Preset ops are still absent from the core's
+per-op path table (`_PATH_ARG_POSITIONS`), so every other preset op with a path
+argument is outside the chokepoint and the next one written will reproduce this
+by default. That is the structural fix and it is not this one.
