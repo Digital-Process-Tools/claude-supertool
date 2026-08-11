@@ -13,6 +13,55 @@ No external CLIs or tokens. Pure stdlib Python. Reads `~/.claude/projects/<encod
 | `claude-log-list` | `claude-log-list[:N][:raw]` | N most recent sessions for the current project (default 10): UUID, mtime, line count, first user message excerpt |
 | `claude-log-tail` | `claude-log-tail:UUID[:N][:raw]` | Last N events in compact form (default 30): `[role] TOOL name(input)` / `[result] output` / `[result/ERR] msg` |
 | `claude-log-summary` | `claude-log-summary:UUID[:raw]` | Full session digest: model, duration, turn counts, tool calls + errors-by-tool, tokens (input/output/cache read/cache create) + cache hit % |
+| `claude-log-cost` | `claude-log-cost[:N or :UUID][:raw]` | Bytes of tool-result text, per tool and per supertool op, plus size distribution, repeat reads, errors and empties. Default: 10 most recent sessions of this project |
+
+## `claude-log-cost` — what a tool result costs (#1252)
+
+`claude-log-summary` counts tool calls. `claude-log-cost` weighs them, because
+the number that decides whether a result-trimming hook is worth building is
+bytes, not calls.
+
+```bash
+./supertool 'claude-log-cost:40'
+```
+
+Five blocks, all raw numbers:
+
+- **By tool** — calls, bytes, share of total, p50/p95/max. Nearest-rank
+  percentiles, not interpolated: every figure is the size of a result that
+  really happened.
+- **By supertool op** — the same columns, split on the `--- op ---` markers the
+  render already prints. Nested sections (`batch:@-` printing one `edit:` block
+  per sub-op) get their own row.
+- **Concentration** — bytes in the ten largest single results, as a share. A
+  heavy skew means a size cap captures most of the win and nothing clever is
+  needed.
+- **Repeat reads** — paths read more than once, and the subset whose re-read
+  returned byte-identical content. Stated as a count **and** a share of total
+  bytes, because those two disagree and only the second one justifies work.
+- **Failures and empties** — error results and zero-byte results with their
+  byte cost.
+
+### What it declines to claim
+
+- A session that cannot be parsed is listed by name under `Skipped:` with a
+  reason. It is never dropped from the totals silently.
+- A `tool_result` whose `tool_use_id` matches no `tool_use` is counted under
+  tool `?` and disclosed, not discarded.
+- Non-text result blocks (an image's base64 payload) are excluded from the byte
+  total and counted separately — those bytes are not comparable to text bytes.
+- A section marker is only believed when the command line it came from named
+  that op. Agents write `echo "--- branch ---"` as a shell separator, and
+  measured over five live sessions that invented nine ops which do not exist
+  and moved real bytes onto them.
+- Results from commands that never invoked supertool are reported as a count
+  and a byte total under "not attributable to an op", never spread across the
+  ops that did run.
+
+Reads are keyed by one path whichever route produced them: `Read` passes an
+absolute `file_path`, a `read:` op is usually relative, and the session cwd —
+recorded on every transcript event — joins them. Unjoined, one file lands under
+two keys and the headline repeat-read figure reads low.
 
 ## Redaction (#760)
 
@@ -65,4 +114,4 @@ No configuration needed. Windows-friendly cwd encoding (handles `\` and drive co
 
 ## Authoring notes
 
-Preset JSON: `presets/claude-log.json`. Helper scripts: `presets/claude-log/`. Always run `claude-log-list` first to get a UUID — the UUID is required by the other two ops.
+Preset JSON: `presets/claude-log.json`. Helper scripts: `presets/claude-log/`. `claude-log-tail` and `claude-log-summary` require a UUID, so run `claude-log-list` first to get one. `claude-log-cost` does not: with no argument it measures the ten most recent sessions of the current project, and a UUID narrows it to one.
