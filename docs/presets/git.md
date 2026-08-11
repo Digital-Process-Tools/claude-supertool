@@ -67,7 +67,7 @@ It is disclosed rather than avoided because the alternative is worse in the dire
 
 It is worse on a refspec. `git push --dry-run origin feature:refs/heads/other` previews pushing a named branch onto a named ref; a caller who obeys the refusal and runs `git-push` pushes **the current branch to its own upstream** — a ref nobody in that exchange named. `git commit --dry-run` is the same shape and is excluded with it.
 
-`-n` is excluded on `git push` and **not** on `git commit`, because it is a different flag there: `git commit -n` is `--no-verify`, which commits. Pinned by `tests/test_guard_flag_clusters_1425.py`.
+`-n` is excluded on `git push` and **not** on `git commit`, because it is a different flag there: `git commit -n` is `--no-verify`, which commits. Pinned by `tests/test_guard_flag_clusters_1427.py`.
 
 ### A clustered short flag is read as its letters
 
