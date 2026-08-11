@@ -2248,9 +2248,13 @@ def _glob_pattern_containment_error(pattern: str) -> Optional[str]:
     The refusal is `_containment_error`'s own — same wording, same opt-out
     sentence, one implementation (#882, #889) — with the two echoed strings
     rewritten to the caller's spelling, so the message names a pattern rather
-    than the stand-in this function substituted. With braces that is the
-    offending *branch*, not the whole typed string — which is the more useful
-    of the two, since it says which alternative crossed the line.
+    than the stand-in this function substituted. Two things it does not
+    reproduce exactly, both in the trailing `(resolved to …)` hint only — the
+    pattern itself is echoed verbatim ahead of it: with braces the message
+    names the offending *branch* rather than the whole typed string (the more
+    useful of the two, since it says which alternative crossed the line), and
+    every magic component renders as `*` whatever it was written as, because
+    the stand-in has already replaced `?`, `[abc]` and `**` alike.
     """
     for sub in _expand_braces(pattern):
         reach = _glob_reach(sub)
@@ -4730,7 +4734,11 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
     cap = _get_op_int("glob", "max_results", MAX_GLOB_RESULTS)
     hidden_files: List[str] = []
     files = _glob_files(pattern, excl, over_fetch=1, hidden=hidden_files)
-    # glob is repo-root relative, so a pattern naming a mid-path segment
+    # glob is CWD-relative — `glob.glob` and the `os.walk` branch both resolve
+    # against `os.getcwd()`, and so does the containment gate above. (This
+    # comment and the `reads.md` row said "repo root" until #1366; from a
+    # subdirectory that is a different directory and the wrong answer.) So a
+    # pattern naming a mid-path segment
     # (`SiBrief/**/*.php` for a dir nested under Dvsi/src2/) returns 0 while the
     # same segment works fine in grep. Retry once with a `**/` prefix so both
     # ops accept the same mental model (#363).
@@ -4744,7 +4752,7 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
         hidden_files = []
         files = _glob_files(retry, excl, over_fetch=1, hidden=hidden_files)
         if files:
-            midpath_note = (f"[mid-path retry: no match at repo root for "
+            midpath_note = (f"[mid-path retry: no match under cwd for "
                             f"{pattern!r} — matched {retry!r}]\n")
     # Containment, second half: what the pattern could not predict (#1366). A
     # wildcard component can land on a symlink pointing out of the tree, so the
