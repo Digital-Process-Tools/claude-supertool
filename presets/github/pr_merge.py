@@ -620,6 +620,36 @@ def _worktree_state(path: str) -> str:
             f"{r.returncode})")
 
 
+#: Settings that decide what a read of a worktree is even willing to mention,
+#: pinned on the command line where they outrank every config file and
+#: `GIT_CONFIG_*` both. `status.showUntrackedFiles=no` is an ordinary user or
+#: repo preference and it suppresses `!!` as well as `??`, so the #1280 gate
+#: inherited it, received an empty list, and deleted an ignored `.env` while
+#: reporting that it had looked (#1290). `core.quotePath` keeps a path with a
+#: newline in it on one line, so splitting the output cannot invent two.
+_DIRT_PINS = ["-c", "status.showUntrackedFiles=normal",
+              "-c", "core.quotePath=true"]
+
+
+def _dirt_read(path: str, argv: List[str]) -> tuple[str, str]:
+    """`(stdout, error)` for one read of what a worktree holds.
+
+    A spawn failure is a *reason*, not a raise: Windows raises
+    `FileNotFoundError [WinError 2]` where POSIX may not fail at all, and an
+    uncaught one here would escape the cleanup arm entirely (#997).
+    """
+    name = argv[0]
+    try:
+        r = _git(["-C", path] + _DIRT_PINS + argv)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+        return ("", f"`git {name}` could not be run: {e}")
+    if r.returncode != 0:
+        why = ((r.stderr or r.stdout) or "").strip()
+        return ("", f"`git {name}` exited {r.returncode}"
+                    + (f": {why}" if why else ""))
+    return (r.stdout or "", "")
+
+
 def _worktree_dirt(path: str) -> tuple[List[str], str]:
     """`(paths, error)` — everything in the tree a removal would destroy.
 
@@ -629,34 +659,66 @@ def _worktree_dirt(path: str) -> tuple[List[str], str]:
     (#1280). Nothing recovers one — not the index, not a stash, not the remote,
     which is what ignoring it meant. A local env file, a virtualenv and a
     scratch database are the three that turn up.
+
+    An empty answer here is the authorisation for that deletion, so it is not
+    taken from one read. Two are used, and they fail in different ways:
+
+    * `git status --porcelain --ignored` is the only one that sees **modified
+      tracked** files, but its untracked half is a *display* setting — the one
+      #1290 turned off underneath the guard;
+    * `git ls-files --others` is plumbing. It has no display configuration to
+      suppress, so it answers the untracked-and-ignored half by a mechanism
+      the first read's failure mode cannot reach.
+
+    Pinning `_DIRT_PINS` closes that instance; requiring both reads is what
+    closes the shape. If **either** read cannot be performed the caller gets
+    the reason and no list, because a tree that was never established is not a
+    tree to delete, and `[]` here would be indistinguishable from an empty one.
     """
-    try:
-        r = _git(["-C", path, "status", "--porcelain", "--ignored"])
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
-        return ([], f"git status could not be run: {e}")
-    if r.returncode != 0:
-        return ([], ((r.stderr or r.stdout) or "").strip()
-                or f"git status exited {r.returncode}")
-    found: List[str] = []
-    for line in _untrusted.split_lines(r.stdout or ""):
+    raw: List[str] = []
+
+    out, err = _dirt_read(path, ["status", "--porcelain", "--ignored",
+                                 "--untracked-files=all"])
+    if err:
+        return ([], err)
+    for line in _untrusted.split_lines(out):
         # `XY path`: two status columns and a space. Anything shorter is not a
         # porcelain record, and an empty list here is about to authorise a
         # deletion — so a line that cannot be read is dropped rather than
         # turned into a path.
         if len(line) > 3:
-            found.append(line[3:].strip())
-    return (found, "")
+            raw.append(line[3:].strip())
+
+    out, err = _dirt_read(path, ["ls-files", "--others", "--directory",
+                                 "--no-empty-directory"])
+    if err:
+        return ([], err)
+    # `--directory` collapses a wholly-untracked directory to one entry, which
+    # keeps a virtualenv from filling the refusal with ten thousand paths; a
+    # partially-tracked one is still listed file by file, so nothing is hidden
+    # by the collapse.
+    for line in _untrusted.split_lines(out):
+        raw.append(line.strip())
+
+    # Both reads answer about overlapping sets, and the refusal counts what it
+    # names — so the same path arriving twice is one file, not two.
+    return ([p for p in dict.fromkeys(raw) if p], "")
 
 
 def _cleanup_worktree(head: str) -> tuple[str, str, str]:
     """Remove the branch's worktree, once its contents have been established.
 
     Two gates, and they answer different questions: `git-worktrees` says
-    whether an agent is alive in the tree, and `git status --ignored` says
-    whether removing it destroys anything. Only the first existed before #1280,
-    and the refusal text justified the second on the grounds that no `--force`
-    is passed — the one sentence that is not true. A wrong safety claim is
-    worse than no claim, because it ends the next reader's search.
+    whether an agent is alive in the tree, and `_worktree_dirt` says whether
+    removing it destroys anything. Only the first existed before #1280, and the
+    refusal text justified the second on the grounds that no `--force` is
+    passed — the one sentence that is not true. A wrong safety claim is worse
+    than no claim, because it ends the next reader's search.
+
+    Which is why the second gate has three answers and not two. A read that did
+    not happen returns a reason, and the arm below prints that reason instead
+    of the removal receipt — #1290 was this same arm printing prose asserting a
+    check it had inherited a config setting out of performing.
     """
     item = "local worktree"
     paths = _worktrees_for_branch(head)
@@ -698,9 +760,11 @@ def _cleanup_worktree(head: str) -> tuple[str, str, str]:
                 f"git declined to remove {_untrusted.flat(path)}: "
                 f"{_untrusted.flat(msg)}")
     return (item, CLEAN_DONE,
-            f"removed {_untrusted.flat(path)} — `git status --ignored` found "
-            f"nothing untracked or ignored in it first, so the removal "
-            f"destroyed nothing that was not committed")
+            f"removed {_untrusted.flat(path)} — two reads with different "
+            f"failure modes both came back empty first (`git status "
+            f"--porcelain --ignored` with the untracked display pinned on, "
+            f"and the plumbing `git ls-files --others`), so nothing "
+            f"untracked, ignored or modified was there to destroy")
 
 
 def _cleanup_local_branch(head: str) -> tuple[str, str, str]:
