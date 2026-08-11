@@ -5,3 +5,4 @@ Bash	~supertool[^|]*\|[^|]*(head|tail|sed|cut|awk)	supertool-no-cut.md	block
 Bash	~(^|[;&|\n] *)(rtk +)?git[[:space:]]+(branch|for-each-ref)[^|]*--merged	merged-is-not-ancestry.md	block	--merged	
 Bash	~(^|[;&|\n] *)(rtk +)?gh[[:space:]]+pr[[:space:]]+(view|merge|create)	gh-pr-view-merge-have-ops.md	block	gh pr	
 Bash	~(^|[;&|\n] *)(rtk +)?(command +)?git[[:space:]]+([^;&|\n]*[[:space:]])?push	git-push-has-an-op.md	block	push	
+Bash	~(^|[;&|\n] *)(rtk +)?(command +)?git[[:space:]]+-c[[:space:]]+[^=[:space:]]*/	git-C-has-cwd.md	block	git -c	
