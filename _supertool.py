@@ -19276,6 +19276,25 @@ def dispatch_verdict(
     a batch sub-op nested under it — and read back off the same thread. It is
     never re-derived from the string returned here (#1291).
     """
+    # Establish the flag before reading it, rather than inheriting one.
+    #
+    # `_call_failed()` is a pure read of a thread-local, and the only clear
+    # lived inside `dispatch` at depth 0 — a function the two lines below
+    # record as one callers REPLACE. When they do, the clear never runs and
+    # this returns whatever last refused on this thread: `master` went red on
+    # macOS only at df34db5, and the batch tally said "all 2 refused" in words
+    # about two ops that had not (#1359).
+    #
+    # Before the call, never after: a sub-op refusing at any depth must still
+    # reach the parent's verdict, which is the whole reason only depth 0
+    # clears it inside `dispatch`. That arrangement is unchanged — this adds
+    # the same reset one level out, where the reader of the bit lives.
+    #
+    # The sibling counters in `_main` — `_SKIP_COUNT`, `_ROLLBACK_COUNT`,
+    # `_NOT_CHECKED` — are all read as per-call deltas for exactly this
+    # reason (#680). This bit was the one member of the group with neither.
+    _DISPATCH_STATE.call_failed = False
+
     # One positional argument when there is nothing else to pass, because
     # `main` has always called `dispatch(arg)` and both the tests and the MCP
     # layer monkeypatch it with that arity. Widening the call here would have
