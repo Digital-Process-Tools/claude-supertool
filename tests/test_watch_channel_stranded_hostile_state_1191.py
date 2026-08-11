@@ -42,6 +42,7 @@ for _dir in (str(REPO / "presets" / "watch"), str(REPO / "presets"), str(REPO / 
     if _dir not in sys.path:
         sys.path.insert(0, _dir)
 
+import _symlink  # noqa: E402
 import _untrusted  # noqa: E402
 import channel  # noqa: E402
 from _changelog_findable import assert_change_is_findable  # noqa: E402
@@ -161,19 +162,6 @@ def test_a_report_with_no_watcher_rows_claims_nothing_about_words(stranded):
 
 # --- #1184's half: a state path may not be a symlink ------------------------
 
-def _can_symlink(tmp_path: Path) -> bool:
-    """Measured, not inferred. Windows grants `os.symlink` to a developer-mode
-    or elevated account and refuses it otherwise, so `os.name` answers the
-    wrong question."""
-    probe = tmp_path / "probe.link"
-    try:
-        os.symlink(str(tmp_path), str(probe))
-    except (OSError, NotImplementedError, AttributeError):
-        return False
-    os.unlink(str(probe))
-    return True
-
-
 needs_nofollow = pytest.mark.skipif(
     not hasattr(os, "O_NOFOLLOW"),
     reason="this platform has no O_NOFOLLOW, so the guard cannot be enforced",
@@ -184,8 +172,7 @@ needs_nofollow = pytest.mark.skipif(
 def test_a_symlinked_state_file_is_not_parsed(stranded, tmp_path):
     """The #1184 shape at this call site: any same-uid JSON file was opened and
     parsed, and its strings rendered, for the price of one symlink."""
-    if not _can_symlink(tmp_path):
-        pytest.skip("this account cannot create symlinks")
+    _symlink.require_symlink()
     secret = tmp_path / "secret.json"
     secret.write_text(json.dumps({
         "sock_path": stranded,
@@ -208,8 +195,7 @@ def test_the_symlink_refusal_is_its_own_state_and_is_reported(stranded, tmp_path
     is printed in the report's first line, and a grep for `symlink` therefore
     passed against code that did nothing at all.
     """
-    if not _can_symlink(tmp_path):
-        pytest.skip("this account cannot create symlinks")
+    _symlink.require_symlink()
     os.symlink(str(tmp_path / "nowhere.json"),
                str(tmp_path / "supertool-watch-evil__1.state.json"))
     _, report = channel.health(stranded)
@@ -222,8 +208,7 @@ def test_one_hostile_file_does_not_hide_the_other_rows(stranded, tmp_path):
     """The judgment this issue turns on. A listing that silently drops a row is
     this repo's most-filed defect, and a listing that dies whole hands an
     attacker a way to erase every other watcher from the report."""
-    if not _can_symlink(tmp_path):
-        pytest.skip("this account cannot create symlinks")
+    _symlink.require_symlink()
     _state(tmp_path, stranded, source="gitlab-mr", watcher_id="42")
     os.symlink(str(tmp_path / "nowhere.json"),
                str(tmp_path / "supertool-watch-evil__1.state.json"))
@@ -238,8 +223,7 @@ def test_an_unreadable_state_file_is_never_rendered_as_no_watchers(stranded, tmp
     """"I could not look" and "there was nothing to see" are opposite facts.
     With every state file unreadable, the listing must not print the sentence
     it prints for an empty directory."""
-    if not _can_symlink(tmp_path):
-        pytest.skip("this account cannot create symlinks")
+    _symlink.require_symlink()
     os.symlink(str(tmp_path / "nowhere.json"),
                str(tmp_path / "supertool-watch-evil__1.state.json"))
     _, report = channel.health(stranded)

@@ -13,6 +13,14 @@ themselves, in five different spellings, split into two kinds:
     but five wordings inside a leg reporting ~680 skips is not a legible blind
     spot.
 
+**The count this feeds is a subset, and says so (#1274).** Only the two
+mechanisms in this module -- ``requires_symlink`` and ``require_symlink()`` --
+produce a skip carrying ``TOKEN``. A test held off a privilege-less runner by an
+unrelated collection-time marker skips without one, and a symlink call inside an
+``except OSError`` arm does not skip at all. ``conftest`` prints the denominator
+and the exclusions next to the number rather than letting it read as a total;
+``tests/test_symlink_gating_register_1232.py`` is the full population.
+
 ``symlink_support()`` asks the filesystem once per process and caches the
 answer together with its reason. Where the privilege is present the tests now
 run -- including on Windows, which no platform-name gate could ever allow.

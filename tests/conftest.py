@@ -203,14 +203,37 @@ def pytest_report_header(config):
     return lines
 
 
-def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    """Count the symlink skips apart from the other ~680 (#1143).
+#: What the count above is a count OF, printed next to it every time (#1274).
+#:
+#: #1232 fixed the loud failure of this line -- it read `0 symlink-dependent
+#: tests did NOT run` while four tests were failing for exactly that reason.
+#: The quiet one survived: the number counts skips carrying `TOKEN`, and two of
+#: the mechanisms that keep a symlink call site off a privilege-less runner
+#: produce no such skip, so a plausible non-zero number read as a total. It is
+#: a subset, and stating which subset is the only thing that cannot be
+#: misread. It stays a subset by choice: `needs_nofollow` fires at collection
+#: on every Windows runner, privileged or not, so stamping the token onto it
+#: would assert a reason nothing ever measured -- an invented claim in place of
+#: a missing one. `tests/test_symlink_gating_register_1232.py` holds the whole
+#: population, mechanism by mechanism, derived from the AST rather than listed.
+_POPULATION = (
+    "  ^ counts skips carrying that token only, not every symlink-dependent "
+    "test: one held off this runner by an unrelated collection-time marker "
+    "(no O_NOFOLLOW, a posix-only class) skips without it, and a symlink call "
+    "inside an `except OSError` arm does not skip at all. Full population: "
+    "tests/test_symlink_gating_register_1232.py")
 
-    `688 skipped` is a number. `N skipped, because this runner has no
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Count the symlink skips apart from the other ~680 (#1143), and say so.
+
+    `688 skipped` is a number. `N of 688 skipped, because this runner has no
     create-symlink privilege` is a fact somebody can act on -- it is the
     difference between an absence in the world and an absence the tooling
     produced. Printed whether the count is zero or not: silence would be
-    indistinguishable from not having looked.
+    indistinguishable from not having looked, and the denominator and
+    `_POPULATION` are printed with it so a non-zero count is not read as a
+    total either (#1274).
     """
     if _symlink is None:
         terminalreporter.write_line(
@@ -226,11 +249,13 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     available, why = _symlink.symlink_support()
     if available:
         terminalreporter.write_line(
-            f"{_symlink.TOKEN}: available -- {n} symlink-dependent tests skipped for it")
-        return
-    terminalreporter.write_line(
-        f"{_symlink.TOKEN}: unavailable -- {n} symlink-dependent tests did NOT run "
-        f"on this platform. Reason: {why}")
+            f"{_symlink.TOKEN}: available -- {n} of {len(skipped)} skipped tests "
+            f"carry this token (expect 0 where the privilege is present)")
+    else:
+        terminalreporter.write_line(
+            f"{_symlink.TOKEN}: unavailable -- {n} of {len(skipped)} skipped tests "
+            f"did NOT run for this reason. Reason: {why}")
+    terminalreporter.write_line(_POPULATION)
 
 
 # Git exports these to every hook it runs. A hook that invokes pytest (our

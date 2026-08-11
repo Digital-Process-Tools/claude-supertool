@@ -39,6 +39,7 @@ for _dir in (str(REPO / "presets" / "watch"), str(REPO / "presets")):
     if _dir not in sys.path:
         sys.path.insert(0, _dir)
 
+import _symlink  # noqa: E402
 import _untrusted  # noqa: E402
 import channel  # noqa: E402
 
@@ -150,19 +151,6 @@ def test_a_report_that_renders_no_health_file_strings_makes_no_such_claim(tmp_pa
 
 # --- #1184: the path may not be a symlink -----------------------------------
 
-def _can_symlink(tmp_path: Path) -> bool:
-    """Measured, not inferred. Windows grants `os.symlink` to a developer-mode
-    or elevated account and refuses it otherwise, so `os.name` answers the
-    wrong question."""
-    probe = tmp_path / "probe.link"
-    try:
-        os.symlink(str(tmp_path), str(probe))
-    except (OSError, NotImplementedError, AttributeError):
-        return False
-    os.unlink(str(probe))
-    return True
-
-
 needs_nofollow = pytest.mark.skipif(
     not hasattr(os, "O_NOFOLLOW"),
     reason="this platform has no O_NOFOLLOW, so the guard cannot be enforced",
@@ -173,8 +161,7 @@ needs_nofollow = pytest.mark.skipif(
 def test_read_health_refuses_a_symlinked_health_file(tmp_path):
     """The #1184 reproduction: a same-uid JSON file, symlinked at the
     predictable name, was opened and parsed."""
-    if not _can_symlink(tmp_path):
-        pytest.skip("this account cannot create symlinks")
+    _symlink.require_symlink()
     secret = tmp_path / "secret.json"
     secret.write_text(json.dumps({"api_key": "sk-SECRET-VALUE"}), encoding="utf-8")
     sock = str(tmp_path / "h.sock")
@@ -190,8 +177,7 @@ def test_read_health_refuses_a_symlinked_health_file(tmp_path):
 def test_the_symlink_refusal_is_its_own_state(tmp_path):
     """Not folded into `publishes no counters`, which says the consumer is old
     or is not claude-channel — a different fact with a different next step."""
-    if not _can_symlink(tmp_path):
-        pytest.skip("this account cannot create symlinks")
+    _symlink.require_symlink()
     sock = str(tmp_path / "h.sock")
     os.symlink(str(tmp_path / "nowhere.json"), sock + channel.HEALTH_SUFFIX)
     _, why = channel.read_health(sock)
@@ -201,8 +187,7 @@ def test_the_symlink_refusal_is_its_own_state(tmp_path):
 @needs_nofollow
 def test_the_symlinked_health_file_never_reaches_the_report(tmp_path, monkeypatch):
     """End to end: the target's own strings must not render, whatever they say."""
-    if not _can_symlink(tmp_path):
-        pytest.skip("this account cannot create symlinks")
+    _symlink.require_symlink()
     monkeypatch.setattr(
         channel, "probe_socket", lambda path: ("accepted", "stubbed probe"))
     target = tmp_path / "target.json"
