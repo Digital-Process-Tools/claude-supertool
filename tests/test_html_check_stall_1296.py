@@ -43,11 +43,13 @@ none is asserted, and none should be inferred from this file.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 
 import pytest
 
+import _adapter_verdict as verdicts
 import test_html_check as html_tests
 from _adapter_budget import inner_budget
 from _adapter_verdict import skip_if_stalled
@@ -96,6 +98,25 @@ def _stub_adapter(tmp_path: Path, payload: dict) -> Path:
     return p
 
 
+@contextlib.contextmanager
+def _a_skip_here_is_a_failure():
+    """Turn a decline inside this block into a red.
+
+    `pytest.skip` is green, so a guard that stops running because the thing
+    it guards went wrong reports exactly what a guard that ran and passed
+    reports. Every assertion in this file that says "this payload is a
+    verdict and must reach its assertion" is wrapped in this; only the two
+    that assert a decline are not.
+    """
+    try:
+        yield
+    except pytest.skip.Exception as exc:
+        raise AssertionError(
+            "skip_if_stalled declined a payload that is a verdict about the "
+            "file, so the assertion guarding it never ran -- and a skip is "
+            "green. Reason given: %s" % exc) from None
+
+
 @pytest.fixture
 def stubbed(tmp_path, monkeypatch):
     """Point `_run` at a stub adapter; yield a caller taking the payload."""
@@ -119,7 +140,7 @@ def test_a_clean_verdict_on_a_broken_page_still_fails(tmp_path, monkeypatch) -> 
     page is fine. If this ever passes, the gate has stopped being a gate.
     """
     monkeypatch.setattr(html_tests, "ADAPTER", _stub_adapter(tmp_path, _clean()))
-    with pytest.raises(AssertionError):
+    with _a_skip_here_is_a_failure(), pytest.raises(AssertionError):
         html_tests.test_broken_inline_script_is_a_finding(tmp_path)
 
 
@@ -128,24 +149,48 @@ def test_a_wrong_line_on_a_real_finding_still_fails(tmp_path, monkeypatch) -> No
     misplaced = _finding()
     misplaced["errors"][0]["line"] = 2
     monkeypatch.setattr(html_tests, "ADAPTER", _stub_adapter(tmp_path, misplaced))
-    with pytest.raises(AssertionError):
+    with _a_skip_here_is_a_failure(), pytest.raises(AssertionError):
         html_tests.test_broken_inline_script_is_a_finding(tmp_path)
+
+
+def test_an_overeager_predicate_reddens_the_guards_rather_than_skipping_them(
+    stubbed, monkeypatch,
+) -> None:
+    """The guards below have to fail, not skip, and that is not automatic.
+
+    `skip_if_stalled` declines by raising, and a decline is GREEN. So every
+    guard here that says "this payload IS a verdict and must reach the
+    assertion written for it" would, if the predicate ever widened to swallow
+    it, stop running rather than go red -- the same absence-read-as-presence
+    this whole change is about, one layer further in, in the code that exists
+    to catch it. `_a_skip_here_is_a_failure` is what converts it back, and
+    this is the test that proves it does.
+    """
+    monkeypatch.setattr(
+        verdicts, "stalled_at_its_own_wall",
+        lambda payload, *, inner_s: "a predicate that calls everything a wall")
+    with pytest.raises(AssertionError, match="never ran"):
+        with _a_skip_here_is_a_failure():
+            stubbed(_finding())
 
 
 def test_a_real_finding_comes_back_unchanged(stubbed) -> None:
     """A parse error is a verdict about the file and must reach the assertion."""
-    assert stubbed(_finding()) == _finding()
+    with _a_skip_here_is_a_failure():
+        assert stubbed(_finding()) == _finding()
 
 
 def test_a_clean_verdict_comes_back_unchanged(stubbed) -> None:
-    assert stubbed(_clean()) == _clean()
+    with _a_skip_here_is_a_failure():
+        assert stubbed(_clean()) == _clean()
 
 
 def test_the_third_state_comes_back_unchanged(stubbed) -> None:
     """`skipped` payloads carry no `ok` at all -- eleven tests here assert on them."""
     third = {"tool": "html-check", "file": "x.html", "duration_ms": 12,
              "skipped": "NO inline <script> block in this file was checked"}
-    assert stubbed(third) == third
+    with _a_skip_here_is_a_failure():
+        assert stubbed(third) == third
 
 
 def test_a_timeout_reported_in_12ms_still_fails(stubbed) -> None:
@@ -154,7 +199,8 @@ def test_a_timeout_reported_in_12ms_still_fails(stubbed) -> None:
     That is broken error routing in the thing this suite tests, and a
     message-only gate would swallow it.
     """
-    assert stubbed(_stall(duration_ms=12))["errors"][0]["msg"] == TIMEOUT_MSG
+    with _a_skip_here_is_a_failure():
+        assert stubbed(_stall(duration_ms=12))["errors"][0]["msg"] == TIMEOUT_MSG
 
 
 def test_an_absent_node_still_fails(stubbed) -> None:
@@ -166,7 +212,8 @@ def test_an_absent_node_still_fails(stubbed) -> None:
     """
     absent = _stall(duration_ms=30_004)
     absent["errors"][0]["msg"] = "node not found on PATH; install Node.js"
-    assert stubbed(absent) == absent
+    with _a_skip_here_is_a_failure():
+        assert stubbed(absent) == absent
 
 
 def test_the_gate_reads_the_budget_off_the_adapter() -> None:
