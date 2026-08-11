@@ -47,15 +47,37 @@ Four of these thirteen ops declare the raw invocation they supersede as `replace
 | `git push --tags`, `--follow-tags` | there is no tag op; this is the flag-shaped route to pushing a tag on any forge |
 | `git push --delete` / `-d`, `--prune`, `--mirror`, `--all` | delete or move refs `git-push` never touches |
 | `git push --force` / `-f` | `git-push` offers only `:force-with-lease`, which *refuses* when the remote moved — a different operation |
+| `git push --dry-run` / `-n` | a **preview**, and `git-push` has no dry-run route: it pushes. See [A dry run is never answered by the op that does it](#a-dry-run-is-never-answered-by-the-op-that-does-it) |
+| `git commit --dry-run` | same: it lists what *would* be committed, and `git-commit` commits |
 | `git commit --amend`, `--fixup`, `--squash`, `--allow-empty` | `git-commit` refuses amend by name ([#962](https://github.com/Digital-Process-Tools/claude-supertool/issues/962)) and its own refusal points at raw `git commit --amend` |
 | `git status --porcelain`, `-s`, `--short`, `-z` | `git-status` renders prose; `:full` uncaps its lists, it does not emit porcelain |
 | `git worktree list --porcelain`, `-z` | same, for the worktree board |
+
+**A short flag in the left column covers its clustered spellings.** `-s` excludes `git status -sb`, which is how most people actually spell it — see [A clustered short flag is read as its letters](#a-clustered-short-flag-is-read-as-its-letters).
 
 ### `git push origin <tagname>` is blocked, and that is the one wrong block here
 
 It is discriminated by the **value of a positional**. `origin master` and `origin v0.34.0` are the same argv shape, the same arity and the same token classes; telling them apart means asking the repository whether a ref is a tag, at guard time, before the command runs. No `unless_flag` keyed on tokens can express that, so the bare `git push` entry claims both and the refusal names `git-push`, which does not do tags.
 
 It is disclosed rather than avoided because the alternative is worse in the direction that costs more. Declaring nothing leaves the entire family ungated — the status quo #1384 was filed about — and the routes past this one block are ordinary: `git push --tags` and `--follow-tags` are excluded above and work on any forge, and on GitHub the documented route is `gh api -X POST .../git/refs`. Pinned by `tests/test_git_replaces_1384.py`.
+
+### A dry run is never answered by the op that does it
+
+`git push --dry-run` and `git push -n` were blocked until v0.35.0, and the refusal named `git-push`, **which performs the real push**. Every other way this guard has been wrong costs a *missed block* — a raw read an op could have answered. This costs the opposite, on the one op here that can destroy someone else's commits.
+
+It is worse on a refspec. `git push --dry-run origin feature:refs/heads/other` previews pushing a named branch onto a named ref; a caller who obeys the refusal and runs `git-push` pushes **the current branch to its own upstream** — a ref nobody in that exchange named. `git commit --dry-run` is the same shape and is excluded with it.
+
+`-n` is excluded on `git push` and **not** on `git commit`, because it is a different flag there: `git commit -n` is `--no-verify`, which commits. Pinned by `tests/test_guard_flag_clusters_1427.py`.
+
+### A clustered short flag is read as its letters
+
+`git status -s` was excluded and `git status -sb` was blocked, because the exclusion compared whole tokens. `-sb` is the ordinary spelling of the intent `-s` was excluded for, and the same gap existed for every short flag on every entry — so it is fixed in the matcher rather than enumerated per entry. A single-dash token is now read as a cluster of single-letter flags: an entry excluding `-s` excludes `-sb`, `-bs` and `-sbz`.
+
+**Only exclusions, never the `flag` matcher.** Widening an exclusion makes the guard block *less*, which is the direction it is allowed to be wrong in — a wrong block has no per-command escape short of `raw_command_guard: false`, which disarms every mapping in the repository. Widening the positive matcher would block more, so `git push -uq` is claimed by the bare entry rather than routed to `git-push:set-upstream`.
+
+**A `--` token is never expanded**, or every long flag containing an `f` would un-claim an entry excluding `-f`.
+
+**The cost, which is real:** a short flag carrying a clustered *value* is expanded too, so `git push -ofoo` reads as carrying `-f` and is no longer claimed (while `git push -oci.skip`, spelling no excluded letter, is still claimed — which is the arbitrariness, not a mitigation). Telling that from `-sb` needs per-flag arity the guard does not have. It errs toward allowing, and `git-push` forwards no push options anyway, so that particular block was already a dead end.
 
 ### `git -C <path> <subcommand>` reaches none of these mappings
 
