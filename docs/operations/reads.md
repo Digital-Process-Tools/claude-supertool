@@ -262,6 +262,35 @@ matched line — the same position the windowed-read disclosure has occupied
 since #955. A note that arrives after you have already read the wrong answer
 is barely a note.
 
+## When the filter matches everything
+
+`grep=` goes through the same pattern gate as `grep`, `grep_around` and
+`around` (#1344). Two things follow, and until #1344 neither did — the gate was
+wired route by route and `read`'s filter, reached through a different parser
+branch, had been wired to neither:
+
+- **bash-grep BRE alternation is rewritten.** `read:PATH:::grep=alpha\|gamma`
+  filters on either branch, as it does everywhere else, instead of searching
+  for the literal string `alpha|gamma`. The rewrite is never silent: the
+  receipt names the pattern that ran.
+- **A saturating pattern is refused, not filtered.** A top-level alternation
+  branch matching the empty string matches every line, so the filter returns
+  the file — indistinguishable from `read:PATH`, except that the caller now
+  believes every line matched what they typed. That is the same false belief
+  the `grep` refusal exists to prevent, arrived at more quietly.
+
+```
+./supertool 'read:probe.txt:::grep=^|x'
+ERROR: pattern `^|x` has an alternation branch `^` that matches the empty string, so the whole pattern matches every line of every file scanned. …
+```
+
+Refusing rather than disclosing is the decision #1344 asked for. The whole file
+already has a spelling — `read:PATH` — so the refusal removes no call anyone
+meant, and the predicate is narrow: it needs a top-level alternation with a
+branch that matches every probe, so `^$|alpha` (blank lines or alpha) and
+`colo(u|)r` still filter. Both the rewrite and the refusal live in one function,
+so a fifth route cannot arrive with a third behaviour.
+
 A `grep=` value that is not a usable regex is still searched for as a literal
 string — an unusable pattern should not fail a read — and the receipt names the
 `re.error` and says the search was literal, so a rejected pattern's zero is not

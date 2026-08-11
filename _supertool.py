@@ -77,7 +77,9 @@ OPERATIONS
                                 PATTERN (original line numbers preserved).
                                 read:PATH:::grep=P searches the WHOLE file; give
                                 an OFFSET/LIMIT and the zero names what it did
-                                not search.
+                                not search. Same pattern gate as grep: BRE
+                                alternation is rewritten (and disclosed), and a
+                                pattern that matches every line is refused.
     glob:PATTERN               Find files matching pattern (** supported).
                                 Auto-reads if PATTERN is a concrete file
                                 path with no wildcards.
@@ -3432,6 +3434,18 @@ def _read_elide(path: str, offset: int, limit: int, grep_filter: str,
 def op_read(path: str, offset: int = 0, limit: int = 0,
             grep_filter: str = "", force_full: bool = False,
             range_form: bool = False) -> str:
+    # `grep=` is a filter on a window rather than a search across a tree, and
+    # until #1344 that difference was expressed by reaching neither the BRE
+    # rewrite nor the saturation refusal — so `read:PATH:::grep=^|x` returned
+    # the whole file under an ordinary header and the caller could only read
+    # that as "every one of these lines matched". The gate decides; the route
+    # only has to reach it. First statement in the op because a refused
+    # pattern must not open the file.
+    filter_note = ""
+    if grep_filter:
+        grep_filter, refusal, filter_note = _pattern_gate(grep_filter)
+        if refusal:
+            return refusal
     # Abstract mode — when enabled, read:PATH on a file in a language
     # tree-sitter knows, with no offset/limit/grep, returns the symbol map
     # (measured 3-18% of the source bytes, median ~5%). Skipped when:
@@ -3485,7 +3499,10 @@ def op_read(path: str, offset: int = 0, limit: int = 0,
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     body = render_file(path, offset, limit, grep_filter, force_full,
                        range_form)
-    return skip_note + body + _read_edit_hint(path, body)
+    # `filter_note` above the header, for the reason the filter notes inside
+    # render_file are: a disclosure the caller reads after paying for the
+    # output is not a disclosure.
+    return skip_note + filter_note + body + _read_edit_hint(path, body)
 
 
 def _read_edit_hint(path: str, body: str) -> str:
@@ -3692,6 +3709,37 @@ def _bre_rewrite_note(written: str, effective: str, rewritten: bool) -> str:
             f"`[|]`.)" + chr(10))
 
 
+def _pattern_gate(pattern: str) -> Tuple[str, str, str]:
+    """The one place a caller-supplied search pattern is normalised and judged.
+
+    Returns `(effective, refusal, note)`. A non-empty `refusal` is the whole
+    answer and the op must return it unchanged; otherwise `effective` is the
+    pattern to run and `note` is the disclosure to print above the result.
+
+    Single-sourced because it was not, and the cost was #1344: the rewrite and
+    the refusal were wired route by route, so `read:PATH:::grep=` — added later
+    and reached through a different parser branch — arrived with neither, and
+    the same pattern meant three different things across four routes.
+
+    Whether a filter on a bounded window should be refused at all is the
+    decision #1344 asked for, and it is answered here rather than at each call:
+    yes. `read`'s `grep=` returns whole-file output when it saturates, which
+    looks exactly like `read:PATH` and therefore hides nothing loud — but what
+    the caller takes away is that every one of those lines matched the pattern
+    they typed, which is the same false belief #1314 was filed about, arrived
+    at more quietly. Disclosing instead would leave the caller holding a file
+    they already had a spelling for (`read:PATH`), paid for in context, under a
+    note correcting the request they just made. Refusing costs nothing a
+    caller meant: the predicate fires only on a top-level alternation with a
+    branch that matches every probe, so `^$|alpha` and `colo(u|)r` still run.
+    """
+    effective, rewritten = _bre_alternation_rewrite(pattern)
+    refusal = _saturating_pattern_refusal(pattern, effective, rewritten)
+    if refusal:
+        return effective, refusal, ""
+    return effective, "", _bre_rewrite_note(pattern, effective, rewritten)
+
+
 def _grep_pattern_note(pattern: str, path: str) -> str:
     """Name the pattern grep actually ran, when a ':' made that a choice (#1065).
 
@@ -3794,12 +3842,11 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
             context: int = 0, count_only: bool = False,
             no_exclude: bool = False, no_auto_read: bool = False) -> str:
     """grep, prefixed by #1065's disclosure of the pattern that actually ran."""
-    effective, rewritten = _bre_alternation_rewrite(pattern)
-    refusal = _saturating_pattern_refusal(pattern, effective, rewritten)
+    _effective, refusal, note = _pattern_gate(pattern)
     if refusal:
         return refusal
     return (_grep_pattern_note(pattern, path)
-            + _bre_rewrite_note(pattern, effective, rewritten)
+            + note
             + _op_grep(pattern, path, limit, context, count_only,
                        no_exclude, no_auto_read))
 
@@ -4145,12 +4192,10 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
     with only the refusal reproduced the original asymmetry one level down —
     a rewrite that merely changes the pattern was still invisible here.
     """
-    effective, rewritten = _bre_alternation_rewrite(pattern)
-    refusal = _saturating_pattern_refusal(pattern, effective, rewritten)
+    _effective, refusal, note = _pattern_gate(pattern)
     if refusal:
         return refusal
-    return (_bre_rewrite_note(pattern, effective, rewritten)
-            + _op_around(pattern, path, n))
+    return note + _op_around(pattern, path, n)
 
 
 def _op_around(pattern: str, path: str, n: int = 10) -> str:
