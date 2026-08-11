@@ -1093,7 +1093,10 @@ side left on the default keeps talking to `/tmp/supertool-watch.sock` while
 the other listens or writes somewhere else entirely. This is the escape
 route `claude-channel` names when it refuses to steal a live socket (#550),
 and the same variable a multi-user machine sets to move the socket under
-`~/.claude/` for per-user isolation.
+`~/.claude/` — for the *socket*. It isolates the consumer and the wire, and
+not the pollers: those are claimed under `SUPERTOOL_WATCH_STATE_DIR`, and
+moving one without the other is the configuration in "Two sessions on one
+machine" below, which gets no pollers at all.
 
 **A poller spawned before the variable changed keeps writing to the path it
 started with**, because `SOCK_PATH` is fixed for the lifetime of the

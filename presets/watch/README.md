@@ -106,8 +106,9 @@ the *same* path on the Phase 2 consumer for anything to arrive there (see
 [notifiers/claude-channel/README.md](../../notifiers/claude-channel/README.md#start-up-and-socket-ownership)).
 This is how a second Claude Code session gets a channel of its own after
 `claude-channel` refuses to steal a live socket (#550), and it is how a
-multi-user machine gives each session's channel a private path instead of the
-world-traversable default.
+multi-user machine gives each session's *channel* a private path instead of the
+world-traversable default. It does nothing about the pollers, which is the
+next paragraph.
 
 **A second session needs `SUPERTOOL_WATCH_STATE_DIR` as well, and setting only
 the socket is worse than setting neither (#1309).** The poller slot is a pid

@@ -456,6 +456,13 @@ def _destination_lines(rows: list[tuple[str, str, str]]) -> list[str]:
     Scoped to watchers that have actually emitted: one with nothing to report
     has no destination to disagree about, and `DELIVERY_NO_EMIT` is already
     reported one line up. Report-only, like everything else on this route.
+
+    The two surveys are separate scans of the state directory, so a file that
+    disappears between them lands in the unrecorded bucket rather than being
+    dropped. That is the right side to fall on — the line it produces says
+    only that nothing here establishes where that watcher writes, which is
+    exactly true of a slot whose file has gone — but it is why this must not
+    be read as "these watchers are running an old build".
     """
     emitted = [(source, wid) for source, wid, state in rows
                if state != transport.DELIVERY_NO_EMIT]
@@ -476,8 +483,11 @@ def _destination_lines(rows: list[tuple[str, str, str]]) -> list[str]:
             f"does not read: {', '.join(others)}. This session reads {here}, "
             f"so those events reached a consumer that is not this one.")
     if unrecorded:
+        # Upper-case, like the `unsure` arm above and for its reason: the
+        # convention on this banner is that news is shouted, and an emit whose
+        # destination cannot be established is unresolved rather than fine.
         out.append(
-            f"radar: delivery — {len(unrecorded)} of {len(emitted)} watcher "
+            f"radar: DELIVERY — {len(unrecorded)} of {len(emitted)} watcher "
             f"state file(s) that emitted do not record which socket they "
             f"wrote to, so nothing here says whether they reach {here}.")
     return out
