@@ -8,9 +8,10 @@ matrix twenty minutes later — PR #1115 went red on 14 of 20 legs over one
 missing `- `.
 
 **This adapter states no rules of its own.** It imports the project's own
-`assemble_changelog.py` and calls the three checks `collect()` calls —
-`parse_fragment_name`, the empty-body test, `scan_fragment_body` — publishing
-their messages verbatim. Those messages are already precise, and a second,
+`assemble_changelog.py` and calls the four checks `collect()` calls, in
+`collect()`'s order — `parse_fragment_name`, the empty-body test,
+`self_reference_finding` (#1251), `scan_fragment_body` — publishing their
+messages verbatim. Those messages are already precise, and a second,
 thinner description of one rule is how two descriptions drift; a local `ok`
 followed by a red matrix would be #1132 inverted, which is worse than #1132.
 
@@ -184,6 +185,18 @@ def main() -> None:
             target, name,
             "{0}: fragment is empty — an entry nobody would ever read".format(name),
             "empty"))
+        emit(_verdict(target, errors, start))
+        return
+
+    # `collect()`'s third stage, and it sits ahead of the body scan there for
+    # the same reason it does here: it needs no parser, so an absent
+    # markdown-it-py must not turn a definite finding into a `skipped`.
+    # Called unqualified, as the other three already are: an assembler missing
+    # a symbol this adapter mirrors is a mismatch, and the shape that hides a
+    # mismatch is checking one rule fewer without saying so.
+    finding = asm.self_reference_finding(name, text)
+    if finding:
+        errors.append(_error(target, name, finding, "self-reference"))
         emit(_verdict(target, errors, start))
         return
 

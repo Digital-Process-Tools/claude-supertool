@@ -18,6 +18,16 @@ The **content is the entry exactly as it would appear** under that heading
 today — a `- **Bold summary** ([#906](link)). Prose.` bullet, with as many
 indented paragraphs after it as the change deserves. Nothing is reformatted.
 
+**The entry has to name its own issue.** `(#906)` anywhere in the body, or a
+link whose URL ends in the number — the opening above does both, and that is
+why it is the shape to copy. The filename is the only structural place the
+number lives and the release deletes the file, so an entry that never says it
+ships unfindable: 8 of the 20 entries in v0.32.0 and 6 of the 28 in v0.33.0
+named every issue but their own
+([#1251](https://github.com/Digital-Process-Tools/claude-supertool/issues/1251)).
+`--check` and the write-time validator both refuse a fragment that omits it,
+so you hear about it in your own PR rather than from a release commit.
+
 **A fragment is bullets and prose, and the guard is a CommonMark parser.** A
 fragment is inserted into `CHANGELOG.md` verbatim, so a line here that CommonMark
 reads as a heading or a link-reference definition becomes one in the released

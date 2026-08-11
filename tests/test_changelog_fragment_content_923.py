@@ -74,9 +74,13 @@ def _repo(tmp_path: Path, fragments: dict, changelog: str = CHANGELOG):
     root = tmp_path / "repo"
     frag_dir = root / "changelog.d"
     frag_dir.mkdir(parents=True)
+    # A fixture body says nothing about issue numbers, and #1251 requires
+    # the entry to name its own. The helper asks the assembler what counts.
+    from _changelog_fragment_fixture import with_self_reference
     (root / "CHANGELOG.md").write_text(changelog, encoding="utf-8")
     for name, body in fragments.items():
-        (frag_dir / name).write_text(body, encoding="utf-8")
+        (frag_dir / name).write_text(
+            with_self_reference(name, body), encoding="utf-8")
     return root / "CHANGELOG.md", frag_dir
 
 

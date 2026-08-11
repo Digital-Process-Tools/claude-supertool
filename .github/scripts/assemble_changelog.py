@@ -359,6 +359,56 @@ def parse_fragment_name(name: str) -> Fragment:
     return Fragment(issue=int(match.group(1)), section=section, slug=match.group(3) or "")
 
 
+#: How a body may name its own issue: `#1192`, or a tracker URL ending in the
+#: number. Both are forms an author writes on purpose. A bare `1192` is not —
+#: v0.32.0's #1130 fragment was findable only because it happened to cite
+#: `tests/test_preset_git_splitlines_register_1130.py`, which no reader would
+#: aim at and no author could be told to produce.
+_SELF_REF = r"(?:#|/(?:issues|pull)/){0}(?![0-9])"
+
+
+def self_reference_finding(name: str, text: str) -> Optional[str]:
+    """One finding if the body never names the issue in its own filename (#1251).
+
+    `changelog.d/<issue>.<section>.md` holds the number in exactly one
+    structural place, and assembly writes the *body* and deletes the file. So
+    the number survives the release only when the author typed it into the
+    prose, which made findability a property of author habit: measured on the
+    fragments as they stood at each release commit, **8 of 20 entries in
+    v0.32.0** and **6 of 28 in v0.33.0** named every issue but their own, and
+    only two of the twenty had a `test_the_change_is_findable` to say so.
+
+    Refusing here rather than appending a reference during assembly is a
+    choice about where the rule lives. An append needs an "is it already
+    there?" test, and that test cannot tell a self-citation from a coincidence
+    — v0.32.0's #1197 was findable only because a *different* fragment in the
+    same release mentioned it. Refusing costs the author one `(#N)` in a PR
+    instead of a release-time repair across thirteen legs, and it is the form
+    `changelog.d/README.md` has documented all along.
+
+    Returns `None` for a name that does not parse: `collect` already reports
+    that from `parse_fragment_name`, and a second complaint about one file
+    would give the write-time validator a different count from `--check`.
+    """
+    try:
+        issue = parse_fragment_name(name).issue
+    except BadFragment:
+        return None
+    number = str(issue)
+    if re.search(_SELF_REF.format(number), text):
+        return None
+    lines = text.splitlines()
+    at = next((i + 1 for i, line in enumerate(lines) if line.strip()), 1)
+    return (
+        "{0}:{1}: the entry never names #{2} — the issue number is in the "
+        "filename, and the release consumes the file, so nothing carries it "
+        "into CHANGELOG.md. Write `(#{2})` into the entry, the way "
+        "changelog.d/README.md's example does; a link to the issue counts "
+        "too. 8 of 20 entries in v0.32.0 and 6 of 28 in v0.33.0 shipped "
+        "naming every issue but their own (#1251). Line: {3}"
+        .format(name, at, number, lines[at - 1] if at <= len(lines) else ""))
+
+
 def collect(directory: Path) -> List[Fragment]:
     """Every fragment in `directory`, sorted deterministically.
 
@@ -382,8 +432,26 @@ def collect(directory: Path) -> List[Fragment]:
         if not text.strip():
             findings.append(f"{path.name}: fragment is empty — an entry nobody would ever read")
             continue
-        body_findings = scan_fragment_body(path.name, text)
-        if body_findings:
+        # Ahead of the body scan, which is the arm that needs `markdown-it-py`:
+        # this finding needs no parser, and a definite refusal must not be lost
+        # behind a `CannotValidate` raised by the check after it. It does not
+        # `continue`, though — preempting the shape scan would answer a
+        # malformed fragment with a note about its issue number and say nothing
+        # about the malformation, which is one round-trip per finding for the
+        # author and the reason `collect` gathers rather than stopping.
+        self_ref = self_reference_finding(path.name, text)
+        if self_ref is not None:
+            findings.append(self_ref)
+        try:
+            body_findings = scan_fragment_body(path.name, text)
+        except CannotValidate:
+            # A refusal that needed no parser outranks "could not look". The
+            # alternative loses the definite answer to report the absent one,
+            # which is the shape `validators/changelog-fragment` already names.
+            if self_ref is None:
+                raise
+            continue
+        if self_ref is not None or body_findings:
             findings.extend(body_findings)
             continue
         fragments.append(Fragment(frag.issue, frag.section, frag.slug, path))
@@ -1035,7 +1103,8 @@ def check(directory: Path) -> int:
     # link ref, at any indent or nesting" was true of the scanner's own model
     # of CommonMark and false of CommonMark. This claim is checkable by the
     # person reading it: it is what markdown-it-py saw.
-    _receipt("ok", "{0} fragments, all names parse; each body parsed with "
+    _receipt("ok", "{0} fragments, all names parse, each body names the issue "
+                   "in its own filename; each body parsed with "
                    "markdown-it-py {1}, whose token stream holds no heading, no "
                    "link ref definition and no raw HTML at any depth, whose "
                    "fences all close inside the fragment, and whose top level is "
