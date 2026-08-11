@@ -64,7 +64,7 @@ A single pathological line — a minified bundle, a 7KB one-line `@extends Foo<a
 Notes:
 
 - **It never delegates to rtk.** The delegated report has no candidate list to count over, so its truncation clause is `total not counted` — the one state a completeness sweep must not come back in.
-- **`all` is a LIMIT and only a LIMIT.** `grep:PATTERN:PATH:5:all` is refused rather than read as either "limit 5" or "limit all": one of those runs a call nobody typed, the other ignores a token the caller believes changed something.
+- **`all` is a LIMIT and only a LIMIT.** `grep:PATTERN:PATH:5:all` is refused rather than read as either "limit 5" or "limit all": one of those runs a call nobody typed, the other ignores a token the caller believes changed something. Same for a third trailing token (`:5:2:all`), which the parser peels and never reads. `grep_around` is `PATTERN:PATH:N:LIMIT` — context **first** — so `grep_around:PATTERN:PATH:all` is refused with the slot order named rather than an `int()` error. The token is matched exactly (`all`, not `All`) on both the colon CLI and the payload route.
 - **`grep:…:count` never needed it** — count mode has no cap and its header claims none.
 - **`all` bounds matches, not bytes.** With a CONTEXT argument the op still shares `grep_around`'s ~16KB output cap, which cuts at a line boundary and names itself in a footer (`… truncated (~N more bytes)`). `limit all` is a claim about the match cap only; plain `grep:PATTERN:PATH:all` has no byte cap beyond the per-line one.
 

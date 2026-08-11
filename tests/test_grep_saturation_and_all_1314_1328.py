@@ -144,9 +144,47 @@ def test_all_returns_every_match(tmp_path: Path) -> None:
 
 
 def test_all_never_carries_a_truncation_marker(tmp_path: Path) -> None:
+    """Both halves matter: before #1328 `all` fell through to the PATH slot and
+    the resulting `path not found` ERROR also lacked the word TRUNCATED, so the
+    absence of the marker on its own is not evidence of anything."""
     f = _lines(tmp_path, "many.txt", 40)
     out = supertool.dispatch(f"grep:line:{f}:all:no-auto-read")
+    assert "(40 results" in out and "line40" in out, out
     assert "TRUNCATED" not in out, out
+
+
+def test_all_outside_the_limit_slot_is_refused(tmp_path: Path) -> None:
+    """`grep:PAT:PATH:LIMIT:CONTEXT:all` peels three trailing tokens and only
+    two are read. Dropping the third silently would run the default under a
+    token the caller believes removed the cap."""
+    f = _lines(tmp_path, "many.txt", 40)
+    out = supertool.dispatch(f"grep:line:{f}:5:2:all")
+    assert "ERROR:" in out and "LIMIT" in out, out
+
+
+def test_grep_around_names_its_own_slot_order_for_all(tmp_path: Path) -> None:
+    """`grep_around` is PATTERN:PATH:N:LIMIT — context first, the opposite of
+    `grep`. A caller copying `grep:PAT:PATH:all` lands `all` in the N slot and
+    used to get `invalid literal for int() with base 10: 'all'`."""
+    f = _lines(tmp_path, "many.txt", 40)
+    out = supertool.dispatch(f"grep_around:line:{f}:all")
+    assert "ERROR:" in out, out
+    assert "invalid literal" not in out, (
+        "a raw int() traceback message is not a diagnosis: " + repr(out))
+    assert f"grep_around:line:{f}:N:all" in out or "N:all" in out, out
+
+
+def test_payload_limit_all_is_case_sensitive(tmp_path: Path) -> None:
+    """`all` is spelled one way in both routes. The colon CLI matches the token
+    exactly, as `count` and `no-auto-read` do, so the payload must not quietly
+    accept a spelling the CLI reads as a path."""
+    f = _lines(tmp_path, "many.txt", 40)
+    payload = tmp_path / "p.toml"
+    payload.write_text(
+        'pattern = "line"\npath = "' + f.as_posix() + '"\n'
+        'limit = "All"\n')
+    out = supertool.dispatch(f"grep:@{payload}")
+    assert "ERROR:" in out and "limit" in out, out
 
 
 def test_all_is_carried_on_the_count_line(tmp_path: Path) -> None:

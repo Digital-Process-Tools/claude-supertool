@@ -56,8 +56,10 @@ OPERATIONS
     grep:PATTERN:PATH:all      Every match, no cap — for "find every one"
                                 (a call-site audit, a rename, a sweep). The
                                 count line reads `limit all` and can never
-                                carry TRUNCATED. `all` is a LIMIT only; it is
-                                refused in the CONTEXT slot.
+                                carry TRUNCATED. `all` is a LIMIT only —
+                                anywhere else in the token list it is
+                                refused, never re-read as something it
+                                could have meant.
     grep:PATTERN:PATH:LIMIT:CONTEXT
                                Search with context lines (like grep -C).
                                 Match lines: path:lineno:content
@@ -3485,12 +3487,27 @@ def _count_lines(path: str, on_error: int = 0) -> int:
         return on_error
 
 
-# #1328 — `all` names the LIMIT slot and only that slot.
-_GREP_ALL_IN_CONTEXT_SLOT = (
-    "ERROR: grep read `all` in the CONTEXT slot (grep:PATTERN:PATH:LIMIT:"
+# #1328 — `all` names the LIMIT slot and only that slot. Both neighbours are
+# refusals rather than readings: `all` in the CONTEXT slot read as a limit runs
+# a call nobody typed, and a third trailing token dropped on the floor (the
+# parser peels every trailing digit and reads two) runs the default under a
+# token the caller believes removed the cap.
+_GREP_ALL_OUTSIDE_LIMIT_SLOT = (
+    "ERROR: grep read `all` outside the LIMIT slot (grep:PATTERN:PATH:LIMIT:"
     "CONTEXT). `all` is a LIMIT — it removes the result cap so a sweep is "
-    "complete; context is a number of lines around each match and has no "
-    "`all`. Did you mean grep:PATTERN:PATH:all:CONTEXT?" + chr(10)
+    "complete; CONTEXT is a number of lines around each match and has no "
+    "`all`, and nothing follows CONTEXT. Did you mean "
+    "grep:PATTERN:PATH:all:CONTEXT?" + chr(10)
+)
+
+# `grep_around` is PATTERN:PATH:N:LIMIT — context FIRST, the opposite order to
+# grep's LIMIT:CONTEXT. Copying `grep:PATTERN:PATH:all` across lands `all` in
+# the N slot, where int() used to raise and the caller got the exception text.
+_GREP_AROUND_ALL_IN_N_SLOT = (
+    "ERROR: grep_around takes PATTERN:PATH:N:LIMIT — context first, the "
+    "opposite order to grep's LIMIT:CONTEXT — so `all` landed in the N slot. "
+    "Did you mean grep_around:PATTERN:PATH:N:all (e.g. "
+    "grep_around:PATTERN:PATH:3:all), or grep:PATTERN:PATH:all:N?" + chr(10)
 )
 
 
@@ -6124,11 +6141,14 @@ def _parse_grep_args(parts: List[str]) -> tuple:
     elif len(trailing) >= 2:
         limit = (GREP_LIMIT_ALL if trailing[0] == _GREP_ALL_TOKEN
                  else int(trailing[0]))
-        if trailing[1] == _GREP_ALL_TOKEN:
+        if _GREP_ALL_TOKEN in trailing[1:]:
             # `all` is a LIMIT. Reading it as one here would run a call nobody
             # typed (limit `all` with the caller's number silently demoted to
             # context), and ignoring it would run the default under a token the
-            # caller believes changed something.
+            # caller believes changed something. `trailing[1:]` rather than
+            # `trailing[1]` because the peel takes every trailing token and the
+            # read takes two: a third one is dropped, and a dropped `all` is
+            # exactly the silent-completeness bug this token exists to close.
             limit = GREP_LIMIT_ALL_MISPLACED
         else:
             context = int(trailing[1])
@@ -18520,7 +18540,11 @@ def _payload_grep_limit(p: Dict[str, Any], default: int) -> int:
     call-site sweep with an alternation ends up.
     """
     value = p.get("limit")
-    if isinstance(value, str) and value.strip().lower() == _GREP_ALL_TOKEN:
+    # Matched exactly, as the colon CLI matches it and as `count` /
+    # `no-auto-read` are matched there. A payload that accepted `All` while the
+    # CLI read the same token as a path name would make the spelling a property
+    # of the route; `_payload_int` refuses it by name instead.
+    if value == _GREP_ALL_TOKEN:
         return GREP_LIMIT_ALL
     return _payload_int(p, "limit", default)
 
@@ -19308,7 +19332,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             if limit == 0:
                 return _receipt(header, _GREP_ZERO_LIMIT)
             if limit == GREP_LIMIT_ALL_MISPLACED:
-                return _receipt(header, _GREP_ALL_IN_CONTEXT_SLOT)
+                return _receipt(header, _GREP_ALL_OUTSIDE_LIMIT_SLOT)
             _hint = _colon_split_hint("grep", pattern, path)
             if _hint:
                 return _receipt(header, _hint)
@@ -19319,6 +19343,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             # context. Sane defaults for "show me how everyone uses this".
             ga_pattern = parts[1] if len(parts) > 1 else ""
             ga_path = parts[2] if len(parts) > 2 and parts[2] else "."
+            if len(parts) > 3 and parts[3] == _GREP_ALL_TOKEN:
+                return _receipt(header, _GREP_AROUND_ALL_IN_N_SLOT)
             ga_context = int(parts[3]) if len(parts) > 3 and parts[3] else 3
             ga_limit_tok = parts[4] if len(parts) > 4 and parts[4] else ""
             if ga_limit_tok == _GREP_ALL_TOKEN:
