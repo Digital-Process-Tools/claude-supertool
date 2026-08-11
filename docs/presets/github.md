@@ -13,7 +13,7 @@ A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting anothe
 | Op | Syntax | What it returns |
 |----|--------|-----------------|
 | `gh-issue` | `gh-issue:NUMBER[:full]` | Issue metadata, description, all comments (truncated by default), linked PRs, image download. `:full` disables truncation. A truncated body says so twice — in the header, before the reader reaches it, and again at the cut — with the exact char count withheld and `:full` named as the way to get the rest (see [A truncated body says so before you reach it](#a-truncated-body-says-so-before-you-reach-it)) |
-| `gh-pr` | `gh-pr:NUMBER_OR_BRANCH[:status\|:full\|:diff[:PATH]]` | Full PR dashboard: branch, checks, reviews/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state plus the `head -> base` branch line only (~250 bytes). The check line opens with `N total:` and every count after it sums back to N, so a state the tally does not recognise is named (`2 cancelled`) instead of dropped; the legs read are reconciled against the number the Actions run declares, so a rollup that came back short carries `⚠ INCOMPLETE — 9 of 14 legs read` and names the legs it never saw (see [The tally says how many legs it did *not* read](#the-tally-says-how-many-legs-it-did-not-read)); anything short of every-check-passed carries `⚠ NOT ALL GREEN`, and zero check runs renders as one of four states — `none yet`, `none, and none will be created`, `none until the conflict is resolved … Rebase`, or a stated `UNKNOWN` — rather than one sentence for all of them ([#585](https://github.com/Digital-Process-Tools/claude-supertool/issues/585), [#594](https://github.com/Digital-Process-Tools/claude-supertool/issues/594), see [Zero check runs](#zero-check-runs-is-four-states-not-one)). The linked issue is every issue a GitHub closing keyword binds to — all of them, plural label when there are several — and a stated `none declared` when the body names no keyword, never the first `#N` in the body ([#591](https://github.com/Digital-Process-Tools/claude-supertool/issues/591), see [The linked issue](#the-linked-issue-is-a-declared-closing-reference-not-the-first-n)). A description over `DESCRIPTION_MAX` (2000 chars) says so twice — in the header and again at the cut — naming the exact char count withheld, and `:full` returns the whole description ([#698](https://github.com/Digital-Process-Tools/claude-supertool/issues/698), see [A truncated body says so before you reach it](#a-truncated-body-says-so-before-you-reach-it)). The comment list is bounded the same way: the last 10 by default, disclosed as `## Comments (10 of 25 shown, 15 earlier truncated — use :full to fetch all)` rather than as a bare total above ten of them, with each comment body cut at 500 chars marked at the cut; `:full` returns every comment whole ([#719](https://github.com/Digital-Process-Tools/claude-supertool/issues/719), see [A capped comment list says how many it did not show](#a-capped-comment-list-says-how-many-it-did-not-show)). `:diff` is the merge gate's own read — the file list with per-file `+/-`, heaviest first — and `:diff:PATH` is one file's hunks; neither is the whole patch, which is the point ([#875](https://github.com/Digital-Process-Tools/claude-supertool/issues/875), see [The PR diff, in the shape a reviewer walks it](#the-pr-diff-in-the-shape-a-reviewer-walks-it)) |
+| `gh-pr` | `gh-pr:NUMBER_OR_BRANCH[:status\|:full\|:diff[:PATH]\|:threads]` | Full PR dashboard: branch, checks, reviews/approval state, linked issue, diff stat, comments. `:status` returns slim merge-state plus the `head -> base` branch line only (~250 bytes). The check line opens with `N total:` and every count after it sums back to N, so a state the tally does not recognise is named (`2 cancelled`) instead of dropped; the legs read are reconciled against the number the Actions run declares, so a rollup that came back short carries `⚠ INCOMPLETE — 9 of 14 legs read` and names the legs it never saw (see [The tally says how many legs it did *not* read](#the-tally-says-how-many-legs-it-did-not-read)); anything short of every-check-passed carries `⚠ NOT ALL GREEN`, and zero check runs renders as one of four states — `none yet`, `none, and none will be created`, `none until the conflict is resolved … Rebase`, or a stated `UNKNOWN` — rather than one sentence for all of them ([#585](https://github.com/Digital-Process-Tools/claude-supertool/issues/585), [#594](https://github.com/Digital-Process-Tools/claude-supertool/issues/594), see [Zero check runs](#zero-check-runs-is-four-states-not-one)). The linked issue is every issue a GitHub closing keyword binds to — all of them, plural label when there are several — and a stated `none declared` when the body names no keyword, never the first `#N` in the body ([#591](https://github.com/Digital-Process-Tools/claude-supertool/issues/591), see [The linked issue](#the-linked-issue-is-a-declared-closing-reference-not-the-first-n)). A description over `DESCRIPTION_MAX` (2000 chars) says so twice — in the header and again at the cut — naming the exact char count withheld, and `:full` returns the whole description ([#698](https://github.com/Digital-Process-Tools/claude-supertool/issues/698), see [A truncated body says so before you reach it](#a-truncated-body-says-so-before-you-reach-it)). The comment list is bounded the same way: the last 10 by default, disclosed as `## Comments (10 of 25 shown, 15 earlier truncated — use :full to fetch all)` rather than as a bare total above ten of them, with each comment body cut at 500 chars marked at the cut; `:full` returns every comment whole ([#719](https://github.com/Digital-Process-Tools/claude-supertool/issues/719), see [A capped comment list says how many it did not show](#a-capped-comment-list-says-how-many-it-did-not-show)). `:diff` is the merge gate's own read — the file list with per-file `+/-`, heaviest first — and `:diff:PATH` is one file's hunks; neither is the whole patch, which is the point ([#875](https://github.com/Digital-Process-Tools/claude-supertool/issues/875), see [The PR diff, in the shape a reviewer walks it](#the-pr-diff-in-the-shape-a-reviewer-walks-it)). `:threads` is the review threads the dashboard header only counts — `path:line`, resolved state, every comment body — and a mode word this op does not have is refused rather than answered with the default view ([#1346](https://github.com/Digital-Process-Tools/claude-supertool/issues/1346), see [An unrecognised mode is refused, and `:threads` answers the header's own question](#an-unrecognised-mode-is-refused-and-threads-answers-the-headers-own-question)) |
 | `gh-prs` | `gh-prs[:author=@me,reviewer=@me,state=open,failed,nopipe,iids,anyauthor]` | PR triage board: the repo's open PRs sorted failing-first then stalest. Per PR: check rollup (a failure shows the failing **check name**), approval state, age, diff size, watch-state, `draft`/`conflict`/`threads` flags + footer pointing at the first failing-and-unwatched PR. The gl-mrs twin. `iids` emits a bare number list for `watch-mine.sh`, with any disclosure as a leading `#` comment. **There is no author default** — the board is the repo's, `author=@me` is a filter you write, and the footer names whichever population is on screen. It was `author=@me`; #1072 made that honest and #1207 removed it, after three PRs nobody wrote sat unseen behind the disclosure ([#1071](https://github.com/Digital-Process-Tools/claude-supertool/issues/1071), [#1207](https://github.com/Digital-Process-Tools/claude-supertool/issues/1207), see [`gh-prs` says whose board it is](#gh-prs-says-whose-board-it-is)). `radar`'s tier still narrows — see the same section |
 | `gh-issues` | `gh-issues[:author=@me,assignee=@me,label=bug,milestone=v1.0,state=open,per=100,iids=1233,1240,1251,external,stale,nomilestone,nopipe,iids]` | Issue triage board, **ranked** rather than listed. `iids=1233,1240,1251` names an exact population by number instead of listing one — the citation-audit read, one call for the whole set, every requested number getting its own row including the ones that are PRs or nothing at all ([#1323](https://github.com/Digital-Process-Tools/claude-supertool/issues/1323), see [`iids=` names the population](#iids-names-the-population-rather-than-listing-one)). `iids` carries the `--limit` disclosure as a leading `#` comment, and a client-side flag that empties the board names the count it dropped ([#1067](https://github.com/Digital-Process-Tools/claude-supertool/issues/1067)): unrankable → external author → stale body → no linked PR → oldest. Per issue: linked PRs read off the issue timeline, an external-filer marker from GitHub's `authorAssociation`, age, comment count, labels, a `[stale]` flag when the newest comment is newer than the last time the body was written, and the milestone as `[m:TITLE]` — never a column, so a row without one pays nothing, and `[m:?]` means gh did not answer rather than "none" ([#864](https://github.com/Digital-Process-Tools/claude-supertool/issues/864), see [The milestone, and the filter that was silently dropped](#the-milestone-and-the-filter-that-was-silently-dropped)). `nomilestone` is the release-planning half — the gap query `gh issue list` cannot express. Enrichment is one GraphQL call per 20 issues; when it fails the derived fields render `?` and the row sorts first — see [The issue board](#the-issue-board). No default `author=@me` — and since [#1207](https://github.com/Digital-Process-Tools/claude-supertool/issues/1207) `gh-prs` has none either, so the two boards finally agree ([#628](https://github.com/Digital-Process-Tools/claude-supertool/issues/628)) |
 | `gh-run` | `gh-run:NUMBER` | Workflow run job list with statuses and failed step names, under a header that sums it: `N total:` and every count after it sums back to N, so `2 cancelled` is named rather than dropped, and anything short of all-passed carries `⚠ NOT ALL GREEN`. GitHub's own run-level field stays visible as `(run-level field: queued)` but never leads — it is a run-lifecycle field, not a leg summary ([#789](https://github.com/Digital-Process-Tools/claude-supertool/issues/789), see [The header sums the table](#gh-runs-header-sums-the-table-beneath-it)). The `## Failed jobs` section below it names every **red** leg, not only the ones spelled `failure` — `timed_out`, `cancelled` and `action_required` are in it, with the state named per leg and a breakdown that reconciles against the header ([#803](https://github.com/Digital-Process-Tools/claude-supertool/issues/803), see [The failed-jobs section](#the-failed-jobs-section-is-every-red-leg-not-every-leg-spelled-failure)) |
@@ -22,7 +22,7 @@ A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting anothe
 | `gh-job` | `gh-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN]` | Job failure detail: PR context + error pattern search + log tail. A `Suite:` line carries the pytest terminal summary read out of the log — `6 failed, 7760 passed, 677 skipped` — when the log states one, because that is the only number in the render that counts **tests** rather than legs ([#1050](https://github.com/Digital-Process-Tools/claude-supertool/issues/1050)); no summary in the log prints no line, never a zero. The line says it is the **log's** claim, not a count supertool made — the log is written by the code the job ran, which on a PR is the PR's own — and is cross-checked against the conclusion the Actions API reports, which the log does not write; the two disagreeing is printed ([#1076](https://github.com/Digital-Process-Tools/claude-supertool/issues/1076)). Gaps between error blocks are marked `... (N lines elided by this op — no error pattern matched them; the log itself is intact)` rather than a bare `...`, which is indistinguishable from an ellipsis the log wrote. **Takes either id namespace** — hand it a check-run id (CodeQL, Dependabot, an external app) and it renders the check run instead, under `# Check run #N` with a `Routed:` line naming the switch and the log mode it could not apply; the checks API is consulted only after the Actions endpoint 404s, so this costs nothing on any working call ([#827](https://github.com/Digital-Process-Tools/claude-supertool/issues/827), see [Two id namespaces](#two-id-namespaces-actions-jobs-and-check-runs)). `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**, and a START past the end returns the tail of the width requested with a line saying so rather than declining — see [Reading a range](gitlab.md#reading-a-range) ([#487](https://github.com/Digital-Process-Tools/claude-supertool/issues/487)); `:grep:PATTERN` runs an ad-hoc regex over the log (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Optional per-job `job_patterns` table in `.supertool.json` (see gitlab preset doc) maps job names to tighter patterns + a `resolution` op. Zero matches on a job GitHub calls `failure` prints `## FAILED — supertool could not classify this job` — patterns tried + a log tail, never silence. That header read `## FAILED — no error pattern matched` until [#1106](https://github.com/Digital-Process-Tools/claude-supertool/issues/1106), which is word-for-word what the gap marker says about lines it elided *inside a successful classification*; `gl-job` refuses in the same words and a test pins the two renders disjoint. `## No error patterns matched` survives only for jobs that did not fail. **On a job whose conclusion is not `failure`** — `cancelled`, `timed_out`, `skipped`, or still running — the header drops its completeness claim and a `> NOTE:` block says error-block selection is a poor fit here and names `:raw:-80` / `:grep:orphan` ([#916](https://github.com/Digital-Process-Tools/claude-supertool/issues/916), see [`:fail` on a job that did not fail](#fail-on-a-job-that-did-not-fail)) |
 | `gh-check` | `gh-check:CHECK_RUN_ID` \| `gh-check:pr:NUMBER` | The **other** id namespace. A check run's status, output title/summary and its annotations — `path:line`, title, message, which for a scanning check (CodeQL, Dependabot, an external app) is the whole finding. Annotations are capped at `GH_CHECK_ANNOTATION_CAP` (default 5) with `+N more` in header **and** footer; a full `per_page=100` page is disclosed as a floor, not a total. Zero annotations on a non-passing check is never rendered as an all-clear, and a failed annotations fetch is never rendered as zero. `gh-check:pr:N` lists the check runs on PR N's head commit **with their ids**, passing ones included. Since [#827](https://github.com/Digital-Process-Tools/claude-supertool/issues/827) this op is the *explicit* form rather than the only route — `gh-job:ID` answers for a check run too, and `gh-pr` names a non-Actions leg as `CodeQL (check #ID)` — so nobody has to learn it. Does not read the code-scanning API ([#793](https://github.com/Digital-Process-Tools/claude-supertool/issues/793), see [Two id namespaces](#two-id-namespaces-actions-jobs-and-check-runs)) |
 | `gh-pr-create` | `gh-pr-create:@FILE` | Open a PR from a JSON/TOML payload. **`base` is required and never defaulted** — `master` and a release branch are equally plausible from one cwd, and a wrong base silently retargets the merge; `head` defaults to the current branch and `repo` to the origin remote, each printed with the source it came from. The receipt names the number and URL, base/head as resolved, **whether any check actually started** (zero renders as "nothing has been created", never as pending), and the issues the body links, parsed with the same closing-reference reader `gh-pr` uses so a malformed `Closes` line is caught at creation rather than after the merge. See [The base is never guessed](#the-base-is-never-guessed) |
-| `gh-pr-merge` | `gh-pr-merge:NUMBER[:squash\\|:merge\\|:rebase][\\|force][\\|cleanup]` | **Merge a PR and prove it landed.** The only op here that writes. Refuses everything it cannot verify, reads the merge back off the remote rather than trusting an exit code, checks every linked issue individually, and reports the default branch after the squash. Without `\\|force` it prints the gate and merges nothing. See [gh-pr-merge refuses more than it merges](#gh-pr-merge-refuses-more-than-it-merges) |
+| `gh-pr-merge` | `gh-pr-merge:NUMBER[:squash\\|:merge\\|:rebase][\\|force][\\|cleanup]` | **Merge a PR and prove it landed.** The only op here that writes. Refuses everything it cannot verify, reads the merge back off the remote rather than trusting an exit code, checks every linked issue individually, and reports the default branch after the squash. The preview opens with how far the base branch has moved since the commit the checks ran on — three states, disclosure only, never a block ([#1257](https://github.com/Digital-Process-Tools/claude-supertool/issues/1257), see [A green tally is a statement about a merge-base](#a-green-tally-is-a-statement-about-a-merge-base)). Without `\\|force` it prints the gate and merges nothing. See [gh-pr-merge refuses more than it merges](#gh-pr-merge-refuses-more-than-it-merges) |
 | `gh-since-tag` | `gh-since-tag[:TAG][:per=N]` | **Should a release fire?** The two numbers the auto-release gate is defined in terms of, from one call: merged PRs since the last tag — number, title, merge instant, in merge order — and unreleased `changelog.d/` fragments by section. Both were hand-rolled every tick until [#1209](https://github.com/Digital-Process-Tools/claude-supertool/issues/1209), when the hand-rolled version printed a confident `0` beside 7 fragments; `gh` returns `2026-08-09T16:07:45Z` and `git show -s --format=%cI` returns `2026-08-09T17:13:43+02:00`, the two were compared as **strings**, and `"16" > "17"` is False at the second character. Every timestamp here is parsed to an instant first, and the two numbers print together because their contradiction is what caught it — a measured zero beside a non-zero fragment count renders as `CONTRADICTION`, not as two numbers to notice. The boundary has three states and the count has four; see [What "the last tag" is](#what-the-last-tag-is-and-when-it-has-no-clean-answer) |
 | `repo:` prefix | `repo:OWNER/NAME` (leading op) | Points `gh-pr`, `gh-prs`, `gh-issue`, `gh-issues`, `gh-run`, `gh-job`, `gh-check` at a repo other than the cwd's — see [Targeting another repo](#targeting-another-repo) |
 | `gh-follow` | `gh-follow:USERNAME` | Follow a GitHub user via the authenticated session |
@@ -1096,6 +1096,118 @@ never exist is what cost a PR its first life.
 **The closing references are parsed and echoed back** with the same reader
 `gh-pr` uses, so a malformed `Closes` line is caught here rather than discovered
 after the merge.
+
+## An unrecognised mode is refused, and `:threads` answers the header's own question
+
+`gh-pr:1331:notamode` printed the default dashboard and exited 0. So did
+`:threads`, `:reviews` and `:comments` — three words a caller reaches for while
+looking at a header that says, of that same PR:
+
+```
+Unresolved threads: 1 / 1
+Reviews: github-advanced-security (COMMENTED)
+```
+
+The op stated a thread existed, accepted a request to see it, and returned a
+view without it, at `PASS`. The agent that hit it concluded the information was
+not reachable through supertool and fell back to
+`gh api repos/.../pulls/1331/comments` — the workaround this repo exists to
+remove, arrived at by an output that gave it no reason to look further
+([#1346](https://github.com/Digital-Process-Tools/claude-supertool/issues/1346)).
+It is the house defect with the states swapped: not an absence read as an
+answer, but an **unhonoured request read as an honoured one**.
+
+Both halves are fixed, and they are separate fixes.
+
+**A mode word the op does not have is refused, nothing is fetched, exit 1.**
+
+```
+$ supertool 'gh-pr:1331:notamode'
+FAIL (0.09s)
+ERROR: gh-pr does not have a 'notamode' mode.
+Nothing was read. This used to fall through to the default dashboard at exit 0, ...
+Modes: status, full, diff[:PATH], threads. Usage: gh-pr:NUMBER_OR_BRANCH[:status|:full|:diff[:PATH]|:threads]
+```
+
+The refusal runs before the branch lookup and before any fetch, so "nothing was
+read" is structural rather than a claim in prose. Everything to the right of
+`diff` is a PATH and is not validated as a mode — a guard that read it as one
+would refuse every path-scoped diff. Exit **1**, matching `gh-job`/`gl-job`
+([#1145](https://github.com/Digital-Process-Tools/claude-supertool/issues/1145)),
+which are the same construct on the same argv shape; `git-push`'s exit 2 is for
+an unknown *flag* on an op that writes.
+
+**`:threads` prints what the count was counting.** Path and line, resolved
+state, outdated marker, and every comment body, unresolved threads first:
+
+```
+# Review threads on PR #1331 ...
+Threads: 0 unresolved of 1
+
+## RESOLVED — _supertool.py [outdated]
+
+**github-advanced-security** (2026-08-11):
+...
+```
+
+It is one op's render, not a new op — the count in the default header and the
+bodies here come off the same `reviewThreads` selection. It runs its own light
+`pr view` rather than the dashboard's, for the same reason `:diff` does.
+
+**And it declines rather than reporting none.** `_fetch_review_threads`, which
+feeds the default header, returns `[]` on *every* failure, so a rate-limited
+GraphQL call and a PR with no threads render identically — this repo's defect
+class, sitting under the line that started the complaint. `:threads` splits
+them: a failed call prints `Threads: UNKNOWN — they could not be read (...)`
+and exits 1, and says in as many words that this is not `none`.
+
+## A green tally is a statement about a merge-base
+
+On 2026-08-10 `master` failed **13 of 15 legs on every platform** from two pull
+requests that were each 22/22 green, merged four minutes apart:
+
+- [#1238](https://github.com/Digital-Process-Tools/claude-supertool/issues/1238)
+  added the `claims` op with no `safety` key, because none was required at its
+  merge-base.
+- [#1243](https://github.com/Digital-Process-Tools/claude-supertool/issues/1243)
+  added a test asserting **every** preset op declares one, over a tree that did
+  not yet contain `claims`.
+
+Neither test was wrong. Their union was red, and nothing in the merge sequence
+looked at the union until it was on the default branch. `gh-pr-merge` performed
+[#454](https://github.com/Digital-Process-Tools/claude-supertool/issues/454)'s
+arithmetic correctly on both: 22 legs read, 22 summed, no non-`SUCCESS` leg.
+GitHub's `mergeable` did not help either — the two PRs touched disjoint files,
+so every conflict-shaped check passed
+([#1257](https://github.com/Digital-Process-Tools/claude-supertool/issues/1257)).
+
+So the preview now opens with the fact the tally cannot carry:
+
+```
+## Base
+  BEHIND: `master` is 3 commits ahead of this PR's head 9f2c1ab. The checks below ran on a tree that does not contain them.
+  `master` head: 58a5288 (2026-08-10T18:22:31Z)
+  A green tally is evidence about this PR's merge-base and about nothing else. ...
+```
+
+**Three states, and the level one is printed too.** `master` has not moved,
+`BEHIND` by N with the base head sha and date, or `UNKNOWN` naming why the
+compare call did not answer — because an absent warning and an unasked question
+render identically, which is the whole complaint. It is asked about
+`headRefOid`, never `headRefName`: the tally belongs to a *commit*, and a ref
+name resolves to whatever the branch points at now.
+
+**It discloses and never blocks, and that was the judgment call.** Blocking on
+`behind by N` would make a busy afternoon serial — four merges in one afternoon
+on 2026-08-07 with zero rebases, which `changelog.d` fragments are what bought.
+A `strict` token was considered and declined: an opt-in refusal is only ever
+typed by somebody who has already decided to be careful, so it adds nothing
+over reading the line and choosing not to merge. What went wrong on 2026-08-10
+was not that a merge happened on an old base; it was that nothing on the
+receipt said the base was old.
+
+It is printed **before** the gate, so it is on the refused previews too — the
+runs a human actually reads before deciding.
 
 ## gh-pr-merge refuses more than it merges
 

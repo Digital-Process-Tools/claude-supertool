@@ -95,6 +95,7 @@ class _Harness:
                  merge_rc: int = 0,
                  branch_stdout=_DEFAULT,
                  default_branch: str = "master",
+                 behind_by: int = 0,
                  fail_json: set | None = None):
         self.pr = pr
         # `""` is a real answer from `_repo_identity`, not a missing fixture:
@@ -116,9 +117,14 @@ class _Harness:
             "Head: eeeeeee (eeeeeee) — 2m old\n"
             "Verdict: GREEN — every workflow concluded.\n"
             "Legs: 20 total: 20 passed, 0 failed, 0 pending\n")
+        # #1257: how far the base branch has moved since the commit the checks
+        # ran on. `0` is the fixture default because it is the case that says
+        # nothing about the tally, not because it is the common one.
+        self.behind_by = behind_by
         self.fail_json = fail_json or set()
         self.merge_calls: list = []
         self.readback_count = 0
+        self.compare_calls: list = []
 
     # -- gh ---------------------------------------------------------------
     def gh(self, args, timeout=30):
@@ -144,6 +150,13 @@ class _Harness:
             if "readback" in self.fail_json:
                 return (None, "gh timed out")
             return (self.after, "")
+        if args[:1] == ["api"] and "compare/" in args[1]:
+            self.compare_calls.append(list(args))
+            if "compare" in self.fail_json:
+                return (None, "gh timed out")
+            return ({"behind_by": self.behind_by,
+                     "base_sha": "e" * 40,
+                     "base_date": "2026-08-10T18:22:31Z"}, "")
         if args[:2] == ["api", "graphql"]:
             if self.bound is None:
                 return (None, "graphql refused")

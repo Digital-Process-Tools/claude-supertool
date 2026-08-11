@@ -28,6 +28,14 @@ COMMENT_MAX = 500
 # metadata and an 80-file diff routinely outruns it.
 DIFF_TIMEOUT = 60
 
+#: Every mode word this op has. A token outside it is refused rather than
+#: dropped (#1346) — `gh-pr:1331:notamode` used to render the default dashboard
+#: at exit 0, and so did `:threads`, `:reviews` and `:comments`, three words a
+#: caller reaches for while looking at a header that says
+#: `Unresolved threads: 1 / 1`. Same resolution as `gh-job` (#1145) and
+#: `git-push` (#647): name what does not exist, name what does, read nothing.
+MODES = ("status", "full", "diff", "threads")
+
 
 def _relative_age(iso: str) -> str:
     """Format an ISO timestamp as 'Nd ago', 'Nh ago', or 'Nm ago'."""
@@ -48,6 +56,33 @@ def _relative_age(iso: str) -> str:
         return f"{secs // 86400}d ago"
     except (ValueError, ImportError):
         return "?"
+
+
+def _mode_refusal(flags: Sequence[str]) -> str:
+    """Message refusing the first unrecognised mode token. Empty when there is none.
+
+    Everything right of `diff` is a PATH, not a mode, so validation stops
+    there: `gh-pr:N:diff:presets/github/pr.py` is a path-scoped diff and a
+    guard that read the path as a mode word would refuse every one of them.
+    """
+    for tok in flags:
+        if not tok:
+            continue
+        if tok == "diff":
+            return ""
+        if tok in MODES:
+            continue
+        return (
+            f"ERROR: gh-pr does not have a {tok!r} mode.\n"
+            f"Nothing was read. This used to fall through to the default "
+            f"dashboard at exit 0, which reads as an answer to the question "
+            f"you asked rather than as a mode that was never applied — and "
+            f"that dashboard's own header advertises the review threads a "
+            f"caller typing {tok!r} is usually after.\n"
+            f"Modes: status, full, diff[:PATH], threads. Usage: "
+            f"gh-pr:NUMBER_OR_BRANCH[:status|:full|:diff[:PATH]|:threads]"
+        )
+    return ""
 
 
 def _gh(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
@@ -380,6 +415,144 @@ def _fetch_review_threads(url: str, number: int | str) -> list[dict]:
         return []
 
 
+#: `first: 100` on threads matches the count query above; `first: 50` on the
+#: comments inside one is well past anything observed and is stated so a future
+#: reader knows it is a cap and not "all of them".
+_THREADS_QUERY = (
+    "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
+    "{pullRequest(number:$n){reviewThreads(first:100){nodes{"
+    "isResolved isOutdated path line "
+    "comments(first:50){nodes{body createdAt url author{login}}}"
+    "}}}}}"
+)
+
+
+def _fetch_review_threads_detailed(
+        url: str, number: int | str) -> tuple[list | None, str]:
+    """`(nodes, error)` — and `None` is not `[]`.
+
+    `_fetch_review_threads` above returns `[]` on every failure, so a PR with
+    threads and a PR whose GraphQL call was rate-limited render identically in
+    the header. That is this repo's defect class, and a mode whose whole
+    purpose is to show the threads cannot inherit it: the two states are split
+    here so `:threads` can decline instead of reporting none.
+    """
+    if not url:
+        return (None, "the PR has no URL, so its owner/repo could not be read")
+    m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/pull/\d+", url)
+    if not m:
+        return (None, f"the PR URL {url!r} is not a github.com pull URL, so "
+                      f"its owner/repo could not be read")
+    owner, repo = m.group(1), m.group(2)
+    try:
+        r = _gh([
+            "api", "graphql",
+            "-f", f"query={_THREADS_QUERY}",
+            "-F", f"o={owner}", "-F", f"r={repo}", "-F", f"n={number}",
+        ], timeout=30)
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        return (None, f"the GraphQL call did not complete: {exc}")
+    if r.returncode != 0:
+        return (None, (r.stderr or r.stdout or "").strip().splitlines()[-1:]
+                and (r.stderr or r.stdout).strip().splitlines()[-1]
+                or f"gh exited {r.returncode}")
+    try:
+        data = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return (None, "the GraphQL reply was not JSON")
+    node = ((data.get("data") or {}).get("repository") or {}).get(
+        "pullRequest") or {}
+    threads = node.get("reviewThreads")
+    if not isinstance(threads, dict) or not isinstance(
+            threads.get("nodes"), list):
+        return (None, "the GraphQL reply carried no reviewThreads list")
+    return (threads["nodes"], "")
+
+
+def _render_threads(number: str, comment_max: int | None) -> int:
+    """`gh-pr:N:threads` — the review comments the dashboard only counts.
+
+    The header of the default view prints `Unresolved threads: 1 / 1` and there
+    was no op that answered the one question a reader then has, so the agent
+    that hit it fell back to `gh api repos/.../pulls/N/comments` (#1346). This
+    is one op's render, not a new op: the count and the bodies come off the
+    same `reviewThreads` selection.
+
+    Its own light `pr view` rather than the dashboard's: this needs the URL,
+    the number and the branch pair, and the dashboard call is ~20x the payload
+    — the same reason `:diff` runs before it.
+    """
+    try:
+        meta = _gh(["pr", "view", number, "--json",
+                    "number,title,url,headRefName,baseRefName"])
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        print(f"ERROR: gh pr view did not complete: {exc}")
+        return 1
+    if meta.returncode != 0:
+        print(_format_error(meta.stderr, "PR", str(number)))
+        return 1
+    try:
+        d = json.loads(meta.stdout)
+    except json.JSONDecodeError:
+        print(f"ERROR: invalid JSON from gh\n{meta.stdout[:500]}")
+        return 1
+
+    iid = d.get("number", number)
+    print(_untrusted.banner())
+    print(f"# Review threads on PR #{iid} "
+          f"{_untrusted.flat(str(d.get('title') or '?'))}")
+    print(f"Branch: {_untrusted.flat(str(d.get('headRefName') or '?'))} -> "
+          f"{_untrusted.flat(str(d.get('baseRefName') or '?'))}")
+    if d.get("url"):
+        print(f"URL: {d['url']}")
+
+    threads, err = _fetch_review_threads_detailed(d.get("url", ""), iid)
+    if threads is None:
+        print(f"Threads: UNKNOWN — they could not be read ({err}).")
+        print("This is not 'none'. Nothing here establishes whether this PR "
+              "has review threads; the default view's own count comes off the "
+              "same call and would be equally silent.")
+        return 1
+    if not threads:
+        print("Threads: no review threads on this PR — read, not assumed.")
+        return 0
+
+    unresolved = sum(1 for t in threads if not t.get("isResolved"))
+    print(f"Threads: {unresolved} unresolved of {len(threads)}")
+    # Unresolved first: the resolved ones are history and the unresolved ones
+    # are the reason anybody ran this.
+    ordered = sorted(threads, key=lambda t: bool(t.get("isResolved")))
+    for t in ordered:
+        state = "RESOLVED" if t.get("isResolved") else "UNRESOLVED"
+        where = _untrusted.flat(str(t.get("path") or "(no file)"))
+        line_no = t.get("line")
+        if isinstance(line_no, int):
+            where += f":{line_no}"
+        outdated = " [outdated]" if t.get("isOutdated") else ""
+        print(f"\n## {state} — {where}{outdated}")
+        comments = ((t.get("comments") or {}).get("nodes")) or []
+        for c in comments:
+            author = _untrusted.flat(
+                str((c.get("author") or {}).get("login") or "?"))
+            body = c.get("body") or ""
+            trunc = ""
+            if comment_max is not None and len(body) > comment_max:
+                body = body[:comment_max]
+                trunc = _body.comment_cut_notice(comment_max)
+            print(f"\n**{author}** ({str(c.get('createdAt') or '')[:10]}):")
+            print(_untrusted.fence(body))
+            if trunc:
+                print(trunc)
+            if c.get("url"):
+                # `flat()`, not raw. This permalink is the one field in this
+                # render that no other read op prints, so no existing scanner
+                # covers it — and it lands at column 0 directly under a fenced
+                # body, which is where supertool's own output belongs. A
+                # U+2028 in it renders as a line break there (#965's shape).
+                print(_untrusted.flat(str(c["url"])))
+    return 0
+
+
 def _head_commit_age_secs(url: str, number: int | str) -> int | None:
     """Seconds since the PR's head commit was made, or None if unestablished.
 
@@ -540,11 +713,21 @@ def _run_diff(number: str, path: str | None) -> int:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("ERROR: usage: pr.py NUMBER_OR_BRANCH [status|full|diff[:PATH]]")
+        # Kept in step with MODES and with _mode_refusal's own list: a usage
+        # line that omits a mode the op has is the #1346 defect pointed the
+        # other way — the caller is told a working request will not work.
+        print("ERROR: usage: pr.py NUMBER_OR_BRANCH "
+              "[status|full|diff[:PATH]|threads]")
         return 1
 
     arg = sys.argv[1]
     flags = sys.argv[2:]
+    # Before the branch lookup and before any fetch: a mode this op cannot
+    # honour is refused, and "nothing was read" has to be true (#1346).
+    refusal = _mode_refusal(flags)
+    if refusal:
+        print(refusal)
+        return 1
     slim = "status" in flags
     # gh-pr had no :full at all. The truncation disclosure names one as the way
     # to get the withheld text, so one has to exist — a stated escape hatch
@@ -587,6 +770,10 @@ def main() -> int:
     if "diff" in flags:
         rest = flags[flags.index("diff") + 1:]
         return _run_diff(arg, rest[0] if rest else None)
+
+    # Same reasoning as the diff route: needs none of the dashboard's fields.
+    if "threads" in flags:
+        return _render_threads(arg, comment_max)
 
     # Fetch PR with all needed fields
     try:

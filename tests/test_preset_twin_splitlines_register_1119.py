@@ -51,6 +51,15 @@ REGISTER: dict[str, str] = {
         "gh's stderr, last line as an error message. Same as above.",
     "presets/github/pr_merge.py::_gh_json":
         "gh's stderr, last line as an error message. Same as above.",
+    "presets/github/pr.py::_fetch_review_threads_detailed":
+        "gh's stderr, last line as a decline reason - copied from "
+        "pr_merge.py::_gh_json above and the same kind (#1346). Narrowing it "
+        "to _untrusted.split_lines would be worse: that breaks on LF/CR/CRLF "
+        "only, so a forged U+2028 would survive INSIDE the extracted line and "
+        "be printed, while str.splitlines() consumes it. The reviewThread "
+        "BODIES this function returns are a different question and are fenced "
+        "at the render, never split here. Pinned by "
+        "test_the_stderr_extraction_consumes_the_separator_it_is_left_on.",
     "presets/github/pr_create.py::main":
         "gh's stdout, scanned for a URL. The extracted value is printed, not "
         "parsed.",
