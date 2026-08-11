@@ -387,7 +387,14 @@ def test_an_unreadable_worktree_status_stops_the_train(
     reached = []
 
     def fake_run(args, cwd, timeout=900):
-        if args[:2] == ["git", "status"]:
+        # Matched anywhere in argv, not at a fixed index: `train()` pins the
+        # status display config with `git -c status.showUntrackedFiles=normal
+        # status --porcelain` (#1295), so `status` sits at index 3. A
+        # positional shim stops shimming and `real_run` executes actual git in
+        # the fixture worktree — which answers 0 on a clean tree, and this
+        # test's whole subject is what happens when the status read FAILS
+        # (#1206).
+        if args[0] == "git" and "status" in args:
             return 128, "fatal: not a git repository"
         if args[:2] == ["git", "fetch"]:
             reached.append(args)

@@ -1298,25 +1298,41 @@ def main() -> int:
               "a command that is safe to paste would no longer name this "
               "branch. Delete it from the PR page, or by hand after reading "
               "the name above.")
-    elif x_repo is not False or head == default_branch:
+    elif x_repo is not False or not default_branch or head == default_branch:
         # The same establishment #1281 put in front of `cleanup`, in front of
         # the printed commands — because these are the *default* path and a
         # reader runs them. Quoting was the only thing between a fork branch
         # called `master` and `gh api -X DELETE …/refs/heads/master` aimed at
         # this repository, and quoting makes a wrong command safe to paste
         # rather than making it right. Both facts are local: no extra call.
+        #
+        # The conditions are tested in `run_cleanup`'s order, and the reason
+        # below is chosen in that same order, so the two arms cannot report
+        # different grounds for the same refusal. `not default_branch` was the
+        # one this arm was missing (#1292): an empty default branch satisfies
+        # neither `x_repo is not False` nor `head == default_branch` — `""` is
+        # not the head — so it fell straight through to the printed DELETE
+        # while `run_cleanup` refused all three items on it. Empty is a
+        # reachable answer, not an impossible one: `_repo_identity` returns it
+        # whenever the API reply lacks `defaultBranchRef.name`, and the
+        # section header above already renders `default_branch or '?'`.
         print(f"  Head branch {_untrusted.flat(_refname.shell_ref(head))} "
               f"still exists.")
-        if head == default_branch:
-            why = (f"it is this repository's default branch, so a delete "
-                   f"command naming it would be aimed at `{default_branch}` "
-                   f"here")
-        else:
+        if x_repo is not False:
             why = ("the head is not established to be in this repository "
                    "(`isCrossRepository` "
                    + ("is true" if x_repo else "did not come back")
                    + "), so a command naming it would be aimed at a ref of "
                      "ours that happens to share the name")
+        elif not default_branch:
+            why = ("this repository's default branch could not be read, so "
+                   "nothing here can tell whether the command would be aimed "
+                   "at it — the same fact `run_cleanup` establishes before it "
+                   "deletes anything")
+        else:
+            why = (f"it is this repository's default branch, so a delete "
+                   f"command naming it would be aimed at `{default_branch}` "
+                   f"here")
         print(f"  No delete command is printed for it: {why}. Delete the "
               f"branch from the PR page, which knows which repository it is "
               f"in.")

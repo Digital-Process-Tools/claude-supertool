@@ -365,7 +365,16 @@ def train(num, dry, wt):
     # op broke it on its own first run, walking into st-wt/835 mid-task. git
     # itself refused the rebase (which is the only reason nothing was lost), so
     # this guard turns luck into a decision.
-    rc, dirty = run(["git", "status", "--porcelain"], wt)
+    # `-c status.showUntrackedFiles=normal` (#1290/#1295). The comment below
+    # already says a status this op could not read is not a clean tree — it was
+    # written about a non-zero exit. A read suppressed by an inherited
+    # `status.showUntrackedFiles=no` exits **zero** and returns nothing, so the
+    # principle was stated and the code implementing it did not cover the case
+    # that actually arises: the guard opens, and the op fetches, rebases and
+    # force-pushes a worktree an agent is working in. `-c` outranks both config
+    # files and `GIT_CONFIG_*`.
+    rc, dirty = run(["git", "-c", "status.showUntrackedFiles=normal",
+                     "status", "--porcelain"], wt)
     if rc != 0:
         # A status this op could not read is not a clean tree. `rc == 0 and
         # dirty.strip()` read it as one, so the single guard between this op and

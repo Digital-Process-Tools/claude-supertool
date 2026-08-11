@@ -568,7 +568,14 @@ def _advisory_git(rev_list_count: str = "", porcelain: str = ""):
     def fake_git(args, timeout=30):
         if args[:2] == ["rev-list", "--count"]:
             return _proc(rev_list_count, 0)
-        if args[:2] == ["status", "--porcelain"]:
+        # `"status" in args`, not `args[:2] ==`. git takes global flags BEFORE
+        # the subcommand, and the read under test now pins its display config
+        # with `-c status.showUntrackedFiles=normal` (#1295) — which moves
+        # `status` off index 0. A positional shim then stops shimming and falls
+        # through to the catch-all, which returns an empty porcelain: the exact
+        # #1206 failure, and on a test asserting a *warning* it would go
+        # vacuous rather than red.
+        if "status" in args:
             return _proc(porcelain, 0)
         return _proc("", 0)
     return fake_git
@@ -808,7 +815,9 @@ def test_main_force_aftermath_lists_discarded(capsys) -> None:
             return _proc("", 0)
         if args[:2] == ["rev-list", "--left-right"]:
             return _proc("0\t0\n", 0)
-        if args[:2] == ["status", "--porcelain"]:
+        # Matched on the subcommand rather than its position, for the reason
+        # given on `_advisory_git` above (#1206/#1295).
+        if "status" in args:
             return _proc("", 0)
         return _proc("", 0)
 

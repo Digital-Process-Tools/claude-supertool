@@ -68,7 +68,12 @@ def _base_git(*, push_result, ls_remote: str = "", status: str = "",
             if isinstance(push_result, Exception):
                 raise push_result
             return push_result
-        if args[:2] == ["status", "--porcelain"]:
+        # `"status" in args`, not `args[:2] ==`: the read under test pins its
+        # display config with a leading `-c status.showUntrackedFiles=normal`
+        # (#1295), so `status` is no longer at index 0. A positional shim would
+        # fall through to the catch-all's empty output and this test would
+        # assert about a tree the fake never described (#1206).
+        if "status" in args:
             return _proc(status, 0)
         if args[:2] == ["rev-list", "--count"]:
             return _proc("1\n", 0)
