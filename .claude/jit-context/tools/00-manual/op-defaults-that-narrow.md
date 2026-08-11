@@ -1,7 +1,7 @@
 ---
 title: "These ops answer a narrower question than you asked"
 tool: Bash
-match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(python3?[[:space:]]+)?([^[:space:]]*/)?supertool(\.py)?[[:space:]][^|]*'(gh-prs|gl-mrs|gh-issues|gl-issues|radar|watches)
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(python3?[[:space:]]+(-m[[:space:]]+)?)?([^[:space:]]*/)?supertool(\.py)?[[:space:]][^|]*'(gh-prs|gl-mrs|gh-issues|gl-issues|radar|watches)
 mode: remind
 ---
 

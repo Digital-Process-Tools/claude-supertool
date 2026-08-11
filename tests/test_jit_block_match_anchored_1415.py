@@ -17,6 +17,12 @@ command-shaped string still matches, because `^`-alternation cannot tell a hered
 from a command. Only a tokeniser can, and the tokeniser is `claude-jit-context`'s,
 a separate repository.
 
+Widening the anchor's whitespace from ` *` to `[[:space:]]*` grows that residue by
+exactly the shape it grows the protection: a payload line indented with a **tab**
+now matches, where one indented with **spaces** always did. Measured both columns
+before taking it — the change is symmetric, not a new class, and the alternative
+was leaving four `block` rules unable to see a tab-indented command at all.
+
 Would these pass if the code did nothing? No — every `must not match` case below
 matches the pre-#1415 patterns, and that is what produced the refusals.
 
@@ -102,6 +108,10 @@ NO_CUT_FIRES = [
      "../../supertool 'read:a'" + PIPE + "cut -c1-40"),
     ("run through an absolute path",
      "/usr/local/bin/supertool 'read:a'" + PIPE + "cut -c1-40"),
+    # The supported invocation forms, pinned because requiring the name to end
+    # at whitespace is what made them enumerable in the first place. `-m` is
+    # here because the first draft dropped it and a reviewer caught the loss.
+    ("run as a module", "python3 -m supertool 'read:a'" + PIPE + "cut -c1-40"),
 ]
 
 NO_CUT_SILENT = [
@@ -178,19 +188,42 @@ OTHER_RULES = [
      "echo the supertool op " + APOS + "gh-prs" + APOS + " reads the whole repo"),
 ]
 
+# Anchoring a rule to command position only works if the anchor knows every way
+# the tool is invoked. Enumerated rather than assumed: an earlier draft required
+# the name to be adjacent to its argument and silently dropped `python3 -m`.
+INVOCATION_FORMS = [
+    "supertool ",
+    "./supertool ",
+    "python3 supertool.py ",
+    "python supertool.py ",
+    "python3 -m supertool ",
+    "rtk supertool ",
+    "/Users/x/.local/bin/supertool ",
+    "../../supertool ",
+]
+
 
 @needs_awk
 @pytest.mark.parametrize("rule,fires,silent", OTHER_RULES,
                          ids=[r[0] for r in OTHER_RULES])
 class TestTheRestOfTheIndex:
-    """Same two directions, for the rules #1415 was widened to cover.
+    """Both directions per rule -- but only ONE of them is the delta.
 
-    Four `block` rules and one `remind` rule were already anchored, but with a
-    ` *` that admits only spaces -- so a tab-indented continuation line, an
-    ordinary way to write a multi-line command, walked through all five. A
-    missed block is the safe direction on this gate, which is exactly why it
-    went unnoticed; the `remind` one is the opposite, and fired on a mere
-    mention of an op name in a test fixture while this file was being written.
+    Be precise about which, because a test that could not have failed before
+    the change reads exactly like one that could:
+
+    * The four `block` rules were already anchored; what changed is ` *` to
+      `[[:space:]]*`. So `fires` (a TAB-indented continuation line) is the new
+      behaviour, and `silent` is a pure regression guard -- it was already
+      silent, and asserting it stays that way is the point, since widening a
+      match can only ever make a rule fire more.
+    * `op-defaults-that-narrow` is the mirror image: it had no anchor at all,
+      so `silent` is the new behaviour and `fires` is the regression guard.
+
+    A missed block is the safe direction on this gate, which is exactly why
+    four rules could fail on tab-indented commands unnoticed. The `remind` rule
+    is the opposite, and fired on a mere mention of an op name in a test
+    fixture and in this branch's own verification script.
     """
 
     def test_a_tab_indented_invocation_is_matched(self, rule, fires, silent):
@@ -198,6 +231,16 @@ class TestTheRestOfTheIndex:
 
     def test_the_command_merely_named_is_not_matched(self, rule, fires, silent):
         assert not _awk_matches(_pattern_for(rule), silent), rule
+
+
+@needs_awk
+@pytest.mark.parametrize("form", INVOCATION_FORMS)
+@pytest.mark.parametrize("rule,arg", [
+    ("supertool-no-cut.md", "'read:a'" + PIPE + "cut -c1-40"),
+    ("op-defaults-that-narrow.md", APOS + "gh-prs:state=open" + APOS),
+])
+def test_every_invocation_form_still_reaches_both_supertool_rules(rule, arg, form):
+    assert _awk_matches(_pattern_for(rule), form + arg), form
 
 
 @needs_awk
@@ -214,16 +257,22 @@ class TestGhListLimit:
         assert not _awk_matches(_pattern_for("gh-list-limit.md"), command), label
 
 
-class TestEveryBlockingRuleIsAnchored:
+class TestEveryRegexRuleIsAnchored:
     """The class, not the two instances.
 
     Deliberately NOT behind `needs_awk`: it reads the index and never runs a
     regex, so gating it on awk would make it skip on the one platform where awk
     is usually absent -- a guard that reports coverage it does not have.
 
-    A row is blocking when column 4 names `block` or column 5 sets `require` —
-    `require` sets `blocked` regardless of the mode (pre-tool-hook.sh:161), which
-    is why `gh-list-limit` refused a command while its frontmatter said `remind`.
+    Every regex row, not only the blocking ones. It was written as a
+    blocking-only filter and widened in the same commit that anchored the last
+    `remind` rule: a reminder that fires on a mere mention costs context rather
+    than a command, but it is the same defect and there is no longer a row in
+    this index that wants an exception.
+
+    (Blocking is not the same as `mode: block` here: `require` sets `blocked`
+    regardless of the mode, pre-tool-hook.sh:161, which is why `gh-list-limit`
+    refused a command while its frontmatter said `remind`.)
 
     `harness-tools-blocked.md` is the one deliberate exception: its `~.` matches
     every subject on purpose, because the tools it names have no legitimate use
