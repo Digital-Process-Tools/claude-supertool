@@ -236,13 +236,15 @@ $ gh pr view 1321 --json state
   Full contract: supertool 'help:gh-pr'
 ```
 
-Three things about it are deliberate.
+Four things about it are deliberate.
 
 **The mapping lives on the op, as `replaces` in its registry entry** — not in a rules file beside it. A new op ships its own enforcement or none, and the refusal text cannot describe a flag the op no longer has. Ask what would happen without running anything: `supertool 'guard:gh pr view 1321 --json state'`.
 
 **It parses the command, it does not pattern-match it.** The command is tokenised into argv the way a shell would, so the match is on the command word, its subcommands and its flags. A project directory called `claude-supertool` is not an invocation of `supertool`; a flag sitting after a quoted argument is still its own token; a heredoc body is content and never argv. Flags select **which** op is named — `--json state` points at `gh-pr:N:status`, `--json files` at `gh-pr:N:diff`.
 
 **A guard that could not answer says so and allows.** If the command does not tokenise, if it hides a substitution inside double quotes or hands a string to `eval` / `sh -c`, or if the registry could not be fully enumerated, the hook adds a line to the transcript naming the gap and the command runs. Failing closed makes an unreadable config a wall; failing open *silently* is worse than no gate at all, because a gate that quietly did not run is indistinguishable from a command that complied.
+
+**Asking a program to describe itself is never replaced.** `--help` and `-h` un-claim every entry, whatever it declares, because no op supersedes a command that performs nothing — and a refusal that answers `gh pr create --help` with *open a pull request* names a remedy worse than the command it stopped. The same reasoning per-command belongs to the op: `presets/github.json` excludes `gh pr create --dry-run`, and `presets/git.json` excludes `git push --dry-run` / `-n` and `git commit --dry-run`.
 
 There is no escape hatch on the command line, on purpose — an environment variable that turns a block off is learned once and prepended forever. A legitimate raw call simply has no `replaces` entry (nothing maps `gh release create`, `gh api -X DELETE`, `git tag`). To turn the whole gate off, set `"raw_command_guard": false` in `.supertool.json`, where it is a decision that shows up in a diff.
 

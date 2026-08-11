@@ -1,5 +1,5 @@
 Edit|Write|Read|Grep|Glob|MultiEdit|NotebookEdit	~.	harness-tools-blocked.md	block		
 Bash	~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(python3?[[:space:]]+(-m[[:space:]]+)?)?([^[:space:]]*/)?supertool(\.py)?[[:space:]][^|]*'(gh-prs|gl-mrs|gh-issues|gl-issues|radar|watches)	op-defaults-that-narrow.md	remind		
-Bash	~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(python3?[[:space:]]+(-m[[:space:]]+)?)?([^[:space:]]*/)?supertool(\.py)?[[:space:]][^\n]*[[:space:]]\|[[:space:]]*(head|tail|sed|cut|awk)	supertool-no-cut.md	block		
+Bash	~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(python3?[[:space:]]+(-m[[:space:]]+)?)?([^[:space:]]*/)?supertool(\.py)?[[:space:]][^\n]*[[:space:]'"]\|[[:space:]]*(head|tail|sed|cut|awk)	supertool-no-cut.md	block		
 Bash	~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?git[[:space:]]+(branch|for-each-ref)[^|]*--merged	merged-is-not-ancestry.md	block	--merged	
 Bash	~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(command[[:space:]]+)?git[[:space:]]+-c[[:space:]]+[^=[:space:]]*/	git-C-has-cwd.md	block	git -c	

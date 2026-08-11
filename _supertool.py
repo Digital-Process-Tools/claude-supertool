@@ -7369,7 +7369,7 @@ def _absorbed_path_hint(op: str, leading: str, path: str,
         f"named (#1417).{nl}"
         f"  Read as {keys[0]}={leading!r} + path='.' — {named!r} stayed inside "
         f"the {keys[0]}, and the PATH slot resolved to the repo root (an empty "
-        f"slot defaults to it).{nl}"
+        f"slot and a literal '.' both produce it).{nl}"
         f"  Nothing would have failed: that scan succeeds, over every file, "
         f"for a {keys[0]} you did not write. So it is declined rather than "
         f"corrected — both readings are live and neither is guessable.{nl}"
@@ -15289,6 +15289,19 @@ def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
 # way past — a guard that wedges a CLI's own help.
 _GUARD_ANY_FLAG = "*"
 
+# Asking a program to describe itself is not an invocation any op supersedes,
+# so this is a property of the guard rather than a key each mapping repeats.
+# Measured on the v0.35.0 tree: all 28 `replaces` entries were blocked by a
+# `--help`, and the refusal named the op that performs the very thing the flag
+# declines — `gh pr create --help` was told to open a pull request. #1394 met
+# one instance of this and paid for it per-op, citing `glab api -h` blocked
+# with no way past as part of what justified the `*` spelling.
+#
+# Matched as whole tokens only, deliberately NOT cluster-expanded the way
+# `unless_flag` is: there, expansion widens an exclusion an op declared, while
+# here `-xh` would un-claim every mapping in the repository at once.
+_GUARD_HELP_FLAGS = ("--help", "-h")
+
 
 def _guard_is_flag(token: str) -> bool:
     """Would a program read this token as an option rather than a positional?
@@ -15325,7 +15338,13 @@ def _guard_excluded(replacement: _Replacement, argv: Sequence[str]) -> bool:
     in: `replaces` has no per-command escape hatch, so a wrong block is got
     past only by `raw_command_guard: false`, which disarms every other
     mapping in the repository with it.
+
+    A help flag un-claims every entry, whatever it declares — see
+    `_GUARD_HELP_FLAGS`.
     """
+    for token in _guard_options(argv):
+        if token.split("=", 1)[0] in _GUARD_HELP_FLAGS:
+            return True
     if not replacement.unless_flag:
         return False
     for token in _guard_options(argv):

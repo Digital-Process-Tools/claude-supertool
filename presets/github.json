@@ -47,7 +47,7 @@
       "syntax": "gh-pr-create:@FILE",
       "example": "gh-pr-create:@.max/pr.toml",
       "replaces": [
-        { "argv": "gh pr create", "unless_flag": ["--web", "-w"], "use": "gh-pr-create:@FILE" }
+        { "argv": "gh pr create", "unless_flag": ["--web", "-w", "--dry-run"], "use": "gh-pr-create:@FILE" }
       ],
       "repo_target": "payload"
     },
