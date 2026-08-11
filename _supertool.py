@@ -21453,7 +21453,15 @@ def _mark_op_failure() -> None:
     #1284's tally can say how many of N refused. Batch sub-ops recurse through
     `dispatch` on the calling thread, and parallel dispatch runs each
     top-level op start to finish on one worker, so a frame at any depth may
-    set it and only depth 0 clears it.
+    set it and no frame above 0 clears it.
+
+    Two sites clear it, and the pair is the invariant: `dispatch` at depth 0,
+    and `dispatch_verdict` immediately before the call it is about to judge.
+    The second is not redundant with the first. `dispatch` is a module global
+    the tests and the MCP layer replace, and when they do the depth-0 clear is
+    not in the process at all — so the bit read back was the last refusal on
+    the thread, whenever that happened (#1359). The frame that reads the flag
+    establishes it.
     """
     _DISPATCH_STATE.call_failed = True
 
