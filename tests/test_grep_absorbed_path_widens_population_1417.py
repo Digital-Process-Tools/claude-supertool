@@ -17,6 +17,7 @@ was the one reading it declined to diagnose.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -118,3 +119,70 @@ def test_an_uncontained_segment_is_no_existence_oracle(
         "an outside path must not be confirmed back to the caller: "
         + repr(out))
     assert "ERROR" not in out, repr(out)
+
+
+# ---------------------------------------------------------------------------
+# What was deliberately NOT generalised, and why
+# ---------------------------------------------------------------------------
+
+def test_around_with_an_explicit_dot_still_runs(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`around` shares the error helper and not the defect.
+
+    Its parser turns an empty PATH into `""`, which fails loudly, so a `.` here
+    is always a value the caller typed. Wiring the grep check into `around` on
+    that basis is what this pins against.
+    """
+    _tree(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    out = supertool.dispatch("around:alpha:code.py:.")
+    assert "would have scanned the whole tree" not in out, repr(out)
+
+
+def test_between_re_over_the_tree_is_not_a_false_refusal(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`between:re:START:END:PATH` carries three caller arguments before PATH.
+
+    So an END that happens to name a file is an ordinary tree-wide range
+    search, not an absorbed path — and the repair a generalised check printed
+    for it dropped the `re:` marker that selects pattern mode, i.e. a suggested
+    call that parses as something else.
+    """
+    _tree(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    out = supertool.dispatch("between:re:alpha:code.py:.")
+    assert "would have scanned the whole tree" not in out, repr(out)
+    assert "#1417" not in out, repr(out)
+
+
+def test_segments_come_from_the_dispatch_tokenizer_not_a_bare_split() -> None:
+    """A Windows drive letter is one token, and `split(':')` tears it in two.
+
+    `_split_arg` merges `C:` back onto the path that follows it, so that is the
+    tokenizer the check has to reuse. A bare `leading.split(':')` yields `C`
+    and `\\repo\\file.py`, neither of which is the path the caller wrote — so the
+    gate would miss the very defect it exists for, and would miss it only on
+    Windows, which is not the platform this was written on.
+    """
+    assert supertool._absorbed_pattern_segments(
+        "PAT:C:\\repo\\file.py") == ["PAT", "C:\\repo\\file.py"]
+    assert supertool._absorbed_pattern_segments("Class::CONST") == [
+        "Class", "", "CONST"]
+
+
+def test_a_windows_absolute_path_absorbed_into_the_pattern_is_caught(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The gate fires on the drive-letter form, on every platform.
+
+    `os.path.exists` is stubbed rather than a real drive-letter file being
+    created: that name is illegal on Windows and merely unusual on POSIX, so
+    either way the test would assert something different on each platform. The
+    claim under test is segmentation, not the filesystem.
+    """
+    win = "C:\\repo\\file.py"
+    real = os.path.exists
+    monkeypatch.setattr(os.path, "exists", lambda p: p == win or real(p))
+    monkeypatch.setattr(supertool, "_gate_paths", lambda c: (None, list(c)))
+    out = supertool._absorbed_path_hint("grep", "PAT:" + win, ".")
+    assert "would have scanned the whole tree" in out, repr(out)
+    assert "grep:PAT:" + win in out, repr(out)
