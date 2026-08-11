@@ -454,7 +454,9 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
 
     unread = sorted(n for n, v in legs.items() if v is None)
     if unread:
-        return (UNKNOWN, f"{UNKNOWN} — the job list for {_names(unread)} did "
+        return (UNKNOWN, f"{UNKNOWN} — the job "
+                         f"{_agrees(len(unread), 'list', 'lists')} for "
+                         f"{_names(unread)} did "
                          f"not come back, so how many legs ran on {short} is "
                          "UNKNOWN and nothing here establishes green. Re-run "
                          "the op; if it persists, count by hand with "
@@ -466,7 +468,7 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
     if red_wfs:
         bad = sum(1 for states in legs.values()
                   for s in (states or []) if _checks.is_red(s))
-        legword = "leg" if bad == 1 else "legs"
+        legword = _agrees(bad, "leg", "legs")
         return (NOT_GREEN, f"{NOT_GREEN} — {bad} {legword} on {short} did not "
                            f"pass, in {_names(red_wfs)}. Named below.")
 
@@ -476,14 +478,18 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
                            for s in (legs.get(n) or [])))
     if moving:
         return (NOT_GREEN, f"{NOT_GREEN} — nothing has failed, but "
-                           f"{_names(moving)} has not concluded on {short}, so "
-                           f"{'it is' if len(moving) == 1 else 'they are'} "
+                           f"{_names(moving)} "
+                           f"{_agrees(len(moving), 'has', 'have')} not "
+                           f"concluded on {short}, so "
+                           f"{_agrees(len(moving), 'it is', 'they are')} "
                            "neither a pass nor a fail. The commit is not "
                            "cleared.")
 
     if missing and age_secs is not None and int(age_secs) <= grace:
         return (NOT_GREEN, f"{NOT_GREEN} — {_names(sorted(missing))} ran on the "
-                           f"previous head and has no run on {short}; the head "
+                           f"previous head and "
+                           f"{_agrees(len(missing), 'has', 'have')} no run on "
+                           f"{short}; the head "
                            f"commit is {_duration(age_secs)} old, inside the "
                            f"{_window(grace)} creation window, so a run is "
                            "still expected. Waiting is the correct action.")
@@ -501,7 +507,7 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
     # anything — the scope of a clearance is what was over-claimed.
     return (GREEN, f"{GREEN} — every workflow on {short} concluded and every "
                    f"leg passed ({n_legs} legs across {n_wf} "
-                   f"{'workflow' if n_wf == 1 else 'workflows'}).{scope}")
+                   f"{_agrees(n_wf, 'workflow', 'workflows')}).{scope}")
 
 
 def _run_conclusion(run: object) -> str:
@@ -519,6 +525,21 @@ def _names(names) -> str:
     if len(items) == 1:
         return f"`{items[0]}`"
     return ", ".join(f"`{n}`" for n in items)
+
+
+def _agrees(n: int, singular: str, plural: str) -> str:
+    """The form of a word agreeing with the count it is talking about.
+
+    Every count-dependent word in `verdict()` comes from here rather than from
+    its own inline conditional, and that is the whole mechanism of #841. The
+    pronoun half of the not-concluded sentence was already count-aware —
+    `'it is' if len(moving) == 1 else 'they are'` — and the verb half next to it
+    was left at a hardcoded `has`, so a two-workflow commit rendered
+    "`CodeQL`, `tests` has not concluded ... so they are neither a pass nor a
+    fail": one sentence, one subject, two different numbers. Two independent
+    conditionals over the same count is a disagreement waiting to be written.
+    """
+    return singular if n == 1 else plural
 
 
 # ---------------------------------------------------------------------------

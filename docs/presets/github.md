@@ -823,20 +823,30 @@ Same family as [`gh-job:...:grep:`](#gh-jobgrep-bounds-its-own-output-and-says-w
 
 ### A capped comment list says how many it did not show
 
-`## Comments (25)` above ten comments was the whole defect ([#719](https://github.com/Digital-Process-Tools/claude-supertool/issues/719)). The number in the header is correct and the ten below it are real, and a reader has no way to tell the two do not describe each other — so a brief written from the render is confidently missing fifteen comments. The ten shown are the most *recent*, which puts the original objection, the design decision and the "do not merge until X" precisely in the withheld half. Same family as the truncated body one section up, in count form rather than character form.
+`## Comments (25)` above ten comments was the whole defect ([#719](https://github.com/Digital-Process-Tools/claude-supertool/issues/719)). The number in the header is correct and the ten below it are real, and a reader has no way to tell the two do not describe each other — so a brief written from the render is confidently missing fifteen comments. Same family as the truncated body one section up, in count form rather than character form. Which ten are shown was settled separately, one section down.
 
 `gh-issue` had already said this correctly since [#681](https://github.com/Digital-Process-Tools/claude-supertool/issues/681); `gh-pr`, in the next file over, had never adopted it. Both now print the same line, from `presets/_body.py`:
 
 | Situation | What prints |
 | --- | --- |
 | 3 comments, all shown | `## Comments (3)` — nothing else, so the absence of a marker means the list is whole |
-| 25 comments, 10 shown | `## Comments (10 of 25 shown, 15 earlier truncated — use :full to fetch all)` |
+| 25 comments, 10 shown | `## Comments (10 of 25 shown, 15 hidden from the middle — use :full to fetch all)`, and `…[15 comments hidden here — use :full to fetch all]` at the seam between the third comment and the nineteenth |
 | a comment over `COMMENT_MAX` | the body, then `…[truncated at 500 chars — use :full]` |
 | `:full` | every comment, every body, and no markers |
 
 **The per-comment cap is per-op and the wording is not.** `gh-issue` cuts a comment at 1000 chars and `gh-pr` at 500 — a PR render also carries checks, reviews, threads and a diff stat, and comments must not crowd out the data that is the reason to open the op. That is the same per-context split `DESCRIPTION_MAX` already makes (3000 / 2000). The *disclosure* is identical at both, which is the part that must not drift.
 
-**Which ten are shown is a separate question and was left alone.** #719 argues the oldest comments carry the objection and the newest are the least load-bearing. That may be right, but it is an argument about selection, not about disclosure, and settling it inside a fix for an invisible cut would smuggle a behaviour change into a diff about honesty. The reasoning sits on `_body.COMMENT_TAIL` and in [#738](https://github.com/Digital-Process-Tools/claude-supertool/issues/738), which also raises a third option neither side of the argument had: keep the head *and* the tail with the gap marked in the middle, which is structurally what `gl-mr` already does.
+### Which ten are shown: the first three and the last seven
+
+#719 kept the ten most *recent* and [#738](https://github.com/Digital-Process-Tools/claude-supertool/issues/738) asked whether the ten oldest were the better choice, since the opening comments carry the original objection, the design decision and the "do not merge until X". The answer taken is neither, and the budget is unchanged at ten.
+
+**Both sides are right about different comments.** The head carries the objection that opened the thread; the tail carries the resolution that closed it. A cap that takes one end therefore guarantees that on every long thread one of the two load-bearing regions is gone — and the reader cannot tell which, because a thread whose opening never mattered renders identically to one whose opening was the whole point. That is the same shape as the invisible cut #719 fixed, one level up: an absence produced by the tool, read as an absence in the world.
+
+**The measurement #738 asked for is not available, and that is the argument rather than a gap in it.** #738 wanted a count over real threads of more than ten comments: does the load-bearing content sit in the first ten or the last ten? Measured across the whole tracker on 2026-08-11, the busiest thread in this repository has **six** comments and the cap has never once fired here, so there is no local corpus to count. These ops read other repos through `repo:OWNER/NAME`, where 25-comment threads are ordinary, but nothing in this repository can be sampled to choose an end. With no evidence either way, the design that does not require choosing one is the answer.
+
+**It is not a new convention.** `gl-mr`'s `_budgeted_comments` has kept a head and a recency tail with an inline gap marker since it was written, so the two GitHub ops converge on a shipped shape instead of drifting into a third. The split is `_body.COMMENT_HEAD` (3) + `_body.COMMENT_TAIL` (7), tail-weighted because "where does this stand" stays the commoner question, and three is enough to carry a thread that opens with an objection and a reply to it.
+
+**The disclosure moved with the cut.** `15 earlier truncated` was true of a tail-only cap and would be false of this one — a disclosure naming the wrong end is the #719 defect wearing the fix's own clothes — so the header now reads `15 hidden from the middle`, and the seam itself carries `…[15 comments hidden here — use :full to fetch all]` in the `cut_notice` wording. The header alone was not enough: it leaves the reader unable to see that two adjacent comments are not consecutive, which is the re-read the header exists to prevent.
 
 ### Linked PRs answer "will this close it", not "does this mention it"
 

@@ -476,7 +476,7 @@ That last rule is the house discipline made explicit: **three states, not two** 
 ```
 
 ```
-radar: master @ 6e5c95c — NOT GREEN — nothing has failed, but `CodeQL`, `tests` has not concluded
+radar: master @ 6e5c95c — NOT GREEN — nothing has failed, but `CodeQL`, `tests` have not concluded
 on 6e5c95c, so they are neither a pass nor a fail. The commit is not cleared.
   Dependency Graph ran on the previous head and has no run on 6e5c95c — that is not 'ran and passed'.
 radar: cold start — no prior snapshot, full board

@@ -1024,11 +1024,17 @@ def main() -> int:
         print("\n## Description\n_(empty)_")
 
     # Comments — the header printed the total and then showed the last ten of
-    # them, with nothing in between saying so (#719).
+    # them, with nothing in between saying so (#719). The ten are now the first
+    # three and the last seven, because either end alone drops a load-bearing
+    # region and leaves the reader unable to tell which (#738) — see
+    # presets/_body.comment_window.
     comments = d.get("comments", [])
-    shown = comments if full else comments[-_body.COMMENT_TAIL:]
+    shown, gap_hidden = ((list(comments), 0) if full
+                         else _body.comment_window(comments))
     print(f"\n{_body.comments_heading(len(shown), len(comments))}")
-    for c in shown:
+    for position, c in enumerate(shown):
+        if gap_hidden and position == _body.COMMENT_HEAD:
+            print(f"\n{_body.comments_gap_notice(gap_hidden)}")
         c_author = _untrusted.flat((c.get("author") or {}).get("login", "?"))
         c_body = c.get("body") or ""
         # The truncation notice is supertool's, so it prints outside the fence
