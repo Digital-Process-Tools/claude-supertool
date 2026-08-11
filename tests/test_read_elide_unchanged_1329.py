@@ -113,16 +113,44 @@ def test_the_window_is_measured_from_the_last_content_not_the_last_elision(
     """A file polled every minute must not be elided forever."""
     f = elide_on / "g.py"
     f.write_bytes(b"p = 3\n")
-    base = time.time()
+    # A whole-second base, never `time.time()`. The record stores the stamp as
+    # `%.3f`, so a wall-clock base carries a sub-millisecond residual that the
+    # stored value loses; a poll landing on the window edge then compares
+    # `900.0004 <= 900`, returns content, re-arms the window, and fails the
+    # assert below. That is a coin flip on the fraction of the second the test
+    # started in, not a platform fact — it first showed up on windows-latest
+    # and reproduces on macOS with a base fraction of .0004 (#1331).
+    base = 1_755_000_000.0
     window = supertool._READ_ELIDE_WINDOW_SECONDS
     monkeypatch.setattr(supertool.time, "time", lambda: base)
     supertool.op_read(str(f))
+    # Six steps across five polls: every poll lands strictly INSIDE the window.
+    # The edge itself is pinned by the test below, not smuggled in here.
     for step in range(1, 6):
         monkeypatch.setattr(supertool.time, "time",
-                            lambda s=step: base + s * (window / 5.0))
-        supertool.op_read(str(f))
+                            lambda s=step: base + s * (window / 6.0))
+        # Contrast: were these to come back as content the window would have
+        # been re-armed and the final assert would be a tautology.
+        assert "elided" in supertool.op_read(str(f)), f"poll {step} not elided"
     monkeypatch.setattr(supertool.time, "time", lambda: base + window + 1)
     assert "     1→p = 3" in supertool.op_read(str(f))
+
+
+def test_the_window_edge_is_inclusive_and_one_second_past_it_is_not(
+    elide_on: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pins `<=` at exactly the window, which the poll test must not sit on."""
+    window = supertool._READ_ELIDE_WINDOW_SECONDS
+    base = 1_755_000_000.0
+    for name, offset, elided in (("edge", window, True),
+                                 ("past", window + 1, False)):
+        f = elide_on / f"g_{name}.py"
+        f.write_bytes(b"p = 3\n")
+        monkeypatch.setattr(supertool.time, "time", lambda: base)
+        supertool.op_read(str(f))
+        monkeypatch.setattr(supertool.time, "time", lambda o=offset: base + o)
+        out = supertool.op_read(str(f))
+        assert ("elided" in out) is elided, f"{name}: {out[:80]}"
 
 
 def test_full_never_elides_and_is_named_by_the_elision(elide_on: Path) -> None:
