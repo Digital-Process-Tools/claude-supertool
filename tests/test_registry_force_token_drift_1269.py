@@ -39,9 +39,9 @@ it in `supertool 'ops'` cannot recover from a refusal that names it.
 
 Measured when this was written: **10 ops read a `force` token; 4 of them did
 not name it** — `bluesky_follow`, `bluesky_like`, `devto_publish` and
-`hashnode_publish`. Three of the four had it in their own module docstring, and
-all four had it in the prose of their `docs/presets/*.md` — the registry, which
-is what `ops` prints, was the only surface that omitted it.
+`hashnode_publish`. All four declared it in the opening line of their own module
+docstring, and all four in the prose of their `docs/presets/*.md` — the
+registry, which is what `ops` prints, was the only surface that omitted it.
 
 What this test does NOT cover, stated so its silence is not read as coverage:
 every other token, in both directions. #1269 is the record of why.
