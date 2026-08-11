@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -107,6 +108,12 @@ def test_the_refusal_is_capped_in_total_not_per_match(planted):
     assert len(reason) < 4000, (
         "the refusal carried " + str(len(reason)) + " characters of config "
         "text into every Bash call")
+    # A line that survived the budget must still carry text. Truncating to
+    # zero renders the ellipsis marker alone — a line saying only that there
+    # was something here.
+    marker = re.compile(r"^\s*… \(\+\d+ chars\)$")
+    for line in reason.split(NL):
+        assert not marker.match(line), repr(line)
 
 
 def test_a_project_defined_op_is_named_as_the_source(planted):

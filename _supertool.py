@@ -14772,7 +14772,12 @@ def _guard_command_word(token: str) -> str:
     lowered = name.lower()
     for suffix in _GUARD_EXE_SUFFIXES:
         if lowered.endswith(suffix) and len(name) > len(suffix):
-            return name[:-len(suffix)]
+            # Lower-cased, but only here. A stripped `.EXE` means the caller
+            # spelled a Windows executable, and Windows filenames are
+            # case-insensitive, so `GH.EXE` is `gh`. Doing it unconditionally
+            # would be wrong the other way: on POSIX `GH` and `gh` are two
+            # different commands and the registry declares one of them.
+            return lowered[:-len(suffix)]
     return name
 
 # Quote, escape and substitution characters, spelled as escapes rather than as
@@ -14936,7 +14941,7 @@ def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
     """
     out: List[str] = []
     unread: List[str] = []
-    single = double = False
+    single = double = backtick = False
     # The last character emitted outside quotes, which is what decides whether
     # a `#` opens a comment. `""` at the start of the command counts as a word
     # start; an escaped character deliberately does not, so an escaped space
@@ -14964,7 +14969,20 @@ def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
                 i += 1
             prev = " "
             continue
-        elif ch in (_GUARD_BACKTICK, "\n") and not single and not double:
+        elif ch == _GUARD_BACKTICK and not single and not double:
+            # A separator either way, so the substituted command becomes a
+            # segment of its own. The *closing* backtick additionally leaves a
+            # `$` where the outer command word would be, because that word is
+            # now whatever the substitution printed and this matcher will
+            # never see it: `\x60printf gh\x60 pr view 1` runs `gh pr view 1`
+            # and used to read as the segment `pr view 1`, matching nothing,
+            # `clean`. The marker makes it `undecided` instead.
+            backtick = not backtick
+            out.append(" ; " if backtick else " ; $ ")
+            i += 1
+            prev = ";"
+            continue
+        elif ch == "\n" and not single and not double:
             out.append(" ; ")
             i += 1
             prev = ";"
@@ -15048,6 +15066,24 @@ def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
                     _guard_command_word(head) in _GUARD_SHELLS
                     and "-c" in candidate):
                 note = f"`{head}` runs a string this matcher never sees"
+                if note not in unread:
+                    unread.append(note)
+            # A command word the shell **computes** is one this matcher is
+            # comparing a string it will never run: `$'gh'`, `${x:-gh}`, `$X`,
+            # `$(printf gh)`, `gh$IFS""pr`, and the `$` a closing backtick
+            # leaves behind all execute `gh pr view 1` under bash and all
+            # tokenised to something that matches nothing — `clean`, silently,
+            # which is #1389's whole defect wearing a different construct.
+            #
+            # Expansion is not implementable here (the value may not exist
+            # yet), so the honest verdict is the third state: allow, and say
+            # the command word was unreadable. Only the command word, and only
+            # the segment's own — `ls -la $HOME` has a `$` in an argument and
+            # stays `clean`, because a disclosure printed under most commands
+            # anyone writes is one nobody reads.
+            if position == 0 and "$" in head:
+                note = ("the command word " + repr(head) + " is expanded by "
+                        "the shell, so what actually runs was not read")
                 if note not in unread:
                     unread.append(note)
             heads.append(candidate)
@@ -15211,7 +15247,11 @@ def _guard_quote(text: str, cap: int) -> str:
     **system-authored** denial, which is the highest-authority channel the
     hook has.
     """
-    cap = max(cap, 0)
+    if cap <= 0:
+        # The budget is spent. An empty string drops the line; truncating to
+        # zero would render `… (+4812 chars)` on its own, which is a line of
+        # output that says only that there was output.
+        return ""
     flat = _flat_field(text)
     if len(flat) <= cap:
         return flat

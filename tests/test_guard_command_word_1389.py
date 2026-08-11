@@ -98,6 +98,14 @@ HIDDEN = [
      + " pr view 1"),
     ("a Windows path with forward slashes",
      "C:/tools/gh.exe pr view 1"),
+    # Windows filenames are case-insensitive, so a stripped `.EXE` spelling is
+    # the same binary. Only when a Windows suffix was actually present: on
+    # POSIX `GH` and `gh` are two different commands and must stay so.
+    ("an upper-case Windows executable",
+     "GH.EXE pr view 1"),
+    ("an upper-case Windows path, quoted",
+     chr(34) + "C:" + BACKSLASH + "tools" + BACKSLASH + "GH.EXE" + chr(34)
+     + " pr view 1"),
     ("a brace group is a separator, not a command word",
      "{ gh pr view 1; }"),
     ("a subshell group",
@@ -143,6 +151,56 @@ def test_the_guard_stays_out_of_the_way(label, command, tmp_path,
     guard_config(tmp_path, _OPS)
     verdict = supertool.guard_command(command)
     assert verdict.state in ("clean", "undecided"), (label, command, verdict)
+
+
+# The command word can be *computed* rather than written, and then the matcher
+# is comparing a string the shell will never run. Every one of these executes
+# `gh pr view 1` under bash — checked with a shell function, not reasoned
+# about — and every one returned `clean`, which is the same silent hole as the
+# table above wearing a different construct.
+#
+# `blocked` is not reachable here without implementing expansion, so the
+# honest verdict is `undecided`: the hook allows the command and says in the
+# transcript that it could not read the command word. That is the same third
+# state `eval` and `sh -c` already take, and it is the difference between
+# "checked, nothing replaced" and "never looked".
+UNREADABLE_COMMAND_WORD = [
+    ("ANSI-C quoting", "$" + chr(39) + "gh" + chr(39) + " pr view 1"),
+    ("parameter expansion with a default", "${x:-gh} pr view 1"),
+    ("a variable assigned in an earlier segment", "X=gh; $X pr view 1"),
+    ("command substitution", "$(printf gh) pr view 1"),
+    ("IFS word-splitting inside one token",
+     "gh$IFS" + chr(34) * 2 + "pr$IFS" + chr(34) * 2 + "view"),
+    ("a backtick substitution as the command word",
+     chr(96) + "printf gh" + chr(96) + " pr view 1"),
+]
+
+
+@pytest.mark.parametrize(
+    "label,command", UNREADABLE_COMMAND_WORD,
+    ids=[r[0] for r in UNREADABLE_COMMAND_WORD])
+def test_a_command_word_the_matcher_cannot_read_is_never_clean(
+        label, command, tmp_path, guard_config):
+    guard_config(tmp_path, _OPS)
+    verdict = supertool.guard_command(command)
+    assert verdict.state == "undecided", (label, command, verdict)
+    assert verdict.notes, (label, command)
+
+
+def test_an_ordinary_command_word_is_still_clean(tmp_path, guard_config):
+    """The price of the rule above, pinned: `$` in an *argument* is not this.
+
+    Only the command word is unreadable when it is computed. Marking every
+    `$` undecided would put a transcript line under most commands anyone
+    writes, which is how a disclosure becomes wallpaper.
+    """
+    guard_config(tmp_path, _OPS)
+    for command in ("ls -la $HOME", "grep -r $PATTERN src/",
+                    "echo $(date) >> log.txt"):
+        assert supertool.guard_command(command).state in (
+            "clean", "undecided"), command
+    assert supertool.guard_command("ls -la $HOME").state == "clean"
+    assert supertool.guard_command("grep -r $PATTERN src/").state == "clean"
 
 
 def test_a_comment_does_not_swallow_a_later_line_end_to_end(
