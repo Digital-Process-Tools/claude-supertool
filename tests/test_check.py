@@ -29,7 +29,10 @@ def test_check_unknown_preset() -> None:
 def test_check_pass(tmp_path: Path) -> None:
     f = tmp_path / "good.txt"
     f.write_text("hello")
-    supertool._CONFIG = {"ops": {"lint": {"cmd": "cat {file}"}}}
+    # `paths` since #1350: `{file}` in a cmd template is a path signal, and an
+    # object-form op carrying one and no declaration is refused, not skipped.
+    supertool._CONFIG = {"ops": {"lint": {
+        "cmd": "cat {file}", "paths": {"args": [1], "root": "cwd"}}}}
     out = supertool.op_check("lint", str(f))
     assert "PASS" in out
 
@@ -50,7 +53,9 @@ def test_check_timeout() -> None:
 def test_check_dict_config(tmp_path: Path) -> None:
     f = tmp_path / "test.txt"
     f.write_text("ok")
-    supertool._CONFIG = {"ops": {"mycheck": {"cmd": "cat {file}", "timeout": 5}}}
+    supertool._CONFIG = {"ops": {"mycheck": {
+        "cmd": "cat {file}", "timeout": 5,
+        "paths": {"args": [1], "root": "cwd"}}}}
     out = supertool.op_check("mycheck", str(f))
     assert "PASS" in out
 
