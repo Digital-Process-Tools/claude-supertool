@@ -110,7 +110,23 @@ _FLAGS = {"nopipe", "iids", "external", "stale", "nomilestone"}
 # with the sign flipped — the tool's failure to narrow, read as a fact about
 # the world.
 _FILTER_KEYS = {"author", "assignee", "label", "milestone", "state", "per",
-                "iids"}
+                "iids", "search"}
+
+# What `search=` is, said once, next to the argv it produces (#1395).
+#
+# The same key is spelled `search=` on `gl-mrs`, and the two engines are not
+# the same engine. That is deliberate rather than sloppy, and the reason is
+# mechanical: this op's whole grammar is ONE comma-separated segment and
+# supertool splits an op argument on ':', so `search=in:title widget` is
+# refused by `_filter_tokens.extra_segments_error` before any filter is
+# parsed. GitHub's qualifier language is unreachable from here by
+# construction. What is left on both sides is "this text occurs in this
+# thing", and the difference that survives is SCOPE — which is why the scope
+# is printed on every render rather than left to be assumed. A search that
+# quietly covered less than the caller meant would return a zero that reads
+# as an absence in the world, this file's own defect class with a filter on.
+SEARCH_ENGINE = "GitHub issue search"
+SEARCH_SCOPE = "title, body and comments"
 
 # Keys whose value is itself a comma-separated list. The op grammar is one
 # comma-separated segment, so without this `iids=1233,1240,1251` parses as
@@ -121,7 +137,7 @@ _LIST_KEYS = {"iids"}
 # population — so gh has nowhere to apply these and they would be dropped when
 # the lookup argv is built. Dropped, this file's own defect class: a board that
 # answers a question nobody asked, printed as though it did.
-_LISTING_KEYS = {"author", "assignee", "label", "milestone", "state"}
+_LISTING_KEYS = {"author", "assignee", "label", "milestone", "state", "search"}
 
 _STATES = {"open", "closed", "all"}
 
@@ -195,9 +211,19 @@ def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
         if key == "state":
             if val in _STATES and val != "open":
                 cmd += ["--state", val]
-        elif key in {"author", "assignee", "label", "milestone"}:
+        elif key in {"author", "assignee", "label", "milestone", "search"}:
+            # `search` goes to `gh issue list --search`, which pushes the query
+            # to GitHub. A client-side filter over one `--limit` page would
+            # answer a different question — "which of the first 50 mention X"
+            # — and would say `capped at --limit` about the fetch while the
+            # caller read it as being about the matches (#1395).
             cmd += [f"--{key}", val]
     return cmd
+
+
+def _search_note(query: str) -> str:
+    """Which engine answered, and what it looked at. One sentence, everywhere."""
+    return f"search {query!r} — {SEARCH_ENGINE} over {SEARCH_SCOPE}"
 
 
 # ---------------------------------------------------------------------------
@@ -963,8 +989,21 @@ def _row(row: dict) -> str:
     )
 
 
-def _render_table(rows: list[dict]) -> str:
+def _render_table(rows: list[dict], search: str | None = None) -> str:
+    """The board, or the named absence that is not a failure.
+
+    `No issues match.` under a `search=` is three claims at once: the search
+    ran, it covered what you think it covered, and the tracker holds nothing.
+    Only the third is what the caller wants to read, and the first two are
+    exactly what goes wrong. A search that could not run never reaches here —
+    it keeps its non-zero exit above — so this sentence is free to say the
+    search RAN, which is the fact that distinguishes the two (#1395).
+    """
     if not rows:
+        if search is not None:
+            return (f"No issues match {_search_note(search)}. "
+                    "The search ran and matched nothing — an empty result, "
+                    "not a lookup that failed.")
         return "No issues match."
     return "\n".join(_row(r) for r in _sorted(rows))
 
@@ -1151,6 +1190,9 @@ def main_with_args(arg_str: str) -> int:
         per_page = int(filters.pop("per"))
     iids_spec = filters.pop("iids", None)
     numbers_only = "iids" in flags
+    # NOT popped — `_build_list_cmd` forwards it to `gh issue list --search`.
+    # Read here so every render below can name the query and the scope.
+    search = filters.get("search")
 
     rows: list[dict]
     unresolved: list[dict] = []
@@ -1214,6 +1256,13 @@ def main_with_args(arg_str: str) -> int:
     # Not stderr — `_run_custom_op` returns a successful op's stdout and drops
     # its stderr, so a note there is a note nobody receives (#654).
     if numbers_only:
+        # The search disclosure rides the piped shape too. This stream becomes
+        # another tool's input, and a list of numbers produced by a search that
+        # covered title/body/comments is not the same population as one from a
+        # search over titles — a consumer that cannot see which it got will
+        # read the shorter one as the tracker being emptier (#1067's shape).
+        if search is not None:
+            print(f"# {_search_note(search)}")
         for note in lookup_notes:
             print(f"# {note}")
         cap = _cap_note(per_page, fetched)
@@ -1313,8 +1362,15 @@ def main_with_args(arg_str: str) -> int:
         cap = _cap_note(per_page, fetched)
         if cap:
             print(f"({cap})")
+        # Above the board as well as in the footer, for the same reason the cap
+        # note is: the consumer that truncates loses the footer, and a board
+        # read without knowing what was searched is a board read wrong.
+        if search is not None:
+            print(f"({_search_note(search)})")
         print(_untrusted.flat_note("issue titles and labels"))
-    print(_render_table(rows))
+    print(_render_table(rows, search))
+    if search is not None:
+        notes.insert(0, _search_note(search))
     footer = _footer(rows, reason, per_page, fetched, notes)
     if footer:
         print(f"\n{footer}")

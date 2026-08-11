@@ -74,7 +74,22 @@ _FILTER_FLAG = {
     "milestone": "--milestone",
     "source-branch": "--source-branch",
     "target-branch": "--target-branch",
+    # `glab mr list --help`: "Filter by <string> in title and description."
+    # Server-side, so it narrows the population rather than the page (#1395).
+    "search": "--search",
 }
+
+# What `search=` is here, and what it is NOT (#1395).
+#
+# `gh-issues` spells the same key `search=` and runs a different engine. The
+# shared spelling is honest only because the scope is stated: GitHub's issue
+# search reads comments, GitLab's `search=` does not, and a caller who learned
+# the key on one side would otherwise carry the wrong expectation to the other
+# and read a zero as "nobody has mentioned this". Naming the half that is not
+# covered is the whole point — an unstated narrowing is an absence produced by
+# the tool, read as an absence in the world.
+SEARCH_ENGINE = "GitLab search"
+SEARCH_SCOPE = "title and description only — comments are NOT searched"
 
 # opened is glab's default and therefore has no flag, which is exactly why a
 # value with no mapping is dangerous: it emits nothing and the default board
@@ -165,6 +180,15 @@ def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
         elif key in _FILTER_FLAG and val:
             cmd += [_FILTER_FLAG[key], val]
     return cmd
+
+
+def _search_note(query: str) -> str:
+    """Which engine answered, and what it looked at — one wording, one source.
+
+    Printed once per render: above the board when there are rows, or inside
+    the `No MRs match ...` line when there are none. Never both.
+    """
+    return f"search {query!r} — {SEARCH_ENGINE} over {SEARCH_SCOPE}"
 
 
 def _run(cmd: list[str], timeout: int = 25) -> subprocess.CompletedProcess[str]:
@@ -497,12 +521,23 @@ def _row(m: dict, watched: set[str], show_pipe: bool, suffix: str = "") -> str:
     )
 
 
-def _render_table(mrs: list[dict], watched: set[str], show_pipe: bool) -> str:
+def _render_table(mrs: list[dict], watched: set[str], show_pipe: bool,
+                  search: str | None = None) -> str:
     """Triage table: pipeline (+ failed job), approval, age, diff size, flags.
 
     Sorted failing-first then stalest so what needs you is at the top.
+
+    `No MRs match.` under a `search=` would be read as a statement about the
+    project rather than about a substring match over titles and descriptions.
+    A search that could not run never reaches here — it keeps its non-zero
+    exit above — so this sentence may say the search RAN, which is the fact
+    that tells the empty result from the failed lookup (#1395).
     """
     if not mrs:
+        if search is not None:
+            return (f"No MRs match {_search_note(search)}. "
+                    "The search ran and matched nothing — an empty result, "
+                    "not a lookup that failed.")
         return "No MRs match."
     return "\n".join(_row(m, watched, show_pipe) for m in sorted(mrs, key=_sort_key))
 
@@ -600,6 +635,9 @@ def main() -> int:
     per_page = cfg["per_page"]
     if "per" in filters:
         per_page = int(filters.pop("per"))
+    # NOT popped — `_build_list_cmd` forwards it to `glab mr list --search`.
+    # Read here so every render below can name the query and the scope.
+    search = filters.get("search")
 
     try:
         result = _run(_build_list_cmd(filters, per_page))
@@ -639,6 +677,12 @@ def main() -> int:
     # that starts background pollers, so an MR dropped here is one nobody looks
     # at again. Losing it on both streams is the one option not available.
     if iids_only:
+        # The search disclosure rides the piped shape too: a list of iids
+        # produced by a title/description match is not the same population as
+        # one from a full-text search, and a consumer that cannot see which it
+        # got reads the shorter list as the project being quieter.
+        if search is not None:
+            print(f"({_search_note(search)})", file=sys.stderr)
         if notice:
             print(notice, file=sys.stderr)
         for m in mrs:
@@ -657,8 +701,15 @@ def main() -> int:
     # unreadable board is one nobody reads. `_board.render_row` carries the
     # structural half — after it no title can reach column 0.
     if mrs:
+        # Guarded on `mrs`, the same way `gh-issues` guards its header notes:
+        # the empty render already carries the whole sentence inside its own
+        # `No MRs match ...` line, and printing it again immediately above is
+        # the same disclosure twice, adjacent. A note repeated verbatim is the
+        # one that gets skimmed.
+        if search is not None:
+            print(f"({_search_note(search)})")
         print(_untrusted.flat_note("MR titles"))
-    print(_render_table(mrs, watched, show_pipe))
+    print(_render_table(mrs, watched, show_pipe, search))
     footer = _footer(mrs, watched, show_pipe, unchecked)
     if footer:
         print(f"\n{footer}")
