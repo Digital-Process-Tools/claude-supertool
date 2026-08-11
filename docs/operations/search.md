@@ -9,12 +9,13 @@ Pattern-based ops for finding content across files or zooming into a known locat
 | `grep` | `grep:PATTERN:PATH` or `grep:PATTERN:PATH:LIMIT` | 10 results default, code + doc extensions only. Each output line is capped at 500 chars (`grep.max_line_chars`) with a `… (+N chars)` marker — see [per-line cap](#per-line-cap). **Auto-reads** full file if PATH is a concrete file under **both** the byte cap (< 20KB) **and** the line cap (≤ 60 lines, `MAX_AUTOREAD_LINES`) with a match; over the line cap it prints a `[auto-read skipped: > N lines — read:PATH:full to see it]` note instead of dumping the file. Append `:no-auto-read` to suppress entirely (parity with `glob`). |
 | `grep` (path list) | `grep:PATTERN:A.py,B.py` | **Refused.** PATH is one path — a comma list is joined into a single filename. `git-resolve` accepts `PATH[,PATH...]`; `grep` does not, and now says so instead of blaming the CWD. Pass a directory, or one `grep` op per file (ops batch into one call). |
 | `grep` (LIMIT 0) | `grep:PATTERN:PATH:0` | **Refused.** `0` = unlimited is the usual convention and supertool declines to guess between that and the default it used to substitute silently. Omit LIMIT, or pass a positive one. |
+| `grep` (LIMIT `all`) | `grep:PATTERN:PATH:all` | Every match, no cap — see [`all` says which question you are asking](#all-says-which-question-you-are-asking). Works in the CONTEXT form (`grep:PATTERN:PATH:all:2`), in `grep_around:PATTERN:PATH:N:all`, and as `limit = "all"` in a payload. Refused in the CONTEXT slot, where it has no meaning. |
 | `grep` (context) | `grep:PATTERN:PATH:LIMIT:CONTEXT` | Show CONTEXT lines before/after each match (like `grep -C`). Match lines: `path:lineno:content`. Context lines: `path-lineno-content`. Non-adjacent groups separated by `--`. |
 | `grep` (count) | `grep:PATTERN:PATH:LIMIT:CONTEXT:count` | Return match counts per file instead of content. Output: `filepath: N matches` per line. |
 | `grep_around` | `grep_around:PATTERN:PATH` or `grep_around:PATTERN:PATH:N:LIMIT` | Every match across files with N lines context (default N=3, LIMIT=10). Alias for `grep:PATTERN:PATH:LIMIT:CONTEXT` with sane defaults — useful for "show me how everyone uses this". Output capped at ~16KB (see below). |
 | `around` | `around:PATTERN:PATH` or `around:PATTERN:PATH:N` | Show N lines (default 10) before and after the **first** match of PATTERN in a single file. Uses line-numbered output like `read`. Output capped at ~16KB (see below). |
 | `around` (line form) | `around:PATH:LINE` or `around:PATH:LINE:N` | Answered by `around_line`, with a receipt naming the call that ran. `around` is PATTERN:PATH and `around_line` is PATH:LINE — opposite argument order, same output — so this shape used to fail with `file not found: 1160`. Only applies where the literal reading is already an error: LINE must not name a real file and PATH must resolve. A genuinely numeric pattern with a real path still greps. |
-| `grep` / `around` (saturating pattern) | `grep:\| \{:PATH` | **Refused.** A top-level empty alternation branch matches every line, and `1000+ matches` reads exactly like a search that found a lot. Supertool rewrites bash-grep BRE alternation, so an escaped literal `\|` becomes a bare `|` with nothing to its left. Use a character class for a literal pipe: `[|] \{`. An empty branch inside a group (`colo(u|)r`) or a `|` inside `[...]` is untouched. |
+| `grep` / `around` (saturating pattern) | `grep:\| \{:PATH`, `grep:^\|def op_:PATH` | **Refused.** A top-level alternation branch that matches the empty string matches at position 0 of every line, so the whole pattern does — and `1000+ matches` reads exactly like a search that found a lot. Supertool rewrites bash-grep BRE alternation, so an escaped literal `\|` becomes a top-level `|`: with nothing to its left that branch is empty, and with `^` to its left it is `^`. Both saturate; the refusal names the offending branch. Use a character class for a literal pipe: `[|] \{`. Untouched: a branch inside a group (`colo(u|)r`, `(^|,)alpha`), a `|` inside `[...]`, and `^$|alpha` — `^$` matches a blank line and not `abc`, so that is a real search. |
 | `around_line` | `around_line:PATH:LINE` or `around_line:PATH:LINE:N` | Show N lines (default 10) of context around a specific line number. Target line marked with `→`. |
 | `between` | `between:SYMBOL:PATH` or `between:re:START:END:PATH` | Return a chunk of a file. **Symbol mode (default):** full body of a named function/method/class via tree-sitter (PHP, Python, JS, TS, Go, Rust, Java, Ruby — a `::`-qualified query stays one symbol rather than re-reading the call as `re:` mode, but it is matched literally against the definition's own name node — PHP `Foo::bar` does not resolve, pass the bare `bar`). SYMBOL may be written the way it reads in source — leading modifiers (`async`, `function`, `def`, `class`, `public static function`, …) and a trailing `(params)` are stripped and retried after the exact match fails, so `between:async function fillAndSubmit:helpers.js` resolves. **Pattern mode (`re:` prefix):** inclusive line slice from first line matching START regex to first line after matching END regex (language-agnostic). |
 
@@ -44,6 +45,28 @@ A single pathological line — a minified bundle, a 7KB one-line `@extends Foo<a
 | `— TRUNCATED, 1000+ matches total (count capped at 1000)`  | Counting stopped at the ceiling; the number is a floor   |
 | `— TRUNCATED, more matches exist (total not counted)`      | Nothing counted — the delegated rtk path, see below      |
 | no marker at all                                           | The answer is complete; the count above it is exact      |
+
+## `all` says which question you are asking
+
+`grep` has one shape for two questions, and its default limit answers the second with the first:
+
+- *"show me some"* — orienting around a symbol. A limit is a **feature**; the top N are the useful ones.
+- *"find every one"* — a rename, a security sweep, a call-site audit. A limit is a **wrong answer**, and the honest `TRUNCATED, 40 matches total` under it does not stop the reader treating the visible rows as the set. That is how a #907 sweep missed two call sites that a later pytest run found.
+
+`all` removes the cap and says so on the count line:
+
+```
+(40 results in 1 files, scanned 1 files, limit all)
+```
+
+`limit all` and `TRUNCATED` are mutually exclusive by construction — a capped answer cannot render as a complete one, and vice versa. Raising the number instead (`:500`) is the same defect with extra steps: it is a guess that has to be high enough, and nothing on the line says whether it was.
+
+Notes:
+
+- **It never delegates to rtk.** The delegated report has no candidate list to count over, so its truncation clause is `total not counted` — the one state a completeness sweep must not come back in.
+- **`all` is a LIMIT and only a LIMIT.** `grep:PATTERN:PATH:5:all` is refused rather than read as either "limit 5" or "limit all": one of those runs a call nobody typed, the other ignores a token the caller believes changed something. Same for a third trailing token (`:5:2:all`), which the parser peels and never reads. `grep_around` is `PATTERN:PATH:N:LIMIT` — context **first** — so `grep_around:PATTERN:PATH:all` is refused with the slot order named rather than an `int()` error. The token is matched exactly (`all`, not `All`) on both the colon CLI and the payload route.
+- **`grep:…:count` never needed it** — count mode has no cap and its header claims none.
+- **`all` bounds matches, not bytes.** With a CONTEXT argument the op still shares `grep_around`'s ~16KB output cap, which cuts at a line boundary and names itself in a footer (`… truncated (~N more bytes)`). `limit all` is a claim about the match cap only; plain `grep:PATTERN:PATH:all` has no byte cap beyond the per-line one.
 
 **The ceiling exists because counting is not free, and the number was measured rather than guessed.** Over a 67,855-file tree, a dense pattern's walk went from 0.01s (stop at `limit + 1`) to 10.3s (count everything); stopping at 1000 cost 0.05s. The bound is on *matches*, not files, so a sparse pattern still reads the whole candidate list — which is exactly what a **non**-truncated grep already does, so the op's worst case is unchanged rather than raised. Tune it with `grep.count_ceiling` / `SUPERTOOL_GREP_COUNT_CEILING`; it is never applied below your own `LIMIT`.
 

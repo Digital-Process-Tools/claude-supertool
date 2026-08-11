@@ -53,6 +53,13 @@ OPERATIONS
     grep:PATTERN:PATH:LIMIT    Search with custom result limit. LIMIT 0 is
                                 refused — it is not "unlimited" here. Omit
                                 LIMIT for the default.
+    grep:PATTERN:PATH:all      Every match, no cap — for "find every one"
+                                (a call-site audit, a rename, a sweep). The
+                                count line reads `limit all` and can never
+                                carry TRUNCATED. `all` is a LIMIT only —
+                                anywhere else in the token list it is
+                                refused, never re-read as something it
+                                could have meant.
     grep:PATTERN:PATH:LIMIT:CONTEXT
                                Search with context lines (like grep -C).
                                 Match lines: path:lineno:content
@@ -243,6 +250,18 @@ MAX_GREP_LINE_CHARS = 500  # per-line cap on grep output (#363) — one 25KB sin
 CHAR_WINDOW_CHARS = 1000  # head/tail peek window for minified single-line files
 MINIFIED_LINE_CHARS = 5000  # a single line this long means line-based view is useless
 MAX_GREP_RESULTS = 10
+# `all` in grep's LIMIT slot (#1328). `grep` had one shape for two questions —
+# "show me some", where a cap is a feature, and "find every one", where a cap is
+# a wrong answer with an honest marker under it. The token is a sentinel rather
+# than a big number so the count line can print `limit all`: a caller reading
+# `limit 9223372036854775807` learns nothing about whether the sweep was
+# complete, and the count line is the part that survives a pipe.
+GREP_LIMIT_ALL = -1
+_GREP_ALL_TOKEN = "all"
+# `all` parsed out of the CONTEXT slot. Reading it as a limit would run a call
+# nobody typed, and dropping it would run the default under a token the caller
+# believes changed something.
+GREP_LIMIT_ALL_MISPLACED = -2
 MAX_GREP_COUNT_CEILING = 1000  # how far past LIMIT grep keeps counting so a
 # truncated answer can state its scope (#1073). Counting every match forfeits
 # the early exit: measured over a 67,855-file tree, a dense pattern's walk went
@@ -3299,13 +3318,58 @@ def _top_level_branches(pattern: str) -> List[str]:
     return branches
 
 
-def _saturates(pattern: str) -> bool:
-    """True when the pattern has an empty TOP-LEVEL alternation branch, i.e. it
-    matches every line. Not a search — a saturation."""
-    if "|" not in pattern:
+# Probe strings for "does this branch match every line?" (#1314). A branch that
+# matches the EMPTY string matches at position 0 of every line, so the whole
+# alternation does — that is the property, and an empty branch is only its
+# simplest spelling. `^`, `$`, `.*` and `z*` all have it and all sailed past the
+# #1120 predicate, which tested for `b == ""`: the filed call
+# `grep:^\|def op_:_supertool.py:5` reported 5 of "1000+ matches" for a pattern
+# that matched every line of the file.
+#
+# The empty probe alone is not enough, and this is where the line is drawn.
+# `^$` matches the empty string and NOT `x`, so `^$|alpha` is a real search
+# ("blank lines or alpha") and refusing it would remove the op for a legitimate
+# caller. A branch has to match every probe — including non-empty ones — before
+# it is called saturating. Same reason `.` and `\b` stay out: neither matches a
+# blank line, so neither makes the pattern match every line.
+_SATURATION_PROBES = ("", "x", "supertool 42", "  ")
+
+
+def _branch_matches_everything(branch: str) -> bool:
+    """True when this one top-level branch matches every line there is."""
+    if branch == "":
+        return True
+    try:
+        regex = re.compile(branch)
+    except re.error:
+        # An uncompilable branch is not a saturation claim to make here; the
+        # pattern's own compile (and its literal fallback) decides what happens.
         return False
+    return all(regex.search(probe) is not None for probe in _SATURATION_PROBES)
+
+
+def _saturating_branch(pattern: str) -> Optional[str]:
+    """The first TOP-LEVEL alternation branch that matches every line, or None.
+
+    Returns the branch rather than a bool because the refusal has to name it:
+    `^|def op_` and `|def op_` are one keystroke apart and want different fixes,
+    and a diagnosis that does not say which half saturated is not actionable.
+    """
+    if "|" not in pattern:
+        return None
     branches = _top_level_branches(pattern)
-    return len(branches) > 1 and any(b == "" for b in branches)
+    if len(branches) < 2:
+        return None
+    for branch in branches:
+        if _branch_matches_everything(branch):
+            return branch
+    return None
+
+
+def _saturates(pattern: str) -> bool:
+    """True when a TOP-LEVEL alternation branch matches every line, i.e. the
+    pattern matches every line. Not a search — a saturation."""
+    return _saturating_branch(pattern) is not None
 
 
 def _saturating_pattern_refusal(written: str, effective: str,
@@ -3317,22 +3381,30 @@ def _saturating_pattern_refusal(written: str, effective: str,
     report cannot be told apart from a real one. Nothing downstream can recover
     the distinction, so it has to be refused at the call.
     """
-    if not _saturates(effective):
+    branch = _saturating_branch(effective)
+    if branch is None:
         return ""
+    if branch == "":
+        why = ("has an empty alternation branch, so it matches every line of "
+               "every file scanned")
+    else:
+        why = (f"has an alternation branch `{branch}` that matches the empty "
+               f"string, so the whole pattern matches every line of every "
+               f"file scanned")
     # Backticks, not !r: repr() DOUBLES every backslash, and a backslash is the
     # one character this message exists to show. `'\\| \\{'` for a pattern the
     # caller typed as `\| \{` is the tool mangling its own diagnosis.
     lines = [
-        f"ERROR: pattern `{effective}` has an empty alternation branch, so it "
-        f"matches every line of every file scanned. That is a saturated "
-        f"pattern, not a search, and its result count is indistinguishable "
-        f"from a search that genuinely found a lot.",
+        f"ERROR: pattern `{effective}` {why}. That is a saturated pattern, not "
+        f"a search, and its result count is indistinguishable from a search "
+        f"that genuinely found a lot.",
     ]
     if rewritten:
+        became = ("a bare `|` with nothing to its left" if branch == ""
+                  else "a top-level `|` that split the pattern into branches")
         lines.append(
             f"  written as `{written}` — supertool rewrites bash-grep BRE "
-            f"alternation, so `{_BRE_ALT}` became a bare `|` with nothing to "
-            f"its left.")
+            f"alternation, so `{_BRE_ALT}` became {became}.")
         lines.append(
             f"  for a literal `|`, use a character class: "
             f"`{written.replace(_BRE_ALT, '[|]')}`")
@@ -3416,6 +3488,30 @@ def _count_lines(path: str, on_error: int = 0) -> int:
         return on_error
 
 
+# #1328 — `all` names the LIMIT slot and only that slot. Both neighbours are
+# refusals rather than readings: `all` in the CONTEXT slot read as a limit runs
+# a call nobody typed, and a third trailing token dropped on the floor (the
+# parser peels every trailing digit and reads two) runs the default under a
+# token the caller believes removed the cap.
+_GREP_ALL_OUTSIDE_LIMIT_SLOT = (
+    "ERROR: grep read `all` outside the LIMIT slot (grep:PATTERN:PATH:LIMIT:"
+    "CONTEXT). `all` is a LIMIT — it removes the result cap so a sweep is "
+    "complete; CONTEXT is a number of lines around each match and has no "
+    "`all`, and nothing follows CONTEXT. Did you mean "
+    "grep:PATTERN:PATH:all:CONTEXT?" + chr(10)
+)
+
+# `grep_around` is PATTERN:PATH:N:LIMIT — context FIRST, the opposite order to
+# grep's LIMIT:CONTEXT. Copying `grep:PATTERN:PATH:all` across lands `all` in
+# the N slot, where int() used to raise and the caller got the exception text.
+_GREP_AROUND_ALL_IN_N_SLOT = (
+    "ERROR: grep_around takes PATTERN:PATH:N:LIMIT — context first, the "
+    "opposite order to grep's LIMIT:CONTEXT — so `all` landed in the N slot. "
+    "Did you mean grep_around:PATTERN:PATH:N:all (e.g. "
+    "grep_around:PATTERN:PATH:3:all), or grep:PATTERN:PATH:all:N?" + chr(10)
+)
+
+
 # #945 — `0` is the near-universal spelling of "no limit", and grep accepted it,
 # ignored it, and quietly applied the default instead. Neither meaning is
 # guessed: honouring it as unlimited would hand a caller who typed one character
@@ -3444,6 +3540,21 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
                        no_exclude, no_auto_read))
 
 
+def _grep_limit_and_label(limit: int) -> Tuple[int, str]:
+    """Resolve grep's LIMIT into (effective cap, what the count line says).
+
+    `all` (#1328) arrives as the GREP_LIMIT_ALL sentinel and leaves as a cap
+    nothing can reach, plus the label `all`. Printing the number instead would
+    put `limit 9223372036854775807` on the line a reader uses to decide whether
+    a sweep was complete — a cap they then have to recognise to interpret.
+    """
+    if limit == GREP_LIMIT_ALL:
+        return sys.maxsize, _GREP_ALL_TOKEN
+    if limit <= 0:
+        limit = _get_op_int("grep", "max_results", MAX_GREP_RESULTS)
+    return limit, str(limit)
+
+
 def _op_grep(pattern: str, path: str = ".", limit: int = 0,
              context: int = 0, count_only: bool = False,
              no_exclude: bool = False, no_auto_read: bool = False) -> str:
@@ -3460,8 +3571,8 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
     When no_auto_read=True, suppresses the single-small-file auto-read so only
     the matching line(s) are emitted (parity with glob's :no-auto-read flag).
     """
-    if limit <= 0:
-        limit = _get_op_int("grep", "max_results", MAX_GREP_RESULTS)
+    unlimited = limit == GREP_LIMIT_ALL
+    limit, limit_label = _grep_limit_and_label(limit)
     if not pattern:
         return "ERROR: empty pattern\n"
 
@@ -3510,7 +3621,12 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
     # the native walker, where the result is right). `-E` closes the gap for
     # alternation, groups and quantifiers; the gate declines delegation for the
     # constructs ERE still cannot express, rather than translating them.
-    if (not count_only and context == 0 and _rtk_enabled() and _has_rtk()
+    # `all` never delegates (#1328): the delegated report cannot count what it
+    # did not collect, so its truncation clause is `total not counted` — the one
+    # state a completeness sweep must not come back in. The native walker is the
+    # only engine that can say `all` and mean it.
+    if (not count_only and context == 0 and not unlimited
+            and _rtk_enabled() and _has_rtk()
             and not _ERE_UNSAFE.search(pattern)):
         _, multi = _split_exclude_prefixes(excl)
         if not multi and not _gitignore_residual(path, excl):
@@ -3588,7 +3704,7 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
         literal_note = _literal_note(pattern, count) if literal else ""
         file_count = len({g[0][0] for g in groups if g})
         out = [literal_note, f"({count} results in {file_count} files{_scanned_suffix(scanned)}{hidden}, "
-               f"limit {limit}, context {context}"
+               f"limit {limit_label}, context {context}"
                f"{_truncation_suffix(truncated, total, capped)})\n"]
         if count == 0:
             out.append(_shim_facade_note(path))
@@ -3641,7 +3757,7 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
 
     out = [literal_note,
            f"({count} results in {file_count} files{_scanned_suffix(scanned)}{hidden}, "
-           f"limit {limit}{_truncation_suffix(truncated, total, capped)})\n"]
+           f"limit {limit_label}{_truncation_suffix(truncated, total, capped)})\n"]
     if count == 0:
         out.append(_shim_facade_note(path))
     current_file = ""
@@ -6008,19 +6124,35 @@ def _parse_grep_args(parts: List[str]) -> tuple:
             no_auto_read = True
         args = args[:-1]
 
-    # Peel trailing ints: format is ...PATH:LIMIT:CONTEXT
-    # Two trailing ints = limit + context; one trailing int = limit only
+    # Peel the trailing LIMIT[:CONTEXT] slots: format is ...PATH:LIMIT:CONTEXT.
+    # Two trailing tokens = limit + context; one = limit only. `all` (#1328) is
+    # accepted in the LIMIT slot alongside the digits — before this it was not a
+    # digit, so it fell through to the PATH slot and `grep:PAT:PATH:all` searched
+    # a directory called `all`.
     context = 0
     limit = _get_op_int("grep", "max_results", MAX_GREP_RESULTS)
-    trailing_ints = []
-    while len(args) >= 3 and args[-1].isdigit():
-        trailing_ints.insert(0, int(args[-1]))
+    trailing = []
+    while len(args) >= 3 and (args[-1].isdigit()
+                              or args[-1] == _GREP_ALL_TOKEN):
+        trailing.insert(0, args[-1])
         args = args[:-1]
-    if len(trailing_ints) == 1:
-        limit = trailing_ints[0]
-    elif len(trailing_ints) >= 2:
-        limit = trailing_ints[0]
-        context = trailing_ints[1]
+    if len(trailing) == 1:
+        limit = (GREP_LIMIT_ALL if trailing[0] == _GREP_ALL_TOKEN
+                 else int(trailing[0]))
+    elif len(trailing) >= 2:
+        limit = (GREP_LIMIT_ALL if trailing[0] == _GREP_ALL_TOKEN
+                 else int(trailing[0]))
+        if _GREP_ALL_TOKEN in trailing[1:]:
+            # `all` is a LIMIT. Reading it as one here would run a call nobody
+            # typed (limit `all` with the caller's number silently demoted to
+            # context), and ignoring it would run the default under a token the
+            # caller believes changed something. `trailing[1:]` rather than
+            # `trailing[1]` because the peel takes every trailing token and the
+            # read takes two: a third one is dropped, and a dropped `all` is
+            # exactly the silent-completeness bug this token exists to close.
+            limit = GREP_LIMIT_ALL_MISPLACED
+        else:
+            context = int(trailing[1])
 
     # Now args should be [pattern_parts..., path]
     # The path is the last element; everything before it is the pattern
@@ -18400,6 +18532,24 @@ def _payload_int(p: Dict[str, Any], key: str, default: int) -> int:
         raise ValueError(f"field '{key}' must be an integer, got {value!r}") from None
 
 
+def _payload_grep_limit(p: Dict[str, Any], default: int) -> int:
+    """`limit` for the grep family, where the string `all` is a value (#1328).
+
+    The colon CLI and the payload route have to accept the same LIMIT or the
+    token is a feature of one spelling — and the payload route is the one that
+    exists for the patterns the CLI cannot express, which is exactly where a
+    call-site sweep with an alternation ends up.
+    """
+    value = p.get("limit")
+    # Matched exactly, as the colon CLI matches it and as `count` /
+    # `no-auto-read` are matched there. A payload that accepted `All` while the
+    # CLI read the same token as a path name would make the spelling a property
+    # of the route; `_payload_int` refuses it by name instead.
+    if value == _GREP_ALL_TOKEN:
+        return GREP_LIMIT_ALL
+    return _payload_int(p, "limit", default)
+
+
 def _payload_bool(p: Dict[str, Any], key: str) -> bool:
     value = p.get(key, False)
     if isinstance(value, bool):
@@ -18459,9 +18609,8 @@ def _read_op_from_payload(op: str, payload: Any, no_exclude: bool = False) -> st
                         f"field 'pattern'\n")
             path = str(p.get("path") or ".")
             if op == "grep":
-                p_limit = _payload_int(
-                    p, "limit",
-                    _get_op_int("grep", "max_results", MAX_GREP_RESULTS))
+                p_limit = _payload_grep_limit(
+                    p, _get_op_int("grep", "max_results", MAX_GREP_RESULTS))
                 if p_limit == 0:
                     return _GREP_ZERO_LIMIT
                 return op_grep(
@@ -18472,7 +18621,7 @@ def _read_op_from_payload(op: str, payload: Any, no_exclude: bool = False) -> st
                     no_auto_read=_payload_bool(p, "no_auto_read"),
                 )
             if op == "grep_around":
-                return op_grep(pattern, path, _payload_int(p, "limit", 10),
+                return op_grep(pattern, path, _payload_grep_limit(p, 10),
                                _payload_int(p, "n", 3), False,
                                no_exclude=no_exclude)
             return op_around(pattern, path, _payload_int(p, "n", 10))
@@ -19183,6 +19332,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 return _receipt(header, _contained)
             if limit == 0:
                 return _receipt(header, _GREP_ZERO_LIMIT)
+            if limit == GREP_LIMIT_ALL_MISPLACED:
+                return _receipt(header, _GREP_ALL_OUTSIDE_LIMIT_SLOT)
             _hint = _colon_split_hint("grep", pattern, path)
             if _hint:
                 return _receipt(header, _hint)
@@ -19193,8 +19344,14 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             # context. Sane defaults for "show me how everyone uses this".
             ga_pattern = parts[1] if len(parts) > 1 else ""
             ga_path = parts[2] if len(parts) > 2 and parts[2] else "."
+            if len(parts) > 3 and parts[3] == _GREP_ALL_TOKEN:
+                return _receipt(header, _GREP_AROUND_ALL_IN_N_SLOT)
             ga_context = int(parts[3]) if len(parts) > 3 and parts[3] else 3
-            ga_limit = int(parts[4]) if len(parts) > 4 and parts[4] else 10
+            ga_limit_tok = parts[4] if len(parts) > 4 and parts[4] else ""
+            if ga_limit_tok == _GREP_ALL_TOKEN:
+                ga_limit = GREP_LIMIT_ALL
+            else:
+                ga_limit = int(ga_limit_tok) if ga_limit_tok else 10
             if ga_limit == 0:
                 return _receipt(header, _GREP_ZERO_LIMIT)
             body = op_grep(ga_pattern, ga_path, ga_limit, ga_context,
