@@ -522,7 +522,18 @@ def _worktree_changes(git_fn=None):
     invent a modified file out of a path that no longer exists.
     """
     run = _git if git_fn is None else git_fn
-    r = run(["status", "--porcelain=v1", "-z"])
+    # `-c status.showUntrackedFiles=normal` (#1290/#1295). #1295 classed this
+    # site as a render; it is not. `_resolve_all_token` feeds this list to
+    # `git add`, so an inherited `status.showUntrackedFiles=no` does not merely
+    # print short — `--all` stages and commits the tracked half only, under a
+    # receipt naming that subset as the answer to `--all`, indistinguishable
+    # from a tree whose untracked half was genuinely empty.
+    #
+    # Only the display setting is pinned. `core.quotePath` is deliberately left
+    # alone: `-z` is unquoted whatever it is set to, and pinning it here would
+    # suggest this read depends on something it does not.
+    r = run(["-c", "status.showUntrackedFiles=normal",
+             "status", "--porcelain=v1", "-z"])
     if r.returncode != 0:
         said = " ".join((r.stderr or "").split())[:120]
         return [], [], said or f"exit {r.returncode}"

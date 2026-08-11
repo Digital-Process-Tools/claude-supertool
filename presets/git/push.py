@@ -893,7 +893,18 @@ def _uncommitted_leftovers() -> tuple[Optional[list[str]], str]:
     a stack trace at this point costs the caller the whole receipt of a push
     that succeeded (#399/#640).
     """
-    r, why = _checked_git(["status", "--porcelain"], "git status --porcelain")
+    # `-c status.showUntrackedFiles=normal`: the setting is an ordinary user
+    # or repo preference and it decides whether `git status` mentions untracked
+    # files *at all*, so an inherited `no` returns an empty list from a dirty
+    # tree — which renders here as silence, which means "nothing was left
+    # behind" (#1290/#1295). The pin goes on the command line because `-c`
+    # outranks config files and `GIT_CONFIG_*` both; setting it through the
+    # environment would lose to a user who had set it through the environment.
+    # `normal` and not `all`: this check reports a *count*, and `all` defeats
+    # git's directory collapse so an untracked `venv/` would arrive as N lines
+    # instead of one.
+    r, why = _checked_git(["-c", "status.showUntrackedFiles=normal",
+                           "status", "--porcelain"], "git status --porcelain")
     if r is None:
         return None, why
     return [ln for ln in r.stdout.splitlines() if ln.strip()], ""

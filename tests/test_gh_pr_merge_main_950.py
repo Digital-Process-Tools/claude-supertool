@@ -94,8 +94,13 @@ class _Harness:
                  declared_names: list | None = None,
                  merge_rc: int = 0,
                  branch_stdout=_DEFAULT,
+                 default_branch: str = "master",
                  fail_json: set | None = None):
         self.pr = pr
+        # `""` is a real answer from `_repo_identity`, not a missing fixture:
+        # the API reply can lack `defaultBranchRef.name` while still naming the
+        # repository, and `main()` only bails on the repository half (#1292).
+        self.default_branch = default_branch
         self.after = after if after is not None else {
             "state": "MERGED", "mergedAt": "2026-08-07T10:00:00Z",
             "mergeCommit": {"oid": "d" * 40}, "headRefName": pr["headRefName"]}
@@ -128,7 +133,8 @@ class _Harness:
             if "repo" in self.fail_json:
                 return (None, "gh timed out")
             return ({"nameWithOwner": REPO,
-                     "defaultBranchRef": {"name": "master"}}, "")
+                     "defaultBranchRef": ({"name": self.default_branch}
+                                          if self.default_branch else {})}, "")
         if args[:2] == ["pr", "view"] and "statusCheckRollup" in args[-1]:
             if "pr" in self.fail_json:
                 return (None, "PR not found")
@@ -500,6 +506,49 @@ def test_a_head_named_after_the_default_branch_gets_no_printed_command(
     assert "gh api -X DELETE" not in out
     assert "git branch -d" not in out
     assert "default branch" in out
+
+
+def test_an_unread_default_branch_gets_no_printed_delete_command(
+        monkeypatch, capsys):
+    """`run_cleanup` refuses all three items here; the printed arm did not.
+
+    The file's own comment calls a printed delete "the same decision made by
+    the reader", and `run_cleanup` requires four facts before any delete: the
+    merge, the repository, the default branch, and the ref identity. The
+    printed arm tested `x_repo is not False or head == default_branch`, which
+    an **empty** `default_branch` satisfies neither half of — `""` is not the
+    head — so the guard fell through and printed a ready-to-paste
+    `gh api -X DELETE .../refs/heads/fix/924` without ever establishing that
+    the head is not this repository's default branch (#1292).
+
+    Empty is a reachable state, not a hypothetical: `_repo_identity` returns
+    it whenever the API answer lacks `defaultBranchRef.name`, `main()` bails
+    only on the repository half, and `:1255` already renders
+    `default_branch or '?'` — the file elsewhere knows the value can be
+    missing.
+    """
+    h = _Harness(_pr(), default_branch="")
+    _install(monkeypatch, h, argv=["944"])
+    m.main()
+    out = capsys.readouterr().out
+    assert "gh api -X DELETE" not in out
+    assert "git branch -d" not in out
+    assert "default branch could not be read" in out
+
+
+def test_the_printed_arm_and_run_cleanup_agree_on_an_unread_default_branch():
+    """The parity claim itself, stated once rather than inferred twice.
+
+    #1292 is not that one arm was wrong in isolation — it is that two arms
+    implementing the same decision had drifted. `run_cleanup` refuses; this
+    pins that it does, next to the test above pinning that the printed arm now
+    does too, so a future edit to either one has to face the pair.
+    """
+    rows = m.run_cleanup("fix/924", merged=True, cross_repo=False,
+                         default_branch="", head_oid="c" * 40)
+    assert rows and all(state == m.CLEAN_REFUSED for _, state, _ in rows)
+    assert all("default branch could not be read" in detail
+               for _, _, detail in rows)
 
 
 def test_an_ordinary_same_repo_head_still_gets_its_commands(
