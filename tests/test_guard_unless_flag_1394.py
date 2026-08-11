@@ -208,9 +208,36 @@ def test_a_malformed_unless_flag_drops_the_entry_and_says_so(
 
 
 def test_an_empty_list_is_an_exclusion_of_nothing(tmp_path, monkeypatch):
-    _load(tmp_path, monkeypatch, _probe_op(
-        argv="probe api", unless_flag=[], use="probe-op:X"))
-    assert supertool.guard_command("probe api -X POST path").state == "blocked"
+    """`[]` is a legal spelling, not a malformed one, and means what it says.
+
+    Asserting only that `probe api -X POST path` stays blocked would be
+    vacuous: that also holds when `unless_flag` is never read at all. The
+    second op is what makes the test a statement about the empty list — it
+    declares the same argv with a real exclusion, so a run where the key is
+    ignored returns both entries and this returns one.
+    """
+    _load(tmp_path, monkeypatch, {"ops": {
+        "empty-op": {
+            "safety": "read-only", "cmd": "true", "syntax": "empty-op",
+            "description": "excludes nothing",
+            "replaces": [{"argv": "probe api", "unless_flag": [],
+                          "use": "empty-op:X"}],
+        },
+        "named-op": {
+            "safety": "read-only", "cmd": "true", "syntax": "named-op",
+            "description": "excludes -X",
+            "replaces": [{"argv": "probe api", "unless_flag": ["-X"],
+                          "use": "named-op:X"}],
+        },
+    }})
+    plain = supertool.guard_command("probe api path")
+    assert plain.state == "blocked", plain
+    assert sorted(m.use for m in plain.matches) == ["empty-op:X",
+                                                    "named-op:X"]
+
+    written = supertool.guard_command("probe api -X POST path")
+    assert written.state == "blocked", written
+    assert sorted(m.use for m in written.matches) == ["empty-op:X"]
 
 
 # --------------------------------------------------------------------------

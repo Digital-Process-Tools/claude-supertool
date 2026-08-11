@@ -148,7 +148,7 @@ Four things it does *not* do, each a decision rather than an omission:
 - **A bare `--` ends the option list**, here and for `flag` alike. `gh pr diff 1 -- --json` names a path called `--json`, and a flag inside an argument is not a flag.
 - **It matches `--method` and `--method=POST`, not `-XPOST`.** A short flag with its value clustered on is not matched by a named spelling, which is a second reason an op that forwards no flags should declare `"*"`.
 
-An `unless_flag` that is neither a non-empty string nor a list of non-empty strings **drops the whole entry** and leaves a note, so the verdict is `undecided` rather than clean. Reading an unreadable exclusion as an absent one would turn one typo into exactly the over-broad block this key exists to prevent.
+An `unless_flag` that is neither a non-empty string nor a list of non-empty strings **drops the whole entry** and leaves a note, so the verdict is `undecided` rather than clean. Reading an unreadable exclusion as an absent one would turn one typo into exactly the over-broad block this key exists to prevent. The one list shape that is *not* malformed is the empty one: `[]` excludes nothing, exactly as omitting the key does, because that is what it literally says — the rule above is about values whose meaning cannot be recovered, not about values that mean nothing.
 
 Three rules for writing one:
 
