@@ -126,17 +126,44 @@ def test_a_subcommand_named_only_as_an_argument_is_not_intercepted(
 # The class gate
 # ---------------------------------------------------------------------------
 
-#: `$1` really is the first argument for these, and the reason is stated rather
-#: than assumed. `test_pre_push_interpreter_572` shims a *python* interpreter and
-#: matches `-c`, which is not a git subcommand and carries no global-flag
-#: prefix; `test_watch_mine_defaults` stubs `supertool`, whose op is always the
-#: first and only argument.
+#: `$1` really is the first argument here and the scan cannot see why, so the
+#: reason is stated rather than assumed. `test_watch_mine_defaults` stubs
+#: `supertool`, whose op is always the first and only argument -- and an op name
+#: is spelled exactly like a subcommand, so nothing about the text distinguishes
+#: it. `test_pre_push_interpreter_572` used to be listed here and no longer needs
+#: to be: it compares `$1` against `-c`, and the rule below now works that out
+#: from git's grammar instead of from the file it lives in. That is the point of
+#: the change -- a filename exemption blesses every shim the file will ever
+#: contain, including a git one added tomorrow.
 _FIRST_ARG_IS_HONEST = {
-    "test_pre_push_interpreter_572.py",
     "test_watch_mine_defaults.py",
 }
 
 _DOLLAR_ONE = re.compile('"[$]1"')
+
+#: What `$1` is tested against, in the spellings a `/bin/sh` shim uses.
+_COMPARED_WITH_DOLLAR_ONE = re.compile('"[$]1"' + r'\s*(?:==|!=|=)\s*"([^"]*)"')
+
+
+def cannot_be_a_git_subcommand_test(text: str) -> bool:
+    """True when every operand compared with `$1` is an option, not a subcommand.
+
+    **git's own grammar decides this, not the name of the file.** Global flags
+    come *before* the subcommand and a subcommand never begins with `-`, so a
+    shim asking whether `$1` is `-c` or `-3` is asking about an option that
+    genuinely is the first argument -- there is no position for it to slide to.
+    A shim asking whether `$1` is `status` is asking the question #1206 is
+    about, whichever binary it stands in for.
+
+    Deliberately conservative in one direction: a literal with no comparison at
+    all (a bare `case "$1" in`, a `printf ... "$1"`) yields nothing to judge and
+    is **not** exempted, because the operands then live in patterns this cannot
+    read. One flag-shaped operand among several is not enough either -- all of
+    them have to be options, or the literal is still deciding on a word that
+    could be a subcommand.
+    """
+    operands = _COMPARED_WITH_DOLLAR_ONE.findall(text)
+    return bool(operands) and all(o.startswith("-") for o in operands)
 
 
 def _sh_literals_matching_dollar_one():
@@ -158,7 +185,8 @@ def _sh_literals_matching_dollar_one():
                     v.value for v in node.values
                     if isinstance(v, ast.Constant) and isinstance(v.value, str)
                 )
-            if text and _DOLLAR_ONE.search(text):
+            if (text and _DOLLAR_ONE.search(text)
+                    and not cannot_be_a_git_subcommand_test(text)):
                 # An f-string is walked as the JoinedStr and again as each of
                 # its Constant parts, so the same shim would otherwise be named
                 # twice and the list would read as a longer class than it is.
@@ -182,3 +210,77 @@ def test_no_shim_in_this_suite_decides_a_git_subcommand_from_dollar_one() -> Non
         "of the subcommand silently disables them:" + os.linesep
         + os.linesep.join("  {0}:{1} {2!r}".format(*h) for h in hits)
     )
+
+# ---------------------------------------------------------------------------
+# The class gate's own rule, tested. A scan that was narrowed and not re-proved
+# is a gate that may have stopped catching the thing it exists for, and nothing
+# downstream would say so.
+# ---------------------------------------------------------------------------
+
+#: The three shims #1206 was filed about, as they were written then. They have
+#: since been routed through `_gitshim.dispatch_on_subcommand`, so the suite no
+#: longer contains them -- which is exactly why the rule has to be held against
+#: them here rather than against whatever happens to be on disk.
+_THE_ORIGINAL_DEFECT = (
+    'if [ "$1" = "status" ]; then exit 128; fi',
+    'if [ "$1" = "diff" ]; then exit 1; fi',
+    'if [ "$1" = "stash" ]; then sleep 30; fi',
+)
+
+
+@pytest.mark.parametrize("shim", _THE_ORIGINAL_DEFECT)
+def test_the_rule_still_catches_the_shims_it_was_written_for(shim: str) -> None:
+    assert not cannot_be_a_git_subcommand_test(shim), shim
+
+
+@pytest.mark.parametrize("shim", [
+    'if [ "$1" = "-c" ]; then exit 0; fi',
+    'if [ "$1" != "-3" ]; then exit 9; fi',
+    'if [ "$1" == "--version" ]; then exit 0; fi',
+    'if [ "$1" = "-c" ]; then exit 1; fi; if [ "$1" = "-m" ]; then exit 2; fi',
+])
+def test_an_option_at_dollar_one_is_not_the_class(shim: str) -> None:
+    """git's global flags precede the subcommand, so an option really is first.
+
+    There is no position for `-c` to slide to; the whole defect is a *word*
+    moving to `$2` when a flag appears in front of it.
+    """
+    assert cannot_be_a_git_subcommand_test(shim), shim
+
+
+@pytest.mark.parametrize("shim", [
+    # One option among the operands is not enough: the other is still a word.
+    'if [ "$1" = "-c" ]; then exit 1; fi; if [ "$1" = "stash" ]; then exit 2; fi',
+    # Nothing to judge -- the operands are in patterns this cannot read.
+    'case "$1" in status) exit 1 ;; esac',
+    'printf "%s" "$1" >> "$LOG"',
+    # A placeholder is not an option, and substitution could put anything there.
+    'if [ "$1" = "{subcommand}" ]; then exit 1; fi',
+])
+def test_the_exemption_does_not_widen_past_what_it_can_read(shim: str) -> None:
+    assert not cannot_be_a_git_subcommand_test(shim), shim
+
+
+def test_the_narrowing_did_not_just_move_the_hole_into_the_allowlist() -> None:
+    """The filename exemption shrank; it must not have been traded for silence.
+
+    `test_pre_push_interpreter_572.py` came off the list because the rule now
+    derives its exemption from git's grammar. If it were still producing a hit,
+    the removal would have converted a stated exemption into a red test -- and
+    if the *scan* had been widened to compensate, this file would be exempt for
+    a reason nobody wrote down.
+    """
+    assert "test_pre_push_interpreter_572.py" not in _FIRST_ARG_IS_HONEST
+    assert (TESTS / "test_pre_push_interpreter_572.py").is_file()
+    named = {name for name, _line, _text in _sh_literals_matching_dollar_one()}
+    assert "test_pre_push_interpreter_572.py" not in named
+
+
+def test_the_scan_still_reads_every_test_module_it_did_before() -> None:
+    """A rule can also be narrowed by quietly reading fewer files."""
+    scanned = [p.name for p in sorted(TESTS.glob("test_*.py"))
+               if p.name not in _FIRST_ARG_IS_HONEST
+               and p.name != Path(__file__).name]
+    assert len(scanned) > 500, len(scanned)
+    assert "test_status_swallowed_705.py" in scanned
+    assert "test_hook_interpreter_windows_1401_1402.py" in scanned

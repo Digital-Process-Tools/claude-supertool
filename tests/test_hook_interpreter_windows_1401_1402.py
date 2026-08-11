@@ -193,6 +193,21 @@ def _real_python() -> str:
     return sys.executable.replace(_BS, "/")
 
 
+def _a_versioned_name_this_host_has() -> str:
+    """Prefer a name that really is on PATH, so shadowing is under test.
+
+    The ordering test needs one versioned rung to work. If it picks a name no
+    host has, the shadow it installs is the only thing there and the test can
+    never notice a real interpreter leaking through. Picking one that *is*
+    installed makes every run adversarial: on this box, on a runner, and on
+    the CI images where the mistake below was found.
+    """
+    for name in _VERSIONED:
+        if shutil.which(name):
+            return name
+    return "python3.12"
+
+
 def _blind_the_versioned_ladder(directory: Path) -> None:
     """Shadow every `python3.X` with one that exists and does not work.
 
@@ -200,9 +215,23 @@ def _blind_the_versioned_ladder(directory: Path) -> None:
     Windows, and this file must not go vacuous on the one platform it is
     about. Shadowing keeps the shell intact and still guarantees the loop
     falls through to the rung under test.
+
+    Every name the wrapper probes is covered, and that is the invariant: a
+    versioned name left unshadowed is the host's own interpreter answering
+    the ladder, and the test then measures the runner rather than the code.
     """
     for name in _VERSIONED:
-        _shim(directory, name, "exit 9")
+        _blind(directory, name)
+
+
+def _blind(directory: Path, name: str) -> Path:
+    """Occupy a name with something that resolves, runs, and cannot answer.
+
+    The counterpart to deleting the file, which is what a test must never do
+    once it has shadowed a name: deletion re-exposes whatever the host has
+    under that name further along PATH.
+    """
+    return _shim(directory, name, "exit 9")
 
 
 def _run_wrapper(command: str, cwd: Path, extra_path: Path,
@@ -272,9 +301,9 @@ def test_the_launcher_is_the_fallback_and_not_the_default(project, fake_bin,
     ran; the recording must not appear.
     """
     marker = tmp_path / "py-was-run"
+    name = _a_versioned_name_this_host_has()
     _blind_the_versioned_ladder(fake_bin)
-    versioned = _shim(fake_bin, "python3.12",
-                      'exec "' + _real_python() + '" "$@"')
+    _shim(fake_bin, name, 'exec "' + _real_python() + '" "$@"')
     _shim(fake_bin, "py",
           ': > "' + str(marker).replace(_BS, "/") + '"' + _NL
           + 'if [ "$1" != "-3" ]; then exit 9; fi' + _NL
@@ -286,7 +315,16 @@ def test_the_launcher_is_the_fallback_and_not_the_default(project, fake_bin,
     # "the marker is absent" for free, so without this the test would pass on
     # the unfixed wrapper - the shape this repo calls a test that would pass
     # if the code did nothing.
-    versioned.unlink()
+    #
+    # **Re-blinded, never unlinked**, and that distinction cost seven CI legs.
+    # Removing the file removes the *shadow*, and the host's own interpreter of
+    # that name - which the whole point of `_a_versioned_name_this_host_has` is
+    # that there usually is one - reappears on PATH one entry further along.
+    # The ladder then answers through it, `py` is never reached, and this
+    # control fires. It fired on ubuntu and macOS and not on the machine this
+    # was written on, for the single reason that this box has no python3.12.
+    # Overwriting keeps the name occupied by something that cannot work.
+    _blind(fake_bin, name)
     hook = _envelope(_run_wrapper("gh pr view 12", project, fake_bin))
     assert hook.get("permissionDecision") == "deny", hook
     assert marker.exists(), (
@@ -294,7 +332,7 @@ def test_the_launcher_is_the_fallback_and_not_the_default(project, fake_bin,
         "so the ordering assertion below would be vacuous")
 
     marker.unlink()
-    _shim(fake_bin, "python3.12", 'exec "' + _real_python() + '" "$@"')
+    _shim(fake_bin, name, 'exec "' + _real_python() + '" "$@"')
     hook = _envelope(_run_wrapper("gh pr view 12", project, fake_bin))
     assert hook.get("permissionDecision") == "deny", hook
     assert not marker.exists(), (
