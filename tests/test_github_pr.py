@@ -152,17 +152,24 @@ def test_main_full_mode_unaffected(monkeypatch, capsys) -> None:
     assert "Checks:" in out
 
 
-def test_main_slim_ignores_unknown_second_arg(monkeypatch, capsys) -> None:
-    """Only literal 'status' triggers slim mode."""
-    payload = _pr_json_payload()
+def test_main_refuses_an_unknown_second_arg(monkeypatch, capsys) -> None:
+    """An unknown mode word is refused, not ignored (#1346).
+
+    This test asserted the opposite until #1346: `verbose` fell through to the
+    default dashboard at exit 0, so a request the op never honoured rendered as
+    a normal answer. The full refusal contract — nothing fetched, the existing
+    modes named — is `tests/test_gh_pr_mode_refusal_1346.py`; this one stays
+    where the old claim was so the inversion is visible in the diff.
+    """
     monkeypatch.setattr(
         pr.subprocess, "run",
-        lambda *a, **kw: _fake_run(payload, returncode=0),
+        lambda *a, **kw: pytest.fail("gh was called on a refusal path"),
     )
     monkeypatch.setattr(sys, "argv", ["pr.py", "12", "verbose"])
     rc = pr.main()
     out = capsys.readouterr().out
-    assert rc == 0
+    assert rc == 1
+    assert "'verbose'" in out
 
 
 # ---------------------------------------------------------------------------

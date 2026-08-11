@@ -1082,6 +1082,87 @@ def _default_branch_report(default_branch: str, repo: str,
     return (state, lines)
 
 
+# ---------------------------------------------------------------------------
+# how old is the base this tally was computed on (#1257)
+# ---------------------------------------------------------------------------
+
+def base_distance(base: str, head_oid: str) -> tuple[int | None, str, str, str]:
+    """`(behind_by, base_head_sha, base_head_date, error)` for the base branch.
+
+    `compare/BASE...HEAD` is asked about `headRefOid`, never `headRefName`: the
+    check tally belongs to a *commit*, and a ref name resolves to whatever the
+    branch points at when the question is asked, which is a different commit
+    the moment anybody pushes. `behind_by` is the field that answers this — the
+    number of commits on the base that the tested tree does not contain.
+
+    `--jq` rather than the whole reply: an ordinary compare carries the commit
+    list and the file list, and nothing here reads either.
+    """
+    if not base or not head_oid:
+        return (None, "", "", "the PR's base branch or head commit was not in "
+                              "the API reply")
+    data, err = _gh_json(
+        ["api", _repo_target.api_path(f"compare/{base}...{head_oid}"),
+         "--jq", "{behind_by, base_sha: .base_commit.sha, "
+                 "base_date: .base_commit.commit.committer.date}"],
+        timeout=30)
+    if err or not isinstance(data, dict):
+        return (None, "", "", err or "the compare API returned no object")
+    behind = data.get("behind_by")
+    if not isinstance(behind, int) or isinstance(behind, bool):
+        return (None, "", "", f"the compare API returned no usable behind_by "
+                              f"({behind!r})")
+    return (behind, str(data.get("base_sha") or ""),
+            str(data.get("base_date") or ""), "")
+
+
+def base_distance_lines(base: str, head_oid: str, behind: int | None,
+                        base_sha: str, base_date: str,
+                        err: str) -> List[str]:
+    """The `## Base` block — three states, and the level one is printed too.
+
+    Disclose, never block. Refusing a merge because the base moved would make a
+    busy afternoon serial and take back what `changelog.d` fragments bought:
+    four merges in one afternoon on 2026-08-07 with zero rebases. What went
+    wrong on 2026-08-10 was not that a merge happened on an old base, it was
+    that nothing on the receipt said the base was old — so the fix is the
+    sentence, not the gate.
+
+    The UNKNOWN arm is the point of writing this at all. An absent warning and
+    an unasked question render identically, and that is the same shape as the
+    tally defect one layer up.
+    """
+    b = _untrusted.flat(base or "?")
+    head7 = head_oid[:7] if head_oid else "?"
+    if behind is None:
+        return [
+            f"  UNKNOWN: how far `{b}` has moved since {head7} could not be "
+            f"read ({err}).",
+            f"  The tally below is a statement about this PR's merge-base. "
+            f"Whether that is still `{b}`'s head was NOT established — this "
+            f"line is the question, not an answer to it.",
+        ]
+    if behind == 0:
+        return [
+            f"  `{b}` has not moved since this PR's head {head7} — the tally "
+            f"below covers a tree containing every commit on `{b}`.",
+        ]
+    sha7 = base_sha[:7] if base_sha else "?"
+    plural = "commit" if behind == 1 else "commits"
+    return [
+        f"  BEHIND: `{b}` is {behind} {plural} ahead of this PR's head "
+        f"{head7}. The checks below ran on a tree that does not contain them.",
+        f"  `{b}` head: {sha7}"
+        + (f" ({base_date})" if base_date else ""),
+        f"  A green tally is evidence about this PR's merge-base and about "
+        f"nothing else. Two PRs each 22/22 green on disjoint files turned "
+        f"`master` red on 2026-08-10 that way — no conflict, no failing leg, "
+        f"and a whole-tree test that only met the other PR's new op after both "
+        f"had landed (#1257). Nothing here blocks the merge; it is the fact "
+        f"you would otherwise have to know to ask for.",
+    ]
+
+
 def _repo_identity() -> tuple[str, str, str]:
     data, err = _gh_json(["repo", "view", "--json",
                           "nameWithOwner,defaultBranchRef"]
@@ -1177,6 +1258,17 @@ def main() -> int:
     print(f"Merge:  {_untrusted.flat(head)} -> {_untrusted.flat(base)}  "
           f"(method: {method})")
     print(f"URL:    {pr.get('url', '?')}")
+    print()
+
+    # Before the gate, not after it: without `force` this op previews and
+    # merges nothing, and a disclosure printed downstream of the gate is absent
+    # from every run a human reads before deciding (#1257).
+    head_oid = str(pr.get("headRefOid") or "")
+    behind, base_sha, base_date, base_err = base_distance(base, head_oid)
+    print("## Base")
+    for line in base_distance_lines(base, head_oid, behind, base_sha,
+                                    base_date, base_err):
+        print(line)
     print()
 
     allowed, gate_lines = gate(pr, declared, missing, reason)
