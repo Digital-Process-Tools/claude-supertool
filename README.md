@@ -599,7 +599,7 @@ Each saved round-trip avoids one prefix cache re-read. The bigger your prefix, t
 
 ## Security — cwd containment
 
-Every path arg supertool sees is checked against the current working directory. `~`/`~user` is expanded first and the *expansion* is what gets checked and then handed to the op, so a tilde path can never reach outside a boundary an absolute one could not (#1300). A malicious `.supertool.json` or prompt-injected op like `paste:~/.ssh/authorized_keys:::pwned` or `read:/etc/passwd` is rejected with a clean error. Symlinks crossing the boundary are caught (realpath follows them). NUL bytes rejected early. See [issue #146](https://github.com/Digital-Process-Tools/claude-supertool/issues/146) for the full threat model.
+Every path arg supertool sees is checked against the current working directory. `~`/`~user` is expanded first and the *expansion* is what gets checked and then handed to the op, so a tilde path can never reach outside a boundary an absolute one could not (#1300). A malicious `.supertool.json` or prompt-injected op like `paste:~/.ssh/authorized_keys:::pwned` or `read:/etc/passwd` is rejected with a clean error. Symlinks crossing the boundary are caught (realpath follows them), including one a `glob` wildcard lands on — `glob` is gated on the reach of its pattern and again on its matches, and refuses the whole call rather than returning a quietly shortened list (#1366). NUL bytes rejected early. See [issue #146](https://github.com/Digital-Process-Tools/claude-supertool/issues/146) for the full threat model.
 
 **Opt-out** (any one is enough):
 
