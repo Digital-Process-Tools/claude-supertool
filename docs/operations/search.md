@@ -115,6 +115,21 @@ The line names **both** halves of the split. Naming only the pattern was precise
 
 Use `grep:@-` with a `pattern` key when the split should fall somewhere else.
 
+**An empty PATH slot is refused, not defaulted** ([#1417](https://github.com/Digital-Process-Tools/claude-supertool/issues/1417)). `grep:_FLAGS|def main:presets/github/issues.py:::40` rejoins to the pattern `_FLAGS|def main:presets/github/issues.py:` with the path `.`, then scans the whole tree and returns hits — a well-formed answer to a question nobody asked. The `|` is incidental; `grep:PATTERN:PATH:` does the same with no alternation in it. So when the path resolves to `.` and a segment of the rejoined pattern names an existing file or directory, grep declines and prints both readings:
+
+```
+ERROR: grep would have scanned the whole tree, not the file you named (#1417).
+  Read as pattern='_FLAGS|def main:presets/github/issues.py:' + path='.' — …
+  If you meant that file:
+    grep:_FLAGS|def main:presets/github/issues.py
+```
+
+It declines rather than auto-correcting, and that is the difference from `around:.supertool.json:232:12`, which *is* redirected to `around_line` and disclosed. The reading that redirect replaces is a hard failure (`path not found: 232`), so there is nothing to lose. Here the reading it would replace is a successful whole-tree sweep: both readings are live, neither is rankable, and a tool with two candidate answers declines instead of guessing. A segment that fails the cwd containment check is skipped rather than named, so the refusal is not an existence oracle for paths outside the boundary.
+
+The gate is narrow because the rejoin is normally right. Measured over the 165 distinct `grep:` spellings written down in this repo, 39 hit the rejoin and none of them is declined.
+
+**It is `grep` only, and that is a decision rather than an oversight.** `around` and `between` share the error helper but not the defect: neither *defaults* a path to `.` — an empty slot becomes `""` and fails loudly — so a `.` there is always a value the caller typed. And `between:re:START:END:PATH` carries three caller-supplied arguments ahead of the path, so `between:re:START:code.py:.` is an ordinary tree-wide range search whose END happens to name a file. Wiring the same check into those two produced a false refusal on that call, and a printed repair that dropped the `re:` marker selecting the mode.
+
 **The path that is checked against the cwd boundary is the one the split produced**, not a fixed argument slot. `grep:PATTERN:PATH` and `around:PATTERN:PATH[:N]` both take the path from the *last* token after the trailing numbers are peeled, so a `:` in the pattern moves it; containment runs on that value. A pattern containing an absolute path is therefore searched for, not opened ([#1166](https://github.com/Digital-Process-Tools/claude-supertool/issues/1166)).
 
 **Delegation does not change the dialect.** When rtk is installed and enabled, a plain `grep` (no context, no count) is delegated to it. The system grep behind rtk reads a POSIX **BRE** unless told otherwise, where `|`, `+`, `?`, `(` and `{` are ordinary characters — so `ab+c` matched a literal plus rather than `abbc`, and only when that reading happened to match at all ([#987](https://github.com/Digital-Process-Tools/claude-supertool/issues/987)). Supertool passes `-E`, and delegates only patterns whose two readings are the same by construction: any backslash escape outside the punctuation both dialects agree on (`\. \$ \* \+ \? \( \) \[ \] \{ \} \| \\ \/ \-`) sends the search to the native walker, as do lookaround and inline flags (`(?...`), non-greedy quantifiers, and POSIX bracket classes (`[[:alpha:]]`, `[[=a=]]`, `[[.a.]]`). That is a whitelist rather than a list of known offenders, because the version that enumerated `\d`/`\w`/`\b` let GNU's `\<` and `\>` word boundaries through — they anchor in ERE and are the plain characters `<` and `>` in Python.

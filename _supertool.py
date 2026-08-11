@@ -7289,6 +7289,102 @@ def _looks_like_path(tok: str) -> bool:
     return not any(c in tok for c in " \t\"'()|<>*?")
 
 
+def _absorbed_pattern_segments(leading: str) -> List[str]:
+    """The pattern's `:`-segments, tokenized the way dispatch tokenized them.
+
+    `_split_arg` is what produced `leading` in the first place, and it merges a
+    Windows drive letter back together (`C:\\src` is ONE token, not `C` plus
+    `\\src`). A plain `leading.split(":")` here would re-fragment exactly the
+    absorbed path this check exists to recognise, and it would do it only on
+    the platform CI runs and the author does not.
+
+    The op name is a throwaway: `_split_arg` splits a whole `op:arg:arg` call
+    and the caller only wants the args.
+    """
+    return _split_arg("x:" + leading)[1:]
+
+
+def _absorbed_path_hint(op: str, leading: str, path: str,
+                        keys: Tuple[str, ...] = ("pattern",)) -> str:
+    """Refuse a `:`-split that swallowed the PATH and widened the scan (#1417).
+
+    `grep:_FLAGS|def main:presets/github/issues.py:::40` rejoins to the pattern
+    `_FLAGS|def main:presets/github/issues.py:` with path `.`, then scans the
+    whole tree (934 files when it was reported) and returns hits. The `|` is
+    incidental — `grep:PAT:PATH:` does the same with no alternation in it. The
+    trigger is the empty PATH token, which `_parse_grep_args` turns into `.`.
+
+    **Why this refuses where `around_line` auto-corrects.** `around:FILE:232:12`
+    is redirected to `around_line` and disclosed, and that is safe for one
+    reason only: the reading it replaces is a hard failure (`path not found:
+    232`), so there is nothing to lose and one candidate answer to gain. Here
+    the reading it would replace is a *successful* whole-tree sweep, so a silent
+    redirect swaps one answer nobody typed for another. Two live candidates and
+    no way to rank them is the shape that has to decline instead of guess.
+
+    **grep only, deliberately.** `_colon_split_hint` is shared with `around`
+    and `between`, and wiring this in there looked free and is not. `around`
+    and `between` never *default* a path to `.` — an empty slot becomes `""`
+    and fails loudly — so `.` there is always a value the caller typed. Worse,
+    `between:re:START:END:PATH` has three caller-supplied arguments before the
+    path, so `between:re:START:code.py:.` is an ordinary tree-wide range search
+    whose END happens to name a file; treating that as an absorbed path is a
+    false refusal, and the repair it printed dropped the `re:` marker that
+    selects the mode. One op's parser defect does not generalise to a family.
+
+    Gated hard, because the re-read is normally right: measured over the 165
+    distinct `grep:` spellings written down in this repo, 39 hit the `:` rejoin
+    and **none** of them is declined here. The refusal needs a segment of the
+    rejoined pattern to name an existing file or directory, and needs it to sit
+    after the first segment — the PATH slot follows the pattern, so a leading
+    segment that happens to name a file is a pattern.
+
+    Containment is checked per segment, and a segment that fails it is skipped
+    rather than reported. Dispatch gates the PATH slot before calling this
+    (#1166) so the stat below is safe; a segment of the PATTERN arrives
+    unchecked, and confirming `/etc/shadow` back to the caller would be exactly
+    the existence oracle that gate closes.
+    """
+    if path != "." or ":" not in leading:
+        return ""
+    segments = _absorbed_pattern_segments(leading)
+    found = -1
+    for i, segment in enumerate(segments):
+        if i == 0 or not segment or segment == ".":
+            continue
+        contained, (expanded,) = _gate_paths([segment])
+        if contained:
+            continue
+        if os.path.exists(expanded):
+            found = i
+    if found < 0:
+        return ""
+    named = segments[found]
+    meant = ":".join(segments[:found])
+    q = chr(39) * 3
+    fields = chr(10).join(f"    {k} = {q}<{k}, colons and all>{q}" for k in keys)
+    nl = chr(10)
+    return (
+        f"ERROR: {op} would have scanned the whole tree, not the file you "
+        f"named (#1417).{nl}"
+        f"  Read as {keys[0]}={leading!r} + path='.' — {named!r} stayed inside "
+        f"the {keys[0]}, and the PATH slot resolved to the repo root (an empty "
+        f"slot defaults to it).{nl}"
+        f"  Nothing would have failed: that scan succeeds, over every file, "
+        f"for a {keys[0]} you did not write. So it is declined rather than "
+        f"corrected — both readings are live and neither is guessable.{nl}"
+        f"  If you meant that file:{nl}"
+        f"    {op}:{meant}:{named}{nl}"
+        f"  If you did mean the whole tree, a payload says where the {keys[0]} "
+        f"ends and the colon CLI cannot:{nl}"
+        f"    ./supertool '{op}:@-' <<'EOF'{nl}"
+        f"{fields}{nl}"
+        f'    path = "."{nl}'
+        f"    EOF{nl}"
+        f"  (or {op}:@file.toml — same shape the mutating ops use.){nl}"
+    )
+
+
 def _colon_split_hint(op: str, leading: str, path: str,
                       keys: Tuple[str, ...] = ("pattern",),
                       call_prefix: Optional[str] = None) -> str:
@@ -21381,6 +21477,14 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 return _receipt(header, _GREP_ZERO_LIMIT)
             if limit == GREP_LIMIT_ALL_MISPLACED:
                 return _receipt(header, _GREP_ALL_OUTSIDE_LIMIT_SLOT)
+            # Before the generic hint, because that one keys off "the path
+            # does not exist" and `.` always exists — so the one reading in
+            # this family that does NOT fail loudly was the one it declined
+            # to diagnose (#1417).
+            _widened = _absorbed_path_hint("grep", pattern, path,
+                                           keys=("pattern",))
+            if _widened:
+                return _receipt(header, _widened)
             _hint = _colon_split_hint("grep", pattern, path)
             if _hint:
                 return _receipt(header, _hint)
