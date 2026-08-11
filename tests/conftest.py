@@ -730,6 +730,15 @@ RESET_EXEMPT_GLOBALS = (
     # Constant op-name tables, same lifetime as _BUILTIN_OPS (#614).
     "_DISPATCH_ONLY_OPS",
     "_MAIN_LEVEL_OPS",
+    # Which argument of each built-in is a path (#146). A local literal inside
+    # `dispatch` until #1285, rebuilt on every call and unreadable from outside
+    # it — which is how it kept a row for `blame` months after that op left the
+    # dispatcher. Same lifetime as _BUILTIN_OPS now that it is at module scope:
+    # written once at import, only ever read.
+    "_PATH_ARG_POSITIONS",
+    # The two op names whose intended target is documented rather than guessed,
+    # read by the unknown-op message (#1303). Constant table, same lifetime.
+    "_OP_SYNONYMS",
     # The safety class of each built-in and its render marker (#1231). Same
     # lifetime and same reasoning as _BUILTIN_OPS: a fact about this binary,
     # written once at import and only ever read. Resetting them would imply

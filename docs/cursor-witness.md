@@ -16,7 +16,7 @@ The agent stops being an opaque process. Its work surfaces in your editor as it 
 | `between:SYMBOL:F` | File opens, symbol's body lines highlighted (tree-sitter resolution) |
 | `read:F:OFFSET:LIMIT` | File opens, lines OFFSET+1 to OFFSET+LIMIT highlighted — the window the read returned, not the one starting at OFFSET |
 | `read:F:START-END` | File opens, lines START to END highlighted |
-| `read:F`, `map`, `tail`, `head`, `wc`, `stat`, `blame` | File opens and focuses (no range available) |
+| `read:F`, `map`, `tail`, `head`, `wc`, `stat` | File opens and focuses (no range available) |
 
 Highlights fade after **4 seconds** so they don't pile up.
 

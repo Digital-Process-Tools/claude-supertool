@@ -209,7 +209,7 @@ These are not "if something blocks you" clauses. A contingency phrased that way 
 
 Commit your work, leave the worktree in place, and report.
 
-Commit through the op, not raw git — `supertool 'git-commit:::MESSAGE'` (or `python3 supertool.py` inside a supertool worktree). It stamps the repo before staging so the record survives a hook rejection, prints HEAD before and after, surfaces hook errors instead of swallowing them, appends `Co-Authored-By` for you, and refuses a mangled pathspec rather than committing under a broken subject. Raw `git commit` is also blocked by a project hook in some checkouts; the op is not.
+Commit through the op, not raw git — `supertool 'git-commit:::MESSAGE:::PATHS'` (or `python3 supertool.py` inside a supertool worktree). **Name the paths.** `git-commit` never stages for you, so the no-PATHS form this line used to prescribe refuses by construction, and every delegated run paid one round-trip for it (#1303). Paths are separated by `:::`; `:::--all` accepts the dirty list the refusal would otherwise count at you; a multi-line body goes through the `git-commit:@-` payload route with a `message` field. It stamps the repo before staging so the record survives a hook rejection, prints HEAD before and after, surfaces hook errors instead of swallowing them, appends `Co-Authored-By` for you, and refuses a mangled pathspec rather than committing under a broken subject. Raw `git commit` is also blocked by a project hook in some checkouts; the op is not.
 
 ## Push back
 

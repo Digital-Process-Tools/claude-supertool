@@ -60,7 +60,7 @@ Mutating ops fire after the file is rewritten (post-validator). Read ops fire af
 | `read:FILE:OFFSET:LIMIT` | OFFSET+1 to OFFSET+LIMIT | Computed from args — OFFSET is a skip count, so the window starts one line below it. This row said `OFFSET to OFFSET+LIMIT-1` until #1417, matching the code and neither matching the op |
 | `read:FILE:START-END` | START to END | Computed from args; before #1417 the range form got no range at all |
 | `read:FILE` | — | Whole file |
-| `map`, `tail`, `head`, `wc`, `stat`, `blame` | — | File-only focus |
+| `map`, `tail`, `head`, `wc`, `stat` | — | File-only focus |
 
 Other read ops (`grep`, `glob`, `ls`) don't fire notifiers — they target multiple files / paths, and the multi-event protocol isn't wired yet. Patches welcome.
 

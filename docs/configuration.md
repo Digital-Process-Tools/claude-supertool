@@ -358,7 +358,7 @@ Override via env: `SUPERTOOL_PARALLEL=4 ./supertool 'read:a' 'grep:x:b/' 'glob:c
 
 A value that is neither a number nor `true`/`false` — or a negative one — leaves parallelism off *and says so*, rather than looking identical to never having set it. See [Numeric environment knobs](#numeric-environment-knobs-and-what-happens-when-one-is-wrong).
 
-**Safe ops** (parallelized): `read`, `grep`, `glob`, `ls`, `head`, `tail`, `wc`, `stat`, `map`, `tree`, `around`, `around_line`, `between`, `diff`, `blame`, `version`, `validate`, `validate_staged`, `workspace`, `resolve`, `diag`, `hover`, `help`. The list in `_supertool.py` is `_PARALLEL_SAFE_OPS`; this paragraph had been missing seven of them since they were added.
+**Safe ops** (parallelized): `read`, `grep`, `glob`, `ls`, `head`, `tail`, `wc`, `stat`, `map`, `tree`, `around`, `around_line`, `between`, `diff`, `version`, `validate`, `validate_staged`, `workspace`, `resolve`, `diag`, `hover`, `help`. The list in `_supertool.py` is `_PARALLEL_SAFE_OPS`; this paragraph had been missing seven of them since they were added. It also carried `blame` until #1285 — there is no such op and has not been since it moved to the `git` preset as `git-blame`.
 
 **Unsafe** — batch falls back to sequential whenever any op is mutating (`edit`, `replace`, `replace_dry`, `replace_lines`, `format`, `format_staged`) or custom (anything in `ops:` — could shell out to anything). All-or-nothing per call: no partial parallelism.
 
@@ -430,7 +430,7 @@ id_rsa*  id_dsa*  id_ecdsa*  id_ed25519*
 
 **A path you name yourself is never excluded.** `grep:PATTERN:.env` searches `.env`, and `read:.env` prints it. Naming the file is a deliberate act; gating it would buy nothing (`read` was never gated) and would break the case someone meant. The list guards the *side effect* — a search aimed elsewhere that walks over a credential on the way.
 
-Ops that take explicit paths and don't traverse (`ls`, `read`, `head`, `tail`, `wc`, `stat`, `around`, `around_line`, `between`, `diff`, `blame`) are not affected — they always work on exactly the path you give them.
+Ops that take explicit paths and don't traverse (`ls`, `read`, `head`, `tail`, `wc`, `stat`, `around`, `around_line`, `between`, `diff`) are not affected — they always work on exactly the path you give them.
 
 See [issue #4](https://github.com/Digital-Process-Tools/claude-supertool/issues/4) for the original design rationale, [#691](https://github.com/Digital-Process-Tools/claude-supertool/issues/691) for the file-level wiring and the hidden-file count, and [#764](https://github.com/Digital-Process-Tools/claude-supertool/issues/764) for why that count survives the rtk-delegated `grep` — see [operations/search.md](operations/search.md#delegated-to-rtk).
 
