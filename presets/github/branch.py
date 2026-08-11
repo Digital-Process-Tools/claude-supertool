@@ -256,7 +256,7 @@ def orphan_lines(selected: dict, fetched: dict) -> list:
         legword = _agrees(n, "leg", "legs")
         lines.append(
             f"  {_untrusted.flat(name)} — the run object concluded "
-            f"`{conclusion}`, but {n} of its {legword} never concluded. A "
+            f"`{conclusion}`, but {n} {legword} of it never concluded. A "
             "run-level conclusion is not a claim about a leg GitHub closed the "
             f"run without, so `{conclusion}` does not cover it and the verdict "
             "above does not clear the commit. Re-run the leg "

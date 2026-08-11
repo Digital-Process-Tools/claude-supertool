@@ -1110,7 +1110,7 @@ under the table names which two sources disagree:
 ```
 tests                            concluded      success ⚠      15 total: 14 passed, 0 failed, 1 pending ⚠ NOT ALL GREEN
 
-  tests — the run object concluded `success`, but 1 of its legs never concluded. A
+  tests — the run object concluded `success`, but 1 leg of it never concluded. A
   run-level conclusion is not a claim about a leg GitHub closed the run without, so
   `success` does not cover it and the verdict above does not clear the commit. Re-run
   the leg (`gh run rerun --job <id>`); waiting will not help, the run that would have

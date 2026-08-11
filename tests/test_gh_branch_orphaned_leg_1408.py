@@ -275,3 +275,25 @@ def test_a_still_running_run_is_untouched_by_the_orphan_marker(
     assert outcome == "not yet", out
     assert "never concluded" not in out, (
         "a run still moving is not a run that closed without its leg:\n" + out)
+
+
+def test_the_orphan_sentence_agrees_with_its_own_count(
+        monkeypatch, capsys) -> None:
+    """#841's rule, one sentence further on.
+
+    The first draft read `1 of its leg never concluded` — a partitive with a
+    singular noun, from `_agrees` applied to a phrase that wanted the plural
+    whatever the count. Both forms are pinned, because a count-dependent word
+    checked at one value is checked at the value the author happened to try.
+    """
+    two = dict(_ORPHAN_JOBS)
+    two[3002] = ([_job(f"pytest ({i})", "completed", "success")
+                  for i in range(13)]
+                 + [_job("pytest (windows-latest, 3.11)", "in_progress"),
+                    _job("pytest (macos-latest, 3.12)", "in_progress")])
+
+    one = _render(monkeypatch, capsys, runs=_ORPHAN_RUNS, jobs=_ORPHAN_JOBS)
+    many = _render(monkeypatch, capsys, runs=_ORPHAN_RUNS, jobs=two)
+
+    assert "1 leg of it never concluded" in one, one
+    assert "2 legs of it never concluded" in many, many
