@@ -11,7 +11,8 @@
     "mcp",
     "watch",
     "dashboard",
-    "claims"
+    "claims",
+    "plugin-marketplace"
   ],
   "mcp": {
     "py-lsp": {

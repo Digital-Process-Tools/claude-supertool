@@ -883,9 +883,11 @@ Cutting the release is mine as of 2026-08-05 under the gates above, and **watchi
 **What does not depend on the cadence, and is the real reason to cut the release: the manifest.** The updater compares manifest versions and nothing else (#133), so if the pin advances onto a sha whose manifest still reads the current version, every user already on it is told they are up to date while the fix sits unread inside their artefact. Merging to `main` is _not_ shipping. This is structurally **"the merge is not done when the PR is green"** one layer out: a green PR is a statement about its merge-base; a pushed tag is a statement about our repo, not about anyone's install. One call, and if the pin is behind, say _which_ — "tagged, not yet in the official catalogue, expected at the next bump" rather than "shipped":
 
 ```bash
-gh api repos/anthropics/claude-plugins-official/contents/.claude-plugin/marketplace.json \
-  -q '.content' | base64 -d | python3 -c "import json,sys; print([p['source']['sha'] for p in json.load(sys.stdin)['plugins'] if p['name']=='PLUGIN'][0])"
+supertool 'plugin-marketplace'          # every catalogue, pin, version at it, distance, bump PRs
+supertool 'plugin-marketplace:NAME'     # another plugin
 ```
+
+**Everything below this line is why that op exists — the traps it now absorbs, kept because the reasoning still decides how to read its output.** The hand-rolled routes are gone from this file on purpose: each of them returned an absence that read like an answer, and I acted on two of them.
 
 **Two catalogues, and I checked the wrong one.** Asked "do we release supertool?", I queried `claude-plugins-official`, got 278 plugins with `remember` present and `supertool` absent, and told Florian supertool was not catalogue-distributed at all. Florian: _"is is also via community plugins of anthropic."_
 
@@ -894,13 +896,9 @@ gh api repos/anthropics/claude-plugins-official/contents/.claude-plugin/marketpl
 | `supertool`               | **no**                    | **yes**                                   |
 | `claude-5h-window-spread` | —                         | yes                                       |
 
-**`supertool` is a community-catalogue plugin only**, so the official-catalogue snippet above answers nothing about it — it raises `IndexError` on an empty list, which is an absence produced by the query and not by the world. Use the raw community route below.
+**`supertool` is a community-catalogue plugin only**, so a query against the official catalogue answers nothing about it — the obvious one-liner raises `IndexError` on an empty list, which is an absence produced by the query and not by the world. The op reads both catalogues and renders `not listed` and `could not be read` as **different rows**, because they call for opposite actions: a submission versus waiting on automation.
 
-The community file is **1.5 MB**, so `gh api …/contents/… -q .content` returns an **empty string** rather than an error — the contents API declines over ~1 MB, and that empty read is why the first check "confirmed" an absence. Use the raw route:
-
-```bash
-curl -sL https://raw.githubusercontent.com/anthropics/claude-plugins-community/main/.claude-plugin/marketplace.json
-```
+The community file is **1.5 MB**, so `gh api …/contents/… -q .content` returns an **empty string** rather than an error — the contents API declines over ~1 MB, and that empty read is why my first check "confirmed" an absence. The op sends `Accept: application/vnd.github.raw`, and still checks the response for an envelope on the way back, because a header sent is not a header honoured.
 
 **The community pin was frozen for two months and then moved.** Measured 2026-08-08, cutting supertool v0.27.0:
 
@@ -910,7 +908,7 @@ curl -sL https://raw.githubusercontent.com/anthropics/claude-plugins-community/m
 
 `bump(supertool): 796166cc → dcb574ea (#1934)` landed at **06:47:11Z, one minute before** I ran `gh release create` at 06:48:57Z — so it moved on the release _commit_, not the tag, jumping 796166c (2026-06-07) straight to the release head. **A frozen pin is a fact about a moment, not a property of the catalogue: measure the pin at each release, and never carry the previous reading forward as a claim about the mechanism.** Check the pin, name the catalogue, never say "shipped" unqualified.
 
-**Measure the last mile before treating it as a wall.** The #264 reporter framed the pin as a snapshot on an opaque schedule, and our README carried the same belief in a worse form — claiming the catalogue was "stuck on v0.5.0" and current was "v0.8.2", two releases stale and read by everyone as current. One call disproved it: `gh api 'repos/anthropics/claude-plugins-official/commits?path=.claude-plugin/marketplace.json&per_page=100'`. I also checked whether a manual bump PR was worth opening and it was not — four community-submitted bumps for this plugin were all **closed** rather than merged, so the automation is authoritative. **An external blocker deserves the same pre-flight as an issue body**, and **a known-issue note that has gone stale is worse than none**, because it is read as current.
+**Measure the last mile before treating it as a wall.** The #264 reporter framed the pin as a snapshot on an opaque schedule, and our README carried the same belief in a worse form — claiming the catalogue was "stuck on v0.5.0" and current was "v0.8.2", two releases stale and read by everyone as current. One call disproved it, and that call is now the op's `bump PRs` row. **Do not open a bump PR by hand** — measured 2026-08-11, every one of the last 300 bumps in the community catalogue was authored by `app/github-actions`, and supertool's only bump ever (#1934) says in its own body that the sha was validated by `claude plugin validate` in a workflow run before the PR was opened. The automation is authoritative; a hand-written PR skips the gate it exists to enforce. The search is **tokenized, not literal** — `bump(claude) in:title` returns `bump(claude-mem)` and a dozen siblings — so the op filters to titles opening `bump(NAME):` and prints `kept N of M returned` whenever it narrowed anything. **An external blocker deserves the same pre-flight as an issue body**, and **a known-issue note that has gone stale is worse than none**, because it is read as current.
 
 **And the version a plugin reports is not the version it is.** That cache directory was **named `0.7.1` while its manifest said `0.8.0`**, and the updater compares manifests, not directory names. Read `.claude-plugin/plugin.json` inside the install.
 
