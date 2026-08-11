@@ -197,7 +197,7 @@
     },
     "batch": {
       "syntax": "batch:@FILE | batch:@-",
-      "description": "N ops from ONE payload — TOML [[ops]] array or JSON array of {\"op\":...}, each entry taking that op's own @payload fields. The only way to put several mutations in one call, since a call carries just one '@-' (#341). Reads/greps mix in freely. Per-op validators, per-op rollback.",
+      "description": "N ops from ONE payload — TOML [[ops]] array or JSON array of {\"op\":...}, each entry taking that op's own @payload fields. The only way to put several mutations in one call, since a call carries just one '@-' (#341). Reads/greps mix in freely. Per-op validators, per-op rollback. A NESTED batch entry takes its inner payload as path = \"@inner.toml\" — the field is 'path' and the leading '@' is required (#1407).",
       "example": "batch:@- with [[ops]] entries for edit + edit + read",
       "status": 1,
       "hint": true

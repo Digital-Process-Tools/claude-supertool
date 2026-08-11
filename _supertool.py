@@ -3496,10 +3496,22 @@ def _read_window_note(path: str, limit: int, offset: int,
     would break every caller who had it right — trading a visible wrong answer
     for an invisible one.
 
-    The `read:PATH:A-B` suggestion is withheld when LIMIT > OFFSET, because
-    that is the shape `_read_range_note` (#382) already speaks to: it reads
-    `A:B` as START:END and would name a different range. Two hints proposing
-    two different ranges is worse than one.
+    The correction fires for every non-range read with a non-zero OFFSET, and
+    names TWO ranges: `read:PATH:{offset+1}-{offset+limit}` is the window that
+    actually came back, and `read:PATH:{offset}-{offset+limit-1}` is the one a
+    caller who read `:A:B` as START:END was after. Until #1417 only the second
+    was offered, and only when LIMIT <= OFFSET, deferring the wider band to
+    `_read_range_note` (#382). That deferral was to a function which is itself
+    gated — on overshoot, or LIMIT < 2*OFFSET — so `read:f:1:40` on a long file
+    tripped neither and got no hint at all. That shape is #1138's own archetype
+    and, measured over 5,598 real `read:PATH:N:M` calls in this machine's
+    transcripts, 1,877 of them (34%) sat in the same hole.
+
+    The parse is NOT changed, and the two candidates #1138 proposed were both
+    measured before being declined: refusing `:N:M` outright hits all 5,549
+    calls with a non-zero OFFSET, and re-reading it as START-END when N < M
+    hits 3,208. Neither number is a rounding error, and a refusal that breaks a
+    form callers legitimately use is a regression dressed as a fix.
 
     A window ends for one of three reasons and the note names which: the LIMIT
     was reached, the file ended, or the byte cap cut it short. The first
@@ -3517,7 +3529,16 @@ def _read_window_note(path: str, limit: int, offset: int,
     # "offset N + limit M = lines A-B" rather than "requested lines A-B":
     # LIMIT is often the 300-line default the caller never typed, and calling
     # that a request would be its own small untruth.
-    asked = f"offset {offset} + limit {limit} = lines {req_start}-{req_end}"
+    # Which of the two grammars ran, named in the receipt rather than left to
+    # be inferred from the numbers (#1414). `:A:B` and `:A-B` are one character
+    # apart and return different windows, and until #1417 the only line that
+    # spoke about the window described BOTH of them in OFFSET/LIMIT terms — so
+    # a range call was reported in the vocabulary of the form it did not use.
+    if range_form:
+        asked = f"range {req_start}-{req_end} (START-END form)"
+    else:
+        asked = (f"offset {offset} + limit {limit} (OFFSET:LIMIT form) "
+                 f"= lines {req_start}-{req_end}")
     if shown <= 0:
         if last_scanned > offset:
             skipped = last_scanned - offset
@@ -3534,9 +3555,20 @@ def _read_window_note(path: str, limit: int, offset: int,
     # and names A-1..B-1 — off by one against the lines they asked for. A
     # correct call being told it was wrong is why the range form reads as
     # non-existent even though it shipped in 0.19.0 (#983).
-    if not range_form and 0 < limit <= offset:
-        hint = ("; OFFSET is a skip count, not a start line — for lines "
-                f"{offset}-{offset + limit - 1} use "
+    if not range_form and offset > 0 and limit > 0:
+        # Two spellings, and the receipt names both because they answer two
+        # different questions: what came back, and what was probably meant.
+        # Until #1417 only the second was offered and only when LIMIT <=
+        # OFFSET, on the reasoning that `_read_range_note` (#382) owned the
+        # other band. It does not: #382 is itself gated on overshoot or
+        # LIMIT < 2*OFFSET, so `read:f:1:40` on a long file — #1138's own
+        # archetype, and the commonest shape there is — satisfied neither gate
+        # and was told nothing. A deferral to a speaker who is silent is the
+        # house defect one level up: an absence produced by the tool, read as
+        # an absence in the world.
+        hint = (f"; OFFSET is a skip count, so {offset} lines were skipped: "
+                f"this window is read:{path}:{req_start}-{req_end}"
+                f" — for lines {offset}-{offset + limit - 1} use "
                 f"read:{path}:{offset}-{offset + limit - 1}")
     suppressed = (last_scanned - offset) - shown
     held = ""
@@ -8502,6 +8534,13 @@ _BATCH_POSITIONAL_FIELDS: Dict[str, Tuple[str, ...]] = {
     "tree":        ("path", "depth"),
     "around_line": ("path", "line", "n"),
     "diff":        ("path1", "path2"),
+    # `batch` takes one argument, so the single-field fallback below would have
+    # placed it — but that fallback places whatever key happens to be there,
+    # under no name. `file = "inner.toml"` therefore ran as `batch:inner.toml`
+    # and was refused for the missing `@`, never for the wrong field (#1407).
+    # Declaring the single field turns the key itself into something that can
+    # be checked.
+    "batch":       ("path",),
 }
 
 
@@ -21711,7 +21750,18 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             # Default: continue_on_error=True (keep running after a failed op).
             ref = parts[1] if len(parts) > 1 else ""
             if not ref.startswith("@"):
-                body = "ERROR: batch requires an @file argument, e.g. batch:@ops.json\n"
+                # Both grammars, because a nested batch reaches here from a
+                # TOML payload where `batch:@ops.json` is not a thing the
+                # caller can type — the field is what they can set, and the
+                # old message never named one (#1407).
+                body = (
+                    "ERROR: batch takes an @file reference, not a bare path"
+                    + (f" (got {ref!r})" if ref else "")
+                    + " — write `batch:@ops.toml` in the colon form, or "
+                    + 'path = "@ops.toml" inside a payload. The leading @ is '
+                    + "what marks the value as a file to read the ops from, "
+                    + "and it is required in both forms.\n"
+                )
             else:
                 try:
                     raw_payload = _load_at_file(ref)

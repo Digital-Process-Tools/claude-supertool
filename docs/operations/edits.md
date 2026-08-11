@@ -193,6 +193,14 @@ Read, edit, and re-read in a single call:
 
 `batch:` prints `[result] N ops run, M writes, K skipped` **twice** — once above the first op and once at the very bottom. The footer is the canonical one and `[branch: X]` still ends the output, but that footer sits below a validators block long enough that `| tail` lands on `git-status : ok` and reads as success. The leading copy is what makes a non-zero `K` visible without a filter. A single op keeps one count: its receipt is three lines with the footer already adjacent to them.
 
+A **nested** `batch` takes its inner payload in the `path` field, and the `@` is
+required there exactly as it is on the command line:
+`{ "op": "batch", "path": "@inner.toml" }`. Any other key is refused by name.
+Before [#1417](https://github.com/Digital-Process-Tools/claude-supertool/issues/1417)
+a single unrecognised key was accepted as an unnamed positional, so
+`"file": "inner.toml"` ran as `batch:inner.toml` and was refused for the missing
+`@` — a message in command-line grammar, about a field the caller had not typed.
+
 Each write sub-op's fields (`old`/`new`/`content`/…) are taken **literally** — the structured payload bypasses the `:::` tokenizer and the shell-escape decoder, so content that itself contains `:::` or backslashes survives byte-for-byte, exactly as a standalone `edit:@file` call behaves. You never re-escape payload content for batch.
 
 ## Line endings
