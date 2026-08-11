@@ -182,6 +182,79 @@ def test_an_interpreter_handed_a_string_is_undecided(tmp_path, guard_config):
             assert verdict.notes
 
 
+def test_a_newline_ends_a_command_the_way_a_semicolon_does(
+        tmp_path, guard_config):
+    """A newline is a command separator, and `shlex` throws it away.
+
+    With `whitespace_split`, a newline is just whitespace, so every line after
+    the first was appended to the *first* line's argv instead of starting a
+    simple command of its own. The real command word then sat at index 3 or 7
+    where no `argv` prefix reaches it, and a multi-line Bash call — which is
+    most non-trivial ones — had exactly its first line checked and the rest
+    unread, reported as `clean`.
+    """
+    guard_config(tmp_path, _TWO_OPS)
+    cmd = chr(10).join(["cd /tmp", "gh pr view 12 --json files"])
+    verdict = supertool.guard_command(cmd)
+    assert verdict.state == "blocked", (verdict, supertool._guard_segments(cmd))
+    assert [m.use for m in verdict.matches] == ["gh-pr:NUMBER:diff"]
+
+
+def test_a_newline_inside_a_quoted_argument_is_not_a_separator(
+        tmp_path, guard_config):
+    """...and the newline that is *inside* a quote still is not one.
+
+    The separator is only a newline the shell would act on. A commit message
+    spanning lines is one token, so nothing in it becomes a command word.
+    """
+    guard_config(tmp_path, _TWO_OPS)
+    cmd = ("git commit -m " + chr(39) + "fix: a thing" + chr(10) + chr(10)
+           + "gh pr view 12 is replaced now." + chr(39))
+    verdict = supertool.guard_command(cmd)
+    assert verdict.state == "clean", (verdict, supertool._guard_segments(cmd))
+
+
+def test_a_command_after_a_heredoc_is_still_checked(tmp_path, guard_config):
+    """The delimiter word is redirection syntax, not the next command's name.
+
+    `<<` tokenises as punctuation and ends the segment, so the delimiter word
+    landed at the head of the *following* segment and pushed the real command
+    word to index 1, where no `argv` prefix can match it. Every command after
+    a heredoc payload was therefore unchecked — silently, and `git-commit:@-`
+    with a heredoc body is this repo's own dominant idiom.
+    """
+    guard_config(tmp_path, _TWO_OPS)
+    cmd = chr(10).join([
+        "supertool " + chr(39) + "git-commit:@-" + chr(39) + " <<" + chr(39)
+        + "MSG" + chr(39),
+        "message = a commit",
+        "MSG",
+        "gh pr view 12 --json state",
+    ])
+    verdict = supertool.guard_command(cmd)
+    assert verdict.state == "blocked", (verdict, supertool._guard_segments(cmd))
+    assert [m.use for m in verdict.matches] == ["gh-pr:NUMBER:status"]
+
+
+def test_a_quoted_heredoc_lookalike_does_not_swallow_the_rest(
+        tmp_path, guard_config):
+    """`<<EOF` inside a quoted argument is text, and opens nothing.
+
+    The stripper matched it as an opener, found no line equal to the
+    delimiter, and consumed every remaining line as body — so the command
+    after it vanished and the guard reported `clean` about a command it had
+    thrown away. An absence produced by the tool, read as an absence in the
+    world.
+    """
+    guard_config(tmp_path, _TWO_OPS)
+    cmd = chr(10).join([
+        "git commit -m " + chr(39) + "docs: see <<EOF in contributing" + chr(39),
+        "gh pr view 12",
+    ])
+    verdict = supertool.guard_command(cmd)
+    assert verdict.state == "blocked", (verdict, supertool._guard_segments(cmd))
+
+
 def test_a_command_after_an_operator_is_still_matched(tmp_path, guard_config):
     """A block that only reads the first word has one hop of reach."""
     guard_config(tmp_path, _TWO_OPS)
@@ -399,7 +472,8 @@ def test_replaces_is_not_handed_to_the_op_subprocess(tmp_path):
     }), encoding="utf-8")
     proc = subprocess.run(
         [sys.executable, str(_ROOT / "supertool.py"), "probe"],
-        capture_output=True, text=True, cwd=str(tmp_path), timeout=60)
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=str(tmp_path), timeout=60)
     assert "SUPERTOOL_LINES" in proc.stdout, proc.stdout
     assert "SUPERTOOL_REPLACES" not in proc.stdout, proc.stdout
 
@@ -472,8 +546,8 @@ def _run_hook(command: str, cwd: Path) -> Dict[str, Any]:
     env["CLAUDE_PLUGIN_ROOT"] = str(_ROOT)
     proc = subprocess.run(
         [sys.executable, str(_ROOT / "hooks" / "pre_bash_guard.py")],
-        input=payload, capture_output=True, text=True, cwd=str(cwd), env=env,
-        timeout=60)
+        input=payload, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", cwd=str(cwd), env=env, timeout=60)
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout) if proc.stdout.strip() else {}
 
