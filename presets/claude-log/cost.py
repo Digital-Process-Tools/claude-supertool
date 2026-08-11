@@ -29,7 +29,7 @@ READ_TOOLS = {"Read", "NotebookRead"}
 PATH_KEYS = ("file_path", "notebook_path")
 
 # supertool renders one section per op, headed by this exact line.
-_SECTION_RE = re.compile(r"^--- (.+) ---$")
+_SECTION_RE = re.compile(r"^--- (.+) ---\Z")
 _OP_RE = re.compile(r"^[a-z][a-z0-9_-]*(?::|$)")
 _SUPERTOOL_RE = re.compile(r"\bsupertool(?:\.py)?\b")
 _ARG_RE = re.compile(r"""\s+(?:'([^']*)'|"([^"]*)"|([^\s'"|;&<>()]+))""")
@@ -238,7 +238,7 @@ def normalise_target(cwd, target):
     return cwd.replace("\\", "/").rstrip("/") + "/" + t
 
 
-_READ_ARG_RE = re.compile(r"^(?:|full|-?\d+|\d+-\d+|\d+\+\d+)$")
+_READ_ARG_RE = re.compile(r"^(?:|full|-?\d+|\d+-\d+|\d+\+\d+)\Z")
 
 
 def read_target(rest):
