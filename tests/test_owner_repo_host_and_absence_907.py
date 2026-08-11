@@ -129,8 +129,7 @@ def test_rows_on_another_host_are_counted_not_echoed() -> None:
         {"url": "https://evilgithub.com/o/r/issues/1"},
         {"url": "https://notgithub.com/o/r/issues/2"},
     ])
-    assert reason is not None
-    assert "2" in reason and "github.com" in reason
+    assert reason == "no row url is on github.com (checked 2)"
     assert "evilgithub" not in reason and "notgithub" not in reason
 
 
@@ -152,4 +151,4 @@ def test_the_decline_the_caller_prints_names_the_cause(capsys, monkeypatch) -> N
     reason = _reason([{"url": "https://evilgithub.com/o/r/issues/1"}])
     text = issues._decline("external", "author association",
                            f"repo could not be identified from the listing: {reason}")
-    assert "github.com" in text
+    assert reason is not None and reason in text
