@@ -1343,7 +1343,29 @@ def _get_op_int(op_name: str, key: str, default: int) -> int:
     cfg = _load_config()
     op_cfg = cfg.get("builtin-ops", {}).get(op_name, {})
     val = op_cfg.get(key)
-    fallback = val if isinstance(val, int) and val > 0 else default
+    fallback = default
+    if val is not None:
+        # `isinstance(True, int)` is True, so a JSON `true` used to read as the
+        # threshold 1 — a one-line `read`, which is not what anyone writing it
+        # meant. And a configured `0` was indistinguishable from an absent key,
+        # so the helper's own default won in silence (#1332).
+        #
+        # It still wins: honouring `"max_lines": 0` would turn a loud
+        # misconfiguration into a silent empty read, which is the worse of the
+        # two failures. What changed is that the substitution is now SAID. The
+        # helper already named a bad env value and said nothing about a bad
+        # config one; a caller who wrote a deliberate `0` in `.supertool.json`
+        # could not tell from any output that it had been discarded.
+        #
+        # A switch does not belong here at all — `_get_op_bool` is the helper
+        # where `0` means off.
+        if isinstance(val, int) and not isinstance(val, bool) and val > 0:
+            fallback = val
+        else:
+            _env_notice(
+                f"note: builtin-ops.{op_name}.{key}={val!r} is not a positive "
+                f"whole number - ignoring it and using {default}. "
+                f"({op_name}.{key} is a threshold; 0 is not an off switch.)")
     if env_val:
         try:
             n = int(env_val)
@@ -1355,6 +1377,70 @@ def _get_op_int(op_name: str, key: str, default: int) -> int:
             return n
         _env_notice(f"note: {env_key}={env_val!r} is below the minimum of 1 "
                     f"- ignoring it and using {fallback}.")
+    return fallback
+
+
+#: The spellings a hand-written `.supertool.json` or an env var may use for a
+#: switch. `_get_op_int` accepts neither, which is the whole of #1332.
+_BOOL_TRUE = ("1", "true", "yes", "on")
+_BOOL_FALSE = ("0", "false", "no", "off")
+
+
+def _coerce_bool(raw: Any) -> "Optional[bool]":
+    """`raw` as a bool, or None when it is not a boolean value at all.
+
+    None is the third state: "this was set, and it is not readable as on or
+    off" is different from "this was not set", and only the caller knows which
+    default that falls back to.
+    """
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, int):
+        return raw != 0
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in _BOOL_TRUE:
+            return True
+        if s in _BOOL_FALSE:
+            return False
+    return None
+
+
+def _get_op_bool(op_name: str, key: str, default: bool) -> bool:
+    """Read a switch from builtin-ops.<op_name>.<key>. `0` means off.
+
+    The sibling of `_get_op_int`, and the reason it exists: that helper is a
+    positive-threshold reader (`val if isinstance(val, int) and val > 0`), so a
+    configured `0` reads as an absent key and the default wins. For `max_lines`
+    or `count_ceiling` that is right — a zero there is meaningless. For a flag
+    whose default is ON it makes the documented off-switch inert, which is how
+    `read.elide: 0` shipped into three documentation sites and did nothing
+    (#1332).
+
+    Env `SUPERTOOL_<OP>_<KEY>` takes precedence, same as `_get_op_int`. A value
+    that is set but unreadable is announced with the state actually in force,
+    rather than silently becoming the default.
+    """
+    env_key = f"SUPERTOOL_{op_name.upper()}_{key.upper()}"
+    env_val = os.environ.get(env_key)
+    cfg = _load_config()
+    op_cfg = cfg.get("builtin-ops", {}).get(op_name, {})
+    val = op_cfg.get(key) if isinstance(op_cfg, dict) else None
+    fallback = default
+    if val is not None:
+        coerced = _coerce_bool(val)
+        if coerced is None:
+            _env_notice(f"note: builtin-ops.{op_name}.{key}={val!r} is not a "
+                        f"true/false value - ignoring it and using {default}.")
+        else:
+            fallback = coerced
+    if env_val:
+        coerced = _coerce_bool(env_val)
+        if coerced is None:
+            _env_notice(f"note: {env_key}={env_val!r} is not a true/false value "
+                        f"- ignoring it and using {fallback}.")
+        else:
+            return coerced
     return fallback
 
 
@@ -3561,26 +3647,23 @@ _READ_ELIDE_WINDOW_SECONDS = 900
 def _read_elide_enabled() -> bool:
     """Whether a repeat read may be elided at all.
 
-    Deliberately NOT routed through `_get_op_int`. That helper exists for
+    Routed through `_get_op_bool`, not `_get_op_int`. That helper exists for
     positive-integer thresholds and reads a configured `0` as "unset",
     substituting its own default (`val if isinstance(val, int) and val > 0`).
-    `read.elide` is the first boolean here whose default is ON, so through
+    `read.elide` was the first boolean here whose default is ON, so through
     that helper `"elide": 0` was documented in three places and inert — a
-    switch that reports the state it was asked for and does not enter it.
-    Every other `_get_op_int` call in this file is a genuine threshold; this
-    was the only site of the class.
+    switch that reports the state it was asked for and does not enter it. It
+    was read inline here as the narrow fix; #1332 gave the class a helper, so
+    the next switch does not have to rediscover this.
+
+    `SUPERTOOL_READ_NO_ELIDE` is kept and checked first: it is the documented
+    per-call escape and it is negative-sense, which `_get_op_bool`'s
+    `SUPERTOOL_READ_ELIDE` is not.
     """
     off = os.environ.get("SUPERTOOL_READ_NO_ELIDE", "")
     if off.strip() and off.strip() != "0":
         return False
-    ops = _load_config().get("builtin-ops", {})
-    block = ops.get("read", {}) if isinstance(ops, dict) else {}
-    val = block.get("elide") if isinstance(block, dict) else None
-    if val is None:
-        return True
-    if isinstance(val, str):
-        return val.strip().lower() not in ("", "0", "false", "no", "off")
-    return bool(val)
+    return _get_op_bool("read", "elide", True)
 
 
 def _read_elide_window() -> float:
@@ -3730,8 +3813,8 @@ def op_read(path: str, offset: int = 0, limit: int = 0,
     #     fall back to source *and say so*, never silently
     skip_note = ""
     if (offset == 0 and limit == 0 and not grep_filter and not force_full
-            and (_get_op_int("read", "abstract", 0)
-                 or _get_op_int("read", "php_abstract", 0))):
+            and (_get_op_bool("read", "abstract", False)
+                 or _get_op_bool("read", "php_abstract", False))):
         lang = _abstract_lang(path)
         threshold = _get_op_int("read", "abstract_threshold_bytes",
                                 _get_op_int("read", "max_bytes", MAX_READ_BYTES))

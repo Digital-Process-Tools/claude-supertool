@@ -89,10 +89,10 @@ Entries document built-in operations (`syntax`, `description`, `example`). Set `
 | ------ | ------------- | ---------------- | ---------------------------------------------------------------------------------------- |
 | `read` | `max_lines`   | 300              | Max lines per read                                                                       |
 | `read` | `max_bytes`   | 20000            | Max bytes per read (truncates at cap). Also the yardstick the abstract read has to beat  |
-| `read` | `abstract`    | 0                | `1` → a read of a file over the threshold returns its tree-sitter symbol map instead of source, for every language in supertool's table. Falls back to source, with the reason, when the map is empty or no smaller. See [operations/reads.md](operations/reads.md#abstract-read) |
-| `read` | `php_abstract` | 0               | Former name of `abstract`, from when the gate was `.php`. Still enables it; either key set to `1` is enough |
+| `read` | `abstract`    | 0 (switch)       | `1` → a read of a file over the threshold returns its tree-sitter symbol map instead of source, for every language in supertool's table. Falls back to source, with the reason, when the map is empty or no smaller. See [operations/reads.md](operations/reads.md#abstract-read) |
+| `read` | `php_abstract` | 0 (switch)      | Former name of `abstract`, from when the gate was `.php`. Still enables it; either key set to `1` is enough |
 | `read` | `abstract_threshold_bytes` | `max_bytes` | File size above which the abstract read applies. Env: `SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES` |
-| `read` | `elide` | 1 | `0` → never elide a repeat read of an unchanged file. `SUPERTOOL_READ_NO_ELIDE=1` does the same for one call. Only fires when both reads share the same parent process, so under Claude Code it never fires between Bash tool calls ([#1352](https://github.com/Digital-Process-Tools/claude-supertool/issues/1352)). See [operations/reads.md](operations/reads.md#eliding-a-repeat-read) |
+| `read` | `elide` | 1 (switch) | `0` → never elide a repeat read of an unchanged file. `SUPERTOOL_READ_NO_ELIDE=1` does the same for one call. Only fires when both reads share the same parent process, so under Claude Code it never fires between Bash tool calls ([#1352](https://github.com/Digital-Process-Tools/claude-supertool/issues/1352)). See [operations/reads.md](operations/reads.md#eliding-a-repeat-read) |
 | `read` | `elide_window_seconds` | 900 | How long after content was last **returned** a byte-identical repeat may be elided. Measured from the last read that actually handed over bytes, never from the last elision. Env: `SUPERTOOL_READ_ELIDE_WINDOW_SECONDS` |
 | `grep` | `max_results` | 10               | Default result limit when not specified in the op                                        |
 | `grep` | `max_line_chars` | 500           | Max chars per output line (match or context); remainder shown as `… (+N chars)`           |
@@ -101,6 +101,13 @@ Entries document built-in operations (`syntax`, `description`, `example`). Set `
 | `around` | `max_bytes` | 16000            | Max bytes for an `around:` context window (truncates at a line boundary)                 |
 | `grep_around` | `max_bytes` | 16000       | Max bytes for a `grep_around:` (and `grep:`-with-context) window                          |
 | `glob` | `max_results` | 50               | Max files returned                                                                       |
+
+**Switches and thresholds are read by two different helpers, and the difference decides what `0` means** ([#1332](https://github.com/Digital-Process-Tools/claude-supertool/issues/1332)).
+
+- **A switch** — `read.elide`, `read.abstract`, `read.php_abstract` — accepts `0`/`1`, `true`/`false`, or the strings `yes`/`no`/`on`/`off`. **`0` means off**, including for a switch whose default is on. `read.elide: 0` was documented in three places and inert for exactly as long as it was read as a threshold.
+- **A threshold** — every other key in the table above — takes a positive whole number, and a `0` or a negative there is refused, not honoured: `"max_lines": 0` meaning "return no lines" would turn a misconfiguration into a silently empty read. The refusal is now printed, naming the key, the value it discarded and the limit actually in force. A `true` in a threshold is refused the same way — Python reads it as `1`, so it used to give you a one-line `read` without a word.
+
+Every key of both kinds also takes an env override, `SUPERTOOL_<OP>_<KEY>` — `SUPERTOOL_READ_ELIDE=0`, `SUPERTOOL_READ_MAX_LINES=500`. An override that cannot be read is announced rather than silently dropped ([#654](https://github.com/Digital-Process-Tools/claude-supertool/issues/654)).
 
 Example — increase read cap and restrict grep to PHP/XML:
 
