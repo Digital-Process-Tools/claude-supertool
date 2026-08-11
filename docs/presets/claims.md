@@ -184,10 +184,16 @@ The boundary is the **repo root**, and the core's is the **cwd**. They differ
 whenever you call `claims` from a subdirectory, where a root-relative argument
 is the documented way to name a document. Root is what the op's own path lens
 has always enforced on the paths a document *cites* (`path leaves the
-repository root`); #1283 applied it to the path the op *reads from*. The core's
-cwd rule stays underneath as defence in depth — a domain-specific boundary is
-enforced by the op that owns it, and the chokepoint does not yet reach preset
-ops at all.
+repository root`); #1283 applied it to the path the op *reads from*. A
+domain-specific boundary is enforced by the op that owns it, with a core check
+underneath as defence in depth.
+
+Since #1287 the chokepoint does reach preset ops, and it enforces *this* op's
+boundary rather than the core's: `presets/claims.json` declares
+`"paths": {"args": [1], "root": "repo"}`, so an out-of-boundary argument is
+refused in the core before `check.py` is spawned at all. The op's own check
+stays — it is what answers when the script is run directly — but the two now
+agree by construction rather than by both happening to be written correctly.
 
 Resolved rather than spelled: a symlink inside the repo pointing at a file
 outside it is refused on where its bytes are.
