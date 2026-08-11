@@ -25,7 +25,7 @@ A workflow not in this list, or a job whose trigger doesn't match the event you'
 
 # Reading a red leg
 
-1. `gh run view --log` first. If it comes back empty for a genuinely failed job: `gh api repos/OWNER/REPO/actions/jobs/<id>/logs`.
+1. `supertool 'gh-job:N:fail'`, or `:raw` for the whole log. If that comes back empty for a genuinely failed job: `gh api repos/OWNER/REPO/actions/jobs/<id>/logs`, which no op maps.
 2. Don't `gh run rerun <id> --failed` before reading the log — it destroys the evidence and costs the same API call.
 3. **A single-platform red is usually real, not a flake.** Running score here: 10 genuine to 2 flakes.
 4. Best discriminator: **which tests passed on that leg.** `2 failed, 4793 passed` = product not disarmed, fault is in fixtures/env, not a mass failure.

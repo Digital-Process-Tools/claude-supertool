@@ -37,6 +37,16 @@
             "command": "S=\"$HOME\"/Documents/claude-jit-context/scripts/pre-path-hook.sh; [ -f \"$S\" ] && bash \"$S\" || true"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "S=\"$CLAUDE_PROJECT_DIR\"/hooks/pre-bash-guard.sh; if [ -f \"$S\" ]; then CLAUDE_PLUGIN_ROOT=\"$CLAUDE_PROJECT_DIR\" bash \"$S\"; else printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"supertool raw-command guard did not run: hooks/pre-bash-guard.sh is not in this checkout. The command was allowed - this is a statement about the guard, not about the command.\"}}'; fi",
+            "timeout": 15
+          }
+        ]
       }
     ]
   }

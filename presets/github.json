@@ -8,6 +8,11 @@
       "timeout": 30,
       "description": "GitHub issue: desc, comments, images, linked PRs. :full = no truncation, all comments. Targets another repo with a leading repo:OWNER/NAME op.",
       "syntax": "gh-issue:NUMBER[:full]",
+      "replaces": [
+        { "argv": "gh issue view", "unless_flag": ["--web", "-w"], "use": "gh-issue:NUMBER" },
+        { "argv": "gh issue view", "flag": "--comments", "unless_flag": ["--web", "-w"], "use": "gh-issue:NUMBER:full" },
+        { "argv": "gh issue view", "flag": "-c", "unless_flag": ["--web", "-w"], "use": "gh-issue:NUMBER:full" }
+      ],
       "repo_target": true
     },
     "gh-issues": {
@@ -17,7 +22,7 @@
       "description": "Issue triage board: list issues (no default author filter — the queue, not mine), ranked unrankable → external author → stale body → no linked PR → oldest. Per issue: linked-PR state from the timeline, external-filer marker from GitHub's authorAssociation, age, comment count, labels, stale-body flag (newest comment newer than lastEditedAt, or createdAt when the body was never edited), and the milestone as '[m:TITLE]' — no column, so a row without one costs nothing and '[m:?]' means gh did not answer rather than 'none'. Enrichment is one GraphQL call per 20 issues; when it fails the derived fields render '?' and the footer names why — never 0, never 'internal', never 'no PR'. An unrecognised token or filter key is REFUSED, never dropped: an unnarrowed board printed for a filter nobody applied reads as the answer to the question you asked. Filters (comma-sep): author/assignee/label/milestone/state/search/per/iids=N,N,N. search=TEXT is SERVER-SIDE — it goes to `gh issue list --search`, so it narrows the population rather than the page, and every render names the engine and the scope it covered (GitHub issue search over title, body and comments) because a search that silently scoped to less returns a zero that reads as an absence in the world. An empty result says the search RAN and matched nothing, which is not the same as a lookup that failed and keeps its non-zero exit. GitHub's qualifier language (`in:title`) is unreachable here and refused rather than half-applied: a ':' in the value is split by the op tokenizer, so the call is refused with nothing fetched. `search=` beside `iids=` is REFUSED — a named population has no listing to search. Flags: nopipe (skip enrichment), iids, external, stale, nomilestone (client-side, so it declines outright if any row's milestone is unknown; the --limit disclosure is measured against the fetch, not against what survived the filter). A client-side flag that empties the board names itself and the count it dropped, so `No issues match.` is never read as a statement about the queue. iids carries the --limit disclosure as a leading `#` comment — it returns before any footer is built, and it is the shape whose output becomes another tool's input. iids=1233,1240,1251 is the OTHER iids: a value filter naming an exact population by number, for auditing citations (124 numbers in one #1233 audit) instead of one gh-issue call each. Every requested number gets a row — an issue, a number that is a PR here, a number that resolves to nothing, or a number the lookup could not reach — because a shorter list is read as 'these all check out'. It never prints 'more may exist' (the population is the one you typed); per= still caps it and names how many it did not look up; a listing filter (author/assignee/label/milestone/state) beside iids= is REFUSED, since there is no listing for gh to apply it to.",
       "syntax": "gh-issues[:author=@me,assignee=@me,label=bug,milestone=v1.0,state=open,search=fence state,per=100,iids=1233,1240,1251,external,stale,nomilestone,nopipe,iids]",
       "replaces": [
-        { "argv": "gh issue list", "use": "gh-issues:per=100" }
+        { "argv": "gh issue list", "unless_flag": ["--web", "-w"], "use": "gh-issues:per=100" }
       ],
       "repo_target": true,
       "per_page": 50
@@ -29,6 +34,9 @@
       "description": "Create a GitHub issue from a JSON/TOML payload file. Supports labels, assignees, and milestone (by title).",
       "syntax": "gh-issue-create:@FILE",
       "example": "gh-issue-create:@.max/new-issue.json",
+      "replaces": [
+        { "argv": "gh issue create", "unless_flag": ["--web", "-w"], "use": "gh-issue-create:@FILE" }
+      ],
       "repo_target": "payload"
     },
     "gh-pr-create": {
@@ -39,7 +47,7 @@
       "syntax": "gh-pr-create:@FILE",
       "example": "gh-pr-create:@.max/pr.toml",
       "replaces": [
-        { "argv": "gh pr create", "use": "gh-pr-create:@FILE" }
+        { "argv": "gh pr create", "unless_flag": ["--web", "-w"], "use": "gh-pr-create:@FILE" }
       ],
       "repo_target": "payload"
     },
@@ -62,11 +70,13 @@
       "description": "Review a pull request: branch, checks, reviews/approval, linked issue, diff stat, comments — the full dashboard. A truncated description says so twice — in the header and at the cut — with the exact char count withheld; :full uncaps it. :status = slim merge-state only (~250B, fits hook cache). :diff is the merge gate's own read, in the shape a reviewer walks rather than the whole patch: the file list with per-file +/-, heaviest first, with '[same edit xN]' noting a file whose every hunk is the identical change — a note, never a filter. :diff:PATH is that one file's hunks, fenced. A diff that could not be fetched says so and exits 1 instead of rendering an empty file list; a PATH not in the diff declines and names the paths that are; both caps (GH_PR_DIFF_MAX_FILES, default 60; GH_PR_DIFF_MAX_BYTES, default 65536) disclose exactly what they withheld. Honours repo:OWNER/NAME, which raw `gh pr diff` from the wrong directory does not. :threads is the review threads themselves — path:line, resolved state, every comment body — which the dashboard header only ever counted ('Unresolved threads: 1 / 1' with no op that answered the next question, #1346); it declines with UNKNOWN when the GraphQL call fails rather than reporting none, which is the state the header's own count cannot tell apart. A mode word this op does not have is REFUSED naming the ones it does, exit 1, nothing fetched — :notamode, :reviews and :comments all used to render the default dashboard at exit 0.",
       "syntax": "gh-pr:NUMBER_OR_BRANCH[:status|:full|:diff[:PATH]|:threads]",
       "replaces": [
-        { "argv": "gh pr view", "use": "gh-pr:NUMBER" },
-        { "argv": "gh pr view", "flag": "--json", "value": "state", "use": "gh-pr:NUMBER:status" },
-        { "argv": "gh pr view", "flag": "--json", "value": "mergeable", "use": "gh-pr:NUMBER:status" },
-        { "argv": "gh pr view", "flag": "--json", "value": "files", "use": "gh-pr:NUMBER:diff" },
-        { "argv": "gh pr diff", "use": "gh-pr:NUMBER:diff" }
+        { "argv": "gh pr view", "unless_flag": ["--web", "-w"], "use": "gh-pr:NUMBER" },
+        { "argv": "gh pr view", "flag": "--comments", "unless_flag": ["--web", "-w"], "use": "gh-pr:NUMBER:full" },
+        { "argv": "gh pr view", "flag": "--json", "value": "state", "unless_flag": ["--web", "-w"], "use": "gh-pr:NUMBER:status" },
+        { "argv": "gh pr view", "flag": "--json", "value": "mergeable", "unless_flag": ["--web", "-w"], "use": "gh-pr:NUMBER:status" },
+        { "argv": "gh pr view", "flag": "--json", "value": "files", "unless_flag": ["--web", "-w"], "use": "gh-pr:NUMBER:diff" },
+        { "argv": "gh pr diff", "unless_flag": ["--web", "-w"], "use": "gh-pr:NUMBER:diff" },
+        { "argv": "gh pr checks", "unless_flag": ["--web", "-w", "--watch"], "use": "gh-pr:NUMBER:status" }
       ],
       "repo_target": true
     },
@@ -76,6 +86,9 @@
       "timeout": 60,
       "description": "PR triage board: list PRs (the repo's, no default author filter), sorted failing-first. Per PR: check rollup (failed\u2192check name), approval (reviewDecision), age, diff size, watch-state, draft/conflict/threads flags + actionable footer. Filters (comma-sep): author/reviewer/assignee/label/state/per. Flags: nopipe (skip review-thread enrichment), iids, failed, anyauthor. A token outside those two lists, or a state outside open/closed/merged/all, is REFUSED (exit 1, no board) rather than dropped. The core board is one gh call; review threads enrich in parallel. There is NO author default: bare gh-prs is every open PR on the repo and gh-prs:author=@me is one person's. It defaulted to author=@me until #1207 — disclosing that filter (#1072) was not enough, and three PRs nobody on the team wrote sat unseen for 5h to 1 day behind a footer read past every time. The population on screen is always named, in states that never render alike: no role filter (says so), rows under a role filter (says which slice), no rows because the filter excluded some (says how many, and that bare gh-prs shows them), and genuinely nothing open. A count the probe could not establish is UNKNOWN, never `excluded none`; the probe drops every role key, not just author. anyauthor is what the bare op now does, still accepted, and still REFUSED alongside an explicit author/assignee/reviewer, because those ask for different boards. radar's gh-prs tier keeps the old default — it keys its departure snapshot on the scope. A fetch that came back exactly --limit long says so, measured against the fetch rather than against what survived `failed`, and iids carries the disclosures about rows the caller did NOT choose to lose — the page cap and the role-filter exclusion — as leading `#` comments, so a piped list is never mistaken for a complete one. Not the scope label on a populated board, and not `failed`'s own complement: both are noise in a stream a script parses.",
       "syntax": "gh-prs[:author=@me,assignee=@me,reviewer=@me,label=bug,state=open,per=50,failed,nopipe,iids,anyauthor]",
+      "replaces": [
+        { "argv": "gh pr list", "unless_flag": ["--web", "-w", "--json"], "use": "gh-prs" }
+      ],
       "repo_target": true,
       "enrich_workers": 8,
       "enrich_cap": 40,
@@ -87,6 +100,9 @@
       "timeout": 15,
       "description": "What passed, what failed? Workflow run jobs with statuses and failed step names. Targets another repo with a leading repo:OWNER/NAME op.",
       "syntax": "gh-run:NUMBER",
+      "replaces": [
+        { "argv": "gh run view", "unless_flag": ["--web", "-w"], "use": "gh-run:NUMBER" }
+      ],
       "repo_target": true
     },
     "gh-branch": {
@@ -96,6 +112,10 @@
       "description": "Is this branch green? Answers for a *branch* — the shape gh-pr cannot take, because after a squash merge the ref that matters is the default branch and it has no PR. Selects runs by workflow identity, never by recency: `gh run list --limit 1` returns whichever workflow started last (routinely CodeQL) and reports its conclusion for the commit, which is how a green gets read off a run that is not the run you meant. The summary is conjunctive — green only when EVERY workflow on the head SHA concluded and every leg passed — and it states four things apart that collapse into each other by default: GREEN, NOT GREEN (failed, or not finished — worded differently), NO RUN (nothing exists for this SHA, with the reason and the ~15min creation window), and UNKNOWN (a job list did not come back — never counted as zero passing legs). Leg counts come from the same _checks.summarize tally as gh-pr/gh-run, so `2 cancelled` is named rather than dropped and the terms sum to the leg count. Names the head SHA, because green is a claim about a commit. Every row says `concluded` or `running` in words, so no bare column can be misread as a leg state. With no argument, answers for the repo default branch — the shape used right after a merge. TAKES A COMMIT TOO (#1083), full or abbreviated, which is the release gate's own question — it clears `the exact commit being tagged`, and the branch head can move between the check and the tag. The mode is decided by the resolution and not by the spelling: a ref is a commit when what it resolves to STARTS WITH it, so `deadbee` as a branch name stays a branch. It used to accept a SHA and answer NO RUN for it, because `gh run list --branch <sha>` matches no branch and returns [] with exit 0 — the house defect inside the op written to prevent it. Commit mode passes the resolved 40-hex name to `gh run list --commit`, never the abbreviation, because that call answers [] exit 0 for a prefix; and it states that the previous-head comparison is not available there rather than letting its silence read as nothing-missing. The declared-but-never-dispatched block, which is the half no enumeration of runs can produce, is keyed on the SHA already and is unchanged. Exit 0 only when GREEN. Targets another repo with a leading repo:OWNER/NAME op.",
       "syntax": "gh-branch[:BRANCH|:COMMIT_SHA]",
       "example": "gh-branch:master",
+      "replaces": [
+        { "argv": "gh run list", "flag": "--branch", "use": "gh-branch:BRANCH" },
+        { "argv": "gh run list", "flag": "--commit", "use": "gh-branch:COMMIT_SHA" }
+      ],
       "repo_target": true
     },
     "gh-job": {
@@ -104,6 +124,10 @@
       "timeout": 30,
       "description": "Why did this job fail? PR context + error pattern search + log tail. Takes EITHER id namespace: a check-run id (CodeQL, Dependabot, external CI) renders the check run — status, output, annotations — under '# Check run #N' with a 'Routed:' line naming the switch, so you never have to know which of GitHub's two lists a red leg landed in; the checks API is only consulted after the Actions endpoint 404s, so working calls cost nothing extra, and a checks call that does not answer declines rather than rendering an empty check. :fail (alias :errors) = matched failure blocks only, no tail — the tight triage view, per-job patterns; :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive); :raw:-N is the last N lines; a START past the end returns the tail of the width requested and says so rather than declining; :grep:PATTERN ad-hoc regex over the log (literal fallback, context, tail on no-match; emission budgeted by GH_JOB_GREP_MAX_BYTES, default 65536 — a capped view says so in its header AND footer with an exact 'N of M matching lines shown' and names bytes, not a match limit, as what cut). The argv this op receives is what core made of the op string, so it is checked before anything is fetched (#1145): a job id that is not all digits is REFUSED — GitHub answers 200 for 'jobs/123ep' by coercing it back to 123, so a mangled id used to render in the header as the job that was read — and a MODE token outside fail/errors/raw/grep is REFUSED rather than dropped to the default view under exit 0. A ':' inside PATTERN is REJOINED, not truncated, with a note above the render echoing how the pattern was read; nothing follows PATTERN here, so that is the only reading. '|' needs no escape and never did.",
       "syntax": "gh-job:NUMBER[:fail|:raw[:-N|:START[:END]]|:grep:PATTERN]",
+      "replaces": [
+        { "argv": "gh run view", "flag": "--log", "unless_flag": ["--web", "-w"], "use": "gh-job:NUMBER:raw" },
+        { "argv": "gh run view", "flag": "--log-failed", "unless_flag": ["--web", "-w"], "use": "gh-job:NUMBER:fail" }
+      ],
       "repo_target": true,
       "lines": 80,
       "error_patterns": "ERROR,FAILED,Error:,Failed,fatal:,##[error]",
@@ -125,6 +149,9 @@
       "description": "What can I tag this with? The repo's label vocabulary — the first call of any triage or release-planning run, because every later decision depends on it and `gh issue edit --add-label` does not protect you from a name that does not exist. Names, descriptions, and how many OPEN issues carry each one, so a dead label is visible next to a live one. Grouped by name prefix (`priority-`, `lane-`, `priority:`) with the grouping declared as INFERRED — a prefix is a repo convention, not a GitHub field, and the spelling is not portable: claude-supertool uses `priority-high`, claude-remember uses `priority:high` and has no lanes. Counts have three states and never two: exact over every open ISSUE read — pull requests are excluded, so `0` means 'on no open issue' rather than 'unused' — a FLOOR rendered `>=N` when the issue read hit GH_LABELS_ISSUE_CAP (default 400), or `?` when the issue list could not be read at all — never 0, because 'I did not look' and 'nobody uses it' are opposite facts. An unreadable label list is an ERROR and exit 1; a repo with genuinely no labels says that in its own words. Paginates, so a repo past 100 labels is not silently truncated. `tally=PREFIX` answers a different question with the same vocabulary (#1084): ONE label family's burn-down — open, closed and frozen (their sum) per label, plus the row a per-label listing cannot produce, `no PREFIX label`, the open issues that escaped the freeze. Those numbers come from the search API, one query per cell, `is:issue`, because enumerating closed issues would hit a cap and render a FLOOR as a burn-down denominator; a cell that did not answer is `?` and poisons `frozen` rather than counting as zero. It also names issues carrying TWO labels of the family — a filing error, never a comma-joined row — and says so in the negative too, so silence is not read as a clean board. An empty family reads as `no labels start with this prefix`, never as an all-NONE board: the spelling is not portable. The prefix is a parameter; an unrecognised token is REFUSED rather than dropped, and a label name carrying a quote is refused rather than silently omitted from every row. Targets another repo with a leading repo:OWNER/NAME op.",
       "syntax": "gh-labels[:tally=PREFIX]",
       "example": "gh-labels:tally=cohort-",
+      "replaces": [
+        { "argv": "gh label list", "unless_flag": ["--web", "-w"], "use": "gh-labels" }
+      ],
       "repo_target": true
     },
     "gh-since-tag": {
