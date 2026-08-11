@@ -6,9 +6,15 @@ its own body called that "two sites". Sweeping the tree with an AST walk rather
 than a grep -- a docstring naming `symlink_to` is not a call site -- the class
 was **28 uncertified call sites across 18 files**, out of 71 sites in 38 files.
 The issue's estimate of ~19 across 13 was low; the count is stated here so the
-next reader does not re-derive it. #1274 then folded the three files that
-hand-rolled their own probe onto the shared helper, which deleted three helper
-definitions: **69 sites in 39 files** as of that change.
+next reader does not re-derive it.
+
+**Those two totals are dated, and were already stale when #1274 read them.**
+71/38 was the tree at #1232; #1283 then added a site in a new file, so the
+tree #1274 started from was 72 sites in 39 files. #1274 folded the three
+files that hand-rolled their own probe onto the shared helper, deleting three
+helper definitions: **69 sites in 39 files**. Any total written here is a
+measurement of one commit, not an invariant -- the tests below re-derive, and
+they are what a reader should believe when a number disagrees with them.
 
 **What "uncertified" means, and why it is not the same as "ungated".** Most of
 the 71 sites never reach a runner without the create-symlink privilege at all,
