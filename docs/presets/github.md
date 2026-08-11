@@ -76,6 +76,7 @@ The four entries that shipped in v0.34.0 had no such exclusion, so this is a **w
 | `gh issue view --web`, `gh pr view --web`, `gh pr diff --web`, `gh issue list --web`, `gh pr list --web`, `gh run view --web`, `gh label list --web` | a browser is not a render any op produces |
 | `gh issue create --web`, `gh pr create --web` | the same, and it is how a long body gets written by hand |
 | `gh pr checks --watch` | `gh-pr:NUMBER:status` is one read. `watch` is the op that polls, and it takes a PR rather than a check list |
+| `gh pr list --json` | `gh-prs` renders a **board** and has no field-selection vocabulary. The maintainer skill's branch reap is a live user of the shape — `gh pr list --state merged --limit 400 --json headRefName -q '.[].headRefName'` — and no op emits it. This is the one asymmetry in the family: `gh issue list --json` is claimed, because `gh-issues` carries `search=` and `iids` and no documented use of the raw shape survives them |
 
 **A short flag covers its clustered spellings**, so `-w` also un-claims `-wq`. See [A clustered short flag is read as its letters](git.md#a-clustered-short-flag-is-read-as-its-letters).
 

@@ -25,9 +25,11 @@ The three tags below are described as this tracker spelled them when this was wr
 Two calls, first, every run:
 
 ```bash
-gh label list --repo OWNER/REPO --limit 200 --json name -q '.[].name'
+supertool 'repo:OWNER/NAME' 'gh-labels'
 gh api repos/OWNER/REPO/milestones -q '.[].title'
 ```
+
+`gh-labels` rather than `gh label list --json name`, which the guard refuses now: it returns the same vocabulary plus how many OPEN issues carry each label, so a dead label is visible next to a live one — and the whole reason for this call is not inventing a name that does not exist. There is no op for milestones, so that line stays raw.
 
 Then use only what came back, in the spelling it came back in. An empty milestone list means this repo does not use milestones — say so once and skip that tag entirely. **Never create a label or a milestone**; a missing mechanism is a question for the maintainer, not something you install.
 

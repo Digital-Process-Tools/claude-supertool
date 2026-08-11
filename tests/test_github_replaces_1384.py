@@ -126,6 +126,15 @@ def test_the_refusal_carries_the_gh_op_own_words(shipped_github):
     ("gh pr checks 1424 --watch", "gh-pr:NUMBER:status is one read, not a "
                                   "poller; `watch` is the op for polling and "
                                   "takes a PR, not a check list"),
+    # The one asymmetry in this family, and it is evidence-driven rather than
+    # a rule: `gh-prs` renders a BOARD and has no field-selection vocabulary,
+    # and the maintainer skill's branch-reap recipe is a live user of exactly
+    # this shape -- `gh pr list --state merged --limit 400 --json headRefName
+    # -q '.[].headRefName'`, which no op produces. A missed block is the safe
+    # direction; a dead end has no per-command way past.
+    ("gh pr list --state merged --limit 400 --json headRefName",
+     "no op emits arbitrary PR fields"),
+    ("gh pr list --json number,title", "same"),
 ])
 def test_an_excluded_shape_of_a_mapped_command_stays_usable(
         shipped_github, command, why):

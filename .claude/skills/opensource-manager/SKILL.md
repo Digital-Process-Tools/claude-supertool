@@ -578,7 +578,7 @@ Florian, at 22:40: _"any idea why pipeline is red?"_ — and both default branch
 
 1. `gh pr merge` → read `state` / `mergedAt` / `mergeCommit`
 2. clean up, in a separate call, gated on that result
-3. **check the default branch's run** — `gh run list --branch <default> --limit 1`
+3. **check the default branch's run** — `supertool 'gh-branch'`. Not `gh run list --branch <default> --limit 1`, which this line prescribed until 2026-08-11 while §"Cutting a release" three hundred lines down said in bold *not* to: it returns whichever **workflow** started last, routinely CodeQL, and reports that conclusion as the commit's. `gh-branch` is conjunctive over every workflow on the head SHA and states GREEN / NOT GREEN / NO RUN / UNKNOWN apart. The raw call is refused by the guard now and names the op.
 
 Step 3 costs one call and I skipped it after every merge for a whole day. The cost is `master` red for hours while the board reads clean, and the person who notices is the one who asked you to watch it.
 
