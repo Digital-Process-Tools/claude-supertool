@@ -1705,7 +1705,7 @@ _DISPATCH_ONLY_OPS = {
 
 # Valid from the CLI but never reaching dispatch(): main() honours and strips
 # them before the op loop. They belong in any list a caller reads.
-_MAIN_LEVEL_OPS = {"cwd"}
+_MAIN_LEVEL_OPS = {"cwd", "repo"}
 
 
 def _valid_op_names() -> List[str]:
@@ -1817,6 +1817,7 @@ _OP_SAFETY_BUILTIN: Dict[str, str] = {
     "hover": "read-only", "introduction": "read-only", "ls": "read-only",
     "map": "read-only", "ops": "read-only", "ops-compact": "read-only",
     "output-format": "read-only", "read": "read-only",
+    "repo": "read-only",
     "replace_dry": "read-only", "resolve": "read-only", "stat": "read-only",
     "tail": "read-only", "tree": "read-only", "validate": "read-only",
     "validate_staged": "read-only", "version": "read-only",

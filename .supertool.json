@@ -135,6 +135,12 @@
       "example": "cwd:~/repo",
       "hint": true
     },
+    "repo": {
+      "syntax": "repo:OWNER/NAME",
+      "description": "Name the repo a call is about, when it is not the one the cwd stands in (#673). MUST be first (or straight after cwd:), once per call. Core resolves it before the op loop and exports SUPERTOOL_REPO, so every gh-* op in the call targets it; an op that cannot honour a repo target REFUSES the whole call rather than half-applying it. Does not reach GitLab (gl-*) or any file op. Not a cwd: substitute — presets still resolve from the cwd's project root, so run it from inside the tree whose presets you mean",
+      "example": "repo:OWNER/NAME",
+      "hint": true
+    },
     "tree": {
       "syntax": "tree:PATH[:DEPTH]",
       "description": "Dir tree, depth=N (def 3). Hides dotfiles",
