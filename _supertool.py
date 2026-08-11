@@ -2063,14 +2063,41 @@ _PATH_SYNTAX_COMPONENTS = frozenset(("PATH", "PATHS", "FILE", "FILES"))
 
 _SYNTAX_TOKEN_RE = re.compile(r"[^A-Za-z0-9_]+")
 
-#: Preset ops that name a path in their syntax and predate the declaration
-#: (#1287). **This set only ever shrinks.** It is not a policy — it is a debt
-#: register: 24 shipped ops name a path, 4 declare a boundary, these 20 do not.
-#: Refusing them today would break every one of them in the same release that
-#: introduced the rule, so they are grandfathered *by name*, which means a
+#: The core's own path placeholders in a `cmd` template. `{file}` is
+#: `parts[1]`; `{dir}` is its `os.path.dirname`. Both are substituted by
+#: `_resolve_custom_op` below, so an op writing either has already told the
+#: core which argument it means a filesystem path to be — a stronger signal
+#: than a prose `syntax` string, and the one #1350 was filed about.
+#:
+#: `{arg}` is deliberately absent even though it substitutes the very same
+#: `parts[1]`. Sixteen shipped ops pass a handle, a ref, a tag, an ID or a
+#: repo slug through it and none of them takes a path, so promoting it would
+#: refuse all sixteen and gate nothing. `{file}` and `{dir}` are the
+#: placeholders whose NAME is the claim; `{arg}` is the one that declines to
+#: make it. An op that means a path and writes `{arg}` is still ungated, and
+#: that is a naming problem in the op rather than a hole the core can close
+#: without over-refusing.
+_PATH_CMD_PLACEHOLDERS = ("{file}", "{dir}")
+
+#: Preset ops that name a path and predate the declaration (#1287). **This set
+#: only ever shrinks.** It is not a policy — it is a debt register: 24 shipped
+#: PRESET ops name a path, 5 declare a boundary, these 19 do not. It opened at
+#: 20 — see the #1351 note below for the one it has lost. Counting this repo's
+#: own `.supertool.json` as well makes it 25 and 6, the extra one being
+#: `oss_train`; all four numbers are pinned in
+#: `tests/test_cmd_placeholder_path_detector_1350.py` so this comment cannot
+#: drift again.
+#: Refusing them at the time would have broken every one of them in the same
+#: release that introduced the rule, so they are grandfathered *by name*,
+#: which means a
 #: newly written op cannot inherit the old default by being written after it —
 #: it is refused at dispatch and red in
 #: `tests/test_preset_path_chokepoint_1287.py` until it declares.
+#:
+#: It has shrunk once, to 19: `gl-api` now declares `{"args": []}` for real
+#: (#1351). It was the op `_syntax_names_a_path`'s docstring held up as the
+#: worked example of the declared pattern while sitting in this register — the
+#: guard citing a member of the set it exists to empty.
 #:
 #: Several of these cannot be expressed as a `parts` index at all: the publish
 #: ops carry their file inside a `|`-separated blob, `git-commit` takes a
@@ -2094,7 +2121,6 @@ _UNDECLARED_PATH_OPS = frozenset((
     "git-resolve",
     "git-trail",
     "git-worktrees",
-    "gl-api",
     "gl-issue-create",
     "hashnode_comment",
     "hashnode_publish",
@@ -2116,7 +2142,17 @@ def _syntax_names_a_path(syntax: str) -> bool:
     Over-detection is the safe direction and it happens: `gl-api:PATH` is an
     API route, not a file. That op answers with `"paths": {"args": []}` — a
     declaration that no argument here is a filesystem path, which is a claim
-    someone made rather than a default nobody noticed.
+    someone made rather than a default nobody noticed. It only became true in
+    #1351: for one release `gl-api` was cited here as the declared example
+    while sitting in `_UNDECLARED_PATH_OPS`, so the sentence teaching the next
+    author what "declared" looks like pointed at an ungated op.
+
+    It is also not the only detector. `_cmd_names_a_path` reads the `cmd`
+    template for the core's `{file}` / `{dir}` placeholders, and
+    `_entry_names_a_path` is the OR of the two — see #1350. The two are not
+    ranked: of the 24 shipped ops this function detects, zero carry either
+    placeholder, so a `cmd`-supersedes-`syntax` detector would have disarmed
+    the gate for every one of them.
     """
     if not isinstance(syntax, str):
         return False
@@ -2125,6 +2161,54 @@ def _syntax_names_a_path(syntax: str) -> bool:
             if component in _PATH_SYNTAX_COMPONENTS:
                 return True
     return False
+
+
+def _cmd_names_a_path(cmd: Any) -> Optional[str]:
+    """Which core path placeholder this `cmd` template substitutes, if any.
+
+    Returns the placeholder rather than a bool so the refusal can name the
+    signal that actually fired. An op with no `syntax` key was told it "names
+    a path in its syntax ()", which reads as a bug in the guard rather than a
+    demand on the op.
+    """
+    if not isinstance(cmd, str):
+        return None
+    for placeholder in _PATH_CMD_PLACEHOLDERS:
+        if placeholder in cmd:
+            return placeholder
+    return None
+
+
+def _entry_names_a_path(entry: Any) -> Optional[str]:
+    """Why this op is being asked to declare a boundary, or `None` (#1350).
+
+    The whole detector, in one place, returning the phrase the refusal prints.
+    Two signals, OR'd, neither superseding the other:
+
+    * the `syntax` string names a `PATH`/`FILE` component — 24 shipped ops;
+    * the `cmd` template substitutes `{file}` or `{dir}` — one, `oss_train`.
+
+    Before this, only the first was read, so an op with no `syntax` key at all
+    took the `return None` arm: no declaration demanded, no check run, and a
+    verdict indistinguishable from declared-clean. That is #1287's own rule
+    answering "no path here" where it meant "I could not tell" — the two-state
+    shape the rule exists to refuse, inside the rule.
+
+    A bare-string op entry (`{"ops": {"lint": "php -l {file}"}}`) never reaches
+    here: `_preset_path_containment` returns early on a non-dict. A string has
+    no `paths` key and so no way to answer the demand, and the answer is to
+    write the op as an object — `docs/contributing.md` has the reasoning.
+    """
+    if not isinstance(entry, dict):
+        return None
+    syntax = entry.get("syntax", "")
+    if _syntax_names_a_path(syntax):
+        return f"names a path in its syntax ({syntax})"
+    placeholder = _cmd_names_a_path(entry.get("cmd", ""))
+    if placeholder is not None:
+        return (f"substitutes the core's {placeholder} path placeholder in "
+                f"its cmd")
+    return None
 
 
 def _path_boundary_label(boundary: str) -> str:
@@ -2168,7 +2252,7 @@ def _repo_root_for_containment() -> str:
         d = parent
 
 
-def _undeclared_path_refusal(op: str, syntax: str) -> str:
+def _undeclared_path_refusal(op: str, signal: str) -> str:
     """What an op that takes a path and declares no boundary gets (#1287).
 
     A refusal, not a `skipped`. The three-state rule this repo applies
@@ -2178,7 +2262,7 @@ def _undeclared_path_refusal(op: str, syntax: str) -> str:
     one.
     """
     return (
-        f"ERROR: op {op!r} names a path in its syntax ({syntax}) and declares "
+        f"ERROR: op {op!r} {signal} and declares "
         f"no containment boundary.\n"
         f'       Add "paths": {{"args": [1], "root": "cwd"}} to its registry '
         f"entry — \"args\" lists the\n"
@@ -2214,10 +2298,10 @@ def _preset_path_containment(
     if decl is None:
         if op in _UNDECLARED_PATH_OPS:
             return None
-        syntax = entry.get("syntax", "")
-        if not _syntax_names_a_path(syntax):
+        signal = _entry_names_a_path(entry)
+        if signal is None:
             return None
-        return _undeclared_path_refusal(op, syntax)
+        return _undeclared_path_refusal(op, signal)
     if (not isinstance(decl, dict) or not isinstance(decl.get("args"), list)
             or not all(isinstance(i, int) and not isinstance(i, bool) and i >= 0
                        for i in decl["args"])):

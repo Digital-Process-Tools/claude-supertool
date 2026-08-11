@@ -16,10 +16,11 @@ The split this file pins:
   root; the core enforces it.
 * **An op that declares nothing and names a path in its syntax is refused.**
   `skipped` is not available: a path argument reaching no check is not a check
-  that could not run, it is an unchecked read. The 20 shipped ops that predate
+  that could not run, it is an unchecked read. The shipped ops that predate
   the declaration are grandfathered by name in `_UNDECLARED_PATH_OPS`, which
   only shrinks — a NEW op cannot join it without a deliberate edit that this
-  file's audit test puts in the diff.
+  file's audit test puts in the diff. It stood at 20 and is 19 since #1351
+  declared `gl-api` for real.
 * **The core's opt-outs stay honoured**, at every boundary, because the gate is
   `_safe_path` with a different root rather than a second copy of the rule.
 """
@@ -283,9 +284,15 @@ def _shipped_ops() -> Dict[str, Dict[str, Any]]:
 class TestTheGrandfatherSetOnlyShrinks:
     """The mechanism that makes the NEXT preset author safe by default.
 
-    24 shipped ops name a path in their syntax and 4 are declared, so 20 are
+    24 shipped ops name a path in their syntax and 5 are declared, so 19 are
     grandfathered. A new op either declares `paths` or fails here — it cannot
     inherit the old default by being written after it.
+
+    The `syntax` detector is not the only one since #1350: an op whose `cmd`
+    substitutes `{file}` / `{dir}` is asked to declare too, and the register
+    covering both — over `presets/*.json` AND `.supertool.json`, where #1350's
+    only live instance sat — is in
+    `tests/test_cmd_placeholder_path_detector_1350.py`.
     """
 
     def test_every_path_shaped_op_is_declared_or_grandfathered(self) -> None:
@@ -316,7 +323,7 @@ class TestTheGrandfatherSetOnlyShrinks:
 
     def test_the_count_is_recorded_so_a_silent_addition_is_visible(
             self) -> None:
-        assert len(supertool._UNDECLARED_PATH_OPS) == 20
+        assert len(supertool._UNDECLARED_PATH_OPS) == 19
 
 
 class TestTheShippedDeclarations:
@@ -331,6 +338,16 @@ class TestTheShippedDeclarations:
             self, name: str, root: str, args: List[int]) -> None:
         entry = _shipped_ops()[name]
         assert entry["paths"] == {"args": args, "root": root}
+
+    def test_gl_api_declares_the_empty_form_with_no_root(self) -> None:
+        """The fifth declaration (#1351), and the only one carrying no `root`.
+
+        `"args": []` says no argument here is a filesystem path, so there is
+        nothing for a root to bound and inventing one would read as a boundary
+        somebody chose. `_preset_path_containment` never looks at `root` when
+        `args` is empty — the containment generator is empty.
+        """
+        assert _shipped_ops()["gl-api"]["paths"] == {"args": []}
 
     def test_claims_declares_the_repository_root_not_the_cwd(self) -> None:
         """#1283's whole argument: a cwd boundary would refuse

@@ -125,10 +125,16 @@ def test_dispatch_around_default_n(tmp_path: Path) -> None:
     assert "ERROR" not in out
 
 
-def test_dispatch_check(tmp_path: Path) -> None:
+def test_dispatch_check(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
     f = tmp_path / "test.txt"
     f.write_text("content")
-    supertool._CONFIG = {"ops": {"lint": {"cmd": "cat {file}"}}}
+    # The declaration is required since #1350: `{file}` in the cmd template is
+    # a path signal on its own, so an object-form op carrying it and no
+    # `paths` key is refused rather than skipped for having no `syntax`.
+    supertool._CONFIG = {"ops": {"lint": {
+        "cmd": "cat {file}", "paths": {"args": [1], "root": "cwd"}}}}
     out = supertool.dispatch(f"check:lint:{f}")
     assert "--- check:" in out
     assert "PASS" in out

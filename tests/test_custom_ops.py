@@ -116,7 +116,10 @@ class TestResolveCustomOp:
         f = tmp_path / "hello.txt"
         f.write_text("world\n")
         supertool._CONFIG = {
-            "ops": {"greet": {"cmd": f"cat {{file}}"}}
+            # `paths` since #1350: a `{file}` cmd template names a path on its
+            # own, and an undeclared one is refused rather than skipped.
+            "ops": {"greet": {"cmd": f"cat {{file}}",
+                              "paths": {"args": [1], "root": "cwd"}}}
         }
         result = supertool._resolve_custom_op("greet", ["greet", str(f)])
         assert result is not None
@@ -128,7 +131,8 @@ class TestResolveCustomOp:
         f = tmp_path / "target.txt"
         f.write_text("content\n")
         supertool._CONFIG = {
-            "ops": {"show": {"cmd": "echo {file}"}}
+            "ops": {"show": {"cmd": "echo {file}",
+                             "paths": {"args": [1], "root": "cwd"}}}
         }
         result = supertool._resolve_custom_op("show", ["show", str(f)])
         assert result is not None
@@ -325,7 +329,8 @@ class TestResolveCustomOp:
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text("x\n")
         supertool._CONFIG = {
-            "ops": {"lsdir": {"cmd": "ls {dir}"}}
+            "ops": {"lsdir": {"cmd": "ls {dir}",
+                              "paths": {"args": [1], "root": "cwd"}}}
         }
         result = supertool._resolve_custom_op("lsdir", ["lsdir", str(f)])
         assert result is not None
@@ -463,7 +468,8 @@ class TestResolveCustomOp:
         f = tmp_path / "t.txt"
         f.write_text("data\n")
         supertool._CONFIG = {
-            "ops": {"peek": {"cmd": f"cat {{file}}"}}
+            "ops": {"peek": {"cmd": f"cat {{file}}",
+                             "paths": {"args": [1], "root": "cwd"}}}
         }
         result = supertool._resolve_custom_op("peek", ["peek", str(f)])
         assert result is not None
@@ -661,7 +667,8 @@ class TestCheckFromOps:
         f = tmp_path / "test.txt"
         f.write_text("hello\n")
         supertool._CONFIG = {
-            "ops": {"lint": {"cmd": f"cat {{file}}"}}
+            "ops": {"lint": {"cmd": f"cat {{file}}",
+                             "paths": {"args": [1], "root": "cwd"}}}
         }
         out = supertool.dispatch(f"check:lint:{f}")
         assert "PASS" in out
