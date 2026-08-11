@@ -117,7 +117,7 @@ A second `read:PATH` of a **byte-identical** file inside 15 minutes returns one 
 
 - **The elision is always one round-trip from the bytes**, and the command that returns them is in the line itself, not in this document. That is the real bound: the worst case is a wasted call, never lost information.
 - **A recency window, measured from the last read that actually returned content** — never bumped by an elision. A file polled every minute would otherwise be elided forever. Default 900s (`read.elide_window_seconds`).
-- **A file whose bytes changed is never elided, at any age.** Repeat reads of files that *moved* are 37.8% of repeat-read bytes on the measured corpus and they are the ones carrying information.
+- **A file whose bytes changed is never elided, at any age.** They are the repeat reads that carry information, and they are most of them: `claude-log:cost` (#1252) measured repeat reads at **37.8% of result bytes** on the dvsi corpus, of which only 8.7 points were byte-identical — so roughly three quarters of that traffic is a file that moved.
 - **A cache that cannot answer returns the content.** An unreadable or unwritable state file is `skipped`, not silence — the three-state rule in [validators.md](../validators.md), applied to the op's own bookkeeping.
 - **`read:PATH:full` never elides** and always re-arms the window, because after a forced read you demonstrably hold the bytes again.
 - **The byte count is the file's size on disk, and says so.** A file over `read.max_bytes` is capped on the way out even under `:full`, so the size of the file and the bytes the first read handed over are different numbers; naming the former as "withheld" would overstate it on exactly the files where the cap bites.

@@ -191,11 +191,33 @@ def test_a_missing_file_is_not_recorded_or_elided(elide_on: Path) -> None:
 def test_the_environment_switch_turns_it_off(
     elide_on: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("SUPERTOOL_READ_NO_ELIDE", "1")
     f = elide_on / "l.py"
     f.write_bytes(b"u = 7\n")
     supertool.op_read(str(f))
+    # Establish the contrast first: without it, "content came back" is equally
+    # satisfied by a switch that works and by an elision engine that never ran.
+    assert "elided" in supertool.op_read(str(f))
+    monkeypatch.setenv("SUPERTOOL_READ_NO_ELIDE", "1")
     assert "     1→u = 7" in supertool.op_read(str(f))
+
+
+def test_the_config_switch_turns_it_off(
+    elide_on: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`read.elide: 0` is the documented off switch, in three places.
+
+    It has to be read directly rather than through `_get_op_int`, which is
+    built for positive-integer thresholds and treats a configured 0 as
+    "unset" — substituting its own default. Routed through it, the switch was
+    documented in configuration.md, reads.md and the changelog, and inert.
+    """
+    f = elide_on / "m.py"
+    f.write_bytes(b"v = 8\n")
+    supertool.op_read(str(f))
+    assert "elided" in supertool.op_read(str(f))
+    monkeypatch.setattr(supertool, "_CONFIG",
+                        {"builtin-ops": {"read": {"elide": 0}}})
+    assert "     1→v = 8" in supertool.op_read(str(f))
 
 
 def test_read_elide_is_a_reaped_cache_kind() -> None:

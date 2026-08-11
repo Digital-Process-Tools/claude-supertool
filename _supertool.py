@@ -3181,9 +3181,28 @@ _READ_ELIDE_WINDOW_SECONDS = 900
 
 
 def _read_elide_enabled() -> bool:
-    if os.environ.get("SUPERTOOL_READ_NO_ELIDE"):
+    """Whether a repeat read may be elided at all.
+
+    Deliberately NOT routed through `_get_op_int`. That helper exists for
+    positive-integer thresholds and reads a configured `0` as "unset",
+    substituting its own default (`val if isinstance(val, int) and val > 0`).
+    `read.elide` is the first boolean here whose default is ON, so through
+    that helper `"elide": 0` was documented in three places and inert — a
+    switch that reports the state it was asked for and does not enter it.
+    Every other `_get_op_int` call in this file is a genuine threshold; this
+    was the only site of the class.
+    """
+    off = os.environ.get("SUPERTOOL_READ_NO_ELIDE", "")
+    if off.strip() and off.strip() != "0":
         return False
-    return bool(_get_op_int("read", "elide", 1))
+    ops = _load_config().get("builtin-ops", {})
+    block = ops.get("read", {}) if isinstance(ops, dict) else {}
+    val = block.get("elide") if isinstance(block, dict) else None
+    if val is None:
+        return True
+    if isinstance(val, str):
+        return val.strip().lower() not in ("", "0", "false", "no", "off")
+    return bool(val)
 
 
 def _read_elide_window() -> float:
