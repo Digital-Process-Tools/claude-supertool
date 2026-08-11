@@ -14228,6 +14228,9 @@ def op_help(op_name: str) -> str:
         if example:
             out.append("")
             out.append(f"Example: {example}")
+        route = _help_payload_route(op_name)
+        if route:
+            out.append(route)
         return "\n".join(out) + "\n"
     if op_name in _valid_op_names():
         return (f"ERROR: op '{op_name}' has no documented help in "
@@ -20704,6 +20707,52 @@ def _at_file_payload_hint(op: str) -> str:
             lines.append(f"    {name} = {quote}...{quote}")
     lines.append("    EOF")
     return chr(10) + chr(10).join(lines)
+
+
+def _at_file_route_ops() -> List[str]:
+    """Every op that has an @payload route, from both registries that grant one.
+
+    There are two reasons an op has the route and they are held in two places:
+    a ':::' in its syntax (derived by `_fields_from_syntax`) and membership of
+    `_READ_OP_AT_FIELDS` (declared, for read ops whose colon form cannot carry
+    a regex or a path with a ':' in it). Asking only one of them answers "no
+    route" for half the ops that have one.
+    """
+    _build_at_file_registry()
+    return sorted(set(_AT_FILE_REGISTRY) | set(_READ_OP_AT_FIELDS))
+
+
+def _help_payload_route(op: str) -> str:
+    """The `@-` block `help:OP` prints beneath the colon form (#1400).
+
+    `help:paste` used to print `paste:::PATH:::CONTENT` and stop. That is worse
+    than printing nothing about input forms at all, because a reference entry
+    listing one of two invocation forms reads as complete — an agent that
+    needed the payload route to write a multi-line file guessed `path` and
+    `content` from scratch and said so.
+
+    Rendered from the registry that drives the route, never typed here. The
+    field names are *derived* from the `syntax` string printed directly above
+    this block, so a hand-written copy would keep describing a route at exactly
+    the moment a syntax reword deleted it — the silent failure
+    `TestPayloadRoutePin` exists to catch (#770).
+
+    Returns "" for an op that has no route. Because every op that has one now
+    prints a block, that emptiness is an answer rather than a gap.
+    """
+    hint = _at_file_payload_hint(op)
+    if not hint:
+        fields = _READ_OP_AT_FIELDS.get(op)
+        if not fields:
+            return ""
+        hint = chr(10) + chr(10).join([
+            f"  {op}:@- (stdin) or {op}:@FILE reads its fields from the "
+            f"payload.",
+            f"    Keys: {', '.join(fields)}",
+        ])
+    return (chr(10) + "Payload route — the colon form is not the only one, and "
+            "for an argument holding ':' or a newline it is not the working "
+            "one (docs/input-forms.md):" + hint)
 
 
 def _reorder_batch_for_snapshot(batch_ops: List[Any]) -> Tuple[List[Any], str]:

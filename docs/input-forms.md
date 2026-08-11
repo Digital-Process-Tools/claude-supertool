@@ -2,6 +2,8 @@
 
 Three ways to pass arguments to supertool ops.
 
+**For one op's field names, ask the op rather than this page**: `help:OP` prints the `@-` payload route and the keys it derives, directly under the colon form. That block is rendered from the registry the route itself uses, so it cannot describe a shape the loader would reject (#1400).
+
 ## Which form? {#which-form}
 
 Pick by the shape of your content, not by habit:
