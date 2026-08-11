@@ -685,6 +685,28 @@ The vocabulary is **not** `gh-prs`'s, and was checked rather than assumed: `glab
 
 **Not verified against a live GitLab.** `glab` is unauthenticated in the environment this was written in, so the GitLab half is covered by stubbed tests only; the GitHub half was reproduced and re-checked against real GitHub.
 
+### `gl-mrs` searches title and description, and says so
+
+`search=TEXT` ([#1395](https://github.com/Digital-Process-Tools/claude-supertool/issues/1395)) goes to `glab mr list --search`, which `glab mr list --help` documents as *"Filter by `<string>` in title and description"*. Server-side, so it narrows the population rather than the page.
+
+```
+supertool 'gl-mrs:search=pipeline,author='
+```
+
+**The key is spelled `search=` on `gh-issues` too, and the engines are not the same.** GitHub's issue search reads titles, bodies **and comments**; GitLab's `search=` reads titles and descriptions only. A caller who learned the key on one forge carries the wrong expectation to the other, and the shape that costs is the zero: nothing matched, because the half you meant was never looked at.
+
+The spelling is shared anyway, and the reason is mechanical rather than aesthetic. A board's whole grammar is one comma-separated segment and supertool splits an op argument on `:`, so GitHub's qualifier language (`in:title`, `sort:created-asc`) is refused by the tokenizer before any filter is parsed — it is unreachable from either op. Stripped of qualifiers both engines answer "this text occurs in this thing", and what survives the difference is scope, not syntax. So the scope is printed on every render rather than left to be assumed:
+
+```
+(search 'pipeline' — GitLab search over title and description only — comments are NOT searched)
+```
+
+[#628](https://github.com/Digital-Process-Tools/claude-supertool/issues/628) is the standing question about `gh-*` and `gl-*` answering the same question in different shapes with nothing pinning them together. Here they are pinned: `tests/test_board_search_1395.py` asserts the two scope sentences are **different** and that each names comments, so the day they collapse into one the suite goes red rather than the render going quietly wrong.
+
+**Three states, not two.** Rows; an empty result that says *the search ran and matched nothing — an empty result, not a lookup that failed*; and a lookup that could not run, which keeps its non-zero exit and prints no board. `No MRs match.` on its own is never printed under a search. The disclosure also rides the `iids` stream, on stderr, where the board's other disclosures go.
+
+**Not verified against a live GitLab** — `glab` is unauthenticated here, so this half is covered by stubbed tests plus `glab mr list --help` read off the installed CLI (1.86.0).
+
 ### Text from the tracker is fenced
 
 Issue and MR descriptions and every comment are wrapped in `⟨remote NONCE⟩ … ⟨/remote NONCE⟩` markers, and one-line fields (titles, usernames, labels, branch names) are flattened to a single line. See [Remote text is fenced](index.md#remote-text-is-fenced) for the convention, what it costs, and why the fence cannot be closed from inside ([#694](https://github.com/Digital-Process-Tools/claude-supertool/issues/694)).
@@ -717,7 +739,7 @@ A mapping is declared when the op answers **the same question**, even if it is k
 
 `glab ci trace` is refused whole, including `glab ci trace <job-name>` and the bare interactive picker, though `gl-job` takes a numeric id only ([#1145](https://github.com/Digital-Process-Tools/claude-supertool/issues/1145) refuses a non-numeric one before fetching anything). "Why did this job fail" is the question, and `gl-pipeline:NUMBER:failed` hands you the id, so the answer is one op away rather than unreachable.
 
-`glab mr list` is refused whole, though `gl-mrs` has no `--search`, `--draft` or date-range filter. The same is already true of `gh issue list` → `gh-issues:per=100` on the GitHub side, shipped in #1347; narrowing the GitLab entry would make the two families disagree for no reason. The missing board filters are a gap in both ops, not a reason to leave the raw list ungated.
+`glab mr list` is refused whole, though `gl-mrs` has no `--draft` or date-range filter. The same is already true of `gh issue list` → `gh-issues:per=100` on the GitHub side, shipped in #1347; narrowing the GitLab entry would make the two families disagree for no reason. The missing board filters are a gap in both ops, not a reason to leave the raw list ungated. `--search` was on that list until [#1395](https://github.com/Digital-Process-Tools/claude-supertool/issues/1395) — it was also the one the refusal made unanswerable, since the fallback the gap permitted is the command being refused.
 
 Contrast `glab api -X POST`, below: there is no supertool answer to "write this to GitLab" at any spelling, so that shape is excluded rather than mapped.
 

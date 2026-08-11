@@ -201,6 +201,32 @@ Two mechanics worth knowing:
 
 Rows also carry `[closed]` now, and `[state:?]` when gh did not answer. A bare board is `state=open` so the marker never showed; `state=all` and `iids=` both render closed issues, and a closed one that looked identical to an open one answered "is this citation still live" wrongly.
 
+### Searching the tracker, and saying which engine answered
+
+`search=TEXT` ([#1395](https://github.com/Digital-Process-Tools/claude-supertool/issues/1395)) goes to `gh issue list --search`, so GitHub does the matching. That is not a detail: `per=` and the enrichment cap widen the **population**, they do not filter it, and a client-side filter over one `--limit` page answers "which of the first 50 mention X" while reporting `capped at --limit 50` about the fetch. On any repo with more than a page of matches those are different questions.
+
+Until this shipped there was no route at all. `gh issue list` is refused by the guard in favour of `gh-issues:per=100` ([#1347](https://github.com/Digital-Process-Tools/claude-supertool/issues/1347)), so the honest answer to "how do I search" was `"raw_command_guard": false`, which disarms every mapping in the repo.
+
+```
+supertool 'gh-issues:search=fence state,per=100'
+```
+
+**Every render names the engine and the scope**, above the board and in the footer:
+
+```
+(search 'fence state' — GitHub issue search over title, body and comments)
+```
+
+A search that quietly scoped to less than the caller meant returns a zero that reads as an absence in the world — this repo's own defect class with a filter on — so the scope is stated rather than assumed. It is stated on the `iids` number stream too, as a leading `#` comment, because that shape becomes another tool's input and a shorter list is otherwise read as a quieter tracker.
+
+**Three states, not two.** Rows; an empty result that says *the search ran and matched nothing — an empty result, not a lookup that failed*; and a lookup that could not run at all, which keeps its non-zero exit and prints no board. `No issues match.` on its own is never printed under a search.
+
+**GitHub's qualifier language is unreachable here, and refused rather than half-applied.** A board's whole grammar is one comma-separated segment and supertool splits an op argument on `:`, so `gh-issues:search=in:title widget` arrives as two argv entries and is refused with nothing fetched ([#964](https://github.com/Digital-Process-Tools/claude-supertool/issues/964)'s guard). There is no escape for the colon; a qualified query needs a shape this grammar does not have.
+
+**`search=` beside `iids=` is refused.** A named population has no listing for GitHub to search, so the query would be dropped and N rows the caller enumerated would read as N rows that matched.
+
+**The same key is spelled `search=` on `gl-mrs`, over a different engine.** That is a decision, not an oversight — see [`gl-mrs` searches title and description](gitlab.md#gl-mrs-searches-title-and-description-and-says-so) for the argument and for the half GitLab does not cover.
+
 ### No default `author=@me`
 
 The filter grammar and row layout are shared with `gh-prs` ([#628](https://github.com/Digital-Process-Tools/claude-supertool/issues/628), `presets/_board.py`), but the defaults answer different questions. `gh-prs` means "my PRs"; `gh-issues` means "the queue". A default author filter here would hide the external reports the ranking exists to surface.

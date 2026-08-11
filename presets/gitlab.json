@@ -30,8 +30,8 @@
       "safety": "read-only",
       "cmd": "{python} {path}gitlab/mrs.py {args}",
       "timeout": 60,
-      "description": "MR triage board: list MRs (default author=@me), sorted failing-first. Per MR: pipeline status (failed→job name), approval state, age, diff size, watch-state, conflict/draft/threads flags + actionable footer. Filters (comma-sep): author/reviewer/assignee/label/milestone/source-branch/target-branch/state/per. Flags: nopipe, iids, failed. A token outside those two lists, or a state outside opened/merged/closed/all, is REFUSED (exit 1, no board) rather than dropped. Enrichment calls run in parallel.",
-      "syntax": "gl-mrs[:author=@me,assignee=@me,reviewer=@me,label=bug,milestone=v1.0,source-branch=x,target-branch=master,state=opened,per=50,failed,nopipe,iids]",
+      "description": "MR triage board: list MRs (default author=@me), sorted failing-first. Per MR: pipeline status (failed→job name), approval state, age, diff size, watch-state, conflict/draft/threads flags + actionable footer. Filters (comma-sep): author/reviewer/assignee/label/milestone/source-branch/target-branch/state/search/per. Flags: nopipe, iids, failed. A token outside those two lists, or a state outside opened/merged/closed/all, is REFUSED (exit 1, no board) rather than dropped. search=TEXT is SERVER-SIDE — it goes to `glab mr list --search`, so it narrows the population rather than the page. The key is spelled the same on gh-issues and the engines are NOT the same: GitLab searches title and description only, comments are not searched, and GitHub's reads comments too — so every render names the engine and the scope rather than leaving the caller to carry one expectation to the other forge. An empty result says the search RAN and matched nothing, which is not the same as a lookup that failed and keeps its non-zero exit. Enrichment calls run in parallel.",
+      "syntax": "gl-mrs[:author=@me,assignee=@me,reviewer=@me,label=bug,milestone=v1.0,source-branch=x,target-branch=master,state=opened,search=fence state,per=50,failed,nopipe,iids]",
       "replaces": [
         { "argv": "glab mr list", "use": "gl-mrs" }
       ],
