@@ -7289,6 +7289,77 @@ def _looks_like_path(tok: str) -> bool:
     return not any(c in tok for c in " \t\"'()|<>*?")
 
 
+def _absorbed_path_hint(op: str, leading: str,
+                        keys: Tuple[str, ...] = ("pattern",)) -> str:
+    """Refuse a `:`-split that swallowed the PATH and widened the scan (#1417).
+
+    `grep:_FLAGS|def main:presets/github/issues.py:::40` rejoins to the pattern
+    `_FLAGS|def main:presets/github/issues.py:` with path `.`, then scans the
+    whole tree (934 files when it was reported) and returns hits. The `|` is
+    incidental — `grep:PAT:PATH:` does the
+    same with no alternation in it. The trigger is the empty PATH token.
+
+    **Why this refuses where `around_line` auto-corrects.** `around:FILE:232:12`
+    is redirected to `around_line` and disclosed, and that is safe for one
+    reason only: the reading it replaces is a hard failure (`path not found:
+    232`), so there is nothing to lose and one candidate answer to gain. Here
+    the reading it would replace is a *successful* whole-tree sweep, so a silent
+    redirect swaps one answer nobody typed for another. Two live candidates and
+    no way to rank them is the shape that has to decline instead of guess.
+
+    Gated hard, because the re-read is normally right: measured over the 155
+    distinct `grep:` spellings written down in this repo, 33 hit the `:` rejoin
+    and **none** of them absorbs a real path. The refusal needs a segment of the
+    rejoined pattern to name an existing file or directory, and needs it to sit
+    after the first segment — the PATH slot follows the pattern, so a leading
+    segment that happens to name a file is a pattern.
+
+    Containment is checked per segment, and a segment that fails it is skipped
+    rather than reported. Dispatch gates the PATH slot before calling this
+    (#1166) so the stat below is safe; a segment of the PATTERN arrives
+    unchecked, and confirming `/etc/shadow` back to the caller would be exactly
+    the existence oracle that gate closes.
+    """
+    if ":" not in leading:
+        return ""
+    segments = leading.split(":")
+    found = -1
+    for i, segment in enumerate(segments):
+        if i == 0 or not segment or segment == ".":
+            continue
+        contained, (expanded,) = _gate_paths([segment])
+        if contained:
+            continue
+        if os.path.exists(expanded):
+            found = i
+    if found < 0:
+        return ""
+    named = segments[found]
+    meant = ":".join(segments[:found])
+    q = chr(39) * 3
+    fields = chr(10).join(f"    {k} = {q}<{k}, colons and all>{q}" for k in keys)
+    nl = chr(10)
+    return (
+        f"ERROR: {op} would have scanned the whole tree, not the file you "
+        f"named (#1417).{nl}"
+        f"  Read as {'+'.join(keys)}={leading!r} + path='.' — {named!r} stayed "
+        f"inside the {keys[0]}, and the empty PATH slot defaulted to the repo "
+        f"root.{nl}"
+        f"  Nothing would have failed: that scan succeeds, over every file, "
+        f"for a {keys[0]} you did not write. So it is declined rather than "
+        f"corrected — both readings are live and neither is guessable.{nl}"
+        f"  If you meant that file:{nl}"
+        f"    {op}:{meant}:{named}{nl}"
+        f"  If you did mean the whole tree, a payload says where the {keys[0]} "
+        f"ends and the colon CLI cannot:{nl}"
+        f"    ./supertool '{op}:@-' <<'EOF'{nl}"
+        f"{fields}{nl}"
+        f'    path = "."{nl}'
+        f"    EOF{nl}"
+        f"  (or {op}:@file.toml — same shape the mutating ops use.){nl}"
+    )
+
+
 def _colon_split_hint(op: str, leading: str, path: str,
                       keys: Tuple[str, ...] = ("pattern",),
                       call_prefix: Optional[str] = None) -> str:
@@ -7303,7 +7374,15 @@ def _colon_split_hint(op: str, leading: str, path: str,
     leading argument and the path token still looks like a path) — crying
     wolf on every wrong path would make the advice worthless.
     """
-    if not path or path == "." or os.path.exists(path):
+    if path == ".":
+        # `.` is not always a path the caller typed: it is also what an EMPTY
+        # PATH slot defaults to, and that is the one reading in this family
+        # that does NOT fail loudly (#1417). Everything below keys off "the
+        # path does not exist", and `.` always exists — so the split that
+        # silently widened one named file to the whole tree was the split this
+        # helper declined to diagnose.
+        return _absorbed_path_hint(op, leading, keys)
+    if not path or os.path.exists(path):
         return ""
     if ":" not in leading and _looks_like_path(path):
         return ""
