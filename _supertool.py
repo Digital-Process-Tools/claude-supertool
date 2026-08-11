@@ -19276,6 +19276,25 @@ def dispatch_verdict(
     a batch sub-op nested under it — and read back off the same thread. It is
     never re-derived from the string returned here (#1291).
     """
+    # Establish the flag before reading it, rather than inheriting one.
+    #
+    # `_call_failed()` is a pure read of a thread-local, and the only clear
+    # lived inside `dispatch` at depth 0 — a function the two lines below
+    # record as one callers REPLACE. When they do, the clear never runs and
+    # this returns whatever last refused on this thread: `master` went red on
+    # macOS only at df34db5, and the batch tally said "all 2 refused" in words
+    # about two ops that had not (#1359).
+    #
+    # Before the call, never after: a sub-op refusing at any depth must still
+    # reach the parent's verdict, which is the whole reason only depth 0
+    # clears it inside `dispatch`. That arrangement is unchanged — this adds
+    # the same reset one level out, where the reader of the bit lives.
+    #
+    # The sibling counters in `_main` — `_SKIP_COUNT`, `_ROLLBACK_COUNT`,
+    # `_NOT_CHECKED` — are all read as per-call deltas for exactly this
+    # reason (#680). This bit was the one member of the group with neither.
+    _DISPATCH_STATE.call_failed = False
+
     # One positional argument when there is nothing else to pass, because
     # `main` has always called `dispatch(arg)` and both the tests and the MCP
     # layer monkeypatch it with that arity. Widening the call here would have
@@ -21434,7 +21453,15 @@ def _mark_op_failure() -> None:
     #1284's tally can say how many of N refused. Batch sub-ops recurse through
     `dispatch` on the calling thread, and parallel dispatch runs each
     top-level op start to finish on one worker, so a frame at any depth may
-    set it and only depth 0 clears it.
+    set it and no frame above 0 clears it.
+
+    Two sites clear it, and the pair is the invariant: `dispatch` at depth 0,
+    and `dispatch_verdict` immediately before the call it is about to judge.
+    The second is not redundant with the first. `dispatch` is a module global
+    the tests and the MCP layer replace, and when they do the depth-0 clear is
+    not in the process at all — so the bit read back was the last refusal on
+    the thread, whenever that happened (#1359). The frame that reads the flag
+    establishes it.
     """
     _DISPATCH_STATE.call_failed = True
 
