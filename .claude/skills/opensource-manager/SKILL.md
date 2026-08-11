@@ -846,7 +846,7 @@ The instinct is "Windows is untested" — wrong. CI runs `windows-latest` across
 
 #1005, #997 and #1004 all landed in **one evening, 2026-08-07**. #620/#627 is the one to read for evidence grade: its Windows analysis is labelled in the PR comment itself as _"Reasoned, not observed — I don't have a Windows box to run this on"_. It was correct, and it should still carry that label. **Say which grade a Windows claim is.**
 
-**Open right now (2026-08-09), both filed rather than half-fixed:** **#1205**, two ungated symlink tests, so a Windows runner without the create-symlink privilege **fails** where every other symlink test **skips**; **#1218**, a red on `pytest (windows-latest, 3.12)` where a test about timeout semantics only exercises them when a real timeout fires, and Windows declined to fire one.
+**Two worked examples, both shipped in v0.32.0 and both worth reading for their shape rather than their status** — this paragraph said "open right now" until 2026-08-11, when one call showed both `CLOSED`: **#1205**, two ungated symlink tests, so a Windows runner without the create-symlink privilege **failed** where every other symlink test **skips**; **#1218**, a red on `pytest (windows-latest, 3.12)` where a test about timeout semantics only exercised them when a real timeout fired, and Windows declined to fire one.
 
 Note the shape of those two. **Neither is a Windows bug** — both are the test harness rendering an environment limit as a product verdict, which is this repo's own defect class relocated into the thing meant to detect it. #1143 exists to make that blind spot legible. So "add more Windows tests" is the wrong lever: the exposure is in the tests that already exist. The levers that work:
 
