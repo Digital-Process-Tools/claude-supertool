@@ -145,8 +145,15 @@ snapshot = _load("radar_snapshot", _HERE / "_snapshot.py")
 SOURCE = prs.WATCH_SOURCE
 SNAPSHOT_PREFIX = "supertool-radar-gh-prs"
 
-# Filter keys `gh-prs._build_list_cmd` can actually put on the command line.
-# Anything else is refused rather than dropped — see the module docstring.
+# The filter keys this tier takes. Anything else is refused rather than dropped
+# — see the module docstring.
+#
+# This is a deliberate SUBSET of `gh-prs._FILTER_KEYS`, not a mirror of it, and
+# the line above said "keys `_build_list_cmd` can actually put on the command
+# line" until #1411 made that false: the builder also emits `merged-since`, a
+# boundary the op refuses outside `state=merged`. A radar tier watches live PRs
+# for state changes, and a board of already-merged ones has no state left to
+# change, so the key is absent on purpose. `per` is absent for the same reason.
 KNOWN_FILTERS = {"author", "assignee", "reviewer", "label", "state"}
 
 # Tokens that are flags rather than key=value — and this tier takes none of

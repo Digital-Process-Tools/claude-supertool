@@ -52,6 +52,45 @@ POSITIVE_INT = "a positive integer"
 # `iids=1233,1240,1251` one value rather than a value and two orphans (#1323).
 POSITIVE_INT_LIST = "a comma-separated list of positive integers"
 
+# Sentinel domain: the value must parse as an ISO-8601 date or instant. Used by
+# `gh-prs:merged-since=` (#1411). The parser is `parse_iso_instant` below and it
+# is the same one the row-level check uses, which is the point: #1209 was two
+# clocks and one comparison, so a boundary filter with a private parser beside
+# the one that places the rows would be that defect wearing a filter's hat.
+ISO_INSTANT = ("an ISO-8601 date or instant (2026-08-09, or "
+               "2026-08-09T16:07:45+00:00)")
+
+
+def parse_iso_instant(value: object):
+    """The one clock, as a UTC `datetime`, or ``None``.
+
+    `gh` emits a `Z` suffix and `git` emits a numeric offset.
+    `datetime.fromisoformat` on the supported floor (3.9) does not accept `Z`,
+    so it is rewritten before parsing rather than compared as text — comparing
+    the two spellings as strings is #1209, where `"16:07:45Z" > "17:13:43+02:00"`
+    is False at the second character and a release was silently delayed.
+
+    A value that will not parse returns ``None``. Every caller treats that as
+    "could not place", never as "old" and never as "now".
+    """
+    from datetime import datetime, timezone
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        # A naive stamp is not a UTC stamp, but the alternative is to drop the
+        # value entirely. Both git and gh always carry a zone, so this branch
+        # exists for the bare `2026-08-09` a caller types by hand.
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
 
 def parse_multi(
     arg_str: str,
@@ -246,6 +285,9 @@ def bad_values(
             members = [m.strip() for m in val.split(",")]
             ok = bool(members) and all(m.isdigit() and int(m) >= 1 for m in members)
             expected = POSITIVE_INT_LIST
+        elif allowed is ISO_INSTANT:
+            ok = parse_iso_instant(val) is not None
+            expected = ISO_INSTANT
         else:
             assert isinstance(allowed, (set, frozenset))
             ok = val in allowed
@@ -255,7 +297,7 @@ def bad_values(
     return bad
 
 
-def extra_segments_error(argv: list[str], op: str) -> str | None:
+def extra_segments_error(argv: list[str], op: str, hint: str = "") -> str | None:
     """Refuse when the `:` tokenizer split an arg the board only reads once.
 
     A board op's whole grammar is ONE comma-separated segment, so `main()` reads
@@ -275,6 +317,13 @@ def extra_segments_error(argv: list[str], op: str) -> str | None:
     splits identically, and #806 declined to promote it), so this refuses and
     names the one form that survives the tokenizer.
 
+    `hint` is appended when the op has a value that legitimately wants a ':'
+    and a colon-free spelling for it. The closing advice — query the backend CLI
+    directly and file the gap — is right when nothing here can express the
+    value, and wrong when something can: `gh-prs:merged-since=` takes a bare
+    date as well as an instant (#1411), so without the hint the refusal sends a
+    caller away from an op that would have answered them.
+
     Returns None for the ordinary single-segment call. Ops with a genuinely
     positional grammar — `gh-job:ID:raw:START:END` — must NOT call this.
     """
@@ -293,6 +342,7 @@ def extra_segments_error(argv: list[str], op: str) -> str | None:
           "itself contains ':' cannot be expressed here at all — there is no "
           "escape — so query it with the backend CLI directly and file the "
           "gap."
+        + (" " + hint if hint else "")
     )
 
 
