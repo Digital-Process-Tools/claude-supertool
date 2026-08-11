@@ -5,7 +5,7 @@
       "safety": "read-only",
       "cmd": "{python} {path}claude-log/list.py {args}",
       "timeout": 10,
-      "description": "List N recent Claude sessions for project (def 10). UUID, mtime, line count, first user msg. Values matching known secret patterns are redacted and the redaction disclosed; append :raw for verbatim",
+      "description": "List N recent Claude sessions for project (def 10). UUID, mtime, line count, first user msg. The store is resolved UPWARD ONLY and in three states (#1317): this cwd's own, else the nearest ancestor's — named in the header as a substitution, because an ancestor is not the directory you asked about — else a decline naming the path it looked for and how many stores exist. A SIBLING is never used: a prefix-match fallback rendered another worktree's sessions as the caller's. Values matching known secret patterns are redacted and the redaction disclosed; append :raw for verbatim",
       "syntax": "claude-log-list[:N][:raw]",
       "example": "claude-log-list:5"
     },
@@ -21,7 +21,7 @@
       "safety": "read-only",
       "cmd": "{python} {path}claude-log/cost.py {args}",
       "timeout": 120,
-      "description": "What tool results cost, in bytes: per tool and per supertool op (split on the render's own '--- op ---' markers), size distribution, repeat reads with the share of bytes they re-paid, errors and empties. Sessions that could not be parsed are listed as skipped with a reason, never dropped from the total. Def: 10 most recent sessions of this project; pass a UUID for one",
+      "description": "What tool results cost, in bytes: per tool and per supertool op (split on the render's own '--- op ---' markers), size distribution, repeat reads with the share of bytes they re-paid, errors and empties. Sessions that could not be parsed are listed as skipped with a reason, never dropped from the total. Def: 10 most recent sessions of this project; pass a UUID for one. With no UUID the store is resolved the same three ways claude-log-list resolves it (#1317) — this cwd, an ancestor named as a substitution, or a decline; never a sibling",
       "syntax": "claude-log-cost[:N|:UUID][:raw]",
       "example": "claude-log-cost:20"
     },

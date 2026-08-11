@@ -5,6 +5,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # for _secrets (#760)
 import _secrets  # noqa: E402
@@ -17,8 +18,15 @@ def encode_cwd(cwd: str) -> str:
     - POSIX:  '/Users/foo/proj'  -> '-Users-foo-proj'
     - Windows:'C:\\Users\\foo'    -> '-C--Users-foo' (drive colon and backslashes both become '-')
 
-    The exact Windows encoding may vary across Claude Code versions; if `project_dir()`
-    cannot find a matching directory, callers should fall back to scanning siblings.
+    The exact Windows encoding may vary across Claude Code versions.
+
+    The encoding is LOSSY and not ours: `/`, `-` and `:` all become `-`, so
+    `/Users/foo/bar` and `/Users/foo-bar` produce the same store name and
+    nothing on disk says which directory wrote it. That ambiguity is a property
+    of the name Claude Code chose and applies to a direct hit exactly as much as
+    to an ancestor — `resolve_project_dir()` cannot resolve it and does not
+    claim to. What it does guarantee is the #1317 half: it never walks to a
+    store that is neither this cwd's encoding nor an ancestor's.
     """
     enc = cwd.replace("\\", "/").replace("/", "-").replace(":", "-")
     if not enc.startswith("-"):
@@ -31,39 +39,121 @@ def claude_projects_root() -> Path:
     return Path.home() / ".claude" / "projects"
 
 
-def project_dir(cwd: str | None = None) -> Path:
-    """Resolve the ~/.claude/projects/<encoded-cwd>/ directory for the given (or current) cwd.
+class ProjectDir(NamedTuple):
+    """Where a claude-log op read its sessions from, and how sure that is.
 
-    If the directly-encoded directory does not exist, fall back to the closest match
-    among siblings (longest common prefix). Returns the encoded path even when missing
-    so callers can produce a clear error.
+    Three states, never two (`docs/validators.md` — "Declining instead of
+    guessing"):
+
+    - `direct`   — this cwd has its own store. The answer.
+    - `ancestor` — the cwd is inside a project whose store exists; `cwd_of`
+                   names that project. Legitimate, but it is NOT the directory
+                   asked about, so every render has to say so.
+    - `missing`  — nothing at or above this cwd has a store. `path` is where
+                   one would live; it does not exist. Callers decline.
+    """
+
+    path: Path
+    kind: str
+    cwd_of: str
+    store_count: int
+    asked: str
+
+
+def _ancestor_paths(cwd: str):
+    """Yield the ancestors of `cwd`, nearest first, as encodable path strings.
+
+    Derived from the string, not from `pathlib`: on POSIX a backslash-separated
+    Windows path is a single component with no parents, so a `.parents` walk
+    would resolve on Windows and decline on macOS for the same input — a
+    platform-shaped answer rather than an answer.
+    """
+    norm = cwd.replace("\\", "/").rstrip("/")
+    parts = norm.split("/")
+    for i in range(len(parts) - 1, 0, -1):
+        yield "/".join(parts[:i]) or "/"
+
+
+def resolve_project_dir(cwd: str | None = None) -> ProjectDir:
+    """Resolve ~/.claude/projects/<encoded-cwd>/ for the given (or current) cwd.
+
+    Upward only. Until #1317 the fallback picked the store whose encoded name
+    shared the longest common PREFIX, which walks sideways: from
+    `~/Documents/st-wt/1317` with no store of its own it returned
+    `-Users-floriandavid-Documents-st-wt-1024`, and every op in the family
+    rendered a plausible board about another worktree's sessions with nothing
+    in the output naming the substitution.
+
+    A sibling is never an answer to "what happened in this directory".
+
+    Known limit, inherited from `encode_cwd` and not from this walk: the
+    encoding collapses `/` and `-`, so a store written by `/Users/foo-bar` is
+    indistinguishable from one written by the ancestor `/Users/foo/bar` and
+    would be returned as `ancestor`. A `direct` hit is ambiguous in precisely
+    the same way, so no resolution strategy over these names can close it;
+    pinned by `test_encode_cwd_collision_is_not_closed_by_this_fix`.
     """
     cwd = cwd if cwd is not None else os.getcwd()
-    encoded = encode_cwd(cwd)
     root = claude_projects_root()
-    direct = root / encoded
-    if direct.exists() or not root.exists():
-        return direct
-    # Fallback: pick the sibling whose name has the longest common prefix with `encoded`
-    best: Path | None = None
-    best_len = 0
-    for sibling in root.iterdir():
-        if not sibling.is_dir():
-            continue
-        n = _common_prefix_len(sibling.name, encoded)
-        if n > best_len:
-            best_len = n
-            best = sibling
-    return best if best is not None else direct
+    direct = root / encode_cwd(cwd)
+    if direct.exists():
+        return ProjectDir(direct, "direct", cwd, _store_count(root), cwd)
+    for ancestor in _ancestor_paths(cwd):
+        candidate = root / encode_cwd(ancestor)
+        if candidate != direct and candidate.is_dir():
+            return ProjectDir(candidate, "ancestor", ancestor, _store_count(root), cwd)
+    return ProjectDir(direct, "missing", cwd, _store_count(root), cwd)
 
 
-def _common_prefix_len(a: str, b: str) -> int:
-    n = 0
-    for x, y in zip(a, b):
-        if x != y:
-            break
-        n += 1
-    return n
+def _store_count(root: Path) -> int:
+    """How many project stores exist at all — reported next to a decline so
+    "none of them is this directory" is distinguishable from "there are none"."""
+    try:
+        return sum(1 for entry in root.iterdir() if entry.is_dir())
+    except OSError:
+        return 0
+
+
+def project_dir(cwd: str | None = None) -> Path:
+    """The store directory for `cwd`, or the path where it would live.
+
+    Kept for callers that only need a path (`session_path`). Anything that
+    prints should use `resolve_project_dir()` and render its `kind`: a bare
+    Path cannot tell a direct hit from an ancestor, and that difference is the
+    whole of #1317.
+    """
+    return resolve_project_dir(cwd).path
+
+
+def decline_lines(res: ProjectDir) -> list:
+    """The `missing` render, shared by every op in the family.
+
+    Names the directory asked about, the store that would hold its sessions,
+    and how many stores exist — so "none of them is yours" cannot be read as
+    "there are none", and neither can be read as an empty board.
+    """
+    return [
+        "no sessions recorded for this directory",
+        f"  directory:  {res.cwd_of}",
+        f"  looked for: {res.path}",
+        f"  {res.store_count} project store(s) exist under {claude_projects_root()};"
+        " none is this directory or an ancestor of it",
+    ]
+
+
+def source_note(res: ProjectDir) -> str:
+    """One line naming an ancestor substitution, or "" for a direct hit.
+
+    An ancestor's store is a legitimate answer and still not the directory the
+    caller stood in, so the substitution is stated rather than implied by a
+    `Project:` path the reader has to diff against their own cwd.
+    """
+    if res.kind != "ancestor":
+        return ""
+    return (
+        f"Source: ancestor store — no sessions recorded for {res.asked}; "
+        f"showing {res.cwd_of}, which is not the same directory"
+    )
 
 
 def session_path(uuid: str) -> Path:

@@ -22,7 +22,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import Redactor, project_dir, session_path, wants_raw  # noqa: E402
+from _common import (  # noqa: E402
+    Redactor,
+    decline_lines,
+    resolve_project_dir,
+    session_path,
+    source_note,
+    wants_raw,
+)
 
 # Tools whose result is the content of a file, for the repeat-read question.
 READ_TOOLS = {"Read", "NotebookRead"}
@@ -524,10 +531,13 @@ def main():
         paths = [sp]
         header = [f"Tool result cost — session {red(uuid)}", f"File: {sp}"]
     else:
-        pdir = project_dir()
-        if not pdir.exists():
-            print(f"ERROR: no Claude project log dir at {pdir}")
+        source = resolve_project_dir()
+        if source.kind == "missing":
+            # See list.py: a sibling store is never an answer about this cwd (#1317).
+            for line in decline_lines(source):
+                print(line)
             return 1
+        pdir = source.path
         found = sorted(pdir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
         if not found:
             print(f"No sessions found in {pdir}")
@@ -538,6 +548,9 @@ def main():
             f"Project: {pdir}",
             f"Selected: {len(paths)} most recent of {len(found)} sessions",
         ]
+        note = source_note(source)
+        if note:
+            header.insert(1, note)
 
     st = measure_sessions(paths)
     render(st, header, red)
