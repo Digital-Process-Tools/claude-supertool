@@ -800,8 +800,10 @@ supertool 'gh-issues:milestone=v0.27.0'    # what is in the next release
 
    **And count the workflows, because a scheduled one may never have run on that commit at all.** Cutting v0.27.0 I read `gh-branch:master` as `GREEN — every workflow on dcb574e concluded (19 legs across 3 workflows)` and tagged on it; `radar` then said NOT GREEN because `slow tests` had not concluded — a **fourth** workflow, `schedule`-triggered rather than `push`. **And it was two, not one**: the #846 agent measured `bf66384` reporting `GREEN … (18 legs across 2 workflows)` while `slow tests` _and_ `changelog` were declared at that commit and undispatched. Neither render was lying — a workflow never dispatched cannot be counted by anything that enumerates runs. So the gate is `.github/workflows/` against the runs, and a workflow defined but absent from the run list is `UNKNOWN`, never a pass:
 
+   **Pass the FULL sha.** `gh run list --commit` matches the sha exactly and does **not** resolve an abbreviation: measured 2026-08-11, `--commit 2a15689` returned `[]` while `--commit 2a15689e7ee77f3ddac93959451918614aba669a` returned four runs on that same commit. It exits 0 either way and prints no warning, so the empty list from a short sha — the form `git log --oneline` hands you — is indistinguishable from a commit no workflow ran on, which is the exact reading this gate is here to make. Use `git rev-parse <ref>`.
+
    ```bash
-   gh run list --commit <sha> --json workflowName,status,conclusion
+   gh run list --commit $(git rev-parse <ref>) --json workflowName,status,conclusion
    python3 -c "import pathlib,re; print([re.search(r'^name:\s*(.+)$',f.read_text(),re.M).group(1) for f in pathlib.Path('.github/workflows').glob('*.y*ml')])"
    ```
 
