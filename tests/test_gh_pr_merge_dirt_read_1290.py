@@ -133,7 +133,7 @@ def test_the_display_knobs_are_set_on_the_command_line(monkeypatch) -> None:
     argv = status[0]
     assert "-c" in argv
     assert "status.showUntrackedFiles=normal" in argv
-    assert "--untracked-files=all" in argv
+    assert "--untracked-files=normal" in argv
     assert "--ignored" in argv
 
 

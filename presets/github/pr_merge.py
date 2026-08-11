@@ -625,8 +625,13 @@ def _worktree_state(path: str) -> str:
 #: `GIT_CONFIG_*` both. `status.showUntrackedFiles=no` is an ordinary user or
 #: repo preference and it suppresses `!!` as well as `??`, so the #1280 gate
 #: inherited it, received an empty list, and deleted an ignored `.env` while
-#: reporting that it had looked (#1290). `core.quotePath` keeps a path with a
-#: newline in it on one line, so splitting the output cannot invent two.
+#: reporting that it had looked (#1290).
+#:
+#: `core.quotePath` is not what keeps a path with a newline in it on one line —
+#: git quotes C0 control characters unconditionally, whatever this is set to,
+#: which is why splitting the output on newlines is safe at all. It governs
+#: bytes >= 0x80, rendering an accented filename as octal escapes, so the
+#: refusal text is ASCII whatever codec the console decoded with.
 _DIRT_PINS = ["-c", "status.showUntrackedFiles=normal",
               "-c", "core.quotePath=true"]
 
@@ -677,8 +682,14 @@ def _worktree_dirt(path: str) -> tuple[List[str], str]:
     """
     raw: List[str] = []
 
+    # `=normal` and not `=all`: the flag is here so the command line, not a
+    # config file, is the last word on whether untracked files are mentioned —
+    # but `all` also defeats git's own directory collapse, and an untracked
+    # `venv/` would then arrive as ten thousand `??` lines beside the single
+    # collapsed entry the second read returns for it. `normal` names the
+    # directory, which is all a refusal needs.
     out, err = _dirt_read(path, ["status", "--porcelain", "--ignored",
-                                 "--untracked-files=all"])
+                                 "--untracked-files=normal"])
     if err:
         return ([], err)
     for line in _untrusted.split_lines(out):
