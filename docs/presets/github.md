@@ -34,6 +34,64 @@ A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting anothe
 | `gh-find-followable` | `gh-find-followable:OWNER/REPO[|N]` | Discover candidate users to follow: pulls stargazers + contributors, deduplicates, filters orgs. Pipe output to a file then review before `gh-batch-follow` |
 | `gh-find-starable` | `gh-find-starable:TOPIC[|N]` | Discover repos worth starring by topic, sorted by stars. Pipe output to a file then review before `gh-batch-star` |
 
+## What a raw `gh` call is refused for
+
+Eleven of these twenty-one ops declare the raw invocation they supersede as `replaces` in `presets/github.json`, and the shipped `PreToolUse` hook refuses that invocation with the op's own description ([#1347](https://github.com/Digital-Process-Tools/claude-supertool/issues/1347), [#1384](https://github.com/Digital-Process-Tools/claude-supertool/issues/1384)). v0.34.0 shipped four of them — `gh-pr`, `gh-pr-merge`, `gh-pr-create`, `gh-issues` — while the rest of the family, including six ops whose GitLab twins were already mapped, went unclaimed.
+
+| Raw command | Refused in favour of |
+|---|---|
+| `gh issue view` | `gh-issue:NUMBER` |
+| `gh issue view --comments` / `-c` | `gh-issue:NUMBER:full` |
+| `gh issue list` | `gh-issues:per=100` |
+| `gh issue create` | `gh-issue-create:@FILE` |
+| `gh pr view` | `gh-pr:NUMBER` |
+| `gh pr view --comments` / `-c` | `gh-pr:NUMBER:full` |
+| `gh pr view --json state` / `mergeable` | `gh-pr:NUMBER:status` |
+| `gh pr view --json files`, `gh pr diff` | `gh-pr:NUMBER:diff` |
+| `gh pr checks` | `gh-pr:NUMBER:status` |
+| `gh pr list` | `gh-prs` |
+| `gh pr create` | `gh-pr-create:@FILE` |
+| `gh pr merge` | `gh-pr-merge:NUMBER:squash\|force` |
+| `gh run view` | `gh-run:NUMBER` |
+| `gh run view --log` | `gh-job:NUMBER:raw` |
+| `gh run view --log-failed` | `gh-job:NUMBER:fail` |
+| `gh run list --branch` | `gh-branch:BRANCH` |
+| `gh run list --commit` | `gh-branch:COMMIT_SHA` |
+| `gh label list` | `gh-labels` |
+
+`gh run view --log` is `gh-job`'s question and not `gh-run`'s, and the flagged entry outscores the bare one, so the refusal names one op rather than two. Sending that reader to `gh-run:NUMBER` — which lists jobs and never prints a log line — is the "dead end" failure the schema's specificity rule exists to prevent.
+
+### `gh run list` is claimed only through `--branch` and `--commit`
+
+Those two flags are the whole mapping. `gh-branch` answers *is this ref green*, conjunctively, over every workflow on the head SHA; a bare `gh run list`, `--limit`, `--workflow` or `--json` is an enumeration it does not produce, and claiming the command word would dead-end all of them. This is the one place in the family where a `flag` is used to make a match **narrower on purpose**, against the general rule in [contributing.md](../contributing.md#replaces--the-raw-command-this-op-supersedes) — because here the flag names the *question*, not a spelling the caller happened to use.
+
+### `--web` and `-w` are excluded from every mapping that has them
+
+No op opens a browser. A mapping that claims `gh pr view 1 --web` refuses it and names `gh-pr:NUMBER`, which prints to a terminal — a dead end whose only way past is `raw_command_guard: false`, and that is repo-global, so escaping one wrong block disarms every other mapping in the repository.
+
+The four entries that shipped in v0.34.0 had no such exclusion, so this is a **widening** of what stays usable and nothing new blocks because of it. `gh pr merge` is the one mapped command with no `--web`, and it carries no exclusion.
+
+| Left alone | Why |
+|---|---|
+| `gh issue view --web`, `gh pr view --web`, `gh pr diff --web`, `gh issue list --web`, `gh pr list --web`, `gh run view --web`, `gh label list --web` | a browser is not a render any op produces |
+| `gh issue create --web`, `gh pr create --web` | the same, and it is how a long body gets written by hand |
+| `gh pr checks --watch` | `gh-pr:NUMBER:status` is one read. `watch` is the op that polls, and it takes a PR rather than a check list |
+
+**A short flag covers its clustered spellings**, so `-w` also un-claims `-wq`. See [A clustered short flag is read as its letters](git.md#a-clustered-short-flag-is-read-as-its-letters).
+
+### Ten ops declare nothing
+
+Each is a decision, pinned as an absence in `tests/test_github_replaces_1384.py` and in the repository-wide census in `tests/test_replaces_census_1384.py`, so moving one is a visible edit rather than a silent hole.
+
+| Op | Why its raw form is not claimed |
+|---|---|
+| `gh-check` | its raw form is `gh api .../check-runs/<id>`, and `gh api` is the escape hatch the whole schema depends on staying unclaimed |
+| `gh-since-tag` | no single raw command produces it: it is a merged-PR list, a local tag resolution and a `changelog.d/` count reconciled against each other |
+| `gh-follow`, `gh-star`, `gh-following`, `gh-starred`, `gh-batch-follow`, `gh-batch-star` | all sit on `gh api user/following/…` or `user/starred/…`; `gh` has no CLI verb for them |
+| `gh-find-followable`, `gh-find-starable` | composites of a stargazer/contributor or topic search with deduplication; no raw command is the same question |
+
+And four commands the maintainer skill documents as the *correct* raw route are unclaimed by construction, because nothing supersedes them: `gh api -X POST .../git/refs` (tagging), `gh api -X DELETE .../git/refs/…` (deleting a ref), `gh release create`, `gh run rerun --failed`, and `gh api .../actions/jobs/<id>/logs` (the fallback when `gh run view --log` comes back empty for a genuinely failed job).
+
 ## The discovery ops render strangers' text, and say so
 
 `gh-starred`, `gh-following`, `gh-find-starable` and `gh-find-followable` print repository names, descriptions and logins from **arbitrary public accounts**, chosen by a topic search rather than by you. That is the widest untrusted-input surface in the tool, and until [#981](https://github.com/Digital-Process-Tools/claude-supertool/issues/981) every one of those fields reached `print()` raw.
