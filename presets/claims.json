@@ -9,6 +9,7 @@
       "hint": true,
       "description": "Does this doc's references still hold? Three states — holds / contradicted / couldn't check — and the third never renders as clean. Verifies: backticked op tokens against the op registry (key= flags only; a head that resolves to nothing is unchecked, not a finding), paths and :LINE numbers and section headings against the repo, and every issue cited under an 'Open defects' heading against the tracker. Prose claims are not checked and the footer says so. Fenced code is skipped.",
       "syntax": "claims:PATH",
+      "paths": { "args": [1], "root": "repo" },
       "example": "claims:.claude/jit-context/paths/00-manual/presets-github.md"
     }
   }

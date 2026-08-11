@@ -38,10 +38,12 @@ Use `:::` (triple colon) as the field separator when XPath contains colons — a
 
 No tokens, no env vars. Inherits global supertool config only.
 
+**PATH is contained to the cwd**, like every builtin read op. `presets/xml.json` declares `"paths": {"args": [1], "root": "cwd"}`, so `xml:/etc/passwd:.//x` is refused with the same message `read:/etc/passwd` gives — until [#1287](https://github.com/Digital-Process-Tools/claude-supertool/issues/1287) it was parsed and reported on. The core's opt-outs (`SUPERTOOL_ALLOW_OUTSIDE_CWD=1`, `"allow_outside_cwd": true` in `.supertool.json`) still apply, and the refusal names them.
+
 Memory scales with file size: a 25 MB XML file uses ~150 MB RAM at peak. For very large files, run from an orchestrator and inject the pre-resolved result into the agent context rather than calling inline.
 
 XPath support uses ElementTree's subset: predicates, `contains()`, `//descendant`, `position()`. A built-in shim handles nested `contains()` predicates that ET doesn't natively support. Line numbers come from a custom expat-based parser layered on top.
 
 ## Authoring notes
 
-Preset JSON: `presets/xml.json`. Helper scripts: `presets/xml/` — one Python file per op (`query.py`, `attr.py`, `count.py`). The `{path}` placeholder in `cmd` resolves to `presets/xml/` at runtime.
+Preset JSON: `presets/xml.json`, including the `paths` declaration described under Configuration. Helper scripts: `presets/xml/` — one Python file per op (`query.py`, `attr.py`, `count.py`). The `{path}` placeholder in `cmd` resolves to `presets/xml/` at runtime.

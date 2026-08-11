@@ -91,6 +91,7 @@ Shorthand string ops (`"lint": "ruff check {file}"`) work with a 60s default tim
 | `example` | no | Concrete example, e.g. `mypy:src/app/module.py`. |
 | `status` | no | `"experimental"` or `"stable"`. Informational only. |
 | `safety` | yes, in shipped presets | `"read-only"`, `"writes"` or `"acts"`. Rendered as the class marker in `ops:roster`. |
+| `paths` | yes, if any argument is a filesystem path | `{"args": [1], "root": "cwd"}` — which argument positions are paths, and the boundary they must stay inside. See below. |
 
 **`safety` decides whether someone may learn your op by calling it.** The `ops:roster` listing is names plus one marker, because that is what fits the ~7KB SessionStart cap — and a bare name is only actionable for an op you can probe. Most ops teach their own signature on contact: `between:FILE:747:820` answers *"'820' was read as the path"* and names the op that does take a range. An op that reaches outside the tree cannot be learned that way — `oss_train` force-pushes a merge train, `gh-pr-merge` merges, `watch` spawns a poller.
 
@@ -105,6 +106,32 @@ Shorthand string ops (`"lint": "ruff check {file}"`) work with a 60s default tim
 An op with no `safety` key, or an unrecognised value, renders `!`. The fallback is the loudest class on purpose: an `acts` op mis-rendered as probe-safe invites somebody to probe it, and the reverse costs one `help:OP` call. Every op in a shipped `presets/*.json` must declare one — `tests/test_ops_roster_1231.py` fails otherwise, so a new op cannot ship classed by accident. Built-in ops take their class from `_OP_SAFETY_BUILTIN` in `_supertool.py` instead: it is a fact about the binary, and a project's `.supertool.json` may be absent, stale, or somebody else's.
 
 `syntax` reads like documentation because it's rendered in `ops` output — but for any op whose syntax uses `:::` (e.g. `git-commit:::MESSAGE[:::PATHS...]`), it is also parsed to derive that op's `@file`/`@payload` field registry: `MESSAGE[:::PATHS...]` becomes the fields `message`, `paths`. Edit it for readability — add a clarifying parenthetical, reword a field name into prose — and the parser can silently stop deriving clean field names, which silently deletes the op's whole payload route. No error, no warning: the op just stops accepting `op:@-`/`op:@payload`, while its docs (and the `ops` listing) still describe the route as if it existed. `tests/test_at_file_route.py::TestPayloadRoutePin` pins which real ops currently have a payload route specifically to catch this at test time — if you're touching a `:::`-bearing `syntax` string, expect that test to have an opinion. See [#770](https://github.com/Digital-Process-Tools/claude-supertool/issues/770).
+
+### An op that takes a path declares where paths may point
+
+Builtin ops have been gated since [#146](https://github.com/Digital-Process-Tools/claude-supertool/issues/146): `_PATH_ARG_POSITIONS` in `_supertool.py` says which argument slot is a path, and dispatch refuses one that resolves outside the cwd. **No preset op was in that table**, so until [#1287](https://github.com/Digital-Process-Tools/claude-supertool/issues/1287) a preset op with a path argument enforced containment itself or not at all — and "not at all" was the default for anything newly written. [#1283](https://github.com/Digital-Process-Tools/claude-supertool/issues/1283) was one instance of that: `claims:/etc/hosts` read the file in the same call that `read:/etc/hosts` refused it.
+
+Declare it:
+
+```json
+"paths": { "args": [1], "root": "repo" }
+```
+
+- **`args`** — argument positions, counting the op name as `0`, exactly like `_PATH_ARG_POSITIONS`. So `claims:PATH` is `[1]` and `xml_attr:PATH:XPATH:ATTR` is also `[1]`. Only the positions you name are checked: over-gating is its own defect ([#1164](https://github.com/Digital-Process-Tools/claude-supertool/issues/1164) refused a legitimate local slice by gating a slot that held a regex). Non-negative only — a negative index is refused rather than read Python-style, because `parts[-1]` on a bare call is the op name.
+- **`root`** — `"cwd"` (the core's boundary, and the right answer for almost everything) or `"repo"` (the repository root). `claims` needs `"repo"` because it resolves a relative argument against the git toplevel: under a cwd boundary, `claims:docs/x.md` run from `docs/` would be refused, and that call works and should.
+- **`"args": []`** — a declaration that no argument here is a filesystem path. `gl-api:PATH` means an API route, not a file. Written down rather than defaulted, because the two look identical from outside.
+
+**An op whose `syntax` names a path and that declares nothing is refused at dispatch.** Not `skipped`: the three-state rule this repo applies everywhere else has no third state here, because a path argument that reaches no check is not a check that could not run — it is an unchecked read, and it renders identically to a checked one.
+
+The detector is the `syntax` string, matched per `_`-separated component, so `PATH`, `PATHS`, `FILE`, `@FILE`, `MD_FILE` and `TEXT_OR_FILE_OR_file://PATH` all count and `NUMBER_OR_BRANCH` does not. It only ever raises the *question* — a path hidden inside a `|`-separated blob cannot be located by reading the syntax, which is why the position is declared explicitly.
+
+Twenty shipped ops predate the rule and are grandfathered by name in `_UNDECLARED_PATH_OPS`. **That set only shrinks**, and `tests/test_preset_path_chokepoint_1287.py` fails if a name is added to it or if a new op with a path skips the declaration — so a newly written op cannot inherit the old default by being written after it.
+
+An op written as a bare command string — the `.supertool.json` shorthand, `"myop": "mytool {file}"` — carries no `syntax` and so has nothing to detect and nothing to refuse. That is deliberate and not a hole in the same sense: those ops are the caller's own config, at the same trust level as validators and presets, and they can declare a boundary by being written as an object instead.
+
+The core's opt-outs (`SUPERTOOL_ALLOW_OUTSIDE_CWD=1`, or `"allow_outside_cwd": true` in `.supertool.json`) are honoured at every boundary, and the refusal names them. The gate is `_safe_path` with a different root, not a second copy of the rule — [#882](https://github.com/Digital-Process-Tools/claude-supertool/issues/882) and [#889](https://github.com/Digital-Process-Tools/claude-supertool/issues/889) are what a second copy costs.
+
+A core check is defence in depth, never a replacement: `presets/claims/check.py` keeps its own boundary check, because the script is also runnable directly.
 
 ### Placeholders
 
@@ -211,6 +238,14 @@ Same op schema as custom ops, wrapped in a manifest:
       "description": "Check deployment status for a service.",
       "syntax": "deploy-status:SERVICE",
       "example": "deploy-status:api-gateway"
+    },
+    "deploy-log": {
+      "cmd": "python3 {path}mytools/log.py {arg}",
+      "safety": "read-only",
+      "description": "Print a captured deploy log.",
+      "syntax": "deploy-log:PATH",
+      "paths": { "args": [1], "root": "cwd" },
+      "example": "deploy-log:logs/api-gateway.log"
     }
   }
 }

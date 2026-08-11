@@ -725,7 +725,9 @@ The precedent proves the asymmetry. **#1135 got `containment` only because its s
 
 > **"Is it below `_safe_path`?" is the wrong question. "Which argument names a directory, and _who knows what that directory is allowed to be_?" is the right one.**
 
-Read-side containment has one universal boundary and one chokepoint. Write-side does not, so a domain-specific boundary has to be enforced by the op that owns it — a core check is defence in depth underneath, never a replacement.
+**Neither side has one universal boundary. The chokepoint is universal; the boundary is not.** This paragraph used to say read-side had both, and #1283's agent refused it from a call that would break: `claims` resolves a relative argument against the *repository root*, so imposing the core's cwd on it refuses `claims:docs/x.md` run from `docs/`. Since #1287 every preset and custom op passes through one gate in `_resolve_custom_op` and each op **declares** its own boundary there — `"paths": {"args": [1], "root": "cwd"|"repo"}` — with the core check underneath as defence in depth, never a replacement. Same conclusion as write-side, reached from the read side.
+
+**An op that names a path and declares nothing is refused, not skipped**, because a path argument reaching no check is an unchecked read rather than a check that could not run. Twenty shipped ops predate the rule and are grandfathered by name in `_UNDECLARED_PATH_OPS`; that set only shrinks and the suite goes red if anything joins it.
 
 **A classification scheme is itself a claim, and this is the third audit running to refuse it and be right** (`discloses`, then `containment`, now its write-side twin). Keep the "say so if a finding fits none of these" clause in every audit brief; the class that does not exist yet is where the worst finding lands.
 

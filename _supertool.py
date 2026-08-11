@@ -1893,12 +1893,23 @@ class SecurityError(Exception):
 _MAX_SAFE_PATH_LEN = 4096
 
 
-def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
+def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None,
+               root: Optional[str] = None, boundary: str = "cwd") -> str:
     """Resolve `p` and enforce repo-root containment (closes #146).
 
     Strict mode (default): the realpath of `p` must equal cwd or live under
     cwd. Symlinks crossing the boundary are rejected. `..` traversal that
     escapes cwd is rejected. Returns the resolved absolute path.
+
+    `root` moves the boundary without moving the rule (#1287). The core's own
+    boundary is the cwd and stays the default; a preset op that resolves its
+    argument against something else — `claims` resolves a relative path against
+    the repository root, so a cwd boundary would refuse `claims:docs/x.md` run
+    from `docs/` — declares that root and gets the *same* check under it.
+    `boundary` is only the word the refusal uses, so the message names the line
+    the caller actually crossed. Parameterised rather than reimplemented: the
+    one thing this repo has learned twice about containment is that a second
+    copy of the rule drifts (#882, #889).
 
     Opt-out (any one is enough):
       1. `allow_outside_cwd=True` per-call kwarg
@@ -1958,19 +1969,28 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None) -> str:
     # This also handles drive-letter case (`c:\` vs `C:\`) and forward-slash
     # variants (`C:/Users` vs `C:\Users`).
     abs_p_cmp = os.path.normcase(abs_p)
-    root_cmp = os.path.normcase(os.path.realpath(os.getcwd()))
+    base = os.path.realpath(root) if root else os.path.realpath(os.getcwd())
+    root_cmp = os.path.normcase(base)
     if abs_p_cmp == root_cmp:
         return abs_p
     if not abs_p_cmp.startswith(root_cmp + os.sep):
+        # %s for the root, %r for the caller's own string: on Windows a %r
+        # doubles every separator, so a caller comparing the printed root
+        # against a real one would never match (#1283). Named only when it is
+        # NOT the cwd — the default message is load-bearing in a dozen tests
+        # and gains nothing from echoing the directory the caller stands in.
+        where = "" if root is None else f", root {base}"
         raise SecurityError(
-            f"path escapes cwd: {p!r} (resolved to {abs_p!r}). "
+            f"path escapes {boundary}: {p!r} (resolved to {abs_p!r}{where}). "
             f"To allow: set SUPERTOOL_ALLOW_OUTSIDE_CWD=1 (env), or add "
             f'`\"allow_outside_cwd\": true` to .supertool.json.'
         )
     return abs_p
 
 
-def _containment_error(candidates: Iterable[str]) -> Optional[str]:
+def _containment_error(candidates: Iterable[str], *,
+                       root: Optional[str] = None,
+                       boundary: str = "cwd") -> Optional[str]:
     """The one containment gate every path-bearing route passes through.
 
     Returns the ``ERROR: …`` line to print, or ``None`` when every candidate is
@@ -2001,10 +2021,206 @@ def _containment_error(candidates: Iterable[str]) -> Optional[str]:
         if not candidate or candidate == ".":
             continue
         try:
-            _safe_path(candidate)
+            _safe_path(candidate, root=root, boundary=boundary)
         except SecurityError as exc:
             return f"ERROR: {exc}\n"
     return None
+
+
+#: Registry keys whose value is a boundary this core knows how to enforce.
+#: `cwd` is the core's own and the default everywhere else; `repo` is the
+#: repository root, which is what `claims` resolves relative arguments against.
+_PATH_BOUNDARIES = ("cwd", "repo")
+
+#: Syntax-string components that mean "this argument is a filesystem path".
+#: Matched per `_`-separated component so `MD_FILE`, `TEXT_OR_FILE_OR_file`
+#: and `@FILE` all count, while `NUMBER_OR_BRANCH` and `PATTERN` do not.
+_PATH_SYNTAX_COMPONENTS = frozenset(("PATH", "PATHS", "FILE", "FILES"))
+
+_SYNTAX_TOKEN_RE = re.compile(r"[^A-Za-z0-9_]+")
+
+#: Preset ops that name a path in their syntax and predate the declaration
+#: (#1287). **This set only ever shrinks.** It is not a policy — it is a debt
+#: register: 24 shipped ops name a path, 4 declare a boundary, these 20 do not.
+#: Refusing them today would break every one of them in the same release that
+#: introduced the rule, so they are grandfathered *by name*, which means a
+#: newly written op cannot inherit the old default by being written after it —
+#: it is refused at dispatch and red in
+#: `tests/test_preset_path_chokepoint_1287.py` until it declares.
+#:
+#: Several of these cannot be expressed as a `parts` index at all: the publish
+#: ops carry their file inside a `|`-separated blob, `git-commit` takes a
+#: `:::`-separated tail, `git-resolve` a comma list. Draining the register is
+#: therefore per-op work, not a sweep, and the ops living in files with open
+#: PRs (`presets/git*`, `presets/github*`, `presets/gitlab*`) were left alone
+#: here on purpose rather than overlooked.
+_UNDECLARED_PATH_OPS = frozenset((
+    "bluesky_publish",
+    "devto_comment",
+    "devto_publish",
+    "gh-batch-follow",
+    "gh-batch-star",
+    "gh-issue-create",
+    "gh-pr",
+    "gh-pr-create",
+    "git-blame",
+    "git-commit",
+    "git-diff",
+    "git-investigate",
+    "git-resolve",
+    "git-trail",
+    "git-worktrees",
+    "gl-api",
+    "gl-issue-create",
+    "hashnode_comment",
+    "hashnode_publish",
+    "hashnode_reply",
+))
+
+
+def _syntax_names_a_path(syntax: str) -> bool:
+    """Does this op's registry syntax string name a filesystem path argument?
+
+    The detector, not the declaration. The registry's `syntax` is already
+    parsed rather than merely displayed, and it is the one field every op
+    fills in, so it is what tells the core that an op *should* have declared a
+    boundary. It cannot say *where* the path is — `TITLE|MD_FILE|CANONICAL`
+    hides one inside a pipe-separated blob — which is exactly why the position
+    is declared explicitly in `paths` and this function only ever produces the
+    question, never the answer.
+
+    Over-detection is the safe direction and it happens: `gl-api:PATH` is an
+    API route, not a file. That op answers with `"paths": {"args": []}` — a
+    declaration that no argument here is a filesystem path, which is a claim
+    someone made rather than a default nobody noticed.
+    """
+    if not isinstance(syntax, str):
+        return False
+    for token in _SYNTAX_TOKEN_RE.split(syntax):
+        for component in token.split("_"):
+            if component in _PATH_SYNTAX_COMPONENTS:
+                return True
+    return False
+
+
+def _path_boundary_label(boundary: str) -> str:
+    """How a boundary is named in a refusal.
+
+    A function rather than a module-level dict: #397's register in
+    `tests/test_state_reset_and_lint_timeout.py` accounts for every mutable
+    global in this file, and a constant lookup table is still a mutable global.
+    Two strings rather than one word because "path escapes cwd" is already in a
+    dozen tests and dozens of transcripts, and the repo one has to read as a
+    sentence.
+    """
+    return "the repository root" if boundary == "repo" else "cwd"
+
+
+def _repo_root_for_containment() -> str:
+    """Nearest ancestor of cwd holding a `.git`, else cwd.
+
+    `.git` is tested with `exists`, not `isdir`: in a linked worktree it is a
+    *file* pointing at the common dir, and this repo's own agents work almost
+    exclusively in worktrees.
+
+    No subprocess. `git rev-parse --show-toplevel` is what `presets/claims`
+    uses and the two agree everywhere it matters; spawning git on every gated
+    call to learn something a directory walk already knows would put a process
+    launch in front of every preset op that takes a path. Where they could
+    disagree — `GIT_WORK_TREE` pointing elsewhere — the core has already
+    scrubbed those variables out of the environment (#692, #714).
+
+    Falling back to cwd rather than to `/` is deliberate: a narrower boundary
+    refuses more, and the failure mode of guessing wide is the bug this whole
+    chokepoint exists to close.
+    """
+    d = os.path.realpath(os.getcwd())
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return os.path.realpath(os.getcwd())
+        d = parent
+
+
+def _undeclared_path_refusal(op: str, syntax: str) -> str:
+    """What an op that takes a path and declares no boundary gets (#1287).
+
+    A refusal, not a `skipped`. The three-state rule this repo applies
+    everywhere else — `ok`, a finding, `skipped` — has no third state here,
+    because a path argument that reaches no check is not a check that could
+    not run. It is an unchecked read, and it renders identically to a checked
+    one.
+    """
+    return (
+        f"ERROR: op {op!r} names a path in its syntax ({syntax}) and declares "
+        f"no containment boundary.\n"
+        f'       Add "paths": {{"args": [1], "root": "cwd"}} to its registry '
+        f"entry — \"args\" lists the\n"
+        f"       argument positions that are filesystem paths, \"root\" is "
+        f'"cwd" (the core\'s boundary)\n'
+        f'       or "repo" (the repository root, for an op that resolves '
+        f'relative paths against it).\n'
+        f'       "args": [] declares that no argument here is a filesystem '
+        f"path.\n"
+    )
+
+
+def _preset_path_containment(
+        op: str, entry: Any, parts: List[str]) -> Optional[str]:
+    """The universal half of #1287: one chokepoint, a declared boundary.
+
+    Every preset and custom op reaches `_resolve_custom_op`, so that is where
+    a path argument can be gated once instead of per-op. What the core cannot
+    supply is the *boundary*: `_PATH_ARG_POSITIONS` imposes the cwd on every
+    builtin, and imposing it on presets too would refuse `claims:docs/x.md`
+    run from `docs/` — a call that works today and should, because `claims`
+    resolves relative arguments against the repository root.
+
+    So the op declares both, and the core enforces both:
+
+        "paths": {"args": [1], "root": "repo"}
+
+    Returns the `ERROR: …` line to print, or `None` to let the op run.
+    """
+    if not isinstance(entry, dict):
+        return None
+    decl = entry.get("paths")
+    if decl is None:
+        if op in _UNDECLARED_PATH_OPS:
+            return None
+        syntax = entry.get("syntax", "")
+        if not _syntax_names_a_path(syntax):
+            return None
+        return _undeclared_path_refusal(op, syntax)
+    if (not isinstance(decl, dict) or not isinstance(decl.get("args"), list)
+            or not all(isinstance(i, int) and not isinstance(i, bool) and i >= 0
+                       for i in decl["args"])):
+        # Negative indices are refused rather than resolved Python-style. They
+        # would read as "the last argument", which is a real shape — `between`
+        # symbol mode takes `parts[-1]` — but the core cannot honour it here:
+        # `parts[-1]` on a bare `op` call is the op NAME, so the declaration
+        # would gate a token that is never a path and skip the one that is.
+        # Refused loudly because the alternative found in review was worse:
+        # an out-of-range index was silently filtered out of the generator
+        # below, so a typo'd declaration ran the op completely unchecked while
+        # looking exactly like a declared one.
+        return (
+            f'ERROR: op {op!r} has a malformed "paths" declaration — expected '
+            f'{{"args": [<non-negative int>, ...], "root": "cwd"|"repo"}}.\n'
+        )
+    boundary = decl.get("root", "cwd")
+    if boundary not in _PATH_BOUNDARIES:
+        return (
+            f'ERROR: op {op!r} declares an unknown path root {boundary!r} — '
+            f'expected one of: {", ".join(_PATH_BOUNDARIES)}.\n'
+        )
+    return _containment_error(
+        (parts[i] for i in decl["args"] if 0 <= i < len(parts)),
+        root=_repo_root_for_containment() if boundary == "repo" else None,
+        boundary=_path_boundary_label(boundary),
+    )
 
 
 def _path_not_found(path: str, *, label: str = "path",
@@ -2284,6 +2500,23 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
 
     if not cmd_template:
         return f"ERROR: empty command for custom op {op!r}\n"
+
+    # #1287 — the universal path chokepoint for preset and custom ops. Builtins
+    # have had `_PATH_ARG_POSITIONS` in `_dispatch_impl` since #146; no preset
+    # op was ever in it, so a preset op with a path argument enforced
+    # containment itself or not at all, and "not at all" was the default for a
+    # newly written one. #1283 was one instance of that, not the class.
+    #
+    # Above the subprocess, not inside it: an out-of-boundary read has already
+    # happened by the time any of the op's output could be filtered.
+    # Not counted as a skip. `_mixed_tree_decline` above is a skip because it
+    # is one — the op could not be run safely and nobody was refused anything.
+    # This is the builtin containment gate's twin, which returns its ERROR and
+    # touches no counter, and the whole argument of #1287 is that an unchecked
+    # path is a refusal rather than a check that could not run.
+    _paths = _preset_path_containment(op, entry, parts)
+    if _paths:
+        return _paths
 
     # Build the command — substitute {file}, {dir}, {arg}, {args}, {argjoin},
     # {python} in ONE pass. Chained str.replace calls would rescan the text a
