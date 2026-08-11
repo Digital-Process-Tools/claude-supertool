@@ -128,9 +128,27 @@ If your op exists because a raw command was the wrong way to get the answer, say
 | `argv` | yes | Command word and subcommands, space-separated. Matched **token-for-token** against the start of a simple command, never as a substring. |
 | `flag` | no | The entry matches only if the command carries this flag. |
 | `value` | no | ...and only if that flag's value is, or contains as a comma-list member, this. Requires `flag`. |
+| `unless_flag` | no | Flag spellings whose presence means this entry does **not** claim the command. A string, or a list; the single item `"*"` is any flag at all. |
 | `use` | no | The op invocation the refusal names. Defaults to the op's `syntax`. |
 
 **The most specific matching entry wins**, so flags select *which* op is named rather than whether to block: `gh pr view 12` names `gh-pr:NUMBER`, `gh pr view 12 --json state` names `gh-pr:NUMBER:status`. Ties are listed together rather than resolved arbitrarily.
+
+**`unless_flag` says *this shape of the command has no replacement*** ([#1394](https://github.com/Digital-Process-Tools/claude-supertool/issues/1394)). `flag` and `value` only ever add specificity, so before it an op could say *this argv is mine* and could not say *this argv is mine except when it carries these flags* — and the only escape hatch, declaring no entry, is all-or-nothing per op while the opt-out (`raw_command_guard: false`) is repo-global. So one over-broad entry took every other mapping in the repository down with it. `gl-api` is the shipped example:
+
+```json
+{ "argv": "glab api", "unless_flag": ["*"], "use": "gl-api:PATH" }
+```
+
+`glab api` is GET by default and a **write** under `-X`, `-F`, `-f` or `--input`, and supertool has no GitLab write route at any spelling. `"*"` rather than a list of those four because gl-api forwards no flags at all: a denylist of the write spellings would have left `-H`, `--hostname`, `-i`, `--output`, `--silent` — and `glab api -h` — blocked with no way past, which is a guard wedging a CLI's own help.
+
+Four things it does *not* do, each a decision rather than an omission:
+
+- **It un-claims the entry, it does not allow the command.** An exclusion loses to nothing: a second, broader entry that still matches still blocks. A veto that crossed entries would let an op in a repository's own `.supertool.json` un-block a command a shipped op legitimately claims.
+- **It keys on the flag, never on its value.** `glab api -X GET` is a read and is excluded anyway. That costs a *missed block*, which is the direction this guard may be wrong in — there is no per-command way past a wrong one.
+- **A bare `--` ends the option list**, here and for `flag` alike. `gh pr diff 1 -- --json` names a path called `--json`, and a flag inside an argument is not a flag.
+- **It matches `--method` and `--method=POST`, not `-XPOST`.** A short flag with its value clustered on is not matched by a named spelling, which is a second reason an op that forwards no flags should declare `"*"`.
+
+An `unless_flag` that is neither a non-empty string nor a list of non-empty strings **drops the whole entry** and leaves a note, so the verdict is `undecided` rather than clean. Reading an unreadable exclusion as an absent one would turn one typo into exactly the over-broad block this key exists to prevent.
 
 Three rules for writing one:
 
