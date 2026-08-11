@@ -212,6 +212,59 @@ def run_phase(run: object) -> str:
     return PHASE_CONCLUDED if raw == _TERMINAL_RUN_STATUS else PHASE_RUNNING
 
 
+def orphaned_legs(run: object, states) -> int:
+    """Legs still pending on a run GitHub has already closed (#1408).
+
+    GitHub does not guarantee that a run object outlives its own jobs. Twice on
+    2026-08-11 — run 31501780284 with `pytest (windows-latest, 3.11)` and
+    31507113066 with `pytest (macos-latest, 3.12)` — the run read `completed /
+    success` while one of its legs sat `in_progress`, and neither leg would ever
+    have reported, because the run that would have carried its result was
+    already closed. Both cleared only with `gh run rerun --job`.
+
+    So the two fields are not two views of one fact and must not be rendered as
+    though they were. `verdict()` already refuses such a commit, through the
+    leg half of its `moving` test; this is the same predicate named, so the
+    table can be marked from the same reading the verdict used rather than from
+    a second derivation of it that could drift.
+
+    Zero for a run still moving: a pending leg under an open run is an ordinary
+    wait, and marking it would put a warning on every in-flight commit.
+    """
+    if run_phase(run) != PHASE_CONCLUDED:
+        return 0
+    return sum(1 for s in (states or []) if _checks.bucket(s) == "pending")
+
+
+def orphan_lines(selected: dict, fetched: dict) -> list:
+    """One sentence per workflow whose run closed without one of its legs.
+
+    A bare marker in the `Outcome` cell would say only that something is odd,
+    which is a second lookup rather than an answer. These lines say which two
+    sources disagree and which one the verdict acted on.
+    """
+    lines = []
+    for name in sorted(selected):
+        jobs = fetched.get(name)
+        if jobs is None:
+            continue
+        states = [_checks.github_state(j) for j in jobs]
+        n = orphaned_legs(selected[name], states)
+        if not n:
+            continue
+        conclusion = str(selected[name].get("conclusion") or "no conclusion")
+        legword = _agrees(n, "leg", "legs")
+        lines.append(
+            f"  {_untrusted.flat(name)} — the run object concluded "
+            f"`{conclusion}`, but {n} of its {legword} never concluded. A "
+            "run-level conclusion is not a claim about a leg GitHub closed the "
+            f"run without, so `{conclusion}` does not cover it and the verdict "
+            "above does not clear the commit. Re-run the leg "
+            "(`gh run rerun --job <id>`); waiting will not help, the run that "
+            "would have carried its result is already closed.")
+    return lines
+
+
 def leg_summary(states) -> str:
     """The shared tally, not a second derivation of it.
 
@@ -799,16 +852,24 @@ def _row(name: str, run: dict, jobs) -> str:
     """
     name = _untrusted.flat(name)
     phase = run_phase(run)
+    if jobs is None:
+        states = None
+        tally = "UNREAD — the job list did not come back"
+    else:
+        states = [_checks.github_state(j) for j in jobs]
+        tally = leg_summary(states)
     if phase == PHASE_CONCLUDED:
         outcome = str(run.get("conclusion") or "no conclusion")
+        # #1408: the cell may not assert a conclusion the verdict has refused.
+        # Marked rather than rewritten — `success` is what the run object says
+        # and suppressing it would trade one silent disagreement for another —
+        # and spelled out in `orphan_lines()` under the table.
+        if orphaned_legs(run, states):
+            outcome += " ⚠"
     elif phase == PHASE_RUNNING:
         outcome = "not yet"
     else:
         outcome = "not read"
-    if jobs is None:
-        tally = "UNREAD — the job list did not come back"
-    else:
-        tally = leg_summary([_checks.github_state(j) for j in jobs])
     return f"{name:<32} {phase:<14} {outcome:<14} {tally}"
 
 
@@ -933,6 +994,12 @@ def main() -> int:
         print("-" * 96)
         for name in sorted(selected):
             print(_row(name, selected[name], fetched.get(name)))
+
+        orphans = orphan_lines(selected, fetched)
+        if orphans:
+            print()
+            for line in orphans:
+                print(line)
 
     if scope_lines:
         print()
