@@ -5678,6 +5678,11 @@ def op_map(path: str, no_exclude: bool = False) -> str:
         # telling the same lie the body used to (#887).
         actual_tier = "none"
     out = [f"({len(files)} files{_hidden_suffix(len(hidden_files))}, tier: {actual_tier})\n"] + out_files
+    # A map of the entry-point shim is the module's surface to whoever reads
+    # it, and it is not (#1272). Fires on the shim named directly — a map of
+    # the *directory* enumerates `_supertool.py` on the next line, so there is
+    # nothing left to disclose and the gate's basename test declines it.
+    out.append(_shim_facade_surface_note(path))
     if truncated:
         out.append(f"\n... (truncated at {MAX_MAP_FILES} files)\n")
     out.append("\n")
@@ -6556,6 +6561,51 @@ def _comma_path_list_suggest(op: str, path: str) -> str:
 _SHIM_CORE = {"supertool.py": "_supertool.py"}
 
 
+def _shim_core_beside(path: str) -> str:
+    """The core file name, if PATH is the entry-point shim with it on disk.
+
+    The gate both facade notes share. Gated on the pair actually being on disk
+    together: a lone file named `supertool.py` in someone else's tree is an
+    ordinary file, and a note there would be a guess.
+    """
+    if not path:
+        return ""
+    core = _SHIM_CORE.get(os.path.basename(path))
+    if not core or not os.path.isfile(path):
+        return ""
+    if not os.path.isfile(os.path.join(os.path.dirname(os.path.abspath(path)),
+                                       core)):
+        return ""
+    return core
+
+
+def _shim_facade_surface_note(path: str) -> str:
+    """Disclose the facade beside a result that is CORRECT but partial (#1272).
+
+    `map:supertool.py` returns the shim's two real symbols. Small, correct,
+    positive — and misleading in exactly the way #1259's zero was, because the
+    reader concludes they have seen the module's surface. It is the harder half:
+    an absence at least looks like nothing, whereas an answer-shaped answer
+    gives nobody a reason to make the second call.
+
+    So the wording is not #1259's. That note says the result is evidence about
+    the shim rather than about supertool, and sends the caller to re-run —
+    right, because there the result was empty. Here the listed symbols really
+    are the shim's and the list really is complete for that file, so a note
+    that read as a correction would be false about a true result. This one
+    affirms the result, then says the surface is next door and offers a second
+    call to ADD, never a re-run to replace.
+    """
+    core = _shim_core_beside(path)
+    if not core:
+        return ""
+    return (f"(note: {os.path.basename(path)} is only the entry point — "
+            f"supertool's implementation lives in {core} beside it (#931). "
+            f"The symbols above are the shim's own and this map is complete "
+            f"for that file; supertool's own surface is next door. Add "
+            f"map:{core} to see it.)" + chr(10))
+
+
 def _shim_facade_note(path: str) -> str:
     """Disclose that an empty result came from an entry-point shim (#1259).
 
@@ -6571,18 +6621,14 @@ def _shim_facade_note(path: str) -> str:
     as the answer to the one they did — a quieter wrong answer than the one
     it replaced.
 
-    Gated on the pair actually being on disk together: a lone file named
-    `supertool.py` in someone else's tree is an ordinary file, and a note
-    there would be a guess. Only ever called where the result is already
-    empty, so a hit — which IS evidence about the shim — is left alone.
+    Gated by `_shim_core_beside` on the pair being on disk together. Only ever
+    called where the result is already empty, so a *hit* — which IS evidence
+    about the shim — is left alone by this one. A hit that claims to be the
+    whole file's surface is a third case, and #1272 gives it its own wording in
+    `_shim_facade_surface_note`: the note there may not read as a correction.
     """
-    if not path:
-        return ""
-    core = _SHIM_CORE.get(os.path.basename(path))
-    if not core or not os.path.isfile(path):
-        return ""
-    if not os.path.isfile(os.path.join(os.path.dirname(os.path.abspath(path)),
-                                       core)):
+    core = _shim_core_beside(path)
+    if not core:
         return ""
     return (f"(note: {os.path.basename(path)} is only the entry point — "
             f"supertool's implementation lives in {core} beside it (#931). "

@@ -121,6 +121,42 @@ Directory walks only visit extensions some tier claims, so this disclosure is
 reached by naming a file directly. That is exactly the case the issue was
 filed from.
 
+## When the file is a facade
+
+`map:supertool.py` is correct and misleading at once. `supertool.py` is a
+~170-line entry-point shim; the tool is `_supertool.py` beside it ([#931](https://github.com/Digital-Process-Tools/claude-supertool/issues/931)).
+The map returns the shim's two real symbols, so the reader gets an answer —
+and concludes they have seen the module's surface:
+
+```
+$ ./supertool 'map:supertool.py'
+(1 files, tier: tree-sitter)
+supertool.py (171 lines)
+  def _marker_lines  [68-80]
+  def _refuse_unimportable_core  [83-145]
+(note: supertool.py is only the entry point — supertool's implementation lives in _supertool.py beside it (#931). The symbols above are the shim's own and this map is complete for that file; supertool's own surface is next door. Add map:_supertool.py to see it.)
+```
+
+[#1259](https://github.com/Digital-Process-Tools/claude-supertool/issues/1259)
+disclosed the same pair under `grep`, `around` and `between`, but only where the
+result was **empty** — an absence read as an absence in the world. A non-empty
+result is the harder half ([#1272](https://github.com/Digital-Process-Tools/claude-supertool/issues/1272)):
+an absence at least looks like nothing, whereas an answer-shaped answer gives
+nobody a reason to make the second call.
+
+So the note is worded as disclosure, never as a correction. The symbols listed
+really are the shim's and the map really is complete for that file, so it
+affirms the result and offers `map:_supertool.py` as a call to **add** — not a
+re-run to replace, which is what #1259's empty-case wording says.
+
+Two things it does not do. It does not scan `_supertool.py` for you: answering a
+question nobody asked, and reporting it as the answer to the one they did, is a
+quieter wrong answer than the one it replaces. And it stays silent on
+`map:<dir>`, because a directory walk already enumerates `_supertool.py` on the
+next line — there is nothing left to disclose. The gate is the named pair with
+both files on disk side by side, so a lone `supertool.py` in an unrelated tree
+is an ordinary file and says nothing.
+
 ## Examples per language
 
 **PHP — class with methods and constants:**
