@@ -29,8 +29,19 @@ LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost", "", "0.0.0.0"})
 _AF_UNIX = getattr(socket, "AF_UNIX", None)
 
 
-class OutboundBlocked(AssertionError):
-    """A test tried to open a connection to a host it does not control."""
+class OutboundBlocked(BaseException):
+    """A test tried to open a connection to a host it does not control.
+
+    `BaseException`, not `AssertionError`, and the reason is the defect this
+    file exists to prevent. Presets catch broadly and by design -- `_http.gql_safe`
+    swallows every OSError to return None, and `hashnode/comment.py::main` wraps
+    its `_me.get_username` call in a bare `except Exception` that renders the
+    exception into an `ABORT -- pre-flight failed (cannot identify user: ...)`
+    line. An `Exception` here would be absorbed by exactly those arms, printed
+    as a plausible ABORT, and a test asserting `"ABORT" in err` would pass: the
+    guard's own signal read as a product verdict, which is #1312 one layer up.
+    Nothing in this repo catches `BaseException`, so the refusal reaches pytest.
+    """
 
 
 def _refuse(what: str, target: Any) -> None:
