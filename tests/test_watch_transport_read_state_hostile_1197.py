@@ -52,6 +52,7 @@ for _dir in (str(REPO / "presets" / "watch"), str(REPO / "presets"), str(REPO / 
     if _dir not in sys.path:
         sys.path.insert(0, _dir)
 
+import _symlink  # noqa: E402
 import _untrusted  # noqa: E402
 import dispatcher  # noqa: E402
 import transport  # noqa: E402
@@ -251,8 +252,7 @@ def test_a_symlinked_gl_mrs_state_file_is_not_parsed(state_dir):
 
     if not hasattr(os, "O_NOFOLLOW"):
         pytest.skip("this platform has no O_NOFOLLOW, so the guard cannot be enforced")
-    if not _can_symlink(state_dir):
-        pytest.skip("this account cannot create symlinks")
+    _symlink.require_symlink()
     secret = state_dir / "secret.json"
     secret.write_text(json.dumps({"source_state": {"pipeline_id": "sk-SECRET-VALUE"}}),
                       encoding="utf-8")
@@ -306,19 +306,6 @@ def test_read_state_stays_lossless_because_its_result_is_written_back(state_dir)
 
 # --- #1184's half: a state path may not be a symlink ------------------------
 
-def _can_symlink(tmp_path: Path) -> bool:
-    """Measured, not inferred. Windows grants `os.symlink` to a developer-mode
-    or elevated account and refuses it otherwise, so `os.name` answers the
-    wrong question."""
-    probe = tmp_path / "probe.link"
-    try:
-        os.symlink(str(tmp_path), str(probe))
-    except (OSError, NotImplementedError, AttributeError):
-        return False
-    os.unlink(str(probe))
-    return True
-
-
 needs_nofollow = pytest.mark.skipif(
     not hasattr(os, "O_NOFOLLOW"),
     reason="this platform has no O_NOFOLLOW, so the guard cannot be enforced",
@@ -329,8 +316,7 @@ needs_nofollow = pytest.mark.skipif(
 def test_a_symlinked_state_file_is_not_parsed(state_dir):
     """The #1184 shape at this call site: any same-uid JSON file was opened,
     parsed and rendered for the price of one symlink at a predictable name."""
-    if not _can_symlink(state_dir):
-        pytest.skip("this account cannot create symlinks")
+    _symlink.require_symlink()
     secret = state_dir / "secret.json"
     secret.write_text(json.dumps({"last_event": {"event": "sk-SECRET-VALUE", "ts": "t"}}),
                       encoding="utf-8")
@@ -349,8 +335,7 @@ def test_the_symlink_refusal_is_its_own_state_and_not_could_not_be_read(state_di
     pytest builds `tmp_path` from the test's own name, so a grep for `symlink`
     can pass against a message that merely quotes the path.
     """
-    if not _can_symlink(state_dir):
-        pytest.skip("this account cannot create symlinks")
+    _symlink.require_symlink()
     os.symlink(str(state_dir / "nowhere.json"),
                str(state_dir / "supertool-watch-gh__9.state.json"))
     _, refusal = transport.read_state_checked("gh", "9")
@@ -364,8 +349,7 @@ def test_a_dangling_symlink_is_not_reported_as_no_state_file(state_dir):
     `O_NOFOLLOW` answers a dangling symlink with `ELOOP`, not `ENOENT`. An
     `exists` call would follow the link and report a hostile act as an absence
     — the exact bug #1184 removed, reintroduced one call site along."""
-    if not _can_symlink(state_dir):
-        pytest.skip("this account cannot create symlinks")
+    _symlink.require_symlink()
     os.symlink(str(state_dir / "nowhere.json"),
                str(state_dir / "supertool-watch-gh__9.state.json"))
     state, refusal = transport.read_state_checked("gh", "9")
@@ -376,8 +360,7 @@ def test_a_dangling_symlink_is_not_reported_as_no_state_file(state_dir):
 @needs_nofollow
 def test_the_symlink_refusal_reaches_the_board(state_dir, capsys):
     """A guard nobody is told about is a guard that reads as a clean slot."""
-    if not _can_symlink(state_dir):
-        pytest.skip("this account cannot create symlinks")
+    _symlink.require_symlink()
     _slot(state_dir, last_event={"event": "e", "ts": "t"})
     os.unlink(str(state_dir / "supertool-watch-gh__9.state.json"))
     os.symlink(str(state_dir / "nowhere.json"),

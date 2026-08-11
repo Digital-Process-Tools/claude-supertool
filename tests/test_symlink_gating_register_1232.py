@@ -8,6 +8,14 @@ was **28 uncertified call sites across 18 files**, out of 71 sites in 38 files.
 The issue's estimate of ~19 across 13 was low; the count is stated here so the
 next reader does not re-derive it.
 
+**Those two totals are dated, and were already stale when #1274 read them.**
+71/38 was the tree at #1232; #1283 then added a site in a new file, so the
+tree #1274 started from was 72 sites in 39 files. #1274 folded the three
+files that hand-rolled their own probe onto the shared helper, deleting three
+helper definitions: **69 sites in 39 files**. Any total written here is a
+measurement of one commit, not an invariant -- the tests below re-derive, and
+they are what a reader should believe when a number disagrees with them.
+
 **What "uncertified" means, and why it is not the same as "ungated".** Most of
 the 71 sites never reach a runner without the create-symlink privilege at all,
 because the test is already skipped there for an unrelated and correct reason --
@@ -15,6 +23,13 @@ a `posix_only` class, an `O_NOFOLLOW` mark, a `try/except OSError` fallback. A
 sweep that gated those too would be motion. So this register does not ask "is
 there a `require_symlink()` above this line"; it asks whether *some* mechanism
 stands between the call and a privilege-less runner, and records which one.
+
+**A mechanism here is not the same thing as a token skip (#1274).** Only `A`
+and `B` produce a skip carrying `_symlink.TOKEN`, so only they are visible to
+`conftest`'s terminal count. `P` fires at collection for an unrelated reason and
+`E` does not skip at all -- the test runs and takes its fallback arm. That is
+why the count is a subset and says so, and why this file is the population it
+points at.
 
 **The label is derived, not asserted.** The `..._is_still_the_one_in_the_code`
 test recomputes every label from the AST and compares. That is the difference
@@ -24,8 +39,9 @@ mode a prose table has.
 
 **Measured, not reasoned, about Windows:** GitHub Actions `windows-latest` *has*
 the privilege today -- job 93605739570 on run 31434590388 (master, 2026-08-10)
-printed `symlink-capability(#1143): available -- 0 symlink-dependent tests
-skipped for it`. So none of the 28 were red on this repo's CI. The gate is for
+printed `symlink-capability(#1143): available` with a zero token count (#1274
+reworded that line to carry its denominator). So none of the 28 were red on
+this repo's CI. The gate is for
 the runner that is not that one: a contributor's Windows without Developer Mode,
 a self-hosted leg, or an Actions image that stops granting it. On such a runner
 28 sites raised `OSError` where their gated siblings skipped, and four of the
@@ -61,6 +77,9 @@ PLATFORM_TOKENS = (
 #: The mechanisms this file recognises. Anything else is `UNGATED`.
 A = "A: @requires_symlink on the test (or an enclosing one)"
 B = "B: require_symlink() in the body"
+#: Unused since #1274 and kept anyway: the classifier has to keep recognising a
+#: hand-rolled probe, or the next one is silently relabelled `P` or `UNGATED`.
+#: `tests/test_symlink_count_population_1274.py` asserts no site carries it.
 D = "D: a local _can_symlink() probe with its own pytest.skip"
 E = "E: the call is inside a try/except OSError"
 P = "P: the test is platform-skipped anyway, for an unrelated reason"
@@ -254,22 +273,19 @@ REGISTER = {
     'tests/test_symlink_capability_1143.py::test_the_probe_agrees_with_the_filesystem': E,
     'tests/test_symlink_rollback_identity_1136.py::_symlink': B,
     'tests/test_validate_header_forgery_and_payload_scope.py::sentinel_tree': B,
-    'tests/test_watch_channel_health_hostile_file_1184_1187.py::_can_symlink': E,
-    'tests/test_watch_channel_health_hostile_file_1184_1187.py::test_read_health_refuses_a_symlinked_health_file': D,
-    'tests/test_watch_channel_health_hostile_file_1184_1187.py::test_the_symlink_refusal_is_its_own_state': D,
-    'tests/test_watch_channel_health_hostile_file_1184_1187.py::test_the_symlinked_health_file_never_reaches_the_report': D,
-    'tests/test_watch_channel_stranded_hostile_state_1191.py::_can_symlink': E,
-    'tests/test_watch_channel_stranded_hostile_state_1191.py::test_a_symlinked_state_file_is_not_parsed': D,
-    'tests/test_watch_channel_stranded_hostile_state_1191.py::test_an_unreadable_state_file_is_never_rendered_as_no_watchers': D,
-    'tests/test_watch_channel_stranded_hostile_state_1191.py::test_one_hostile_file_does_not_hide_the_other_rows': D,
-    'tests/test_watch_channel_stranded_hostile_state_1191.py::test_the_symlink_refusal_is_its_own_state_and_is_reported': D,
+    'tests/test_watch_channel_health_hostile_file_1184_1187.py::test_read_health_refuses_a_symlinked_health_file': B,
+    'tests/test_watch_channel_health_hostile_file_1184_1187.py::test_the_symlink_refusal_is_its_own_state': B,
+    'tests/test_watch_channel_health_hostile_file_1184_1187.py::test_the_symlinked_health_file_never_reaches_the_report': B,
+    'tests/test_watch_channel_stranded_hostile_state_1191.py::test_a_symlinked_state_file_is_not_parsed': B,
+    'tests/test_watch_channel_stranded_hostile_state_1191.py::test_an_unreadable_state_file_is_never_rendered_as_no_watchers': B,
+    'tests/test_watch_channel_stranded_hostile_state_1191.py::test_one_hostile_file_does_not_hide_the_other_rows': B,
+    'tests/test_watch_channel_stranded_hostile_state_1191.py::test_the_symlink_refusal_is_its_own_state_and_is_reported': B,
     'tests/test_watch_pid_read_hostile_1200.py::_hostile_symlink': B,
-    'tests/test_watch_transport_read_state_hostile_1197.py::_can_symlink': E,
-    'tests/test_watch_transport_read_state_hostile_1197.py::test_a_dangling_symlink_is_not_reported_as_no_state_file': D,
-    'tests/test_watch_transport_read_state_hostile_1197.py::test_a_symlinked_gl_mrs_state_file_is_not_parsed': D,
-    'tests/test_watch_transport_read_state_hostile_1197.py::test_a_symlinked_state_file_is_not_parsed': D,
-    'tests/test_watch_transport_read_state_hostile_1197.py::test_the_symlink_refusal_is_its_own_state_and_not_could_not_be_read': D,
-    'tests/test_watch_transport_read_state_hostile_1197.py::test_the_symlink_refusal_reaches_the_board': D,
+    'tests/test_watch_transport_read_state_hostile_1197.py::test_a_dangling_symlink_is_not_reported_as_no_state_file': B,
+    'tests/test_watch_transport_read_state_hostile_1197.py::test_a_symlinked_gl_mrs_state_file_is_not_parsed': B,
+    'tests/test_watch_transport_read_state_hostile_1197.py::test_a_symlinked_state_file_is_not_parsed': B,
+    'tests/test_watch_transport_read_state_hostile_1197.py::test_the_symlink_refusal_is_its_own_state_and_not_could_not_be_read': B,
+    'tests/test_watch_transport_read_state_hostile_1197.py::test_the_symlink_refusal_reaches_the_board': B,
 }
 
 #: The escape hatch, deliberately empty. A site belongs here only if failing --
@@ -347,7 +363,7 @@ def test_the_gate_turns_a_failure_into_a_skip_for_real(tmp_path) -> None:
     assert _symlink.TOKEN in r.stdout, (
         "the skips did not carry " + _symlink.TOKEN + ", so they are not "
         "separable from the other ~680 skips in a leg:" + os.linesep + r.stdout)
-    assert "4 symlink-dependent tests did NOT run" in r.stdout, (
+    assert "4 of 4 skipped tests did NOT run for this reason" in r.stdout, (
         "conftest's terminal line under-counted. Before this issue it read `0 "
         "symlink-dependent tests did NOT run` on this very run while four "
         "tests were failing for exactly that reason -- the reporter built to "
