@@ -95,6 +95,37 @@ def test_an_unread_job_list_pluralises_the_thing_that_did_not_come_back() -> Non
     assert "the job lists for `CodeQL`, `tests` did not come back" in two
 
 
+# ---------------------------------------------------------------------------
+# the clause that rides on the same rendered line as the verdict
+# ---------------------------------------------------------------------------
+
+def test_the_unestablished_scope_clause_agrees_with_the_workflow_count() -> None:
+    """`scope_clause` is appended straight onto the GREEN sentence, so its
+    counts are read as part of the same line. `whether these 1 are all of them`
+    is the reported defect one function over, and reachable on any commit where
+    a single workflow produced a run."""
+    one = branch.scope_clause([], "the directory could not be read", 1)
+    two = branch.scope_clause([], "the directory could not be read", 2)
+    assert "whether this 1 workflow is all of them" in one
+    assert "whether these 2 workflows are all of them" in two
+
+
+def test_the_undispatched_scope_clause_agrees_at_both_counts() -> None:
+    """Green on arrival — these two conditionals were written correctly. Pinned
+    because they sit in the sentence #841 is about and were the last two count
+    words in it not coming from `_agrees`."""
+    def _wf(name):
+        return {"name": name, "path": ".github/workflows/%s.yml" % name}
+
+    one_undispatched = branch.scope_clause([_wf("slow")], "", 3)
+    one_ran = branch.scope_clause([_wf("slow"), _wf("cron")], "", 1)
+    assert "1 declared in" in one_undispatched
+    assert "produced none and is NOT covered" in one_undispatched
+    assert "covers the 3 workflows that produced a run" in one_undispatched
+    assert "covers the 1 workflow that produced a run" in one_ran
+    assert "produced none and are NOT covered" in one_ran
+
+
 def test_the_red_branch_that_already_agreed_still_does() -> None:
     """`leg`/`legs` off `bad` was the one sibling written correctly, and is the
     pattern the rest were brought onto. Regression guard, not a fix."""

@@ -290,8 +290,16 @@ def scope_clause(undispatched: list, unestablished: str, n_wf: int) -> str:
     paid for that twice.
     """
     if unestablished:
+        # `these {n_wf} are` was a bare plural over a count that is routinely 1
+        # — one workflow producing a run on a commit is ordinary — so this read
+        # "whether these 1 are all of them" (#841, found reviewing #841's own
+        # fix). The noun is named as well as counted, because "whether this 1
+        # is" fixes the agreement and still leaves the reader guessing what is
+        # being counted.
+        subject = _agrees(n_wf, "this 1 workflow is",
+                          f"these {n_wf} workflows are")
         return (f" The set of workflows declared at this commit is "
-                f"UNESTABLISHED ({unestablished}), so whether these {n_wf} are "
+                f"UNESTABLISHED ({unestablished}), so whether {subject} "
                 f"all of them is UNKNOWN.")
     if not undispatched:
         return ""
@@ -307,10 +315,13 @@ def scope_clause(undispatched: list, unestablished: str, n_wf: int) -> str:
     names = ", ".join(f"`{s}`" for s in shown)
     if n > _checks.NAMED_CAP:
         names += f", +{n - _checks.NAMED_CAP} more"
+    # These two were written correctly and are routed through `_agrees` anyway:
+    # this clause is appended onto the same rendered line as the verdict, and a
+    # count word that agrees by hand today is the shape #841 was.
     return (f" This covers the {n_wf} "
-            f"{'workflow' if n_wf == 1 else 'workflows'} that produced a run; "
+            f"{_agrees(n_wf, 'workflow', 'workflows')} that produced a run; "
             f"{n} declared in {_declared_workflows.WORKFLOW_DIR} at this commit "
-            f"produced none and {'is' if n == 1 else 'are'} NOT covered: "
+            f"produced none and {_agrees(n, 'is', 'are')} NOT covered: "
             f"{names}.")
 
 
@@ -530,8 +541,10 @@ def _names(names) -> str:
 def _agrees(n: int, singular: str, plural: str) -> str:
     """The form of a word agreeing with the count it is talking about.
 
-    Every count-dependent word in `verdict()` comes from here rather than from
-    its own inline conditional, and that is the whole mechanism of #841. The
+    Every count-dependent word in the rendered verdict line comes from here
+    rather than from its own inline conditional — including `scope_clause`'s,
+    which is appended onto that same line and is therefore part of the same
+    sentence, not a neighbour of it. That is the whole mechanism of #841. The
     pronoun half of the not-concluded sentence was already count-aware —
     `'it is' if len(moving) == 1 else 'they are'` — and the verb half next to it
     was left at a hardcoded `has`, so a two-workflow commit rendered
