@@ -3573,7 +3573,8 @@ def _read_window_note(path: str, limit: int, offset: int,
         # and was told nothing. A deferral to a speaker who is silent is the
         # house defect one level up: an absence produced by the tool, read as
         # an absence in the world.
-        hint = (f"; OFFSET is a skip count, so {offset} lines were skipped: "
+        skipped_word = "line was" if offset == 1 else "lines were"
+        hint = (f"; OFFSET is a skip count, so {offset} {skipped_word} skipped: "
                 f"this window is read:{path}:{req_start}-{got_end}")
         # The FACT above fires always. The GUESS below — which lines the caller
         # was probably after — fires only when `_read_range_note` is silent,

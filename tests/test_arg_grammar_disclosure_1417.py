@@ -241,3 +241,11 @@ def test_notifier_range_declines_rather_than_inverting() -> None:
     honest answer; a backwards one is not."""
     assert supertool._read_target_read(["read", "f.py", "10", "0"]) == (
         "f.py", None, None)
+
+def test_one_skipped_line_is_singular(tmp_path: Path) -> None:
+    """`offset 1` is the archetype in #1138 and therefore the sentence most
+    often read; it rendered as "1 lines were skipped"."""
+    f = _numbered(tmp_path, "many.txt", 200)
+    out = supertool.dispatch(f"read:{f}:1:40")
+    assert "1 line was skipped" in out, out
+    assert "1 lines were skipped" not in out, out
