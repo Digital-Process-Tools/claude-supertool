@@ -1,7 +1,7 @@
 ---
 title: "gh issue/pr list without --limit returns one page, and a short page looks like the whole board"
 tool: Bash
-match: ~(^|[;&|\n] *)(rtk +)?gh[[:space:]]+(issue|pr)[[:space:]]+list
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?gh[[:space:]]+(issue|pr)[[:space:]]+list
 mode: remind
 require: --limit
 ---

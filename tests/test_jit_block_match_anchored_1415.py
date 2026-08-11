@@ -89,6 +89,18 @@ NO_CUT_FIRES = [
     ("relative path form", "./supertool 'read:a'" + PIPE + "cut -c1-40"),
     ("the cut is not the first pipe",
      "supertool 'gh-job:9:raw'" + PIPE + "grep -i fail" + PIPE + "awk '{print $1}'"),
+    # Each of these discriminates the anchor actually written from a cruder one
+    # that would pass every case above. Without the newline alternative the
+    # first is missed; with " *" instead of "[[:space:]]*" the second is; and
+    # with a one-level "./" instead of a path segment the last two are.
+    ("the invocation is on the second line of the command",
+     "cd /tmp &&\nsupertool 'git-status'" + PIPE + "head -5"),
+    ("a tab-indented continuation line",
+     "cd /tmp &&\n\tsupertool 'git-status'" + PIPE + "head -5"),
+    ("run through a multi-segment relative path",
+     "../../supertool 'read:a'" + PIPE + "cut -c1-40"),
+    ("run through an absolute path",
+     "/usr/local/bin/supertool 'read:a'" + PIPE + "cut -c1-40"),
 ]
 
 NO_CUT_SILENT = [
@@ -103,12 +115,19 @@ NO_CUT_SILENT = [
     ("a heredoc body quoting a piped example",
      "python3 supertool.py 'gh-issue-create:@-' <<'EOF'\n"
      "See supertool 'grep:x'" + PIPE + "head -80 for the shape.\nEOF"),
+    # A different binary that merely STARTS with the guarded name is the same
+    # mere-mention defect one word to the right, so the name must end at a space.
+    ("a different binary sharing the name's prefix",
+     "supertoolkit 'x'" + PIPE + "head -5"),
+    ("a sibling script sharing the name's prefix",
+     "./supertool-benchmark.sh 'x'" + PIPE + "tail -5"),
 ]
 
 LIST_LIMIT_FIRES = [
     ("bare invocation", GIL + " --state open"),
     ("pr form after a chain operator", "cd /tmp && " + GPL + " --state open"),
     ("rtk-wrapped", "rtk " + GIL + " --milestone v0.35.0"),
+    ("a tab-indented continuation line", "cd /tmp &&\n\t" + GPL + " --state open"),
 ]
 
 LIST_LIMIT_SILENT = [
@@ -166,7 +185,11 @@ class TestEveryBlockingRuleIsAnchored:
     pattern test that would quietly absolve a future unanchored rule.
     """
 
-    ANCHOR = r"(^|[;&|\n] *)"
+    # A PREFIX, deliberately not a whole group: the five older rules close it as
+    # `(^|[;&|\n] *)` and the two #1415 touched rewrote it as
+    # `(^|[;&|\n])[[:space:]]*`, which also admits a tab. What every blocking
+    # rule must share is the alternation pinning the match to command position.
+    ANCHOR = r"(^|[;&|\n]"
     EXEMPT = {"harness-tools-blocked.md": "matches everything on purpose"}
 
     def test_live_rows(self):
