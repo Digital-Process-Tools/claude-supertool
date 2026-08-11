@@ -224,6 +224,28 @@ claude -p "..." --permission-mode bypassPermissions \
 
 `--allowedTools` is [ignored in bypass mode](https://github.com/anthropics/claude-code/issues/12232) — always use `--disallowedTools` when bypassing.
 
+### The raw-command guard — an op blocks the raw command it replaces
+
+Installed with the plugin, on by default. A `PreToolUse` hook checks every `Bash` command against the op registry: if an op declares that it supersedes that invocation, the command is refused and the refusal quotes **the op's own description**.
+
+```
+$ gh pr view 1321 --json state
+`gh pr view 1321 --json state` is replaced by supertool's `gh-pr` op.
+  Use: supertool 'gh-pr:NUMBER:status'
+  Review a pull request: branch, checks, reviews/approval, linked issue…
+  Full contract: supertool 'help:gh-pr'
+```
+
+Three things about it are deliberate.
+
+**The mapping lives on the op, as `replaces` in its registry entry** — not in a rules file beside it. A new op ships its own enforcement or none, and the refusal text cannot describe a flag the op no longer has. Ask what would happen without running anything: `supertool 'guard:gh pr view 1321 --json state'`.
+
+**It parses the command, it does not pattern-match it.** The command is tokenised into argv the way a shell would, so the match is on the command word, its subcommands and its flags. A project directory called `claude-supertool` is not an invocation of `supertool`; a flag sitting after a quoted argument is still its own token; a heredoc body is content and never argv. Flags select **which** op is named — `--json state` points at `gh-pr:N:status`, `--json files` at `gh-pr:N:diff`.
+
+**A guard that could not answer says so and allows.** If the command does not tokenise, or the registry could not be fully enumerated, the hook adds a line to the transcript naming the gap and the command runs. Failing closed makes an unreadable config a wall; failing open *silently* is worse than no gate at all, because a gate that quietly did not run is indistinguishable from a command that complied.
+
+There is no escape hatch on the command line, on purpose — an environment variable that turns a block off is learned once and prepended forever. A legitimate raw call simply has no `replaces` entry (nothing maps `gh release create`, `gh api -X DELETE`, `git tag`). To turn the whole gate off, set `"raw_command_guard": false` in `.supertool.json`, where it is a decision that shows up in a diff.
+
 ---
 
 ## Operations
@@ -657,7 +679,7 @@ See [docs/contributing.md](docs/contributing.md) — custom ops, presets, valida
 
 **Linux/macOS:** works out of the box.
 
-**Windows:** works via Git Bash or WSL (the plugin's `hooks/session-start.sh` + `.githooks/pre-push` are bash scripts; the Python tool itself is cross-platform). Native `cmd.exe` / PowerShell without bash won't fire the hooks. The pre-push hook needs a real `pythonX.Y` on `PATH` (or `PYTHON=` pointing at one) — it will not run the bare name `python3`, which on Windows can resolve to the App Execution Alias stub and block forever inside `git push`. See [docs/contributing.md](docs/contributing.md#running-tests).
+**Windows:** works via Git Bash or WSL (the plugin's `hooks/session-start.sh`, `hooks/pre-bash-guard.sh` and `.githooks/pre-push` are bash scripts; the Python tool itself is cross-platform). Native `cmd.exe` / PowerShell without bash won't fire the hooks. The pre-push hook needs a real `pythonX.Y` on `PATH` (or `PYTHON=` pointing at one) — it will not run the bare name `python3`, which on Windows can resolve to the App Execution Alias stub and block forever inside `git push`. See [docs/contributing.md](docs/contributing.md#running-tests).
 
 **Paths with spaces:** fine. Arguments arrive via `sys.argv` pre-tokenized by the shell, so `supertool "'read:/home/jo bob/file.py'"` works unchanged.
 

@@ -12,6 +12,7 @@ Ops for self-documentation and version introspection. Used primarily in session-
 | `version` | `version` | Show supertool version. |
 | `help` | `help:OP` | Print the full reference for a single op — syntax, full (uncompacted) description, and example — read from `.supertool.json`. Discovers an op's payload shape (e.g. `vim`'s macro grammar) without grepping source. Errors with a pointer to `ops` for an unknown or undocumented op. |
 | `registry` | `registry[:OP]` | Which ops this project loads, and where each definition came from — preset, project config, or a project entry merged over a preset one. `registry:OP` shows one op's merged definition with the source of every key. See below. |
+| `guard` | `guard:SHELL COMMAND` | What, if anything, the op registry says replaces a raw shell command — the same answer the shipped `PreToolUse` hook enforces on every Bash call. Three states: `BLOCKED` naming the op and quoting its description, `OK`, and `UNDECIDED` when the command did not tokenise or the registry could not be enumerated. See below. |
 | `gc` | `gc[:dry\|:run][:KIND]` | Prune supertool's own caches. Bare `gc` and `gc:dry` preview; `gc:run` deletes. See below. |
 | `cwd` | `cwd:PATH` | Set the working dir for the whole call. **Must be the first op** — chdir's once before dispatch, then is stripped, so every following op resolves against `PATH`. Replaces a `cd PATH && ./supertool …` prefix (which trips the use-supertool hook and risks stale-cwd path poisoning) for cross-repo sessions. `~`/`$VAR` expanded; non-directory or non-first → error before any op runs. |
 | `repo` | `repo:OWNER/NAME` | Name the repo a call is *about*, when it is not the one the cwd stands *in*. **First op, or immediately after `cwd:`**, once per call; resolved before the op loop and exported as `SUPERTOOL_REPO`. Honoured by the `gh-*` family only — an op in the same call that cannot honour it **refuses the whole call** rather than half-applying the target. Not a `cwd:` substitute: presets still resolve from the cwd's project root. Full reference in [github.md](../presets/github.md#targeting-another-repo). |
@@ -70,6 +71,28 @@ Only **index**-derived answers flip. A bare `GIT_DIR` leaves the work tree at th
 There is no opt-out. If you meant to operate on the repo those variables name, `cd` there — or use `cwd:PATH` as the call's first op — rather than relying on the environment. The scrub is unconditional because a redirect that survives into `git push` is not something a receipt can undo after the fact.
 
 `GIT_CEILING_DIRECTORIES` and `GIT_DISCOVERY_ACROSS_FILESYSTEM` are deliberately left alone: they only *restrict* discovery, so they cannot land an op on the wrong repo — the worst they do is make it find none — and they are set on purpose by people working over slow mounts.
+
+## `guard` — what the registry says replaces a raw command
+
+The block on raw commands is a property of the op, not of a rules file beside it: each op declares `replaces` in its registry entry, and one `PreToolUse` hook shipped with the plugin enforces every one of them. `guard` asks that question directly, without running anything.
+
+```
+$ supertool 'guard:gh pr view 1321 --json state'
+## Raw-command guard
+
+BLOCKED
+
+`gh pr view 1321 --json state` is replaced by supertool's `gh-pr` op.
+  Use: supertool 'gh-pr:NUMBER:status'
+  Review a pull request: branch, checks, reviews/approval, linked issue…
+  Full contract: supertool 'help:gh-pr'
+```
+
+**It parses, it does not pattern-match.** The command is tokenised into argv the way a shell would, so the match is on the command word, its subcommands and its flags — a directory named `claude-supertool` is not an invocation, a flag after a quoted argument is still a token, and a heredoc body is content rather than argv. Flags select *which* op is named: `--json state` points at `gh-pr:N:status`, `--json files` at `gh-pr:N:diff`.
+
+`UNDECIDED` is a real third state and is never rendered as `OK`. A command that did not tokenise, or a registry that could not be fully enumerated, means the guard did not answer — and the hook allows the command while saying so in the transcript, because a gate that quietly did not run is indistinguishable from a command that complied.
+
+Writing a mapping: [contributing.md](../contributing.md). Turning the gate off: `"raw_command_guard": false`, [configuration.md](../configuration.md).
 
 ## `registry` — which ops are loaded, and where each came from
 

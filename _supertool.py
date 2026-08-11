@@ -1821,6 +1821,7 @@ _BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc
 _DISPATCH_ONLY_OPS = {
     "between", "vim", "batch", "gc", "help", "version",
     "ops", "ops-compact", "introduction", "output-format", "registry",
+    "guard",
 }
 
 # Valid from the CLI but never reaching dispatch(): main() honours and strips
@@ -1937,6 +1938,7 @@ _OP_SAFETY_BUILTIN: Dict[str, str] = {
     "hover": "read-only", "introduction": "read-only", "ls": "read-only",
     "map": "read-only", "ops": "read-only", "ops-compact": "read-only",
     "output-format": "read-only", "read": "read-only",
+    "guard": "read-only",
     "registry": "read-only", "repo": "read-only",
     "replace_dry": "read-only", "resolve": "read-only", "stat": "read-only",
     "tail": "read-only", "tree": "read-only", "validate": "read-only",
@@ -2911,7 +2913,11 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     })
 
     # Pass extra config keys as SUPERTOOL_ env vars
-    _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status", "restartMcp"}
+    # `replaces` is reserved because it is metadata for the raw-command guard
+    # (#1347), read by the hook and never by the op's own subprocess. Without
+    # it every gh-* call would carry a JSON-encoded copy of its own mapping
+    # table in SUPERTOOL_REPLACES, which nothing reads.
+    _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status", "restartMcp", "replaces"}
     # No scrub here any more (#714). #692 put one on this line because every
     # PRESET op is launched from it — true, and the reasoning holds, but this
     # is the launcher for half the op table. Built-ins never reach it, and core
@@ -14643,6 +14649,340 @@ def op_registry(op_name: str = "") -> str:
     return "\n".join(lines) + "\n"
 
 
+# ---------------------------------------------------------------------------
+# Raw-command guard (#1347)
+#
+# The mapping from a raw shell invocation to the op that supersedes it is a
+# property of the op, so it lives in the op's registry entry as `replaces` and
+# nowhere else. One matcher reads it; one shipped PreToolUse hook enforces it.
+#
+# **It parses, it does not regex.** Every failure of the hand-written rules this
+# replaces was a regex reading a command as a string: `supertool-no-cut.md`
+# firing on the *directory name* `claude-supertool` eight times on 2026-08-11
+# (#1221), `gh-list-limit.md` refusing commands that carry `--limit` because a
+# quoted argument preceded it (#1336). Tokenising into argv the way a shell
+# would makes both structurally impossible rather than individually patched: a
+# directory name is not a command word, and a flag inside a quoted value is not
+# a token. The cost is that this is a *model* of a shell, not a shell — see
+# `_guard_segments` for exactly which constructs it understands.
+# ---------------------------------------------------------------------------
+
+# Shell metacharacters `shlex(punctuation_chars=True)` emits as their own
+# tokens. A token made only of these ends the current simple command.
+_GUARD_PUNCTUATION = "();<>|&"
+
+# Words that may stand in front of the real command word without changing what
+# is being run. Kept deliberately short: a word wrongly listed here lets a
+# block through, and every entry is one somebody actually types.
+_GUARD_PREFIX_WORDS = frozenset({
+    "rtk", "command", "builtin", "sudo", "exec", "nohup", "time",
+    # Shell keywords that open a compound command, so the next word is a
+    # command word: `for i in 1 2; do gh pr view $i; done`.
+    "do", "then", "else", "elif", "if", "while", "until", "!",
+})
+
+_GUARD_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+# A heredoc opener and its delimiter word. The body is content — a commit
+# message, a TOML payload — and is never argv. #1221's most expensive false
+# positive was a `git-commit:@-` payload whose *message text* contained a
+# pipe and a word the rule matched on. The quote characters are written as
+# hex escapes so the pattern itself carries no quoting ambiguity.
+_GUARD_HEREDOC = re.compile(r"<<-?\s*([\x22\x27]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+# How much of an op's description the refusal carries. The descriptions in this
+# repo run to 4KB; a refusal that pastes one of those buries its own verdict.
+_GUARD_DESC_CAP = 320
+
+
+class GuardMatch(NamedTuple):
+    """One raw invocation the registry says an op supersedes."""
+    op: str
+    use: str
+    description: str
+    argv: str
+    command: str
+
+
+class GuardVerdict(NamedTuple):
+    """Three states, never two (docs/validators.md, "Declining instead of guessing").
+
+    ``blocked``   at least one segment is replaced by an op.
+    ``clean``     nothing is, and the guard could see everything it needed to.
+    ``undecided`` the guard could not answer — the command did not tokenise, or
+                  the registry could not be fully enumerated. It is **not**
+                  ``clean``: a gate that did not run must not render as a
+                  command that complied, which is the defect #1347 opens with.
+    ``off``       the project turned the guard off in `.supertool.json`.
+    """
+    state: str
+    matches: Tuple[GuardMatch, ...]
+    notes: Tuple[str, ...]
+
+
+class _Replacement(NamedTuple):
+    op: str
+    argv: Tuple[str, ...]
+    flag: Optional[str]
+    value: Optional[str]
+    use: str
+    description: str
+
+
+def _guard_strip_heredocs(command: str) -> str:
+    """Drop heredoc bodies before tokenising.
+
+    Line-based rather than token-based, because `shlex` discards newlines and
+    the body's extent is defined by them. Everything between the opener's line
+    and the delimiter line is content, so it cannot contain a command.
+    """
+    out: List[str] = []
+    lines = command.split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        m = _GUARD_HEREDOC.search(line)
+        if not m:
+            continue
+        delimiter = m.group(2)
+        while i < len(lines) and lines[i].strip() != delimiter:
+            i += 1
+        if i < len(lines):
+            i += 1  # the delimiter line itself
+    return "\n".join(out)
+
+
+def _guard_segments(command: str) -> List[List[str]]:
+    """Tokenise into simple commands, or raise ValueError.
+
+    What it models: POSIX quoting, `;` `&&` `||` `|` `&` and redirections as
+    separators, leading `VAR=value` assignments, and a short list of wrapper
+    words. What it does not model: aliases, functions, `eval`, command
+    substitution executing a *different* command, and any construct that only a
+    real shell resolves. Those are why a non-match is reported as a non-match
+    and never as a proof of innocence.
+    """
+    lexer = shlex.shlex(_guard_strip_heredocs(command), posix=True,
+                        punctuation_chars=True)
+    lexer.whitespace_split = True
+    tokens = list(lexer)  # ValueError on an unterminated quote
+
+    segments: List[List[str]] = []
+    current: List[str] = []
+    for token in tokens:
+        if token and all(ch in _GUARD_PUNCTUATION for ch in token):
+            segments.append(current)
+            current = []
+        else:
+            current.append(token)
+    segments.append(current)
+
+    heads: List[List[str]] = []
+    for segment in segments:
+        while segment and (segment[0] in _GUARD_PREFIX_WORDS
+                           or _GUARD_ENV_ASSIGNMENT.match(segment[0])):
+            segment = segment[1:]
+        if segment:
+            heads.append(segment)
+    return heads
+
+
+def _guard_flag_values(argv: Sequence[str], flag: str) -> List[str]:
+    """Every value the command gives *flag* — `--json state` and `--json=state`."""
+    values: List[str] = []
+    for i, token in enumerate(argv):
+        if token == flag and i + 1 < len(argv):
+            values.append(argv[i + 1])
+        elif token.startswith(flag + "="):
+            values.append(token[len(flag) + 1:])
+    out: List[str] = []
+    for value in values:
+        out.extend(part for part in value.split(",") if part)
+    return out
+
+
+def _guard_replacements(config: Optional[Dict[str, Any]] = None
+                        ) -> Tuple[List[_Replacement], List[str]]:
+    """Every `replaces` entry in the effective registry, plus why it may be short.
+
+    Sourced from `_op_registry`, never from a second walk over `presets/*.json`
+    — a partial project override merges key-by-key, and a hand-rolled walk turns
+    such an op into a stub with no `replaces` at all (#1356).
+    """
+    entries, incomplete = _op_registry(config)
+    out: List[_Replacement] = []
+    notes = list(incomplete)
+    for entry in entries:
+        definition = entry.definition
+        if not isinstance(definition, dict):
+            continue
+        raw = definition.get("replaces")
+        if not isinstance(raw, list):
+            if raw is not None:
+                notes.append(f'op "{entry.name}" has a "replaces" that is not '
+                             f"a list, so its mappings were not read")
+            continue
+        description = str(definition.get("description") or "")
+        syntax = str(definition.get("syntax") or entry.name)
+        for item in raw:
+            if not isinstance(item, dict) or not item.get("argv"):
+                notes.append(f'op "{entry.name}" has a "replaces" entry that '
+                             f"is not a table with an argv, and was skipped")
+                continue
+            argv = tuple(str(item["argv"]).split())
+            flag = item.get("flag")
+            value = item.get("value")
+            out.append(_Replacement(
+                op=entry.name,
+                argv=argv,
+                flag=str(flag) if flag else None,
+                value=str(value) if value is not None else None,
+                use=str(item.get("use") or syntax),
+                description=description,
+            ))
+    return out, notes
+
+
+def _guard_score(replacement: _Replacement, argv: Sequence[str]
+                 ) -> Optional[int]:
+    """How specifically this entry matches, or None if it does not.
+
+    Specificity is what lets flags select **which** op is named rather than
+    whether to block: `gh pr view --json state` and `gh pr view --json files`
+    are the same command word and different ops, so the bare `gh pr view` entry
+    must lose to whichever flagged entry also matched.
+    """
+    n = len(replacement.argv)
+    if tuple(argv[:n]) != replacement.argv:
+        return None
+    if replacement.flag is None:
+        return 0
+    values = _guard_flag_values(argv, replacement.flag)
+    if replacement.value is None:
+        return 1 if values or replacement.flag in argv else None
+    return 2 if replacement.value in values else None
+
+
+def guard_command(command: str, config: Optional[Dict[str, Any]] = None
+                  ) -> GuardVerdict:
+    """Does the registry replace anything in this shell command?
+
+    The escape hatch is deliberately **not** an environment variable. An env var
+    that turns a block off is learned once and then prepended forever, which is
+    not a block; `"raw_command_guard": false` in `.supertool.json` is a decision
+    that lives in the repo, shows up in a diff and is reviewable. The clean
+    hatch for a legitimate raw call — tagging, releasing, deleting a ref,
+    re-running a workflow — is that no op declares it under `replaces`.
+    """
+    if config is None:
+        config = _load_config()
+    if config.get("raw_command_guard") is False:
+        return GuardVerdict("off", (), (
+            "raw_command_guard is false in .supertool.json",))
+
+    replacements, notes = _guard_replacements(config)
+    try:
+        segments = _guard_segments(command)
+    except ValueError as exc:
+        return GuardVerdict("undecided", (), tuple(notes) + (
+            f"the command did not tokenise ({exc}), so no part of it was "
+            f"checked against the registry",))
+
+    matches: List[GuardMatch] = []
+    seen = set()
+    for argv in segments:
+        scored = []
+        for replacement in replacements:
+            score = _guard_score(replacement, argv)
+            if score is not None:
+                scored.append((score, replacement))
+        if not scored:
+            continue
+        best = max(score for score, _ in scored)
+        for score, replacement in scored:
+            if score != best:
+                continue
+            key = (replacement.op, replacement.use, tuple(argv))
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append(GuardMatch(
+                op=replacement.op,
+                use=replacement.use,
+                description=replacement.description,
+                argv=" ".join(replacement.argv),
+                command=" ".join(argv),
+            ))
+
+    if matches:
+        # A positive match is authoritative even when the population is short:
+        # an op that IS in the registry and DOES declare this invocation is a
+        # fact, and a missing preset cannot unmake it.
+        return GuardVerdict("blocked", tuple(matches), tuple(notes))
+    if notes:
+        return GuardVerdict("undecided", (), tuple(notes))
+    return GuardVerdict("clean", (), ())
+
+
+def _guard_description(text: str) -> str:
+    if len(text) <= _GUARD_DESC_CAP:
+        return text
+    cut = len(text) - _GUARD_DESC_CAP
+    return text[:_GUARD_DESC_CAP].rstrip() + f"… (+{cut} chars)"
+
+
+def guard_refusal(verdict: GuardVerdict) -> str:
+    """The message the hook denies with — the op's own words, not a second copy.
+
+    The refusal text being the op's description is the point of putting the
+    mapping in the registry: it cannot describe a flag the op no longer has,
+    which is the failure that made #1221's hand-written rule teach a wrong fact
+    for an unknown number of sessions.
+    """
+    lines: List[str] = []
+    for match in verdict.matches:
+        lines.append(f"`{match.command}` is replaced by supertool's "
+                     f"`{match.op}` op.")
+        lines.append(f"  Use: supertool '{match.use}'")
+        if match.description:
+            lines.append(f"  {_guard_description(match.description)}")
+        lines.append(f"  Full contract: supertool 'help:{match.op}'")
+        lines.append("")
+    lines.append("Only invocations an op supersedes are declared under "
+                 "`replaces`, so tagging, releasing, deleting a ref and "
+                 "re-running a workflow are not blocked. This gate is turned "
+                 "off with raw_command_guard: false in .supertool.json.")
+    return "\n".join(lines)
+
+
+def guard_undecided_note(verdict: GuardVerdict) -> str:
+    """What the hook says when it could not answer. It never says nothing."""
+    return ("supertool's raw-command guard did not run on this command: "
+            + "; ".join(verdict.notes)
+            + ". The command was allowed — this is a statement about the "
+              "guard, not about the command.")
+
+
+def op_guard(command: str) -> str:
+    """Ask the registry what, if anything, replaces a raw shell command."""
+    if not command.strip():
+        return ("ERROR: guard takes the shell command to check.\n"
+                "  guard:gh pr view 1321 --json state\n")
+    verdict = guard_command(command)
+    if verdict.state == "off":
+        return ("## Raw-command guard\n\nOFF: " + "; ".join(verdict.notes)
+                + "\n")
+    if verdict.state == "blocked":
+        body = "BLOCKED\n\n" + guard_refusal(verdict)
+    elif verdict.state == "undecided":
+        body = "UNDECIDED: " + guard_undecided_note(verdict)
+    else:
+        body = "OK: nothing in this command is replaced by an op loaded here."
+    return "## Raw-command guard\n\n" + body + "\n"
+
+
 _NO_EXCLUDE_SUFFIX = ":::no-exclude"
 
 
@@ -20891,6 +21231,13 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             body = op_workspace(ws_path)
         elif op == "help":
             body = op_help(parts[1] if len(parts) > 1 else "")
+        elif op == "guard":
+            # The whole remainder is the command, colons and all: a shell
+            # command is not a colon-delimited op arg and re-splitting it
+            # would hand the matcher a different command than the one the
+            # user typed.
+            header = ""
+            body = op_guard(":".join(parts[1:]))
         elif op == "registry":
             # Meta-op, markdown header — same treatment as `ops`, whose
             # listing this one answers the provenance half of.

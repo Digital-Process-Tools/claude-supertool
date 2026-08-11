@@ -177,6 +177,20 @@ Any key in a custom op config that isn't a reserved key (`cmd`, `timeout`, `desc
 
 The script receives `SUPERTOOL_LINES=80` and `SUPERTOOL_ERROR_PATTERNS=ERROR,FAIL,Fatal` in its environment. This lets users tune op behavior from JSON without modifying scripts.
 
+## `raw_command_guard` — the shipped raw-command block
+
+Default on. A `PreToolUse` hook shipped with the plugin (`hooks/pre-bash-guard.sh`) refuses any `Bash` command an op declares it replaces, quoting the op's own description. The mapping is the `replaces` key on each op's registry entry — see the Op schema in [contributing.md](contributing.md).
+
+```json
+{
+  "raw_command_guard": false
+}
+```
+
+Set it to `false` to turn the gate off for a project. It is the **only** way off: there is no environment variable and no per-command flag, because an escape hatch that can be prepended to a command is not a block. A raw call nobody replaced is not blocked in the first place — `gh release create`, `gh api -X DELETE`, `git tag` have no `replaces` entry and never will unless an op supersedes them.
+
+`supertool 'guard:SHELL COMMAND'` answers the same question without running anything, in three states: `BLOCKED` naming the op, `OK`, and `UNDECIDED` when the command did not tokenise or the registry could not be enumerated. The hook allows on `UNDECIDED` and says so in the transcript — a gate that quietly did not run is indistinguishable from a command that complied, which is the whole reason it exists.
+
 ## Compact mode
 
 Set `"compact": true` in `.supertool.json` to enable compact reads. When enabled, `read` ops skip blank lines and comment-only lines (`//`, `#`, `/* */`, `<!-- -->`, PHPDoc `*` lines), preserving original line numbers. Reduces token cost for exploration without losing structure.

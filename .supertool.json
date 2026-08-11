@@ -227,6 +227,12 @@
       "description": "Run formatters on all staged files. Pair with validate_staged for a normalize-then-check pass. Append `verbose` for full per-file details.",
       "example": "format_staged"
     },
+    "guard": {
+      "syntax": "guard:SHELL COMMAND",
+      "description": "What, if anything, the op registry says replaces this raw shell command — the same answer the shipped PreToolUse hook enforces on every Bash call. The mapping is `replaces` on the op's own entry, so it cannot drift from the op, and the refusal quotes the op's own description. It PARSES rather than regexes: the command is tokenised into argv the way a shell would, so a directory name is not a command word (#1221) and a flag inside a quoted argument is still a token (#1336). Three states — BLOCKED naming the op, OK, and UNDECIDED when the command did not tokenise or the registry could not be enumerated, which is never rendered as OK. Turn the gate off with \"raw_command_guard\": false.",
+      "example": "guard:gh pr view 1321 --json state",
+      "hint": true
+    },
     "registry": {
       "syntax": "registry[:OP]",
       "description": "Which ops this project actually loads, and where each definition came from — preset, project config, or a project entry merged over a preset one. `registry:OP` shows one op's merged definition with the source of every key. Answers what a hand-rolled walk over presets/*.json + .supertool.json gets wrong: a partial project override merges key-by-key, so overwriting wholesale turns an op into a stub with no cmd or syntax and drops it from every filtered count with no marker (#1356). A population that could not be fully enumerated says INCOMPLETE in the body, never a shorter list.",
