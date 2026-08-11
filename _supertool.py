@@ -2051,6 +2051,58 @@ def _containment_error(candidates: Iterable[str], *,
     return None
 
 
+def _expand_home(p: str) -> str:
+    """`~` / `~user` expansion, for a value the gate is about to clear.
+
+    Not a new policy. `_safe_path` has expanded `~` since #146 — on the
+    string it *checks*. What it never did was hand the expansion back, so
+    every op re-used the caller's literal `~/x`, which `os.path.abspath`
+    turns into `<cwd>/~/x` and which never exists (#1300). The gate approved
+    one path and the op opened another.
+
+    Deliberately narrower than `_safe_path`'s own normalisation:
+
+    * **no `realpath`** — that resolves symlinks, and handing an op the
+      symlink target would change what a write lands on and what every
+      receipt prints, which is not what was filed;
+    * **no `expandvars`** — a `$` is a legal character in a filename, so
+      expanding one would break a file that reads fine today. The same
+      check/use mismatch does exist for `$VAR` and is filed separately;
+      `~` is the shape that cannot name a real relative path.
+
+    Whatever the platform's `expanduser` makes of `~user` is what the op
+    gets, and the two cannot disagree — POSIX leaves an unknown user exactly
+    as typed, while `ntpath.expanduser` invents a home for any name by
+    joining it onto the parent of `USERPROFILE` without checking it exists.
+    Neither is normalised away here: the point of this function is that the
+    string returned is the string opened, not that the two platforms answer
+    the same.
+    """
+    if not isinstance(p, str) or not p.startswith("~"):
+        return p
+    return os.path.expanduser(p)
+
+
+def _gate_paths(candidates: Iterable[str], *,
+                root: Optional[str] = None,
+                boundary: str = "cwd") -> Tuple[Optional[str], List[str]]:
+    """`_containment_error`, plus the strings the caller must actually use.
+
+    One return value, so a caller cannot check one string and open another —
+    which is the whole of #1300. The expansion is applied *after* the check
+    and is the same one the check itself performs, so this widens nothing:
+    a `~` resolving outside the boundary is refused before the expanded
+    value is ever produced for use. `test_a_tilde_path_outside_the_boundary_is_still_refused`
+    pins that ordering.
+
+    On refusal the caller gets the error and must not use the list; it is
+    returned unconditionally only so the signature has one shape.
+    """
+    originals = list(candidates)
+    err = _containment_error(originals, root=root, boundary=boundary)
+    return err, [_expand_home(c) for c in originals]
+
+
 #: Registry keys whose value is a boundary this core knows how to enforce.
 #: `cwd` is the core's own and the default everywhere else; `repo` is the
 #: repository root, which is what `claims` resolves relative arguments against.
@@ -2289,7 +2341,21 @@ def _path_not_found(path: str, *, label: str = "path",
         suggest = (_comma_path_list_suggest(op, path)
                    or _multi_path_suggest(op, path, call_prefix)
                    or None)
-    tried = os.path.abspath(os.path.expanduser(path))
+    # `os.path.abspath` and nothing else. This line used to run its own
+    # `expanduser`, so a `~/x` that the op had stat-ed literally was reported
+    # as the expanded path — one that existed, and that the reader had just
+    # listed. The receipt named a path the tool never touched (#1300). Ops
+    # now receive the expansion from the containment gate, so the two agree;
+    # where they cannot (an unknown `~user`), the literal is what is shown
+    # because the literal is what was opened.
+    tried = os.path.abspath(path)
+    if not suggest and path.startswith("~") and os.path.expanduser(path) == path:
+        # `cwd:` provably cannot fix this one: no working directory makes a
+        # `~user` resolve. Same reasoning as #734 and #921 — a hint pointing
+        # at the one cause that did not apply costs a round-trip and a wrong
+        # conclusion.
+        suggest = ("`~` was not expanded: no such user. Pass an absolute "
+                   "path, or `~/` for your own home.")
     lines = [
         f"ERROR: {label} not found: {path}",
         f"  tried: {tried} (cwd: {os.getcwd()})",
@@ -4297,6 +4363,21 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
     """Find files matching pattern. Auto-reads concrete file paths unless no_auto_read."""
     if not pattern:
         return "ERROR: empty pattern\n"
+    # `glob` is the one path-taking op that does NOT expand `~` (#1300), and it
+    # says so rather than answering `(0 files)` — a zero the tool manufactured,
+    # indistinguishable from a real empty directory, which is this codebase's
+    # house defect.
+    #
+    # Why refuse instead of expanding, when every other op now expands: the
+    # expansion elsewhere is written back *behind* `_safe_path`, so it can only
+    # name what the gate already cleared. `glob` is not in
+    # `_PATH_ARG_POSITIONS` and resolves its own pattern, so there is no gate
+    # here to sit behind — expanding would widen what the op can reach rather
+    # than fix what it can say. The honest half of #1300, chosen deliberately.
+    if pattern.startswith("~"):
+        _eg = _fwd(os.path.join(os.path.expanduser("~"), "*.txt"))
+        return ("ERROR: unsupported path form: glob does not expand `~` — "
+                f"pass an absolute path (e.g. glob:{_eg}).\n")
 
     # Auto-promote: concrete path with no wildcards that points to a file
     if not WILDCARD_CHARS.search(pattern) and os.path.isfile(pattern):
@@ -18833,6 +18914,18 @@ def _read_op_from_payload(op: str, payload: Any, no_exclude: bool = False) -> st
             [*_payload_strlist(p, "path"), *_payload_strlist(p, "paths")])
         if contained:
             return contained
+        # Write the gate's own `~` expansion back, behind the check that just
+        # cleared these exact strings (#1300). Applied to the payload fields
+        # rather than to a returned list because every branch below re-reads
+        # `p["path"]` / `p["paths"]`, and either may be a string or a list.
+        for _pk in ("path", "paths"):
+            if _pk in p:
+                _pv = p[_pk]
+                if isinstance(_pv, str):
+                    p[_pk] = _expand_home(_pv)
+                elif isinstance(_pv, list):
+                    p[_pk] = [_expand_home(_x) if isinstance(_x, str) else _x
+                              for _x in _pv]
         if op in ("grep", "grep_around", "around"):
             pattern = str(p.get("pattern", "") or "")
             if not pattern:
@@ -19496,11 +19589,18 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         "edit": (3,), "replace": (3,), "replace_dry": (3,),
         "replace_lines": (1,), "paste": (1,), "append": (1,), "vim": (1,),
     }
-    _containment = _containment_error(
-        parts[_pos] for _pos in _PATH_ARG_POSITIONS.get(op, ()) if _pos < len(parts)
-    )
+    _path_slots = [_pos for _pos in _PATH_ARG_POSITIONS.get(op, ())
+                   if _pos < len(parts)]
+    _containment, _gated = _gate_paths(parts[_pos] for _pos in _path_slots)
     if _containment:
         return _receipt(header, _containment)
+    # Write the gate's own expansion back into the slot the op will read, so
+    # the string opened is the string checked (#1300). `parts` may be the
+    # caller's list on the `pre_parsed` route, so copy before mutating.
+    if any(_gated[_i] != parts[_pos] for _i, _pos in enumerate(_path_slots)):
+        parts = list(parts)
+        for _i, _pos in enumerate(_path_slots):
+            parts[_pos] = _gated[_i]
 
     try:
         if op == "read":
@@ -19558,7 +19658,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             # Ahead of the hint, not after it: `_colon_split_hint` stats the
             # path to decide whether to fire, and a stat of an outside file is
             # itself the existence oracle this gate exists to close.
-            _contained = _containment_error([path])
+            _contained, (path,) = _gate_paths([path])
             if _contained:
                 return _receipt(header, _contained)
             if limit == 0:
@@ -19619,7 +19719,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             # decide whether to fire, and that stat is the oracle. The #1135
             # guard inside the delegation covers the OTHER slot — parts[1],
             # once promotion has turned it into a filename — and still runs.
-            _contained = _containment_error([path])
+            _contained, (path,) = _gate_paths([path])
             if _contained:
                 return _receipt(header, _contained)
             _delegated = _around_line_delegation(pattern, path, n)
@@ -19657,7 +19757,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     start_pat = parts[2]
                     end_pat = parts[3]
                     path = ":".join(parts[4:])
-                    _contained = _containment_error([path])
+                    _contained, (path,) = _gate_paths([path])
                     if _contained:
                         return _receipt(header, _contained)
                     # between:re rejoins RIGHTWARD, so a ':' in START or END
@@ -19690,7 +19790,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 # Ahead of the hints, not after them: both stat the path to
                 # decide whether to fire, and a stat of an outside file is
                 # itself the existence oracle this gate exists to close.
-                _contained = _containment_error([path])
+                _contained, (path,) = _gate_paths([path])
                 if _contained:
                     return _receipt(header, _contained)
                 _range_hint = _between_numeric_hint(parts)
@@ -19976,7 +20076,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 # Position 1 is the comma-joined blob, which the generic gate
                 # above cannot read — so the individual files are checked here,
                 # through the same helper.
-                _v_contained = _containment_error(v_files)
+                _v_contained, v_files = _gate_paths(v_files)
                 if _v_contained:
                     return _receipt(header, _v_contained)
                 body = op_validate_multi(v_files, v_tools or None, verbose=v_verbose)
