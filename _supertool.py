@@ -14754,7 +14754,6 @@ def _guard_strip_heredocs(command: str) -> str:
     i = 0
     while i < len(lines):
         line = lines[i]
-        out.append(line)
         i += 1
         # EVERY opener on the line, in order. `cmd <<A <<B` is legal bash and
         # queues two bodies; reading only the first left the second tokenised
@@ -14762,10 +14761,30 @@ def _guard_strip_heredocs(command: str) -> str:
         # class this routine exists to remove, inside the routine itself.
         for m in _GUARD_HEREDOC.finditer(line):
             delimiter = m.group(2)
-            while i < len(lines) and lines[i].strip() != delimiter:
-                i += 1
-            if i < len(lines):
-                i += 1  # the delimiter line itself
+            end = i
+            while end < len(lines) and lines[end].strip() != delimiter:
+                end += 1
+            if end >= len(lines):
+                # Nothing ahead closes it, so the shell would not either: this
+                # is almost always the text `<<EOF` inside a quoted argument,
+                # which this routine cannot tell from an opener before the
+                # command is tokenised. Consuming to end-of-command on that
+                # guess deleted every command after a commit message that
+                # merely mentioned `<<EOF`, and the guard then said `clean`
+                # about input it had thrown away. Leave it and let it be
+                # checked: being wrong here costs a scan of a body nobody can
+                # run; being wrong the other way was a silent hole.
+                continue
+            # The opener goes too, not just the body. `<<` lexes as punctuation
+            # and ends the segment, so a delimiter word left behind became the
+            # HEAD of the next simple command and pushed the real command word
+            # to index 1, where no argv prefix reaches it — and
+            # `git-commit:@-` with a heredoc body is this repo's own idiom.
+            # Only once the delimiter was found: editing the line in the
+            # unclosed case would cut text out of a quoted argument.
+            line = line.replace(m.group(0), " ", 1)
+            i = end + 1
+        out.append(line)
     return "\n".join(out)
 
 
@@ -14787,6 +14806,14 @@ def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
       the lexer hands back whole, so the guard cannot read it. Reported, so
       the verdict is `undecided` rather than a clean bill for a command
       nobody looked at.
+
+    An unquoted **newline** is separated here for the same reason and by the
+    same scan. `shlex` with `whitespace_split` calls a newline whitespace, so
+    every line after the first was appended to the first line's argv and its
+    command word landed where no prefix reaches it: a multi-line Bash call had
+    exactly its first line checked. A newline *inside* quotes is part of one
+    argument — a commit message spanning lines is not several commands — which
+    is why this needs quote state and cannot be a `str.replace`.
     """
     out: List[str] = []
     unread: List[str] = []
@@ -14802,7 +14829,7 @@ def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
             single = not single
         elif ch == _GUARD_DQUOTE and not single:
             double = not double
-        elif ch == _GUARD_BACKTICK and not single and not double:
+        elif ch in (_GUARD_BACKTICK, "\n") and not single and not double:
             out.append(" ; ")
             i += 1
             continue
