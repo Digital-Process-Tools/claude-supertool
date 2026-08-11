@@ -315,7 +315,13 @@ def _named_gl_jobs(pipe_id: str | int, cap: int = _checks.NAMED_CAP) -> list[str
         status = str(j.get("status") or "").strip().lower()
         if not status or status == "success" or status in _GL_JOB_RESOLVES_ITSELF:
             continue
-        name = str(j.get("name") or "?")
+        # A job name is written in the source branch's .gitlab-ci.yml, so
+        # whoever opened the MR chose it. This block is the `:status` render —
+        # the one a poll loop reads every tick and looks at least closely — and
+        # a name carrying a separator would otherwise be its own line in it
+        # (#982). `gl-pipeline` already flattens the same field from the same
+        # endpoint; this is the second reader adopting the first one's rule.
+        name = _untrusted.flat(str(j.get("name") or "?"))
         job_id = str(j.get("id") or "")
         groups.setdefault(status, []).append((name, job_id))
 
@@ -327,13 +333,28 @@ def _named_gl_jobs(pipe_id: str | int, cap: int = _checks.NAMED_CAP) -> list[str
         text = ", ".join(parts)
         if len(items) > cap:
             text += f", +{len(items) - cap} more"
-        lines.append(f"  {label}: {text}")
+        lines.append(f"  {_untrusted.flat(label)}: {text}")
     if not lines:
         lines.append("  jobs: none non-passing reported for this pipeline")
     note = _unreadable(skipped, len(jobs), "pipeline jobs")
     if note:
         lines.append(note)
     return lines
+
+
+def _failed_job_lines(named: list[dict]) -> list[str]:
+    """`  #{id} | {name} | {stage}` per failed job, one job to one line.
+
+    Extracted from `main()` so the flattening has somewhere to be asserted:
+    `name` and `stage` are both the MR author's words out of .gitlab-ci.yml
+    (#982), and this is the block a reader scans to decide what broke.
+    """
+    flat = _untrusted.flat
+    return [
+        f"  #{flat(str(j.get('id', '?')))} | {flat(str(j.get('name', '?')))} "
+        f"| {flat(str(j.get('stage', '?')))}"
+        for j in named
+    ]
 
 
 def _local_branch_check(source: str) -> str:
@@ -1114,11 +1135,8 @@ def main() -> int:
             named, bad_jobs = _dict_elements(jobs or [])
             if named:
                 print(f"Failed jobs ({len(named)}):")
-                for job in named:
-                    jid = job.get("id", "?")
-                    jname = job.get("name", "?")
-                    jstage = job.get("stage", "?")
-                    print(f"  #{jid} | {jname} | {jstage}")
+                for line in _failed_job_lines(named):
+                    print(line)
             else:
                 # A failed pipeline whose failed-jobs list is empty is a real
                 # and surprising answer — a blocked stage, a runner that never

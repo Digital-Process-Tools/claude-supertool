@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from _env import env_float  # noqa: E402  (the one numeric-knob reader)
+import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
 
 
 def star(repo: str) -> tuple[bool, str]:
@@ -60,7 +61,10 @@ def main(arg: str) -> int:
             time.sleep(delay)
         success, msg = star(repo)
         marker = "OK " if success else "ERR"
-        print(f"  {marker} {repo}: {msg}")
+        # One candidate, one row. `msg` on the failure arm is `gh`'s stderr,
+        # which quotes the repository name back at us, and a fifty-line run is
+        # skimmed for exactly the rows a forged one imitates (#981).
+        print(f"  {marker} {_untrusted.flat(repo)}: {_untrusted.flat(msg)}")
         if success:
             ok += 1
         else:

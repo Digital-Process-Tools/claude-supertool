@@ -19,6 +19,9 @@ import subprocess
 import sys
 import urllib.parse
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
+
 
 def parse_args(arg: str) -> tuple[str, int]:
     if not arg:
@@ -55,13 +58,21 @@ def main(arg: str) -> int:
         print(f"# 0 repos for topic {topic!r}")
         return 0
     print(f"# {len(repos)} repos for topic {topic!r} (sorted by stars)")
+    # A `#` comment, not a bare banner: this output is written to be redirected
+    # into a candidates file and fed to `gh-batch-star`, which takes every
+    # non-comment line as a repository to star (#981).
+    print(f"# {_untrusted.flat_note('Repository names and descriptions', 'GitHub')}")
     print(f"# Review, delete those you don't want, then:")
     print(f"#   ./supertool 'gh-batch-star:CANDIDATES_FILE'")
     print()
     for r in repos:
-        full = r.get("full_name", "?")
+        full = _untrusted.flat(str(r.get("full_name", "?")))
         stars = r.get("stargazers_count", 0)
-        desc = (r.get("description") or "").replace("\n", " ")[:120]
+        # `.replace("\n", " ")` was the whole of the old handling. It answered
+        # one of the ten separators `str.splitlines()` breaks on, and none of
+        # the escape sequences that can erase a row off the screen. Flatten
+        # first, slice second — a cut made first leaves the tail behind (#970).
+        desc = _untrusted.flat(str(r.get("description") or ""))[:120]
         print(f"{full}  # {stars}★  {desc}")
     return 0
 

@@ -9,6 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
+import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
 
 
 def main(arg: str) -> int:
@@ -33,10 +34,16 @@ def main(arg: str) -> int:
         print("(0 starred repos)")
         return 0
     print(f"(starred {len(repos)} repos)")
+    # These are other people's words about other people's repositories, and this
+    # op exists to be read quickly. One disclosure at the top, and `flat()` per
+    # field so nothing below it can reach column 0 (#981).
+    print(_untrusted.flat_note("Repository names and descriptions", "GitHub"))
     for r in repos[:n]:
-        full = r.get("full_name", "?")
-        url = r.get("html_url", "")
-        desc = (r.get("description") or "")[:120]
+        full = _untrusted.flat(str(r.get("full_name", "?")))
+        url = _untrusted.flat(str(r.get("html_url", "")))
+        # Flatten, then slice: a cut made first leaves whatever the separator
+        # started, and `flat()` spells U+2028 as eight characters (#970).
+        desc = _untrusted.flat(str(r.get("description") or ""))[:120]
         print(f"  - {full} → {url}")
         if desc:
             print(f"      {desc}")

@@ -9,6 +9,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
+import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
 
 
 def main(arg: str) -> int:
@@ -33,8 +34,14 @@ def main(arg: str) -> int:
         print("(following 0 users)")
         return 0
     print(f"(following {len(users)} users)")
+    # A login is constrained by GitHub today; the render does not borrow that
+    # validation as its own line discipline, because `gh` can be pointed at
+    # another host with GH_HOST and nothing here can tell (#981).
+    print(_untrusted.flat_note("Logins", "GitHub"))
     for u in users[:n]:
-        print(f"  - @{u.get('login','?')} ({u.get('html_url','')})")
+        login = _untrusted.flat(str(u.get("login", "?")))
+        url = _untrusted.flat(str(u.get("html_url", "")))
+        print(f"  - @{login} ({url})")
     return 0
 
 

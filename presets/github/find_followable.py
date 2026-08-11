@@ -18,6 +18,9 @@ import os
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
+
 
 def fetch(endpoint: str) -> list[dict]:
     # No --paginate — popular repos have 100k+ stars and would timeout.
@@ -84,11 +87,17 @@ def main(arg: str) -> int:
         rows.append((login, "contributor"))
     rows.sort(key=lambda r: r[0].lower())
     print(f"# {len(rows)} candidates from {repo} (stargazers + contributors, orgs excluded)")
+    # A `#` comment, not a bare banner. `gh-batch-follow` skips comment lines
+    # and follows every other one — it does not even require an `OWNER/REPO`
+    # shape — so an uncommented disclosure is an account it tries to follow.
+    print(f"# {_untrusted.flat_note('Logins', 'GitHub')}")
     print(f"# Review this list, delete who you don't want, then:")
     print(f"#   ./supertool 'gh-batch-follow:CANDIDATES_FILE'")
     print()
     for login, source in rows:
-        print(f"{login}  # {source}")
+        # One candidate, one line: a login carrying a separator would otherwise
+        # add a second target to the file this list becomes (#981).
+        print(f"{_untrusted.flat(login)}  # {source}")
     return 0
 
 

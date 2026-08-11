@@ -34,6 +34,18 @@ A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting anothe
 | `gh-find-followable` | `gh-find-followable:OWNER/REPO[|N]` | Discover candidate users to follow: pulls stargazers + contributors, deduplicates, filters orgs. Pipe output to a file then review before `gh-batch-follow` |
 | `gh-find-starable` | `gh-find-starable:TOPIC[|N]` | Discover repos worth starring by topic, sorted by stars. Pipe output to a file then review before `gh-batch-star` |
 
+## The discovery ops render strangers' text, and say so
+
+`gh-starred`, `gh-following`, `gh-find-starable` and `gh-find-followable` print repository names, descriptions and logins from **arbitrary public accounts**, chosen by a topic search rather than by you. That is the widest untrusted-input surface in the tool, and until [#981](https://github.com/Digital-Process-Tools/claude-supertool/issues/981) every one of those fields reached `print()` raw.
+
+The naive reading is that a newline breaks the alignment. It is the lesser half: the text after an injected separator is unconstrained, so it can be padded to the block's own shape and read as a row the tool emitted — a repository that was never in the result set, a login that does not exist. These ops exist to decide who to follow and what to star, so a forged row is a recommendation supertool did not make.
+
+The fix is the convention the rest of the repo already keeps ([#819](https://github.com/Digital-Process-Tools/claude-supertool/issues/819), [#965](https://github.com/Digital-Process-Tools/claude-supertool/issues/965), [#970](https://github.com/Digital-Process-Tools/claude-supertool/issues/970)), not a second one: `_untrusted.flat()` on every remote field, and `_untrusted.flat_note()` once at the top of the block. Nothing here is fenced — two marker lines around a six-word description is the noise that gets a convention switched off — and nothing is censored either. Every word survives; control characters are shown as themselves, so a description cannot reach column 0 where the tool speaks. A description is flattened **then** sliced to 120 characters, in that order: a cut made first leaves behind whatever the separator started.
+
+**The disclosure on `gh-find-starable` and `gh-find-followable` is a `#` comment, and that is load-bearing.** Both are written to be redirected into a candidates file and handed to `gh-batch-star` / `gh-batch-follow`, which skip `#` lines and take every other line as a target. `gh-batch-follow` does not even require an `OWNER/REPO` shape, so a bare disclosure line there would be an account it tries to follow.
+
+`gh-star`, `gh-follow`, `gh-batch-star` and `gh-batch-follow` flatten too, on a narrower ground: their error arms echo `gh`'s stderr, which quotes back the name it was given, and the batch ops print it as a row in a list a reader skims for exactly the `ERR` lines a forged one imitates.
+
 ## `:fail` on a job that did not fail
 
 `:fail` selects error blocks, which is the right question for a job that **failed** and close to the worst one for a job that was **cancelled**. A cancellation writes exactly one error line — `##[error]The operation was canceled.` — and puts everything diagnostic outside it.

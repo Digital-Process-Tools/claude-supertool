@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from _env import env_float  # noqa: E402  (the one numeric-knob reader)
+import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
 
 
 def follow(user: str) -> tuple[bool, str]:
@@ -58,7 +59,9 @@ def main(arg: str) -> int:
             time.sleep(delay)
         success, msg = follow(user)
         marker = "OK " if success else "ERR"
-        print(f"  {marker} @{user}: {msg}")
+        # Same as gh-batch-star: `msg` on the failure arm is `gh`'s stderr and
+        # quotes the login back (#981).
+        print(f"  {marker} @{_untrusted.flat(user)}: {_untrusted.flat(msg)}")
         if success:
             ok += 1
         else:
