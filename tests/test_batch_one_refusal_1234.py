@@ -136,8 +136,8 @@ def test_exit_one_from_a_non_op_cause_does_not_claim_a_refusal(
     validator.
 
     `replace` finding nothing is the documented case: its body is
-    `(0 occurrences of 'x' found)`, which `_body_indicates_failure` does not
-    read as a failure, while `_SKIP_COUNT` does. None of those is an op
+    `(0 occurrences of 'x' found)`, which the op-return verdict does not read
+    as a failure, while `_SKIP_COUNT` does. None of those is an op
     refusing, so the line must not say `0 refused` beside an exit 1 and leave
     the reader hunting for the op that did not fail.
     """

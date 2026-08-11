@@ -143,7 +143,8 @@ def test_vim_atomic_decline_is_counted(tmp_path: Path, monkeypatch) -> None:
 def test_exit_code_nonzero_when_a_batch_entry_declined(tmp_path: Path, monkeypatch, capsys) -> None:
     """An agent chaining `batch: && git commit` must not commit a half-applied
     set. `replace` is the case that mattered: its zero-match receipt says no
-    `ERROR`, so `_body_indicates_failure` never saw it and the call exited 0."""
+    `ERROR`, so the verdict taken from the op's return value does not see it
+    and the call exited 0."""
     _no_branch(monkeypatch)
     f = tmp_path / "x.txt"
     f.write_text("alpha\nbeta\n")

@@ -541,23 +541,22 @@ def test_main_returns_zero_when_grep_finds_fail_lines(
     assert ret == 0
 
 
-def test_body_indicates_failure_matches_marker_only_after_header() -> None:
-    """Direct check on the helper: marker must be on line right after header."""
-    # Real failure: FAIL on the line right after '--- op ---'
-    body_real = "--- read:/x ---\nFAIL (1.23s)\nstack trace\n"
-    assert supertool._body_indicates_failure(body_real) is True
+def test_op_body_failure_reads_the_ops_own_return_value_only() -> None:
+    """Direct check on the helper: the verdict token is at position 0.
 
-    # User content: FAIL deeper in body
-    body_fake = "--- read:/x ---\nINFO: started\nFAIL: something\n"
-    assert supertool._body_indicates_failure(body_fake) is False
+    It is handed the string the OP returned, never the receipt — so there is
+    no header to skip past and nothing further in the body can reach it.
+    """
+    assert supertool._op_body_failed("FAIL (1.23s)\nstack trace\n") is True
+    assert supertool._op_body_failed("ERROR: file not found\n") is True
 
-    # Real ERROR: header + 'ERROR: ' on next line
-    body_err = "--- read:/x ---\nERROR: file not found\n"
-    assert supertool._body_indicates_failure(body_err) is True
-
-    # User content: ERROR appears mid-body
-    body_innocent = "--- grep:ERROR:/x ---\n  3:ERROR: connection refused\n"
-    assert supertool._body_indicates_failure(body_innocent) is False
+    # Anything after the first token is the caller's content.
+    assert supertool._op_body_failed("INFO: started\nFAIL: something\n") is False
+    assert supertool._op_body_failed("  3:ERROR: connection refused\n") is False
+    # A quoted receipt inside an op's own output is content too — this is the
+    # shape that flipped a successful call's exit code before #1291.
+    assert supertool._op_body_failed(
+        "PASS (0.01s)\n--- git-status ---\nERROR: quoted\n") is False
 
 
 def test_main_logs_call(tmp_path: Path, monkeypatch) -> None:
