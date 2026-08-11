@@ -276,14 +276,14 @@ def _owner_repo(rows: list[dict]) -> tuple[tuple[str, str] | None, str | None]:
     if not rows:
         return None, "the listing had no rows"
     if not urls:
-        return None, f"none of the {len(rows)} row(s) carried a url"
+        return None, f"no row carried a url (checked {len(rows)})"
     if not on_host:
         return None, (
-            f"none of the {urls} row url(s) is on {_repo_target.GITHUB_HOST}"
+            f"no row url is on {_repo_target.GITHUB_HOST} (checked {urls})"
         )
     return None, (
-        f"{on_host} of {urls} row url(s) are on {_repo_target.GITHUB_HOST} but "
-        f"none carries an owner/name path"
+        f"no row url on {_repo_target.GITHUB_HOST} carried an owner/name path "
+        f"(checked {on_host})"
     )
 
 

@@ -170,13 +170,14 @@ def github_owner_repo(url: str) -> tuple[str, str] | None:
     nobody named, on a real host, with nothing downstream having any reason to
     doubt it.
     """
-    if not is_github_host(url_host(url)):
-        return None
     try:
-        path = urllib.parse.urlsplit(url or "").path
+        parts = urllib.parse.urlsplit(url or "")
+        host = (parts.hostname or "").lower()
     except ValueError:
         return None
-    segments = [part for part in path.split("/") if part]
+    if not is_github_host(host):
+        return None
+    segments = [part for part in parts.path.split("/") if part]
     if len(segments) < 2:
         return None
     return segments[0], segments[1]
