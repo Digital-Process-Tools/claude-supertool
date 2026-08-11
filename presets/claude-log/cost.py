@@ -238,6 +238,28 @@ def normalise_target(cwd, target):
     return cwd.replace("\\", "/").rstrip("/") + "/" + t
 
 
+_READ_ARG_RE = re.compile(r"^(?:|full|-?\d+|\d+-\d+|\d+\+\d+)$")
+
+
+def read_target(rest):
+    """The path a `read:` section header names, with the op's own numeric args
+    stripped.
+
+    Splitting once more on ':' to drop `:OFF:LIM` also eats a Windows drive
+    colon, keying every absolute path under `"C"` — unrelated files merged into
+    one fabricated repeat read, and the join with `Read`'s absolute file_path
+    broken, in the very figure this op exists to produce. So trailing tokens are
+    dropped only when they look like arguments, and a leading single letter
+    followed by a separator is put back.
+    """
+    parts = (rest or "").split(":")
+    if len(parts) > 1 and len(parts[0]) == 1 and parts[0].isalpha() and parts[1][:1] in ("/", "\\"):
+        parts = [parts[0] + ":" + parts[1]] + parts[2:]
+    while len(parts) > 1 and _READ_ARG_RE.match(parts[-1]):
+        parts.pop()
+    return ":".join(parts)
+
+
 def _record_read(reads, read_bytes, target, text, size):
     digest = hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()
     reads.setdefault(target, []).append((digest, size))
@@ -317,7 +339,7 @@ def measure_sessions(paths):
                         st.per_op.setdefault(op, []).append(n)
                         body += n
                         if op == "read" and ":" in header:
-                            target = header.split(":", 1)[1].split(":", 1)[0]
+                            target = read_target(header.split(":", 1)[1])
                             if target:
                                 _record_read(
                                     reads, read_bytes, normalise_target(cwd, target), sec, n

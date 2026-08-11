@@ -49,7 +49,9 @@ Five blocks, all raw numbers:
 - A `tool_result` whose `tool_use_id` matches no `tool_use` is counted under
   tool `?` and disclosed, not discarded.
 - Non-text result blocks (an image's base64 payload) are excluded from the byte
-  total and counted separately — those bytes are not comparable to text bytes.
+  total, because those bytes are not comparable to text bytes. What is reported
+  for them is a count per kind (`image x2`), not a size — their byte cost is not
+  measured at all, and the report says so rather than implying it is in there.
 - A section marker is only believed when the command line it came from named
   that op. Agents write `echo "--- branch ---"` as a shell separator, and
   measured over five live sessions that invented nine ops which do not exist

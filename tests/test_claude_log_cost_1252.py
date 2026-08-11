@@ -335,6 +335,24 @@ class TestRepeatReads:
         assert stats.repeat_read_paths == 1
         assert [t for t, _n, _b in stats.top_repeat_paths] == ["/x/proj/a.py"]
 
+    def test_windows_drive_letter_in_a_read_header_is_not_truncated(self, proj: FakeProject) -> None:
+        # `read:PATH:OFF:LIM` is stripped of its numeric args by splitting on
+        # ':' — which eats a Windows drive colon and keys every absolute path
+        # under "C", merging unrelated files into one fabricated repeat read.
+        body = "--- read:C:\\proj\\a.py ---\ncontent\n"
+        events = [
+            {**_tool_use("a", "Bash", {"command": "supertool 'read:C:\\proj\\a.py'"}),
+             "cwd": "C:\\proj"},
+            _tool_result("a", body),
+        ]
+        proj.add_session("s1", events)
+        stats = cost.measure_sessions([proj.proj_dir / "s1.jsonl"])
+        assert cost.read_target("C:\\proj\\a.py") == "C:\\proj\\a.py"
+        assert cost.read_target("tests/a.py:1:70") == "tests/a.py"
+        assert cost.read_target("tests/a.py:full") == "tests/a.py"
+        assert cost.read_target("tests/a.py:1-70") == "tests/a.py"
+        assert cost.read_target("tests/a.py") == "tests/a.py"
+
     def test_normalise_target_uses_the_transcripts_separators(self) -> None:
         assert cost.normalise_target("/x/proj", "a.py") == "/x/proj/a.py"
         assert cost.normalise_target("/x/proj", "/abs/a.py") == "/abs/a.py"
