@@ -44,6 +44,8 @@ The keys the **core** stamps on a result. An adapter may never send one: `_valid
 
 This table is the doc's half of a contract whose other half is `_VALIDATOR_CORE_ONLY_KEYS` in the core. Neither is generated from the other, so `tests/test_schema_contract_drift_1042.py` compares them in both directions and fails if either side names a field the other does not (#1042). Do not add a row here without adding the key there.
 
+**A field in the adapter table above is not thereby a field a core decision may read (#1277).** Emitting and consulting are two permissions, and only the second is a containment property: a key that one of the core's own decisions — no-verdict, regressed, baseline, gate-did-not-run, not-checked — consults is a key an adapter can write into to decide something the adapter is not entitled to decide. That list is `DECISION_READABLE_KEYS` in `tests/test_adapter_cannot_forge_core_keys_1036.py`, it is held apart from this document on purpose, and it is deliberately narrower: five of the nine documented adapter fields are on it, and `diff`, `duration_ms`, `file` and `metrics` are withheld. Adding a row here therefore reddens that test rather than silently widening the exemption, which is what it did while the check used this table directly.
+
 ### Skipped: the third state
 
 `ok` alone has two values and the world has three: clean, broken, and **never looked at**. A validator that refused to run has produced no information about the file, so folding that into either `ok` value is a lie in one direction or the other.
