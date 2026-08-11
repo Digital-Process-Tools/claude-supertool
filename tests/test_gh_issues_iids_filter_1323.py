@@ -1,0 +1,505 @@
+"""`gh-issues:iids=N,N,N` — the bulk citation lookup (#1323).
+
+The issue proposes a new op (`gh-titles`). It is the wrong shape: a bulk issue
+lookup is the same *model* as the board — same population, same tracker-text
+flattening, same three-state absence handling — differing only in how the
+population is named. So it is a filter on `gh-issues`, and it inherits `per=`,
+the disclosure machinery and the refusal.
+
+The issue also asserts "`gh-prs` already takes `iids`, so the first spelling
+costs a filter rather than a concept". That is false: `iids` is a *flag* on
+both `gh-prs` and `gh-issues` (`_FLAGS`, render numbers only). There was no
+value filter to copy anywhere in the family.
+
+What every test below pins, and what fails on the code as it stands:
+
+1. The tokenizer splits on `,`, so `iids=1233,1240,1251` arrived as
+   `iids=1233` plus two orphans. The refusal that produced is correct and must
+   survive for a genuinely unknown token — but a list value has to reach the op
+   whole.
+2. **A number that does not resolve gets its own row.** Never a shorter list.
+   An audit over a short list reads as "all of these check out", which is the
+   exact reading #1233's audit had to avoid: 12 of its 124 numbers belonged to
+   another repo.
+3. **A PR number is a third answer**, not the same answer as a number that does
+   not exist. GraphQL's `issue(number:)` returns null for both.
+4. `gh api graphql` **exits non-zero** when any alias is NOT_FOUND, while still
+   returning every alias that resolved. Reading the exit code alone throws away
+   the whole chunk — this repo's defect class, on the read side.
+5. A requested population is finite and named, so `capped at --limit N — more
+   may exist` is a false sentence there and must not print. A cap only exists
+   if the caller asked for one with `per=`, and then it says how many it lost.
+"""
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+ROOT = Path(__file__).parent.parent
+PRESET_PATH = ROOT / "presets" / "github" / "issues.py"
+_spec = importlib.util.spec_from_file_location("github_issues_1323", PRESET_PATH)
+assert _spec is not None and _spec.loader is not None
+issues = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(issues)
+
+_ft_spec = importlib.util.spec_from_file_location(
+    "filter_tokens_1323", ROOT / "presets" / "_filter_tokens.py")
+assert _ft_spec is not None and _ft_spec.loader is not None
+filter_tokens = importlib.util.module_from_spec(_ft_spec)
+_ft_spec.loader.exec_module(filter_tokens)
+
+
+class _Result:
+    def __init__(self, code: int, out: str = "", err: str = "") -> None:
+        self.returncode = code
+        self.stdout = out
+        self.stderr = err
+
+
+def _issue_node(number: int, title: str, state: str = "OPEN", **kw: Any) -> dict:
+    node: dict[str, Any] = {
+        "number": number,
+        "title": title,
+        "state": state,
+        "url": f"https://github.com/o/r/issues/{number}",
+        "createdAt": "2026-01-01T00:00:00Z",
+        "updatedAt": "2026-01-02T00:00:00Z",
+        "lastEditedAt": None,
+        "authorAssociation": "OWNER",
+        "author": {"login": "fdaviddpt"},
+        "milestone": None,
+        "labels": {"nodes": []},
+        "assignees": {"nodes": []},
+        "comments": {"totalCount": 0, "nodes": []},
+        "closedByPullRequestsReferences": {"nodes": []},
+        "timelineItems": {"nodes": []},
+    }
+    node.update(kw)
+    return node
+
+
+def _fake_gh(repository: dict, errors: list | None = None, code: int = 0):
+    """Stand in for every subprocess this op makes on the iids path."""
+    calls: list[list[str]] = []
+
+    def run(cmd, **kwargs):  # noqa: ANN001
+        calls.append(list(cmd))
+        if cmd[:3] == ["gh", "repo", "view"]:
+            return _Result(0, json.dumps({"name": "r", "owner": {"login": "o"}}))
+        if cmd[:3] == ["gh", "api", "graphql"]:
+            payload: dict[str, Any] = {"data": {"repository": repository}}
+            if errors:
+                payload["errors"] = errors
+            return _Result(code, json.dumps(payload))
+        raise AssertionError(f"unexpected subprocess: {cmd}")
+
+    run.calls = calls  # type: ignore[attr-defined]
+    return run
+
+
+# ---------------------------------------------------------------------------
+# 1. the tokenizer has to carry a list value whole
+# ---------------------------------------------------------------------------
+
+class TestListValuedKey:
+    def test_comma_separated_value_survives_the_tokenizer(self) -> None:
+        filters, flags, unknown = filter_tokens.parse(
+            "iids=1233,1240,1251", {"iids"}, set(), list_keys={"iids"})
+        assert unknown == []
+        assert filters == {"iids": "1233,1240,1251"}
+        assert flags == set()
+
+    def test_a_bare_token_after_a_non_list_key_is_still_refused(self) -> None:
+        _, _, unknown = filter_tokens.parse(
+            "label=bug,1240", {"label", "iids"}, set(), list_keys={"iids"})
+        assert unknown == ["1240"]
+
+    def test_a_flag_ends_the_list_and_does_not_join_it(self) -> None:
+        filters, flags, unknown = filter_tokens.parse(
+            "iids=1,2,nopipe", {"iids"}, {"nopipe"}, list_keys={"iids"})
+        assert filters == {"iids": "1,2"}
+        assert flags == {"nopipe"}
+        assert unknown == []
+
+    def test_a_bare_token_after_the_flag_is_not_readopted(self) -> None:
+        _, _, unknown = filter_tokens.parse(
+            "iids=1,nopipe,2", {"iids"}, {"nopipe"}, list_keys={"iids"})
+        assert unknown == ["2"]
+
+    def test_a_repeated_list_key_accumulates_rather_than_replacing(self) -> None:
+        """`v[-1]` is the scalar rule and it silently drops the earlier group.
+
+        `iids=1,2,nopipe,iids=3,4` is a spelling any caller reaches by editing
+        an existing call, and it used to look up 3 and 4 only — no unknown
+        token, no note, no shorter-list disclosure anywhere, because the
+        numbers were gone before `_parse_iids` ever saw them. That is exactly
+        the absence this filter exists to refuse, produced by the tokenizer.
+        """
+        filters, flags, unknown = filter_tokens.parse(
+            "iids=1,2,nopipe,iids=3,4", {"iids"}, {"nopipe"}, list_keys={"iids"})
+        assert unknown == []
+        assert flags == {"nopipe"}
+        assert filters == {"iids": "1,2,3,4"}
+
+    def test_a_non_list_key_still_keeps_only_its_last_value(self) -> None:
+        filters, _, _ = filter_tokens.parse(
+            "author=a,author=b", {"author"}, set(), list_keys={"iids"})
+        assert filters == {"author": "b"}
+
+    def test_default_has_no_list_keys_so_nothing_else_changes(self) -> None:
+        _, _, unknown = filter_tokens.parse("author=me,1240", {"author"}, set())
+        assert unknown == ["1240"]
+
+    def test_a_non_numeric_member_is_a_value_error_not_a_silent_drop(self) -> None:
+        bad = filter_tokens.bad_values(
+            {"iids": "1233,twelve"}, {"iids": filter_tokens.POSITIVE_INT_LIST})
+        assert [k for k, _v, _e in bad] == ["iids"]
+
+    def test_a_well_formed_list_passes_the_value_check(self) -> None:
+        assert filter_tokens.bad_values(
+            {"iids": "1233,1240"}, {"iids": filter_tokens.POSITIVE_INT_LIST}) == []
+
+
+class TestParseIids:
+    def test_order_is_preserved_and_duplicates_are_counted(self) -> None:
+        numbers, dupes = issues._parse_iids("1240,1233,1240,1251")
+        assert numbers == [1240, 1233, 1251]
+        assert dupes == 1
+
+
+# ---------------------------------------------------------------------------
+# 2/3. three answers, one row each
+# ---------------------------------------------------------------------------
+
+class TestEveryRequestedNumberGetsARow:
+    def test_missing_and_pr_numbers_are_rows_not_absences(
+            self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+        repository = {
+            "i1233": _issue_node(1233, "the citation audit"),
+            "i1326": None,
+            "p1326": {"number": 1326, "title": "one host check", "state": "OPEN"},
+            "i999999": None,
+            "p999999": None,
+        }
+        monkeypatch.setattr(issues.subprocess, "run", _fake_gh(repository))
+        rc = issues.main_with_args("iids=1233,1326,999999")
+        out = capsys.readouterr().out
+        assert rc == 0
+        # every requested number appears, none of them silently dropped
+        for number in ("1233", "1326", "999999"):
+            assert f"#{number}" in out, out
+        assert "is a PR" in out
+        assert "does not resolve to an issue" in out
+        assert "3 issue(s)" in out
+
+    def test_the_footer_separates_unresolved_from_failed_enrichment(
+            self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+        repository = {
+            "i1233": _issue_node(1233, "the citation audit"),
+            "i999999": None, "p999999": None,
+        }
+        monkeypatch.setattr(issues.subprocess, "run", _fake_gh(repository))
+        rc = issues.main_with_args("iids=1233,999999")
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "1 requested number(s) are not issues here" in out
+        # the enrichment clause is a different claim and must not absorb them
+        assert "enrichment" not in out
+
+    def test_a_closed_issue_does_not_render_as_an_open_one(
+            self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+        repository = {"i1233": _issue_node(1233, "shipped", state="CLOSED")}
+        monkeypatch.setattr(issues.subprocess, "run", _fake_gh(repository))
+        issues.main_with_args("iids=1233")
+        assert "[closed]" in capsys.readouterr().out
+
+    def test_state_is_three_valued_like_every_other_list_field(self) -> None:
+        assert "[state:?]" in issues._flags({"number": 1})
+        assert "[closed]" in issues._flags({"number": 1, "state": "CLOSED"})
+        assert "closed" not in issues._flags({"number": 1, "state": "OPEN"})
+
+
+# ---------------------------------------------------------------------------
+# 4. a NOT_FOUND alias makes gh exit 1 with the rest of the data intact
+# ---------------------------------------------------------------------------
+
+class TestNonZeroExitWithData:
+    def test_the_resolved_aliases_survive_a_not_found_exit(
+            self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+        repository = {
+            "i1233": _issue_node(1233, "the citation audit"),
+            "i999999": None, "p999999": None,
+        }
+        errors = [{"type": "NOT_FOUND", "path": ["repository", "i999999"],
+                   "message": "Could not resolve to an Issue with the number of 999999."}]
+        monkeypatch.setattr(issues.subprocess, "run",
+                            _fake_gh(repository, errors=errors, code=1))
+        rc = issues.main_with_args("iids=1233,999999")
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "the citation audit" in out
+        assert "999999" in out
+
+    def test_an_error_that_is_not_not_found_is_named_not_swallowed(
+            self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+        errors = [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}]
+        monkeypatch.setattr(issues.subprocess, "run",
+                            _fake_gh({}, errors=errors, code=1))
+        rc = issues.main_with_args("iids=1233")
+        captured = capsys.readouterr()
+        both = (captured.out + captured.err).lower()
+        assert rc == 1
+        assert "rate_limited" in both or "rate limit" in both
+
+
+# ---------------------------------------------------------------------------
+# 5. the cap says what it did, and never claims more may exist
+# ---------------------------------------------------------------------------
+
+class TestCapDisclosure:
+    def test_a_named_population_never_prints_more_may_exist(
+            self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+        repository = {f"i{n}": _issue_node(n, f"issue {n}") for n in range(1, 4)}
+        monkeypatch.setattr(issues.subprocess, "run", _fake_gh(repository))
+        rc = issues.main_with_args("iids=1,2,3")
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "3 issue(s)" in out
+        assert "more may exist" not in out
+
+    def test_an_explicit_per_caps_and_says_by_how_much(
+            self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+        repository = {f"i{n}": _issue_node(n, f"issue {n}") for n in (1, 2)}
+        monkeypatch.setattr(issues.subprocess, "run", _fake_gh(repository))
+        issues.main_with_args("iids=1,2,3,per=2")
+        out = capsys.readouterr().out
+        assert "iids capped at per=2" in out
+        assert "1 of 3" in out
+
+    def test_duplicates_are_collapsed_and_the_collapse_is_stated(
+            self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+        repository = {"i1233": _issue_node(1233, "the citation audit")}
+        monkeypatch.setattr(issues.subprocess, "run", _fake_gh(repository))
+        issues.main_with_args("iids=1233,1233")
+        assert "1 duplicate number(s) collapsed" in capsys.readouterr().out
+
+
+class TestPerChunkFailureReason:
+    def test_a_failed_row_carries_its_own_chunk_s_reason(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Two chunks fail differently; neither row may borrow the other's cause.
+
+        `reason = reason or chunk_reason` keeps the first fault for the whole
+        call, so every later chunk's rows were rendered under a cause that was
+        not theirs — a stated reason that is wrong sends the reader to fix
+        something that is not broken.
+        """
+        seen: list[str] = []
+
+        def run(cmd, **kwargs):  # noqa: ANN001
+            seen.append("call")
+            which = len(seen)
+            payload = {"data": {"repository": None},
+                       "errors": [{"type": "RATE_LIMITED",
+                                   "message": f"fault {which}"}]}
+            return _Result(1, json.dumps(payload))
+
+        monkeypatch.setattr(issues.subprocess, "run", run)
+        results, reason = issues._fetch_lookup("o", "r", [1, 2], 1, True)
+        assert results[1][0] == "failed" and results[2][0] == "failed"
+        assert results[1][1] == "fault 1"
+        assert results[2][1] == "fault 2"
+        assert reason == "fault 1"
+
+
+class TestTheTwoRoutesDoNotEnrichTwice:
+    """The rebase conflict against `master`, pinned as behaviour.
+
+    `master`'s enrichment block reads the repo off row urls and calls
+    `_fetch_enrichment` — a second GraphQL round-trip. The `iids=` route asked
+    for `_ENRICH_FIELDS` in the *same* query that fetched the rows, so running
+    the block again pays twice for data already in hand, and its decline
+    (`repo could not be identified from the listing`) is a sentence that cannot
+    be true where there was no listing. A "take both sides" resolution compiles
+    and passes every other test in this file.
+    """
+
+    def test_the_lookup_route_makes_exactly_one_graphql_call(
+            self, monkeypatch: pytest.MonkeyPatch,
+            capsys: pytest.CaptureFixture) -> None:
+        repository = {"i1233": _issue_node(1233, "the citation audit")}
+        run = _fake_gh(repository)
+        monkeypatch.setattr(issues.subprocess, "run", run)
+        assert issues.main_with_args("iids=1233") == 0
+        capsys.readouterr()
+        graphql = [c for c in run.calls if c[:3] == ["gh", "api", "graphql"]]
+        assert len(graphql) == 1, run.calls
+
+    def test_the_lookup_route_keeps_its_own_reason(
+            self, monkeypatch: pytest.MonkeyPatch,
+            capsys: pytest.CaptureFixture) -> None:
+        """A `reason: str | None = None` at the enrichment block wipes it.
+
+        The lookup hit a real fault and still rendered the rows it got. If the
+        listing block runs afterwards it resets `reason` and re-derives one
+        from its own second call, so the footer names a cause from a call the
+        caller's rows did not come from — and if that second call succeeds, the
+        footer names no cause at all for rows that are demonstrably degraded.
+        """
+        calls: list[list[str]] = []
+
+        def run(cmd, **kwargs):  # noqa: ANN001
+            calls.append(list(cmd))
+            if cmd[:3] == ["gh", "repo", "view"]:
+                return _Result(0, json.dumps({"name": "r",
+                                              "owner": {"login": "o"}}))
+            nth = len([c for c in calls if c[:3] == ["gh", "api", "graphql"]])
+            if nth == 1:
+                return _Result(1, json.dumps({
+                    "data": {"repository": {
+                        "i1233": None,
+                        "i1240": _issue_node(1240, "resolved fine")}},
+                    "errors": [{"type": "SERVICE_UNAVAILABLE",
+                                "path": ["repository", "i1233"],
+                                "message": "the first call's fault"}]}))
+            # a second, *successful* enrichment call — the one that must not
+            # happen, and whose success would erase the fault above
+            return _Result(0, json.dumps({"data": {"repository": {}}}))
+
+        monkeypatch.setattr(issues.subprocess, "run", run)
+        assert issues.main_with_args("iids=1233,1240") == 0
+        out = capsys.readouterr().out
+        assert "the first call's fault" in out
+        assert "lookup failed" in out
+        # the alias was nulled by a FAULT, not by GitHub saying the number is
+        # neither an issue nor a PR — those are different rows
+        assert "does not resolve to an issue" not in out
+        # never the listing's decline, which has no listing to refer to
+        assert "could not be identified from the listing" not in out
+
+    def test_owner_repo_is_unpacked_as_the_pair_it_now_returns(self) -> None:
+        """#1326 made `_owner_repo` return `(pair, why)`.
+
+        A copy of the old single-return call site survives `git rebase` without
+        a conflict and without a crash: `pair` is then always truthy, and
+        `_fetch_enrichment(pair[0], pair[1], ...)` is handed `name=None` on
+        every board call. This is the shape of that mistake, not its location.
+        """
+        pair, why = issues._owner_repo(
+            [{"url": "https://github.com/o/r/issues/1"}])
+        assert pair == ("o", "r")
+        assert why is None
+        assert issues._owner_repo([])[0] is None
+
+
+class TestRepoResolutionFailure:
+    """A `gh` that did not run is not a cwd that is not a repo.
+
+    `iids=` has no listing to derive the repo from, so it resolves it with its
+    own `gh repo view` — and every failure of that call used to collapse into
+    the one message that blames the working directory. On Windows a missing
+    `gh` raises `FileNotFoundError [WinError 2]` exactly as it does here, so
+    the reader is sent to `cd` somewhere while the real fault is an uninstalled
+    binary or an expired token.
+    """
+
+    def _run_failing(self, monkeypatch: pytest.MonkeyPatch, outcome):  # noqa: ANN001
+        def run(cmd, **kwargs):  # noqa: ANN001
+            if cmd[:3] == ["gh", "repo", "view"]:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                return outcome
+            raise AssertionError("nothing may be called before the repo is known")
+        monkeypatch.setattr(issues.subprocess, "run", run)
+
+    def test_a_missing_gh_binary_is_not_reported_as_a_bad_cwd(
+            self, monkeypatch: pytest.MonkeyPatch,
+            capsys: pytest.CaptureFixture) -> None:
+        self._run_failing(monkeypatch, FileNotFoundError(2, "No such file"))
+        rc = issues.main_with_args("iids=1233")
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "gh repo view" in err
+        assert "cwd is not a GitHub repo" not in err
+
+    def test_an_expired_token_is_not_reported_as_a_bad_cwd(
+            self, monkeypatch: pytest.MonkeyPatch,
+            capsys: pytest.CaptureFixture) -> None:
+        self._run_failing(monkeypatch, _Result(1, "", "error: not logged in to any hosts"))
+        rc = issues.main_with_args("iids=1233")
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "gh auth login" in err
+        assert "cwd is not a GitHub repo" not in err
+
+    def test_a_directory_that_really_is_not_a_repo_still_says_so(
+            self, monkeypatch: pytest.MonkeyPatch,
+            capsys: pytest.CaptureFixture) -> None:
+        self._run_failing(
+            monkeypatch, _Result(1, "", "fatal: not a git repository"))
+        rc = issues.main_with_args("iids=1233")
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "cwd is not a GitHub repo" in err
+
+
+# ---------------------------------------------------------------------------
+# composition
+# ---------------------------------------------------------------------------
+
+class TestComposition:
+    @pytest.mark.parametrize("token", ["label=bug", "state=all", "author=@me",
+                                       "assignee=@me", "milestone=v1.0"])
+    def test_a_listing_filter_beside_iids_is_refused_not_ignored(
+            self, token: str, capsys: pytest.CaptureFixture) -> None:
+        rc = issues.main_with_args(f"iids=1233,{token}")
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert token.split("=")[0] in err
+        assert "iids" in err
+        # it must refuse the *composition*, not fall through to the
+        # unrecognised-token refusal that master gives for `iids=1233` itself
+        assert "unrecognised" not in err
+
+    def test_the_iids_flag_still_renders_numbers_only(
+            self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
+        repository = {
+            "i1233": _issue_node(1233, "the citation audit"),
+            "i999999": None, "p999999": None,
+        }
+        monkeypatch.setattr(issues.subprocess, "run", _fake_gh(repository))
+        rc = issues.main_with_args("iids=1233,999999,iids")
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "1233" in out
+        # the number that did not resolve is not silently absent from a list
+        # whose whole purpose is to be another tool's input
+        assert "999999" in out
+        assert [line for line in out.splitlines() if line.startswith("#")]
+
+    @pytest.mark.parametrize("flag", ["external", "stale", "nomilestone"])
+    def test_a_client_side_flag_declines_over_a_number_that_is_not_an_issue(
+            self, flag: str, monkeypatch: pytest.MonkeyPatch,
+            capsys: pytest.CaptureFixture) -> None:
+        """Nobody can say whether a number that is not an issue is external.
+
+        Filtering it in claims it is; filtering it out drops a row the caller
+        named. Neither is reportable, so the op declines — the same answer
+        `nomilestone` already gives over an unknown milestone.
+        """
+        repository = {
+            "i1233": _issue_node(1233, "the citation audit"),
+            "i999999": None, "p999999": None,
+        }
+        monkeypatch.setattr(issues.subprocess, "run", _fake_gh(repository))
+        rc = issues.main_with_args(f"iids=1233,999999,{flag}")
+        assert rc == 1
+        assert "cannot filter by " + flag in capsys.readouterr().err
+
+    def test_bare_iids_flag_is_untouched_by_the_new_filter_key(self) -> None:
+        _filters, flags, unknown = issues._parse_args("iids")
+        assert flags == {"iids"} and unknown == []

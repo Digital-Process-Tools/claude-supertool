@@ -47,26 +47,47 @@ from __future__ import annotations
 # not get one.
 POSITIVE_INT = "a positive integer"
 
+# Sentinel domain: the value must be a comma-separated list of integers >= 1.
+# The list arrives through `list_keys` below, which is what makes
+# `iids=1233,1240,1251` one value rather than a value and two orphans (#1323).
+POSITIVE_INT_LIST = "a comma-separated list of positive integers"
+
 
 def parse_multi(
     arg_str: str,
     filter_keys: set[str] | frozenset[str],
     flag_names: set[str] | frozenset[str],
+    list_keys: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[dict[str, list[str]], set[str], list[str]]:
     """Tokenise a comma-separated arg string, keeping every value of a key.
 
     A repeated key accumulates rather than overwriting, which is how a caller
     asks for more than one author when the list endpoint takes only one per
     query. The third return value is every token that was placed nowhere.
+
+    **`list_keys` names the keys whose value is itself a comma-separated
+    list.** The whole grammar is one comma-separated segment, so a caller
+    writing `iids=1233,1240,1251` hands this function a value and two bare
+    tokens — and the two orphans were refused while `iids=1233` applied, which
+    is the narrowest possible answer to a question about three numbers. A bare
+    token immediately following a list key rejoins that key's value.
+
+    The continuation stops at the first token that is *placed* some other way:
+    a `key=value` or a known flag. So `iids=1,nopipe,2` refuses `2` rather than
+    quietly reading it as an iid across an intervening flag — the ordering is
+    the caller's claim about what belongs to what, and guessing past it is the
+    silent-drop defect with the sign flipped again.
     """
     filters: dict[str, list[str]] = {}
     flags: set[str] = set()
     unknown: list[str] = []
+    open_list: str | None = None
     for tok in (t.strip() for t in arg_str.split(",")):
         if not tok:
             continue
         if "=" in tok:
             key, _, val = tok.partition("=")
+            open_list = None
             if key.strip() not in filter_keys:
                 unknown.append(tok)
             elif not val.strip():
@@ -90,8 +111,16 @@ def parse_multi(
                 unknown.append(tok)
             else:
                 filters.setdefault(key.strip(), []).append(val.strip())
+                # Only a value this function actually stored may be continued.
+                # Opening the list on the token's *shape* would let a refused
+                # `iids=` swallow the numbers after it and report nothing.
+                if key.strip() in list_keys:
+                    open_list = key.strip()
         elif tok in flag_names:
+            open_list = None
             flags.add(tok)
+        elif open_list is not None:
+            filters[open_list][-1] += "," + tok
         else:
             unknown.append(tok)
     return filters, flags, unknown
@@ -101,14 +130,27 @@ def parse(
     arg_str: str,
     filter_keys: set[str] | frozenset[str],
     flag_names: set[str] | frozenset[str],
+    list_keys: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[dict[str, str], set[str], list[str]]:
     """The scalar view of `parse_multi` — a repeated key keeps its last value.
 
     One tokenizer behind both readings, so a board and the radar tier that
     shares its vocabulary can never disagree about what an arg string said.
+
+    **A repeated LIST key concatenates instead.** `v[-1]` is right for a scalar
+    — `author=a,author=b` can only forward one `--author` — and wrong for a
+    list, where every group the caller wrote is part of the one population they
+    asked about. `iids=1,2,nopipe,iids=3,4` is a spelling anyone reaches by
+    editing an existing call, and under the scalar rule it looked up 3 and 4
+    only: no unknown token, no refusal, no disclosure, because the numbers were
+    gone before the op could count them. A silently shorter list is the exact
+    defect `iids=` exists to refuse, so the tokenizer must not manufacture one.
     """
-    multi, flags, unknown = parse_multi(arg_str, filter_keys, flag_names)
-    return {k: v[-1] for k, v in multi.items()}, flags, unknown
+    multi, flags, unknown = parse_multi(arg_str, filter_keys, flag_names, list_keys)
+    scalar = {
+        k: (",".join(v) if k in list_keys else v[-1]) for k, v in multi.items()
+    }
+    return scalar, flags, unknown
 
 
 def is_empty_value(tok: str, filter_keys: set[str] | frozenset[str]) -> bool:
@@ -200,6 +242,10 @@ def bad_values(
         if allowed is POSITIVE_INT:
             ok = val.isdigit() and int(val) >= 1
             expected = POSITIVE_INT
+        elif allowed is POSITIVE_INT_LIST:
+            members = [m.strip() for m in val.split(",")]
+            ok = bool(members) and all(m.isdigit() and int(m) >= 1 for m in members)
+            expected = POSITIVE_INT_LIST
         else:
             assert isinstance(allowed, (set, frozenset))
             ok = val in allowed
