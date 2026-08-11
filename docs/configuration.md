@@ -196,6 +196,23 @@ Default on. A `PreToolUse` hook shipped with the plugin (`hooks/pre-bash-guard.s
 
 Set it to `false` to turn the gate off for a project. It is the **only** way off: there is no environment variable and no per-command flag, because an escape hatch that can be prepended to a command is not a block. A raw call nobody replaced is not blocked in the first place — `gh release create`, `gh api -X DELETE`, `git tag` have no `replaces` entry and never will unless an op supersedes them.
 
+**A repository can wire the guard itself instead of waiting for a plugin release.** The hook ships in the plugin's `hooks.json`, so it becomes active for a checkout only when the installed plugin carries it — a claude-supertool clone whose plugin install predates the hook has the mapping and no enforcement. Adding it as a `PreToolUse` hook in the project's own `.claude/settings.json` closes that gap, and is how this repository dogfoods its own guard ([#1376](https://github.com/Digital-Process-Tools/claude-supertool/issues/1376)):
+
+```json
+{
+  "matcher": "Bash",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "S=\"$CLAUDE_PROJECT_DIR\"/hooks/pre-bash-guard.sh; if [ -f \"$S\" ]; then CLAUDE_PLUGIN_ROOT=\"$CLAUDE_PROJECT_DIR\" bash \"$S\"; fi",
+      "timeout": 15
+    }
+  ]
+}
+```
+
+Three things about that snippet are load-bearing. `CLAUDE_PLUGIN_ROOT` is set explicitly, because the script defaults to it and a value inherited from an unrelated plugin install would point the hook at a different tree. It is its **own entry** rather than a second command inside an existing one, so one script's failure is not another's silence — every matching `PreToolUse` hook runs and any `deny` stops the call. And the missing-file branch should print a decline envelope rather than nothing: empty output is indistinguishable from a clean verdict, which is the failure the guard's own third state exists for.
+
 `supertool 'guard:SHELL COMMAND'` answers the same question without running anything, in three states: `BLOCKED` naming the op, `OK`, and `UNDECIDED` when the command did not tokenise, hid a substitution inside double quotes, handed a string to `eval` / `sh -c`, or the registry could not be enumerated. The hook allows on `UNDECIDED` and says so in the transcript — a gate that quietly did not run is indistinguishable from a command that complied, which is the whole reason it exists.
 
 ### Which interpreter the hook runs, and what it does when there is none

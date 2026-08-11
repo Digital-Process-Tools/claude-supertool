@@ -40,7 +40,8 @@ The match is pinned to command position, because until #1415 it was not — and 
 2026-08-11 it refused **seven** commands that cut nothing: this repository's own
 directory name inside a `cd` path (x3), a shell variable, a bar inside an op's own
 argument (`grep:head|tail`), and a heredoc body quoting a piped example. The
-anchoring idiom is the one `gh-pr-view-merge-have-ops.md` already used.
+anchoring idiom is `(^|[;&|\n])[[:space:]]*`, which every regex row in
+`00-index.tsv` now carries.
 
 **It is still a regex, not a parser.** A heredoc line that *begins* with a supertool
 call and a pipe still matches, because `^`-alternation cannot tell a body from a

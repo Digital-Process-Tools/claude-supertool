@@ -84,8 +84,6 @@ def _awk_matches(pattern, subject):
 PIPE = " | "
 BAR = "|"
 APOS = "'"
-GIL = "gh issue list"
-GPL = "gh pr list"
 
 NO_CUT_FIRES = [
     ("plain op piped to head", "supertool 'grep:x:.:5'" + PIPE + "head -80"),
@@ -134,21 +132,19 @@ NO_CUT_SILENT = [
      "./supertool-benchmark.sh 'x'" + PIPE + "tail -5"),
 ]
 
-LIST_LIMIT_FIRES = [
-    ("bare invocation", GIL + " --state open"),
-    ("pr form after a chain operator", "cd /tmp && " + GPL + " --state open"),
-    ("rtk-wrapped", "rtk " + GIL + " --milestone v0.35.0"),
-    ("a tab-indented continuation line", "cd /tmp &&\n\t" + GPL + " --state open"),
-]
-
-LIST_LIMIT_SILENT = [
-    # The shape that refused the #1395 PR body and opened this issue.
-    ("prose naming the command inside a quoted heredoc",
-     "gh-pr-create:@- <<'EOF'\nThe guard measured a raw " + GIL
-     + " call at 31 against a true 72.\nEOF"),
-    ("named mid-sentence in a commit message",
-     "git commit -m 'docs: say why " + GIL + " is capped'"),
-]
+# `gh-list-limit.md`, `gh-pr-view-merge-have-ops.md` and `git-push-has-an-op.md`
+# had rows here and were **retired in #1376**: the shipped guard blocks
+# `gh issue list`, `gh pr list`, `gh pr view|merge|create` and `git push` off
+# the op registry, and `.claude/settings.json` now wires that guard for this
+# repository's own sessions. Their coverage moved to
+# `tests/test_jit_rule_retirement_1376.py`, which asserts the block on each of
+# those commands rather than the regex that used to approximate it.
+#
+# The evidence #1415 was filed on is unchanged by that and is worth keeping
+# next to the anchor: `gh-list-limit`'s unanchored pattern refused the #1395 PR
+# body for naming `gh issue list` in prose, and refused a commit message for
+# the same. That is why every surviving regex row is anchored, checked by
+# TestEveryRegexRuleIsAnchored below over whatever the index holds.
 
 
 @needs_awk
@@ -174,12 +170,6 @@ OTHER_RULES = [
     ("merged-is-not-ancestry.md",
      "cd /tmp &&\n\tgit branch --merged master",
      "git commit -m " + APOS + "docs: --merged is not ancestry for git branch" + APOS),
-    ("gh-pr-view-merge-have-ops.md",
-     "cd /tmp &&\n\tgh pr view 1415 --json body",
-     "echo " + APOS + "gh pr view has an op" + APOS),
-    ("git-push-has-an-op.md",
-     "cd /tmp &&\n\tgit push origin HEAD",
-     "echo " + APOS + "git push has an op" + APOS),
     ("git-C-has-cwd.md",
      "cd /tmp &&\n\tgit -C /Users/x/repo status",
      "echo " + APOS + "git -C /tmp is not a cwd" + APOS),
@@ -241,20 +231,6 @@ class TestTheRestOfTheIndex:
 ])
 def test_every_invocation_form_still_reaches_both_supertool_rules(rule, arg, form):
     assert _awk_matches(_pattern_for(rule), form + arg), form
-
-
-@needs_awk
-class TestGhListLimit:
-
-    @pytest.mark.parametrize("label,command", LIST_LIMIT_FIRES,
-                             ids=[c[0] for c in LIST_LIMIT_FIRES])
-    def test_a_real_invocation_is_still_matched(self, label, command):
-        assert _awk_matches(_pattern_for("gh-list-limit.md"), command), label
-
-    @pytest.mark.parametrize("label,command", LIST_LIMIT_SILENT,
-                             ids=[c[0] for c in LIST_LIMIT_SILENT])
-    def test_prose_naming_the_command_is_not_matched(self, label, command):
-        assert not _awk_matches(_pattern_for("gh-list-limit.md"), command), label
 
 
 class TestEveryRegexRuleIsAnchored:
