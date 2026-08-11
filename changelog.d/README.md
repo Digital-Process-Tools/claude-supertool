@@ -14,6 +14,39 @@ Changelog headings — `added`, `changed`, `deprecated`, `removed`, `fixed`,
 without two PRs colliding on a path, which is the whole point of the
 directory.
 
+**Nothing outside this directory may name your fragment by path.** The release
+*consumes* fragments: `assemble_changelog.py` folds the prose into `CHANGELOG.md`
+and deletes the file. So a test, a doc example, a fixture or a jit-context note
+keyed to `changelog.d/<n>.<section>.md` is green for exactly the window between
+your PR and the next tag, and red on that tag and every tag after — and the
+window is invisible from inside your own PR, because the file is there the whole
+time your CI runs.
+
+That has shipped four times.
+[#941](https://github.com/Digital-Process-Tools/claude-supertool/issues/941)
+reddened five legs on v0.26.0,
+[#953](https://github.com/Digital-Process-Tools/claude-supertool/issues/953)
+thirteen of twenty on v0.27.0, and
+[#1231](https://github.com/Digital-Process-Tools/claude-supertool/issues/1231)
+thirteen of twenty-two on v0.33.0 — that last one was not an assertion at all,
+just a filename in a tuple of paths a test swept, which is why "do not assert a
+fragment exists" was too narrow a rule
+([#1293](https://github.com/Digital-Process-Tools/claude-supertool/issues/1293)).
+
+Two permanent things to point at instead:
+
+- **`CHANGELOG.md`**, where this fragment's prose lands and stays.
+- **`assert_change_is_findable(<issue>)`** in `tests/_changelog_findable.py`,
+  when what you mean is "the change is documented". It accepts a pending
+  fragment *or* a released entry, exactly one of which is true at any moment.
+
+Both guards run in CI. `tests/test_changelog_findable_1053.py` refuses the
+assertion shape by parsing the suite; `tests/test_changelog_findable_1293.py`
+refuses any tracked text file, in any language, that names a fragment currently
+on disk. Naming an *already consumed* fragment is fine and common — the
+`906.added.md` examples on this page are three of 185 such lines across 19
+files — because nothing the next tag deletes is called that.
+
 The **content is the entry exactly as it would appear** under that heading
 today — a `- **Bold summary** ([#906](link)). Prose.` bullet, with as many
 indented paragraphs after it as the change deserves. Nothing is reformatted.
