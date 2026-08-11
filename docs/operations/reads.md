@@ -107,7 +107,7 @@ invisible one.
 
 ## Eliding a repeat read
 
-A second `read:PATH` of a **byte-identical** file inside 15 minutes returns one line instead of the content:
+A second `read:PATH` of a **byte-identical** file inside 15 minutes returns one line instead of the content — **provided both reads share the same parent process.** Under Claude Code that means the same Bash tool call, and only that; see "Where it actually fires" below before you count on it.
 
 ```
 [read elided — presets/gh/job.py is byte-identical to your read at 07:14:22 (sha256 3f9a1c2d8b04, 4,812 bytes on disk), so this would return what you already have. If you no longer have it: read:presets/gh/job.py:full]
@@ -125,7 +125,22 @@ A second `read:PATH` of a **byte-identical** file inside 15 minutes returns one 
 
 **Keyed on `(session, realpath, sha256)`** — not mtime, which changes on a no-op rewrite and misses a same-second edit. The session component is `USER | PPID | realpath(cwd)`: PPID is the session proxy supertool already uses for its call log, and the resolved cwd is mixed in because nine worktrees were live on one machine on 2026-08-11 and one agent's read must never suppress another's. The two failure directions are not symmetric — over-keying costs one file returned again, under-keying withholds content the caller never saw — so the key is deliberately the narrower one. State lives in one small sidecar per `(session, file)` under `~/.cache/supertool/read-elide/`, so concurrent supertool processes never read-modify-write a shared index; `gc` reaps the kind after a day.
 
-**What it is worth here: nothing.** Measured with `claude-log:cost` over real transcripts, unchanged re-reads are **0.0% of result bytes on the supertool corpus** — batching already prevents the pattern. The 8.7% figure people quote is the `Read`-tool-driven corpus (252,851 B, one `portfolio.json` read sixteen times) and is not ours. This exists for what it prevents.
+**Where it actually fires — measured 2026-08-11, and it is narrower than the paragraph above sounds.** `os.getppid()` for `supertool` is the process that *ran* it, which is the shell, and Claude Code starts a new shell per Bash tool call. So the key changes on every turn:
+
+```
+# two bare reads of one unchanged file, separate Bash calls, ~60s apart
+call 1 -> 3,840 bytes of content
+call 2 -> 3,840 bytes of content
+~/.cache/supertool/read-elide: two keys, one file
+
+# the same two reads on ONE command line
+supertool 'read:PATH' >/dev/null; supertool 'read:PATH' >second.txt
+wc -c second.txt -> 276          # the elision line
+```
+
+**It therefore fires for two invocations inside one shell — the case batching already covers — and never for the repeat read after a compaction it was built for.** A human at an interactive prompt keeps one shell and does get it; an agent driving `supertool` through per-call shells does not. Filed as [#1352](https://github.com/Digital-Process-Tools/claude-supertool/issues/1352), open at the time of writing: the fix is not obvious, because Claude Code exposes `session_id` only to hook stdin, and the two failure directions above still bind. `tests/test_read_elide_session_boundary_1352.py` pins both arms, so whoever changes the key finds out from a red test rather than from this paragraph.
+
+**What it is worth here: nothing, and that was true before the key was.** Measured with `claude-log:cost` over real transcripts, unchanged re-reads are **0.0% of result bytes on the supertool corpus** — batching already prevents the pattern. That is a property of the corpus, not of the key, so it survives #1352 either way. The 8.7% figure people quote is the `Read`-tool-driven corpus (252,851 B, one `portfolio.json` read sixteen times) and is not ours. This exists for what it prevents.
 
 Turn it off with `read.elide: 0` in `.supertool.json`, or `SUPERTOOL_READ_NO_ELIDE=1` for one call.
 
