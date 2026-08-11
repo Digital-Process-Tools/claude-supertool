@@ -11,11 +11,16 @@ they have every reason to trust:
     ...ten of them...
 
 A reviewer reading that concludes those ten *are* the discussion. The ten shown
-are the most recent, so the fifteen withheld are exactly the ones carrying the
+were the most recent, so the fifteen withheld were exactly the ones carrying the
 original objection. `gh-issue` has said this correctly since #681 — `N of M
-shown, K earlier truncated — use :full to fetch all`. `gh-pr`, standing right
-next to it, never adopted it. This is #263's shape: the convention existed and
-one call site had not taken it up.
+shown, K ... — use :full to fetch all`. `gh-pr`, standing right next to it,
+never adopted it. This is #263's shape: the convention existed and one call site
+had not taken it up.
+
+**Which ten, and the exact wording, moved in #738** — the cap now keeps the
+first three and the last seven and says `15 hidden from the middle`. The
+assertions here were updated to that rather than deleted: the disclosure
+contract is what this file guards, and it survives the selection change intact.
 
 Two more things this pins, both found while checking the issue's own open
 questions rather than assumed:
@@ -111,9 +116,12 @@ def test_gh_pr_capped_comment_list_reads_differently_than_a_whole_one(
     whole = _run_gh_pr(monkeypatch, capsys, _comments(3))
     capped = _run_gh_pr(monkeypatch, capsys, _comments(25))
     assert "## Comments (3)" in whole
-    assert "truncated" not in whole
+    assert "hidden" not in whole
     assert "## Comments (3)" not in capped
-    assert "truncated" in capped
+    # The word was "truncated" until #738 moved the cut from the head of the
+    # thread to its middle; what is pinned is that a capped list is visibly
+    # capped, not the verb used to say so.
+    assert "hidden" in capped
 
 
 def test_gh_pr_states_the_exact_number_of_comments_withheld(
@@ -122,7 +130,8 @@ def test_gh_pr_states_the_exact_number_of_comments_withheld(
     """'some comments are missing' is the defect, not the fix — 25 minus the ten
     shown is fifteen, and the reader is owed the fifteen."""
     out = _run_gh_pr(monkeypatch, capsys, _comments(25))
-    assert "## Comments (10 of 25 shown, 15 earlier truncated — use :full to fetch all)" in out
+    assert ("## Comments (10 of 25 shown, 15 hidden from the middle — "
+            "use :full to fetch all)") in out
 
 
 def test_gh_pr_names_a_way_to_see_the_withheld_comments(monkeypatch, capsys) -> None:
@@ -140,15 +149,17 @@ def test_gh_pr_full_returns_every_comment_and_says_nothing(monkeypatch, capsys) 
         assert f"[{i}] comment body" in out
 
 
-def test_gh_pr_still_shows_the_most_recent_ten(monkeypatch, capsys) -> None:
-    """Which end gets cut is a separate argument (#738). A disclosure fix that
-    silently changes the selection would be answering a question nobody asked, so
-    this pins it: a future change to the selection shows up as a failing test
-    rather than as a quietly different render."""
+def test_gh_pr_keeps_both_ends_of_the_thread(monkeypatch, capsys) -> None:
+    """This pinned the most-recent-ten selection so that changing it would show
+    up as a failing test rather than a quietly different render. #738 changed it
+    on purpose, and it did — updated here rather than deleted, because the
+    guard is the point and the selection it guards is now head-plus-tail.
+    Full reasoning and the selection tests are in
+    `tests/test_comment_cap_both_ends_738.py`."""
     out = _run_gh_pr(monkeypatch, capsys, _comments(25))
+    assert "[0] comment body" in out
     assert "[24] comment body" in out
-    assert "[15] comment body" in out
-    assert "[14] comment body" not in out
+    assert "[12] comment body" not in out
 
 
 def test_gh_pr_marks_a_comment_cut_at_the_character_cap(monkeypatch, capsys) -> None:
@@ -213,7 +224,8 @@ def test_the_two_github_ops_disclose_a_capped_comment_list_identically(
     proves nothing about what either one prints."""
     pr_out = _run_gh_pr(monkeypatch, capsys, _comments(25))
     issue_out = _run_gh_issue(monkeypatch, capsys, _comments(25))
-    heading = "## Comments (10 of 25 shown, 15 earlier truncated — use :full to fetch all)"
+    heading = ("## Comments (10 of 25 shown, 15 hidden from the middle — "
+               "use :full to fetch all)")
     assert heading in pr_out
     assert heading in issue_out
 

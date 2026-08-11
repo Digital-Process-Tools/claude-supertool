@@ -74,13 +74,17 @@ def test_full_flag_keeps_full_body(monkeypatch, capsys) -> None:
 
 
 def test_default_caps_at_10_comments(monkeypatch, capsys) -> None:
+    """Ten of fifteen, and since #738 they are the first three and the last
+    seven rather than the last ten — so the comment that vanishes is one from
+    the middle, not the opening one."""
     comments = [_comment(f"u{i}", f"msg-{i}") for i in range(15)]
     _install_fakes(monkeypatch, body="d", comments=comments)
     monkeypatch.setattr(sys, "argv", ["issue.py", "42"])
     issue.main()
     out = capsys.readouterr().out
     assert "msg-14" in out
-    assert "msg-0" not in out
+    assert "msg-0" in out
+    assert "msg-5" not in out
     assert "use :full" in out
 
 

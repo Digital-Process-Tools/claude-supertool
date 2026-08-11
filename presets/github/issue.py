@@ -554,11 +554,17 @@ def main() -> int:
         if body_withheld:
             print(f"\n{_body.cut_notice(body_withheld)}")
 
-    # Comments — gh gives them directly in the issue JSON
+    # Comments — gh gives them directly in the issue JSON. The capped render
+    # keeps the first three and the last seven rather than one end of the
+    # thread, and marks the seam between them (#738) — see
+    # presets/_body.comment_window for why neither end alone is the answer.
     comments = d.get("comments", [])
-    shown = comments if full else comments[-_body.COMMENT_TAIL:]
+    shown, gap_hidden = ((list(comments), 0) if full
+                         else _body.comment_window(comments))
     print(f"\n{_body.comments_heading(len(shown), len(comments))}")
-    for comment in shown:
+    for position, comment in enumerate(shown):
+        if gap_hidden and position == _body.COMMENT_HEAD:
+            print(f"\n{_body.comments_gap_notice(gap_hidden)}")
         c_author = _untrusted.flat((comment.get("author") or {}).get("login", "?"))
         c_body = comment.get("body") or ""
         # The truncation notice is supertool's, so it is printed outside the
