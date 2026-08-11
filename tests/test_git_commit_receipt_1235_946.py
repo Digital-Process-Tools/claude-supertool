@@ -227,36 +227,34 @@ def test_a_multi_line_decoy_in_an_ops_own_output_is_not_a_failure(
 ) -> None:
     """Widening the marker must not widen what counts as this call failing.
 
-    The marker is anchored to the call's own header, which is at position 0.
     A `--- … ---` block followed by `ERROR: ` deeper inside an op's OUTPUT is
-    the caller's content — a grep hit, a quoted receipt, a diff — and the old
-    pattern could not reach it because it could not cross a newline. The
-    fix must not hand that reach over as a side effect.
+    the caller's content — a grep hit, a quoted receipt, a diff. Since #1291
+    the verdict is taken from the op's own return value before a header is
+    prepended, so the reach the marker briefly had does not exist to guard
+    against: nothing past the first token is looked at.
     """
     body = (
-        "--- read:notes.md ---\n"
         "PASS (0.01s)\n"
         "--- a quoted header\n"
         "spanning two lines ---\n"
         "ERROR: this is quoted text, not this call's verdict\n"
     )
-    assert supertool._body_indicates_failure(body) is False, body
-    real = "--- git-commit:::subject\nbody ---\nERROR: nothing staged\n"
-    assert supertool._body_indicates_failure(real) is True, real
+    assert supertool._op_body_failed(body) is False, body
+    assert supertool._op_body_failed("ERROR: nothing staged\n") is True
 
 
-def test_the_marker_does_not_rescan_from_every_diff_hunk_header() -> None:
+def test_the_verdict_does_not_scan_a_diff_shaped_receipt_at_all() -> None:
     """A `git-diff` receipt is thousands of lines starting `--- a/path`.
 
-    A lazily-quantified `re.search` retries from each of them, which is
-    quadratic: measured at 4.0s on a 3000-hunk body against 0.0013s before,
-    on every dispatch body. The bound is three orders of magnitude above the
-    anchored cost so a slow runner cannot redden this, and three orders below
-    the searching form's.
+    A lazily-quantified `re.search` retried from each of them, which is
+    quadratic: measured at 4.0s on a 3000-hunk body against 0.0013s, on every
+    dispatch body. The anchored match reads the first few characters and
+    stops, so the size of the receipt is not an input at all. The bound is
+    three orders above the anchored cost and three below the searching form's.
     """
-    body = "--- diff:a:b ---\nPASS (0.1s)\n" + (
+    body = "PASS (0.1s)\n" + (
         "--- a/src/file.py\n+++ b/src/file.py\n@@ -1 +1 @@\n-x\n+y\n" * 4000
     )
     start = time.monotonic()
-    assert supertool._body_indicates_failure(body) is False
+    assert supertool._op_body_failed(body) is False
     assert time.monotonic() - start < 2.0

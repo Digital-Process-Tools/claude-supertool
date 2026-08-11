@@ -18615,7 +18615,12 @@ def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) ->
     threaded CPython (3.13t+) don't share/corrupt each other's count.
     """
     depth = getattr(_DISPATCH_STATE, "depth", 0)
+    # Cleared by the OUTERMOST frame only: a batch sub-op that refuses has to
+    # be able to set a flag its parent still carries when it returns.
+    if depth == 0:
+        _DISPATCH_STATE.call_failed = False
     if depth >= _DISPATCH_MAX_DEPTH:
+        _mark_op_failure()
         return (
             f"ERROR: dispatch recursion limit ({_DISPATCH_MAX_DEPTH}) exceeded "
             f"— check for a self-referencing batch payload\n"
@@ -18646,6 +18651,23 @@ def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) ->
         # already died. The outermost frame owns the reset either way.
         if depth == 0:
             _FORMATTER_SKIPS.clear()
+
+
+def dispatch_verdict(
+    arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None
+) -> "Tuple[str, bool]":
+    """`dispatch`, plus the structural answer to "did this call refuse".
+
+    The verdict is set by whichever frame produced the refusal — this one, or
+    a batch sub-op nested under it — and read back off the same thread. It is
+    never re-derived from the string returned here (#1291).
+    """
+    # One positional argument when there is nothing else to pass, because
+    # `main` has always called `dispatch(arg)` and both the tests and the MCP
+    # layer monkeypatch it with that arity. Widening the call here would have
+    # been a compatibility break bought for nothing.
+    out = dispatch(arg) if pre_parsed is None else dispatch(arg, pre_parsed)
+    return out, _call_failed()
 
 
 def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) -> str:
@@ -18723,17 +18745,24 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         )
     ):
         if len(parts) > 2:
-            return header + (
+            return _receipt(header, (
                 f"ERROR: {op}:@... takes the @reference as the only argument "
                 f"(e.g. {op}:@payload.toml or {op}:@-). Put fields in the "
                 f"payload, not on the colon CLI.\n"
-            )
+            ))
         try:
             _read_payload = _load_at_file(parts[1], note=False)
         except ValueError as _e:
+            _mark_op_failure()
             return header + _take_payload_warnings() + f"ERROR: {_e}\n"
-        return header + _take_payload_warnings() + _read_op_from_payload(
+        # The warnings lead the body, so the verdict is taken from the op's
+        # own answer rather than from whatever ends up first on the line.
+        _read_warnings = _take_payload_warnings()
+        _read_body = _read_op_from_payload(
             op, _read_payload, no_exclude=no_exclude)
+        if _op_body_failed(_read_body):
+            _mark_op_failure()
+        return header + _read_warnings + _read_body
 
     # @file route — 'op:@path' or 'op:@-' (stdin).
     # Load JSON, rebuild parts list, then fall through to the normal handlers.
@@ -18745,12 +18774,12 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         and _at_file_fields(op)
     ):
         if len(parts) > 2:
-            return header + (
+            return _receipt(header, (
                 f"ERROR: {op}:@... takes the @reference as the only argument "
                 f"(e.g. {op}:@payload.json or {op}:@-). Put fields in the "
                 f"JSON/TOML payload, not on the colon CLI."
                 + _at_file_payload_hint(op) + chr(10)
-            )
+            ))
         try:
             payload = _load_at_file(parts[1])
             parts, _at_file_replace_all = _at_file_to_parts(op, payload)
@@ -18857,7 +18886,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         parts[_pos] for _pos in _PATH_ARG_POSITIONS.get(op, ()) if _pos < len(parts)
     )
     if _containment:
-        return header + _containment
+        return _receipt(header, _containment)
 
     try:
         if op == "read":
@@ -18872,12 +18901,13 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 elif _READ_RANGE_RE.fullmatch(parts[2]):
                     r_start, r_end = (int(x) for x in parts[2].split("-"))
                     if r_start < 1:
-                        return header + "ERROR: read range START must be >= 1\n"
+                        return _receipt(
+                            header, "ERROR: read range START must be >= 1\n")
                     if r_end < r_start:
-                        return header + (
+                        return _receipt(header, (
                             f"ERROR: read range END ({r_end}) is before "
                             f"START ({r_start})\n"
-                        )
+                        ))
                     offset = r_start - 1
                     limit = r_end - r_start + 1
                     range_form = True
@@ -18889,10 +18919,10 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 elif parts[3].startswith("grep="):
                     pass  # picked up by the filter scan below
                 elif range_form:
-                    return header + (
+                    return _receipt(header, (
                         f"ERROR: read:PATH:START-END takes no LIMIT "
                         f"(got {parts[3]!r}) — the range already bounds it\n"
-                    )
+                    ))
                 else:
                     limit = int(parts[3])
             # The filter can land in any trailing slot: parts[4] for the
@@ -18916,12 +18946,12 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             # itself the existence oracle this gate exists to close.
             _contained = _containment_error([path])
             if _contained:
-                return header + _contained
+                return _receipt(header, _contained)
             if limit == 0:
-                return header + _GREP_ZERO_LIMIT
+                return _receipt(header, _GREP_ZERO_LIMIT)
             _hint = _colon_split_hint("grep", pattern, path)
             if _hint:
-                return header + _hint
+                return _receipt(header, _hint)
             body = op_grep(pattern, path, limit, context, count_only,
                            no_exclude=no_exclude, no_auto_read=no_auto_read)
         elif op == "grep_around":
@@ -18932,7 +18962,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             ga_context = int(parts[3]) if len(parts) > 3 and parts[3] else 3
             ga_limit = int(parts[4]) if len(parts) > 4 and parts[4] else 10
             if ga_limit == 0:
-                return header + _GREP_ZERO_LIMIT
+                return _receipt(header, _GREP_ZERO_LIMIT)
             body = op_grep(ga_pattern, ga_path, ga_limit, ga_context,
                            count_only=False, no_exclude=no_exclude)
         elif op == "wc":
@@ -18969,13 +18999,13 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             # once promotion has turned it into a filename — and still runs.
             _contained = _containment_error([path])
             if _contained:
-                return header + _contained
+                return _receipt(header, _contained)
             _delegated = _around_line_delegation(pattern, path, n)
             if _delegated:
-                return header + _delegated
+                return _receipt(header, _delegated)
             _hint = _colon_split_hint("around", pattern, path)
             if _hint:
-                return header + _hint
+                return _receipt(header, _hint)
             body = op_around(pattern, path, n)
         elif op == "map":
             path = parts[1] if len(parts) > 1 else "."
@@ -19007,7 +19037,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     path = ":".join(parts[4:])
                     _contained = _containment_error([path])
                     if _contained:
-                        return header + _contained
+                        return _receipt(header, _contained)
                     # between:re rejoins RIGHTWARD, so a ':' in START or END
                     # steals from the path rather than from the pattern — the
                     # opposite of grep/around, and the reason it needs its own
@@ -19021,7 +19051,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                         call_prefix=f"between:re:{start_pat}:{end_pat}",
                     )
                     if _hint:
-                        return header + _hint
+                        return _receipt(header, _hint)
                     body = op_between_pattern(start_pat, end_pat, path)
                 else:
                     body = ("ERROR: between:re: requires START:END:PATH "
@@ -19040,14 +19070,14 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 # itself the existence oracle this gate exists to close.
                 _contained = _containment_error([path])
                 if _contained:
-                    return header + _contained
+                    return _receipt(header, _contained)
                 _range_hint = _between_numeric_hint(parts)
                 if _range_hint:
-                    return header + _range_hint
+                    return _receipt(header, _range_hint)
                 _hint = _colon_split_hint("between", symbol, path,
                                           keys=("symbol",))
                 if _hint:
-                    return header + _hint
+                    return _receipt(header, _hint)
                 body = op_between_symbol(symbol, path)
             else:
                 body = ("ERROR: between requires SYMBOL:PATH or "
@@ -19184,6 +19214,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                     if not isinstance(_item, dict):
                                         err = f"ERROR: each batch op must be a JSON object, got {type(_item).__name__}\n"
                                         results.append(err)
+                                        _mark_op_failure()
                                         if not continue_on_error:
                                             break
                                         continue
@@ -19191,6 +19222,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                     if not _sub_op:
                                         err = "ERROR: batch op missing 'op' field\n"
                                         results.append(err)
+                                        _mark_op_failure()
                                         if not continue_on_error:
                                             break
                                         continue
@@ -19212,13 +19244,20 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                         _read_target = str(
                                             _read_payload_fields.get("path", "") or ""
                                         )
+                                        # Dispatched straight to the op, so
+                                        # no frame exists to take the verdict.
+                                        # Taken here instead, off the op's own
+                                        # return value (#1291).
+                                        _read_body = _read_op_from_payload(
+                                            _sub_op, _read_payload_fields
+                                        )
+                                        if _op_body_failed(_read_body):
+                                            _mark_op_failure()
                                         _sub_result = (
                                             "--- "
                                             + _payload_header_arg(_sub_op, _read_target)
                                             + " ---\n"
-                                            + _read_op_from_payload(
-                                                _sub_op, _read_payload_fields
-                                            )
+                                            + _read_body
                                         )
                                         results.append(_sub_result)
                                         if not continue_on_error and _sub_result.split("\n")[1:2] and (
@@ -19232,6 +19271,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                         except ValueError as _ve:
                                             err = f"ERROR: {_ve}\n"
                                             results.append(err)
+                                            _mark_op_failure()
                                             if not continue_on_error:
                                                 break
                                             continue
@@ -19267,12 +19307,26 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                         _fields, _order_err = _ordered_batch_fields(_sub_op, _item)
                                         if _order_err:
                                             results.append(_order_err)
+                                            _mark_op_failure()
                                             if not continue_on_error:
                                                 break
                                             continue
                                         _sub_arg = ":".join([_sub_op] + _fields) if _fields else _sub_op
                                     _sub_result = dispatch(_sub_arg, pre_parsed=_sub_pre_parsed)
                                     results.append(_sub_result)
+                                    # NOT the call's verdict — that was taken
+                                    # inside the frame above and is already in
+                                    # `_call_failed()`. This is `continue_on_
+                                    # error`'s own question, and it is still
+                                    # answered by line-indexing the rendered
+                                    # string, so a sub-op argument holding a
+                                    # newline puts the header on line 1 and the
+                                    # batch runs on. Same mechanism as #1291
+                                    # and deliberately not folded into it:
+                                    # `_call_failed()` cannot tell `ERROR` from
+                                    # `FAIL`, so reusing it here would silently
+                                    # widen what stops a batch. Left for its
+                                    # own decision.
                                     if not continue_on_error and _sub_result.split("\n")[1:2] and (
                                         _sub_result.split("\n")[1].startswith("ERROR")
                                     ):
@@ -19302,7 +19356,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 # through the same helper.
                 _v_contained = _containment_error(v_files)
                 if _v_contained:
-                    return header + _v_contained
+                    return _receipt(header, _v_contained)
                 body = op_validate_multi(v_files, v_tools or None, verbose=v_verbose)
             else:
                 body = op_validate(v_path, v_tools or None, verbose=v_verbose)
@@ -19385,6 +19439,24 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     body = _unknown_op_message(op)
     except (ValueError, IndexError) as e:
         body = f"ERROR: argument parsing: {e}\n"
+
+    # The verdict, taken here and nowhere else. `body` is what the op RETURNED
+    # and the header has not been prepended yet, so the boundary this used to
+    # go looking for is not in question. Everything below only decorates the
+    # receipt — payload warnings lead it, a batch's `[result]` leads it — and
+    # each of those pushes the verdict token off the line a body scan reads.
+    #
+    # A preset op is not a second population. `_resolve_custom_op` records
+    # `result.returncode == 0` in `_CUSTOM_OP_OK` at the subprocess, and the
+    # `FAIL (…)` line is rendered FROM that boolean rather than the other way
+    # round. Where it stays None the op never reached a child — a timeout, an
+    # OSError, a malformed `ops` entry — and the string it returned is then
+    # the only statement in existence about what happened.
+    if _custom_op_ok is not None:
+        if not _custom_op_ok:
+            _mark_op_failure()
+    elif _op_body_failed(body):
+        _mark_op_failure()
 
     # Fire read-op notifiers (mutating ops already fire inside _run_with_validators)
     try:
@@ -20547,22 +20619,23 @@ def _main(argv: List[str]) -> int:
             from concurrent.futures import ThreadPoolExecutor
             max_workers = min(workers, len(argv))
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                bodies = list(ex.map(dispatch, argv))
+                answers = list(ex.map(dispatch_verdict, argv))
         else:
-            bodies = [dispatch(a) for a in argv]
+            answers = [dispatch_verdict(a) for a in argv]
     finally:
         if defer:
             _DEFER_FORMATTERS = False
 
+    bodies = [_b for _b, _ in answers]
     refused = 0
     # `any_failure` has more than one source, and the tally below must not
     # attribute all of it to the ops it counted. See the three counter checks
     # further down.
     counter_failure = False
-    for body in bodies:
+    for body, op_failed in answers:
         sys.stdout.write(body)
         total_out_bytes += len(body.encode("utf-8"))
-        if _body_indicates_failure(body):
+        if op_failed:
             any_failure = True
             refused += 1
 
@@ -20578,8 +20651,8 @@ def _main(argv: List[str]) -> int:
             total_out_bytes += len(validator_drain_out.encode("utf-8"))
 
     # A declined op is a failure even when its receipt never said ERROR (#680).
-    # `_body_indicates_failure` reads the first content line, which catches
-    # `edit`'s no-match but not `replace`'s "(0 occurrences of 'x' found)" — so
+    # The verdict above is the op's own return token, which catches `edit`'s
+    # no-match but not `replace`'s "(0 occurrences of 'x' found)" — so
     # `batch: && git commit` committed a half-applied set and exited 0. The
     # counter is the authority here precisely because it does not read prose.
     if _SKIP_COUNT[0] > _skips_at_entry:
@@ -20631,7 +20704,7 @@ def _main(argv: List[str]) -> int:
     if len(bodies) > 1 and any_failure:
         if counter_failure and refused:
             # Both kinds of failure at once, and this is the branch that has to
-            # say the least. `refused` counts first-line ERROR/FAIL markers;
+            # say the least. `refused` counts ops that returned a refusal;
             # the counters catch the failures that render as ordinary prose —
             # `replace`'s `(0 occurrences ...)`, an edit a validator reverted.
             # An op can therefore be outside `refused` and still not have
@@ -20671,75 +20744,82 @@ def _main(argv: List[str]) -> int:
     return 1 if any_failure else 0
 
 
-# Op failure marker — matches FAIL/ERROR emitted by supertool itself, not
-# user content that happens to contain those words. Anchored to the line
-# immediately after the '--- op:args ---' header so a grep result returning
-# a line starting with 'ERROR:' won't trigger a false-positive exit code.
+# The op's own verdict token, matched at POSITION 0 of the string an op
+# returned. Never against a rendered receipt.
 #
-# `[\s\S]*?` rather than `[^\n]*`, because THE HEADER IS NOT ONE LINE. It is
-# `--- {arg} ---`, and `arg` is whatever the caller typed: a multi-line commit
-# message puts newlines inside it. `[^\n]*` cannot cross one, so the marker
-# never matched and every failing op whose argument held a newline exited 0
-# (#1235). Measured 2026-08-10: `git-commit:::subject` refused and exited 1;
-# the same refusal with one body line added exited 0. That is a refusal a hook
-# or a `&&` chain reads as a success, on exactly the multi-line messages this
-# repo's commit conventions ask for.
+# The exit code used to be re-derived from `header + body` by locating where
+# the header ended — and the header is `--- {arg} ---`, holding whatever the
+# caller typed. That made the verdict a function of the argument, and it was
+# wrong in both directions (#1291):
 #
-# Kept exactly as it was, and it still searches: a `batch:` body carries its
-# sub-ops' headers deeper in, and a failing sub-op has flipped the exit code
-# since long before #1235. Linear, and unchanged in behaviour.
-_FAIL_MARKER = re.compile(r"^---[^\n]*\n(FAIL\b|ERROR:\s)", re.MULTILINE)
-
-# The verdict word, once the header's own close has been located by hand.
-_FAIL_AFTER_HEADER = re.compile(r"(FAIL\b|ERROR:\s)")
-
-# `--- {arg} ---\n`. Found with `str.find` rather than a lazy regex, and this
-# is the whole of why the multi-line case is not a second regex:
+#  - a `re.search` for a `---` line followed by `FAIL`/`ERROR: ` over the
+#    whole body fired on an argument that spanned lines with an error-shaped
+#    continuation, so a `grep` that found nothing exited 1 — and #1284's tally
+#    then said "1 refused" in words, an explicit false sentence off a false
+#    bit;
+#  - taking the header's close to be the FIRST `" ---" + newline` put that
+#    close inside the argument whenever the argument held such a line, so the
+#    verdict was read off the wrong line and a refusal exited 0. Reachable
+#    from this repo's own commit convention — a message quoting an op receipt
+#    — which is #1279 restored on exactly the messages the convention asks
+#    for.
 #
-#  - a lazy `[\s\S]*?` under `re.search` retries from every line beginning
-#    `--- `, which is O(n²). A `git-diff` receipt is thousands of `--- a/path`
-#    hunk headers: measured on a 255KB diff-shaped body with 3000 of them, the
-#    searched form took 4.0s against 0.0013s for the single-line one, and
-#    doubling the line count quadrupled it. This runs on every dispatch body.
-#  - even anchored at position 0 the lazy form BACKTRACKS past the real close
-#    when what follows it is not a verdict, so a `--- … ---` block deeper in
-#    an op's own OUTPUT — a grep hit, a quoted receipt, a diff — flipped the
-#    exit code of a call that had succeeded. That reach is surface the old
-#    pattern never had, because it could not cross a newline at all.
-_HEADER_CLOSE = " ---\n"
+# The docstring that shipped with the previous version claimed a trade: a
+# narrow false negative in the argument, against a wide false positive in the
+# output. It had taken both, and the false negative was not narrow.
+#
+# There is nothing left to search for. `_dispatch_impl` holds the op's return
+# value before it prepends a header to it, so the boundary is a fact rather
+# than a guess. The match being anchored also disposes of the quadratic rescan
+# a lazy search cost on a diff-shaped body — 4.0s on 255KB of `--- a/path`
+# hunk headers against 0.0013s (#1279) — because this reads at most the first
+# few characters however large the receipt grows.
+_OP_VERDICT_FAIL = re.compile(r"(FAIL\b|ERROR:\s)")
 
 
-def _body_indicates_failure(body: str) -> bool:
-    """True iff the dispatch body's first content line starts with FAIL or ERROR:.
+def _op_body_failed(body: str) -> bool:
+    """Did the op that returned *body* refuse?
 
-    Intentionally narrow: only the line immediately after a '--- header ---'
-    counts. Deeper FAIL/ERROR strings are user content and must not flip the
-    process exit code.
-
-    A header is not always one line. `--- {arg} ---` holds whatever the caller
-    typed, and a multi-line commit message puts newlines inside it — so the
-    single-line pattern never matched and every failing op with a newline in
-    its argument exited 0 (#1235). The second arm below answers that: the
-    header is the first thing in the body and its close is the FIRST
-    `" ---\n"`, both of which are facts rather than searches.
-
-    **The residual, stated rather than hidden.** An argument whose own text
-    contains a line ending in ` ---` moves that first close earlier, and this
-    would then read the wrong line and report a refusal as a success. That is
-    the same direction as the bug being fixed, and it is accepted here because
-    the alternative — scanning on for a later close — is what let an op's
-    OUTPUT flip the exit code, and output is far more reachable than an
-    argument: every `grep` over this repo's own docs contains such a line.
-    Narrow false negative, or wide false positive; this takes the narrow one.
+    The op-return convention, and the only channel a builtin has: every op
+    returns `str`, and a refusal is a string that starts `ERROR: ` or `FAIL`.
+    So this reads the first token of what the op returned — not the receipt
+    later built around it, and not any line further in, which is the caller's
+    own content.
     """
-    if _FAIL_MARKER.search(body) is not None:
-        return True
-    if not body.startswith("--- "):
-        return False
-    close = body.find(_HEADER_CLOSE)
-    if close < 0:
-        return False
-    return _FAIL_AFTER_HEADER.match(body, close + len(_HEADER_CLOSE)) is not None
+    return _OP_VERDICT_FAIL.match(body) is not None
+
+
+def _receipt(header: str, body: str) -> str:
+    """Assemble a receipt, taking the call's verdict on the way.
+
+    `_dispatch_impl` returns early at eighteen refusal and redirect gates
+    before it reaches the main verdict point, and each one had its refusal
+    read back out of the rendered string it had just built. Passing the two
+    halves separately is what makes the boundary a fact rather than a search
+    — which is the whole of #1291.
+    """
+    if _op_body_failed(body):
+        _mark_op_failure()
+    return header + body
+
+
+def _mark_op_failure() -> None:
+    """Record, at the frame that knows it, that this call refused.
+
+    Thread-local rather than a process-global counter, unlike `_SKIP_COUNT`
+    and `_ROLLBACK_COUNT` beside it: those are per-call deltas collapsed into
+    one bit, and this one has to stay attributable to a single top-level op so
+    #1284's tally can say how many of N refused. Batch sub-ops recurse through
+    `dispatch` on the calling thread, and parallel dispatch runs each
+    top-level op start to finish on one worker, so a frame at any depth may
+    set it and only depth 0 clears it.
+    """
+    _DISPATCH_STATE.call_failed = True
+
+
+def _call_failed() -> bool:
+    """The flag `_mark_op_failure` sets, for the frame that owns this call."""
+    return bool(getattr(_DISPATCH_STATE, "call_failed", False))
 
 
 def _cli() -> int:
