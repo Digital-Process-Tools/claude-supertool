@@ -84,6 +84,11 @@ The preset definition is still in effect; the project entry merges these keys ov
 - dashboard  preset dashboard  + lane_prefix
 - git-diff   preset git        + red_flags_extra
 - radar      preset watch      + radar_tiers
+```
+
+Three answers sit in that last column, not two: the keys the project supplied, `(replaced wholesale)` when the project entry was not a table and replaced the shipped definition outright, and `(merged, no keys)` when it merged and changed nothing. The middle one is the only case where the preset's `cmd` and `syntax` are gone.
+
+```
 
 ### From presets (46)
 - gh-issue            preset github
@@ -127,7 +132,9 @@ INCOMPLETE: this listing may be missing ops.
 
 In a batched call stderr is somewhere else entirely, and a short list and a complete one are byte-identical apart from the rows that are absent. Same rule as the rest of the tool: three states, not two.
 
-A config that declares `"presets"` but never passed through the loader is a third case — the population is right but nothing can be attributed. Those ops render under `### Source not known`, with the reason in the `INCOMPLETE` block. They are never quietly reported as project-only.
+A config that declares `"presets"` but never passed through the loader is a third case: no preset op was ever merged in, so the listing holds only whatever the raw `"ops"` section carried — short *and* unattributable. Those ops render under `### Source not known`, with both facts in the `INCOMPLETE` block. They are never quietly reported as project-only.
+
+A `"presets"` value that is not a list is the same shape one step earlier. Nothing is merged, so the config asked for ops that are now absent; the loader records that as a preset warning and `registry` prints it rather than going on to report a complete set.
 
 ## `gc` — cache retention
 

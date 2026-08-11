@@ -81,8 +81,8 @@ class TestOneMergeRule:
         _preset(tmp_path, "p", {"widget": {"cmd": "c", "syntax": "widget:PATH"}})
         config = fresh_config(tmp_path, {
             "presets": ["p"], "ops": {"widget": {"tint": "blue"}}})
-        assert config["ops"]["widget"] == supertool._merge_op_def(
-            {"cmd": "c", "syntax": "widget:PATH"}, {"tint": "blue"})
+        assert config["ops"]["widget"] == {
+            "cmd": "c", "syntax": "widget:PATH", "tint": "blue"}
 
 
 class TestTheEffectiveRegistry:
@@ -128,6 +128,32 @@ class TestTheEffectiveRegistry:
         assert widget.preset == "p"
         assert widget.project is False
 
+    def test_a_dict_over_a_string_preset_def_is_not_a_key_merge(
+            self, tmp_path: Path, fresh_config) -> None:
+        """A preset may ship an op as a bare cmd string. A dict landing on one
+        replaces it wholesale — `_merge_op_def` needs BOTH sides to be dicts —
+        so there is no per-key answer to give, and claiming one would attribute
+        keys to a preset definition that no longer exists."""
+        _preset(tmp_path, "p", {"widget": "echo shipped"})
+        fresh_config(tmp_path, {
+            "presets": ["p"], "ops": {"widget": {"tint": "blue"}}})
+        widget = _by_name(supertool._op_registry()[0])["widget"]
+        assert widget.definition == {"tint": "blue"}
+        assert widget.overridden is None, (
+            "reported a key-by-key merge over a preset definition that was "
+            "replaced outright")
+
+    def test_an_override_that_changes_nothing_is_not_a_wholesale_replace(
+            self, tmp_path: Path, fresh_config) -> None:
+        """`()` and `None` are different answers and the render must not fuse
+        them: an empty dict override leaves the preset definition entirely
+        intact."""
+        _preset(tmp_path, "p", {"widget": {"cmd": "c"}})
+        fresh_config(tmp_path, {"presets": ["p"], "ops": {"widget": {}}})
+        widget = _by_name(supertool._op_registry()[0])["widget"]
+        assert widget.overridden == ()
+        assert "replaced wholesale" not in supertool.op_registry()
+
 
 class TestAWalkThatCannotEnumerateSaysSo:
     """The failure this exists to prevent: a short population, no marker."""
@@ -151,6 +177,19 @@ class TestAWalkThatCannotEnumerateSaysSo:
         fresh_config(tmp_path, {"presets": ["bad"], "ops": {}})
         _, incomplete = supertool._op_registry()
         assert any("bad" in r for r in incomplete), incomplete
+
+    def test_a_malformed_presets_value_is_not_silence(
+            self, tmp_path: Path, fresh_config) -> None:
+        """`"presets": "p"` is truthy and not a list, so no preset op is ever
+        merged. Reporting every remaining op as complete project attribution
+        turns a config error into a registry that looks whole."""
+        _preset(tmp_path, "p", {"widget": {"cmd": "c"}})
+        fresh_config(tmp_path, {"presets": "p", "ops": {"solo": {"cmd": "s"}}})
+        entries, incomplete = supertool._op_registry()
+        assert [e.name for e in entries] == ["solo"]
+        assert incomplete, (
+            "a presets declaration that merged nothing reported a complete "
+            "registry")
 
     def test_provenance_it_never_computed_is_unknown_not_absent(
             self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -217,8 +256,12 @@ class TestTheRender:
         fresh_config(tmp_path, {
             "presets": ["p"], "ops": {"widget": {"tint": "blue"}}})
         out = supertool.op_registry("widget")
-        assert "cmd" in out and "syntax" in out and "tint" in out
-        assert "p" in out
+        # The key name alone proves nothing — the op of this render is the
+        # source label beside it.
+        rows = {line.split()[1]: " ".join(line.split()[2:])
+                for line in out.splitlines() if line.startswith("- ")}
+        assert rows == {"cmd": "preset p", "syntax": "preset p",
+                        "tint": "project"}, out
 
     def test_an_unknown_name_is_refused_not_rendered_empty(
             self, tmp_path: Path, fresh_config) -> None:

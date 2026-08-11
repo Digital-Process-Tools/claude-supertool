@@ -717,15 +717,30 @@ def _merge_op_def(base: Any, override: Any) -> Any:
     So: one function, and `_op_registry` renders what it produced rather than
     recomputing it.
     """
-    if isinstance(base, dict) and isinstance(override, dict):
+    if _merges_key_by_key(base, override):
         merged = dict(base)
         merged.update(override)
         return merged
     return override
 
 
+def _merges_key_by_key(base: Any, override: Any) -> bool:
+    """Will this override merge into the base, or replace it outright?
+
+    A predicate rather than an inlined `isinstance` pair because two callers
+    ask it and they must never disagree: `_merge_op_def` decides what lands in
+    the registry, `_record_op_sources` decides what the registry says happened.
+    The first version asked only whether the *override* was a dict, so a dict
+    landing on a preset that ships its op as a bare cmd string was recorded as
+    a key-by-key merge — attributing surviving keys to a definition that had
+    been replaced entirely.
+    """
+    return isinstance(base, dict) and isinstance(override, dict)
+
+
 def _record_op_sources(config: Dict[str, Any],
                        op_presets: Dict[str, str],
+                       preset_bases: Dict[str, Any],
                        project_ops: Dict[str, Any],
                        merged_ops: Dict[str, Any]) -> None:
     """Stamp where each merged op came from, for `_op_registry` to read.
@@ -745,12 +760,13 @@ def _record_op_sources(config: Dict[str, Any],
             continue
         if preset is None:
             overridden: Any = []
-        elif isinstance(override, dict):
+        elif _merges_key_by_key(preset_bases.get(name), override):
             overridden = sorted(override)
         else:
-            # A non-dict override replaced the shipped definition outright, so
-            # there is no per-key answer to give. None, never [] — an empty
-            # list would read as "changed nothing".
+            # The shipped definition was replaced outright — either side being
+            # a non-dict does it — so there is no per-key answer to give.
+            # None, never [] — an empty list means "merged, changed nothing",
+            # which is a different and true thing about a `{}` override.
             overridden = None
         sources[name] = {"preset": preset, "project": True,
                          "overridden": overridden}
@@ -763,11 +779,20 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
     project_ops = config.get("ops", {})
     if not isinstance(project_ops, dict):
         project_ops = {}
-    if not presets or not isinstance(presets, list):
+    if presets is not None and not isinstance(presets, list):
+        # Declared and unusable is not the same as not declared. Nothing gets
+        # merged either way, but here the config asked for ops that are now
+        # absent — so the registry must not go on to report a complete set.
+        config.setdefault("_preset_warnings", []).append(
+            f'"presets" must be a list of preset names, got '
+            f"{type(presets).__name__} — no preset ops were merged")
+        _record_op_sources(config, {}, {}, project_ops, project_ops)
+        return
+    if not presets:
         # No presets to merge, so every op is the project's own — provenance
         # is fully known and must be stamped, or `_op_registry` cannot tell
         # this from a config that never reached the loader at all.
-        _record_op_sources(config, {}, project_ops, project_ops)
+        _record_op_sources(config, {}, {}, project_ops, project_ops)
         return
 
     merged_ops: Dict[str, Any] = {}
@@ -813,11 +838,15 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
             # Preset-vs-preset is a wholesale replace, not a key merge.
             op_presets[op_name] = name
 
-    # Project-level ops override preset ops, by the one shared rule.
+    # Project-level ops override preset ops, by the one shared rule. The
+    # pre-override state is kept: whether an override merged or replaced is a
+    # fact about the base it landed on, and after the loop that base is gone.
+    preset_bases = dict(merged_ops)
     for op_name, op_def in project_ops.items():
         merged_ops[op_name] = _merge_op_def(merged_ops.get(op_name), op_def)
     config["ops"] = merged_ops
-    _record_op_sources(config, op_presets, project_ops, merged_ops)
+    _record_op_sources(config, op_presets, preset_bases, project_ops,
+                       merged_ops)
 
 
 def _load_config() -> Dict[str, Any]:
@@ -13947,7 +13976,9 @@ def _op_registry(config: Dict[str, Any] | None = None
     * provenance stamped by the loader — authoritative,
     * no ``presets`` key at all — every op is the project's own, which is a
       fact derivable without the loader, so still complete,
-    * ``presets`` declared but never merged — provenance *unknown*, reported.
+    * ``presets`` declared but never merged — the population is whatever the
+      raw ``ops`` section held, so it is *both* short and unattributable, and
+      both are reported.
 
     Preset load failures recorded in ``_preset_warnings`` are carried through
     too: those ops are genuinely absent from the list.
@@ -13965,8 +13996,9 @@ def _op_registry(config: Dict[str, Any] | None = None
         if config.get("presets"):
             incomplete.append(
                 "op sources were never recorded — this config declares "
-                "presets but did not pass through the loader, so no op can be "
-                "attributed and shadowing cannot be detected")
+                "presets but did not pass through the loader, so no preset "
+                "op was ever merged in: the list holds only what the raw "
+                '"ops" section carried, and nothing can be attributed')
             sources = {}
         else:
             sources = {n: {"preset": None, "project": True, "overridden": []}
@@ -14118,10 +14150,20 @@ def op_registry(op_name: str = "") -> str:
         lines.append(f"### Shadowed by project config ({len(shadowed)})")
         lines.append("The preset definition is still in effect; the project "
                      "entry merges these keys over it.")
+        # Three states, not two. `None` is a wholesale replace; `()` is a
+        # merge that changed nothing, which leaves the preset definition fully
+        # intact — rendering both as "replaced wholesale" asserts the opposite
+        # of the truth for the second.
+        def _what_the_project_did(e: OpOrigin) -> str:
+            if e.overridden is None:
+                return "(replaced wholesale)"
+            if not e.overridden:
+                return "(merged, no keys)"
+            return ", ".join(e.overridden)
+
         _rows(shadowed, lambda e: (
             f"preset {(e.preset or '').ljust(preset_width)}  + "
-            + (", ".join(e.overridden) if e.overridden
-               else "(replaced wholesale)")))
+            + _what_the_project_did(e)))
     if from_preset:
         lines.append(f"### From presets ({len(from_preset)})")
         _rows(from_preset, lambda e: f"preset {e.preset}")
