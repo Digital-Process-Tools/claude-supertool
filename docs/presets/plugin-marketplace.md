@@ -62,6 +62,7 @@ A `skipped` catalogue never renders as a row saying absent, in its own row or in
 ## What each row says
 
 ```
+# sample output, measured 2026-08-11 -- the shas and counts below are that run's, not today's
 plugin-marketplace -- supertool 0.33.0, local HEAD 6a6347e
 
 community  anthropics/claude-plugins-community
