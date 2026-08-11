@@ -73,8 +73,8 @@ community  anthropics/claude-plugins-community
 ```
 
 - **`pinned`** — the sha, the plugin manifest version *at* that sha, and its date. A sha alone says nothing; the version at it is the thing users have.
-- **`distance`** — commits and tags between the pin and local `HEAD`, resolved from this clone. If the pinned commit is not in this clone the row is `skipped` and says to fetch it.
-- **`bump PRs`** — the catalogue's automation opens one PR per bump, titled `bump(NAME): old -> new`. **The search is printed under its own result**, because that title convention belongs to one repository's workflow and not to the ecosystem: if it is renamed, this renders as a query that found nothing rather than as a plugin that was never bumped. An `OPEN` bump PR gets its own line — that is a bump waiting on review, not a bump that never happened.
+- **`distance`** — commits and tags between the pin and local `HEAD`, resolved from this clone. When it cannot be resolved the row is `skipped` and says which of the two reasons applies: the commit is not in this clone (fetch it), or it is here and carries no `.claude-plugin/plugin.json`, which fetching will not fix. `git show SHA:PATH` exits 128 for both.
+- **`bump PRs`** — the catalogue's automation opens one PR per bump, titled `bump(NAME): old -> new`. **The search is printed under its own result**, because that title convention belongs to one repository's workflow and not to the ecosystem: if it is renamed, this renders as a query that found nothing rather than as a plugin that was never bumped. An `OPEN` bump PR gets its own line — that is a bump waiting on review, not a bump that never happened. Two things the forge's answer needs correcting for, both measured 2026-08-11: **the search is tokenized**, so `bump(claude) in:title` comes back with `bump(claude-mem)`, `bump(claude-hud)`, twelve more siblings and a `ci:` PR merely holding both words — only titles beginning `bump(NAME):` are kept, and the row says `kept N of M returned` whenever that narrowed anything; and **the order is relevance, not time**, since GitHub search defaults to best match with no `sort:` qualifier, so the list is re-sorted here rather than requested that way.
 - **unpinned** — an entry with no `sha` tracks the repository default branch, so every release reaches users at once. That is the *opposite* of a stale pin and is not rendered as a missing one.
 
 Titles come from another repository's tracker, so they are flattened to one line under a single disclosure line, the same trade `gh-prs` and `gl-mrs` make.
@@ -96,6 +96,8 @@ Two things it deliberately says out loud:
 
 - **which tree it read.** `claude plugin validate` examines the working tree, uncommitted edits included. The automation validates the pushed sha it is about to pin. A green about the wrong tree is this repo's defect class wearing a CLI's exit code.
 - **an absent `claude` CLI is `skipped` with its reason** — never a pass, never a failure. The gate section is omitted entirely for `plugin-marketplace:NAME`, since validating this working tree says nothing about somebody else's plugin.
+
+A skipped gate does **not** red the op. It is evidence beside the question rather than the question, `claude` is not in this preset's `requires`, and a machine without it should not turn an op whose catalogues all answered into a failure. Exit 1 is reserved for a catalogue that went unread.
 
 ## Judgment calls, and why
 

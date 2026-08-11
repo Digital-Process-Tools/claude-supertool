@@ -28,7 +28,10 @@ So every catalogue resolves to one of three states and never two:
 ``skipped``     the catalogue could not be read, and the reason is printed
 
 A ``skipped`` catalogue never renders as a row saying absent, and the exit
-status is 1 whenever any question went unanswered.
+status is 1 whenever any **catalogue** went unanswered. The gate section below
+is deliberately outside that: it is evidence beside the question rather than
+the question, ``claude`` is not in this preset's ``requires``, and a machine
+without it must not red an op whose catalogues all answered.
 
 What is *not* here
 ------------------
@@ -315,13 +318,29 @@ def fetch_bump_prs(
 
 
 def git_version_at(root: Path, sha: str, run: Callable[..., Any] = _run) -> Tuple[Optional[str], Optional[str]]:
+    # `git show SHA:PATH` exits 128 for two different worlds -- the commit is
+    # not in this clone, or it is and had no manifest at that path -- and only
+    # the first is fixed by fetching. Asking `cat-file -t` first tells them
+    # apart. (`-t` rather than `-e SHA^{commit}`: the caret is nothing to
+    # CreateProcess, but there is no reason to ship one through a Windows
+    # command line to find out.)
+    rc, kind, _ = run(["git", "-C", str(root), "cat-file", "-t", sha], GIT_TIMEOUT)
+    if rc is None:
+        return None, "git is not available here"
+    if rc != 0 or kind.strip() != "commit":
+        return None, "commit %s is not in this clone (fetch it to resolve)" % sha[:8]
+
     rc, out, _ = run(
         ["git", "-C", str(root), "show", "%s:%s" % (sha, PLUGIN_MANIFEST)], GIT_TIMEOUT
     )
     if rc is None:
         return None, "git is not available here"
     if rc != 0:
-        return None, "commit %s is not in this clone (fetch it to resolve)" % sha[:8]
+        return None, (
+            "commit %s is in this clone but carries no %s -- the catalogue is "
+            "pinned to a commit that predates the manifest, or to another tree"
+            % (sha[:8], PLUGIN_MANIFEST)
+        )
     try:
         doc = json.loads(out)
     except ValueError:
@@ -538,14 +557,52 @@ def _pin_rows(
     return rows
 
 
+def keep_own_bumps(prs: Sequence[Dict[str, Any]], plugin: str) -> List[Dict[str, Any]]:
+    """This plugin's bump PRs, newest first.
+
+    Two corrections to what the forge hands back, and neither is cosmetic:
+
+    * **The search is tokenized, not literal.** Measured 2026-08-11 against the
+      community catalogue: `bump(claude) in:title` returns `bump(claude-mem)`,
+      `bump(claude-hud)`, twelve more siblings, and a `ci:` PR that merely holds
+      both words. Taking the raw result as this plugin's history inflates the
+      count and can pick somebody else's PR as "latest". Only a title beginning
+      `bump(NAME):` is this plugin's.
+    * **The result order is relevance, not time.** GitHub search defaults to
+      best-match with no `sort:` qualifier, so `prs[0]` is not the newest bump.
+      Sorting here rather than passing `sort:created-desc` keeps the guarantee
+      local: a qualifier is a request, and this is the answer.
+
+    `createdAt` values are compared as strings deliberately -- they all come
+    from one API in one `...Z` format, so lexical order is chronological order.
+    That is exactly the assumption #1209 broke by comparing `gh`'s `Z` instant
+    against `git`'s `+02:00` one, so it is written down rather than implied.
+    """
+    prefix = "bump(%s):" % plugin
+    mine = [p for p in prs if isinstance(p, dict) and (p.get("title") or "").strip().startswith(prefix)]
+    return sorted(mine, key=lambda p: p.get("createdAt") or "", reverse=True)
+
+
 def _bump_rows(repo: str, plugin: str, run: Callable[..., Any]) -> List[Tuple[str, str]]:
     prs, reason = fetch_bump_prs(repo, plugin, run=run)
     query = bump_query(plugin)
     searched = ("", "searched: %s (limit %d)" % (query, BUMP_PR_LIMIT))
     if prs is None:
         return [("bump PRs", "%s -- %s" % (SKIPPED, reason)), searched]
+
+    returned = len(prs)
+    prs = keep_own_bumps(prs, plugin)
+    rows_extra: List[Tuple[str, str]] = []
+    if returned != len(prs):
+        rows_extra.append((
+            "",
+            "kept %d of %d returned: GitHub search tokenizes, so 'bump(%s)' also "
+            "matches bump(%s-other) and any title holding both words. Only titles "
+            "starting '%s:' are this plugin's."
+            % (len(prs), returned, plugin, plugin, "bump(%s)" % plugin),
+        ))
     if not prs:
-        return [("bump PRs", "none found"), searched]
+        return [("bump PRs", "none found"), searched] + rows_extra
     latest = prs[0]
     when = (latest.get("mergedAt") or latest.get("createdAt") or "")[:10]
     # The title is another repository's tracker text on its way into a render
@@ -561,7 +618,7 @@ def _bump_rows(repo: str, plugin: str, run: Callable[..., Any]) -> List[Tuple[st
         when,
         title,
     )
-    rows = [("bump PRs", row), searched]
+    rows = [("bump PRs", row), searched] + rows_extra
     if any(p.get("state") == "OPEN" for p in prs):
         rows.append(("", "an OPEN bump PR is waiting on review in that catalogue"))
     return rows

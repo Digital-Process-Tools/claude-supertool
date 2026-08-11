@@ -397,3 +397,74 @@ def test_a_bump_pr_title_cannot_add_a_line_or_a_glyph() -> None:
         "the arrow is transliterated, not replaced by '?' -- a mangled sha "
         "diff makes a reader re-check a line that was never damaged"
     )
+
+def test_another_plugins_bump_pr_is_not_counted_as_this_ones() -> None:
+    """GitHub search is tokenized, not literal. Measured 2026-08-11 against the
+    community catalogue: `bump(claude) in:title` returns `bump(claude-mem)`,
+    `bump(claude-hud)`, twelve more siblings, and a `ci:` PR holding both words.
+    Taking that back raw inflates the count and can name somebody else's PR as
+    this plugin's latest bump."""
+    returned = [
+        {"number": 9, "title": "ci: policy scan for bump PRs of supertool", "createdAt": "2026-08-11T00:00:00Z"},
+        {"number": 8, "title": "bump(supertool-extra): aaa → bbb", "createdAt": "2026-08-10T00:00:00Z"},
+        {"number": 1934, "title": "bump(supertool): 796166cc → dcb574ea", "createdAt": "2026-08-08T06:40:04Z"},
+    ]
+    kept = pin.keep_own_bumps(returned, "supertool")
+    assert [p["number"] for p in kept] == [1934]
+
+
+def test_the_latest_bump_pr_is_the_newest_not_the_first_returned() -> None:
+    """`gh pr list --search` with no `sort:` qualifier is ordered by best match,
+    not by time, so `prs[0]` is not the newest bump."""
+    returned = [
+        {"number": 100, "title": "bump(supertool): aaa → bbb", "createdAt": "2026-06-01T00:00:00Z"},
+        {"number": 300, "title": "bump(supertool): ccc → ddd", "createdAt": "2026-08-08T00:00:00Z"},
+        {"number": 200, "title": "bump(supertool): bbb → ccc", "createdAt": "2026-07-01T00:00:00Z"},
+    ]
+    assert [p["number"] for p in pin.keep_own_bumps(returned, "supertool")] == [300, 200, 100]
+
+
+def test_the_search_result_is_narrowed_and_says_so() -> None:
+    """A count silently smaller than what the forge returned is a count nobody
+    can check. Both numbers print, with the reason."""
+
+    def fake_run(argv: Any, timeout: int) -> Any:
+        payload = [
+            {"number": 8, "state": "MERGED", "title": "bump(supertool-extra): a → b", "createdAt": "2026-08-10T00:00:00Z"},
+            {"number": 1934, "state": "MERGED", "title": "bump(supertool): c → d", "createdAt": "2026-08-08T00:00:00Z"},
+        ]
+        return 0, json.dumps(payload), ""
+
+    body = "\n".join(t for _, t in pin._bump_rows("r", "supertool", fake_run))
+    assert "1 found" in body
+    assert "kept 1 of 2 returned" in body
+    assert "#1934" in body
+
+
+def test_a_pin_present_in_the_clone_without_a_manifest_is_not_a_fetch_problem() -> None:
+    """`git show SHA:PATH` exits 128 both when the commit is missing and when
+    the commit is there without that path. Only the first is fixed by fetching,
+    and telling someone to fetch a commit they already have sends them looking
+    in the wrong place."""
+    calls = []
+
+    def fake_run(argv: Any, timeout: int) -> Any:
+        calls.append(argv)
+        if "cat-file" in argv:
+            return 0, "commit\n", ""
+        return 128, "", "fatal: path does not exist"
+
+    version, why = pin.git_version_at(Path("/repo"), "dcb574ea3444", run=fake_run)
+    assert version is None
+    assert why is not None
+    assert "not in this clone" not in why
+    assert "carries no" in why
+
+
+def test_an_unknown_pin_still_says_to_fetch() -> None:
+    def fake_run(argv: Any, timeout: int) -> Any:
+        return 128, "", "fatal: Not a valid object name"
+
+    version, why = pin.git_version_at(Path("/repo"), "dcb574ea3444", run=fake_run)
+    assert version is None
+    assert why is not None and "not in this clone" in why
