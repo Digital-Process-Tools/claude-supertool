@@ -1934,6 +1934,134 @@ def _valid_op_names() -> List[str]:
     return sorted((_BUILTIN_OPS | _DISPATCH_ONLY_OPS | _MAIN_LEVEL_OPS) - {"vi"})
 
 
+# Ops whose intended target is a documented fact rather than a guess (#1303).
+# Two entries, and both carry their evidence:
+#
+# `write` — the harness tool is called `Write`, and
+# `.claude/jit-context/tools/00-manual/harness-tools-blocked.md`, which fires on
+# every `Write` attempt in this repo, maps `Write` to `paste`. The tool taught
+# the mapping in one place and forgot it in the other, so an agent reaching for
+# `write:@-` got the whole builtin roster in alphabetical order, explaining none
+# of it.
+# `vi` — lingers in `_BUILTIN_OPS` from before the op was renamed `vim`, and no
+# branch handles it; `_valid_op_names()` drops it for that reason.
+#
+# Additions belong here only with that kind of receipt. Anything inferable is
+# inferred below instead, where the rule can be stated and argued with.
+_OP_SYNONYMS = {"write": "paste", "vi": "vim"}
+
+# Below four characters, one edit is not a typo signal. `lsx` is one edit from
+# `ls`, `dif` from `diff`, `hea` from `head` and `heap`; suggesting on that is
+# how a refusal sends its reader one round-trip FURTHER from the answer than
+# silence would. Whole-segment matches (`worktrees` -> `git-worktrees`) have no
+# length floor, because a shared segment is not a coincidence.
+_NEAR_MISS_MIN_LEN = 4
+
+# Three at most. A ranked list long enough to need reading is the wall of names
+# this exists to replace.
+_NEAR_MISS_MAX = 3
+
+
+def _within_one_edit(a: str, b: str) -> bool:
+    """True when `a` becomes `b` in one insert, delete, substitute or swap.
+
+    Optimal string alignment distance <= 1, decided directly rather than by
+    building a matrix. The transposition arm is not decoration: `raed` for
+    `read` is two substitutions to Levenshtein and one typo to a human, and
+    adjacent-key swaps are the commonest miss there is.
+    """
+    if a == b:
+        return False
+    la, lb = len(a), len(b)
+    if abs(la - lb) > 1:
+        return False
+    if la == lb:
+        diff = [i for i in range(la) if a[i] != b[i]]
+        if len(diff) == 1:
+            return True
+        return (len(diff) == 2 and diff[1] == diff[0] + 1
+                and a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]])
+    short, long_ = (a, b) if la < lb else (b, a)
+    i = j = 0
+    skipped = False
+    while i < len(short) and j < len(long_):
+        if short[i] == long_[j]:
+            i += 1
+            j += 1
+        elif skipped:
+            return False
+        else:
+            skipped = True
+            j += 1
+    return True
+
+
+def _near_miss_ops(op: str) -> List[Tuple[str, str]]:
+    """Names worth putting in front of a caller who typed `op`, and why each.
+
+    Empty is a real answer and the common one. The bar is not "suggest
+    something" — a wrong name costs the reader a round-trip they would not have
+    spent on silence, and #1424's `misdirects` class is what that looks like
+    when the named remedy is worse than the refusal. So every rule here is one
+    that cannot fire on a coincidence, and a miss under all of them prints
+    nothing rather than the least-bad candidate.
+
+    The candidate set is what is loaded in THIS process — builtins plus the
+    project's and presets' ops — because that is the set the caller may
+    immediately use, and it is already in memory. Shipped-but-not-enabled
+    presets are a second tier and are labelled as such: naming one without
+    saying it is not loaded here would answer a question the caller did not ask.
+    """
+    typed = op.strip().lower()
+    if not typed:
+        return []
+    loaded: Dict[str, str] = {name: "builtin" for name in _valid_op_names()}
+    config = _load_config()
+    sources = config.get("_op_sources") or {}
+    for name in (config.get("ops") or {}):
+        preset = (sources.get(name) or {}).get("preset")
+        loaded[name] = f"preset '{preset}'" if preset else "project op"
+
+    hits: List[Tuple[str, str]] = []
+    seen = set()
+
+    def _add(name: str, why: str) -> None:
+        if name == op or name in seen:
+            return
+        seen.add(name)
+        hits.append((name, why))
+
+    # Case first, and alone. `Read:x` differs from `read` by something that is
+    # certainly not a typo of a third op, and the distance rule cannot see that:
+    # lowercased it is distance 0, which the "not a suggestion for itself" guard
+    # discards, leaving `head` at distance 1 as the top candidate. Returning here
+    # rather than falling through — once the name is known, a runner-up is noise.
+    by_lower = {name.lower(): name for name in loaded}
+    if typed in by_lower:
+        _add(by_lower[typed], loaded[by_lower[typed]])
+        return hits[:_NEAR_MISS_MAX]
+
+    target = _OP_SYNONYMS.get(typed)
+    if target in loaded:
+        _add(target, loaded[target])
+    for name in sorted(loaded):
+        if name.lower().endswith("-" + typed):
+            _add(name, loaded[name])
+    if len(typed) >= _NEAR_MISS_MIN_LEN:
+        for name in sorted(loaded):
+            if _within_one_edit(typed, name.lower()):
+                _add(name, loaded[name])
+    if not hits:
+        for name, preset in sorted(_shipped_preset_ops().items()):
+            if name in loaded:
+                continue
+            if name.lower().endswith("-" + typed) or (
+                    len(typed) >= _NEAR_MISS_MIN_LEN
+                    and _within_one_edit(typed, name.lower())):
+                _add(name, f"preset '{preset}', not loaded here")
+    return hits[:_NEAR_MISS_MAX]
+
+
 def _unknown_op_message(op: str) -> str:
     """Answer "can I do this?" in three states, not two (#614).
 
@@ -1972,8 +2100,15 @@ def _unknown_op_message(op: str) -> str:
             f"or make this call's first op 'cwd:<project-path>'.\n"
             f"       'ops' lists what is loaded here.\n"
         )
-    msg = (f"ERROR: unknown operation: {op}\n"
-           f"Valid operations: {', '.join(_valid_op_names())}\n")
+    msg = f"ERROR: unknown operation: {op}\n"
+    # Above the roster, not instead of it (#1222). The suggestion can still be
+    # wrong; the list cannot, and a reader who has to scroll past 44 names to
+    # reach a candidate has been charged for both.
+    near = _near_miss_ops(op)
+    if near:
+        msg += ("Did you mean: "
+                + ", ".join(f"{name} ({why})" for name, why in near) + "\n")
+    msg += f"Valid operations: {', '.join(_valid_op_names())}\n"
     loaded = _load_config().get("ops") or {}
     if loaded:
         msg += (f"Plus {len(loaded)} project/preset ops loaded from "
@@ -2069,11 +2204,76 @@ _OP_SAFETY_BUILTIN: Dict[str, str] = {
 # `_OP_SAFETY_BUILTIN` above declares the same fact for `ops` output, and
 # tests/test_parallel_safe_writes_1244.py asserts the two cannot drift apart
 # again — two sources for one truth is what filed this.
+#
+# It carried `blame` until #1285, three and a half months after b4099a5 moved
+# that op to the git preset as `git-blame`: four registries needed the deletion
+# and three did not get it. tests/test_registry_names_dispatch_1285.py holds
+# every table here against the dispatcher now, because a name in this one with
+# no dispatch branch is inert only by coincidence — the day a preset or config
+# op is named `blame`, the row applies to it.
 _PARALLEL_SAFE_OPS = {
     "read", "grep", "glob", "ls", "head", "tail", "wc", "stat",
-    "map", "tree", "around", "around_line", "between", "diff", "blame",
+    "map", "tree", "around", "around_line", "between", "diff",
     "version", "validate", "validate_staged", "workspace",
     "resolve", "diag", "hover", "help",
+}
+
+
+# #146: dispatch-level path containment. Each op has a known position(s) of its
+# path arg(s) in `parts`. _safe_path enforces cwd containment unless
+# SUPERTOOL_ALLOW_OUTSIDE_CWD=1 is set. Chokepoint coverage (render_file,
+# _atomic_write) catches internal callers that bypass dispatch (alias expansion,
+# test code calling op_X directly).
+#
+# At module scope since #1285, and not for tidiness: read by `dispatch` and by
+# the drift guard that holds every op registry against the dispatcher. As a
+# local literal it was unreadable from outside the function, so the one table
+# whose rows say *which argument is a path* had no check on its membership.
+_PATH_ARG_POSITIONS = {
+    "read": (1,), "head": (1,), "tail": (1,), "wc": (1,),
+    "stat": (1,), "around_line": (1,), "ls": (1,), "tree": (1,),
+    "map": (1,), "validate": (1,), "format": (1,),
+    "workspace": (1,), "diag": (1,),
+    # grep_around:PATTERN:PATH — parts[2] and nothing else, because its
+    # trailing slots must parse as ints, so a ':' in the pattern fails the
+    # call rather than moving the path.
+    "grep_around": (2,),
+    # `grep` and `around` are deliberately absent: neither keeps its path
+    # in a fixed slot. `_parse_grep_args`/`_parse_around_args` peel the
+    # trailing ints and take `path = args[-1]`, so a ':' anywhere in the
+    # PATTERN pushes the path past slot 2 and the gate saw a pattern
+    # fragment instead — arbitrary read, contents and all (#1166). Read
+    # from the other side it also over-contained: with a ':' in the
+    # pattern, slot 2 IS a pattern fragment, so searching a local file for
+    # an absolute-path string was refused while naming a file the caller
+    # never asked to open. Both branches gate the path they computed.
+    # `glob` is deliberately absent, and until #1366 the absence had no
+    # note beside it — the only unexplained one in a table where `grep`,
+    # `around` and `between` each say why. It read as a decision and was
+    # an oversight: `glob` reached no gate at all, so `glob:/tmp/x/*.txt`
+    # listed what `read:/tmp/x/f.txt` refused. Its slot 1 is a PATTERN,
+    # not a path — magic components, `**`, brace groups — so this table
+    # cannot gate it, and neither can #1287's `_resolve_custom_op`
+    # declaration gate, which only ever sees preset ops. `op_glob` gates
+    # the reach it computes and the matches it got, at the points it has
+    # them; see `_glob_reach`.
+    # hover:SYMBOL:FILE, rename:OLD:NEW:FILE, resolve:SYMBOL[:FROM_FILE]
+    "hover": (2,), "rename": (3,), "resolve": (2,),
+    # diff:PATH1:PATH2
+    "diff": (1, 2),
+    # `between` is deliberately absent: neither of its readings keeps its
+    # path in a fixed slot. Symbol mode takes parts[-1] (a ':' in the
+    # symbol pushes the path past slot 2, and nothing gated parts[3] —
+    # #1163), `re:` mode joins parts[4:] (a ':' in the path leaves only
+    # the first fragment gated). And slot 2 is the START *regex* in the
+    # `re:` reading, so gating it refused a legitimate local slice while
+    # naming a file the caller never asked for (#1164). Both branches
+    # gate the path they computed, at the point they computed it.
+    # check:PRESET:PATH — runs a custom op, path forwarded as {file}.
+    "check": (2,),
+    # mutating ops (also covered by _atomic_write chokepoint):
+    "edit": (3,), "replace": (3,), "replace_dry": (3,),
+    "replace_lines": (1,), "paste": (1,), "append": (1,), "vim": (1,),
 }
 
 
@@ -21461,57 +21661,9 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     _rollbacks_before = _ROLLBACK_COUNT[0]
     _left_on_disk_before = _LEFT_ON_DISK_COUNT[0]
 
-    # #146: dispatch-level path containment. Each op has a known position(s)
-    # of its path arg(s) in `parts`. _safe_path enforces cwd containment
-    # unless SUPERTOOL_ALLOW_OUTSIDE_CWD=1 is set. Chokepoint coverage
-    # (render_file, _atomic_write) catches internal callers that bypass
-    # dispatch (alias expansion, test code calling op_X directly).
-    _PATH_ARG_POSITIONS = {
-        "read": (1,), "head": (1,), "tail": (1,), "wc": (1,),
-        "stat": (1,), "around_line": (1,), "ls": (1,), "tree": (1,),
-        "map": (1,), "blame": (1,), "validate": (1,), "format": (1,),
-        "workspace": (1,), "diag": (1,),
-        # grep_around:PATTERN:PATH — parts[2] and nothing else, because its
-        # trailing slots must parse as ints, so a ':' in the pattern fails the
-        # call rather than moving the path.
-        "grep_around": (2,),
-        # `grep` and `around` are deliberately absent: neither keeps its path
-        # in a fixed slot. `_parse_grep_args`/`_parse_around_args` peel the
-        # trailing ints and take `path = args[-1]`, so a ':' anywhere in the
-        # PATTERN pushes the path past slot 2 and the gate saw a pattern
-        # fragment instead — arbitrary read, contents and all (#1166). Read
-        # from the other side it also over-contained: with a ':' in the
-        # pattern, slot 2 IS a pattern fragment, so searching a local file for
-        # an absolute-path string was refused while naming a file the caller
-        # never asked to open. Both branches gate the path they computed.
-        # `glob` is deliberately absent, and until #1366 the absence had no
-        # note beside it — the only unexplained one in a table where `grep`,
-        # `around` and `between` each say why. It read as a decision and was
-        # an oversight: `glob` reached no gate at all, so `glob:/tmp/x/*.txt`
-        # listed what `read:/tmp/x/f.txt` refused. Its slot 1 is a PATTERN,
-        # not a path — magic components, `**`, brace groups — so this table
-        # cannot gate it, and neither can #1287's `_resolve_custom_op`
-        # declaration gate, which only ever sees preset ops. `op_glob` gates
-        # the reach it computes and the matches it got, at the points it has
-        # them; see `_glob_reach`.
-        # hover:SYMBOL:FILE, rename:OLD:NEW:FILE, resolve:SYMBOL[:FROM_FILE]
-        "hover": (2,), "rename": (3,), "resolve": (2,),
-        # diff:PATH1:PATH2
-        "diff": (1, 2),
-        # `between` is deliberately absent: neither of its readings keeps its
-        # path in a fixed slot. Symbol mode takes parts[-1] (a ':' in the
-        # symbol pushes the path past slot 2, and nothing gated parts[3] —
-        # #1163), `re:` mode joins parts[4:] (a ':' in the path leaves only
-        # the first fragment gated). And slot 2 is the START *regex* in the
-        # `re:` reading, so gating it refused a legitimate local slice while
-        # naming a file the caller never asked for (#1164). Both branches
-        # gate the path they computed, at the point they computed it.
-        # check:PRESET:PATH — runs a custom op, path forwarded as {file}.
-        "check": (2,),
-        # mutating ops (also covered by _atomic_write chokepoint):
-        "edit": (3,), "replace": (3,), "replace_dry": (3,),
-        "replace_lines": (1,), "paste": (1,), "append": (1,), "vim": (1,),
-    }
+    # The table is `_PATH_ARG_POSITIONS`, at module scope. It was a local
+    # literal here until #1285 — which is exactly why nothing noticed it naming
+    # `blame`, an op the dispatcher had stopped accepting three months earlier.
     _path_slots = [_pos for _pos in _PATH_ARG_POSITIONS.get(op, ())
                    if _pos < len(parts)]
     _containment, _gated = _gate_paths(parts[_pos] for _pos in _path_slots)
@@ -22328,7 +22480,6 @@ _READ_OP_TARGETS: Dict[str, Any] = {
     "head":        _read_target_file_only,
     "wc":          _read_target_file_only,
     "stat":        _read_target_file_only,
-    "blame":       _read_target_file_only,
 }
 
 

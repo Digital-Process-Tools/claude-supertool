@@ -368,6 +368,19 @@ Three states, not two — `available`, `unknown`, and `unavailable here` with th
 
 A name that is not a shipped preset op still reads as a plain `unknown operation`. A typo is never softened into "maybe you need a project root".
 
+It does carry a `Did you mean:` line when — and only when — a candidate can be shown to be right ([#1222](https://github.com/Digital-Process-Tools/claude-supertool/issues/1222), [#1303](https://github.com/Digital-Process-Tools/claude-supertool/issues/1303)):
+
+```
+$ supertool 'worktrees'
+ERROR: unknown operation: worktrees
+Did you mean: git-worktrees (preset 'git')
+Valid operations: append, around, …
+```
+
+Three rules produce that line, and nothing else does: a hand-maintained synonym for a name whose intended target is documented (`write` → `paste`, from the same mapping the repo's `Write`-blocking hook teaches); a candidate that is exactly `<prefix>-<typed>`, so `worktrees` finds `git-worktrees` and `blame` finds `git-blame`; and one edit — insert, delete, substitute, or an adjacent swap — over names of four characters or more. Under four characters a single edit is noise (`lsx` is one from `ls`), so nothing is offered. The candidates are the ops **loaded in that process**, builtins and presets together, ranked in that order and capped at three; a shipped preset that this cwd does not enable is named only if nothing loaded matches, and is labelled `not loaded here`.
+
+When no rule fires the message is silent about it, which is the point: a suggestion that is wrong costs the reader a round-trip that silence would not have. The roster below the suggestion is never replaced by it.
+
 **The escape hatch is `cwd:`** — the first op in a call, which `chdir`s before dispatch so the rest of the call resolves against that project's config:
 
 ```bash
