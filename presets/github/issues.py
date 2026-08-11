@@ -235,45 +235,56 @@ def _is_unknown(row: dict) -> bool:
 # enrichment — one GraphQL call per chunk, for what `gh issue list` omits
 # ---------------------------------------------------------------------------
 
-# The host a row's `url` must be on before its path is read as owner/name.
-_GITHUB_HOST = "github.com"
-
-
-def _is_github_host(authority: str) -> bool:
-    """Exact host, or a `.`-boundary subdomain of it — never a suffix (#1180).
-
-    `endswith("github.com")` also matches `evilgithub.com` and `notgithub.com`.
-    The rows come from `gh` today, so nothing hostile reaches here through the
-    normal path; what this decides is which repo every subsequent GraphQL call
-    is made against, and it decides it from row content rather than from
-    configuration. The moment rows arrive from a fixture, a cached board or a
-    merged tier, a lookalike host picks the target. Same shape as the `gl-api`
-    host check.
-    """
-    host = authority.lower().partition("@")[2] or authority.lower()
-    host = host.partition(":")[0]
-    return host == _GITHUB_HOST or host.endswith("." + _GITHUB_HOST)
-
-
-def _owner_repo(rows: list[dict]) -> tuple[str, str] | None:
-    """The repo this board is about, for the GraphQL root.
+def _owner_repo(rows: list[dict]) -> tuple[tuple[str, str] | None, str | None]:
+    """The repo this board is about, for the GraphQL root — and why, when there is none.
 
     A repo target wins outright. Otherwise the answer is already in the rows:
     every issue carries its own `url`, so the owner/name costs no extra call
-    and cannot disagree with the list the board is rendering.
+    and cannot disagree with the list the board is rendering. What decides
+    which repo every subsequent GraphQL call is made against is therefore row
+    content rather than configuration, which is why the host test is
+    `_repo_target.is_github_host` and not a suffix match (#1180): the moment
+    rows arrive from a fixture, a cached board or a merged tier, a lookalike
+    host picks the target.
 
     A row whose url is not on GitHub is skipped rather than ending the search:
     one unusable row must not decide that the whole board has no repo.
+
+    **Three states, not two** (#907). A bare `None` was the answer to four
+    different situations — an empty listing, rows carrying no url at all, rows
+    whose urls are on some other host, and a github.com url too short to hold
+    an owner and a name — and the caller renders it into a decline the reader
+    is meant to act on. The reason counts rows; it never quotes a url, because
+    a url is tracker content and an error line is ours.
     """
     target = _repo_target.owner_repo()
     if target is not None:
-        return target
+        return target, None
+    urls = 0
+    on_host = 0
     for row in rows:
         url = str(row.get("url") or "")
-        parts = url.split("/")
-        if len(parts) >= 5 and _is_github_host(parts[2]):
-            return parts[3], parts[4]
-    return None
+        if not url:
+            continue
+        urls += 1
+        if not _repo_target.is_github_host(_repo_target.url_host(url)):
+            continue
+        on_host += 1
+        pair = _repo_target.github_owner_repo(url)
+        if pair is not None:
+            return pair, None
+    if not rows:
+        return None, "the listing had no rows"
+    if not urls:
+        return None, f"no row carried a url (checked {len(rows)})"
+    if not on_host:
+        return None, (
+            f"no row url is on {_repo_target.GITHUB_HOST} (checked {urls})"
+        )
+    return None, (
+        f"no row url on {_repo_target.GITHUB_HOST} carried an owner/name path "
+        f"(checked {on_host})"
+    )
 
 
 def _graphql_query(owner: str, name: str, numbers: list[int]) -> str:
@@ -732,9 +743,11 @@ def main_with_args(arg_str: str) -> int:
     if "nopipe" in flags:
         reason = REASON_NOPIPE
     elif rows:
-        pair = _owner_repo(rows)
+        # Only under `rows`: an empty listing has nothing to enrich, so its
+        # absence of a repo is not a degradation and must not print as one.
+        pair, why = _owner_repo(rows)
         if pair is None:
-            reason = "repo could not be identified from the listing"
+            reason = f"repo could not be identified from the listing — {why}"
         else:
             numbers = [r["number"] for r in rows if isinstance(r.get("number"), int)]
             data, reason = _fetch_enrichment(pair[0], pair[1], numbers, cfg["chunk"])
