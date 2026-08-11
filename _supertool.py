@@ -37,7 +37,11 @@ shell glob expansion:
 
 OPERATIONS
 ----------
-    read:PATH                  Read file (first 300 lines, 20KB cap)
+    read:PATH                  Read file (first 300 lines, 20KB cap). A repeat
+                                read of a BYTE-IDENTICAL file inside 15 minutes
+                                returns a one-line elision naming the sha, the
+                                bytes withheld and read:PATH:full to get them.
+                                A changed file is never elided.
     read:PATH:START-END        Read an explicit line range, inclusive
     read:PATH:OFFSET:LIMIT     Read with offset and line limit. OFFSET is a
                                 skip count, not a start line — :19:1 returns
@@ -3149,6 +3153,155 @@ def _abstract_map(path: str, lang: str, size_bytes: int) -> Tuple[str, str]:
     return body, ""
 
 
+# ---------------------------------------------------------------------------
+# #1329 — eliding a repeat read of a byte-identical file
+# ---------------------------------------------------------------------------
+# The op cannot observe whether the caller still holds the first copy. A
+# re-read after a context compaction is the NORMAL case, not the edge case:
+# the earlier result was evicted and the model is asking again precisely
+# because it no longer has it. Nothing in this process can tell that apart
+# from a redundant second ask, so the design does not try to. It bounds the
+# damage instead, and every bound below is one of this repo's own rules:
+#
+#   - the elision is always ONE round-trip from the bytes, and the command
+#     that returns them is printed in the line itself, not in the docs;
+#   - it only fires inside a recency window measured from the last time
+#     content was ACTUALLY returned — never bumped by an elision, or a file
+#     polled every minute would be elided forever;
+#   - a state file that cannot be read or written returns the content. An
+#     unanswered cache is `skipped`, not silence;
+#   - a file whose bytes changed is never elided, at any age. Repeat reads of
+#     files that MOVED are the ones that carry information.
+#
+# Measured on the supertool corpus (`claude-log:cost`, #1252): unchanged
+# re-reads are 0.0% of result bytes, because batching already prevents the
+# pattern here. This is built for what it prevents, not for what it recovers.
+_READ_ELIDE_KIND = "read-elide"
+_READ_ELIDE_WINDOW_SECONDS = 900
+
+
+def _read_elide_enabled() -> bool:
+    if os.environ.get("SUPERTOOL_READ_NO_ELIDE"):
+        return False
+    return bool(_get_op_int("read", "elide", 1))
+
+
+def _read_elide_window() -> float:
+    return float(_get_op_int("read", "elide_window_seconds",
+                             _READ_ELIDE_WINDOW_SECONDS))
+
+
+def _read_elide_session_key() -> str:
+    """Identity that two concurrent agents must never share.
+
+    PPID is the session proxy `caller_tag` already uses — Claude Code does not
+    expose session_id to Bash tools, only to hook stdin. Nine worktrees were
+    live on this machine on 2026-08-11, so the resolved cwd is mixed in too:
+    two agents that somehow share a parent still key separately per tree.
+    The two failure directions are not symmetric — over-keying costs one file
+    returned again, under-keying suppresses content the caller never saw — so
+    the key is deliberately the narrower of the two.
+    """
+    # USER is POSIX; Windows sets USERNAME. Neither is load-bearing on its own
+    # — PPID plus the resolved cwd already separate two agents — but a "?" for
+    # every Windows caller would silently drop a component of the key.
+    user = os.environ.get("USER") or os.environ.get("USERNAME") or "?"
+    return "|".join((user, str(os.getppid()),
+                     os.path.realpath(os.getcwd())))
+
+
+def _read_elide_state_path(file_path: str) -> str:
+    """One sidecar per (session, file), so concurrent supertool processes never
+    read-modify-write a shared index."""
+    key = f"{_read_elide_session_key()}|{os.path.realpath(file_path)}"
+    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
+    return os.path.join(str(_cache_root() / _READ_ELIDE_KIND), digest)
+
+
+def _read_elide_load(file_path: str) -> "Optional[Tuple[str, float, int]]":
+    """(sha256, when content was last RETURNED, bytes) — or None for no record.
+
+    OSError is deliberately not swallowed here: the caller has to be able to
+    tell "no record" from "the cache could not answer", and both must end in
+    the content being returned rather than in an elision.
+    """
+    with open(_read_elide_state_path(file_path), "r", encoding="utf-8") as fh:
+        raw = fh.read().strip()
+    parts = raw.split()
+    if len(parts) != 3:
+        return None
+    try:
+        return parts[0], float(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+
+
+def _read_elide_record(file_path: str, digest: str, size: int,
+                       now: float) -> None:
+    target = _read_elide_state_path(file_path)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    tmp = f"{target}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(f"{digest} {now:.3f} {size}\n")
+    os.replace(tmp, target)
+
+
+def _read_elide_line(file_path: str, digest: str, size: int,
+                     when: float) -> str:
+    # "on disk", not "not returned": a >20KB file is byte-capped on the way
+    # out (`apply_byte_cap = in_claude or not force_full`), so the file's size
+    # and the bytes the first read actually handed over are not the same
+    # number. Naming the file's size as the withheld amount would overstate it
+    # on exactly the files where the cap bites.
+    stamp = datetime.fromtimestamp(when).strftime("%H:%M:%S")
+    return (f"[read elided — {file_path} is byte-identical to your read at "
+            f"{stamp} (sha256 {digest[:12]}, {size:,} bytes on disk), so this "
+            f"would return what you already have. If you no longer have it: "
+            f"read:{file_path}:full]\n")
+
+
+def _read_elide(path: str, offset: int, limit: int, grep_filter: str,
+                force_full: bool, range_form: bool) -> str:
+    """The elision line, or "" meaning "return the content".
+
+    Records on every path that returns content, including `full` — after a
+    forced read the caller demonstrably holds the bytes again.
+    """
+    if offset or limit or grep_filter or range_form:
+        # A recorded whole-file read says nothing about a slice request, and
+        # a slice must not arm an elision of the whole file.
+        return ""
+    if not _read_elide_enabled():
+        return ""
+    hasher = hashlib.sha256()
+    size = 0
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                hasher.update(chunk)
+                size += len(chunk)
+    except OSError:
+        # Missing, a directory, unreadable — render_file owns that message.
+        # (Windows raises PermissionError where POSIX raises
+        # IsADirectoryError; both are OSError, which is why this catches the
+        # base class rather than either name.)
+        return ""
+    digest = hasher.hexdigest()
+    now = time.time()
+    try:
+        prior = _read_elide_load(path)
+    except OSError:
+        prior = None
+    if (prior is not None and not force_full and prior[0] == digest
+            and 0 <= now - prior[1] <= _read_elide_window()):
+        return _read_elide_line(path, digest, prior[2], prior[1])
+    try:
+        _read_elide_record(path, digest, size, now)
+    except OSError:
+        pass  # A cache that cannot be written never suppresses content.
+    return ""
+
+
 def op_read(path: str, offset: int = 0, limit: int = 0,
             grep_filter: str = "", force_full: bool = False,
             range_form: bool = False) -> str:
@@ -3197,6 +3350,10 @@ def op_read(path: str, offset: int = 0, limit: int = 0,
     # default here made the two identical, and the filter then searched only
     # the first 300 lines while reporting its zero as a fact about the file
     # (#1052).
+    elision = _read_elide(path, offset, limit, grep_filter, force_full,
+                          range_form)
+    if elision:
+        return elision
     if limit <= 0 and not grep_filter:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     body = render_file(path, offset, limit, grep_filter, force_full,
@@ -13866,6 +14023,11 @@ atexit.register(_sweep_old_notifier_temp_files)
 # the measured population by design. `vi-cursor` is a legacy directory no
 # code still writes to.
 _GC_DEFAULT_RETENTION_DAYS: Dict[str, float] = {
+    # `read-elide` (#1329) is one tiny sidecar per (session, file) and the
+    # session key holds a PPID, so yesterday's entries can never match again:
+    # 1 day, not 7, because the population is per-session garbage the moment
+    # the session ends.
+    "read-elide": 1,
     "vim-cursor": 7,
     "vim-undo": 7,
     "vi-cursor": 7,

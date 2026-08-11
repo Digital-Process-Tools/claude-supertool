@@ -105,6 +105,30 @@ inclusive addressing and is the form to prefer; re-basing OFFSET would have
 broken every caller who had it right, trading a visible wrong answer for an
 invisible one.
 
+## Eliding a repeat read
+
+A second `read:PATH` of a **byte-identical** file inside 15 minutes returns one line instead of the content:
+
+```
+[read elided — presets/gh/job.py is byte-identical to your read at 07:14:22 (sha256 3f9a1c2d8b04, 4,812 bytes on disk), so this would return what you already have. If you no longer have it: read:presets/gh/job.py:full]
+```
+
+**The op cannot know whether you still hold the first copy, and that is the whole design problem.** A re-read after a context compaction is the normal case, not the edge case: the earlier result was evicted, the model is asking again precisely *because* it no longer has it, and a line saying "unchanged since 07:14" hands back nothing. Nothing observable inside the process distinguishes that from a redundant second ask. So the feature does not try to guess. Every rule below is a bound on the damage when the guess would have been wrong:
+
+- **The elision is always one round-trip from the bytes**, and the command that returns them is in the line itself, not in this document. That is the real bound: the worst case is a wasted call, never lost information.
+- **A recency window, measured from the last read that actually returned content** — never bumped by an elision. A file polled every minute would otherwise be elided forever. Default 900s (`read.elide_window_seconds`).
+- **A file whose bytes changed is never elided, at any age.** Repeat reads of files that *moved* are 37.8% of repeat-read bytes on the measured corpus and they are the ones carrying information.
+- **A cache that cannot answer returns the content.** An unreadable or unwritable state file is `skipped`, not silence — the three-state rule in [validators.md](../validators.md), applied to the op's own bookkeeping.
+- **`read:PATH:full` never elides** and always re-arms the window, because after a forced read you demonstrably hold the bytes again.
+- **The byte count is the file's size on disk, and says so.** A file over `read.max_bytes` is capped on the way out even under `:full`, so the size of the file and the bytes the first read handed over are different numbers; naming the former as "withheld" would overstate it on exactly the files where the cap bites.
+- **Only a bare `read:PATH` participates.** An explicit offset, limit, `START-END` range or `grep=` filter is never elided, and never arms an elision of the whole file — a recorded whole-file read says nothing about a slice request.
+
+**Keyed on `(session, realpath, sha256)`** — not mtime, which changes on a no-op rewrite and misses a same-second edit. The session component is `USER | PPID | realpath(cwd)`: PPID is the session proxy supertool already uses for its call log, and the resolved cwd is mixed in because nine worktrees were live on one machine on 2026-08-11 and one agent's read must never suppress another's. The two failure directions are not symmetric — over-keying costs one file returned again, under-keying withholds content the caller never saw — so the key is deliberately the narrower one. State lives in one small sidecar per `(session, file)` under `~/.cache/supertool/read-elide/`, so concurrent supertool processes never read-modify-write a shared index; `gc` reaps the kind after a day.
+
+**What it is worth here: nothing.** Measured with `claude-log:cost` over real transcripts, unchanged re-reads are **0.0% of result bytes on the supertool corpus** — batching already prevents the pattern. The 8.7% figure people quote is the `Read`-tool-driven corpus (252,851 B, one `portfolio.json` read sixteen times) and is not ours. This exists for what it prevents.
+
+Turn it off with `read.elide: 0` in `.supertool.json`, or `SUPERTOOL_READ_NO_ELIDE=1` for one call.
+
 ## Abstract read
 
 `read` on a large file can return the file's **symbol map** instead of its source: every class, function and method with its line number, for the whole file, rather than the first 300 lines of text. Off by default; enable per project in `.supertool.json`:

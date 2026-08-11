@@ -71,7 +71,9 @@
       "max_lines": 300,
       "max_bytes": 20000,
       "abstract": 0,
-      "php_abstract": 0
+      "php_abstract": 0,
+      "elide": 1,
+      "elide_window_seconds": 900
     },
     "read-grep": {
       "syntax": "read:PATH:::grep=PATTERN",

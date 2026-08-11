@@ -107,6 +107,13 @@ def pytest_configure(config):
     # Tests that explicitly exercise persistence (test_vim_persist*) unset
     # this via monkeypatch.delenv("SUPERTOOL_VIM_NO_PERSIST").
     os.environ.setdefault("SUPERTOOL_VIM_NO_PERSIST", "1")
+    # #1329: `read` elides a repeat read of a byte-identical file, keyed per
+    # session in ~/.cache/supertool/read-elide. A pytest process is ONE session
+    # by that key, so without this any test that reads the same path twice
+    # would get an elision line instead of content — and it would write into
+    # the developer's real cache doing it. test_read_elide_unchanged_1329.py
+    # opts back in via monkeypatch.delenv after redirecting XDG_CACHE_HOME.
+    os.environ.setdefault("SUPERTOOL_READ_NO_ELIDE", "1")
     # #474: the opportunistic cache GC is armed on every invocation and fires
     # at most once an hour. A test run must not reap the developer's real
     # ~/.cache/supertool as a side effect. test_gc_474.py opts back in with
