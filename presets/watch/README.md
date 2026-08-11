@@ -106,8 +106,19 @@ the *same* path on the Phase 2 consumer for anything to arrive there (see
 [notifiers/claude-channel/README.md](../../notifiers/claude-channel/README.md#start-up-and-socket-ownership)).
 This is how a second Claude Code session gets a channel of its own after
 `claude-channel` refuses to steal a live socket (#550), and it is how a
-multi-user machine gives each session's channel a private path instead of the
-world-traversable default.
+multi-user machine gives each session's *channel* a private path instead of the
+world-traversable default. It does nothing about the pollers, which is the
+next paragraph.
+
+**A second session needs `SUPERTOOL_WATCH_STATE_DIR` as well, and setting only
+the socket is worse than setting neither (#1309).** The poller slot is a pid
+file under the state directory, held `O_CREAT|O_EXCL` by exactly one process
+(#476), so two sessions sharing the default `/tmp` share one set of slots: the
+second session spawns no pollers at all, because the first session's already
+hold every slot — and those are bound to the *other* socket for life. The board
+renders healthy from both sides. `radar`'s delivery banner now compares each
+watcher's recorded `sock_path` against the socket this process reads and says
+so; see `docs/presets/watch.md`, "Two sessions on one machine".
 
 A watcher spawned before the variable was changed keeps writing to whatever
 `SOCK_PATH` it started with — that value is fixed for the process's

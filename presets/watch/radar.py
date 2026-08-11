@@ -430,7 +430,67 @@ def delivery_banner() -> list[str]:
         head = (f"radar: delivery — no watcher has recorded an emit yet across "
                 f"{total} state file(s), so nothing here says whether the socket "
                 f"delivers.")
-    return [head, "       " + _DELIVERY_FOOTNOTE]
+    return [head, "       " + _DELIVERY_FOOTNOTE, *_destination_lines(rows)]
+
+
+def _destination_lines(rows: list[tuple[str, str, str]]) -> list[str]:
+    """Whether `accepted` means accepted by the socket *this* session reads.
+
+    The gap #1309 named. A poller captures `SOCK_PATH` at spawn and keeps it
+    for life, so a second session that exports `SUPERTOOL_WATCH_SOCK` and
+    leaves `SUPERTOOL_WATCH_STATE_DIR` alone shares the first session's poller
+    slots: every slot is held, every emit is accepted, and the header above
+    said so — about a socket this session has never read a byte from. The
+    datum that settles it has been in the state file since #581 and had no
+    reader until here.
+
+    Three states, and the third is what keeps the other two honest:
+
+      * a recorded path that is not this process's — those events reached a
+        consumer, and it is not the one this session is talking to;
+      * a watcher that emitted and recorded no path at all — an older build,
+        or a state file that could not be read. Not agreement. Said so;
+      * everything recorded here — no line, because agreement is not news and
+        a header printed every time is a header nobody reads.
+
+    Scoped to watchers that have actually emitted: one with nothing to report
+    has no destination to disagree about, and `DELIVERY_NO_EMIT` is already
+    reported one line up. Report-only, like everything else on this route.
+
+    The two surveys are separate scans of the state directory, so a file that
+    disappears between them lands in the unrecorded bucket rather than being
+    dropped. That is the right side to fall on — the line it produces says
+    only that nothing here establishes where that watcher writes, which is
+    exactly true of a slot whose file has gone — but it is why this must not
+    be read as "these watchers are running an old build".
+    """
+    emitted = [(source, wid) for source, wid, state in rows
+               if state != transport.DELIVERY_NO_EMIT]
+    if not emitted:
+        return []
+    recorded = {(source, wid): path
+                for source, wid, path in transport.emit_destinations()}
+    here = transport.SOCK_PATH
+    elsewhere = [slot for slot in emitted
+                 if recorded.get(slot, "") not in ("", here)]
+    unrecorded = [slot for slot in emitted if not recorded.get(slot, "")]
+    out: list[str] = []
+    if elsewhere:
+        others = sorted({recorded[slot] for slot in elsewhere})
+        out.append(
+            f"radar: DELIVERY — {len(elsewhere)} of {len(emitted)} watcher "
+            f"state file(s) that emitted last wrote to a socket this session "
+            f"does not read: {', '.join(others)}. This session reads {here}, "
+            f"so those events reached a consumer that is not this one.")
+    if unrecorded:
+        # Upper-case, like the `unsure` arm above and for its reason: the
+        # convention on this banner is that news is shouted, and an emit whose
+        # destination cannot be established is unresolved rather than fine.
+        out.append(
+            f"radar: DELIVERY — {len(unrecorded)} of {len(emitted)} watcher "
+            f"state file(s) that emitted do not record which socket they "
+            f"wrote to, so nothing here says whether they reach {here}.")
+    return out
 
 
 def state_main(arg: str = "") -> int:
