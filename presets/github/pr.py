@@ -708,7 +708,11 @@ def _run_diff(number: str, path: str | None) -> int:
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("ERROR: usage: pr.py NUMBER_OR_BRANCH [status|full|diff[:PATH]]")
+        # Kept in step with MODES and with _mode_refusal's own list: a usage
+        # line that omits a mode the op has is the #1346 defect pointed the
+        # other way — the caller is told a working request will not work.
+        print("ERROR: usage: pr.py NUMBER_OR_BRANCH "
+              "[status|full|diff[:PATH]|threads]")
         return 1
 
     arg = sys.argv[1]
