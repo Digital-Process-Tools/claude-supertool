@@ -8,9 +8,10 @@ matrix twenty minutes later — PR #1115 went red on 14 of 20 legs over one
 missing `- `.
 
 **This adapter states no rules of its own.** It imports the project's own
-`assemble_changelog.py` and calls the three checks `collect()` calls —
-`parse_fragment_name`, the empty-body test, `scan_fragment_body` — publishing
-their messages verbatim. Those messages are already precise, and a second,
+`assemble_changelog.py` and calls the four checks `collect()` calls, in
+`collect()`'s order and gathering where it gathers — `parse_fragment_name`,
+the empty-body test, `self_reference_finding` (#1251), `scan_fragment_body`
+— publishing their messages verbatim. Those messages are already precise, and a second,
 thinner description of one rule is how two descriptions drift; a local `ok`
 followed by a red matrix would be #1132 inverted, which is worse than #1132.
 
@@ -187,9 +188,29 @@ def main() -> None:
         emit(_verdict(target, errors, start))
         return
 
+    # `collect()`'s third stage, and it sits ahead of the body scan there for
+    # the same reason it does here: it needs no parser, so an absent
+    # markdown-it-py must not turn a definite finding into a `skipped`.
+    # Called unqualified, as the other three already are: an assembler missing
+    # a symbol this adapter mirrors is a mismatch, and the shape that hides a
+    # mismatch is checking one rule fewer without saying so.
+    # It does not return here, for the same reason `collect()` does not
+    # `continue`: a fragment that is both malformed and silent about its issue
+    # has two findings, and reporting one of them at write time while `--check`
+    # reports both is the divergence this adapter exists to not have.
+    self_ref = asm.self_reference_finding(name, text)
+    if self_ref:
+        errors.append(_error(target, name, self_ref, "self-reference"))
+
     try:
         findings = asm.scan_fragment_body(name, text)
     except asm.CannotValidate as exc:
+        if self_ref:
+            # `collect()` makes the same call: a refusal that needed no parser
+            # outranks "could not look", and publishing `skipped` here would
+            # drop a definite finding to report an absent tool.
+            emit(_verdict(target, errors, start))
+            return
         if required(TOOL):
             emit({"tool": TOOL, "file": target, "ok": False, "count": 1,
                   "errors": [{"line": None, "col": None, "severity": "error",
