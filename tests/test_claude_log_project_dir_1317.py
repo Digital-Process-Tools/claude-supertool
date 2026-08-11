@@ -239,3 +239,28 @@ class TestOpsSurfaceTheDecline:
         assert "cccccccc-0000-0000-0000-000000000000" in out
         assert "ancestor" not in out.lower()
         assert "no sessions recorded" not in out
+
+
+class TestKnownLimit:
+    def test_encode_cwd_collision_is_not_closed_by_this_fix(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`encode_cwd` maps `/` and `-` to the same character, so a store
+        written by `/Users/foo-bar` and one written by `/Users/foo/bar` have the
+        same name and nothing on disk says which. The ancestor walk therefore
+        returns it as `ancestor` — and a DIRECT hit is ambiguous identically,
+        which is what makes this a property of the name Claude Code chose rather
+        than a defect of the upward-only walk. Raised in review of #1317; pinned
+        here so a future disambiguator has a failing test to turn green.
+        """
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        assert _common.encode_cwd("/Users/foo/bar") == _common.encode_cwd("/Users/foo-bar")
+
+        root = tmp_path / ".claude" / "projects"
+        root.mkdir(parents=True)
+        # Written by the unrelated directory `/Users/foo-bar`.
+        (root / _common.encode_cwd("/Users/foo-bar")).mkdir()
+
+        res = _common.resolve_project_dir("/Users/foo/bar/baz")
+        assert res.kind == "ancestor"          # would be `missing` if it could tell
+        assert _common.resolve_project_dir("/Users/foo/bar").kind == "direct"  # same hole

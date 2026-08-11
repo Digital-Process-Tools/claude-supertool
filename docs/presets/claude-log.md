@@ -126,6 +126,8 @@ A **sibling** store is never used. Until #1317 the fallback picked the store who
 
 `claude-log-tail` and `claude-log-summary` take a UUID and are unaffected: a session is found by name across every store.
 
+**One ambiguity it cannot close.** The store name is Claude Code's, and it maps `/`, `-` and `:` all to `-`: `/Users/foo/bar` and `/Users/foo-bar` produce the same directory name, and nothing on disk says which one wrote it. A `direct` hit is ambiguous in exactly the same way as an `ancestor` one, so this is a property of the naming scheme rather than of the resolution order. Pinned by `tests/test_claude_log_project_dir_1317.py::TestKnownLimit`.
+
 ## Authoring notes
 
 Preset JSON: `presets/claude-log.json`. Helper scripts: `presets/claude-log/`. `claude-log-tail` and `claude-log-summary` require a UUID, so run `claude-log-list` first to get one. `claude-log-cost` does not: with no argument it measures the ten most recent sessions of the current project, and a UUID narrows it to one.

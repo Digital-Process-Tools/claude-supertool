@@ -18,9 +18,15 @@ def encode_cwd(cwd: str) -> str:
     - POSIX:  '/Users/foo/proj'  -> '-Users-foo-proj'
     - Windows:'C:\\Users\\foo'    -> '-C--Users-foo' (drive colon and backslashes both become '-')
 
-    The exact Windows encoding may vary across Claude Code versions. When no store
-    matches, `resolve_project_dir()` declines by name — it never nominates another
-    directory's store (#1317).
+    The exact Windows encoding may vary across Claude Code versions.
+
+    The encoding is LOSSY and not ours: `/`, `-` and `:` all become `-`, so
+    `/Users/foo/bar` and `/Users/foo-bar` produce the same store name and
+    nothing on disk says which directory wrote it. That ambiguity is a property
+    of the name Claude Code chose and applies to a direct hit exactly as much as
+    to an ancestor — `resolve_project_dir()` cannot resolve it and does not
+    claim to. What it does guarantee is the #1317 half: it never walks to a
+    store that is neither this cwd's encoding nor an ancestor's.
     """
     enc = cwd.replace("\\", "/").replace("/", "-").replace(":", "-")
     if not enc.startswith("-"):
@@ -79,6 +85,13 @@ def resolve_project_dir(cwd: str | None = None) -> ProjectDir:
     in the output naming the substitution.
 
     A sibling is never an answer to "what happened in this directory".
+
+    Known limit, inherited from `encode_cwd` and not from this walk: the
+    encoding collapses `/` and `-`, so a store written by `/Users/foo-bar` is
+    indistinguishable from one written by the ancestor `/Users/foo/bar` and
+    would be returned as `ancestor`. A `direct` hit is ambiguous in precisely
+    the same way, so no resolution strategy over these names can close it;
+    pinned by `test_encode_cwd_collision_is_not_closed_by_this_fix`.
     """
     cwd = cwd if cwd is not None else os.getcwd()
     root = claude_projects_root()
