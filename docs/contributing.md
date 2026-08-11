@@ -152,9 +152,14 @@ An `unless_flag` that is neither a non-empty string nor a list of non-empty stri
 
 Three rules for writing one:
 
-- **Declare only what the op genuinely replaces.** Absence *is* the escape hatch. There is no op for tagging, releasing, deleting a ref or re-running a workflow, so nothing maps them and they are never blocked. An entry for something the op only half-answers turns a working command into a dead end.
+- **Declare only what the op genuinely replaces.** Absence *is* the escape hatch. There is no op for tagging, releasing, deleting a ref or re-running a workflow, so nothing maps `git tag`, `gh release create`, `gh api -X DELETE` or `gh run rerun` and they are never blocked. (One shape escapes that rule and is disclosed below: `git push origin <tagname>` is a tag operation the matcher cannot separate from an ordinary branch push.) An entry for something the op only half-answers turns a working command into a dead end.
 - **Do not reach for `flag` to make a match narrower out of caution.** An entry with no `flag` matches the command word, which is usually what you mean; a flag makes the block conditional on a spelling the caller happens to use.
 - **`replaces` is metadata, not op configuration.** It is a reserved key, so unlike `per_page` or `error_patterns` it is *not* exported to your op's subprocess as `SUPERTOOL_REPLACES`.
+
+**Two shapes an entry cannot see**, both worth knowing before you write one ([#1384](https://github.com/Digital-Process-Tools/claude-supertool/issues/1384)):
+
+- **The value of a positional.** `git push origin master` and `git push origin v0.34.0` are the same argv shape, the same arity and the same token classes. `unless_flag` keys on flags and there is no `unless_positional` — telling those two apart means asking the repository whether a ref is a tag, at guard time, on every Bash call, before the command runs. So `presets/git.json` claims both and pushing a tag by name is blocked with `git-push` named, which does not do tags. That is a **wrong block, disclosed** in `docs/presets/git.md` rather than avoided, because the alternative was leaving the whole git family ungated.
+- **A global option before the subcommand.** `argv` matches a contiguous token prefix, so `{"argv": "git status"}` does not match `git -C /tmp/x status`, `git -c core.pager=cat status` or `git --git-dir=/tmp/x/.git status`. The only spelling `replaces` offers instead is `{"argv": "git -C"}`, which claims *every* `git -C` subcommand including the ones no op answers, so `presets/git.json` declines it and says so.
 
 The matcher tokenises the command with `shlex` and matches argv — see `_guard_segments` in `_supertool.py` for exactly which shell constructs it models and which it does not. That is the design decision [#1347](https://github.com/Digital-Process-Tools/claude-supertool/issues/1347) stands on: the hand-written regexes it replaced failed by reading a command as a string, one firing on a *directory name* and another refusing commands that carried the very flag it required.
 
