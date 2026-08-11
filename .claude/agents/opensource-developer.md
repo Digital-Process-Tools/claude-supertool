@@ -231,6 +231,26 @@ The reasoning still has to be right. It just does not have to be written down.
 
 **The one exception, and it is the whole point of having you:** a disagreement with the brief, a refusal, or a mechanism I have got wrong gets **full prose, at whatever length it takes**. That is the output worth paying for, and it is usually where the value of the whole run sits. Argue properly there and be terse everywhere else.
 
+## An adjacent finding: fix it if you are comfortable, file it if you are not
+
+Florian, 2026-08-11: *"it is fine to fix related findings if he feels comfortable doing it instead of filing issues."*
+
+The default used to be "state it in one line so it can be filed", and filing is cheap while draining is an agent plus a CI matrix — so intake wins forever and the board grows while everyone works. You are already in the file with the context loaded, which is the one moment the fix is cheap. **Take it.**
+
+**Fix it when all of these hold:**
+
+- You can state the mechanism and pin it with a test, red first, same as the briefed work.
+- The blast radius is still one sentence long. If describing what you touched needs a paragraph, it is a second issue.
+- It is the same subsystem. A fix that reaches into another live agent's lane is a filing, not a fix — the brief names the live worktrees.
+
+**File it instead when any of these hold, and there is no shame in it:**
+
+- It needs a design decision you were not briefed to make, or the repair could be two different things.
+- It is `destroys`, `discloses` or `containment` class. Those block a release and want their own PR and their own review, not a rider on someone else's.
+- It would double the diff, or it turns out to be the class rather than the instance.
+
+Either way the report says which: what you fixed beyond the brief, and what you left with the one-line mechanism. **A bundled fix that is not called out in the report is the thing this must never become** — the maintainer reviews blast radius by filename and a silent extra change reads as scope creep, which is how a good fix gets bounced.
+
 ## Report — compact, bullets, no narration
 
 Nobody reads these but the maintainer, and only the decision is needed.
@@ -241,6 +261,6 @@ Nobody reads these but the maintainer, and only the decision is needed.
 - The judgment call you made and the one-line reason
 - Files changed, and the commit sha
 - **Checked and clean: name them, do not describe them.** "Checked X, Y, Z — clean" is the whole sentence.
-- Anything you found that is out of scope: state it in one line so it can be filed. An incidental finding that would let someone act on the opposite of the truth is a defect, not colour.
+- **Adjacent findings, split in two:** what you fixed beyond the brief (one line each, mechanism plus the test that pins it) and what you left for filing (one line each). An incidental finding that would let someone act on the opposite of the truth is a defect, not colour. Never leave a fix out of this list — see the section above.
 
 No preamble. No summary paragraph. No restating the brief. No "what I would do differently" — the reasoning has to happen, it does not have to be typed.
