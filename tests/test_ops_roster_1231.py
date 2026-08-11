@@ -240,9 +240,17 @@ def test_watermark_briefings_are_acts_not_read_only(manifest: str, name: str) ->
     assert data["ops"][name]["safety"] == "acts"
 
 
+# `changelog.d/1231.added.md` was here and cannot be: a fragment is consumed
+# by `assemble_changelog.py` at the tag, so this swept a file that exists only
+# between the PR and the release. It went red on the v0.33.0 release commit —
+# on every leg, for a reason that had nothing to do with the figures — and it
+# would have gone red on every release after. `CHANGELOG.md` is where that
+# fragment's prose now lives and it is permanent, so the sweep follows the text
+# rather than the file. Measured when swapped: 0 occurrences of either stale
+# figure across the whole assembled history. Filed as #1293.
 _FIGURE_BEARING = (
     "_supertool.py", "README.md", "hooks/session-start.sh",
-    "docs/operations/meta.md", "changelog.d/1231.added.md",
+    "docs/operations/meta.md", "CHANGELOG.md",
     "tests/test_ops_roster_1231.py",
 )
 
