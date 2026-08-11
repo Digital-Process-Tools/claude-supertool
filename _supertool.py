@@ -15237,11 +15237,29 @@ def _guard_excluded(replacement: _Replacement, argv: Sequence[str]) -> bool:
             continue
         if _GUARD_ANY_FLAG in replacement.unless_flag:
             return True
-        # `--method=POST` is the same flag as `--method POST`. A short flag
-        # with its value clustered on (`-XPOST`) is not matched by a named
-        # spelling, which is one reason an op that forwards no flags should
-        # declare `*` rather than a list.
-        if token.split("=", 1)[0] in replacement.unless_flag:
+        # `--method=POST` is the same flag as `--method POST`.
+        stem = token.split("=", 1)[0]
+        if stem in replacement.unless_flag:
+            return True
+        # A single-dash token is a cluster of single-letter flags, so an entry
+        # excluding `-s` excludes `-sb` too — and `-sb` is the *common*
+        # spelling of the intent `-s` was excluded for (`git status -sb`).
+        # Comparing whole tokens made every short-flag exclusion, present and
+        # future, defeatable by clustering.
+        #
+        # This widens exclusions, so the guard blocks *less* — the direction
+        # this function is allowed to be wrong in, per the docstring above.
+        # The positive `flag` matcher is deliberately NOT given the same
+        # treatment: there it would block more, with no per-command way past.
+        #
+        # The cost, stated because it is real: a short flag carrying a
+        # clustered *value* whose text happens to spell an excluded letter is
+        # excluded too — `git push -oci.skip` reads as carrying `-f`. Telling
+        # that from `-sb` needs per-flag arity this guard does not have, and it
+        # errs toward allowing. `--` tokens are never expanded, which is what
+        # keeps `--foo` from matching an excluded `-f`.
+        if not stem.startswith("--") and any(
+                "-" + letter in replacement.unless_flag for letter in stem[1:]):
             return True
     return False
 
