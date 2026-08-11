@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
 
 
 def main(arg: str) -> int:
@@ -27,7 +31,9 @@ def main(arg: str) -> int:
     elif "404" in err:
         sys.stderr.write(f"ERROR: user @{user} not found\n")
     else:
-        sys.stderr.write(f"ERROR: gh follow failed: {result.stderr.strip()}\n")
+        # Same as gh-star: gh's stderr quotes the login back (#981).
+        sys.stderr.write(
+            f"ERROR: gh follow failed: {_untrusted.flat(result.stderr.strip())}\n")
     return 1
 
 

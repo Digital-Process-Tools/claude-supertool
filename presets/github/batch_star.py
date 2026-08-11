@@ -14,6 +14,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from _env import env_float  # noqa: E402  (the one numeric-knob reader)
+import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
+
+#: How much of `gh`'s error text one row may carry, measured on what prints.
+ERROR_MAX = 120
 
 
 def star(repo: str) -> tuple[bool, str]:
@@ -28,7 +32,10 @@ def star(repo: str) -> tuple[bool, str]:
         return False, "auth (gh auth login)"
     if "404" in err:
         return False, "not found"
-    return False, result.stderr.strip()[:120]
+    # Returned uncut: the 120-character budget is on the rendered row, and
+    # `flat()` spells one U+2028 as eight characters, so a slice taken here
+    # would not bound anything. The caller flattens, then slices (#970/#981).
+    return False, result.stderr.strip()
 
 
 def main(arg: str) -> int:
@@ -60,7 +67,11 @@ def main(arg: str) -> int:
             time.sleep(delay)
         success, msg = star(repo)
         marker = "OK " if success else "ERR"
-        print(f"  {marker} {repo}: {msg}")
+        # One candidate, one row. `msg` on the failure arm is `gh`'s stderr,
+        # which quotes the repository name back at us, and a fifty-line run is
+        # skimmed for exactly the rows a forged one imitates (#981).
+        print(f"  {marker} {_untrusted.flat(repo)}: "
+              f"{_untrusted.flat(msg)[:ERROR_MAX]}")
         if success:
             ok += 1
         else:
