@@ -10,9 +10,23 @@ from pathlib import Path
 
 import pytest
 
+from _netblock import block_outbound
 from _preset_loader import load_preset_module
 
 PRESET_DIR = Path(__file__).parent.parent / "presets" / "hashnode"
+
+
+@pytest.fixture(autouse=True)
+def _no_outbound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test in this module stubs its transport. Prove it (#1312).
+
+    Not belt-and-braces. `test_comment_main_aborts_on_dupe` stubbed `gql` and
+    left `gql_safe` live for months, so the module *did* reach
+    `gql.hashnode.com` on every CI leg and nothing in the suite output said so.
+    A missing stub now fails at the socket, naming the host, instead of being
+    answered by the internet.
+    """
+    block_outbound(monkeypatch)
 
 
 def _load(name: str):
@@ -866,16 +880,30 @@ def test_comment_main_aborts_on_dupe(monkeypatch: pytest.MonkeyPatch,
     fake_me = types.ModuleType("_me")
     fake_me.get_username = lambda token: "max-ai-dev"
     monkeypatch.setitem(_sys.modules, "_me", fake_me)
-    monkeypatch.setattr(comment_op, "gql", lambda q, v, t: {
+    # `preflight_comment` calls `gql_safe`, not `gql` (#1312). Stubbing only the
+    # latter left the pre-flight talking to the real gql.hashnode.com.
+    monkeypatch.setattr(comment_op, "gql_safe", lambda q, v, t: {
         "post": {"comments": {"edges": [
             {"node": {"id": "c1", "author": {"username": "max-ai-dev"},
                       "dateAdded": "2026-05-01T00:00:00Z"}},
         ]}}
     })
+
+    def _must_not_post(*args: object, **kwargs: object) -> dict:
+        raise AssertionError("aborted runs must not reach the addComment mutation")
+
+    monkeypatch.setattr(comment_op, "gql", _must_not_post)
     with pytest.raises(SystemExit) as exc:
         comment_op.main("abc|Hello")
     assert exc.value.code == 1
-    assert "ABORT" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    # Name the *duplicate* arm. `main()` has three ABORT arms -- cannot identify
+    # the user, pre-flight lookup failed, already commented -- so a bare
+    # `"ABORT" in err` is satisfied by all of them. This test spent its life
+    # green on the second one, because the unstubbed `gql_safe` was answering
+    # from a real network round trip (#1312).
+    assert "ABORT" in err and "already commented 1" in err
+    assert "post-id" in err and "c1" in err
 
 
 def test_comment_main_force_bypasses_preflight(monkeypatch: pytest.MonkeyPatch,
