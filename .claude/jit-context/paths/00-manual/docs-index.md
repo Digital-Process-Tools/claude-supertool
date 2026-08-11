@@ -4,35 +4,43 @@ match: "docs/"
 mode: once, remind
 ---
 
-# `docs/contributing.md` (110KB / 1300 lines) — section map
+# `docs/contributing.md` (124KB / 1415 lines) — section map
 
-Re-derived 2026-08-11 by grepping the headings. Fourteen of these twenty rows
-were stale by 13–45 lines, all in the same direction — the file only grows, so a
-row is a floor. Search the heading text, not the number.
+**No line numbers, on purpose.** This table carried them until 2026-08-11 and they
+were wrong twice over: thirteen of twenty-one rows sat ~79 lines short — `Cutting a
+release` said 284 and it is at 363 — and the heading *levels* were wrong too, so a
+reader looking for `## Cutting a release` found a `###` nested under `Changelog
+fragments`. The note above the table said "search the heading text, not the number"
+and the numbers were still there to be trusted, which is what a reader does.
 
-| Heading | Line | When you need it |
-|---|---|---|
-| Quick start | 7 | first-time setup |
-| Checking syntax against the supported floor | 17 | before claiming "works on 3.9" |
-| What the repo-wide Python guards scan/skip | 44 | guard false-positive on a new dir |
-| Custom ops | 62 | adding an op to `.supertool.json` |
-| Op schema | 83 | table of `cmd`/`timeout`/`syntax`/etc |
-| Placeholders | 109 | `{file}`/`{dir}`/`{arg}`/`{args}`/`{path}` |
-| Dispatch order | 122 | builtin vs custom vs preset vs alias |
-| Extra config keys as environment variables | 126 | passing config into an op's subprocess |
-| `scripts/` — this repo's own maintainer ops | 154 | the repo's own tooling entries |
-| Presets | 174 | writing a preset manifest |
-| File layout | 178 | where preset JSON + helper scripts live |
-| Resolution order | 190 | project vs user vs shipped preset wins |
-| Preset schema | 198 | same as op schema, wrapped in manifest |
-| Validators | 231 | stub only — real doc is `docs/validators.md` |
-| Changelog fragments | 237 | `changelog.d/NNN.section.md` naming |
-| Cutting a release | 284 | assembling fragments into `CHANGELOG.md` |
-| Helper script conventions | 326 | writing `presets/*/foo.py` |
-| HTTP requests go through `presets/_http.py` | 338 | any preset that calls a URL |
-| Fetching a URL somebody else chose | 374 | user-supplied URL handling |
-| The body is bounded, in bytes and in wall clock | 410 | streaming/size-limit rules |
-| Text encoding | 429 | UTF-8 read/write rules, Windows console traps |
+The one call that answers this correctly, and cannot go stale:
+
+```
+supertool 'read:docs/contributing.md:::grep=^#'
+```
+
+| Heading | When you need it |
+|---|---|
+| Quick start | first-time setup |
+| Checking syntax against the supported floor | before claiming "works on 3.9" |
+| What the repo-wide Python guards scan/skip | guard false-positive on a new dir |
+| Custom ops | adding an op to `.supertool.json` |
+| Op schema | table of `cmd`/`timeout`/`syntax`/etc |
+| `replaces` — the raw command this op supersedes | the #1347 guard's mapping |
+| An op that takes a path declares where paths may point | `"paths": {"args": […], "root": …}` |
+| Placeholders | `{file}`/`{dir}`/`{arg}`/`{args}`/`{path}` |
+| Dispatch order | builtin vs custom vs preset vs alias |
+| Extra config keys as environment variables | passing config into an op's subprocess |
+| `scripts/` — this repo's own maintainer ops | the repo's own tooling entries |
+| Presets / File layout / Resolution order / Preset schema | writing a preset manifest |
+| Validators | stub only — real doc is `docs/validators.md` |
+| Changelog fragments | `changelog.d/NNN.section.md` naming |
+| Cutting a release (`###`, under Changelog fragments) | assembling fragments into `CHANGELOG.md` |
+| Helper script conventions | writing `presets/*/foo.py` |
+| HTTP requests go through `presets/_http.py` | any preset that calls a URL |
+| Fetching a URL somebody else chose | user-supplied URL handling |
+| The body is bounded, in bytes and in wall clock | streaming/size-limit rules |
+| Text encoding | UTF-8 read/write rules, Windows console traps |
 
 ## Load-bearing details, don't re-derive
 
