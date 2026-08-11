@@ -1046,6 +1046,19 @@ adapter reporting `timeout` in 12ms has broken error routing, which is a
 defect in the thing the suite tests). Nothing else in this rule moves: the
 adapter still publishes the stall as `ok: false`, never as `skipped`.
 
+**A test asserting a file is *broken* needs the same gate, and cannot use that
+wrapper** ([#1296]). A stall is `ok: false` with one `adapter` error, so
+`assert_declined` passes on it and whatever comes next — a pinned source line,
+an `errors[0]["code"]` — is what fails, pointing at the product. Use
+`_adapter_verdict.skip_if_stalled(payload, inner_s=inner_budget(ADAPTER))`,
+which runs the identical predicate and hands back any non-stall payload
+unchanged. Put it in the file's own spawn helper, not at each call site: one
+gate is one thing to keep correct, and every assertion in the file is equally
+exposed. `tests/test_html_check.py` does exactly that, pinned by
+`tests/test_html_check_stall_1296.py` — which also pins the bar such a gate has
+to clear, that the test still fails if the adapter reports the broken file
+clean.
+
 **The adapter side of the same rule.** An adapter that grants itself a budget
 must survive blowing it. Letting `TimeoutExpired` escape kills the process on
 a traceback with **empty stdout**, and every caller `json.loads()` that — so a
@@ -1202,6 +1215,7 @@ ceiling bounds it; the finer guard waits for evidence.
 [#722]: https://github.com/Digital-Process-Tools/claude-supertool/issues/722
 [#727]: https://github.com/Digital-Process-Tools/claude-supertool/issues/727
 [#794]: https://github.com/Digital-Process-Tools/claude-supertool/issues/794
+[#1296]: https://github.com/Digital-Process-Tools/claude-supertool/issues/1296
 
 ### Never assert a property of a workflow by grepping the workflow
 

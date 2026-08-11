@@ -41,7 +41,8 @@ import pytest
 
 __all__ = [
     "verdict", "describe", "assert_ok", "assert_declined", "assert_adapter_ok",
-    "stalled_at_its_own_wall", "assert_adapter_ok_or_skip_if_stalled",
+    "stalled_at_its_own_wall", "skip_if_stalled",
+    "assert_adapter_ok_or_skip_if_stalled",
 ]
 
 MAX_ERRORS_SHOWN = 3
@@ -265,6 +266,27 @@ def stalled_at_its_own_wall(payload: Any, *, inner_s: int) -> str | None:
         return None
 
 
+def skip_if_stalled(payload: Any, *, inner_s: int) -> Any:
+    """Decline if `payload` is a stall; otherwise hand it back untouched (#1296).
+
+    `stalled_at_its_own_wall` classifies, this acts, and they are separate so
+    that a caller which wants to assert *on* a stall still can. Returns the
+    payload so it can wrap a parse in one expression.
+
+    Split out of `assert_adapter_ok_or_skip_if_stalled` because the wrapper
+    below only covers tests asserting a file is **clean**, and the failure that
+    prompted this (#1296) was a test asserting a file is **broken**: a stall
+    there is `ok: false` with `count: 1`, so `assert_declined` passes and the
+    next line -- a pinned source line the adapter never reached -- is what
+    fails. Same non-verdict, opposite assertion, and the wrapper could not be
+    reused because there is nothing here to assert ok about.
+    """
+    reason = stalled_at_its_own_wall(payload, inner_s=inner_s)
+    if reason is not None:
+        pytest.skip(reason)
+    return payload
+
+
 def assert_adapter_ok_or_skip_if_stalled(
     result: subprocess.CompletedProcess,
     *,
@@ -291,8 +313,5 @@ def assert_adapter_ok_or_skip_if_stalled(
     The skip reason carries the rendered verdict, duration included — a 30s
     spawn is worth knowing about even when it is not worth a red.
     """
-    payload = verdict(result, adapter=adapter)
-    reason = stalled_at_its_own_wall(payload, inner_s=inner_s)
-    if reason is not None:
-        pytest.skip(reason)
+    payload = skip_if_stalled(verdict(result, adapter=adapter), inner_s=inner_s)
     return assert_ok(payload, context=context)

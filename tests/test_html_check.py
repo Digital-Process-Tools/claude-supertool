@@ -8,20 +8,42 @@ from pathlib import Path
 
 import pytest
 
-from _adapter_verdict import assert_ok, assert_declined
+from _adapter_budget import inner_budget
+from _adapter_verdict import assert_ok, assert_declined, skip_if_stalled
 from _winenv import empty_path_env
 
 ADAPTER = Path(__file__).parent.parent / "validators" / "html-check" / "html-check.py"
 
+# The adapter's own `node --check` budget, read off its source rather than
+# copied (#702) -- see `_adapter_budget.inner_budget`.
+INNER_S = inner_budget(ADAPTER)
+
 
 def _run(file_path: str) -> dict:
+    """Spawn the adapter and return its verdict -- or decline if there is none.
+
+    Every assertion below is about what `node --check` said about some HTML.
+    When the adapter spends its whole internal budget without an answer it
+    reports that, correctly and on contract, as `ok: false` with one `adapter`
+    error naming the timeout -- which is not a verdict about the file, and
+    asserting on it publishes an environment limit as a product defect. That
+    happened twice on `windows-latest, 3.11` on 2026-08-11 and reached
+    `test_broken_inline_script_is_a_finding` as a pinned-line failure (#1296).
+
+    So a stall declines here, once, rather than at every call site. Nothing
+    else moves: `skip_if_stalled` returns any other payload untouched, so a
+    clean verdict on a broken page, a finding on the wrong line, an absent
+    `node`, a `skipped` third state and a `timeout` reported in 12ms all still
+    reach the assertion that was written for them (#794's four clauses,
+    pinned in `test_html_check_stall_1296.py`).
+    """
     result = subprocess.run(
         [sys.executable, str(ADAPTER), file_path],
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
     )
     assert result.stdout.strip(), f"no stdout; stderr={result.stderr}"
-    return json.loads(result.stdout)
+    return skip_if_stalled(json.loads(result.stdout), inner_s=INNER_S)
 
 
 # ---------------------------------------------------------------------------
