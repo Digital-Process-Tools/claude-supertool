@@ -17,6 +17,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from _env import env_float  # noqa: E402  (the one numeric-knob reader)
 import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
 
+#: How much of `gh`'s error text one row may carry, measured on what prints.
+ERROR_MAX = 120
+
 
 def follow(user: str) -> tuple[bool, str]:
     result = subprocess.run(
@@ -30,7 +33,9 @@ def follow(user: str) -> tuple[bool, str]:
         return False, "auth (gh auth login)"
     if "404" in err:
         return False, "not found"
-    return False, result.stderr.strip()[:120]
+    # Uncut here for the same reason as gh-batch-star: the caller flattens
+    # first, and a slice taken before that bounds the wrong string (#981).
+    return False, result.stderr.strip()
 
 
 def main(arg: str) -> int:
@@ -61,7 +66,8 @@ def main(arg: str) -> int:
         marker = "OK " if success else "ERR"
         # Same as gh-batch-star: `msg` on the failure arm is `gh`'s stderr and
         # quotes the login back (#981).
-        print(f"  {marker} @{_untrusted.flat(user)}: {_untrusted.flat(msg)}")
+        print(f"  {marker} @{_untrusted.flat(user)}: "
+              f"{_untrusted.flat(msg)[:ERROR_MAX]}")
         if success:
             ok += 1
         else:

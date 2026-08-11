@@ -66,6 +66,7 @@ following_mod = _load("presets/github/following.py", "gh_following_981")
 find_starable_mod = _load("presets/github/find_starable.py", "gh_find_starable_981")
 find_followable_mod = _load("presets/github/find_followable.py", "gh_find_followable_981")
 batch_star_mod = _load("presets/github/batch_star.py", "gh_batch_star_981")
+batch_follow_mod = _load("presets/github/batch_follow.py", "gh_batch_follow_981")
 
 #: Zl, not a control character. GitHub accepts it in a repository description
 #: and `str.splitlines()` breaks on it (#886) — so does every log reader and
@@ -283,4 +284,41 @@ def test_batch_star_error_is_one_row(monkeypatch: Any, capsys: Any,
     rendered = capsys.readouterr().out.splitlines()
     assert forged not in rendered, (
         "gh stderr became a row gh-batch-star wrote:\n" + _numbered(rendered)
+    )
+
+
+ERROR_CAP = 120
+
+
+@pytest.mark.parametrize("mod,arg,prefix", [
+    ("batch_star", "octo/tool", "octo/tool"),
+    ("batch_follow", "octocat", "@octocat"),
+])
+def test_batch_error_row_is_capped_after_flattening(
+    monkeypatch: Any, capsys: Any, tmp_path: Path,
+    mod: str, arg: str, prefix: str,
+) -> None:
+    """The cap is on what prints, not on what arrived.
+
+    `flat()` spells U+2028 as `[U+2028]` — eight characters for one — so a
+    slice taken before the flatten is not a bound on the row. Thirty separators
+    against a 120-character budget render 260 characters, and the row that
+    carries them is the one a reader is scanning for. Flatten first, slice
+    second, which is the ordering `gh-find-starable` and `gh-starred` keep and
+    these two did not (#970's rule, #981's sweep).
+    """
+    module = {"batch_star": batch_star_mod, "batch_follow": batch_follow_mod}[mod]
+    candidates = tmp_path / "candidates.txt"
+    candidates.write_text(f"{arg}\n", encoding="utf-8")
+    _install(monkeypatch, module,
+             lambda argv: _Result(stderr="x" * 60 + SEP * 30 + "y" * 60,
+                                  returncode=1))
+    monkeypatch.setattr(module, "time", types.SimpleNamespace(sleep=lambda _: None))
+    assert module.main(str(candidates)) == 1
+    rendered = capsys.readouterr().out.splitlines()
+    row = next(line for line in rendered if line.startswith("  ERR "))
+    message = row.split(f"{prefix}: ", 1)[1]
+    assert len(message) <= ERROR_CAP, (
+        f"{mod} rendered a {len(message)}-character error against a "
+        f"{ERROR_CAP}-character cap — the slice ran before the flatten:\n{row}"
     )
