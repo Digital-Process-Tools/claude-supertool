@@ -30,7 +30,7 @@ import json
 import os
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict
 
 import pytest
@@ -122,6 +122,64 @@ def test_a_heredoc_body_is_not_an_argv(tmp_path, guard_config):
     ])
     verdict = supertool.guard_command(cmd)
     assert verdict.state == "clean", verdict
+
+
+def test_every_heredoc_on_a_line_has_its_body_stripped(tmp_path, guard_config):
+    """`cmd <<A <<B` is legal bash, and only the first opener used to be read.
+
+    The second body was tokenised as ordinary shell text, so content became an
+    invocation — the exact class this whole feature exists to remove, inside
+    the routine written to prevent it.
+    """
+    guard_config(tmp_path, _TWO_OPS)
+    cmd = chr(10).join([
+        "cat <<A <<B", "ignored", "A",
+        "doc note; gh pr view 12", "B", ""])
+    verdict = supertool.guard_command(cmd)
+    assert verdict.state == "clean", verdict
+
+
+def test_a_backtick_substitution_is_a_command(tmp_path, guard_config):
+    """`$(...)` was matched only by accident and backticks not at all.
+
+    Worse, glued to an assignment the whole head token was eaten:
+    `x=`gh pr view 12`` stripped as an env assignment and took `gh` with it.
+    """
+    guard_config(tmp_path, _TWO_OPS)
+    tick = chr(96)
+    for cmd in (tick + "gh pr view 12" + tick,
+                "x=" + tick + "gh pr view 12" + tick + "; echo $x",
+                "echo $(gh pr view 12)"):
+        assert supertool.guard_command(cmd).state == "blocked", cmd
+
+
+def test_a_backtick_inside_quotes_is_still_text(tmp_path, guard_config):
+    guard_config(tmp_path, _TWO_OPS)
+    tick = chr(96)
+    cmd = "echo 'run " + tick + "gh pr view 12" + tick + " by hand'"
+    assert supertool.guard_command(cmd).state == "clean", cmd
+
+
+def test_a_substitution_the_lexer_cannot_open_is_undecided(
+        tmp_path, guard_config):
+    """Quoting hides a substitution from the tokeniser. That is not `clean`."""
+    guard_config(tmp_path, _TWO_OPS)
+    for cmd in ('echo "$(some-command)"',
+                'echo "' + chr(96) + 'some-command' + chr(96) + '"'):
+        verdict = supertool.guard_command(cmd)
+        assert verdict.state == "undecided", (cmd, verdict)
+
+
+def test_an_interpreter_handed_a_string_is_undecided(tmp_path, guard_config):
+    """`eval` and `sh -c` run a command this matcher never sees."""
+    guard_config(tmp_path, _TWO_OPS)
+    for cmd in ('eval "$SOMETHING"',
+                'bash -c "gh pr view 12"',
+                "sh -c 'ls'"):
+        verdict = supertool.guard_command(cmd)
+        assert verdict.state in ("blocked", "undecided"), (cmd, verdict)
+        if verdict.state == "undecided":
+            assert verdict.notes
 
 
 def test_a_command_after_an_operator_is_still_matched(tmp_path, guard_config):
@@ -270,14 +328,54 @@ def test_the_first_cut_covers_the_measured_commands():
 
 
 def test_every_shipped_entry_uses_only_known_keys():
+    shipped = _shipped_replaces()
+    # Without this the whole test is vacuous: at the base commit `replaces`
+    # exists nowhere, `_shipped_replaces()` is empty, both loops never run and
+    # the schema check passes against nothing. Proved red-first — it was the
+    # one test of these that passed with no product code at all.
+    assert shipped, "no shipped op declares `replaces`, so nothing was checked"
     allowed = {"argv", "flag", "value", "use"}
-    for name, definition in _shipped_replaces().items():
+    for name, definition in shipped.items():
         for entry in definition["replaces"]:
             assert set(entry) <= allowed, (name, entry)
             assert entry["argv"].strip() == entry["argv"]
             assert "use" in entry, (name, entry)
             if "value" in entry:
                 assert "flag" in entry, (name, entry)
+
+
+def test_every_use_string_names_an_op_that_exists():
+    """The refusal's *description* cannot go stale. Its `use` line can.
+
+    #1347's second promise is that the refusal text is the op's own
+    documentation, so it cannot describe a flag the op no longer has. That
+    holds for `description`, which is read off the registry entry at match
+    time — and it does **not** hold for `use`, which is a hand-written string
+    sitting beside it. Rename or drop an op and every refusal that points at
+    it keeps confidently naming a command that does not exist, which is
+    exactly the failure #1221's hand-written rule had.
+
+    Nothing else checks this: the schema test above accepts any `use` at all
+    as long as the key is present.
+    """
+    known = set(supertool._OP_SAFETY_BUILTIN)
+    for path in sorted((_ROOT / "presets").glob("*.json")):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        known.update(data.get("ops") or {})
+    assert known, "no op names could be enumerated, so nothing was checked"
+
+    checked = 0
+    for name, definition in _shipped_replaces().items():
+        for entry in definition["replaces"]:
+            # `use` is optional in the schema and defaults to the op's own
+            # syntax, so an entry without one can only name its own op.
+            head = entry.get("use", name).split(":")[0]
+            assert head in known, (
+                "op " + name + " declares replaces -> " + entry.get("use", name)
+                + ", but no op named " + head + " exists, so the refusal "
+                "would name a command the reader cannot run")
+            checked += 1
+    assert checked, "no `use` strings were checked"
 
 
 def test_replaces_is_not_handed_to_the_op_subprocess(tmp_path):
@@ -311,6 +409,41 @@ def test_the_hook_is_registered_for_pretooluse_bash():
         encoding="utf-8"))["hooks"]
     pre = hooks["PreToolUse"]
     assert any(m.get("matcher") == "Bash" for m in pre), pre
+
+
+def test_every_hook_command_points_at_a_script_that_exists():
+    """A hooks.json path nobody resolves is a hook that errors on every call.
+
+    Nothing checked this before, and this change is what makes it matter: the
+    SessionStart hook fires once a session, so a broken path there is one
+    visible error. `PreToolUse(Bash)` fires before **every** Bash command, so
+    the same typo is an error on every command the user runs, for as long as
+    the release is out. The path is only ever exercised at install time, which
+    is the one place this repo's tests do not reach.
+    """
+    raw = (_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+    hooks = json.loads(raw)["hooks"]
+    referenced = []
+    for event, groups in hooks.items():
+        for group in groups:
+            for hook in group.get("hooks") or []:
+                if hook.get("type") != "command":
+                    continue
+                for token in str(hook.get("command", "")).split():
+                    token = token.strip(chr(34) + chr(39))
+                    marker = "${CLAUDE_PLUGIN_ROOT}/"
+                    if marker not in token:
+                        continue
+                    rel = token.split(marker, 1)[1].rstrip(chr(34) + chr(39))
+                    referenced.append((event, rel))
+    assert referenced, "no plugin-root hook commands found, so nothing was checked"
+    for event, rel in referenced:
+        # PurePosixPath: hooks.json spells these with forward slashes, and the
+        # assertion is about the repo layout, not about the host separator.
+        target = _ROOT.joinpath(*PurePosixPath(rel).parts)
+        assert target.is_file(), (
+            event + " hook references " + rel + ", which is not a file in the "
+            "repo — every " + event + " would fire a hook that cannot run")
 
 
 def test_the_wrapper_never_runs_the_bare_interpreter_name(tmp_path):

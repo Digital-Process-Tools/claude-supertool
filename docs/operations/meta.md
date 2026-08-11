@@ -90,7 +90,7 @@ BLOCKED
 
 **It parses, it does not pattern-match.** The command is tokenised into argv the way a shell would, so the match is on the command word, its subcommands and its flags — a directory named `claude-supertool` is not an invocation, a flag after a quoted argument is still a token, and a heredoc body is content rather than argv. Flags select *which* op is named: `--json state` points at `gh-pr:N:status`, `--json files` at `gh-pr:N:diff`.
 
-`UNDECIDED` is a real third state and is never rendered as `OK`. A command that did not tokenise, or a registry that could not be fully enumerated, means the guard did not answer — and the hook allows the command while saying so in the transcript, because a gate that quietly did not run is indistinguishable from a command that complied.
+`UNDECIDED` is a real third state and is never rendered as `OK`. A command that did not tokenise, one that hides a substitution inside double quotes or hands a string to `eval` / `sh -c`, or a registry that could not be fully enumerated, all mean the guard did not answer — and the hook allows the command while saying so in the transcript, because a gate that quietly did not run is indistinguishable from a command that complied.
 
 Writing a mapping: [contributing.md](../contributing.md). Turning the gate off: `"raw_command_guard": false`, [configuration.md](../configuration.md).
 

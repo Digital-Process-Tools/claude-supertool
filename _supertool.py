@@ -14683,6 +14683,19 @@ _GUARD_PREFIX_WORDS = frozenset({
 
 _GUARD_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
+# Words that hand a *string* to something else to run. The matcher never sees
+# what comes out, so a non-match past one of these is not evidence of anything.
+_GUARD_INDIRECT_WORDS = frozenset({"eval", "source", "."})
+_GUARD_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+
+# Quote, escape and substitution characters, spelled as escapes rather than as
+# themselves: this file is edited through a payload route where a literal
+# backslash is a refusal and a quote run ends a block.
+_GUARD_SQUOTE = chr(39)
+_GUARD_DQUOTE = chr(34)
+_GUARD_BACKSLASH = chr(92)
+_GUARD_BACKTICK = chr(96)
+
 # A heredoc opener and its delimiter word. The body is content — a commit
 # message, a TOML payload — and is never argv. #1221's most expensive false
 # positive was a `git-commit:@-` payload whose *message text* contained a
@@ -14743,29 +14756,83 @@ def _guard_strip_heredocs(command: str) -> str:
         line = lines[i]
         out.append(line)
         i += 1
-        m = _GUARD_HEREDOC.search(line)
-        if not m:
-            continue
-        delimiter = m.group(2)
-        while i < len(lines) and lines[i].strip() != delimiter:
-            i += 1
-        if i < len(lines):
-            i += 1  # the delimiter line itself
+        # EVERY opener on the line, in order. `cmd <<A <<B` is legal bash and
+        # queues two bodies; reading only the first left the second tokenised
+        # as ordinary shell text, which is content read as an invocation — the
+        # class this routine exists to remove, inside the routine itself.
+        for m in _GUARD_HEREDOC.finditer(line):
+            delimiter = m.group(2)
+            while i < len(lines) and lines[i].strip() != delimiter:
+                i += 1
+            if i < len(lines):
+                i += 1  # the delimiter line itself
     return "\n".join(out)
 
 
-def _guard_segments(command: str) -> List[List[str]]:
-    """Tokenise into simple commands, or raise ValueError.
+def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
+    """Split what the shell would split, and name what quoting hid.
+
+    Three cases, and the whole point is that they are three:
+
+    * **Unquoted** ``\x60cmd\x60`` — a real command, and `shlex` has no notion of
+      backticks, so it tokenised as one word glued to its opener. After an
+      assignment (``x=\x60gh …\x60``) the whole thing matched
+      `_GUARD_ENV_ASSIGNMENT` and was stripped, taking the command word with
+      it. Replaced with a separator here so the substituted command becomes a
+      segment of its own. ``$(…)`` only ever worked by accident, because `(`
+      happens to be a punctuation char.
+    * **Single-quoted** — literal text in every shell. Left alone; it is not a
+      command and must not become one.
+    * **Double-quoted** — substitutes, but the delimiters are inside a token
+      the lexer hands back whole, so the guard cannot read it. Reported, so
+      the verdict is `undecided` rather than a clean bill for a command
+      nobody looked at.
+    """
+    out: List[str] = []
+    unread: List[str] = []
+    single = double = False
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if ch == _GUARD_BACKSLASH and not single and i + 1 < len(command):
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        if ch == _GUARD_SQUOTE and not double:
+            single = not single
+        elif ch == _GUARD_DQUOTE and not single:
+            double = not double
+        elif ch == _GUARD_BACKTICK and not single and not double:
+            out.append(" ; ")
+            i += 1
+            continue
+        elif double and (ch == _GUARD_BACKTICK
+                         or command[i:i + 2] == "$("):
+            unread.append("a command substitution inside a double-quoted "
+                          "argument was not read")
+        out.append(ch)
+        i += 1
+    return "".join(out), unread
+
+
+def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
+    """Tokenise into simple commands plus what it could not read, or raise ValueError.
 
     What it models: POSIX quoting, `;` `&&` `||` `|` `&` and redirections as
-    separators, leading `VAR=value` assignments, and a short list of wrapper
-    words. What it does not model: aliases, functions, `eval`, command
-    substitution executing a *different* command, and any construct that only a
-    real shell resolves. Those are why a non-match is reported as a non-match
-    and never as a proof of innocence.
+    separators, leading `VAR=value` assignments, a short list of wrapper words,
+    heredoc bodies, and backtick / `$(...)` substitution wherever the shell
+    would have split it.
+
+    What it cannot model is returned as the second element rather than silently
+    dropped: a substitution whose delimiters are inside quotes, and a word that
+    hands a string to something else to run (`eval`, `sh -c`). Those become the
+    guard's `undecided` state — a construct this matcher did not read is not
+    evidence that nothing was replaced. Aliases and shell functions remain
+    invisible and are named here so the limit is on the record.
     """
-    lexer = shlex.shlex(_guard_strip_heredocs(command), posix=True,
-                        punctuation_chars=True)
+    prepared, unread = _guard_open_substitutions(
+        _guard_strip_heredocs(command))
+    lexer = shlex.shlex(prepared, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     tokens = list(lexer)  # ValueError on an unterminated quote
 
@@ -14784,9 +14851,14 @@ def _guard_segments(command: str) -> List[List[str]]:
         while segment and (segment[0] in _GUARD_PREFIX_WORDS
                            or _GUARD_ENV_ASSIGNMENT.match(segment[0])):
             segment = segment[1:]
-        if segment:
-            heads.append(segment)
-    return heads
+        if not segment:
+            continue
+        head = segment[0]
+        if head in _GUARD_INDIRECT_WORDS or (
+                os.path.basename(head) in _GUARD_SHELLS and "-c" in segment):
+            unread.append(f"`{head}` runs a string this matcher never sees")
+        heads.append(segment)
+    return heads, unread
 
 
 def _guard_flag_values(argv: Sequence[str], flag: str) -> List[str]:
@@ -14884,11 +14956,12 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
 
     replacements, notes = _guard_replacements(config)
     try:
-        segments = _guard_segments(command)
+        segments, unread = _guard_segments(command)
     except ValueError as exc:
         return GuardVerdict("undecided", (), tuple(notes) + (
             f"the command did not tokenise ({exc}), so no part of it was "
             f"checked against the registry",))
+    notes.extend(unread)
 
     matches: List[GuardMatch] = []
     seen = set()
