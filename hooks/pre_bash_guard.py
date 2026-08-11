@@ -9,12 +9,21 @@ entry, and this file only asks `guard_command` and renders the answer.
 Three outcomes, deliberately not two:
 
 * a match  -> `permissionDecision: deny`, with the op's own description.
-* no match, and the guard could see everything -> silence, exit 0.
+* no match, and the guard could see everything -> an envelope with no
+  decision in it, which is silence to the caller.
 * the guard could **not** answer -> the command runs, and the transcript says
   so in `additionalContext`. Failing closed makes an unreadable config a wall
   the caller cannot even edit their way out of; failing open *silently* is the
   exact defect #1347 opens with, where a gate that intermittently did not run
   was indistinguishable from a command that complied. Allow, and disclose.
+
+**Every path writes an envelope, including the clean one** (#1390). Writing
+nothing was the same bytes an interpreter that never started writes, so the
+wrapper above could not tell "checked, nothing replaced" from "did not run" —
+the third state existing in this file and not surviving the layer below it.
+The clean envelope carries `hookEventName` and no decision, so what the caller
+sees is unchanged; what the *wrapper* sees is the difference between an answer
+and an absence.
 """
 from __future__ import annotations
 
@@ -26,6 +35,11 @@ import sys
 def _emit(payload: dict) -> None:
     payload["hookEventName"] = "PreToolUse"
     sys.stdout.write(json.dumps({"hookSpecificOutput": payload}))
+
+
+def _nothing_to_say() -> None:
+    """An answer that decides nothing — not the same bytes as no answer."""
+    _emit({})
 
 
 def _undecided(reason: str) -> None:
@@ -44,9 +58,11 @@ def main() -> int:
         return 0
 
     if event.get("tool_name") not in (None, "Bash"):
+        _nothing_to_say()
         return 0
     command = (event.get("tool_input") or {}).get("command")
     if not isinstance(command, str) or not command.strip():
+        _nothing_to_say()
         return 0
 
     root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(
@@ -70,6 +86,8 @@ def main() -> int:
                "permissionDecisionReason": _supertool.guard_refusal(verdict)})
     elif verdict.state == "undecided":
         _undecided("; ".join(verdict.notes))
+    else:
+        _nothing_to_say()
     return 0
 
 
