@@ -9,9 +9,16 @@
 # **The bare name `python3` is never run** (#572). On Windows it can resolve to
 # the App Execution Alias stub, which *blocks* rather than erroring — and this
 # hook runs before EVERY Bash call, so that is not one slow command, it is a
-# session where nothing runs until each hook timeout expires. Only versioned
-# names and an activated venv are tried, and each must execute, not merely
-# resolve. Same ladder as .githooks/pre-push.
+# session where nothing runs until each hook timeout expires. Versioned names,
+# an activated venv and `py -3` are tried, and each must execute, not merely
+# resolve.
+#
+# **This ladder is no longer the same as `.githooks/pre-push`'s**, which stops
+# at the versioned names. The divergence is deliberate: this hook discloses
+# and allows, so when it cannot resolve an interpreter the gate is off and the
+# session continues, where pre-push refuses the push, lists every name it
+# tried, and documents `PYTHON=` as the way through. A loud refusal with an
+# escape hatch does not need the extra rung the way a disclosed allow does.
 #
 # **`SUPERTOOL_PYTHON` is deliberately not read here** (#1390). It selected the
 # interpreter, the only test was `-c pass`, and every binary that exits 0
@@ -37,6 +44,16 @@
 # that got `python3` banned in #572, are `python.exe` and `python3.exe`. If
 # that is wrong, the cost is #572 again, which is why the rung is last: any
 # host with a versioned interpreter never reaches it.
+#
+# **#572 considered `py -3` and dropped it, and this reverses that** for this
+# script only. Its reason, quoted from the v0.15.0 CHANGELOG entry, was "this
+# is a bash script that only ever runs under Git Bash or WSL, where a Windows
+# launcher shim is the wrong layer to reach for" - a preference about layering,
+# argued without the fact #1402 supplies: on Windows the versioned names it
+# chose instead **do not exist**, because python.org and hostedtoolcache both
+# create `python.exe` and `python3.exe` and no `python3.X.exe`. #572 checked
+# that versioned names are not *aliased*, which is true, and not that they are
+# present. Under WSL `py` is simply absent and the rung costs a `command -v`.
 #
 # `VIRTUAL_ENV` stays, because on Windows it is often the only interpreter
 # there is, and it is required to look like a venv (`pyvenv.cfg`) rather than

@@ -170,9 +170,20 @@ _NEEDS_BASH = require_or_skip(
 
 
 def _shim(directory: Path, name: str, body: str) -> Path:
-    """A fake interpreter, written as a POSIX script and made executable."""
+    """A fake interpreter, written as a POSIX script and made executable.
+
+    The explicit empty `newline` is load-bearing and is not style. Python's
+    text mode translates every line feed to `os.linesep` on write, so on
+    Windows these files would be written CRLF - and Git Bash, the shell that
+    runs them on the one platform this module exists to exercise, reads the
+    carriage return as part of the token: `shift` and `fi` with a CR glued on
+    are not `shift` and `fi`. Every fabricated interpreter would fail for a
+    reason with nothing to do with the ladder, on Windows only, while the
+    whole file stayed green here.
+    """
     path = directory / name
-    path.write_text("#!/bin/sh" + _NL + body + _NL, encoding="utf-8")
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        handle.write("#!/bin/sh" + _NL + body + _NL)
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP
                | stat.S_IXOTH)
     return path
@@ -358,9 +369,14 @@ def test_the_launcher_is_only_ever_invoked_with_a_version_selector():
     catch never has to fire.
     """
     wrapper = _WRAPPER.read_text(encoding="utf-8")
+    found = False
     for line in wrapper.splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
         if "attempt py" in stripped:
+            found = True
             assert "attempt py -3" in stripped, line
+    # Without this the loop matches nothing once the rung is removed, and a
+    # test that executes no assertion reports as a pass.
+    assert found, "no `attempt py` line at all, so nothing above was checked"
