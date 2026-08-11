@@ -23,7 +23,9 @@ reaches an op that `_safe_path` did not clear, so this widens nothing —
 from __future__ import annotations
 
 import os
+import shlex
 from pathlib import Path
+from typing import Any, Dict
 
 import pytest
 
@@ -198,6 +200,68 @@ class TestTheReceiptNamesWhatWasTried:
         out = supertool.dispatch("read:" + _UNKNOWN_USER)
         assert "wrong CWD?" not in out, out
         assert "not expanded" in out, out
+
+
+class TestThePresetChokepointExpandsToo:
+    """#1287's gate had the same shape as the core's, and the same defect.
+
+    A preset/custom op with a declared `paths` boundary is checked on the
+    expanded path and then handed the literal one, which it substitutes into
+    a `cmd` template and runs through `shlex.split` — argv, no shell, so
+    nothing downstream expands it either. Measured before the fix:
+    `cat: ~/t.txt: No such file or directory`.
+    """
+
+    def _op(self, monkeypatch: pytest.MonkeyPatch, **decl: Any) -> None:
+        entry: Dict[str, Any] = {
+            "cmd": "{python} -c "
+                   + shlex.quote("import sys;print(open(sys.argv[1]).read())")
+                   + " {file}",
+            "syntax": "probe:PATH",
+        }
+        entry.update(decl)
+        monkeypatch.setattr(supertool, "_CONFIG", {"ops": {"probe": entry}})
+
+    def test_a_declared_op_receives_the_expanded_path(
+            self, sample: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._op(monkeypatch, paths={"args": [1], "root": "cwd"})
+        out = supertool._resolve_custom_op("probe", ["probe", "~/sample.txt"])
+        assert out is not None
+        assert MARK in out, out
+
+    def test_a_declared_op_outside_the_boundary_is_still_refused(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", raising=False)
+        h = tmp_path / "home"
+        h.mkdir()
+        (h / "sample.txt").write_text(MARK, encoding="utf-8")
+        work = tmp_path / "work"
+        work.mkdir()
+        monkeypatch.setenv("HOME", str(h))
+        monkeypatch.setenv("USERPROFILE", str(h))
+        monkeypatch.delenv("HOMEDRIVE", raising=False)
+        monkeypatch.delenv("HOMEPATH", raising=False)
+        monkeypatch.chdir(work)
+        self._op(monkeypatch, paths={"args": [1], "root": "cwd"})
+        out = supertool._resolve_custom_op("probe", ["probe", "~/sample.txt"])
+        assert out is not None
+        assert "escapes cwd" in out, out
+        assert MARK not in out, out
+
+
+class TestTheRecoveryHintsSeeTheFileToo:
+    """`around`'s misordering recovery stats the promoted slot itself.
+
+    It is gated where it is promoted, so the expansion belongs there too —
+    otherwise a `~` file that exists degrades from an auto-run to a
+    suggestion, which is the same "the tool cannot see it" failure one
+    layer up.
+    """
+
+    def test_around_delegates_for_a_tilde_path(self, sample: Path) -> None:
+        out = supertool.dispatch("around:~/sample.txt:1")
+        assert "read as around_line:" in out, out
+        assert MARK in out, out
 
 
 class TestContainmentIsNotWidened:

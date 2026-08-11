@@ -2259,6 +2259,15 @@ def _preset_path_containment(
         "paths": {"args": [1], "root": "repo"}
 
     Returns the `ERROR: …` line to print, or `None` to let the op run.
+
+    **Mutates `parts` in place** on the declared path, writing back the gate's
+    own `~` expansion into each declared slot (#1300). In place because the
+    caller substitutes `{file}` / `{args}` from that same list immediately
+    after, and a preset op handed the literal `~/x` passes it to a child
+    process with no shell to expand it — `cat: ~/t.txt: No such file or
+    directory`, measured. Only the declared branch does this: an op in
+    `_UNDECLARED_PATH_OPS` reaches no check, so there is nothing for an
+    expansion to sit behind and it keeps the literal, exactly as `glob` does.
     """
     if not isinstance(entry, dict):
         return None
@@ -2292,11 +2301,17 @@ def _preset_path_containment(
             f'ERROR: op {op!r} declares an unknown path root {boundary!r} — '
             f'expected one of: {", ".join(_PATH_BOUNDARIES)}.\n'
         )
-    return _containment_error(
-        (parts[i] for i in decl["args"] if 0 <= i < len(parts)),
+    slots = [i for i in decl["args"] if 0 <= i < len(parts)]
+    err, gated = _gate_paths(
+        (parts[i] for i in slots),
         root=_repo_root_for_containment() if boundary == "repo" else None,
         boundary=_path_boundary_label(boundary),
     )
+    if err:
+        return err
+    for _i, _slot in enumerate(slots):
+        parts[_slot] = gated[_i]
+    return None
 
 
 def _path_not_found(path: str, *, label: str = "path",
@@ -2836,6 +2851,11 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         _safe_path(path)
     except SecurityError as e:
         return f"ERROR: {e}\n"
+    # Behind the check that just cleared it (#1300). Dispatch already hands
+    # this an expanded path; the rebind is for the internal callers this
+    # chokepoint exists to catch — alias expansion and direct `render_file`
+    # calls — so the string opened is the string checked here too.
+    path = _expand_home(path)
     # A caller who names no LIMIT alongside `grep=` is asking about the file,
     # not about the file's first `read.max_lines` lines (#1052). Recorded here,
     # before the default lands, because afterwards the two are indistinguishable.
@@ -4398,8 +4418,11 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
     # same segment works fine in grep. Retry once with a `**/` prefix so both
     # ops accept the same mental model (#363).
     midpath_note = ""
+    # `~` is not in this tuple: a tilde pattern returns above and never
+    # reaches the retry, so listing it here would be a guard for a case that
+    # cannot arrive (#1300).
     if (not files and "/" in pattern
-            and not pattern.startswith(("/", "~", "**", "./", "../"))):
+            and not pattern.startswith(("/", "**", "./", "../"))):
         retry = "**/" + pattern
         hidden_files = []
         files = _glob_files(retry, excl, over_fetch=1, hidden=hidden_files)
@@ -6502,7 +6525,7 @@ def _around_line_delegation(pattern: str, path: str, n: int) -> str:
     # `_PATH_ARG_POSITIONS` entirely — the table gated a fixed slot the parser
     # did not necessarily use — but that changed nothing here: the promoted slot
     # was never in it.)
-    _contained = _containment_error([pattern])
+    _contained, (pattern,) = _gate_paths([pattern])
     if _contained:
         return _contained
     if not pattern or not os.path.isfile(pattern):
@@ -6571,7 +6594,7 @@ def _between_numeric_hint(parts: List[str]) -> str:
     path = parts[1]
     if not path:
         return ""
-    _contained = _containment_error([path])
+    _contained, (path,) = _gate_paths([path])
     if _contained:
         return _contained
     if not os.path.isfile(path):
@@ -6620,7 +6643,8 @@ def _comma_path_list_suggest(op: str, path: str) -> str:
     # string — `a.py,/etc/shadow` resolves under the cwd because its first
     # character does, so the tally leaked whether the second entry existed
     # (#1142, the same oracle #1135 closed for `around`).
-    if _containment_error(entries):
+    _entry_err, entries = _gate_paths(entries)
+    if _entry_err:
         return ""
     found = [e for e in entries if os.path.exists(e)]
     if not found:
@@ -6750,7 +6774,8 @@ def _multi_path_suggest(op: str, path: str,
     parts = path.split()
     if len(parts) < 2:
         return ""
-    if _containment_error(parts):
+    _multi_err, parts = _gate_paths(parts)
+    if _multi_err:
         return ""
     if not all(os.path.exists(p) for p in parts):
         return ""
@@ -7045,6 +7070,10 @@ def _atomic_write(path: str, content: str) -> None:
     # Containment check happens against the symlink target (real path) so a
     # symlinked write doesn't escape cwd via the symlink itself.
     _safe_path(path)
+    # Behind that check, and for the same reason as `render_file` (#1300): a
+    # direct internal caller must not write to `<cwd>/~/x` after the gate
+    # approved the home path.
+    path = _expand_home(path)
     # Every mutating op passes through here, which makes it the one place that
     # can promise a coalesced `git status` snapshot never outlives a write
     # (#1126). Cleared before the write rather than after: an exception on the
