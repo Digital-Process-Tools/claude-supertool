@@ -183,7 +183,11 @@ def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
 
 
 def _search_note(query: str) -> str:
-    """Which engine answered, and what it looked at. One sentence, everywhere."""
+    """Which engine answered, and what it looked at — one wording, one source.
+
+    Printed once per render: above the board when there are rows, or inside
+    the `No MRs match ...` line when there are none. Never both.
+    """
     return f"search {query!r} — {SEARCH_ENGINE} over {SEARCH_SCOPE}"
 
 
@@ -696,9 +700,14 @@ def main() -> int:
     # a per-row fence is the noise that gets a convention switched off, and an
     # unreadable board is one nobody reads. `_board.render_row` carries the
     # structural half — after it no title can reach column 0.
-    if search is not None:
-        print(f"({_search_note(search)})")
     if mrs:
+        # Guarded on `mrs`, the same way `gh-issues` guards its header notes:
+        # the empty render already carries the whole sentence inside its own
+        # `No MRs match ...` line, and printing it again immediately above is
+        # the same disclosure twice, adjacent. A note repeated verbatim is the
+        # one that gets skimmed.
+        if search is not None:
+            print(f"({_search_note(search)})")
         print(_untrusted.flat_note("MR titles"))
     print(_render_table(mrs, watched, show_pipe, search))
     footer = _footer(mrs, watched, show_pipe, unchecked)

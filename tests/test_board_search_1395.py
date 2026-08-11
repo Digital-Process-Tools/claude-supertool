@@ -233,6 +233,31 @@ def test_gl_empty_result_says_the_search_ran(
     assert "GitLab" in out, out
 
 
+@pytest.mark.parametrize("rows", [[], [1]])
+def test_the_scope_sentence_is_printed_once_per_render(
+    monkeypatch: pytest.MonkeyPatch, rows: list[int],
+) -> None:
+    """Above the board OR inside the empty sentence — never both.
+
+    `gl-mrs` printed the disclosure unconditionally and then again inside its
+    own `No MRs match ...` line, so the empty search render carried the same
+    sentence twice, adjacent. A disclosure repeated verbatim is the one that
+    gets skimmed, which is the failure mode every note in these boards exists
+    to avoid. `gh-issues` guards the header print on `rows` and is the shape
+    copied here.
+
+    `gl-mrs`'s footer carries no search term, so one occurrence in the whole
+    render is the invariant here. (`gh-issues` deliberately prints twice —
+    header and footer — for the reason its cap note does: the consumer that
+    truncates is the one that loses the footer.)
+    """
+    payload = [_mr(1)] if rows else []
+    _code, out, _err = _run_mrs(monkeypatch, payload, "search=widget,nopipe")
+    assert out.count("GitLab search over") == 1, (
+        "the scope sentence must appear once above the board or once inside "
+        f"the empty-result line, not both. got {out!r}")
+
+
 def test_gh_a_search_that_could_not_run_is_never_an_empty_board(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
