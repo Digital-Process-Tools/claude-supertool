@@ -362,12 +362,13 @@ def test_a_changelog_fragment_exists() -> None:
 
 ### Cutting a release
 
-The release edits four files, and `test_plugin_manifest_version_matches_code`, `test_pyproject_version_522` and `test_the_newest_release_section_is_the_version_that_ships` guard all four against each other:
+The release edits **five** files, and `test_plugin_manifest_version_matches_code`, `test_pyproject_version_522`, `test_the_newest_release_section_is_the_version_that_ships` and `test_readme_version_badge_matches_code` guard all five against each other:
 
 1. `.claude-plugin/plugin.json` — `version`
-2. `_supertool.py` — `VERSION` (~line 113). Not `supertool.py`: since [#931](https://github.com/Digital-Process-Tools/claude-supertool/issues/931) that is an 80-line entry-point shim and the constant lives with the code.
+2. `_supertool.py` — `VERSION`. Not `supertool.py`: since [#931](https://github.com/Digital-Process-Tools/claude-supertool/issues/931) that is an 80-line entry-point shim and the constant lives with the code. Grep the constant rather than a line number.
 3. `pyproject.toml` — `version`
-4. `CHANGELOG.md` — **written by the assembler, not by hand:**
+4. `README.md` — the version badge. **This section said "four files" and omitted it until v0.34.0**, and the badge is the site that rotted: it read `0.14.1` while the tool shipped `0.29.0`, fifteen releases stale, hyperlinked to the very file it disagreed with. `test_readme_version_badge_matches_code` fails on an **unmatched pattern** rather than passing, because a regex that found nothing has not checked the badge.
+5. `CHANGELOG.md` — **written by the assembler, not by hand:**
 
 ```bash
 python3 .github/scripts/assemble_changelog.py --version 0.26.0 --dry-run   # read it first
