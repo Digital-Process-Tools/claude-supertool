@@ -18,6 +18,13 @@ File reading and directory listing ops. Reach for these when you know the path a
 | `tree` | `tree:PATH` or `tree:PATH:DEPTH` | Directory structure with depth limit (default 3). Hides dotfiles. Files listed before subdirectories. |
 | `diff` | `diff:PATH1:PATH2` | Unified diff between two files. |
 
+The window line names which of the two grammars ran — `(OFFSET:LIMIT form)` or
+`(START-END form)` — because they are one character apart and return different
+windows, and until
+[#1417](https://github.com/Digital-Process-Tools/claude-supertool/issues/1417)
+the line described both of them in OFFSET/LIMIT terms, reporting a range call in
+the vocabulary of the form it did not use.
+
 The window line is not shown as a correction when the range form was used: a
 `read:PATH:120-124` states the window it returned, and stops there. It used to
 add "OFFSET is a skip count, not a start line — for lines 119-123 use
@@ -34,26 +41,54 @@ rendered as well-formed output with nothing to distinguish them from a correct
 one, and the last of the three signed off with `[complete file — no more lines]`.
 
 Any read with a non-zero OFFSET now carries one line, immediately after the
-count header and **before the content**, naming the window asked for and the
-window returned:
+count header and **before the content**, naming the grammar it took, the window
+asked for and the window returned:
 
 ```
 (403 lines, 18211 bytes)
-window: offset 19 + limit 1 = lines 20-20; returning lines 20-20 of 403, stopping at line 20: the limit was reached; OFFSET is a skip count, not a start line — for lines 19-19 use read:file.py:19-19
+window: offset 19 + limit 1 (OFFSET:LIMIT form) = lines 20-20; returning lines 20-20 of 403, stopping at line 20: the limit was reached; OFFSET is a skip count, so 19 lines were skipped: this window is read:file.py:20-20 — for lines 19-19 use read:file.py:19-19
     20→...
 ```
 
 Clamped short:
 
 ```
-window: offset 8 + limit 5 = lines 9-13; returning lines 9-10 of 10, stopping at line 10: the end of the file; OFFSET is a skip count, not a start line — for lines 8-12 use read:ten.txt:8-12
+window: offset 8 + limit 5 (OFFSET:LIMIT form) = lines 9-13; returning lines 9-10 of 10, stopping at line 10: the end of the file; OFFSET is a skip count, so 8 lines were skipped: this window is read:ten.txt:9-10 — for lines 8-12 use read:ten.txt:8-12
 ```
+
+**Two ranges are named, and they mean different things.** `this window is
+read:PATH:A-B` is the fact: the span that came back, spelled in the unambiguous
+form — note the clamped example, where it ends at 10 and not at the 13 that was
+asked for. `for lines C-D use read:PATH:C-D` is the other reading, what a caller
+who read `:A:B` as `START:END` was after. Seeing the first number one higher
+than the OFFSET typed is what makes the off-by-one visible.
+
+The fact is stated on every non-range read with a non-zero OFFSET. **The guess
+is withheld when the misread-range note below is speaking**, because that note
+answers the same question from the same numbers and lands somewhere else — on
+`read:PATH:20:25` the two of them proposed `20-44` and `20-25`, one call and two
+answers to one question.
+
+Until [#1417](https://github.com/Digital-Process-Tools/claude-supertool/issues/1417)
+this fired only when `LIMIT <= OFFSET`, deferring the rest to the misread-range
+note below — which is itself gated on overshoot-or-`LIMIT < 2*OFFSET`. So
+`read:PATH:1:40` on a long file tripped neither gate and got no hint at all, and
+that is the commonest shape of the mistake
+([#1138](https://github.com/Digital-Process-Tools/claude-supertool/issues/1138)):
+measured over 5,598 real `read:PATH:N:M` calls, 1,877 of them (34%) sat in that
+hole. A deferral to a speaker who is silent is the house defect one level up.
+
+The parse is deliberately unchanged. #1138 proposed refusing `:N:M`, or reading
+it as `START-END` when `N < M` — measured against the same 5,598 calls those
+would refuse or silently re-aim 5,549 and 3,208 of them respectively, and a
+refusal that breaks a form callers legitimately use is a regression dressed as a
+fix.
 
 Past EOF — no content, and the render says so instead of claiming the file was
 shown in full:
 
 ```
-window: offset 99 + limit 3 = lines 100-102; returning nothing — the file has 10 lines
+window: offset 99 + limit 3 (OFFSET:LIMIT form) = lines 100-102; returning nothing — the file has 10 lines
 ```
 
 A windowed read that reaches EOF closes with `[end of file — lines 1-OFFSET not
@@ -81,7 +116,8 @@ When two of them land on the same line — LIMIT reached exactly at EOF — the 
 says so rather than choosing:
 
 ```
-window: offset 40 + limit 60 = lines 41-100; returning lines 41-100 of 100, stopping at line 100: the end of the file and the limit was reached coincide here — which one ended the window cannot be told apart
+window: offset 40 + limit 60 (OFFSET:LIMIT form) = lines 41-100; returning lines 41-100 of 100, stopping at line 100: the end of the file and the limit was reached coincide here — which one ended the window cannot be told apart; OFFSET is a skip count, so 40 lines were skipped: this window is read:hundred.txt:41-100
+note: this asked for 60 lines from offset 40 — those args are OFFSET:LIMIT, not START:END. For lines 40-60 (21 lines), use read:hundred.txt:40-60
 ```
 
 ### Compact mode
@@ -91,7 +127,7 @@ printed, so the span the note names is wider than the count of lines in the
 body, and the note says how many were suppressed:
 
 ```
-window: offset 10 + limit 50 = lines 11-60; returning lines 11-60 of 200, 25 of those 50 lines emitted (compact mode skipped 25), stopping at line 60: the limit was reached
+window: offset 10 + limit 50 (OFFSET:LIMIT form) = lines 11-60; returning lines 11-60 of 200, 25 of those 50 lines emitted (compact mode skipped 25), stopping at line 60: the limit was reached; OFFSET is a skip count, so 10 lines were skipped: this window is read:file.py:11-60 — for lines 10-59 use read:file.py:10-59
 ```
 
 Every number in the render — the window line, the `... (N more lines)` footer and

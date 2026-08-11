@@ -205,14 +205,25 @@ def test_read_limit_smaller_than_offset_gets_no_note(tmp_path: Path) -> None:
     """A LIMIT below the OFFSET cannot be an END line, so nothing is ambiguous."""
     f = _numbered(tmp_path, "many.txt", 400)
     out = supertool.dispatch(f"read:{f}:200:50")
-    assert "OFFSET:LIMIT" not in out, out
+    # #382's sentence, not the bare token `OFFSET:LIMIT` this used to look for:
+    # since #1417 the window line names the grammar it took on every offset
+    # read, so that token is present whether or not #382's note fired and the
+    # assertion had stopped testing what it says it tests.
+    assert "not START:END" not in out, out
 
 
 def test_read_limit_far_above_offset_stays_quiet(tmp_path: Path) -> None:
     """#382's counter-example, and the reason the gate is a ratio rather than a
     blanket widening: `10:20` is an ordinary skip-then-read, and a note on every
     LIMIT > OFFSET call would fire on it. An END line lands near its START; an
-    independent LIMIT does not."""
+    independent LIMIT does not.
+
+    #1417's window-line hint DOES fire here, and deliberately: it states the
+    window that came back and how to spell it, which is true of every offset
+    read. What must stay silent is #382's *guess* about which reading was
+    meant, and that is what this asserts."""
     f = _numbered(tmp_path, "many.txt", 400)
     out = supertool.dispatch(f"read:{f}:10:200")
-    assert "OFFSET:LIMIT" not in out, out
+    # See the sibling above: `not START:END` is #382's own wording and is the
+    # only thing that distinguishes its note from #1417's form label.
+    assert "not START:END" not in out, out
