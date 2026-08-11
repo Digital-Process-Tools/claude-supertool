@@ -41,8 +41,11 @@ def test_parallel_safe_set_never_contradicts_declared_safety() -> None:
 
     Keyed off the declaration site rather than a hand-kept list, because the
     defect was two sources of the same truth drifting apart. An op absent from
-    `_OP_SAFETY_BUILTIN` is not checked here -- `blame` is one -- since that
-    table only covers built-ins.
+    `_OP_SAFETY_BUILTIN` is not checked here, since that table only covers
+    built-ins. `blame` was the example named here, and it was the wrong kind:
+    it was absent because it had stopped being an op at all, which this check
+    is blind to by construction and
+    `tests/test_registry_names_dispatch_1285.py` now covers.
     """
     declared = supertool._OP_SAFETY_BUILTIN
     contradictions = {

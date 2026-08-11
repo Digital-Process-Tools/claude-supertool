@@ -1941,7 +1941,8 @@ def _valid_op_names() -> List[str]:
 # `.claude/jit-context/tools/00-manual/harness-tools-blocked.md`, which fires on
 # every `Write` attempt in this repo, maps `Write` to `paste`. The tool taught
 # the mapping in one place and forgot it in the other, so an agent reaching for
-# `write:@-` got 30 names in alphabetical order and none of them explained.
+# `write:@-` got the whole builtin roster in alphabetical order, explaining none
+# of it.
 # `vi` — lingers in `_BUILTIN_OPS` from before the op was renamed `vim`, and no
 # branch handles it; `_valid_op_names()` drops it for that reason.
 #
@@ -2029,6 +2030,16 @@ def _near_miss_ops(op: str) -> List[Tuple[str, str]]:
             return
         seen.add(name)
         hits.append((name, why))
+
+    # Case first, and alone. `Read:x` differs from `read` by something that is
+    # certainly not a typo of a third op, and the distance rule cannot see that:
+    # lowercased it is distance 0, which the "not a suggestion for itself" guard
+    # discards, leaving `head` at distance 1 as the top candidate. Returning here
+    # rather than falling through — once the name is known, a runner-up is noise.
+    by_lower = {name.lower(): name for name in loaded}
+    if typed in by_lower:
+        _add(by_lower[typed], loaded[by_lower[typed]])
+        return hits[:_NEAR_MISS_MAX]
 
     target = _OP_SYNONYMS.get(typed)
     if target in loaded:

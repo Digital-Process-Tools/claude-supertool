@@ -86,6 +86,20 @@ def test_vi_is_carried_to_vim() -> None:
     assert "vim" in line, line
 
 
+def test_a_wrong_case_name_is_carried_to_itself_not_to_a_neighbour() -> None:
+    """`Read:x` is not a typo of `head`. Found reviewing the first commit.
+
+    Case is the one difference that is certainly not a typo of something else,
+    and the distance rule could not see it: lowercased, `Read` is distance 0
+    from `read`, which the "a name is not a suggestion for itself" guard threw
+    out — leaving `head` at distance 1 as the top candidate. Naming the wrong op
+    with a straight face is worse than the wall of names this replaced.
+    """
+    line = _suggestion_line(supertool._unknown_op_message("Read"))
+    assert "read" in line, line
+    assert "head" not in line, line
+
+
 def test_a_transposed_builtin_is_named() -> None:
     line = _suggestion_line(supertool._unknown_op_message("raed"))
     assert "read" in line, line

@@ -71,7 +71,8 @@ def _scratch_repo(tmp_path: Path) -> Path:
 def _head(work: Path) -> str:
     return subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=work, capture_output=True,
-        text=True, check=True).stdout.strip()
+        text=True, check=True, encoding="utf-8", errors="replace",
+    ).stdout.strip()
 
 
 def test_the_brief_prescribes_at_least_one_commit_form() -> None:

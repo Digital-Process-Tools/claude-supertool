@@ -36,9 +36,13 @@ def _subprocess_env(extra: dict[str, str] | None = None) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 def test_parallel_safe_includes_read_only_ops() -> None:
+    # `blame` sat in this list until #1285 — it left the dispatcher in b4099a5
+    # (moved to the git preset as `git-blame`) and the assertion went on
+    # holding, because `_is_parallel_safe` answers about the set, not about
+    # whether anything dispatches the name.
     for op in ("read", "grep", "glob", "ls", "head", "tail", "wc", "stat",
                "map", "tree", "around", "around_line", "between", "diff",
-               "blame", "version"):
+               "version"):
         assert supertool._is_parallel_safe(f"{op}:foo")
 
 
