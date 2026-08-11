@@ -1337,6 +1337,13 @@ def _get_op_int(op_name: str, key: str, default: int) -> int:
     tell it had been discarded (#654). It now names the variable, the value, and
     the limit actually in force — resolved first, so the number printed is the
     one that will be used rather than a guess at it.
+
+    The *config* side did the same thing and said nothing at all, for another
+    thirty-odd releases (#1332). A `builtin-ops.<op>.<key>` that is not a
+    positive whole number is still refused — a `"max_lines": 0` honoured as
+    "return no lines" would be a silent empty read, which is worse than the
+    misconfiguration — but it is now announced through the same notice. A
+    switch belongs on `_get_op_bool`, where `0` means off, not here.
     """
     env_key = f"SUPERTOOL_{op_name.upper()}_{key.upper()}"
     env_val = os.environ.get(env_key)

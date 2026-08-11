@@ -234,10 +234,14 @@ def test_the_config_switch_turns_it_off(
 ) -> None:
     """`read.elide: 0` is the documented off switch, in three places.
 
-    It has to be read directly rather than through `_get_op_int`, which is
-    built for positive-integer thresholds and treats a configured 0 as
-    "unset" — substituting its own default. Routed through it, the switch was
-    documented in configuration.md, reads.md and the changelog, and inert.
+    It must not be read through `_get_op_int`, which is built for
+    positive-integer thresholds and treats a configured 0 as "unset" —
+    substituting its own default. Routed through it, the switch was documented
+    in configuration.md, reads.md and the changelog, and inert.
+
+    Read inline here as the narrow fix, and through `_get_op_bool` since #1332
+    gave the class its own reader. This test does not care which: it asserts
+    the switch enters the state it reports, which is the thing that was false.
     """
     f = elide_on / "m.py"
     f.write_bytes(b"v = 8\n")
