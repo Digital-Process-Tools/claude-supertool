@@ -2032,11 +2032,6 @@ def _containment_error(candidates: Iterable[str], *,
 #: repository root, which is what `claims` resolves relative arguments against.
 _PATH_BOUNDARIES = ("cwd", "repo")
 
-#: How each boundary is named in a refusal. Two strings rather than one word
-#: because "path escapes cwd" is already in a dozen tests and dozens of
-#: transcripts, and the repo one has to read as a sentence.
-_PATH_BOUNDARY_LABELS = {"cwd": "cwd", "repo": "the repository root"}
-
 #: Syntax-string components that mean "this argument is a filesystem path".
 #: Matched per `_`-separated component so `MD_FILE`, `TEXT_OR_FILE_OR_file`
 #: and `@FILE` all count, while `NUMBER_OR_BRANCH` and `PATTERN` do not.
@@ -2106,6 +2101,19 @@ def _syntax_names_a_path(syntax: str) -> bool:
             if component in _PATH_SYNTAX_COMPONENTS:
                 return True
     return False
+
+
+def _path_boundary_label(boundary: str) -> str:
+    """How a boundary is named in a refusal.
+
+    A function rather than a module-level dict: #397's register in
+    `tests/test_state_reset_and_lint_timeout.py` accounts for every mutable
+    global in this file, and a constant lookup table is still a mutable global.
+    Two strings rather than one word because "path escapes cwd" is already in a
+    dozen tests and dozens of transcripts, and the repo one has to read as a
+    sentence.
+    """
+    return "the repository root" if boundary == "repo" else "cwd"
 
 
 def _repo_root_for_containment() -> str:
@@ -2211,7 +2219,7 @@ def _preset_path_containment(
     return _containment_error(
         (parts[i] for i in decl["args"] if 0 <= i < len(parts)),
         root=_repo_root_for_containment() if boundary == "repo" else None,
-        boundary=_PATH_BOUNDARY_LABELS[boundary],
+        boundary=_path_boundary_label(boundary),
     )
 
 
