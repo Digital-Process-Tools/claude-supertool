@@ -511,8 +511,8 @@ def _lookup_query(owner: str, name: str, numbers: list[int], enrich: bool) -> st
     return f'query {{ repository(owner: "{owner}", name: "{name}") {{ {parts} }} }}'
 
 
-def _graphql_payload(result: object) -> tuple[dict, str | None]:
-    """`(repository, reason)` from a `gh api graphql` result.
+def _graphql_payload(result: object) -> tuple[dict, str | None, set[str]]:
+    """`(repository, reason, faulted aliases)` from a `gh api graphql` result.
 
     **A NOT_FOUND alias makes `gh` exit 1 while returning every alias that did
     resolve.** Measured against this repo on 2026-08-11: one missing number in
@@ -524,6 +524,12 @@ def _graphql_payload(result: object) -> tuple[dict, str | None]:
 
     NOT_FOUND is expected here and is an *answer*; anything else — rate limit,
     auth, a field GitHub renamed — is a failed read and is named.
+
+    The third return value is **the aliases a non-NOT_FOUND error nulled**,
+    read off each error's `path`. A partial failure nulls the alias exactly as
+    a missing number does, so without this a number the call failed on renders
+    as `does not resolve to an issue` — the tool's own absence wearing the
+    world's sentence, on the one op whose whole job is telling those apart.
     """
     stdout = getattr(result, "stdout", "") or ""
     try:
@@ -532,17 +538,23 @@ def _graphql_payload(result: object) -> tuple[dict, str | None]:
         payload = None
     if not isinstance(payload, dict):
         err = (getattr(result, "stderr", "") or "").strip()[:160]
-        return {}, err or "gh api graphql returned unparseable JSON"
-    others = [
-        str(e.get("message") or e.get("type") or "")
-        for e in (payload.get("errors") or [])
-        if isinstance(e, dict) and str(e.get("type") or "") != "NOT_FOUND"
-    ]
+        return {}, err or "gh api graphql returned unparseable JSON", set()
+    others = []
+    faulted: set[str] = set()
+    for err_obj in (payload.get("errors") or []):
+        if not isinstance(err_obj, dict):
+            continue
+        if str(err_obj.get("type") or "") == "NOT_FOUND":
+            continue
+        others.append(str(err_obj.get("message") or err_obj.get("type") or ""))
+        for step in (err_obj.get("path") or []):
+            if isinstance(step, str) and step != "repository":
+                faulted.add(step)
     repo = ((payload.get("data") or {}).get("repository")) or {}
     reason = "; ".join(m for m in others if m)[:200] or None
     if not repo and reason is None and getattr(result, "returncode", 0) != 0:
         reason = (getattr(result, "stderr", "") or "").strip()[:160] or "gh api graphql failed"
-    return repo, reason
+    return repo, reason, faulted
 
 
 def _fetch_lookup(owner: str, name: str, numbers: list[int], chunk: int,
@@ -572,7 +584,7 @@ def _fetch_lookup(owner: str, name: str, numbers: list[int], chunk: int,
             for number in batch:
                 results[number] = ("failed", chunk_reason)
             continue
-        repo, chunk_reason = _graphql_payload(result)
+        repo, chunk_reason, faulted = _graphql_payload(result)
         reason = reason or chunk_reason
         if not repo:
             # Each row carries ITS chunk's cause, not the call's first one. A
@@ -591,8 +603,13 @@ def _fetch_lookup(owner: str, name: str, numbers: list[int], chunk: int,
             if isinstance(pr, dict):
                 results[number] = ("pr", pr)
                 continue
-            # The alias came back null and no error stopped the chunk: GitHub
-            # answered, and the answer is that the number is neither.
+            if faulted & {f"i{number}", f"p{number}"}:
+                # A fault nulled this alias. It looks exactly like a number
+                # that does not exist, and it is the opposite claim.
+                results[number] = ("failed", chunk_reason)
+                continue
+            # The alias came back null and no error named it: GitHub answered,
+            # and the answer is that the number is neither.
             results[number] = ("absent", None)
     return results, reason
 

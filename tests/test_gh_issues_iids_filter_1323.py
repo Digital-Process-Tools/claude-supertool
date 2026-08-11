@@ -316,6 +316,86 @@ class TestPerChunkFailureReason:
         assert reason == "fault 1"
 
 
+class TestTheTwoRoutesDoNotEnrichTwice:
+    """The rebase conflict against `master`, pinned as behaviour.
+
+    `master`'s enrichment block reads the repo off row urls and calls
+    `_fetch_enrichment` — a second GraphQL round-trip. The `iids=` route asked
+    for `_ENRICH_FIELDS` in the *same* query that fetched the rows, so running
+    the block again pays twice for data already in hand, and its decline
+    (`repo could not be identified from the listing`) is a sentence that cannot
+    be true where there was no listing. A "take both sides" resolution compiles
+    and passes every other test in this file.
+    """
+
+    def test_the_lookup_route_makes_exactly_one_graphql_call(
+            self, monkeypatch: pytest.MonkeyPatch,
+            capsys: pytest.CaptureFixture) -> None:
+        repository = {"i1233": _issue_node(1233, "the citation audit")}
+        run = _fake_gh(repository)
+        monkeypatch.setattr(issues.subprocess, "run", run)
+        assert issues.main_with_args("iids=1233") == 0
+        capsys.readouterr()
+        graphql = [c for c in run.calls if c[:3] == ["gh", "api", "graphql"]]
+        assert len(graphql) == 1, run.calls
+
+    def test_the_lookup_route_keeps_its_own_reason(
+            self, monkeypatch: pytest.MonkeyPatch,
+            capsys: pytest.CaptureFixture) -> None:
+        """A `reason: str | None = None` at the enrichment block wipes it.
+
+        The lookup hit a real fault and still rendered the rows it got. If the
+        listing block runs afterwards it resets `reason` and re-derives one
+        from its own second call, so the footer names a cause from a call the
+        caller's rows did not come from — and if that second call succeeds, the
+        footer names no cause at all for rows that are demonstrably degraded.
+        """
+        calls: list[list[str]] = []
+
+        def run(cmd, **kwargs):  # noqa: ANN001
+            calls.append(list(cmd))
+            if cmd[:3] == ["gh", "repo", "view"]:
+                return _Result(0, json.dumps({"name": "r",
+                                              "owner": {"login": "o"}}))
+            nth = len([c for c in calls if c[:3] == ["gh", "api", "graphql"]])
+            if nth == 1:
+                return _Result(1, json.dumps({
+                    "data": {"repository": {
+                        "i1233": None,
+                        "i1240": _issue_node(1240, "resolved fine")}},
+                    "errors": [{"type": "SERVICE_UNAVAILABLE",
+                                "path": ["repository", "i1233"],
+                                "message": "the first call's fault"}]}))
+            # a second, *successful* enrichment call — the one that must not
+            # happen, and whose success would erase the fault above
+            return _Result(0, json.dumps({"data": {"repository": {}}}))
+
+        monkeypatch.setattr(issues.subprocess, "run", run)
+        assert issues.main_with_args("iids=1233,1240") == 0
+        out = capsys.readouterr().out
+        assert "the first call's fault" in out
+        assert "lookup failed" in out
+        # the alias was nulled by a FAULT, not by GitHub saying the number is
+        # neither an issue nor a PR — those are different rows
+        assert "does not resolve to an issue" not in out
+        # never the listing's decline, which has no listing to refer to
+        assert "could not be identified from the listing" not in out
+
+    def test_owner_repo_is_unpacked_as_the_pair_it_now_returns(self) -> None:
+        """#1326 made `_owner_repo` return `(pair, why)`.
+
+        A copy of the old single-return call site survives `git rebase` without
+        a conflict and without a crash: `pair` is then always truthy, and
+        `_fetch_enrichment(pair[0], pair[1], ...)` is handed `name=None` on
+        every board call. This is the shape of that mistake, not its location.
+        """
+        pair, why = issues._owner_repo(
+            [{"url": "https://github.com/o/r/issues/1"}])
+        assert pair == ("o", "r")
+        assert why is None
+        assert issues._owner_repo([])[0] is None
+
+
 class TestRepoResolutionFailure:
     """A `gh` that did not run is not a cwd that is not a repo.
 
