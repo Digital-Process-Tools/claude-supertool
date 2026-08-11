@@ -13,7 +13,7 @@ Hashnode publishing, discovery, and engagement via GraphQL. Replaces manual API 
 
 | Op | Syntax | What it returns |
 |----|--------|-----------------|
-| `hashnode_publish` | `hashnode_publish:TITLE\|MD_FILE\|CANONICAL[|TAGS\|COVER]` | Published post URL + slug |
+| `hashnode_publish` | `hashnode_publish:TITLE\|MD_FILE\|CANONICAL[|TAGS\|COVER\|force]` | Published post URL + slug |
 | `hashnode_list` | `hashnode_list[:N]` or `hashnode_list:USER[:N]` | Post list: title, slug, date, reaction count |
 | `hashnode_read` | `hashnode_read:SLUG_OR_URL` | Full post body + title, tags, date, reaction + comment counts |
 | `hashnode_browse` | `hashnode_browse:TAG[|N][|SORT]` | Cross-publication tag feed: titles, authors, slugs, reaction counts |

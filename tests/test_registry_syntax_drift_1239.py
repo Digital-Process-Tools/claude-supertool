@@ -13,6 +13,16 @@ the `@file` payload field names (`tests/test_at_file_route.py::TestPayloadRouteP
 Discovery is by import rather than by a hand-written list, because a hand-written
 list of ops-with-filters is the second copy of the same contract this test exists
 to abolish.
+
+**What this does not cover, measured 2026-08-11 (#1269).** The sweep can only
+see an op that binds a module-level vocabulary. Four do. Thirty-four ops name a
+token in their `syntax` at all, and the other thirty parse theirs positionally
+out of `arg.split("|")` or `sys.argv`, so there is nothing here for the AST walk
+to find — `gh-pr-merge` accepting `cleanup` while its `syntax` omitted it, in
+this test's own PR, is that gap. Do not read a green here as a statement about
+the registry: it is a statement about four ops.
+`tests/test_registry_force_token_drift_1269.py` covers one token (`force`)
+across all of them, and records why widening further was measured and declined.
 """
 from __future__ import annotations
 
