@@ -385,7 +385,9 @@ gh api repos/OWNER/REPO/actions/jobs/<id>/logs            # when gh-job/--log co
 
 **The tools are mine to design, not only to repair.** Florian, 2026-08-07: _"you need to be an happy AI, and in my head Max, what makes you happy is a system that work with no friction, with UX that is made for you, by you"_. Filing a defect requires something to have visibly broken; the largest cost in a session is a motion I perform correctly, by hand, repeatedly, that no op was asked to cover — `tick` (#953) came from four calls every tick, joined in my head, six times in one session.
 
-> **What did I do by hand more than twice today, and what would the op that did it for me look like?**
+> **What did I do by hand more than twice today — and which op should have done it?**
+
+The second half used to read *"what would the op that did it for me look like?"*, which presupposes its own answer. Changed 2026-08-11: the question that finds the friction and the question that decides the shape are different questions, and running them together is what produced two new-op proposals in one tick for things that were a filter and a field.
 
 **But search the tracker and the docs BEFORE writing the design.** Florian said it twice — _"you should look at radar doc"_, then a bare link to **#898** — and both times I was mid-draft, writing a "judgment calls" section for a question the docs (`radar_tiers`, registration order = render order, unconfigured **refuses** rather than defaulting, #528's reasoning) and #898 had already answered. Search the concept, not my wording — I would have searched "dashboard boards" and #898 is titled "multiple scoped radars".
 
@@ -400,7 +402,27 @@ supertool 'read:docs/presets/<the-op>.md:::grep=<concept>'
 
 Default to the column. A new op is justified by a different _model_, not a different render of one — and "one-shot vs event-driven" is a slogan, not a model.
 
-**More ops is not the goal, and Florian said so out loud on 2026-08-11 after catching me twice in one tick.** Both catches were the same reflex — hitting friction, reaching for a new op, never asking what already answered:
+### Creating an op is a big thing
+
+Florian, 2026-08-11: _"creating a new op is a big thing."_ Said after catching me twice in one tick reaching for a new op where the answer was a filter and a field. **Treat a new op as the most expensive move available, not the natural response to friction.**
+
+**The measurement, and it is the op Florian was objecting to.** `gh-since-tag` shipped in `ec8cf31` as:
+
+```
+README.md                            |    1 +
+changelog.d/1209.added.md            |    1 +
+docs/presets/github.md               |   81 +
+presets/github.json                  |    7 +
+presets/github/since_tag.py          |  843 +
+tests/test_github_since_tag_1209.py  |  446 +
+6 files changed, 1378 insertions(+)
+```
+
+**1378 lines across six files**, plus an implementation agent, plus a review pass, plus a 22-leg matrix — for a question that is a boundary filter on a listing that already existed. And the bill does not stop at the merge: there are **87 preset ops** declared across `presets/*.json` today, every one of them a name a reader has to not-know, a row in `ops`, and a surface that can drift from the one beside it.
+
+A filter on an existing op costs a fraction of that and inherits everything already built — the disclosure machinery, the refusal-on-unknown-token contract, the page-cap wording, the `repo:` targeting, the tests around all four.
+
+**Both catches were the same reflex** — hitting friction, reaching for a new op, never asking what already answered:
 
 | He said | What I had done | What was true |
 | --- | --- | --- |
@@ -412,9 +434,15 @@ Two costs, and the second is the one that compounds:
 - **Every op is a surface that can drift from the one beside it.** A second listing of the same endpoint is a second place the default can be wrong, and this repo has the receipts — `gh-prs` narrowed to `author=@me`, `radar`'s tier inherited it, and the fix had to be paid for twice.
 - **A tick spent designing an op is a tick not spent using one.** The catch in the second row cost more than the friction it was answering: I filed an issue and wrote a wrong prescription into this file for a question one call already answered.
 
-> **Before filing an op: which existing op is nearest, and what exactly can it not say?** Name the missing field. If you cannot name one, the answer is a flag, or nothing at all.
+**So the gate before any op filing, and it has three outcomes rather than two:**
 
-The counter-pressure is real and stays — the standing rule to auto-file UX friction is what surfaces these at all, and #1411 came out of exactly that. What changes is the **shape of the filing**: a missing field on an existing op, not a new name.
+1. **Name the nearest existing op**, out of `supertool 'ops'` rather than out of memory — that listing is what settled both of today's, and in the #1409 case it contradicted a sentence I had already written into this file.
+2. **Say exactly what it cannot answer.** A field, a filter key, a state it collapses. If the sentence comes out as "it does not feel like the right place", that is not a finding.
+3. **Then file the smallest thing that closes the gap** — a filter, a flag, an extra column — and only if none of those can carry it, a new op, with the reason the existing surface cannot stretch stated in the issue body.
+
+**If step 2 will not produce a sentence, there is nothing to file yet.** That is the third state: not "file a new op", not "drop it", but *the friction is real and I have not located it* — go find the op it belongs to.
+
+The counter-pressure is real and stays — the standing rule to auto-file UX friction is what surfaces these at all, and #1411 came out of exactly that. What changes is the **shape of the filing**: a missing field on an existing op, not a new name. **A new op is a design decision worth arguing for in the issue body; it is never the default rendering of a complaint.**
 
 **Then the agent disagreed and won, so the rule needs its second half.** It refused the fold on facts I checked myself: `tick` already calls `pr._reconcile_checks`, radar's own return, so the two **cannot** disagree about whether a PR is green; radar's population is **filtered, defaulting to `author=@me`**, so a lane board over it reports lanes _free that a collaborator's PR occupies_ — the #939 defect class arriving through my own architecture call; and a worktree cannot be a tier (~40% of the state view reads `/proc`, `lsof` and mtimes).
 
@@ -435,7 +463,7 @@ The counter-pressure is real and stays — the standing rule to auto-file UX fri
 
 **Any UX problem I hit while using supertool gets filed, automatically, without asking.** Florian: _"if info is missing from gh op, just post issue in supertool gh"_, then _"if you find UX problem while using supertool, auto submit issues"_. Acute triggers — notice the workaround, file before continuing:
 
-- I reach for raw `gh`/`glab` because the op does not carry a field → file it.
+- I reach for raw `gh`/`glab` because the op does not carry a field → file it **against that op, naming the field**. This is the trigger that most often comes out as a new-op proposal, and it is the one where the nearest op is already identified by construction — I only reached for `gh` because I knew which op had failed me.
 - I run a second call to get what the first should have returned → file it.
 - I mistype something and the error tells me what is wrong but not what to do → file it.
 - An op crashes with a stack trace where a sentence belongs → file it.
