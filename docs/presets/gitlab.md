@@ -698,9 +698,19 @@ Each op declares the raw invocation it supersedes as `replaces` in `presets/gitl
 | `glab ci trace` | `gl-job:NUMBER` |
 | `glab ci get --pipeline-id` / `-p` | `gl-pipeline:NUMBER` |
 
-The flag decides **which** op is named, not whether to refuse — the same discrimination `gh pr view --json state` and `--json files` make on the GitHub side.
+On the two `view` commands the flag decides **which** op is named rather than whether to refuse — the same discrimination `gh pr view --json state` and `--json files` make on the GitHub side, and either spelling is refused.
 
-`glab ci get` is the one entry that exists only in its flagged form. Without a pipeline id it is the discovery call — "what ran on this branch" — and `gl-pipeline` needs the id that call is being used to find, so a bare `glab ci get` is not refused. `contributing.md` warns against reaching for `flag` to narrow a match out of caution; this is the other case, where the unflagged shape is a question the op cannot answer.
+`glab ci get` is the exception, and the only entry with no unflagged form: there the flag decides *whether* to refuse at all. Without a pipeline id that call is the discovery question — "what ran on this branch" — and `gl-pipeline` needs the id the call is being used to find, so a bare `glab ci get` is not refused. `contributing.md` warns against reaching for `flag` to narrow a match out of caution; this is the other case, where the unflagged shape is a question the op cannot answer at all.
+
+### The bar is the question, not the spelling
+
+A mapping is declared when the op answers **the same question**, even if it is keyed differently — not when it accepts the same arguments. Two entries are deliberately broader than their op's argument surface, and both are the first kind:
+
+`glab ci trace` is refused whole, including `glab ci trace <job-name>` and the bare interactive picker, though `gl-job` takes a numeric id only ([#1145](https://github.com/Digital-Process-Tools/claude-supertool/issues/1145) refuses a non-numeric one before fetching anything). "Why did this job fail" is the question, and `gl-pipeline:NUMBER:failed` hands you the id, so the answer is one op away rather than unreachable.
+
+`glab mr list` is refused whole, though `gl-mrs` has no `--search`, `--draft` or date-range filter. The same is already true of `gh issue list` → `gh-issues:per=100` on the GitHub side, shipped in #1347; narrowing the GitLab entry would make the two families disagree for no reason. The missing board filters are a gap in both ops, not a reason to leave the raw list ungated.
+
+Contrast `glab api -X POST`, below: there is no supertool answer to "write this to GitLab" at any spelling, so nothing is declared.
 
 ### Two ops declare nothing, on purpose
 

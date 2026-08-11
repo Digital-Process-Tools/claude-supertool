@@ -104,6 +104,31 @@ def test_a_flag_selects_the_more_specific_op(shipped_gitlab, command, use):
     assert _uses(command) == [use], command
 
 
+@pytest.mark.parametrize("command,use", [
+    # `gl-job` takes a numeric id only (#1145 refuses a name before fetching),
+    # and the bare form is glab own interactive picker.
+    ("glab ci trace lint", "gl-job:NUMBER"),
+    ("glab ci trace", "gl-job:NUMBER"),
+    # `gl-mrs` has no --search, no --draft, no date range.
+    ("glab mr list --search widget", "gl-mrs"),
+])
+def test_a_shape_the_op_answers_differently_is_still_refused(
+        shipped_gitlab, command, use):
+    """Deliberately broader than the op argument surface, and why that is right.
+
+    The bar for declaring a mapping is that the op answers the same
+    *question*, not that it accepts the same arguments. `gl-pipeline:N:failed`
+    hands you the job id `glab ci trace lint` would have resolved, and
+    `gh issue list` -> `gh-issues:per=100` already makes the identical trade on
+    the GitHub side. Contrast `glab api -X POST`, where no spelling of any op
+    answers the question at all — that one declares nothing.
+
+    Listed here rather than left to the bare prefix so that narrowing one of
+    these later is a visible decision instead of a silent hole.
+    """
+    assert _uses(command) == [use], command
+
+
 def test_the_refusal_carries_the_gitlab_op_own_words(shipped_gitlab):
     verdict = supertool.guard_command("glab ci trace 224356863")
     text = supertool.guard_refusal(verdict)
