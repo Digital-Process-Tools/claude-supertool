@@ -22,6 +22,22 @@
 # supertool's own spawns; a gate deciding whether a command may run is a
 # different trust context and does not inherit it.
 #
+# **`py -3` is the last rung, and it is the only one Windows usually has**
+# (#1402). Neither python.org's installer nor GitHub's `hostedtoolcache`
+# creates `python3.9.exe`-`python3.14.exe`; both create `python.exe` and
+# `python3.exe`. So the versioned ladder above finds nothing on a standard
+# Windows install and the guard declines on every Bash call - honest, and off.
+# The Windows Python launcher is a real executable rather than an alias stub,
+# it takes a version selector, and it is tried **after** every versioned name
+# so a host with a real `python3.12` keeps using it.
+#
+# Graded **reasoned, not observed** (the #627 convention): nobody here has a
+# Windows box. The load-bearing claim is that Windows ships no default
+# App Execution Alias for `py.exe` - the unconfigured stubs that block, and
+# that got `python3` banned in #572, are `python.exe` and `python3.exe`. If
+# that is wrong, the cost is #572 again, which is why the rung is last: any
+# host with a versioned interpreter never reaches it.
+#
 # `VIRTUAL_ENV` stays, because on Windows it is often the only interpreter
 # there is, and it is required to look like a venv (`pyvenv.cfg`) rather than
 # merely to be set. That narrows the same primitive without closing it: an
@@ -53,14 +69,18 @@ fi
 # probe reads from /dev/null.
 PROBE='import sys; sys.stdout.write("supertool-python-" + str(sys.version_info[0]))'
 
-for candidate in "${CANDIDATES[@]}"; do
-    command -v "$candidate" >/dev/null 2>&1 || continue
+# attempt INTERPRETER [ARG...] — answer through this candidate, or return 1.
+# Takes an argv rather than a single word because `py -3` is two of them, and
+# splitting a candidate string here would break the `$VIRTUAL_ENV` paths, which
+# can contain spaces.
+attempt() {
     # Not `-c pass`. Exiting 0 is a property of `/usr/bin/true`, of `/bin/ls`
     # and of every other binary on the box; printing this line is a property
-    # of a Python 3 (#1390).
-    said=$("$candidate" -c "$PROBE" 2>/dev/null </dev/null) || continue
-    [ "$said" = "supertool-python-3" ] || continue
-    out=$("$candidate" "$BIN")
+    # of a Python 3 (#1390). It is also what rejects a launcher that prints a
+    # preamble of its own: the check is equality, not a substring (#1402).
+    said=$("$@" -c "$PROBE" 2>/dev/null </dev/null) || return 1
+    [ "$said" = "supertool-python-3" ] || return 1
+    out=$("$@" "$BIN")
     rc=$?
     if [ "$rc" -ne 0 ]; then
         decline "the interpreter exited $rc"
@@ -70,6 +90,18 @@ for candidate in "${CANDIDATES[@]}"; do
     fi
     printf '%s' "$out"
     exit 0
+}
+
+for candidate in "${CANDIDATES[@]}"; do
+    command -v "$candidate" >/dev/null 2>&1 || continue
+    attempt "$candidate"
 done
 
-decline "no python3.9-3.14 on PATH that executes (the bare name python3 is never tried, see hooks/pre-bash-guard.sh)"
+# The Windows Python launcher, last (#1402). `command -v` first, so a host
+# without it never execs anything: a missing `py` costs a builtin lookup, not
+# a spawn.
+if command -v py >/dev/null 2>&1; then
+    attempt py -3
+fi
+
+decline "no python3.9-3.14, venv interpreter or py -3 on PATH that executes (the bare name python3 is never tried, see hooks/pre-bash-guard.sh)"

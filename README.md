@@ -681,7 +681,9 @@ See [docs/contributing.md](docs/contributing.md) — custom ops, presets, valida
 
 **Linux/macOS:** works out of the box.
 
-**Windows:** works via Git Bash or WSL (the plugin's `hooks/session-start.sh`, `hooks/pre-bash-guard.sh` and `.githooks/pre-push` are bash scripts; the Python tool itself is cross-platform). Native `cmd.exe` / PowerShell without bash won't fire the hooks. The pre-push hook needs a real `pythonX.Y` on `PATH` (or `PYTHON=` pointing at one) — it will not run the bare name `python3`, which on Windows can resolve to the App Execution Alias stub and block forever inside `git push`. See [docs/contributing.md](docs/contributing.md#running-tests).
+**Windows:** works via Git Bash or WSL (the plugin's `hooks/session-start.sh`, `hooks/pre-bash-guard.sh` and `.githooks/pre-push` are bash scripts; the Python tool itself is cross-platform). Native `cmd.exe` / PowerShell without bash won't fire the hooks — and on such a host Claude Code has no `Bash` tool either, so there is nothing for the raw-command guard to gate. The pre-push hook needs a real `pythonX.Y` on `PATH` (or `PYTHON=` pointing at one) — it will not run the bare name `python3`, which on Windows can resolve to the App Execution Alias stub and block forever inside `git push`. See [docs/contributing.md](docs/contributing.md#running-tests).
+
+**Windows and the raw-command guard's interpreter:** `hooks/pre-bash-guard.sh` needs a Python it can name. Neither python.org's installer nor GitHub's `hostedtoolcache` creates `python3.9`–`python3.14`, so the guard falls back to `py -3`, the Windows Python launcher, after every versioned name and after an activated virtualenv. With no interpreter at all the guard does not silently pass: it says in the transcript that it could not run, and allows the command. See [docs/configuration.md](docs/configuration.md).
 
 **Paths with spaces:** fine. Arguments arrive via `sys.argv` pre-tokenized by the shell, so `supertool "'read:/home/jo bob/file.py'"` works unchanged.
 
