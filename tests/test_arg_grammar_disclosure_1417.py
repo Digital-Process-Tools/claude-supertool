@@ -167,3 +167,77 @@ def test_nested_batch_with_the_documented_spelling_still_runs(
     out = supertool.dispatch(f"batch:@{outer}")
     assert "alpha" in out, out
     assert "ERROR" not in out, out
+
+# ---------------------------------------------------------------------------
+# Round 2 — the review of 58135ef
+# ---------------------------------------------------------------------------
+
+def test_the_named_window_is_the_one_that_came_back_not_the_one_requested(
+        tmp_path: Path) -> None:
+    """`this window is read:PATH:A-B` is offered as a fact. When EOF clamps the
+    window short, the requested end is not that fact — naming it there is the
+    house defect inside the line written to cure it."""
+    f = _numbered(tmp_path, "short.txt", 10)
+    out = supertool.dispatch(f"read:{f}:8:5")
+    assert "returning lines 9-10 of 10" in out, out
+    assert f"this window is read:{f}:9-10" in out, out
+    assert f"this window is read:{f}:9-13" not in out, out
+
+
+def test_only_one_range_is_ever_proposed_as_the_reading_meant(
+        tmp_path: Path) -> None:
+    """#382's note and the window hint both answer 'what did you mean', and on
+    a call that fires both they answered it differently: `read:f:20:25` drew
+    `for lines 20-44` from one and `For lines 20-25` from the other. The window
+    hint yields the guess to #382 and keeps only the fact."""
+    f = _numbered(tmp_path, "many.txt", 400)
+    out = supertool.dispatch(f"read:{f}:20:25")
+    assert f"read:{f}:20-25" in out, out
+    assert f"read:{f}:20-44" not in out, out
+    assert f"this window is read:{f}:21-45" in out, out
+
+
+def test_the_fact_is_stated_even_when_382_speaks(tmp_path: Path) -> None:
+    """Yielding the guess must not silence the window's own range spelling —
+    that is the half #1138 never got."""
+    f = _numbered(tmp_path, "many.txt", 400)
+    out = supertool.dispatch(f"read:{f}:20:25")
+    assert "OFFSET is a skip count" in out, out
+
+
+def test_the_guess_is_still_made_when_382_is_silent(tmp_path: Path) -> None:
+    """`1:40` on a long file is the shape that trips neither of #382's tells,
+    so the window hint is the only place the second reading can be named."""
+    f = _numbered(tmp_path, "many.txt", 400)
+    out = supertool.dispatch(f"read:{f}:1:40")
+    assert f"for lines 1-40 use read:{f}:1-40" in out, out
+    assert "not START:END" not in out, out
+
+# ---------------------------------------------------------------------------
+# Adjacent: the notifier/cursor range for `read` reads OFFSET as a start line
+# ---------------------------------------------------------------------------
+
+def test_notifier_range_matches_the_lines_the_read_actually_returned() -> None:
+    """`read:f:19:1` renders line 20, and the editor was told to highlight line
+    19 — the same OFFSET-is-a-start-line mistake #1417 is about, in the code
+    that decides where the cursor lands. `docs/notifiers.md` documented the
+    off-by-one faithfully, which is why it survived."""
+    assert supertool._read_target_read(["read", "f.py", "19", "1"]) == (
+        "f.py", 20, 20)
+    assert supertool._read_target_read(["read", "f.py", "100", "60"]) == (
+        "f.py", 101, 160)
+
+
+def test_notifier_range_understands_the_range_form() -> None:
+    """`read:PATH:START-END` is the form the docs tell callers to prefer, and it
+    is the one form whose range needs no arithmetic at all — it was the only one
+    that got no highlight."""
+    assert supertool._read_target_read(["read", "f.py", "120-124"]) == (
+        "f.py", 120, 124)
+
+
+def test_notifier_range_declines_rather_than_inverting() -> None:
+    """A zero LIMIT would compute an END before its START. No range is an
+    honest answer; a backwards one is not."""
+    assert supertool._read_target_read(["read", "f.py", "10", "0"]) == (
+        "f.py", None, None)
