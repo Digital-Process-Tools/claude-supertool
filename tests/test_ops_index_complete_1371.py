@@ -23,7 +23,8 @@ from pathlib import Path
 
 import supertool
 
-INDEX = Path(__file__).parent.parent / "docs" / "operations" / "index.md"
+ROOT = Path(__file__).parent.parent
+INDEX = ROOT / "docs" / "operations" / "index.md"
 
 # Names carrying their own punctuation in the page (`ops:roster`) or rendered as
 # a slash pair (`replace` / `replace_dry`) still appear as bare backticked
@@ -70,6 +71,61 @@ def test_every_dispatchable_op_is_reachable_from_the_categories_table() -> None:
     assert not missing, (
         f"absent from the Categories table in {INDEX.name}: {missing} — a "
         f"reader who does not know the name has no route to these"
+    )
+
+
+def _dispatchable_names(monkeypatch) -> set:
+    """Every name this checkout would accept: builtins plus config/preset ops.
+
+    `_valid_op_names()` alone is the wrong denominator for the honesty check —
+    the page legitimately carries `git-blame`, which ships with the `git`
+    preset. conftest's `_disable_rtk_and_config` pins `_CONFIG = {}`, so the
+    config has to be loaded back for the duration of this one assertion.
+    """
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", False)
+    monkeypatch.setattr(supertool, "_CONFIG", None)
+    monkeypatch.setattr(supertool, "_CONFIG_PATH", None)
+    config = supertool._load_config()
+    names = set(supertool._valid_op_names())
+    for section in ("builtin-ops", "ops", "aliases"):
+        names |= set(config.get(section, {}))
+    assert len(names) > len(supertool._valid_op_names()), (
+        "no config op names loaded — the check below would be against builtins "
+        "only and would flag every preset op on the page")
+    return names
+
+
+def test_neither_table_names_an_op_that_does_not_dispatch(monkeypatch) -> None:
+    """The other direction, and the reference had one (#1371 review).
+
+    Completeness and honesty are separate properties: the two assertions above
+    are satisfied by a page that also lists ops which do not exist. The page
+    listed `blame`, syntax cell and all, and `blame:PATH:LINE` answers
+    `unknown operation: blame` — the op is `git-blame`, from the git preset,
+    documented in `docs/presets/git.md`. A reader following this reference
+    into a refusal is the same defect as one who never found the op, one
+    surface along.
+
+    Scoped to the builtin reference: this page enumerates what the dispatcher
+    accepts, and a preset op belongs in `docs/presets/`. Names are read as the
+    head of a `:`-form, so `ops:roster` checks as `ops`.
+    """
+    text = _index_text()
+    named = set()
+    for section in ("## Categories", "## Full op table"):
+        for line in _section(text, section).splitlines():
+            if not line.startswith("|") or line.startswith("|--"):
+                continue
+            cells = line.split("|")
+            # Categories puts the names in cell 2 (cell 1 is the category
+            # label); the full op table puts the op in cell 1.
+            for cell in cells[1:3]:
+                named.update(n.split(":")[0] for n in _BACKTICKED.findall(cell))
+    phantom = sorted(named - _dispatchable_names(monkeypatch))
+    assert not phantom, (
+        f"{INDEX.name} names ops the dispatcher does not accept: {phantom} — "
+        f"each one sends a reader to `unknown operation`"
     )
 
 
