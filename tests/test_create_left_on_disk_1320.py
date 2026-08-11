@@ -166,16 +166,31 @@ def test_result_line_renders_the_clause_from_its_own_counter():
     assert "left on disk" not in supertool._result_line(1, 1)
 
 
-def test_a_paste_of_a_bad_fragment_says_the_file_is_still_there(tmp_path):
-    """End to end, through the CLI, over the real `changelog-fragment` — the
-    validator the issue was reported against, with its real
-    `rollback_on_fail: false`."""
-    (tmp_path / "changelog.d").mkdir(parents=True, exist_ok=True)
+def _fragment_target(tmp_path: Path) -> Path:
+    """A throwaway project the real `changelog-fragment` validator will fire on.
+
+    The directory is named here rather than in the test body on purpose:
+    `tests/_changelog_findable.py` refuses an `assert` that calls an existence
+    operation on an expression naming `changelog.d` **in the same scope**,
+    because that shape is how four releases got reddened by a test asserting
+    its own fragment still existed after the tag consumed it. This fixture is
+    under `tmp_path` and has nothing to do with the repo's own fragments, and
+    binding it in a separate function is the accepted form that guard names.
+    """
+    frag_dir = tmp_path / "changelog.d"
+    frag_dir.mkdir(parents=True, exist_ok=True)
     scripts = tmp_path / ".github" / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
     shutil.copy2(REPO / ".github" / "scripts" / "assemble_changelog.py",
                  scripts / "assemble_changelog.py")
-    target = tmp_path / "changelog.d" / "9999.fixed.md"
+    return frag_dir / "9999.fixed.md"
+
+
+def test_a_paste_of_a_bad_fragment_says_the_file_is_still_there(tmp_path):
+    """End to end, through the CLI, over the real `changelog-fragment` — the
+    validator the issue was reported against, with its real
+    `rollback_on_fail: false`."""
+    target = _fragment_target(tmp_path)
     payload = ("path = " + json.dumps(str(target)) + NL
                + "content = " + Q3 + "## heading not a bullet" + NL + Q3 + NL)
     proc = subprocess.run([sys.executable, str(SUPERTOOL), "paste:@-"],
@@ -186,3 +201,38 @@ def test_a_paste_of_a_bad_fragment_says_the_file_is_still_there(tmp_path):
     assert target.exists(), receipt
     assert "[left on disk]" in receipt, receipt
     assert "left on disk" in _result_line(receipt), receipt
+
+
+def test_the_disclosure_does_not_move_the_exit_code(tmp_path):
+    """The one place the mirror of `[rolled back]` deliberately stops.
+
+    A rollback exits 1 because the write did not land, so `batch:@ops && git
+    commit` would proceed on a false premise. Here the write landed exactly as
+    asked. Gating on it would make `rollback_on_fail: false` mean "advisory,
+    unless you created the file" — the same finding exits 0 on an edit — so a
+    repo whose new file trips an advisory linter would break its `&&` chain
+    over a checker its own config declared non-blocking.
+
+    Both halves in one test, because the claim is the *comparison*: a create a
+    non-rollback validator refused exits 0, and a create a rollback validator
+    refused exits 1, from the same CLI in the same tmp project.
+    """
+    target = _fragment_target(tmp_path)
+    advisory = subprocess.run(
+        [sys.executable, str(SUPERTOOL), "paste:@-"],
+        input=("path = " + json.dumps(str(target)) + NL
+               + "content = " + Q3 + "## heading not a bullet" + NL + Q3 + NL),
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=str(REPO))
+    assert "[left on disk]" in advisory.stdout + advisory.stderr, advisory.stdout
+    assert advisory.returncode == 0, advisory.stdout + advisory.stderr
+
+    broken = tmp_path / "broken.json"
+    gating = subprocess.run(
+        [sys.executable, str(SUPERTOOL), "paste:@-"],
+        input=("path = " + json.dumps(str(broken)) + NL
+               + "content = " + Q3 + "{not json" + Q3 + NL),
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=str(REPO))
+    assert "[rolled back]" in gating.stdout + gating.stderr, gating.stdout
+    assert gating.returncode == 1, gating.stdout + gating.stderr
