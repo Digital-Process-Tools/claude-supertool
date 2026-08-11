@@ -16,17 +16,16 @@ absence of an entry is the only escape hatch, and the opt-out
 disarms the whole gate, GitHub's four included. A command supertool cannot
 answer must therefore stay silently allowed.
 
-Two ops ship no mapping on purpose:
+`gl-api` shipped unmapped here for exactly that reason and was mapped in
+#1394, once `unless_flag` gave the schema a way to say *this shape of the
+command has no replacement*. Its shapes are pinned in
+`tests/test_guard_unless_flag_1394.py`, not here.
 
-* `gl-api` — `_guard_score` has no negative term, so `{"argv": "glab api"}`
-  would also block `glab api -X POST` / `-F` / `--input`, the write shapes
-  gl-api itself names glab for ("GET-only by design"). supertool has no route
-  for a GitLab write, so that block has no way past except turning the guard
-  off everywhere. Expressing the GET-only mapping needs an exclusion term in
-  the guard core, which is #1347's schema and not this preset's.
+One op still ships no mapping on purpose:
+
 * `gl-runners` — `glab` has no runner command at all (`glab --help`, 1.86.0).
-  The only raw route to the fleet is `glab api runners/...`, which is the
-  `glab api` prefix above.
+  The only raw route to the fleet is `glab api runners/...`, and that is
+  gl-api's entry, not this op's.
 """
 from __future__ import annotations
 
@@ -147,8 +146,6 @@ def test_the_refusal_carries_the_gitlab_op_own_words(shipped_gitlab):
      "supertool has no route for a GitLab API write at all"),
     ("glab api -F title=x projects/:id/issues",
      "-F makes glab POST; same absence as -X"),
-    ("glab api projects/:id/members/all",
-     "gl-api ships unmapped — the schema cannot exclude the write shapes"),
     ("glab issue list --per-page 50",
      "there is no gl-issues board op on the GitLab side"),
     ("glab ci status",
@@ -188,14 +185,14 @@ def test_nothing_added_here_fires_on_an_unrelated_command(
 def test_exactly_these_gitlab_ops_declare_a_mapping():
     """The record of which absences were chosen, next to the ones that were not.
 
-    Adding `gl-api` or `gl-runners` here is a real decision — see the module
-    docstring for why neither is expressible today — so it should not be
-    possible to make it without touching this line.
+    Adding `gl-runners` here is a real decision — see the module docstring for
+    why it is not expressible — so it should not be possible to make it
+    without touching this line.
     """
     declared = {name for name, definition in _GITLAB_OPS.items()
                 if "replaces" in definition}
     assert declared == {"gl-mr", "gl-mrs", "gl-issue", "gl-issue-create",
-                        "gl-job", "gl-pipeline"}, sorted(declared)
+                        "gl-job", "gl-pipeline", "gl-api"}, sorted(declared)
 
 
 # --------------------------------------------------------------------------

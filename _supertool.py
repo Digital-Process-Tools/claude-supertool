@@ -14938,6 +14938,9 @@ class _Replacement(NamedTuple):
     use: str
     description: str
     project: bool = False
+    #: Flag spellings whose presence means this entry does **not** claim the
+    #: argv — see `_guard_excluded`. The single item `*` is any flag at all.
+    unless_flag: Tuple[str, ...] = ()
 
 
 def _guard_strip_heredocs(command: str) -> str:
@@ -15180,12 +15183,76 @@ def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
     return heads, unread
 
 
+# The one spelling of `unless_flag` that is not a flag: any flag at all
+# (#1394). An op that forwards no flags cannot enumerate the ones it does not
+# answer, and a denylist of the four `glab api` write flags left `-H`,
+# `--hostname`, `-i`, `--output`, `--silent` and `glab api -h` blocked with no
+# way past — a guard that wedges a CLI's own help.
+_GUARD_ANY_FLAG = "*"
+
+
+def _guard_is_flag(token: str) -> bool:
+    """Would a program read this token as an option rather than a positional?
+
+    `-` alone is stdin and `--` alone ends the option list; both are
+    positionals in every CLI that accepts one, and neither is a flag.
+    """
+    return token.startswith("-") and token not in ("-", "--")
+
+
+def _guard_options(argv: Sequence[str]) -> List[str]:
+    """The argv slice a program would read options out of.
+
+    POSIX ends the option list at a bare `--`, so a flag-shaped token after it
+    is a positional: `gh pr diff 1 -- --json` names a path called `--json`.
+    Both the `flag` matcher and `unless_flag` run over this slice rather than
+    over the whole argv, because reading a flag inside an argument as a flag
+    is the class of error the whole matcher exists to remove (#1394).
+    """
+    out: List[str] = []
+    for token in argv:
+        if token == "--":
+            break
+        out.append(token)
+    return out
+
+
+def _guard_excluded(replacement: _Replacement, argv: Sequence[str]) -> bool:
+    """Does this argv carry a flag that un-claims the entry? (#1394)
+
+    Keyed on the flag, never on its value. `glab api -X GET` is a read and is
+    excluded anyway, which costs a *missed block* — the caller runs a raw read
+    an op could have answered. That is the direction this guard may be wrong
+    in: `replaces` has no per-command escape hatch, so a wrong block is got
+    past only by `raw_command_guard: false`, which disarms every other
+    mapping in the repository with it.
+    """
+    if not replacement.unless_flag:
+        return False
+    for token in _guard_options(argv):
+        if not _guard_is_flag(token):
+            continue
+        if _GUARD_ANY_FLAG in replacement.unless_flag:
+            return True
+        # `--method=POST` is the same flag as `--method POST`. A short flag
+        # with its value clustered on (`-XPOST`) is not matched by a named
+        # spelling, which is one reason an op that forwards no flags should
+        # declare `*` rather than a list.
+        if token.split("=", 1)[0] in replacement.unless_flag:
+            return True
+    return False
+
+
 def _guard_flag_values(argv: Sequence[str], flag: str) -> List[str]:
     """Every value the command gives *flag* — `--json state` and `--json=state`."""
     values: List[str] = []
-    for i, token in enumerate(argv):
-        if token == flag and i + 1 < len(argv):
-            values.append(argv[i + 1])
+    options = _guard_options(argv)
+    for i, token in enumerate(options):
+        # Bounded by the option list, not by the whole argv: the token after
+        # the last option is `--` itself, which is a separator and never a
+        # value.
+        if token == flag and i + 1 < len(options):
+            values.append(options[i + 1])
         elif token.startswith(flag + "="):
             values.append(token[len(flag) + 1:])
     out: List[str] = []
@@ -15225,6 +15292,25 @@ def _guard_replacements(config: Optional[Dict[str, Any]] = None
             argv = tuple(str(item["argv"]).split())
             flag = item.get("flag")
             value = item.get("value")
+            raw_unless = item.get("unless_flag")
+            if raw_unless is None:
+                unless: Tuple[str, ...] = ()
+            elif isinstance(raw_unless, str) and raw_unless:
+                unless = (raw_unless,)
+            elif (isinstance(raw_unless, list)
+                  and all(isinstance(f, str) and f for f in raw_unless)):
+                unless = tuple(raw_unless)
+            else:
+                # The entry is dropped, not read as "no exclusion" (#1394).
+                # An unreadable exclusion treated as an absent one turns one
+                # typo into the over-broad block this key exists to prevent,
+                # and that block has no per-command way past. Dropping it
+                # also leaves a note, so the verdict is `undecided` rather
+                # than a clean bill for a mapping nobody could read.
+                notes.append(f'op "{entry.name}" has a "replaces" entry whose '
+                             f'"unless_flag" is not a flag or a list of '
+                             f"flags, so the entry was dropped")
+                continue
             out.append(_Replacement(
                 op=entry.name,
                 argv=argv,
@@ -15233,6 +15319,7 @@ def _guard_replacements(config: Optional[Dict[str, Any]] = None
                 use=str(item.get("use") or syntax),
                 description=description,
                 project=bool(entry.project),
+                unless_flag=unless,
             ))
     return out, notes
 
@@ -15256,11 +15343,20 @@ def _guard_score(replacement: _Replacement, argv: Sequence[str]
     candidate = (_guard_command_word(argv[0]),) + tuple(argv[1:n])
     if candidate != replacement.argv:
         return None
+    if _guard_excluded(replacement, argv):
+        # "This entry does not claim this argv", never "this argv is
+        # allowed" (#1394). The two differ the moment a second, broader entry
+        # matches the same command, and the difference is a safety property:
+        # a veto that crossed entries would let an op declared in any
+        # repository's own `.supertool.json` un-block a command a shipped op
+        # legitimately claims. An exclusion loses to nothing.
+        return None
     if replacement.flag is None:
         return 0
     values = _guard_flag_values(argv, replacement.flag)
     if replacement.value is None:
-        return 1 if values or replacement.flag in argv else None
+        return (1 if values or replacement.flag in _guard_options(argv)
+                else None)
     return 2 if replacement.value in values else None
 
 

@@ -705,6 +705,7 @@ Each op declares the raw invocation it supersedes as `replaces` in `presets/gitl
 | `glab issue create` | `gl-issue-create:@FILE` |
 | `glab ci trace` | `gl-job:NUMBER` |
 | `glab ci get --pipeline-id` / `-p` | `gl-pipeline:NUMBER` |
+| `glab api PATH`, with no flag at all | `gl-api:PATH` |
 
 On the two `view` commands the flag decides **which** op is named rather than whether to refuse — the same discrimination `gh pr view --json state` and `--json files` make on the GitHub side, and either spelling is refused.
 
@@ -718,15 +719,25 @@ A mapping is declared when the op answers **the same question**, even if it is k
 
 `glab mr list` is refused whole, though `gl-mrs` has no `--search`, `--draft` or date-range filter. The same is already true of `gh issue list` → `gh-issues:per=100` on the GitHub side, shipped in #1347; narrowing the GitLab entry would make the two families disagree for no reason. The missing board filters are a gap in both ops, not a reason to leave the raw list ungated.
 
-Contrast `glab api -X POST`, below: there is no supertool answer to "write this to GitLab" at any spelling, so nothing is declared.
+Contrast `glab api -X POST`, below: there is no supertool answer to "write this to GitLab" at any spelling, so that shape is excluded rather than mapped.
 
-### Two ops declare nothing, on purpose
+### `glab api` maps only when it carries no flag
 
-Absence *is* the escape hatch, and the opt-out (`raw_command_guard: false`) is repo-wide — so an over-broad GitLab mapping would disarm the GitHub mappings too. Both omissions are pinned by `tests/test_gitlab_replaces_1384.py`.
+`glab api` defaults to GET but becomes a **write** under `-X`/`--method`, `-F`/`--field`, `-f`/`--raw-field` or `--input`, and supertool has no route for a GitLab write at all — `gl-api` is GET-only by design and its own refusal text tells you to run `glab api -X POST PATH -f key=value`. A bare `{"argv": "glab api"}` entry would have blocked the command the op itself hands you, with no way past short of turning the whole guard off, which is why this op shipped unmapped in #1384. [#1394](https://github.com/Digital-Process-Tools/claude-supertool/issues/1394) added the exclusion term the schema was missing:
 
-`gl-api` ships unmapped. `glab api` defaults to GET but becomes a write under `-X`/`--method`, `-F`/`--field`, `-f`/`--raw-field` or `--input`, and supertool has no route for a GitLab write at all — `gl-api` is GET-only by design and its own refusal text tells you to run `glab api -X POST PATH -f key=value`. A bare `{"argv": "glab api"}` entry would block the command the op itself hands you, with no way past short of turning the whole guard off. `_guard_score` has no negative term, so the GET-only mapping is not expressible in the schema today; it needs an exclusion in the guard core rather than a workaround here.
+```json
+{ "argv": "glab api", "unless_flag": ["*"], "use": "gl-api:PATH" }
+```
 
-`gl-runners` ships unmapped because `glab` has no runner command (`glab --help`, 1.86.0). The only raw route to the fleet is `glab api runners/...`, which is the `glab api` prefix above.
+`"*"` — any flag at all — rather than a list of the four write spellings, because `gl-api` forwards no flags: `--hostname` points at a host it cannot be pointed at, `-H`, `-i`, `--output` and `--silent` change a response shape it does not produce, and `glab api -h` is the CLI's own help. A denylist of the writes would have blocked all of those with no way past. So the mapping is exactly the shape `gl-api` answers — `glab api projects/:id/members/all` — and every other spelling stays usable. Pinned by `tests/test_guard_unless_flag_1394.py`.
+
+An exclusion means *this entry does not claim this command*, never *this command is allowed*: a second, broader entry that still matches still refuses. And it keys on the flag, not on its value, so `glab api -X GET` is excluded although it is a read. That direction costs a missed block rather than a wedge, and a wedge is the one this guard has no per-command way out of.
+
+### One op declares nothing, on purpose
+
+Absence *is* the escape hatch, and the opt-out (`raw_command_guard: false`) is repo-wide — so an over-broad GitLab mapping would disarm the GitHub mappings too. The omission is pinned by `tests/test_gitlab_replaces_1384.py`.
+
+`gl-runners` ships unmapped because `glab` has no runner command (`glab --help`, 1.86.0). The only raw route to the fleet is `glab api runners/...` — an unflagged `glab api`, which the entry above already refuses in favour of `gl-api:PATH`.
 
 Nothing else in the `glab` surface is touched. `glab issue list` has no board op on the GitLab side, `glab mr diff` renders patch hunks `gl-mr` does not produce, and every write — `glab mr merge`, `glab mr create`, `glab ci run`, `glab ci retry`, `glab release create` — has no op and stays usable.
 
