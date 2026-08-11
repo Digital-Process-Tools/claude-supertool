@@ -694,14 +694,109 @@ def _resolve_preset_cmd(cmd: str, preset_dir: str) -> str:
     return cmd.replace("{path}", path_prefix)
 
 
+#: Distinguishes "the project supplied no override" from "it supplied None".
+_UNSET = object()
+
+
+def _merge_op_def(base: Any, override: Any) -> Any:
+    """The one rule for a project op-def landing on a preset op-def (#1356).
+
+    Dict over dict merges key-by-key, so a project override can add or replace
+    individual keys without restating the preset's `cmd`. Anything else
+    replaces wholesale.
+
+    Extracted from `_merge_presets` because the rule had escaped it. Three ops
+    in this repo's own `.supertool.json` — `dashboard`, `radar`, `git-diff` —
+    are partial overrides carrying one config key and no `cmd` or `syntax` at
+    all, and a hand-rolled walk writing the obvious `ops[name] = entry`
+    replaced the shipped definition with the stub. The op count is unchanged
+    either way, so nothing looks wrong; the entry simply stops matching every
+    filter downstream. #1350's containment audit lost `git-diff` — the op it
+    was written about — out of its own population and printed a pass.
+
+    So: one function, and `_op_registry` renders what it produced rather than
+    recomputing it.
+    """
+    if _merges_key_by_key(base, override):
+        merged = dict(base)
+        merged.update(override)
+        return merged
+    return override
+
+
+def _merges_key_by_key(base: Any, override: Any) -> bool:
+    """Will this override merge into the base, or replace it outright?
+
+    A predicate rather than an inlined `isinstance` pair because two callers
+    ask it and they must never disagree: `_merge_op_def` decides what lands in
+    the registry, `_record_op_sources` decides what the registry says happened.
+    The first version asked only whether the *override* was a dict, so a dict
+    landing on a preset that ships its op as a bare cmd string was recorded as
+    a key-by-key merge — attributing surviving keys to a definition that had
+    been replaced entirely.
+    """
+    return isinstance(base, dict) and isinstance(override, dict)
+
+
+def _record_op_sources(config: Dict[str, Any],
+                       op_presets: Dict[str, str],
+                       preset_bases: Dict[str, Any],
+                       project_ops: Dict[str, Any],
+                       merged_ops: Dict[str, Any]) -> None:
+    """Stamp where each merged op came from, for `_op_registry` to read.
+
+    Written by the loader during the one walk that does the merging, never
+    recomputed: a second walk is a second copy of the rule, which is the whole
+    defect (#1356). Its presence is also the signal that provenance is *known* —
+    a config that never passed through here reports "unknown", not "project".
+    """
+    sources: Dict[str, Dict[str, Any]] = {}
+    for name in merged_ops:
+        preset = op_presets.get(name)
+        override = project_ops.get(name, _UNSET)
+        if override is _UNSET:
+            sources[name] = {"preset": preset, "project": False,
+                             "overridden": []}
+            continue
+        if preset is None:
+            overridden: Any = []
+        elif _merges_key_by_key(preset_bases.get(name), override):
+            overridden = sorted(override)
+        else:
+            # The shipped definition was replaced outright — either side being
+            # a non-dict does it — so there is no per-key answer to give.
+            # None, never [] — an empty list means "merged, changed nothing",
+            # which is a different and true thing about a `{}` override.
+            overridden = None
+        sources[name] = {"preset": preset, "project": True,
+                         "overridden": overridden}
+    config["_op_sources"] = sources
+
+
 def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
     """Load and merge preset ops into config. Project ops win on conflict."""
     presets = config.get("presets")
-    if not presets or not isinstance(presets, list):
+    project_ops = config.get("ops", {})
+    if not isinstance(project_ops, dict):
+        project_ops = {}
+    if presets is not None and not isinstance(presets, list):
+        # Declared and unusable is not the same as not declared. Nothing gets
+        # merged either way, but here the config asked for ops that are now
+        # absent — so the registry must not go on to report a complete set.
+        config.setdefault("_preset_warnings", []).append(
+            f'"presets" must be a list of preset names, got '
+            f"{type(presets).__name__} — no preset ops were merged")
+        _record_op_sources(config, {}, {}, project_ops, project_ops)
+        return
+    if not presets:
+        # No presets to merge, so every op is the project's own — provenance
+        # is fully known and must be stamped, or `_op_registry` cannot tell
+        # this from a config that never reached the loader at all.
+        _record_op_sources(config, {}, {}, project_ops, project_ops)
         return
 
-    project_ops = config.get("ops", {})
     merged_ops: Dict[str, Any] = {}
+    op_presets: Dict[str, str] = {}
 
     for name in presets:
         if not isinstance(name, str):
@@ -739,19 +834,19 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
             elif isinstance(op_def, str):
                 op_def = _resolve_preset_cmd(op_def, preset_dir)
             merged_ops[op_name] = op_def
+            # Last preset wins the definition, so it wins the attribution too.
+            # Preset-vs-preset is a wholesale replace, not a key merge.
+            op_presets[op_name] = name
 
-    # Project-level ops override preset ops. Dict op-defs deep-merge key-by-key
-    # so a project override can add/replace individual keys (e.g. job_patterns)
-    # without restating the preset's cmd; non-dicts replace wholesale.
+    # Project-level ops override preset ops, by the one shared rule. The
+    # pre-override state is kept: whether an override merged or replaced is a
+    # fact about the base it landed on, and after the loop that base is gone.
+    preset_bases = dict(merged_ops)
     for op_name, op_def in project_ops.items():
-        base = merged_ops.get(op_name)
-        if isinstance(base, dict) and isinstance(op_def, dict):
-            merged = dict(base)
-            merged.update(op_def)
-            merged_ops[op_name] = merged
-        else:
-            merged_ops[op_name] = op_def
+        merged_ops[op_name] = _merge_op_def(merged_ops.get(op_name), op_def)
     config["ops"] = merged_ops
+    _record_op_sources(config, op_presets, preset_bases, project_ops,
+                       merged_ops)
 
 
 def _load_config() -> Dict[str, Any]:
@@ -1723,7 +1818,7 @@ _BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc
 # capability list. Kept separate so the blocklist's semantics are untouched.
 _DISPATCH_ONLY_OPS = {
     "between", "vim", "batch", "gc", "help", "version",
-    "ops", "ops-compact", "introduction", "output-format",
+    "ops", "ops-compact", "introduction", "output-format", "registry",
 }
 
 # Valid from the CLI but never reaching dispatch(): main() honours and strips
@@ -1840,7 +1935,7 @@ _OP_SAFETY_BUILTIN: Dict[str, str] = {
     "hover": "read-only", "introduction": "read-only", "ls": "read-only",
     "map": "read-only", "ops": "read-only", "ops-compact": "read-only",
     "output-format": "read-only", "read": "read-only",
-    "repo": "read-only",
+    "registry": "read-only", "repo": "read-only",
     "replace_dry": "read-only", "resolve": "read-only", "stat": "read-only",
     "tail": "read-only", "tree": "read-only", "validate": "read-only",
     "validate_staged": "read-only", "version": "read-only",
@@ -14044,6 +14139,243 @@ def _ops_argument_refusal(arg: str, op_name: str = "ops") -> str:
             f"lists the ones that are.\n")
 
 
+class OpOrigin(NamedTuple):
+    """One op in the effective registry, and where its definition came from.
+
+    ``overridden`` is ``None`` — not ``[]`` — when a project entry replaced a
+    preset definition wholesale rather than merging keys into it. An empty list
+    would read as "the project changed nothing".
+    """
+    name: str
+    definition: Any
+    preset: str | None
+    project: bool
+    overridden: Tuple[str, ...] | None
+
+
+def _op_registry(config: Dict[str, Any] | None = None
+                 ) -> Tuple[List[OpOrigin], List[str]]:
+    """The effective op registry, plus the reasons it may be short (#1356).
+
+    **The population comes from the product, never from a second walk.**
+    ``config["ops"]`` is what `_merge_presets` produced; this annotates it from
+    the provenance the same walk stamped. A caller that re-globbed
+    ``presets/*.json`` and wrote ``ops[name] = entry`` would silently reduce
+    three of this repo's ops to stubs — see `_merge_op_def`.
+
+    The second element is the point of the function. A registry that could not
+    enumerate everything must say so rather than return a smaller set, because
+    a short list and a complete one render identically. Three states:
+
+    * provenance stamped by the loader — authoritative,
+    * no ``presets`` key at all — every op is the project's own, which is a
+      fact derivable without the loader, so still complete,
+    * ``presets`` declared but never merged — the population is whatever the
+      raw ``ops`` section held, so it is *both* short and unattributable, and
+      both are reported.
+
+    Preset load failures recorded in ``_preset_warnings`` are carried through
+    too: those ops are genuinely absent from the list.
+    """
+    if config is None:
+        config = _load_config()
+    ops = config.get("ops")
+    if not isinstance(ops, dict):
+        ops = {}
+    incomplete: List[str] = [
+        str(w) for w in (config.get("_preset_warnings") or [])]
+
+    sources = config.get("_op_sources")
+    if not isinstance(sources, dict):
+        if config.get("presets"):
+            incomplete.append(
+                "op sources were never recorded — this config declares "
+                "presets but did not pass through the loader, so no preset "
+                "op was ever merged in: the list holds only what the raw "
+                '"ops" section carried, and nothing can be attributed')
+            sources = {}
+        else:
+            sources = {n: {"preset": None, "project": True, "overridden": []}
+                       for n in ops}
+
+    entries: List[OpOrigin] = []
+    for name in sorted(ops):
+        src = sources.get(name)
+        if not isinstance(src, dict):
+            src = {"preset": None, "project": False, "overridden": []}
+        overridden = src.get("overridden")
+        entries.append(OpOrigin(
+            name=name,
+            definition=ops[name],
+            preset=src.get("preset"),
+            project=bool(src.get("project")),
+            overridden=(None if overridden is None
+                        else tuple(str(k) for k in overridden)),
+        ))
+    return entries, incomplete
+
+
+def _registry_not_enabled_line() -> str:
+    """Shipped presets this config does not load, by name and op count.
+
+    Same disclosure `ops` carries, rebuilt here to name **only preset names**.
+    `_preset_disclosure` embeds `_CONFIG_PATH` / `os.getcwd()`, and a host path
+    in this body would make the render differ between Windows and POSIX for no
+    gain — the registry's subject is attribution by name.
+    """
+    missing = _presets_not_loaded_here()
+    if not missing:
+        return ""
+    missing_set = set(missing)
+    n_ops = sum(1 for p in _shipped_preset_ops().values() if p in missing_set)
+    return (f"Not enabled here: {', '.join(missing)} "
+            f"({len(missing)} shipped presets, {n_ops} ops). "
+            f'Add one under "presets", or lead with cwd:<project-path>.')
+
+
+def _registry_unknown_op(op_name: str) -> str:
+    """Three states for a name the registry does not hold (#614's rule)."""
+    preset = _shipped_preset_ops().get(op_name)
+    if preset is not None:
+        return (f"ERROR: '{op_name}' is not in this project's registry, but it "
+                f"ships with this binary in preset '{preset}' — this config "
+                f'does not list it under "presets".\n'
+                f"  Every op that is loaded here: `registry`.\n")
+    if op_name in _valid_op_names():
+        return (f"ERROR: '{op_name}' is a built-in, not a preset or project op, "
+                f"so it has no registry entry. `help:{op_name}` documents it; "
+                f"`ops:roster` lists every name.\n")
+    return (f"ERROR: no op named '{op_name}' here.\n"
+            f"  `registry` lists every op this config loads, with its source.\n")
+
+
+def _registry_incomplete_block(incomplete: List[str]) -> List[str]:
+    """The marker that keeps a short population from reading as a whole one.
+
+    In the body, not on stderr. `main()` already prints `_preset_warnings` to
+    stderr, but in a batched call stderr is somewhere else entirely and the
+    reader of this op's output sees a list that looks complete (#1356).
+    """
+    out = ["INCOMPLETE: this listing may be missing ops."]
+    out.extend(f"  - {reason}" for reason in incomplete)
+    return out
+
+
+def _registry_one_op(entry: OpOrigin, incomplete: List[str]) -> str:
+    """One op's merged definition, with the source of each key."""
+    lines: List[str] = [f"## {entry.name}"]
+    if entry.preset and entry.project and entry.overridden is None:
+        lines.append(f"Preset '{entry.preset}' defines it; the project entry "
+                     f"replaced that definition wholesale (non-dict override).")
+    elif entry.preset and entry.project:
+        n = len(entry.overridden or ())
+        lines.append(f"Preset '{entry.preset}' defines it; shadowed by "
+                     f"{n} project key{'' if n == 1 else 's'}, merged over it.")
+    elif entry.preset:
+        lines.append(f"Preset '{entry.preset}'.")
+    elif entry.project:
+        lines.append("Project config only — no preset ships this op.")
+    else:
+        lines.append("Source unknown — see the INCOMPLETE note below.")
+    lines.append("")
+    if isinstance(entry.definition, dict):
+        overridden = set(entry.overridden or ())
+        width = max((len(k) for k in entry.definition), default=0)
+        for key in sorted(entry.definition):
+            if key in overridden:
+                where = "project"
+            elif entry.preset:
+                where = f"preset {entry.preset}"
+            elif entry.project:
+                where = "project"
+            else:
+                where = "unknown"
+            lines.append(f"- {key.ljust(width)}  {where}")
+    else:
+        lines.append(f"- (not a table) {entry.definition!r}")
+    if incomplete:
+        lines.append("")
+        lines.extend(_registry_incomplete_block(incomplete))
+    return "\n".join(lines) + "\n"
+
+
+def op_registry(op_name: str = "") -> str:
+    """Render the effective op registry, or one op's merged definition.
+
+    Exists so the answer to "what ops are loaded, and where did each come
+    from?" comes from the product rather than from each caller's copy of the
+    merge rule (#1356).
+    """
+    entries, incomplete = _op_registry()
+    if op_name:
+        for entry in entries:
+            if entry.name == op_name:
+                return _registry_one_op(entry, incomplete)
+        return _registry_unknown_op(op_name)
+
+    shadowed = [e for e in entries if e.preset and e.project]
+    from_preset = [e for e in entries if e.preset and not e.project]
+    project_only = [e for e in entries if e.project and not e.preset]
+    unattributed = [e for e in entries if not e.preset and not e.project]
+
+    lines: List[str] = [
+        f"## Op registry — {len(entries)} ops "
+        f"({len(from_preset) + len(shadowed)} from presets, "
+        f"{len(project_only)} project-only, {len(shadowed)} shadowed)",
+        # Built-ins are a property of the binary, not of a config's registry,
+        # so they are not here. Said out loud: a count that reads as the
+        # tool's whole capability is #614's defect, and this one is smaller
+        # than `ops:roster` by every built-in.
+        "Built-ins are not config entries and are not listed — `ops:roster`.",
+        "",
+    ]
+    if incomplete:
+        lines.extend(_registry_incomplete_block(incomplete))
+        lines.append("")
+
+    def _rows(group: List[OpOrigin], note) -> None:
+        width = max((len(e.name) for e in group), default=0)
+        for entry in group:
+            lines.append(f"- {entry.name.ljust(width)}  {note(entry)}")
+        lines.append("")
+
+    if shadowed:
+        preset_width = max(len(e.preset or "") for e in shadowed)
+        lines.append(f"### Shadowed by project config ({len(shadowed)})")
+        lines.append("The preset definition is still in effect; the project "
+                     "entry merges these keys over it.")
+        # Three states, not two. `None` is a wholesale replace; `()` is a
+        # merge that changed nothing, which leaves the preset definition fully
+        # intact — rendering both as "replaced wholesale" asserts the opposite
+        # of the truth for the second.
+        def _what_the_project_did(e: OpOrigin) -> str:
+            if e.overridden is None:
+                return "(replaced wholesale)"
+            if not e.overridden:
+                return "(merged, no keys)"
+            return ", ".join(e.overridden)
+
+        _rows(shadowed, lambda e: (
+            f"preset {(e.preset or '').ljust(preset_width)}  + "
+            + _what_the_project_did(e)))
+    if from_preset:
+        lines.append(f"### From presets ({len(from_preset)})")
+        _rows(from_preset, lambda e: f"preset {e.preset}")
+    if project_only:
+        lines.append(f"### Project config only ({len(project_only)})")
+        _rows(project_only, lambda e: "project")
+    if unattributed:
+        lines.append(f"### Source not known ({len(unattributed)})")
+        _rows(unattributed, lambda e: "unknown")
+
+    not_enabled = _registry_not_enabled_line()
+    if not_enabled:
+        lines.append(not_enabled)
+        lines.append("")
+    lines.append("One op with per-key sources: `registry:NAME`.")
+    return "\n".join(lines) + "\n"
+
+
 _NO_EXCLUDE_SUFFIX = ":::no-exclude"
 
 
@@ -20254,6 +20586,11 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             body = op_workspace(ws_path)
         elif op == "help":
             body = op_help(parts[1] if len(parts) > 1 else "")
+        elif op == "registry":
+            # Meta-op, markdown header — same treatment as `ops`, whose
+            # listing this one answers the provenance half of.
+            header = ""
+            body = op_registry(parts[1] if len(parts) > 1 else "")
         elif op in ("introduction", "output-format", "ops", "ops-compact", "version"):
             # Meta-ops use markdown headers instead of --- header ---
             header = ""
