@@ -683,6 +683,49 @@ A treadmill, not a swamp — worse in one way: it looks like progress from the i
 - **The cohort is closure accounting, never a work order.** Priority decides what gets worked next — a destroys-class bug filed tomorrow ships tomorrow. Report the current cohort count and its delta every tick, alongside merged-since-tag and the unreleased-entry count.
 - **`gh-issues:external` answers the outside-the-org half directly** (authorship still cannot separate me from Florian). **Raise the limit** — it caps at 50 and prints `capped at --limit 50 — more may exist`, so on a 70-issue board the default returns a zero meaning "I looked at 50 of them". Use `gh-issues:external,per=100`.
 
+#### The cap: 100 open, and it is a number not a direction
+
+Florian, 2026-08-11: _"we cannot have more than 100 issues open"_. Said at **111**, after a session in which I filed eight.
+
+The cohort mechanism gives the backlog an end; it does not bound its *size*, and those are different properties. A rolling queue of finite batches can still sit at 200 forever with every batch shrinking on schedule. So the cap is the second constraint and it binds the thing the cohorts do not.
+
+**At 100 or above, filing is not free any more.** The standing instruction to auto-file UX friction stays — it is what surfaces real defects and I am not trading that away — but above the line it acquires a precondition:
+
+> **Above 100: before filing, close one.** Not "close something eventually", not "file and drain later". The same tick.
+
+That is deliberately the most annoying possible design, because the alternative designs all fail the same way. A soft target gets rounded down at 18:30 on a long session. A "file it in a batch at the end" rule loses the evidence that made it worth filing. A rate limit on filings punishes the day the tool actually breaks. Pairing each filing with a closure is the only version where the cost lands on the person creating it, in the moment, with the context still loaded.
+
+**And the closure has to be a real one.** Reading an issue, establishing it is shipped or duplicate or unreproducible, and saying so with the command that proves it. Closing the easiest thing on the board to buy a filing slot is worse than not filing, because it converts a real backlog entry into a false one.
+
+**Three things this changes, and one it does not:**
+
+- **Fold before you file.** The nearest-op gate above already asks which existing op is nearest; this adds the tracker half — **which existing issue is nearest, and can this be a comment on it?** Two views of one defect are one issue. Several of today's eight were probably that.
+- **A negative result is not a filing.** I spent four configurations establishing that `diag` does *not* falsely report clean, and recorded it as a comment on the PR. That was right. An unreproduced hypothesis filed "so somebody checks later" is intake with none of the value.
+- **Drainage is delegable and filing is not.** Three `opensource-triager` agents over disjoint cohort slices cost a fraction of one implementation agent and answer the question the cap actually asks — *which of these should not be open* — far better than I can while also merging. When the number is over, that is the move.
+- **What it does not change:** priority. A destroys-class bug filed at 150 open still ships first. The cap governs how many entries exist, never which one is worked next.
+
+**Count it with the op, and count it twice.** Measured 2026-08-11, my own `gh api ... --paginate --jq 'length'` printed `98` and then `13` — one number per page, and I read the first as the answer. The real figure was **111**, from `gh-labels:tally=cohort-`, whose multi-label line states the total explicitly. A per-page aggregation is the page cap wearing a different hat.
+
+#### But the cap rations intake, and the leak is upstream of it
+
+Florian, in the same breath: _"and then, how to stop the leaking… you do one thing, you find 3"_. He is right that the cap does not answer this. Rationing filings while discovery runs at 3× fixes just moves the queue into my head.
+
+**Three mechanisms produce the 3-per-1, and only one of them is a problem.**
+
+**1. The review layer is a discovery machine, and that is the point.** Every implementation agent spawns a reviewer briefed for *anything made worse that nobody filed* and *stale prose adjacent to the diff*. It works — on 2026-08-11 it caught a CRLF shim that would have failed on the only platform its file existed for, two vacuous tests, and three stale sentences. **Do not throttle this.** Findings are the return on the review, not a side effect of it.
+
+**2. Adjacent one-liners get filed instead of fixed, to keep the PR scoped.** This is the actual leak, and it is a rule of mine misfiring. "One feature per PR" protects reviewability; it was never meant to convert a one-line fix in a file already open into a tracker entry with a lifecycle. **The corrected rule: if it is in a file the PR already touches, in the same class as the change, and fixable in the same commit — fix it and say so in the body.** File it only when it needs a decision, a different subsystem, or a separate test story. Today's PRs got that right four times (`guard_refusal`'s stale footer, meta.md's `help` row) and wrong at least twice.
+
+**3. I file per instance where the defect is a class.** This is the one that multiplies. Today I filed **#1407** (`batch`'s nested field name), **#1414** (`read:A:B` vs `A-B`), **#1417** (`grep` re-reading a pattern as a path) as three issues. They are one defect: **an op's argument grammar resolves an ambiguity silently and discloses it after the fact, or not at all.** Same family, same fix shape, one test story. Filed as one issue with three named instances, that is 1 entry and a better brief; filed as three it is 3 entries and three partial views nobody can see the pattern from.
+
+Same tick, same mistake: **#1413** (the guard cannot see the PowerShell tool) and **#1421** (the guard cannot see past a command's global options) are both *the guard's view of a command is narrower than the command*.
+
+> **Before filing: is this an instance of something already filed, or of something I am about to file twice?** If two of the day's findings share a sentence, they share an issue.
+
+**What that costs, honestly:** a class issue is easier to under-fix. An agent handed "three instances" can fix two and close it. So the class body **names each instance explicitly and the PR must account for all of them** — which is the same discipline as "when an issue names N instances, check N", pointed the other way.
+
+**The measurement to watch, and it is not the open count.** Filings per merged PR. If that stays above 1 the queue grows whatever the cap says; if the three mechanisms above are working it should sit near 1 — reviews still finding things, adjacents absorbed into their PRs, classes filed once.
+
 ### But "is the loop worth it" is the wrong question — ask whether the fix compounds
 
 Florian, day eight: _"token are intelligence we have to spend carefully, but if they make things easier, they save token later"_ — and then, plainly, _"it's an investment"_.
