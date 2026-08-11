@@ -63,11 +63,18 @@ and would have drifted from this file's refusals within a release. It is also
 a row in every registry the repo now maintains per op (#1269, #1287, #1318),
 which is the standing cost the issue's own question was about.
 
-Three answers, not two, because a citation audit is exactly the reading that
-must not be given a shorter list: an issue, **a number that is a PR here**, and
-a number that resolves to nothing. GraphQL's `issue(number:)` returns null for
-the last two identically, so the query asks `pullRequest(number:)` alongside it
-and every requested number gets its own row saying which of the three it is.
+Four answers, not one-or-nothing, because a citation audit is exactly the
+reading that must not be given a shorter list: an issue, **a number that is a
+PR here**, a number that resolves to nothing, and a number the lookup could not
+reach — the last of which is the tool's own absence and must never wear the
+third one's sentence. GraphQL's `issue(number:)` returns null for a PR and for
+nothing identically, so the query asks `pullRequest(number:)` alongside it, and
+every requested number gets its own row saying which of the four it is.
+
+`external` / `stale` / `nomilestone` beside `iids=` therefore **decline** as
+soon as one requested number is not an issue: nobody can say whether a number
+that resolves to nothing was filed from outside, filtering it in claims it was,
+and filtering it out drops a row the caller named.
 """
 from __future__ import annotations
 
@@ -426,37 +433,53 @@ def _iids_composition_error(listing: list[str]) -> str:
     )
 
 
-def _lookup_repo() -> tuple[str, str] | None:
-    """The repo a number lookup is about, when there are no rows to read it off.
+def _lookup_repo() -> tuple[tuple[str, str] | None, str | None]:
+    """`((owner, name), None)` or `(None, why not)` — never a bare absence.
 
     `_owner_repo` derives the target from the board's own rows, which is the
     right answer when a listing produced them. `iids=` has no listing, so the
     repo has to be established before the first call rather than after it —
     a repo target when one was given, otherwise gh's own answer for the cwd.
+
+    **The reason is returned rather than flattened.** Every way this call can
+    fail used to collapse into `no_repo_error`, which blames the working
+    directory — so an uninstalled `gh` (`FileNotFoundError`, and `[WinError 2]`
+    on the platform CI runs that nobody writes on) or an expired token sent the
+    reader to `cd` somewhere while the real fault went unnamed. The listing
+    path has told these three apart since it shipped; this one is new and had
+    one sentence for all of them.
     """
     pair = _repo_target.owner_repo()
     if pair is not None:
-        return pair
+        return pair, None
     try:
         result = subprocess.run(
             ["gh", "repo", "view", "--json", "owner,name"],
             capture_output=True, text=True, timeout=30,
             encoding="utf-8", errors="replace",
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        return None, f"ERROR: gh repo view failed: {exc}"
     if result.returncode != 0:
-        return None
+        err = (result.stderr or "").strip() or "unknown error"
+        low = err.lower()
+        if "not logged in" in low or "401" in err:
+            return None, "ERROR: gh not authenticated. Run: gh auth login"
+        if ("github host" in low or "not a git repository" in low
+                or "git remotes" in low or "could not determine" in low):
+            return None, _repo_target.no_repo_error("gh-issues:iids=1,2,3")
+        return None, f"ERROR: gh repo view: {err}"
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
-        return None
+        return None, "ERROR: could not parse gh repo view JSON output"
     owner = str(((payload.get("owner") or {}) if isinstance(payload, dict) else {})
                 .get("login") or "").strip()
     name = str((payload.get("name") if isinstance(payload, dict) else "") or "").strip()
     if not owner or not name:
-        return None
-    return owner, name
+        return None, ("ERROR: gh repo view answered without an owner/name this "
+                      "op can read")
+    return (owner, name), None
 
 
 # The list-shaped fields `gh issue list --json` would have returned, asked for
@@ -544,15 +567,20 @@ def _fetch_lookup(owner: str, name: str, numbers: list[int], chunk: int,
                 encoding="utf-8", errors="replace",
             )
         except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-            reason = reason or f"gh api graphql failed: {exc}"
+            chunk_reason = f"gh api graphql failed: {exc}"
+            reason = reason or chunk_reason
             for number in batch:
-                results[number] = ("failed", None)
+                results[number] = ("failed", chunk_reason)
             continue
         repo, chunk_reason = _graphql_payload(result)
         reason = reason or chunk_reason
         if not repo:
+            # Each row carries ITS chunk's cause, not the call's first one. A
+            # stated reason that belongs to a different call sends the reader
+            # to fix something that is not broken, which is worse than saying
+            # nothing.
             for number in batch:
-                results[number] = ("failed", None)
+                results[number] = ("failed", chunk_reason)
             continue
         for number in batch:
             issue = repo.get(f"i{number}")
@@ -629,8 +657,10 @@ def _unresolved_row(number: int, kind: str, payload: object,
         note = f"is a PR {scope}, not an issue"
         status = "✗ is a PR"
     elif kind == "failed":
-        title = f"number {number} could not be looked up — {reason or 'the call failed'}"
-        note = f"could not be looked up — {reason or 'the call failed'}"
+        cause = (payload if isinstance(payload, str) and payload
+                 else reason) or "the call failed"
+        title = f"number {number} could not be looked up — {cause}"
+        note = f"could not be looked up — {cause}"
         status = "? lookup failed"
     else:
         title = f"number {number} does not resolve to an issue {scope}"
@@ -1050,9 +1080,10 @@ def _lookup_iids(
             f"{requested} requested number(s) not looked up")
         numbers = numbers[:per_page]
 
-    pair = _lookup_repo()
+    pair, repo_error = _lookup_repo()
     if pair is None:
-        print(_repo_target.no_repo_error("gh-issues:iids=1,2,3"), file=sys.stderr)
+        print(repo_error or _repo_target.no_repo_error("gh-issues:iids=1,2,3"),
+              file=sys.stderr)
         return 1
 
     # Under the numbers-only render nothing derived is printed, so the

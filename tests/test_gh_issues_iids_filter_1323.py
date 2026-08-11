@@ -130,6 +130,26 @@ class TestListValuedKey:
             "iids=1,nopipe,2", {"iids"}, {"nopipe"}, list_keys={"iids"})
         assert unknown == ["2"]
 
+    def test_a_repeated_list_key_accumulates_rather_than_replacing(self) -> None:
+        """`v[-1]` is the scalar rule and it silently drops the earlier group.
+
+        `iids=1,2,nopipe,iids=3,4` is a spelling any caller reaches by editing
+        an existing call, and it used to look up 3 and 4 only — no unknown
+        token, no note, no shorter-list disclosure anywhere, because the
+        numbers were gone before `_parse_iids` ever saw them. That is exactly
+        the absence this filter exists to refuse, produced by the tokenizer.
+        """
+        filters, flags, unknown = filter_tokens.parse(
+            "iids=1,2,nopipe,iids=3,4", {"iids"}, {"nopipe"}, list_keys={"iids"})
+        assert unknown == []
+        assert flags == {"nopipe"}
+        assert filters == {"iids": "1,2,3,4"}
+
+    def test_a_non_list_key_still_keeps_only_its_last_value(self) -> None:
+        filters, _, _ = filter_tokens.parse(
+            "author=a,author=b", {"author"}, set(), list_keys={"iids"})
+        assert filters == {"author": "b"}
+
     def test_default_has_no_list_keys_so_nothing_else_changes(self) -> None:
         _, _, unknown = filter_tokens.parse("author=me,1240", {"author"}, set())
         assert unknown == ["1240"]
@@ -268,6 +288,85 @@ class TestCapDisclosure:
         assert "1 duplicate number(s) collapsed" in capsys.readouterr().out
 
 
+class TestPerChunkFailureReason:
+    def test_a_failed_row_carries_its_own_chunk_s_reason(
+            self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Two chunks fail differently; neither row may borrow the other's cause.
+
+        `reason = reason or chunk_reason` keeps the first fault for the whole
+        call, so every later chunk's rows were rendered under a cause that was
+        not theirs — a stated reason that is wrong sends the reader to fix
+        something that is not broken.
+        """
+        seen: list[str] = []
+
+        def run(cmd, **kwargs):  # noqa: ANN001
+            seen.append("call")
+            which = len(seen)
+            payload = {"data": {"repository": None},
+                       "errors": [{"type": "RATE_LIMITED",
+                                   "message": f"fault {which}"}]}
+            return _Result(1, json.dumps(payload))
+
+        monkeypatch.setattr(issues.subprocess, "run", run)
+        results, reason = issues._fetch_lookup("o", "r", [1, 2], 1, True)
+        assert results[1][0] == "failed" and results[2][0] == "failed"
+        assert results[1][1] == "fault 1"
+        assert results[2][1] == "fault 2"
+        assert reason == "fault 1"
+
+
+class TestRepoResolutionFailure:
+    """A `gh` that did not run is not a cwd that is not a repo.
+
+    `iids=` has no listing to derive the repo from, so it resolves it with its
+    own `gh repo view` — and every failure of that call used to collapse into
+    the one message that blames the working directory. On Windows a missing
+    `gh` raises `FileNotFoundError [WinError 2]` exactly as it does here, so
+    the reader is sent to `cd` somewhere while the real fault is an uninstalled
+    binary or an expired token.
+    """
+
+    def _run_failing(self, monkeypatch: pytest.MonkeyPatch, outcome):  # noqa: ANN001
+        def run(cmd, **kwargs):  # noqa: ANN001
+            if cmd[:3] == ["gh", "repo", "view"]:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                return outcome
+            raise AssertionError("nothing may be called before the repo is known")
+        monkeypatch.setattr(issues.subprocess, "run", run)
+
+    def test_a_missing_gh_binary_is_not_reported_as_a_bad_cwd(
+            self, monkeypatch: pytest.MonkeyPatch,
+            capsys: pytest.CaptureFixture) -> None:
+        self._run_failing(monkeypatch, FileNotFoundError(2, "No such file"))
+        rc = issues.main_with_args("iids=1233")
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "gh repo view" in err
+        assert "cwd is not a GitHub repo" not in err
+
+    def test_an_expired_token_is_not_reported_as_a_bad_cwd(
+            self, monkeypatch: pytest.MonkeyPatch,
+            capsys: pytest.CaptureFixture) -> None:
+        self._run_failing(monkeypatch, _Result(1, "", "error: not logged in to any hosts"))
+        rc = issues.main_with_args("iids=1233")
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "gh auth login" in err
+        assert "cwd is not a GitHub repo" not in err
+
+    def test_a_directory_that_really_is_not_a_repo_still_says_so(
+            self, monkeypatch: pytest.MonkeyPatch,
+            capsys: pytest.CaptureFixture) -> None:
+        self._run_failing(
+            monkeypatch, _Result(1, "", "fatal: not a git repository"))
+        rc = issues.main_with_args("iids=1233")
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "cwd is not a GitHub repo" in err
+
+
 # ---------------------------------------------------------------------------
 # composition
 # ---------------------------------------------------------------------------
@@ -301,6 +400,25 @@ class TestComposition:
         # whose whole purpose is to be another tool's input
         assert "999999" in out
         assert [line for line in out.splitlines() if line.startswith("#")]
+
+    @pytest.mark.parametrize("flag", ["external", "stale", "nomilestone"])
+    def test_a_client_side_flag_declines_over_a_number_that_is_not_an_issue(
+            self, flag: str, monkeypatch: pytest.MonkeyPatch,
+            capsys: pytest.CaptureFixture) -> None:
+        """Nobody can say whether a number that is not an issue is external.
+
+        Filtering it in claims it is; filtering it out drops a row the caller
+        named. Neither is reportable, so the op declines — the same answer
+        `nomilestone` already gives over an unknown milestone.
+        """
+        repository = {
+            "i1233": _issue_node(1233, "the citation audit"),
+            "i999999": None, "p999999": None,
+        }
+        monkeypatch.setattr(issues.subprocess, "run", _fake_gh(repository))
+        rc = issues.main_with_args(f"iids=1233,999999,{flag}")
+        assert rc == 1
+        assert "cannot filter by " + flag in capsys.readouterr().err
 
     def test_bare_iids_flag_is_untouched_by_the_new_filter_key(self) -> None:
         _filters, flags, unknown = issues._parse_args("iids")

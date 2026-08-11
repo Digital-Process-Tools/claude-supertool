@@ -136,9 +136,21 @@ def parse(
 
     One tokenizer behind both readings, so a board and the radar tier that
     shares its vocabulary can never disagree about what an arg string said.
+
+    **A repeated LIST key concatenates instead.** `v[-1]` is right for a scalar
+    — `author=a,author=b` can only forward one `--author` — and wrong for a
+    list, where every group the caller wrote is part of the one population they
+    asked about. `iids=1,2,nopipe,iids=3,4` is a spelling anyone reaches by
+    editing an existing call, and under the scalar rule it looked up 3 and 4
+    only: no unknown token, no refusal, no disclosure, because the numbers were
+    gone before the op could count them. A silently shorter list is the exact
+    defect `iids=` exists to refuse, so the tokenizer must not manufacture one.
     """
     multi, flags, unknown = parse_multi(arg_str, filter_keys, flag_names, list_keys)
-    return {k: v[-1] for k, v in multi.items()}, flags, unknown
+    scalar = {
+        k: (",".join(v) if k in list_keys else v[-1]) for k, v in multi.items()
+    }
+    return scalar, flags, unknown
 
 
 def is_empty_value(tok: str, filter_keys: set[str] | frozenset[str]) -> bool:
