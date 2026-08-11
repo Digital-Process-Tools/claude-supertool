@@ -15,8 +15,12 @@ nothing about the path it was written for. That is indistinguishable from a
 working test, forever.
 
 So the shim has to describe "a git invoked with this subcommand", not "a git
-whose first word is this subcommand" -- and the last test here is the class
-gate, because this one was found by tripping over it rather than by looking.
+whose first word is this subcommand" -- and the suite-wide scan below is the
+class gate, because this one was found by tripping over it rather than by
+looking. The tests after that gate hold the gate's *own* rule against the
+three shims it was written for, since a scan that gets narrowed and not
+re-proved is a gate that may have stopped catching its class without saying
+so.
 """
 from __future__ import annotations
 

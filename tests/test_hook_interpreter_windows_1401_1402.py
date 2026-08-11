@@ -208,19 +208,25 @@ def _a_versioned_name_this_host_has() -> str:
     return "python3.12"
 
 
-def _blind_the_versioned_ladder(directory: Path) -> None:
-    """Shadow every `python3.X` with one that exists and does not work.
+def _blind_the_whole_ladder(directory: Path) -> None:
+    """Shadow every rung the wrapper probes with one that exists and fails.
 
     Not an empty PATH: stripping PATH entirely breaks the shell itself on
     Windows, and this file must not go vacuous on the one platform it is
     about. Shadowing keeps the shell intact and still guarantees the loop
     falls through to the rung under test.
 
-    Every name the wrapper probes is covered, and that is the invariant: a
-    versioned name left unshadowed is the host's own interpreter answering
-    the ladder, and the test then measures the runner rather than the code.
+    **Every name the wrapper probes is covered, `py` included**, and that is
+    the invariant rather than a detail. A rung left unshadowed is the host's
+    own interpreter answering the ladder, and the test then measures the
+    runner rather than the code. `py` was missed on the first pass: absent on
+    this box and on the POSIX runners, present on Windows, where it would have
+    turned the decline this file asserts into a live verdict - a red on the
+    one platform the file exists for, in the same shape as the unmasking that
+    the deletion above caused. A test that names a rung it does not blind is
+    asserting about the runner.
     """
-    for name in _VERSIONED:
+    for name in _VERSIONED + ["py"]:
         _blind(directory, name)
 
 
@@ -283,7 +289,7 @@ def test_the_launcher_answers_when_no_versioned_name_does(project, fake_bin):
     is banned. Before this the ladder ran out and the guard declined on every
     Bash call while `raw_command_guard` defaulted to on.
     """
-    _blind_the_versioned_ladder(fake_bin)
+    _blind_the_whole_ladder(fake_bin)
     _shim(fake_bin, "py",
           'if [ "$1" != "-3" ]; then exit 9; fi' + _NL
           + "shift" + _NL
@@ -302,7 +308,7 @@ def test_the_launcher_is_the_fallback_and_not_the_default(project, fake_bin,
     """
     marker = tmp_path / "py-was-run"
     name = _a_versioned_name_this_host_has()
-    _blind_the_versioned_ladder(fake_bin)
+    _blind_the_whole_ladder(fake_bin)
     _shim(fake_bin, name, 'exec "' + _real_python() + '" "$@"')
     _shim(fake_bin, "py",
           ': > "' + str(marker).replace(_BS, "/") + '"' + _NL
@@ -349,7 +355,7 @@ def test_a_launcher_that_prints_a_preamble_is_not_trusted(project, fake_bin):
     built on an interpreter it could not identify. Pinned as a decision, not
     left to be discovered.
     """
-    _blind_the_versioned_ladder(fake_bin)
+    _blind_the_whole_ladder(fake_bin)
     quiet = 'if [ "$1" != "-3" ]; then exit 9; fi' + _NL + "shift" + _NL
 
     # Control: the same launcher without the preamble is trusted. A wrapper
@@ -371,7 +377,7 @@ def test_a_launcher_that_prints_a_preamble_is_not_trusted(project, fake_bin):
 @_NEEDS_BASH
 def test_no_interpreter_at_all_still_declines_in_words(project, fake_bin):
     """The third state survives the new rung: no `py`, no versioned name."""
-    _blind_the_versioned_ladder(fake_bin)
+    _blind_the_whole_ladder(fake_bin)
     hook = _envelope(_run_wrapper("gh pr view 12", project, fake_bin))
     assert hook.get("permissionDecision") != "deny", hook
     context = str(hook.get("additionalContext", ""))
