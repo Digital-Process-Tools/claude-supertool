@@ -820,7 +820,19 @@ The precedent proves the asymmetry. **#1135 got `containment` only because its s
 
 **An op that names a path and declares nothing is refused, not skipped**, because a path argument reaching no check is an unchecked read rather than a check that could not run. Nineteen shipped ops predate the rule and are grandfathered by name in `_UNDECLARED_PATH_OPS`; that set only shrinks and the suite goes red if anything joins it. It was twenty until #1351 declared `gl-api` — the op the detector's own docstring cited as the worked example of a *declared* op while it sat in the grandfather register. The detector reads two signals since #1350: the `syntax` string, and a `cmd` template substituting `{file}` / `{dir}`.
 
-**A classification scheme is itself a claim, and this is the third audit running to refuse it and be right** (`discloses`, then `containment`, now its write-side twin). Keep the "say so if a finding fits none of these" clause in every audit brief; the class that does not exist yet is where the worst finding lands.
+**And a SEVENTH, added 2026-08-11 by the v0.35.0 round-1 audit: `misdirects` — the remedy is not the thing refused.** The finding was `git push --dry-run` and `git push -n` **blocked**, with the refusal naming `git-push`, which performs the real push. The auditor classed it `misreports` by the letter of the table, then said the table does not hold it:
+
+> Every other row is about what already happened; this one is a refusal whose *named substitute performs an irreversible action the blocked command explicitly declined to perform*, on the one op in the repo that can destroy someone else's commits.
+
+Verified by hand before acting on it. It is sharpest on a refspec: `git push --dry-run origin feature:refs/heads/other` is a **preview** of pushing a named branch to a named ref, and an agent obeying the refusal pushes *the current branch to its own upstream* — a ref the caller never named.
+
+| Class | Undo | Found by |
+| --- | --- | --- |
+| **Misdirects** | whatever the remedy did | reading a refusal's `Use:` line as an instruction and asking what happens if it is obeyed |
+
+**It does not block a release by itself** — nothing has happened yet when the refusal prints. It ranks above `misreports` because the reader most likely to obey it is an agent, immediately, and because a gate whose remedy is worse than the command is a gate people learn to route around. That one was taken pre-tag rather than filed.
+
+**A classification scheme is itself a claim, and this is the FOURTH audit running to refuse it and be right** (`discloses`, then `containment`, then its write-side twin, now `misdirects`). Keep the "say so if a finding fits none of these" clause in every audit brief; the class that does not exist yet is where the worst finding lands. Four for four is no longer a caveat — **assume the table is incomplete and brief for the refusal explicitly**, because on this evidence the marginal value of that clause is higher than any row in the table.
 
 - **Keeping them apart is operationally load-bearing** — those are **two different searches**, and an audit briefed only on `discloses` runs the sink-following one and misses this. `containment` blocks a release exactly like `destroys` and `discloses`.
 - **The standing rule for briefs:** any PR that makes an op treat a **new argument slot as a filename** — or makes an op **delete** rather than rewrite — must state which existing guard it is now downstream of. Both blockers that night shared that shape: a new capability added at a layer _below_ where its guard lives.
