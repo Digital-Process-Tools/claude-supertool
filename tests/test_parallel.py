@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -72,6 +73,41 @@ def _supertool_path() -> Path:
     return Path(__file__).parent.parent / "supertool.py"
 
 
+# `read`'s meta line ends in a compact suffix, and one of its tokens is
+# `git?` — supertool's disclosure that the working-tree lookup DECLINED, i.e.
+# state unknown rather than clean (#705). In a `tmp_path` outside any repo the
+# steady-state answer is no token at all: git exits non-zero with "not a git
+# repository", which `_path_meta_suffix` recognises and stays silent about. The
+# token appears only when that git call fails some OTHER way — its 2s timeout,
+# or a non-zero exit whose stderr says something else (a dubious-ownership
+# refusal, a held index lock). Both were reproduced against the product on
+# macOS by putting a shim `git` on PATH: `sleep 4` and `exit 128` each turn
+# `(1 lines, 10 bytes) crlf` into `(1 lines, 10 bytes) crlf git?`.
+#
+# `seq` and `par` are two independent subprocesses, so either can trip that and
+# the other not — and the parallel one spawns four `git status` at once, which
+# is the side more likely to hit the timeout. That is what reddened only
+# `pytest (windows-latest, 3.10)` on the docs-only #1362: expected
+# `crlf git?`, got `crlf` (#1364). Comparing the two receipts byte-for-byte
+# asserts an environment condition as if it were a product verdict — this
+# repo's own defect class, relocated into the harness (#1205, #1218, #1360).
+#
+# So the token is normalised out of BOTH sides. Everything else in the receipt,
+# including the order these tests exist to check, is still compared byte-exact.
+_META_LINE = re.compile(r"^\(\d+ lines, \d+ bytes\)")
+
+
+def _without_decline_token(receipt: str) -> str:
+    """Erase the `git?` decline token from every meta line. Nothing else."""
+    token = " " + supertool.PATH_META_UNKNOWN
+    out = []
+    for line in receipt.split("\n"):
+        if _META_LINE.match(line):
+            line = line.replace(token, "")
+        out.append(line)
+    return "\n".join(out)
+
+
 def _run(argv: list[str], parallel: bool, tmp_path: Path) -> str:
     extra = {"SUPERTOOL_PARALLEL": "4"} if parallel else None
     result = subprocess.run(
@@ -82,6 +118,28 @@ def _run(argv: list[str], parallel: bool, tmp_path: Path) -> str:
     return result.stdout
 
 
+def test_decline_token_is_normalised_out_but_order_is_not() -> None:
+    """`_without_decline_token` erases the decline token and nothing else.
+
+    Pins the normaliser used by the seq/par comparisons below. The last two
+    assertions are the anti-vacuity clauses: a normaliser that returned its
+    input would fail the first, and one that flattened the whole meta line
+    would pass the first and fail the third.
+    """
+    token = supertool.PATH_META_UNKNOWN
+    declined = f"--- read:f0.txt ---\n(1 lines, 10 bytes) crlf {token}\n1→content0\n"
+    certain = "--- read:f0.txt ---\n(1 lines, 10 bytes) crlf\n1→content0\n"
+    assert _without_decline_token(declined) == _without_decline_token(certain)
+    assert _without_decline_token(certain) == certain
+    # Order is still load-bearing after normalisation.
+    reordered = "--- read:f1.txt ---\n(1 lines, 10 bytes) crlf\n1→content0\n"
+    assert _without_decline_token(declined) != _without_decline_token(reordered)
+    # The token is only ever a meta-line suffix; a body line that happens to
+    # contain it is content, not a disclosure.
+    body = f"--- read:f0.txt ---\n(1 lines, 10 bytes) crlf\n1→ask {token} yes\n"
+    assert _without_decline_token(body) == body
+
+
 def test_parallel_preserves_input_order(tmp_path: Path) -> None:
     """Output must match input order, not completion order."""
     for i in range(5):
@@ -89,7 +147,7 @@ def test_parallel_preserves_input_order(tmp_path: Path) -> None:
     argv = [f"read:f{i}.txt" for i in range(5)]
     seq = _run(argv, parallel=False, tmp_path=tmp_path)
     par = _run(argv, parallel=True, tmp_path=tmp_path)
-    assert seq == par
+    assert _without_decline_token(seq) == _without_decline_token(par)
 
 
 def test_parallel_falls_back_to_sequential_for_mixed_batch(
@@ -106,7 +164,7 @@ def test_parallel_falls_back_to_sequential_for_mixed_batch(
     argv = ["read:x.txt", "replace_dry:::foo:::FOO:::."]
     seq = _run(argv, parallel=False, tmp_path=tmp_path)
     par = _run(argv, parallel=True, tmp_path=tmp_path)
-    assert seq == par
+    assert _without_decline_token(seq) == _without_decline_token(par)
 
 
 def test_parallel_single_op_unchanged(tmp_path: Path) -> None:
@@ -114,7 +172,7 @@ def test_parallel_single_op_unchanged(tmp_path: Path) -> None:
     f.write_text("hi\n")
     seq = _run(["read:x.txt"], parallel=False, tmp_path=tmp_path)
     par = _run(["read:x.txt"], parallel=True, tmp_path=tmp_path)
-    assert seq == par
+    assert _without_decline_token(seq) == _without_decline_token(par)
 
 
 def test_parallel_disabled_by_default(tmp_path: Path) -> None:
