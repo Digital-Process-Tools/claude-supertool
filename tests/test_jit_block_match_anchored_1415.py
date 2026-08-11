@@ -110,6 +110,19 @@ NO_CUT_FIRES = [
     # at whitespace is what made them enumerable in the first place. `-m` is
     # here because the first draft dropped it and a reviewer caught the loss.
     ("run as a module", "python3 -m supertool 'read:a'" + PIPE + "cut -c1-40"),
+    # Every case above and below this line put a SPACE before the bar, and #1426
+    # started requiring one -- disclosed nowhere, in a fragment claiming three
+    # narrowings and naming a different one. `PIPE` is `" | "`, so all ten cases
+    # shared the blind spot and nothing here discriminated it. The shape a shell
+    # actually produces most often is the bar hard against the closing quote.
+    ("no space before the bar",
+     "supertool 'grep:x:.:5'" + BAR + "head -80"),
+    ("no space before the bar, double-quoted argument",
+     'supertool "grep:x:.:5"' + BAR + "head -80"),
+    ("no space before the bar, branch worktree form",
+     "python3 supertool.py 'gh-issue:1415:full'" + BAR + "tail -20"),
+    ("no space before the bar, and the cut is not the first pipe",
+     "supertool 'gh-job:9:raw'" + BAR + "grep -i fail" + PIPE + "awk '{print $1}'"),
 ]
 
 NO_CUT_SILENT = [

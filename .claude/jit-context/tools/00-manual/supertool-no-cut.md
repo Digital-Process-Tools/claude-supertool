@@ -1,7 +1,7 @@
 ---
 title: "Piping a supertool op through head/tail/sed selects against the answer"
 tool: Bash
-match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(python3?[[:space:]]+(-m[[:space:]]+)?)?([^[:space:]]*/)?supertool(\.py)?[[:space:]][^\n]*[[:space:]]\|[[:space:]]*(head|tail|sed|cut|awk)
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(python3?[[:space:]]+(-m[[:space:]]+)?)?([^[:space:]]*/)?supertool(\.py)?[[:space:]][^\n]*[[:space:]'"]\|[[:space:]]*(head|tail|sed|cut|awk)
 mode: block
 ---
 
@@ -43,8 +43,19 @@ argument (`grep:head|tail`), and a heredoc body quoting a piped example. The
 anchoring idiom is `(^|[;&|\n])[[:space:]]*`, which every regex row in
 `00-index.tsv` now carries.
 
+**The bar must sit against whitespace or a closing quote.** #1426 required
+whitespace alone, undisclosed, and lost `supertool 'grep:x'|head -20` — the
+commonest shape there is, blocked before it and silent after, with all ten test
+cases sharing a `PIPE = " | "` constant that could not see it. A quote is
+admitted because that is what a shell leaves against the bar; a bar inside the
+op's own argument (`grep:head|tail`) still has a bare letter to its left and is
+still ignored. A bar after an **unquoted** argument is not matched — quote your
+ops and it does not arise.
+
 **It is still a regex, not a parser.** A heredoc line that *begins* with a supertool
 call and a pipe still matches, because `^`-alternation cannot tell a body from a
-command. Excluding quoted strings and heredocs by construction needs the tokeniser
+command. Two invocation shapes are outside the anchor and stay so: an env-var
+prefix (`FOO=1 supertool … | head`) and a command substitution
+(`$(which supertool) … | head`). Excluding quoted strings and heredocs by construction needs the tokeniser
 the `guard` op uses, and the JIT matcher is `claude-jit-context`'s — a separate
 repository. Read this rule as narrower, never as precise.

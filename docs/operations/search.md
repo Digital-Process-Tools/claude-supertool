@@ -115,7 +115,7 @@ The line names **both** halves of the split. Naming only the pattern was precise
 
 Use `grep:@-` with a `pattern` key when the split should fall somewhere else.
 
-**An empty PATH slot is refused, not defaulted** ([#1417](https://github.com/Digital-Process-Tools/claude-supertool/issues/1417)). `grep:_FLAGS|def main:presets/github/issues.py:::40` rejoins to the pattern `_FLAGS|def main:presets/github/issues.py:` with the path `.`, then scans the whole tree and returns hits — a well-formed answer to a question nobody asked. The `|` is incidental; `grep:PATTERN:PATH:` does the same with no alternation in it. So when the path resolves to `.` and a segment of the rejoined pattern names an existing file or directory, grep declines and prints both readings:
+**A PATH slot that came out as `.` is refused, not scanned** ([#1417](https://github.com/Digital-Process-Tools/claude-supertool/issues/1417)) — an empty slot and a literal `.` both produce it, and the refusal names the slot rather than guessing which one the caller typed, because `_parse_grep_args` collapses the two and nothing downstream can tell them apart. `grep:_FLAGS|def main:presets/github/issues.py:::40` rejoins to the pattern `_FLAGS|def main:presets/github/issues.py:` with the path `.`, then scans the whole tree and returns hits — a well-formed answer to a question nobody asked. The `|` is incidental; `grep:PATTERN:PATH:` does the same with no alternation in it. So when the path resolves to `.` and a segment of the rejoined pattern names an existing file or directory, grep declines and prints both readings:
 
 ```
 ERROR: grep would have scanned the whole tree, not the file you named (#1417).

@@ -246,6 +246,8 @@ Three things about it are deliberate.
 
 There is no escape hatch on the command line, on purpose — an environment variable that turns a block off is learned once and prepended forever. A legitimate raw call simply has no `replaces` entry (nothing maps `gh release create`, `gh api -X DELETE`, `git tag`). To turn the whole gate off, set `"raw_command_guard": false` in `.supertool.json`, where it is a decision that shows up in a diff.
 
+**Asking a program to describe itself is never replaced.** `--help` and `-h` un-claim every entry, whatever it declares, because no op supersedes a command that performs nothing — and a refusal that answers `gh pr create --help` with *open a pull request* names a remedy worse than the command it stopped. The same reasoning per-command belongs to the op: `presets/github.json` excludes `gh pr create --dry-run`, and `presets/git.json` excludes `git push --dry-run` / `-n` and `git commit --dry-run`.
+
 That was the decision and, until [#1390](https://github.com/Digital-Process-Tools/claude-supertool/issues/1390), not the behaviour: the hook's interpreter ladder read `SUPERTOOL_PYTHON` and accepted any binary that exited 0, so one variable turned the gate off silently. It no longer reads that variable, a candidate has to prove it is a Python 3, and an interpreter that runs and produces no verdict is disclosed rather than read as a clean one. [configuration.md](docs/configuration.md#which-interpreter-the-hook-runs-and-what-it-does-when-there-is-none) has the ladder.
 
 ---
