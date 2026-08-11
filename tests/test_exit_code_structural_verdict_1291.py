@@ -144,36 +144,17 @@ def test_a_failing_sub_op_inside_a_batch_still_flips_the_exit_code(
     assert rc == 1, out
 
 
-def test_an_ops_own_output_containing_a_receipt_is_still_not_a_failure(
-    tmp_path: Path,
-) -> None:
-    """A quoted receipt inside rendered CONTENT is the caller's data."""
-    (tmp_path / "notes.md").write_text(
-        "--- git-status ---" + chr(10) + "ERROR: quoted, not ours" + chr(10))
-    rc, out = _run(["read:notes.md"], cwd=tmp_path)
-    assert "ERROR: quoted, not ours" in out, out
-    assert rc == 0, out
-
-
-def test_the_verdict_is_not_a_scan_of_a_diff_shaped_receipt(
-    tmp_path: Path,
-) -> None:
-    """This runs on every dispatch, and a `git-diff` receipt is thousands of
-    lines beginning `--- a/path`. A lazy search over the body measured 4.0s
-    on a 255KB body of that shape (#1279); the anchored form measured
-    0.0013s. The bound is three orders above the anchored cost so a slow
-    runner cannot redden it, and well below the searching form's.
-    """
-    big = tmp_path / "huge.diff"
-    big.write_text(
-        ("--- a/src/file.py" + chr(10) + "+++ b/src/file.py" + chr(10)
-         + "@@ -1 +1 @@" + chr(10) + "-x" + chr(10) + "+y" + chr(10)) * 4000
-    )
-    start = time.monotonic()
-    rc, out = _run(["read:huge.diff:0:100000"], cwd=tmp_path)
-    elapsed = time.monotonic() - start
-    assert rc == 0, out
-    assert elapsed < 20.0, elapsed
+# Two CLI-level guards were drafted here and dropped rather than kept, and the
+# reason is worth the four lines. One read a file whose content was a quoted
+# receipt and asserted exit 0; the other timed a read of a 950KB diff-shaped
+# file. Both pass unchanged against the pre-#1291 code, because no builtin op
+# ever puts caller content where either implementation looks — a receipt always
+# opens with the op's own summary line. They would have been tests of the
+# subprocess and the filesystem. The two properties they were reaching for are
+# pinned where they are actually observable, at the unit level:
+# `tests/test_dispatch.py::test_op_body_failure_reads_the_ops_own_return_value_only`
+# and `test_git_commit_receipt_1235_946.py::
+# test_the_verdict_does_not_scan_a_diff_shaped_receipt_at_all`.
 
 
 def test_the_helper_that_read_the_rendered_body_is_gone() -> None:

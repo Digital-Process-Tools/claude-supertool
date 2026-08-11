@@ -18662,7 +18662,11 @@ def dispatch_verdict(
     a batch sub-op nested under it — and read back off the same thread. It is
     never re-derived from the string returned here (#1291).
     """
-    out = dispatch(arg, pre_parsed)
+    # One positional argument when there is nothing else to pass, because
+    # `main` has always called `dispatch(arg)` and both the tests and the MCP
+    # layer monkeypatch it with that arity. Widening the call here would have
+    # been a compatibility break bought for nothing.
+    out = dispatch(arg) if pre_parsed is None else dispatch(arg, pre_parsed)
     return out, _call_failed()
 
 
@@ -19310,6 +19314,19 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                         _sub_arg = ":".join([_sub_op] + _fields) if _fields else _sub_op
                                     _sub_result = dispatch(_sub_arg, pre_parsed=_sub_pre_parsed)
                                     results.append(_sub_result)
+                                    # NOT the call's verdict — that was taken
+                                    # inside the frame above and is already in
+                                    # `_call_failed()`. This is `continue_on_
+                                    # error`'s own question, and it is still
+                                    # answered by line-indexing the rendered
+                                    # string, so a sub-op argument holding a
+                                    # newline puts the header on line 1 and the
+                                    # batch runs on. Same mechanism as #1291
+                                    # and deliberately not folded into it:
+                                    # `_call_failed()` cannot tell `ERROR` from
+                                    # `FAIL`, so reusing it here would silently
+                                    # widen what stops a batch. Left for its
+                                    # own decision.
                                     if not continue_on_error and _sub_result.split("\n")[1:2] and (
                                         _sub_result.split("\n")[1].startswith("ERROR")
                                     ):
@@ -20775,7 +20792,7 @@ def _op_body_failed(body: str) -> bool:
 def _receipt(header: str, body: str) -> str:
     """Assemble a receipt, taking the call's verdict on the way.
 
-    `_dispatch_impl` returns early at twenty-odd refusal and redirect gates
+    `_dispatch_impl` returns early at eighteen refusal and redirect gates
     before it reaches the main verdict point, and each one had its refusal
     read back out of the rendered string it had just built. Passing the two
     halves separately is what makes the boundary a fact rather than a search
