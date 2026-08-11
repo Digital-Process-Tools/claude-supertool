@@ -17,6 +17,14 @@
       "syntax": "claude-log-tail:UUID[:N][:raw]",
       "example": "claude-log-tail:84397aff-4925-45fd-afc5-3641e28c993c:50"
     },
+    "claude-log-cost": {
+      "safety": "read-only",
+      "cmd": "{python} {path}claude-log/cost.py {args}",
+      "timeout": 120,
+      "description": "What tool results cost, in bytes: per tool and per supertool op (split on the render's own '--- op ---' markers), size distribution, repeat reads with the share of bytes they re-paid, errors and empties. Sessions that could not be parsed are listed as skipped with a reason, never dropped from the total. Def: 10 most recent sessions of this project; pass a UUID for one",
+      "syntax": "claude-log-cost[:N|:UUID][:raw]",
+      "example": "claude-log-cost:20"
+    },
     "claude-log-summary": {
       "safety": "read-only",
       "cmd": "{python} {path}claude-log/summary.py {args}",
