@@ -18,7 +18,9 @@ simply never added to it.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,6 +29,23 @@ import supertool
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG = json.loads((REPO_ROOT / ".supertool.json").read_text(encoding="utf-8"))
+
+
+def _load_claims_check():
+    """`presets/claims/check.py`, loaded the way the other claims tests do."""
+    path = REPO_ROOT / "presets" / "claims" / "check.py"
+    spec = importlib.util.spec_from_file_location("_claims_check_1240", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(REPO_ROOT / "presets"))
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path.pop(0)
+    return mod
+
+
+_claims_check = _load_claims_check()
 
 
 @pytest.fixture
@@ -86,13 +105,20 @@ def test_help_repo_returns_a_reference_not_an_unknown_op(shipped_config):
     assert "repo:OWNER/NAME" in out
 
 
-def test_claims_registry_resolves_repo():
-    """A doc citing `repo:OWNER/NAME` must read as a checked reference."""
-    registry = {}
-    for section in ("builtin-ops", "ops", "aliases"):
-        entries = CONFIG.get(section)
-        if isinstance(entries, dict):
-            for name, spec in entries.items():
-                if isinstance(spec, dict) and spec.get("syntax"):
-                    registry[name] = spec["syntax"]
+def test_claims_resolves_a_repo_reference_instead_of_declining_it():
+    """A doc citing `repo:OWNER/NAME` must read as a checked reference.
+
+    Through `claims`' own loader and its own op lens, not a re-implementation
+    of either: a private copy of the registry walk would stay green if the real
+    one broke, which is the shape of a test that passes when the code does
+    nothing.
+    """
+    registry = _claims_check._load_registry(REPO_ROOT)
     assert "repo" in registry
+
+    findings = _claims_check._op_findings(0, "repo:OWNER/NAME", registry)
+    states = {f.state for f in findings}
+    assert _claims_check.UNCHECKED not in states, (
+        "claims still declines to check `repo:` — the op resolves to nothing "
+        "in the registry, so every document citing it reads as unverifiable")
+    assert states <= {_claims_check.HOLDS}, findings
