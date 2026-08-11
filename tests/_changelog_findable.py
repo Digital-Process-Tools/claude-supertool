@@ -135,6 +135,12 @@ _PENDING_REMEDY = (
     "a hermetic fixture that happens to reuse this PR's own issue number, give "
     "the fixture a different number.")
 
+#: A fragment name is matched with a left digit boundary, never as a bare
+#: substring: `1.added.md` occurs inside `21.added.md`, so a pending fragment
+#: for a low issue number would have flagged a correct reference to a consumed
+#: one. The right-hand side needs no guard — the name already ends in `.md`.
+_LEFT_BOUNDARY = "(?<![0-9])"
+
 
 def pending_fragments(root: Path = REPO_ROOT) -> List[str]:
     """The fragment filenames the next tag will delete, sorted.
@@ -181,10 +187,11 @@ def pending_fragment_references(root: Path, files: Sequence[Path],
     """Findings for every line of `files` naming a fragment still pending.
 
     Keyed to the directory's contents rather than to a filename pattern, which
-    is what makes it precise. This repo holds 162 references to fragment names
-    and every one is correct — a doc example, a comment, a `tmp_path` fixture —
-    because each names an issue whose fragment was consumed releases ago. Only
-    a name that is on disk right now can be deleted by the next tag.
+    is what makes it precise. 185 lines across 19 tracked files outside this
+    directory name a fragment, and every one is correct — a doc example, a
+    comment, a `tmp_path` fixture — because each names an issue whose fragment
+    was consumed releases ago. Only a name that is on disk right now can be
+    deleted by the next tag.
 
     `changelog.d/` itself is not scanned: a fragment naming a sibling fragment
     is consumed in the same commit, and the README quotes the grammar three
@@ -199,6 +206,8 @@ def pending_fragment_references(root: Path, files: Sequence[Path],
     names = list(pending) if pending is not None else pending_fragments(root)
     if not names:
         return []
+    wanted = [(name, re.compile(_LEFT_BOUNDARY + re.escape(name)))
+              for name in names]
     findings: List[str] = []
     for entry in sorted(files, key=lambda path: Path(path).as_posix()):
         rel = Path(entry)
@@ -213,8 +222,8 @@ def pending_fragment_references(root: Path, files: Sequence[Path],
         except UnicodeDecodeError:
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
-            for name in names:
-                if name in line:
+            for name, pattern in wanted:
+                if pattern.search(line):
                     findings.append(
                         "{0}:{1}: names {2}/{3}, which this checkout still has "
                         "pending — {4}"

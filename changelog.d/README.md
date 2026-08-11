@@ -44,8 +44,8 @@ Both guards run in CI. `tests/test_changelog_findable_1053.py` refuses the
 assertion shape by parsing the suite; `tests/test_changelog_findable_1293.py`
 refuses any tracked text file, in any language, that names a fragment currently
 on disk. Naming an *already consumed* fragment is fine and common — the
-`906.added.md` examples on this page are three of 162 such references — because
-nothing the next tag deletes is called that.
+`906.added.md` examples on this page are three of 185 such lines across 19
+files — because nothing the next tag deletes is called that.
 
 The **content is the entry exactly as it would appear** under that heading
 today — a `- **Bold summary** ([#906](link)). Prose.` bullet, with as many

@@ -14,7 +14,20 @@ added | changed | deprecated | removed | fixed | security
 
 # Never edit CHANGELOG.md in a PR
 
-Add a fragment under `changelog.d/` instead. Rule: `docs/contributing.md:196`.
+Add a fragment under `changelog.d/` instead. Rule: `docs/contributing.md`,
+"Changelog fragments" (the line number here went 41 lines stale; the heading did not).
+
+# Nothing outside this directory may name a pending fragment
+
+The tag **deletes** it. A test, doc example, fixture or jit note keyed to
+`changelog.d/<n>.<section>.md` is green until the release and red on it and
+every one after — and invisible from inside the PR that writes it. Shipped four
+times: #941 (5 legs, v0.26.0), #953 (13/20, v0.27.0), #1231 (13/22, v0.33.0 —
+not an assert, a filename in a swept tuple), #1053.
+
+Point at `CHANGELOG.md`, or call `assert_change_is_findable(<issue>)` from
+`tests/_changelog_findable.py`. Naming an *already consumed* fragment is fine.
+Enforced by `tests/test_changelog_findable_{1053,1293}.py` (#1293).
 
 # The guard is a real parser, not a scanner
 

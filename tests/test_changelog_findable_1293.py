@@ -21,7 +21,7 @@ workflow comment, a jit-context citation, a fixture. It is keyed to the
 fragments actually on disk, which is what makes it precise: a reference to an
 already-consumed number (`906.added.md` in a doc example, `999.fixed.md` in a
 `tmp_path` fixture) names nothing the next tag can delete and is not a finding.
-There are 162 such references in this repo and every one of them is correct.
+185 lines across 19 tracked files do that, and every one of them is correct.
 
 Would these pass if the code did nothing? No. The detector tests feed it #1231's
 shipped tuple verbatim and require a finding on its line; the negative tests put
@@ -137,7 +137,7 @@ def test_the_same_text_beside_a_consumed_fragment_is_silent(tmp_path):
     """The discriminator, and the reason this is keyed to disk rather than to
     syntax: `changelog.d/1231.added.md` in a comment or a doc example names
     nothing the next tag deletes. A detector that flagged every
-    fragment-shaped literal would refuse 162 correct references in this repo."""
+    fragment-shaped literal would refuse 185 correct lines in this repo."""
     root = _tree(tmp_path, files={"tests/test_ops_roster_1231.py": SHIPPED_1231})
     assert _scan(root) == []
 
@@ -154,6 +154,23 @@ def test_the_windows_spelling_is_a_finding(tmp_path):
     filename is what makes the separator irrelevant."""
     root = _tree(tmp_path, pending=["953.added.md"], files={
         "docs/x.md": r"see changelog.d\953.added.md for the entry"})
+    assert len(_scan(root)) == 1
+
+
+def test_a_longer_number_ending_in_the_pending_one_is_not_a_finding(tmp_path):
+    """`1.added.md` occurs inside `21.added.md`, so a bare substring test would
+    report a correct reference to a consumed fragment as a pending one. The
+    match carries a left digit boundary for exactly this."""
+    root = _tree(tmp_path, pending=["1.added.md"], files={
+        "docs/x.md": "see changelog.d/21.added.md for the entry"})
+    assert _scan(root) == []
+
+
+def test_the_number_it_actually_names_is_still_a_finding(tmp_path):
+    """The other half of the boundary: a guard tightened until it matches
+    nothing is the absence this repo files most."""
+    root = _tree(tmp_path, pending=["21.added.md"], files={
+        "docs/x.md": "see changelog.d/21.added.md for the entry"})
     assert len(_scan(root)) == 1
 
 
@@ -221,7 +238,7 @@ def test_this_checkout_lists_its_own_files():
         pytest.skip("git could not list this checkout")
     names = {path.as_posix() for path in files}
     assert "tests/_changelog_findable.py" in names
-    # 878 tracked at the time of writing. A floor near the real number, because
+    # 880 tracked at the time of writing. A floor near the real number, because
     # `> 10` also passes with the listing silently truncated.
     assert len(files) >= 800, len(files)
 

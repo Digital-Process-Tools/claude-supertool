@@ -4,7 +4,11 @@ match: "docs/"
 mode: once, remind
 ---
 
-# `docs/contributing.md` (98KB / ~1255 lines) — section map
+# `docs/contributing.md` (110KB / 1300 lines) — section map
+
+Re-derived 2026-08-11 by grepping the headings. Fourteen of these twenty rows
+were stale by 13–45 lines, all in the same direction — the file only grows, so a
+row is a floor. Search the heading text, not the number.
 
 | Heading | Line | When you need it |
 |---|---|---|
@@ -13,21 +17,22 @@ mode: once, remind
 | What the repo-wide Python guards scan/skip | 44 | guard false-positive on a new dir |
 | Custom ops | 62 | adding an op to `.supertool.json` |
 | Op schema | 83 | table of `cmd`/`timeout`/`syntax`/etc |
-| Placeholders | 96 | `{file}`/`{dir}`/`{arg}`/`{args}`/`{path}` |
-| Dispatch order | 108 | builtin vs custom vs preset vs alias |
-| Extra config keys as env vars | 112 | passing config into an op's subprocess |
-| Presets | 132 | writing a preset manifest |
-| File layout | 136 | where preset JSON + helper scripts live |
-| Resolution order | 148 | project vs user vs shipped preset wins |
-| Preset schema | 156 | same as op schema, wrapped in manifest |
-| Validators | 188 | stub only — real doc is `docs/validators.md` |
-| Changelog fragments | 194 | `changelog.d/NNN.section.md` naming |
-| Cutting a release | 239 | assembling fragments into `CHANGELOG.md` |
-| Helper script conventions | 281 | writing `presets/*/foo.py` |
-| HTTP requests go through `presets/_http.py` | 293 | any preset that calls a URL |
-| Fetching a URL somebody else chose | 329 | user-supplied URL handling |
-| The body is bounded, in bytes and wall clock | 365 | streaming/size-limit rules |
-| Text encoding | 384 | UTF-8 read/write rules, Windows console traps |
+| Placeholders | 109 | `{file}`/`{dir}`/`{arg}`/`{args}`/`{path}` |
+| Dispatch order | 122 | builtin vs custom vs preset vs alias |
+| Extra config keys as environment variables | 126 | passing config into an op's subprocess |
+| `scripts/` — this repo's own maintainer ops | 154 | the repo's own tooling entries |
+| Presets | 174 | writing a preset manifest |
+| File layout | 178 | where preset JSON + helper scripts live |
+| Resolution order | 190 | project vs user vs shipped preset wins |
+| Preset schema | 198 | same as op schema, wrapped in manifest |
+| Validators | 231 | stub only — real doc is `docs/validators.md` |
+| Changelog fragments | 237 | `changelog.d/NNN.section.md` naming |
+| Cutting a release | 284 | assembling fragments into `CHANGELOG.md` |
+| Helper script conventions | 326 | writing `presets/*/foo.py` |
+| HTTP requests go through `presets/_http.py` | 338 | any preset that calls a URL |
+| Fetching a URL somebody else chose | 374 | user-supplied URL handling |
+| The body is bounded, in bytes and in wall clock | 410 | streaming/size-limit rules |
+| Text encoding | 429 | UTF-8 read/write rules, Windows console traps |
 
 ## Load-bearing details, don't re-derive
 
@@ -35,7 +40,7 @@ mode: once, remind
 - **Python guards** (`tests/_repo_walk.py`) decide source-vs-machine-state in order: (1) hardcoded name list (`__pycache__`, `.venv`, `.git`, etc. — git can't see these, esp. `.git` and untracked venvs), (2) `git ls-files --others --ignored --exclude-standard --directory`, (3) denylist fallback if git is unavailable. A dot-prefix alone is NOT exempt (#593 — `.github/`, `.githooks/` are source).
 - **Custom op `syntax` field is PARSED, not just displayed**, for any op whose `syntax` contains `:::` — e.g. `MESSAGE[:::PATHS...]` derives field names `message`, `paths` for the `@file`/`@payload` route. Rewording that string for readability can silently break field derivation, silently deleting the op's payload route (no error) — docs still describe a route that no longer exists. Pinned by `tests/test_at_file_route.py::TestPayloadRoutePin`. Ref #770.
 - **Preset resolution order**: `./presets/{name}.json` (project) → `~/.config/supertool/presets/{name}.json` (user) → `{install dir}/presets/{name}.json` (shipped). First found wins; project always overrides preset on name conflict.
-- **Changelog fragments**: never edit `CHANGELOG.md` directly in a PR — add `changelog.d/<issue>.<section>.md`. Section = `added`/`fixed`/etc. Enforced by `.github/workflows/changelog.yml`.
+- **Changelog fragments**: never edit `CHANGELOG.md` directly in a PR — add `changelog.d/<issue>.<section>.md`. Section = `added`/`fixed`/etc. Enforced by `.github/workflows/changelog.yml`. **And nothing outside `changelog.d/` may name a pending fragment by path** — the tag deletes it, which reddened four release commits before `tests/test_changelog_findable_1293.py` started refusing it (#1293).
 
 ## Sibling docs — what each owns
 
