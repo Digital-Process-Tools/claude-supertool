@@ -47,12 +47,26 @@ on disk are made against that fixture in other functions.
 some other route — an indirection through a helper, a fixture, a path built from
 a variable that never spells the directory. It closes the shape that shipped
 three times, and it says so rather than implying more.
+
+**A fourth instance proved the syntax was never the class** (#1231, #1293). A
+module-level tuple of swept paths held `changelog.d/1231.added.md` and a
+`read_text` in a loop resolved it against the checkout — no `assert`, no
+existence call, so the detector above is blind to it by construction, and the
+v0.33.0 release commit went red on 13 of 22 legs. `pending_fragment_references`
+is the answer to that: it asks which fragments are on disk *now* and refuses any
+tracked text file that names one, in any language and by any syntax. The two
+guards are complementary and deliberately overlap. The AST detector fires on a
+PR that ships no fragment of its own; this one fires on any file shape at all,
+including a doc example or a workflow comment, but only while the fragment it
+names is pending.
 """
 from __future__ import annotations
 
 import ast
+import re
+import subprocess
 from pathlib import Path
-from typing import List, Sequence, Set
+from typing import List, Optional, Sequence, Set
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -99,6 +113,114 @@ def assert_change_is_findable(issue: int, root: Path = REPO_ROOT) -> None:
         "one of those two is true at any moment: the release consumes the "
         "fragment and writes the entry. Looked in {2} and {3}."
         .format(number, FRAGMENT_DIR, (root / FRAGMENT_DIR), changelog))
+
+
+#: The Keep a Changelog headings a fragment filename may carry.
+_SECTIONS = ("added", "changed", "deprecated", "removed", "fixed", "security")
+
+#: `<issue>.<section>[.<slug>].md`, the grammar `changelog.d/README.md`
+#: prescribes and `assemble_changelog.py` consumes. `README.md` is the one
+#: permanent file in the directory and is deliberately not matched.
+_FRAGMENT_NAME = re.compile(
+    r"\A[0-9]+\.(?:" + "|".join(_SECTIONS) + r")(?:\.[^.]+)?\.md\Z")
+
+_PENDING_REMEDY = (
+    "the tag that ships this change deletes that file, so the reference is "
+    "green until the release and red on it and every release after — #941 took "
+    "five legs on v0.26.0, #953 thirteen of twenty on v0.27.0, #1231 thirteen "
+    "of twenty-two on v0.33.0, and none of the three was visible from inside "
+    "the PR that wrote it. Point at CHANGELOG.md instead, where the fragment's "
+    "prose lands permanently, or call `assert_change_is_findable(<issue>)` "
+    "from tests/_changelog_findable.py, which accepts either state. If this is "
+    "a hermetic fixture that happens to reuse this PR's own issue number, give "
+    "the fixture a different number.")
+
+
+def pending_fragments(root: Path = REPO_ROOT) -> List[str]:
+    """The fragment filenames the next tag will delete, sorted.
+
+    An absent or unreadable `changelog.d/` is an empty list rather than an
+    error: right after a release the directory is genuinely empty, and that is
+    a real state, not a failure to look. What must not read as clean is a
+    *scan* that saw no files — that is `scan_test_tree`'s and `tracked_files`'
+    problem, and both say so separately.
+    """
+    directory = Path(root) / FRAGMENT_DIR
+    try:
+        entries = sorted(directory.iterdir())
+    except OSError:
+        return []
+    return [path.name for path in entries
+            if path.is_file() and _FRAGMENT_NAME.match(path.name)]
+
+
+def tracked_files(root: Path = REPO_ROOT) -> Optional[List[Path]]:
+    """Every path git tracks under `root`, or `None` when git could not be asked.
+
+    `None` and `[]` are different answers and the caller must be able to tell
+    them apart: an empty list is "this repository tracks nothing", which would
+    let a sweep over it report a clean sheet it never earned. Windows raises
+    `FileNotFoundError` when git is not installed where POSIX may not fail the
+    same way, so the spawn is caught rather than the exit status alone.
+    """
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    if done.returncode != 0:
+        return None
+    names = done.stdout.decode("utf-8", "replace").split("\0")
+    return [Path(name) for name in names if name]
+
+
+def pending_fragment_references(root: Path, files: Sequence[Path],
+                                pending: Optional[Sequence[str]] = None
+                                ) -> List[str]:
+    """Findings for every line of `files` naming a fragment still pending.
+
+    Keyed to the directory's contents rather than to a filename pattern, which
+    is what makes it precise. This repo holds 162 references to fragment names
+    and every one is correct — a doc example, a comment, a `tmp_path` fixture —
+    because each names an issue whose fragment was consumed releases ago. Only
+    a name that is on disk right now can be deleted by the next tag.
+
+    `changelog.d/` itself is not scanned: a fragment naming a sibling fragment
+    is consumed in the same commit, and the README quotes the grammar three
+    times.
+
+    A file that does not decode as UTF-8 is skipped rather than guessed at, and
+    so is one git lists but the working tree does not have — a staged deletion
+    is an ordinary state and a `FileNotFoundError` out of a guard reads as a
+    product failure.
+    """
+    root = Path(root)
+    names = list(pending) if pending is not None else pending_fragments(root)
+    if not names:
+        return []
+    findings: List[str] = []
+    for entry in sorted(files, key=lambda path: Path(path).as_posix()):
+        rel = Path(entry)
+        if rel.parts[:1] == (FRAGMENT_DIR,):
+            continue
+        try:
+            raw = (root / rel).read_bytes()
+        except OSError:
+            continue
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for name in names:
+                if name in line:
+                    findings.append(
+                        "{0}:{1}: names {2}/{3}, which this checkout still has "
+                        "pending — {4}"
+                        .format(rel.as_posix(), lineno, FRAGMENT_DIR, name,
+                                _PENDING_REMEDY))
+    return findings
 
 
 def _string_constants(node: ast.AST) -> List[str]:
