@@ -26,7 +26,7 @@ Git investigation and workflow ops. Replaces the 4-6 raw `git` calls you'd norma
 
 ## What a raw `git` call is refused for
 
-Four of these thirteen ops declare the raw invocation they supersede as `replaces` in `presets/git.json`, and the shipped `PreToolUse` hook refuses that invocation with the op's own description ([#1347](https://github.com/Digital-Process-Tools/claude-supertool/issues/1347), [#1384](https://github.com/Digital-Process-Tools/claude-supertool/issues/1384)). Before this the git ops had no enforcement that shipped with the tool: #1384 measured `git push origin master`, `git commit -m x` and `git -C /tmp/x status` as **allowed, silently**, while two hand-written markdown rules in this repository existed to stop the first two.
+Four of these thirteen ops declare the raw invocation they supersede as `replaces` in `presets/git.json`, and the shipped `PreToolUse` hook refuses that invocation with the op's own description ([#1347](https://github.com/Digital-Process-Tools/claude-supertool/issues/1347), [#1384](https://github.com/Digital-Process-Tools/claude-supertool/issues/1384)). Before this the git ops had no enforcement that shipped with the tool: #1384 measured `git push origin master`, `git commit -m x` and `git -C /tmp/x status` as **allowed, silently**, while two hand-written markdown rules in this repository (`git-push-has-an-op.md`, `git-C-has-cwd.md`) covered the first and the third. Nothing anywhere covered `git commit`.
 
 | Raw command | Refused in favour of |
 |---|---|

@@ -5,7 +5,8 @@
 none, so the three commands #1384's own measurement table calls out --
 `git push origin master`, `git commit -m x`, `git -C /tmp/x status` -- were
 allowed **silently**, while two `block` rules in
-`.claude/jit-context/tools/00-manual/` existed to stop the first two by hand.
+`.claude/jit-context/tools/00-manual/` existed to stop the first and the third
+by hand. Nothing anywhere stopped `git commit`.
 
 Four ops declare a mapping. The other nine deliberately do not, and the
 absences are asserted as hard as the presences: in this schema an absent entry
@@ -151,8 +152,14 @@ def test_the_refusal_footer_does_not_promise_tagging_is_never_blocked(
     which *commands* no op maps, and a preset can falsify it, so the footer no
     longer makes it and points at the op that answers per command instead.
     """
-    text = supertool.guard_refusal(
-        supertool.guard_command("git push origin v0.34.0"))
+    verdict = supertool.guard_command("git push origin v0.34.0")
+    # `guard_refusal` renders its footer for any verdict handed to it, so
+    # without this the whole test passes with `git-push`'s mapping deleted:
+    # nothing would be blocked, no match would render, and an absent claim
+    # about tags reads exactly like a corrected one.
+    assert verdict.state == "blocked", verdict
+    text = supertool.guard_refusal(verdict)
+    assert "git-push" in text, text
     assert "tagging" not in text, text
     # ...while still carrying the two facts it exists for.
     assert "raw_command_guard: false" in text, text
