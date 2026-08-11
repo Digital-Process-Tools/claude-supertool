@@ -74,9 +74,9 @@ def test_refusal_carries_the_corrected_call_and_the_payload_route(
 
 def test_a_colon_pattern_with_no_absorbed_path_still_scans_the_tree(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The re-read is usually right. Measured over 155 grep spellings in this
-    repo, 33 fire the ':' disclosure and 0 absorb a real path — so the refusal
-    must not fire on any of them."""
+    """The re-read is usually right. Measured over 165 grep spellings in this
+    repo, 39 fire the ':' disclosure and 0 are declined — so the refusal must
+    not fire on any of them."""
     _tree(tmp_path)
     (tmp_path / "cpp.py").write_text("Class::CONST\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)

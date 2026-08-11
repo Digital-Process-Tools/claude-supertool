@@ -7332,9 +7332,9 @@ def _absorbed_path_hint(op: str, leading: str, path: str,
     false refusal, and the repair it printed dropped the `re:` marker that
     selects the mode. One op's parser defect does not generalise to a family.
 
-    Gated hard, because the re-read is normally right: measured over the 155
-    distinct `grep:` spellings written down in this repo, 33 hit the `:` rejoin
-    and **none** of them absorbs a real path. The refusal needs a segment of the
+    Gated hard, because the re-read is normally right: measured over the 165
+    distinct `grep:` spellings written down in this repo, 39 hit the `:` rejoin
+    and **none** of them is declined here. The refusal needs a segment of the
     rejoined pattern to name an existing file or directory, and needs it to sit
     after the first segment — the PATH slot follows the pattern, so a leading
     segment that happens to name a file is a pattern.

@@ -126,7 +126,7 @@ ERROR: grep would have scanned the whole tree, not the file you named (#1417).
 
 It declines rather than auto-correcting, and that is the difference from `around:.supertool.json:232:12`, which *is* redirected to `around_line` and disclosed. The reading that redirect replaces is a hard failure (`path not found: 232`), so there is nothing to lose. Here the reading it would replace is a successful whole-tree sweep: both readings are live, neither is rankable, and a tool with two candidate answers declines instead of guessing. A segment that fails the cwd containment check is skipped rather than named, so the refusal is not an existence oracle for paths outside the boundary.
 
-The gate is narrow because the rejoin is normally right. Measured over the 155 distinct `grep:` spellings written down in this repo, 33 hit the rejoin and none of them absorbs a real path.
+The gate is narrow because the rejoin is normally right. Measured over the 165 distinct `grep:` spellings written down in this repo, 39 hit the rejoin and none of them is declined.
 
 **It is `grep` only, and that is a decision rather than an oversight.** `around` and `between` share the error helper but not the defect: neither *defaults* a path to `.` — an empty slot becomes `""` and fails loudly — so a `.` there is always a value the caller typed. And `between:re:START:END:PATH` carries three caller-supplied arguments ahead of the path, so `between:re:START:code.py:.` is an ordinary tree-wide range search whose END happens to name a file. Wiring the same check into those two produced a false refusal on that call, and a printed repair that dropped the `re:` marker selecting the mode.
 
