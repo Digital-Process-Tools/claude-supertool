@@ -1,8 +1,8 @@
 Bash	~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?gh[[:space:]]+(issue|pr)[[:space:]]+list	gh-list-limit.md	remind	--limit	
 Edit|Write|Read|Grep|Glob|MultiEdit|NotebookEdit	~.	harness-tools-blocked.md	block		
-Bash	~supertool[^|]*'(gh-prs|gl-mrs|gh-issues|gl-issues|radar|watches)	op-defaults-that-narrow.md	remind		
+Bash	~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(python3?[[:space:]]+)?([^[:space:]]*/)?supertool(\.py)?[[:space:]][^|]*'(gh-prs|gl-mrs|gh-issues|gl-issues|radar|watches)	op-defaults-that-narrow.md	remind		
 Bash	~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(python3?[[:space:]]+)?([^[:space:]]*/)?supertool(\.py)?[[:space:]][^\n]*[[:space:]]\|[[:space:]]*(head|tail|sed|cut|awk)	supertool-no-cut.md	block		
-Bash	~(^|[;&|\n] *)(rtk +)?git[[:space:]]+(branch|for-each-ref)[^|]*--merged	merged-is-not-ancestry.md	block	--merged	
-Bash	~(^|[;&|\n] *)(rtk +)?gh[[:space:]]+pr[[:space:]]+(view|merge|create)	gh-pr-view-merge-have-ops.md	block	gh pr	
-Bash	~(^|[;&|\n] *)(rtk +)?(command +)?git[[:space:]]+([^;&|\n]*[[:space:]])?push	git-push-has-an-op.md	block	push	
-Bash	~(^|[;&|\n] *)(rtk +)?(command +)?git[[:space:]]+-c[[:space:]]+[^=[:space:]]*/	git-C-has-cwd.md	block	git -c	
+Bash	~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?git[[:space:]]+(branch|for-each-ref)[^|]*--merged	merged-is-not-ancestry.md	block	--merged	
+Bash	~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?gh[[:space:]]+pr[[:space:]]+(view|merge|create)	gh-pr-view-merge-have-ops.md	block	gh pr	
+Bash	~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(command[[:space:]]+)?git[[:space:]]+([^;&|\n]*[[:space:]])?push	git-push-has-an-op.md	block	push	
+Bash	~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(command[[:space:]]+)?git[[:space:]]+-c[[:space:]]+[^=[:space:]]*/	git-C-has-cwd.md	block	git -c	

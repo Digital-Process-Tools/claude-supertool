@@ -77,6 +77,7 @@ def _awk_matches(pattern, subject):
 
 PIPE = " | "
 BAR = "|"
+APOS = "'"
 GIL = "gh issue list"
 GPL = "gh pr list"
 
@@ -154,6 +155,51 @@ class TestSupertoolNoCut:
         assert not _awk_matches(_pattern_for("supertool-no-cut.md"), command), label
 
 
+# The other rules in the index, one line each. Every `fires` case puts the
+# invocation on a TAB-indented continuation line: that is the shape ` *` misses
+# and `[[:space:]]*` catches, so each row fails under the older idiom and under
+# no other difference. Every `silent` case names the command inside a quoted
+# argument, which is the shape the anchor exists for.
+OTHER_RULES = [
+    ("merged-is-not-ancestry.md",
+     "cd /tmp &&\n\tgit branch --merged master",
+     "git commit -m " + APOS + "docs: --merged is not ancestry for git branch" + APOS),
+    ("gh-pr-view-merge-have-ops.md",
+     "cd /tmp &&\n\tgh pr view 1415 --json body",
+     "echo " + APOS + "gh pr view has an op" + APOS),
+    ("git-push-has-an-op.md",
+     "cd /tmp &&\n\tgit push origin HEAD",
+     "echo " + APOS + "git push has an op" + APOS),
+    ("git-C-has-cwd.md",
+     "cd /tmp &&\n\tgit -C /Users/x/repo status",
+     "echo " + APOS + "git -C /tmp is not a cwd" + APOS),
+    ("op-defaults-that-narrow.md",
+     "cd /tmp &&\n\tsupertool " + APOS + "gh-prs:state=open" + APOS,
+     "echo the supertool op " + APOS + "gh-prs" + APOS + " reads the whole repo"),
+]
+
+
+@needs_awk
+@pytest.mark.parametrize("rule,fires,silent", OTHER_RULES,
+                         ids=[r[0] for r in OTHER_RULES])
+class TestTheRestOfTheIndex:
+    """Same two directions, for the rules #1415 was widened to cover.
+
+    Four `block` rules and one `remind` rule were already anchored, but with a
+    ` *` that admits only spaces -- so a tab-indented continuation line, an
+    ordinary way to write a multi-line command, walked through all five. A
+    missed block is the safe direction on this gate, which is exactly why it
+    went unnoticed; the `remind` one is the opposite, and fired on a mere
+    mention of an op name in a test fixture while this file was being written.
+    """
+
+    def test_a_tab_indented_invocation_is_matched(self, rule, fires, silent):
+        assert _awk_matches(_pattern_for(rule), fires), rule
+
+    def test_the_command_merely_named_is_not_matched(self, rule, fires, silent):
+        assert not _awk_matches(_pattern_for(rule), silent), rule
+
+
 @needs_awk
 class TestGhListLimit:
 
@@ -185,11 +231,11 @@ class TestEveryBlockingRuleIsAnchored:
     pattern test that would quietly absolve a future unanchored rule.
     """
 
-    # A PREFIX, deliberately not a whole group: the five older rules close it as
-    # `(^|[;&|\n] *)` and the two #1415 touched rewrote it as
-    # `(^|[;&|\n])[[:space:]]*`, which also admits a tab. What every blocking
-    # rule must share is the alternation pinning the match to command position.
-    ANCHOR = r"(^|[;&|\n]"
+    # The whole opening, not a prefix: every regex row in this index now spells
+    # it identically. `[[:space:]]*` rather than ` *` because the latter admits
+    # no tab, and it applies to the `^` branch too -- a command indented inside
+    # a script is still a command.
+    ANCHOR = r"(^|[;&|\n])[[:space:]]*"
     EXEMPT = {"harness-tools-blocked.md": "matches everything on purpose"}
 
     def test_live_rows(self):
@@ -200,15 +246,14 @@ class TestEveryBlockingRuleIsAnchored:
             f = raw.split(TAB)
             if len(f) < 5 or not f[1].startswith("~"):
                 continue
-            blocking = "block" in f[3] or f[4].strip() != ""
-            if blocking and f[2] not in self.EXEMPT:
+            if f[2] not in self.EXEMPT:
                 rows.append((f[2], f[1]))
 
-        assert rows, "no blocking regex rows found; the index shape changed"
+        assert rows, "no regex rows found; the index shape changed"
         unanchored = [name for name, pat in rows if not pat[1:].startswith(self.ANCHOR)]
         assert not unanchored, (
-            "blocking rules whose match is not pinned to command position, so they "
-            "fire on a mere mention: {0}".format(", ".join(unanchored)))
+            "rules whose match is not pinned to command position, so they fire on "
+            "a mere mention: {0}".format(", ".join(unanchored)))
 
 
 def test_the_change_is_findable():

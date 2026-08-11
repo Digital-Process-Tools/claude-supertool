@@ -1,7 +1,7 @@
 ---
 title: "Do not ask git whether a branch is merged — this repo squash-merges"
 tool: Bash
-match: ~(^|[;&|\n] *)(rtk +)?git[[:space:]]+(branch|for-each-ref)[^|]*--merged
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?git[[:space:]]+(branch|for-each-ref)[^|]*--merged
 mode: block
 ---
 

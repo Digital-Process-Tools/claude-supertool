@@ -1,7 +1,7 @@
 ---
 title: "`gh pr view` / `gh pr merge` / `gh pr create` have ops"
 tool: Bash
-match: ~(^|[;&|\n] *)(rtk +)?gh[[:space:]]+pr[[:space:]]+(view|merge|create)
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?gh[[:space:]]+pr[[:space:]]+(view|merge|create)
 mode: block
 ---
 
