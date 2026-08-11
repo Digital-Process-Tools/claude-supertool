@@ -130,7 +130,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, MutableMapping, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, MutableMapping, NamedTuple, Optional, Sequence, Tuple
 
 VERSION = "0.35.0"
 
@@ -15603,6 +15603,130 @@ def _guard_options(argv: Sequence[str]) -> List[str]:
     return out
 
 
+# Options a program reads BEFORE its subcommand. `replaces` argv is matched
+# from the first token, so without this table `git -C P status` is not the
+# `git status` any entry declares and walks past every mapping (#1421) — while
+# plain `git status` is blocked, and the two render byte-identically to a
+# command nothing replaces.
+#
+# Three outcomes per token, not two, and the third is the whole design: a
+# pre-subcommand token in neither list makes the verdict `undecided`. The two
+# cheaper normalisers are both wrong in the expensive direction. Skipping
+# leading dashes until a positional turns up walks past the subcommand itself
+# on a malformed command and scores something nobody typed; guessing arity
+# swallows the subcommand into an option's value. Either is a WRONG BLOCK,
+# whose only escape is `raw_command_guard: false` for the whole repository.
+#
+# `gh` carries no `--repo` entry on purpose. Observed, not reasoned, on
+# gh 2.x and glab 1.86.0: `gh --repo cli/cli version` answers `unknown flag:
+# --repo`, `glab --repo x/y version` prints its version — gh defines the flag
+# on its leaf commands, glab on its root. No gh invocation both carries it
+# before the subcommand and runs, so an entry for it would block a call that
+# cannot execute, naming an op for something nobody can type successfully.
+_GUARD_GLOBAL_OPTIONS: Dict[str, Dict[str, Tuple[str, ...]]] = {
+    "git": {
+        "value": ("-C", "-c", "--git-dir", "--work-tree", "--namespace",
+                  "--super-prefix", "--config-env", "--attr-source"),
+        # `--exec-path` is deliberately in NEITHER list: bare, it prints the
+        # path and runs nothing; with `=`, it takes a value. One token, two
+        # arities, so it is exactly what the third state is for.
+        "boolean": ("--paginate", "-p", "-P", "--no-pager", "--bare",
+                    "--no-replace-objects", "--literal-pathspecs",
+                    "--no-literal-pathspecs", "--glob-pathspecs",
+                    "--noglob-pathspecs", "--icase-pathspecs",
+                    "--no-icase-pathspecs", "--no-optional-locks",
+                    "--no-lazy-fetch", "--no-advice", "--version",
+                    "--html-path", "--man-path", "--info-path"),
+    },
+    "gh": {"value": (), "boolean": ("--version",)},
+    "glab": {"value": ("--repo", "-R"), "boolean": ("--version",)},
+}
+
+
+def _guard_normalise(argv: Sequence[str], heads: FrozenSet[str]
+                     ) -> Tuple[Sequence[str], Optional[str]]:
+    """The argv with a program's own global options removed, or why it is not.
+
+    Applied only where it can change an answer: a command word some entry
+    declares with a subcommand after it, whose second token is flag-shaped.
+    Every other command — the overwhelming majority — returns unchanged and
+    without a note, because a disclosure printed under most commands anyone
+    writes is one nobody reads (the same reasoning `_guard_segments` applies
+    to a `$` in an argument).
+    """
+    if len(argv) < 2 or not _guard_is_flag(argv[1]):
+        return argv, None
+    head = _guard_command_word(argv[0])
+    if head not in heads:
+        return argv, None
+    for token in _guard_options(argv):
+        # A help flag un-claims every entry anyway (#1430), so there is
+        # nothing to normalise for and nothing to disclose.
+        if token.split("=", 1)[0] in _GUARD_HELP_FLAGS:
+            return argv, None
+    table = _GUARD_GLOBAL_OPTIONS.get(head, {})
+    values = table.get("value", ())
+    booleans = table.get("boolean", ())
+    i = 1
+    while i < len(argv):
+        token = argv[i]
+        # `--` and `-` are positionals, so the option run has ended.
+        if not _guard_is_flag(token):
+            break
+        if token.startswith("--"):
+            stem = token.split("=", 1)[0]
+            if stem in values:
+                i += 1 if "=" in token else 2
+                continue
+            if token in booleans:
+                i += 1
+                continue
+        else:
+            if token in booleans:
+                i += 1
+                continue
+            if token in values:
+                i += 2
+                continue
+            # A short option may carry its value attached (`git -C/tmp/x`).
+            # Only the exact two-character stem counts: `-pC` is not `-p`
+            # plus `C`, it is a cluster this walk will not take apart.
+            if len(token) > 2 and token[:2] in values:
+                i += 1
+                continue
+        return argv, (
+            "`" + head + "`'s option " + repr(token) + " sits before its "
+            "subcommand and this matcher has no grammar for it, so what "
+            "`" + head + "` would run was not read")
+    if i > len(argv):
+        return argv, (
+            "`" + head + "`'s option " + repr(argv[-1]) + " takes a value and "
+            "the command ends there, so what `" + head + "` would run was not "
+            "read")
+    if i == 1:
+        return argv, None
+    return [argv[0]] + list(argv[i:]), None
+
+
+def guard_command_words(config: Optional[Dict[str, Any]] = None
+                        ) -> Tuple[str, ...]:
+    """Every command word some `replaces` entry declares, sorted.
+
+    Exists so a caller that cannot tokenise a command — the PreToolUse hook on
+    a shell this POSIX matcher does not read (#1413) — can still tell a command
+    that might have been replaced from one that certainly was not, without
+    keeping a second hardcoded copy of the list that would go stale against
+    the registry. Empty when the gate is off, so a disabled guard discloses
+    nothing.
+    """
+    if config is None:
+        config = _load_config()
+    if config.get("raw_command_guard") is False:
+        return ()
+    replacements, _ = _guard_replacements(config)
+    return tuple(sorted({r.argv[0] for r in replacements if r.argv}))
+
+
 def _guard_excluded(replacement: _Replacement, argv: Sequence[str]) -> bool:
     """Does this argv carry a flag that un-claims the entry? (#1394)
 
@@ -15799,12 +15923,21 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
             f"checked against the registry",))
     notes.extend(unread)
 
+    # Only a command word declared with a subcommand after it can be hidden
+    # by a global option; a single-token entry claims the command word itself
+    # and there is nothing behind the options to find.
+    heads = frozenset(replacement.argv[0] for replacement in replacements
+                      if len(replacement.argv) > 1)
+
     matches: List[GuardMatch] = []
     seen = set()
     for argv in segments:
+        scoring, note = _guard_normalise(argv, heads)
+        if note is not None and note not in notes:
+            notes.append(note)
         scored = []
         for replacement in replacements:
-            score = _guard_score(replacement, argv)
+            score = _guard_score(replacement, scoring)
             if score is not None:
                 scored.append((score, replacement))
         if not scored:

@@ -206,12 +206,14 @@ def test_an_excluded_shape_of_a_mapped_command_stays_usable(
 # The absences, which are load-bearing: the opt-out is repo-global
 # --------------------------------------------------------------------------
 
+# The four global-option rows that used to open this list are gone. They were
+# recorded here as chosen absences -- "argv is a contiguous token prefix and
+# -C's value sits inside it" -- and #1421 established that a chosen absence is
+# not what they were: `git status` blocked and `git -C P status` clean is one
+# subcommand with two verdicts, and the second rendered byte-identically to a
+# command nothing replaces. They are now pinned as BLOCKED in
+# tests/test_guard_narrower_than_the_command_1421.py.
 @pytest.mark.parametrize("command,why", [
-    ("git -C /tmp/x status",
-     "argv is a contiguous token prefix and -C's value sits inside it"),
-    ("git -C /tmp/x push origin master", "same"),
-    ("git -c core.pager=cat status", "same, for the config-override spelling"),
-    ("git --git-dir=/tmp/x/.git status", "same"),
     ("git diff",
      "raw git diff spans revision ranges, machine formats and pathspecs "
      "git-diff has no spelling for, and a range carries no flag to exclude"),
@@ -301,11 +303,12 @@ def test_the_hook_denies_the_commands_1384_measured(tmp_path):
         assert hook["hookEventName"] == "PreToolUse"
         assert hook["permissionDecision"] == "deny", (command, hook)
         assert op in hook["permissionDecisionReason"], command
-    # The third stays allowed, and #1384 should not be closed believing
-    # otherwise: `git -C <path>` is not reachable from a `replaces` argv.
-    out = _run_hook("git -C /tmp/x status", tmp_path)
-    assert out.get("hookSpecificOutput", {}).get(
-        "permissionDecision") != "deny", out
+    # The third was allowed when #1384 shipped, and that was the defect rather
+    # than the design (#1421): `git -C <path> status` now reaches the same
+    # entry `git status` does, through the hook and not only in the matcher.
+    hook = _run_hook("git -C /tmp/x status", tmp_path)["hookSpecificOutput"]
+    assert hook["permissionDecision"] == "deny", hook
+    assert "git-status" in hook["permissionDecisionReason"], hook
 
 
 def test_the_hook_lets_a_tag_flag_push_through(tmp_path):

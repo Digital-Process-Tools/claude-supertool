@@ -485,7 +485,11 @@ def test_the_hook_is_registered_for_pretooluse_bash():
     hooks = json.loads((_ROOT / "hooks" / "hooks.json").read_text(
         encoding="utf-8"))["hooks"]
     pre = hooks["PreToolUse"]
-    assert any(m.get("matcher") == "Bash" for m in pre), pre
+    # An alternation since #1413, so this is a membership test rather than an
+    # equality one. A hook that only matches `Bash` never runs wherever the
+    # PowerShell tool is enabled, and never running is indistinguishable at
+    # the call site from running and approving.
+    assert any("Bash" in (m.get("matcher") or "") for m in pre), pre
 
 
 def test_every_hook_command_points_at_a_script_that_exists():

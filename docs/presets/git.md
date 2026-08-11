@@ -38,6 +38,14 @@ Four of these thirteen ops declare the raw invocation they supersede as `replace
 | `git push -u` / `--set-upstream` | `git-push:set-upstream` |
 | `git worktree list` | `git-worktrees` |
 
+### A global option no longer hides the subcommand
+
+`git -C /tmp/x status`, `git -c core.pager=cat status` and `git --git-dir=D status` used to answer `OK: nothing in this command is replaced by an op loaded here` while plain `git status` was blocked — one subcommand, two verdicts, and the second byte-identical to a command nothing maps ([#1421](https://github.com/Digital-Process-Tools/claude-supertool/issues/1421)). The entries above are unchanged; the matcher strips git's own global options before scoring them.
+
+Two consequences for the table below. **`git -C W tag v1` still runs**, because `tag` is what the walk lands on and nothing maps it — a normaliser with a wrong option table is exactly what would swallow it, which is why the table is explicit rather than heuristic. And **`git -C W push origin v1.2.3` is blocked**, for the same reason `git push origin v1.2.3` already was: the bare `git push` entry cannot discriminate on a positional's value. Leaving the prefixed spelling clean would have made `-C` a documented bypass for the one op here that can destroy someone else's commits.
+
+An option in neither list — `git --exec-path status`, or anything git adds after this was written — is `UNDECIDED`, never a guess. The command runs and the guard says it could not read it.
+
 ### The shapes of a mapped command that are deliberately left alone
 
 `unless_flag` un-claims an entry for a spelling the op does not answer. Each of these runs raw, and that is the design: absence *is* the escape hatch, the opt-out (`raw_command_guard: false`) is repo-wide, and a block naming an op that cannot do the job is a dead end with nothing to route around it.
