@@ -89,7 +89,22 @@ _FLAGS = {"nopipe", "iids", "failed", "anyauthor"}
 # contents (#939). `gh-issues` grew this refusal in #864; the two sibling ops
 # then disagreed about whether a typo was an error or a silent full board,
 # which is worse than the original bug.
-_FILTER_KEYS = {"author", "assignee", "label", "reviewer", "state", "per"}
+_FILTER_KEYS = {"author", "assignee", "label", "reviewer", "state", "per",
+                "merged-since"}
+
+# The one value here that is an instant rather than a name. `merged-since=` is
+# the boundary vocabulary this op had none of, and its absence is why
+# `gh-since-tag` built its own `gh pr list` argv — a third caller of the listing
+# that drifted twice already (#1207, #1230, filed as #1411).
+#
+# **Instants only. A tag name is deliberately not accepted.** Resolving one has
+# three outcomes — RESOLVED, AMBIGUOUS, UNRESOLVED — and a listing filter has
+# two: apply the token or refuse it. There is no way here to say "two tags at
+# one instant on different commits", which is the state `gh-since-tag` exists to
+# report. Worse, this op is `repo_target: true` while a tag is a read of the
+# *local* clone, so a tag name would resolve against one repository and list
+# from another — measured, that combination printed one repo's tag beside
+# another repo's merge count (`since_tag.repo_target_refusal`).
 
 # Check conclusions that mean "this PR is red".
 _FAIL_CONCLUSIONS = {
@@ -140,7 +155,37 @@ _STATES = {"open", "closed", "merged", "all"}
 _VALUE_DOMAINS: dict[str, object] = {
     "state": _STATES,
     "per": _filter_tokens.POSITIVE_INT,
+    "merged-since": _filter_tokens.ISO_INSTANT,
 }
+
+# `--search merged:>X` cannot match an open PR, so these are the states where
+# the boundary can return a row at all.
+_MERGE_BEARING_STATES = {"merged", "closed", "all"}
+
+
+def _state_conflict(filters: dict[str, str]) -> str | None:
+    """`merged-since=` under a state that cannot contain a merge — the refusal.
+
+    `gh pr list` defaults to open, and `--search merged:>INSTANT` over open PRs
+    returns nothing however the repository looks. Rendering that as `No PRs
+    match.` is this repo's defect class exactly: an absence produced by the
+    query, read as an absence in the world — and it is the convincing direction,
+    because an empty board under a boundary the caller *did* type looks like an
+    answer rather than like a mistake.
+    """
+    if "merged-since" not in filters or not filters.get("merged-since"):
+        return None
+    state = filters.get("state") or "open"
+    if state in _MERGE_BEARING_STATES:
+        return None
+    return (
+        f"ERROR: merged-since= asks about merges and state={state} cannot "
+        f"contain one — `gh pr list` would be sent `--search merged:>...` over "
+        f"{state} PRs, which matches no row whatever this repository looks "
+        f"like. An empty board there is a fact about the query, not about the "
+        f"repo, so it is refused rather than printed. Add state=merged (or "
+        f"state=closed / state=all)."
+    )
 
 
 def _parse_args(arg_str: str) -> tuple[dict[str, str], set[str], list[str]]:
@@ -169,8 +214,15 @@ def _bad_values(filters: dict[str, str]) -> list[tuple[str, str, str]]:
     return _filter_tokens.bad_values(filters, _VALUE_DOMAINS)
 
 
-def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
+def _build_list_cmd(filters: dict[str, str], per_page: int, *,
+                    fields: str = _LIST_FIELDS) -> list[str]:
     """Build the `gh pr list ... --json` argv from parsed filters.
+
+    **This is the one place the listing is spelled.** `gh-since-tag` builds no
+    argv of its own since #1411; it calls this with its own `fields` and a
+    `merged-since` boundary. The parameter is keyword-only on purpose — #1230 is
+    what a positional parameter on this function costs, and a field set is the
+    caller's render input, never a narrowing of the population.
 
     **No role filter is ever added here.** The argv narrows only by what the
     caller wrote. state=open is gh's default (no flag emitted). reviewer has no
@@ -188,8 +240,16 @@ def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
     the tree wants is not a default, it is the next inheritance of this bug;
     with the narrowing removed there is nothing left here to inherit.
     """
-    cmd = (["gh", "pr", "list", "--json", _LIST_FIELDS, "--limit", str(per_page)]
+    cmd = (["gh", "pr", "list", "--json", fields, "--limit", str(per_page)]
            + _repo_target.gh_args())
+    # Every `--search` qualifier goes into ONE flag. gh binds `--search` to a
+    # single string, so a second occurrence replaces the first rather than
+    # narrowing further: `reviewer=@me,merged-since=...` emitted two and the
+    # board answered only the later half, with no token unapplied and nothing to
+    # disclose. There was one search key until #1411 added the second, so this
+    # never fired in a shipped release — it is fixed here because adding the
+    # second key is what makes it reachable.
+    search: list[str] = []
     for key, val in filters.items():
         if not val:
             continue
@@ -203,7 +263,18 @@ def _build_list_cmd(filters: dict[str, str], per_page: int) -> list[str]:
         elif key == "label":
             cmd += ["--label", val]
         elif key == "reviewer":
-            cmd += ["--search", f"review-requested:{val}"]
+            search.append(f"review-requested:{val}")
+        elif key == "merged-since":
+            # Normalised to one canonical UTC spelling rather than forwarded as
+            # typed, so `2026-08-09`, `...Z` and `...+02:00` become the same
+            # qualifier. `_bad_values` has already refused anything unparsable;
+            # the `is None` arm is for a caller reaching this function directly.
+            when = _filter_tokens.parse_iso_instant(val)
+            if when is not None:
+                search.append(
+                    "merged:>" + when.strftime("%Y-%m-%dT%H:%M:%S+00:00"))
+    if search:
+        cmd += ["--search", " ".join(search)]
     return cmd
 
 
@@ -499,6 +570,21 @@ def _probe_population(filters: dict[str, str], per_page: int
     return len(rows), None
 
 
+def _population(filters: dict[str, str]) -> str:
+    """The noun phrase for the rows this board is about — `state=`, not "open".
+
+    The scope note said "every author's **open** PRs" whatever `state=` asked
+    for, so `gh-prs:state=merged` labelled a merged board as the open one. That
+    is a wrong label on the one line whose entire job is saying which population
+    is on screen, and `merged-since=` (#1411) is a filter nobody writes without
+    `state=merged`, so it went from rarely-seen to the common case.
+    """
+    state = filters.get("state") or "open"
+    if state == "all":
+        return "PRs in any state"
+    return f"{state} PRs"
+
+
 def _scope_note(filters: dict[str, str], per_page: int, fetched: int
                 ) -> str | None:
     """Which population this board is, and what the filter cost — three states.
@@ -515,10 +601,11 @@ def _scope_note(filters: dict[str, str], per_page: int, fetched: int
     role filter, which is now something the caller typed, and where an empty
     answer still hides a number they will want.
     """
+    population = _population(filters)
     role = sorted(k for k in ("author", "assignee", "reviewer") if k in filters)
     if not role:
-        return ("no author filter (default) — every author's open PRs on this "
-                "repo; gh-prs:author=@me for yours")
+        return (f"no author filter (default) — every author's {population} on "
+                f"this repo; gh-prs:author=@me for yours")
     spelled = ", ".join(f"{k}={filters[k]}" for k in role)
     if fetched:
         return f"{spelled} — one slice of the repo; gh-prs for all of it"
@@ -527,8 +614,8 @@ def _scope_note(filters: dict[str, str], per_page: int, fetched: int
         return (f"{spelled} applied; whether it excluded anything is "
                 f"UNKNOWN — {reason}")
     if count:
-        return (f"{spelled} excluded {count} open PR(s) — gh-prs to see them")
-    return f"{spelled} excluded none — nothing is open either way"
+        return (f"{spelled} excluded {count} {population} — gh-prs to see them")
+    return f"{spelled} excluded none — nothing matches either way"
 
 
 def _footer(prs: list[dict], watched: set[str] | None,
@@ -572,6 +659,10 @@ def main_with_args(arg_str: str) -> int:
     bad = _bad_values(filters)
     if bad:
         print(_filter_tokens.value_error(bad), file=sys.stderr)
+        return 1
+    conflict = _state_conflict(filters)
+    if conflict:
+        print(conflict, file=sys.stderr)
         return 1
     iids_only = "iids" in flags
     failed_only = "failed" in flags
@@ -713,8 +804,23 @@ def main_with_args(arg_str: str) -> int:
     return 0
 
 
+# The colon-free spelling of the one value here that wants a ':'. supertool
+# splits an op argument on ':', so `merged-since=2026-08-09T16:07:45Z` arrives
+# as three argv entries and the value is gone before any filter is parsed. The
+# generic refusal closes with "query it with the backend CLI directly and file
+# the gap", which is right when nothing can express the value and wrong here.
+_COLON_HINT = ("The one value on this op that wants a ':' is the boundary: "
+               "write `merged-since=YYYY-MM-DD` — a bare date is read as that "
+               "day at 00:00:00 UTC and needs no colon.")
+
+
+def _extra_segments_error(argv: list[str]) -> str | None:
+    """`extra_segments_error` for this op, carrying the colon-free spelling."""
+    return _filter_tokens.extra_segments_error(argv, "gh-prs", _COLON_HINT)
+
+
 def main() -> int:
-    extra = _filter_tokens.extra_segments_error(sys.argv, "gh-prs")
+    extra = _extra_segments_error(sys.argv)
     if extra:
         print(extra, file=sys.stderr)
         return 1

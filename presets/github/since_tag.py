@@ -93,9 +93,18 @@ from datetime import datetime, timezone
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import _filter_tokens  # noqa: E402  (the one instant parser, shared with gh-prs)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _untrusted  # noqa: E402  (PR titles and tag names are remote text — #851)
+import prs  # noqa: E402  (the one `gh pr list` argv — see `read_merged_prs`)
+
+# The fields this op renders, which are not the board's. `prs._LIST_FIELDS`
+# carries `statusCheckRollup` — dozens of check runs per PR, over a page of up
+# to 500 merged ones — and none of it is read here. The shared thing is the
+# query; the payload is the caller's (#1411).
+PR_LIST_FIELDS = "number,title,mergedAt,url"
 
 BOUNDARY_RESOLVED = "RESOLVED"
 BOUNDARY_AMBIGUOUS = "AMBIGUOUS"
@@ -140,22 +149,13 @@ def parse_instant(value: object) -> Optional[datetime]:
     on the supported floor (3.9) does not accept `Z`, so it is rewritten before
     parsing rather than compared as text. A value that cannot be parsed returns
     ``None`` and every caller treats that as "could not place", never as "old".
+
+    The body lives in `_filter_tokens` since #1411, because `gh-prs` grew a
+    `merged-since=` boundary and needs the identical reading. Two parsers over
+    the same two spellings is what #1209 was: the whole bug was one comparison
+    that did not know the other side's clock.
     """
-    text = str(value or "").strip()
-    if not text:
-        return None
-    if text.endswith(("Z", "z")):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        # A naive stamp is not a UTC stamp, but the alternative is to drop the
-        # row entirely. Both git and gh always carry a zone, so this branch is
-        # defensive rather than expected.
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    return _filter_tokens.parse_iso_instant(value)
 
 
 def filter_merged(rows, boundary):
@@ -588,11 +588,20 @@ def read_merged_prs(boundary, limit: int):
     that can matter, but `filter_merged` re-checks every row locally. The server
     filter is an optimisation; the parsed comparison is the guarantee, and it is
     the one #1209 was filed about.
+
+    **The argv is `prs._build_list_cmd`'s, not this function's** (#1411). It was
+    built here by hand, which made this a third caller of a listing that has
+    drifted twice — #1207 put a default `author=@me` into that builder and #1230
+    found `radar` had inherited the narrow board after the op dropped it. Nothing
+    was wrong with the copy; the defect was that a second place existed for the
+    same thing to go wrong. What stays here is everything that is not the query:
+    the boundary's three states, the local-history reconcile, and the
+    `changelog.d` cross-check.
     """
     stamp = boundary.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
-    argv = (["gh", "pr", "list", "--limit", str(limit), "--state", "merged",
-             "--search", f"merged:>{stamp}",
-             "--json", "number,title,mergedAt,url"] + _repo_target.gh_args())
+    argv = prs._build_list_cmd(
+        {"state": "merged", "merged-since": stamp}, limit,
+        fields=PR_LIST_FIELDS)
     ok, out, reason = _run(argv, GH_TIMEOUT)
     if not ok:
         return None, reason
