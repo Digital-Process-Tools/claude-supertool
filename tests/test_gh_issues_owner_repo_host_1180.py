@@ -21,22 +21,27 @@ def _no_target(monkeypatch) -> None:
     monkeypatch.setattr(issues._repo_target, "owner_repo", lambda: None)
 
 
+def _pair(rows: list[dict]):
+    """`_owner_repo` returns (pair, reason) since #907; #1180 is about the pair."""
+    return issues._owner_repo(rows)[0]
+
+
 def test_owner_repo_reads_a_real_github_url(monkeypatch) -> None:
     _no_target(monkeypatch)
     rows = [{"url": "https://github.com/owner/name/issues/7"}]
-    assert issues._owner_repo(rows) == ("owner", "name")
+    assert _pair(rows) == ("owner", "name")
 
 
 def test_owner_repo_declines_a_lookalike_host(monkeypatch) -> None:
     _no_target(monkeypatch)
     rows = [{"url": "https://evilgithub.com/attacker/payload/issues/7"}]
-    assert issues._owner_repo(rows) is None
+    assert _pair(rows) is None
 
 
 def test_owner_repo_declines_a_suffixed_lookalike_host(monkeypatch) -> None:
     _no_target(monkeypatch)
     rows = [{"url": "https://notgithub.com/attacker/payload/issues/7"}]
-    assert issues._owner_repo(rows) is None
+    assert _pair(rows) is None
 
 
 def test_owner_repo_skips_a_lookalike_and_takes_the_real_one(monkeypatch) -> None:
@@ -45,16 +50,16 @@ def test_owner_repo_skips_a_lookalike_and_takes_the_real_one(monkeypatch) -> Non
         {"url": "https://evilgithub.com/attacker/payload/issues/7"},
         {"url": "https://github.com/owner/name/issues/8"},
     ]
-    assert issues._owner_repo(rows) == ("owner", "name")
+    assert _pair(rows) == ("owner", "name")
 
 
 def test_owner_repo_accepts_a_dot_boundary_subdomain(monkeypatch) -> None:
     _no_target(monkeypatch)
     rows = [{"url": "https://www.github.com/owner/name/issues/7"}]
-    assert issues._owner_repo(rows) == ("owner", "name")
+    assert _pair(rows) == ("owner", "name")
 
 
 def test_owner_repo_target_still_wins(monkeypatch) -> None:
     monkeypatch.setattr(issues._repo_target, "owner_repo", lambda: ("t", "r"))
     rows = [{"url": "https://evilgithub.com/attacker/payload/issues/7"}]
-    assert issues._owner_repo(rows) == ("t", "r")
+    assert _pair(rows) == ("t", "r")

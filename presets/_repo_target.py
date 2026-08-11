@@ -14,8 +14,11 @@ the empty/None form and the caller behaves exactly as it did before.
 from __future__ import annotations
 
 import os
+import urllib.parse
 
 ENV_VAR = "SUPERTOOL_REPO"
+
+GITHUB_HOST = "github.com"
 
 
 def target() -> str | None:
@@ -108,3 +111,72 @@ def not_found_hint() -> str:
     if value:
         return f"Check the number, or the repo target (gh repo view {value})."
     return "Check the number or verify you're in the right repo (gh repo view)."
+
+
+# ---------------------------------------------------------------------------
+# the repo a *url* is about — one implementation, two callers (#907)
+# ---------------------------------------------------------------------------
+
+
+def is_github_host(host: str) -> bool:
+    """True for ``github.com`` itself and for a ``.``-boundary subdomain of it.
+
+    A suffix test is the defect this exists to prevent: ``endswith("github.com")``
+    also accepts ``evilgithub.com`` and ``notgithub.com`` (#1180, CodeQL
+    ``py/incomplete-url-substring-sanitization``). The boundary is the dot, and
+    the dot is written out rather than implied. A trailing root dot is stripped,
+    so the FQDN spelling ``github.com.`` is the same host.
+
+    **GitHub Enterprise Server is deliberately not accepted** (#907, which asked
+    for a decision rather than an assumption). A GHES install lives on an
+    operator-chosen host — ``github.acme.example`` — which is not a subdomain of
+    ``github.com``, so no loosening of this predicate reaches it; only
+    configuration could. Nothing else in this repo supports GHES: ``gh``'s own
+    ``GH_HOST`` is read nowhere, and the one operator-widenable host list
+    (``SUPERTOOL_IMAGE_HOSTS`` in ``github/issue.py``) widens where *bytes* may
+    be fetched from, not which repository an API call is aimed at. The
+    subdomains this arm does admit are GitHub's own — ``www.``, ``api.``,
+    ``gist.`` — and calling them "Enterprise" was wrong in two comments and one
+    test docstring until #907. If GHES is ever wanted, it belongs in config next
+    to ``SUPERTOOL_IMAGE_HOSTS``, not in a widened literal here.
+    """
+    host = (host or "").lower().rstrip(".")
+    return host == GITHUB_HOST or host.endswith("." + GITHUB_HOST)
+
+
+def url_host(url: str) -> str:
+    """The lowercased host of *url*, ``""`` when it has none or cannot be parsed.
+
+    ``urlsplit`` rather than ``url.split("/")[2]``, because the authority is not
+    the host: it may carry ``user@`` and ``:port``, and a ``#`` or ``?`` can end
+    it early. ``https://github.com@evil.example/o/r`` has host ``evil.example``
+    — index arithmetic read the whole ``github.com@evil.example`` as the host,
+    which happens to be refused, but refuses a genuine ``https://user@github.com/o/r``
+    with it. A malformed authority (``https://[::1/x``) makes ``urlsplit`` raise
+    ``ValueError``; that is an unparseable url, not a crash for the caller.
+    """
+    try:
+        return (urllib.parse.urlsplit(url or "").hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def github_owner_repo(url: str) -> tuple[str, str] | None:
+    """``(owner, name)`` from a GitHub url, or None when *url* yields neither.
+
+    The first two path segments, taken from the parsed path so a ``#`` or ``?``
+    ends it: ``https://github.com/o#x/r/issues/1`` names the repo ``o``, not the
+    repo ``o#x`` that splitting the raw string on ``/`` reported — a repository
+    nobody named, on a real host, with nothing downstream having any reason to
+    doubt it.
+    """
+    if not is_github_host(url_host(url)):
+        return None
+    try:
+        path = urllib.parse.urlsplit(url or "").path
+    except ValueError:
+        return None
+    segments = [part for part in path.split("/") if part]
+    if len(segments) < 2:
+        return None
+    return segments[0], segments[1]

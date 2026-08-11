@@ -322,12 +322,12 @@ def test_graphql_query_asks_for_every_number() -> None:
 
 def test_owner_repo_from_issue_urls_costs_no_extra_call(monkeypatch) -> None:
     monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
-    assert issues._owner_repo([_issue(1)]) == ("o", "n")
+    assert issues._owner_repo([_issue(1)]) == (("o", "n"), None)
 
 
 def test_owner_repo_prefers_the_repo_target(monkeypatch) -> None:
     monkeypatch.setenv("SUPERTOOL_REPO", "octo/other")
-    assert issues._owner_repo([_issue(1)]) == ("octo", "other")
+    assert issues._owner_repo([_issue(1)]) == (("octo", "other"), None)
 
 
 def test_apply_enrichment_leaves_unfetched_rows_unknown() -> None:

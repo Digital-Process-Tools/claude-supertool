@@ -140,7 +140,13 @@ def test_a_lookalike_host_does_not_resolve_owner_repo() -> None:
 
 
 def test_real_github_hosts_still_resolve() -> None:
-    """The fix must not cost Enterprise, whose host is a `github.com` subdomain."""
+    """The fix must not cost GitHub's own subdomains — `www.`, `api.`, `gist.`.
+
+    Not Enterprise, which this docstring and two comments claimed until #907: a
+    GHES install is on an operator-chosen host and is not a subdomain of
+    github.com at all, so this arm never reached it. See
+    `_repo_target.is_github_host` for the decision that GHES is out of scope.
+    """
     assert issue._owner_repo("https://github.com/o/r/issues/1") == ("o", "r")
     assert issue._owner_repo("https://GitHub.com/o/r/issues/1") == ("o", "r")
     assert issue._owner_repo("https://corp.github.com/o/r/issues/1") == ("o", "r")
