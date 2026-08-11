@@ -2,6 +2,12 @@
 
 ~40 ops across five categories. Use this page for a quick "all ops at a glance" lookup, then follow the per-category links for patterns and recipes.
 
+## Path arguments
+
+A path argument may be relative to the cwd, absolute, or start with `~` / `~user`. All three resolve the same way and are checked against the same [cwd containment boundary](../../README.md#security--cwd-containment) — `~` is expanded *before* the check, so it grants nothing an absolute path would not (#1300).
+
+`~` that names no such user is left exactly as typed, and the refusal says so instead of blaming the working directory. Every `not found` receipt prints the string the op actually stat-ed under `tried:`, so an absolute path in that line is one the tool really opened.
+
 ## Categories
 
 | Category | Ops | Page |
