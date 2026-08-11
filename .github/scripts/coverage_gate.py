@@ -247,6 +247,14 @@ NOT_MEASURED_PY: "dict[str, str]" = {
         "the suite measuring itself — the pass/fail count is the same fact, "
         "and a floor here rewards writing tests for tests"
     ),
+    "hooks/": (
+        "the plugin's harness adapters (#1347). Every line runs in a process "
+        "the harness spawns with hook JSON on stdin, never inside pytest, so "
+        "an in-process number here would be zero however well the hook is "
+        "tested. Both are exercised as subprocesses instead, by "
+        "tests/test_raw_command_guard_1347.py, and the judgment they carry "
+        "lives in guard_command() in _supertool.py, which is enforced"
+    ),
 }
 
 #: Not Python at all. Listed so the gap is recorded rather than merely

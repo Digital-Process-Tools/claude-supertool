@@ -92,6 +92,7 @@ Shorthand string ops (`"lint": "ruff check {file}"`) work with a 60s default tim
 | `status` | no | `"experimental"` or `"stable"`. Informational only. |
 | `safety` | yes, in shipped presets | `"read-only"`, `"writes"` or `"acts"`. Rendered as the class marker in `ops:roster`. |
 | `paths` | yes, if any argument is a filesystem path | `{"args": [1], "root": "cwd"}` — which argument positions are paths, and the boundary they must stay inside. See below. |
+| `replaces` | no | Raw shell invocations this op supersedes. The shipped `PreToolUse` hook refuses them. See below. |
 
 **`safety` decides whether someone may learn your op by calling it.** The `ops:roster` listing is names plus one marker, because that is what fits the ~7KB SessionStart cap — and a bare name is only actionable for an op you can probe. Most ops teach their own signature on contact: `between:FILE:747:820` answers *"'820' was read as the path"* and names the op that does take a range. An op that reaches outside the tree cannot be learned that way — `oss_train` force-pushes a merge train, `gh-pr-merge` merges, `watch` spawns a poller.
 
@@ -106,6 +107,38 @@ Shorthand string ops (`"lint": "ruff check {file}"`) work with a 60s default tim
 An op with no `safety` key, or an unrecognised value, renders `!`. The fallback is the loudest class on purpose: an `acts` op mis-rendered as probe-safe invites somebody to probe it, and the reverse costs one `help:OP` call. Every op in a shipped `presets/*.json` must declare one — `tests/test_ops_roster_1231.py` fails otherwise, so a new op cannot ship classed by accident. Built-in ops take their class from `_OP_SAFETY_BUILTIN` in `_supertool.py` instead: it is a fact about the binary, and a project's `.supertool.json` may be absent, stale, or somebody else's.
 
 `syntax` reads like documentation because it's rendered in `ops` output — but for any op whose syntax uses `:::` (e.g. `git-commit:::MESSAGE[:::PATHS...]`), it is also parsed to derive that op's `@file`/`@payload` field registry: `MESSAGE[:::PATHS...]` becomes the fields `message`, `paths`. Edit it for readability — add a clarifying parenthetical, reword a field name into prose — and the parser can silently stop deriving clean field names, which silently deletes the op's whole payload route. No error, no warning: the op just stops accepting `op:@-`/`op:@payload`, while its docs (and the `ops` listing) still describe the route as if it existed. `tests/test_at_file_route.py::TestPayloadRoutePin` pins which real ops currently have a payload route specifically to catch this at test time — if you're touching a `:::`-bearing `syntax` string, expect that test to have an opinion. See [#770](https://github.com/Digital-Process-Tools/claude-supertool/issues/770).
+
+### `replaces` — the raw command this op supersedes
+
+If your op exists because a raw command was the wrong way to get the answer, say so **in the op**, and the shipped guard enforces it for every plugin user:
+
+```json
+"gh-pr": {
+  "syntax": "gh-pr:NUMBER_OR_BRANCH[:status|:full|:diff[:PATH]|:threads]",
+  "replaces": [
+    { "argv": "gh pr view", "use": "gh-pr:NUMBER" },
+    { "argv": "gh pr view", "flag": "--json", "value": "state", "use": "gh-pr:NUMBER:status" },
+    { "argv": "gh pr view", "flag": "--json", "value": "files",  "use": "gh-pr:NUMBER:diff" }
+  ]
+}
+```
+
+| Key | Required | Means |
+|-----|----------|-------|
+| `argv` | yes | Command word and subcommands, space-separated. Matched **token-for-token** against the start of a simple command, never as a substring. |
+| `flag` | no | The entry matches only if the command carries this flag. |
+| `value` | no | ...and only if that flag's value is, or contains as a comma-list member, this. Requires `flag`. |
+| `use` | no | The op invocation the refusal names. Defaults to the op's `syntax`. |
+
+**The most specific matching entry wins**, so flags select *which* op is named rather than whether to block: `gh pr view 12` names `gh-pr:NUMBER`, `gh pr view 12 --json state` names `gh-pr:NUMBER:status`. Ties are listed together rather than resolved arbitrarily.
+
+Three rules for writing one:
+
+- **Declare only what the op genuinely replaces.** Absence *is* the escape hatch. There is no op for tagging, releasing, deleting a ref or re-running a workflow, so nothing maps them and they are never blocked. An entry for something the op only half-answers turns a working command into a dead end.
+- **Do not reach for `flag` to make a match narrower out of caution.** An entry with no `flag` matches the command word, which is usually what you mean; a flag makes the block conditional on a spelling the caller happens to use.
+- **`replaces` is metadata, not op configuration.** It is a reserved key, so unlike `per_page` or `error_patterns` it is *not* exported to your op's subprocess as `SUPERTOOL_REPLACES`.
+
+The matcher tokenises the command with `shlex` and matches argv — see `_guard_segments` in `_supertool.py` for exactly which shell constructs it models and which it does not. That is the design decision [#1347](https://github.com/Digital-Process-Tools/claude-supertool/issues/1347) stands on: the hand-written regexes it replaced failed by reading a command as a string, one firing on a *directory name* and another refusing commands that carried the very flag it required.
 
 ### An op that takes a path declares where paths may point
 
