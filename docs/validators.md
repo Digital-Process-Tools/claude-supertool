@@ -4,6 +4,8 @@
 
 Validators are squiggle-on-save for the LLM. After every mutating op — `edit`, `replace`, `replace_lines`, `paste`, `append`, `vim` — supertool runs the matching validators against the result file. If one fails and `rollback_on_fail: true` is set, the file reverts atomically to its pre-edit state and the model gets an immediate error receipt with the parse error, line number, and column. No broken files sitting around. No "edit succeeded, discovered it three turns later."
 
+`rollback_on_fail` is per-validator and defaults to `false`, so the sentence above is a promise about the validators that set it. A validator that reports a finding without it leaves the file exactly as the op wrote it — and when the op *created* that file, the receipt says so in words: see "And a create that STANDS is its own state too".
+
 The model retries with real information instead of hallucinating a fix.
 
 ## The built-in syntax backstop
@@ -988,6 +990,39 @@ Two decisions worth stating, because the obvious fix is wrong in both directions
 - **`rolled back` is not folded into `skipped`.** A skipped op left the disk alone; a rolled-back one wrote and had the write undone. The remedies differ — a new anchor versus a fix to the code — and collapsing them would degrade `skipped` into "something was odd", which is how a count stops being read.
 
 The counter is bumped inside `_retract_write`, the single chokepoint both rollback paths already pass through, so a third rollback path added later cannot be silently invisible.
+
+### And a create that STANDS is its own state too
+
+`rollback_on_fail` is per-validator, and four of this repo's own eight set it `false` on purpose — `ruff` and `lsp-diag` are advisory, `git-status` is not about the file's content, and `changelog-fragment` refuses shapes an author iterates on. So a validator can report a finding on a file the op **created** and nothing undoes the write. That is the correct policy; what was wrong until [#1320](https://github.com/Digital-Process-Tools/claude-supertool/issues/1320) is that the receipt for it was byte-identical to a clean create:
+
+```
+created changelog.d/9999.fixed.md (1 lines, 0 → 25 bytes)
+
+[validators]
+changelog-fragment: ? → 3       ✗ (baseline not measured)
+    L1 shape  9999.fixed.md:1: a fragment whose top level is not a single `- ` bullet list …
+[result] 1 op run, 1 write
+```
+
+`[result] 1 op run, 1 write` is what a fragment that passed prints. A reader piping to the footer — the documented read — got the write and not the refusal; a reader who saw the red row had nothing telling them the artefact survived it. It now says both:
+
+```
+[left on disk] changelog-fragment reported a finding on changelog.d/9999.fixed.md, and no validator that found something sets rollback_on_fail, so nothing undid the write — confirms "created changelog.d/9999.fixed.md (1 lines, 0 → 25 bytes)"; the created file is STILL THERE — delete it or fix it before the next read
+[result] 1 op run, 1 write, 1 left on disk — 1 created file a validator refused was NOT removed and is still on disk
+```
+
+The mirror of `[rolled back]`, built the same way and deliberately so: it quotes the receipt's own `created` line back, so a filter that caught the claim catches its qualification adjacent to it. It **confirms** rather than retracts — the path is real, and the next action is to delete or fix it rather than to re-run the write.
+
+Four boundaries, each of which would make the disclosure worse than the bug it replaces:
+
+- **A create no validator faulted says nothing.** A marker on the green path is a number readers learn to stop seeing.
+- **A `skipped` is not a finding.** A checker that declined refused nothing, and announcing a refused artefact over an absence is this document's own defect pointed the other way.
+- **An overwrite is not disclosed.** Its leftover bytes are in a file the caller already owned and the `edited` line above states that truthfully. A create announced a path into existence that a checker then refused, and nothing else on the receipt says it is still there.
+- **A rollback that already fired suppresses it.** `[rolled back]`, `[ROLLBACK NOT POSSIBLE]` and `[ROLLBACK FAILED]` each already say where the file stands; two markers about one write would contradict each other.
+
+**The exit code does NOT move, and that is the one place the mirror stops.** A rollback exits 1 because the write did not land — the caller's `batch:@ops && git commit` proceeds on a premise that is false. Here the write landed, exactly as asked, and the only thing that was missing was the reader knowing it. Escalating would make `rollback_on_fail: false` mean "advisory, unless you created the file": the identical `changelog-fragment` finding exits 0 on an edit and would exit 1 on a create, so every repo whose new file trips an advisory linter would break its `&&` chain over a checker its own config declared non-blocking. Measured on this branch — an edit that introduces two `changelog-fragment` findings exits 0, and the create that leaves the file exits 0. If you want a create to gate, that is what `rollback_on_fail: true` is for.
+
+**This is not "create rollback is unimplemented".** [#1088](https://github.com/Digital-Process-Tools/claude-supertool/issues/1088) built that arm — `_rollback_action(False, None)` is `unlink`, and a new `.json` that does not parse really is removed, because `jsonlint` sets `rollback_on_fail: true`. The `? → N ✗ (baseline not measured)` row on a create is a statement about the *delta*, not about whether the rollback comparison can fire. The only discriminator is the flag.
 
 ## Adapter contract
 

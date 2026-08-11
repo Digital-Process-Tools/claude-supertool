@@ -7573,7 +7573,8 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
                  reapplied: int = 0,
                  not_checked: Optional[Sequence[str]] = None,
                  rolled_back: int = 0,
-                 validated: Optional[Sequence[Tuple[str, bool, bool]]] = None) -> str:
+                 validated: Optional[Sequence[Tuple[str, bool, bool]]] = None,
+                 left_on_disk: int = 0) -> str:
     """`[result] N ops run, M writes[, K skipped][, K rolled back][, K re-applied]` (#621),
     or, for a read-only `validate:` run, `[result] N files, M with findings,
     K not checked` (#990).
@@ -7678,6 +7679,19 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
     undone, and the remedies differ (fix the anchor vs fix the code). It is not
     folded into `nothing changed on disk` either, because a no-match prints
     exactly that too — the two most confusable outcomes on this path.
+
+    `left_on_disk` names a seventh state and it is `rolled_back`'s opposite
+    number (#1320): the op CREATED a file, a validator reported a finding on it,
+    and no validator that found anything was configured to roll back — so the
+    refused artefact is in the tree. Every other outcome of a create was already
+    distinguishable here and this one was not: it printed `1 op run, 1 write`,
+    the same line a clean create prints, while the block above showed a red row.
+    A reader piping to the footer — the documented read — got the write and not
+    the refusal, and a reader who saw the refusal had no way to learn the file
+    survived it. Counted rather than named, unlike `NOT RUN`: the actionable
+    identifier is the path, the path is already on the `[left on disk]` line
+    above with the validator that refused it, and a footer that grows by a
+    filesystem path per op stops being one line.
     """
     if ops <= 0:
         names = list(dict.fromkeys(not_checked or ()))
@@ -7705,6 +7719,8 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
         line += f", {skipped} skipped"
     if rolled_back > 0:
         line += f", {rolled_back} rolled back"
+    if left_on_disk > 0:
+        line += f", {left_on_disk} left on disk"
     if reapplied > 0:
         line += f", {reapplied} re-applied"
     files = list(validated or ())
@@ -7722,9 +7738,15 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
         line += (f", {len(names)} validator{'' if len(names) == 1 else 's'} "
                  f"NOT RUN ({', '.join(names)})")
     tails = []
-    if writes == 0:
+    if writes == 0 and left_on_disk == 0:
         # A rolled-back write is not a second application of anything, so this
         # clause wins: the bytes complained about are no longer on disk.
+        #
+        # Not when a create was left on disk (#1320). In a batch that both
+        # reverted one write and kept a refused create, `writes` can net to zero
+        # while a refused file is sitting in the tree, and "nothing changed on
+        # disk" would then be flatly false about the one path the reader most
+        # needs to act on.
         tails.append("nothing changed on disk")
     elif reapplied > 0:
         tails.append("an edit already present in the file was applied again")
@@ -7733,6 +7755,11 @@ def _result_line(ops: int, writes: int, skipped: int = 0,
             f"{rolled_back} edit{'' if rolled_back == 1 else 's'} "
             f"{'was' if rolled_back == 1 else 'were'} reverted after "
             f"validation and did NOT land")
+    if left_on_disk > 0:
+        tails.append(
+            f"{left_on_disk} created file{'' if left_on_disk == 1 else 's'} a "
+            f"validator refused {'was' if left_on_disk == 1 else 'were'} NOT "
+            f"removed and {'is' if left_on_disk == 1 else 'are'} still on disk")
     if names:
         tails.append("those validators returned no verdict, so the file was "
                      "NOT checked")
@@ -7914,6 +7941,25 @@ _REAPPLY_COUNT: List[int] = [0]
 # which is the shape of defect this counter exists to close.
 _ROLLBACK_COUNT: List[int] = [0]
 
+# Bumped where a mutating op CREATED a file, a validator reported a finding on
+# it, and nothing undid the write (#1320). The seventh state, and the mirror
+# image of `_ROLLBACK_COUNT`: same red row above, opposite outcome on disk.
+#
+# It is not a bug that no rollback fired. `rollback_on_fail` is per-validator
+# and four of this repo's own eight set it false on purpose — `ruff`,
+# `lsp-diag`, `git-status` and `changelog-fragment` are advisory, and reverting
+# an author's bytes over a lint nit is the trade this repo ranks below
+# misreporting. What was wrong is that the receipt for that outcome was
+# byte-identical to a clean create: `[result] 1 op run, 1 write`, with the
+# refused artefact sitting in the tree for `git status`, test collection and
+# every later read to find (#1320).
+#
+# Only a create. An overwrite's leftover bytes are in a file the caller already
+# owned and the `edited` line above states that truthfully; a create announced a
+# path into existence that a checker then refused, and nothing else on the
+# receipt says it is still there.
+_LEFT_ON_DISK_COUNT: List[int] = [0]
+
 # Validators that ran and returned no verdict about the file (#665). The state
 # `skipped` covers a checker that declined before running; this covers one that
 # was asked to run, could not, and had only an `adapter` error to say so with.
@@ -7997,6 +8043,70 @@ def _rollback_action(pre_existed: bool, pre_content: Optional[bytes]) -> str:
     return "refuse"
 
 
+def _receipt_head(body: object) -> str:
+    """The op's own success line — the first non-blank line of its receipt.
+
+    Shared by the two markers that talk about that line rather than about the
+    file: `[rolled back]` retracts it, `[left on disk]` confirms it. One
+    implementation, because a filtered read has to find the same string in both
+    cases and two copies of "first non-blank line" would drift.
+    """
+    if isinstance(body, str):
+        for ln in body.splitlines():
+            if ln.strip():
+                return _flat_cell(ln.strip())
+    return ""
+
+
+def _note_left_on_disk() -> None:
+    """A refused create stood. Single chokepoint for the counter (#1320).
+
+    Separate from the renderer for the reason `_retract_write` is: a second
+    disclosure path added later must not be able to print the marker without
+    moving the number the footer reads.
+    """
+    _LEFT_ON_DISK_COUNT[0] += 1
+
+
+def _left_on_disk_line(names: Sequence[str], path: str, body: object,
+                       target: str = "") -> str:
+    """`[left on disk]` — the create nothing undid, said in words (#1320).
+
+    The mirror of `_retraction_line`, and deliberately built the same way. It
+    quotes the receipt's own `created …` line back so that a filtered read which
+    caught the claim catches its qualification adjacent to it — an agent greps
+    for `created|ERROR`, and "created, and a checker refused it, and it is still
+    there" arrived as three lines that shared no token.
+
+    It CONFIRMS rather than retracts, which is the whole distinction from the
+    rollback marker: the file exists, the path is real, and the reader's next
+    action is to delete or fix it rather than to re-run the write.
+
+    Why this is not solved by turning `rollback_on_fail` on everywhere: four of
+    this repo's eight validators set it false on purpose. `ruff` and `lsp-diag`
+    are advisory about style and semantics, `git-status` is not about the file's
+    content at all, and `changelog-fragment` refuses shapes an author routinely
+    iterates on. Unlinking there would trade a misreport for the destruction of
+    a write the caller asked for — the one outcome ranked below misreporting.
+
+    Symlink-aware for the same reason `_retraction_line` is (#1136): the write
+    landed on the target, so that is the path still holding the refused bytes.
+    """
+    head = _receipt_head(body)
+    quoted = f' — confirms "{head}"' if head else ""
+    subject = _flat_cell(path)
+    via = ""
+    if target and os.path.abspath(target) != os.path.abspath(path):
+        subject = _flat_cell(target)
+        via = (f" ({_flat_cell(path)} is a symlink, so the write landed on its "
+               f"target and that is the file still holding these bytes)")
+    who = ", ".join(_flat_cell(n) for n in names)
+    return (f"[left on disk] {who} reported a finding on {subject}, and no "
+            f"validator that found something sets rollback_on_fail, so nothing "
+            f"undid the write{via}{quoted}; the created file is STILL THERE — "
+            f"delete it or fix it before the next read")
+
+
 def _retraction_line(name: str, verb: str, path: str, body: object,
                      created: bool = False, target: str = "") -> str:
     """Retract a receipt's own success line where a FILTERED read will see it.
@@ -8023,12 +8133,7 @@ def _retraction_line(name: str, verb: str, path: str, body: object,
     `'edited pkg\\\\x.py (line 2)'` — text that no longer matches the line it
     is retracting, which defeats the whole point of quoting it.
     """
-    head = ""
-    if isinstance(body, str):
-        for ln in body.splitlines():
-            if ln.strip():
-                head = _flat_cell(ln.strip())
-                break
+    head = _receipt_head(body)
     quoted = f' — retracts "{head}"' if head else ""
     # `removed` / `NOT created` on the create path (#1088). "restored" names an
     # earlier state, and a file this call brought into being has none — a reader
@@ -17177,6 +17282,11 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                     f"would delete content this call never wrote. The write "
                     f"STANDS and the file is NOT what it was (#1088).\n"
                 )
+                # Not reachable together with #1320's disclosure below —
+                # `refuse` implies `_pre_existed` — but set anyway rather than
+                # left to a coupling between two functions that a later change
+                # to `_rollback_action` would break silently.
+                already_undone = True
                 break
             try:
                 if action == "unlink":
@@ -17190,7 +17300,29 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                     created=action == "unlink", target=_target) + "\n")
             except OSError as e:
                 diff_out += f"\n[ROLLBACK FAILED] {name}: {e}\n"
+            already_undone = True
             break
+
+    # A create nothing undid is still in the tree, and until #1320 the only
+    # place that said so was the filesystem. Deliberately NOT gated on
+    # `needs_rollback`: the case being disclosed is precisely the one where no
+    # applicable validator asks for a rollback, so reading the flag would skip
+    # every instance of it.
+    #
+    # `already_undone` covers all three arms above — undone, refused, or an
+    # unlink that raised — because each already tells the reader where the file
+    # stands, and two markers about one write would contradict each other.
+    if applicable and not _pre_existed and not already_undone:
+        refused_by = [n for n in applicable
+                      if n in after_results
+                      and _validator_regressed(before.get(n), after_results[n])]
+        # `os.path.exists` asked separately from the finding: the finding is
+        # what makes this a refusal, the file being there is what makes it worth
+        # saying, and a validator that removed the file itself is neither.
+        if refused_by and os.path.exists(_target):
+            _note_left_on_disk()
+            diff_out += ("\n" + _left_on_disk_line(
+                refused_by, path, body, target=_target) + "\n")
 
     suffix = ""
     if fmt_rows:  # silent when all formatters are no-op
@@ -20173,6 +20305,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     _skips_before = _SKIP_COUNT[0]
     _reapplies_before = _REAPPLY_COUNT[0]
     _rollbacks_before = _ROLLBACK_COUNT[0]
+    _left_on_disk_before = _LEFT_ON_DISK_COUNT[0]
 
     # #146: dispatch-level path containment. Each op has a known position(s)
     # of its path arg(s) in `parts`. _safe_path enforces cwd containment
@@ -20901,7 +21034,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                    _REAPPLY_COUNT[0] - _reapplies_before,
                                    _not_checked_slice,
                                    _ROLLBACK_COUNT[0] - _rollbacks_before,
-                                   _validated_slice)
+                                   _validated_slice,
+                                   _LEFT_ON_DISK_COUNT[0] - _left_on_disk_before)
             # A batch says its count twice, and the leading copy is the load-
             # bearing one. The footer is separated from the per-op results by a
             # validators block long enough that `tail` lands on `git-status :
