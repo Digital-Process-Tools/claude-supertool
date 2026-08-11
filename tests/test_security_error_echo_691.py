@@ -29,6 +29,25 @@ from pathlib import Path
 
 import pytest
 
+from _netblock import block_outbound
+
+
+@pytest.fixture(autouse=True)
+def _no_outbound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests stub their transport. Prove it (#1312).
+
+    Two of them did not, and could not: they patched
+    `MODULE.urllib.request.urlopen`, but every preset here routes through
+    `_http.urlopen`, which calls `_http._OPEN` -- bound to the opener at import
+    and never re-read from `urllib.request`. The stub therefore replaced a name
+    nothing calls, the request went to the live host, and both tests passed on
+    whatever the internet said. `test_create_session_does_not_print_the_password`
+    is the sharp one: its assertion is that a *credential echoed by the remote*
+    is redacted, and the echo it injects had never once been delivered.
+    """
+    block_outbound(monkeypatch)
+
+
 FAKE_APP_PASSWORD = "fake-abcd-efgh-ijkl-mnop"
 FAKE_API_KEY = "FAKE_devto_api_key_0123456789"
 FAKE_TOKEN = "FAKE_hashnode_token_0123456789"
@@ -86,12 +105,21 @@ class TestBlueskyErrorEcho:
             raise _http_error(
                 400, f'{{"message":"got password {FAKE_APP_PASSWORD}"}}')
 
-        monkeypatch.setattr(atproto.urllib.request, "urlopen", _boom)
+        # `_http._OPEN` is the seam, not `urllib.request.urlopen` (#1312).
+        # `_atproto` calls `_http.urlopen`, which calls `_OPEN` -- bound to the
+        # opener at import and never looked up on `urllib.request` again. The
+        # old target was never consulted, so this test made a live request to
+        # bsky.social and asserted a redaction against a body it did not write.
+        monkeypatch.setattr(sys.modules["_http"], "_OPEN", _boom)
         with pytest.raises(SystemExit):
             atproto.create_session("me.bsky.social", FAKE_APP_PASSWORD)
         err = capsys.readouterr().err
         assert FAKE_APP_PASSWORD not in err
         assert "createSession" in err
+        # Proof the injected body was delivered. Without it the two assertions
+        # above are satisfied by *any* failure, including the connection error
+        # this test used to produce (#1312).
+        assert "[REDACTED]" in err
 
 
 class TestDevtoErrorEcho:
@@ -110,15 +138,35 @@ class TestDevtoErrorEcho:
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         class _Resp:
+            """Enough of a response for `_http.read_capped` to drain it.
+
+            `read` takes a size and returns b"" when exhausted -- `read_capped`
+            calls it in a loop and would otherwise never terminate. No
+            `headers`, so no declared Content-Length, so no short-read check.
+            """
+
+            def __init__(self) -> None:
+                self._body = f"<html>{FAKE_API_KEY}</html>".encode("utf-8")
+
             def __enter__(self): return self
             def __exit__(self, *a): return False
-            def read(self): return f"<html>{FAKE_API_KEY}</html>".encode("utf-8")
+            def close(self) -> None: pass
 
+            def read(self, n: int = -1) -> bytes:
+                out, self._body = self._body, b""
+                return out
+
+        # `_http._OPEN`, not `urllib.request.urlopen` -- see the bluesky case
+        # above and the module fixture (#1312).
         monkeypatch.setattr(
-            devto_rest.urllib.request, "urlopen", lambda req, timeout=0: _Resp())
+            sys.modules["_http"], "_OPEN", lambda req, timeout=0: _Resp())
         with pytest.raises(SystemExit):
             devto_rest.request("GET", "/articles/1", FAKE_API_KEY)
-        assert FAKE_API_KEY not in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert FAKE_API_KEY not in err
+        # Proof the injected body was delivered, not merely that some unrelated
+        # failure printed no key (#1312).
+        assert "<html>" in err and "[REDACTED]" in err
 
 
 class TestHashnodeTruncationOrder:

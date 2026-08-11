@@ -408,6 +408,28 @@ Three rules about the refusal:
 2. **It is deliberately not an `OSError`.** A blanket `except OSError` or `except urllib.error.URLError` must not absorb a credential-exfiltration attempt into a generic "network error", and a `..._safe()` helper whose contract is "returns `None` on any error" must not turn it into a silent `None`. Where such a helper exists (`hashnode._graphql.gql_safe`, `bluesky._atproto.refresh_session`), the refusal is a documented carve-out that exits instead.
 3. **Ordering matters.** Put `except RedirectRefused` *before* the broad handlers.
 
+**Testing one of these: the seam is `_http._OPEN`, and nothing else works.** `_OPEN` is bound to the opener once at import and never looked up on `urllib.request` again, so `monkeypatch.setattr(mod.urllib.request, "urlopen", ...)` replaces a name no preset calls. It raises nothing — the stub is simply ignored and the request goes to the live host, which is why two tests in `test_security_error_echo_691.py` spent months contacting `bsky.social` and `dev.to` on every CI leg and passing on whatever came back ([#1312](https://github.com/Digital-Process-Tools/claude-supertool/issues/1312)). The bluesky one asserts that a password *echoed by the remote* is redacted, and the echo it injects had never been delivered.
+
+```python
+monkeypatch.setattr(sys.modules["_http"], "_OPEN", lambda req, timeout=0: _Resp())
+```
+
+The same trap one layer up: an op with both a `gql` and a `gql_safe` needs both stubbed, or whichever one the code path under test actually calls stays live.
+
+**Arm `block_outbound` so a missed stub fails at the socket.**
+
+```python
+from _netblock import block_outbound
+
+@pytest.fixture(autouse=True)
+def _no_outbound(monkeypatch: pytest.MonkeyPatch) -> None:
+    block_outbound(monkeypatch)
+```
+
+`tests/_netblock.py` refuses any non-loopback `connect` or `getaddrinfo` and names the host and what to stub. Loopback and `AF_UNIX` stay open, so `test_http_bounds.py` and the `claude-channel` suites are unaffected — those bind their own servers and the process under test is the one that answered.
+
+Why this is a rule and not a nicety: a live call makes the leg a statement about somebody else's DNS and redirect policy. #1312 was filed off a red on PR #1302, whose diff was one test file and one markdown table; Hashnode had started answering 301, `_http.urlopen` correctly refused the off-origin hop, and the test rendered that correct refusal as a product defect.
+
 ### Fetching a URL somebody else chose
 
 Everything above governs a request to a URL *this repo* chose — the four API clients hold their base URLs as constants, and the only untrusted input is where a redirect points. `gh-issue` broke that assumption: it pulled `http(s)` URLs out of issue markdown and fetched them, so any comment containing
