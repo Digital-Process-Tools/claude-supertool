@@ -112,7 +112,19 @@ Summary shows cache hit %, error counts per tool, and total turns — enough to 
 
 ## Configuration
 
-No configuration needed. Windows-friendly cwd encoding (handles `\` and drive colons). Falls back to closest-prefix sibling directory when the encoded path doesn't exist.
+No configuration needed. Windows-friendly cwd encoding (handles `\` and drive colons).
+
+**Which store answers, in three states (#1317).** `claude-log-list` and `claude-log-cost` resolve the cwd to a transcript store **upward only**:
+
+| State | What you see |
+| --- | --- |
+| `direct` | the cwd has its own store — a plain `Project:` header |
+| `ancestor` | the cwd is inside a project that has one — the header carries `Source: ancestor store — no sessions recorded for X; showing Y, which is not the same directory` |
+| `missing` | nothing at or above the cwd has a store — `no sessions recorded for this directory`, naming the path it looked for and how many stores exist, exit 1 |
+
+A **sibling** store is never used. Until #1317 the fallback picked the store whose encoded name shared the longest common prefix, which from `~/Documents/st-wt/1317` returned `st-wt/1024` and rendered another worktree's sessions as the caller's. Working from a fresh worktree, `missing` is the expected answer, not a fault.
+
+`claude-log-tail` and `claude-log-summary` take a UUID and are unaffected: a session is found by name across every store.
 
 ## Authoring notes
 

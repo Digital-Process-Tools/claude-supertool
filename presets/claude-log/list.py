@@ -11,7 +11,16 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _common import Redactor, event_content_parts, project_dir, read_jsonl, trunc, wants_raw  # noqa: E402
+from _common import (  # noqa: E402
+    Redactor,
+    decline_lines,
+    event_content_parts,
+    read_jsonl,
+    resolve_project_dir,
+    source_note,
+    trunc,
+    wants_raw,
+)
 
 
 def first_user_excerpt(path: Path, red: Redactor, max_chars: int = 100) -> str:
@@ -64,10 +73,14 @@ def main() -> int:
             break
     red = Redactor(enabled=not wants_raw(sys.argv[1:]))
 
-    pdir = project_dir()
-    if not pdir.exists():
-        print(f"ERROR: no Claude project log dir at {pdir}")
+    source = resolve_project_dir()
+    if source.kind == "missing":
+        # Never nominate a neighbour's store (#1317): a board rendered from
+        # another worktree's sessions is indistinguishable from this one's.
+        for line in decline_lines(source):
+            print(line)
         return 1
+    pdir = source.path
 
     sessions = sorted(
         pdir.glob("*.jsonl"),
@@ -92,6 +105,9 @@ def main() -> int:
         rows.append(f"{uuid}  {mtime}  {turns:>5}  {lines:>6}  {excerpt}")
 
     print(f"Project: {pdir}")
+    note = source_note(source)
+    if note:
+        print(note)
     print(f"Showing {len(sessions)} most recent sessions (of {len(list(pdir.glob('*.jsonl')))})")
     note = red.note()
     if note:

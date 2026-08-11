@@ -2,7 +2,7 @@
 
 Covers:
 - POSIX and Windows cwd encoding (encode_cwd)
-- project_dir() fallback to longest-common-prefix sibling
+- project_dir() upward-only resolution (see test_claude_log_project_dir_1317.py)
 - list.py: ranking by mtime, line count, first user excerpt extraction
 - tail.py: compact event formatting, bootstrap line, error marker
 - summary.py: tool counts, error counts, final assistant text
@@ -142,7 +142,7 @@ class TestEncodeCwd:
         assert _common.encode_cwd("-foo-bar") == "-foo-bar"
 
 
-# ---------- project_dir fallback --------------------------------------------
+# ---------- project_dir resolution ------------------------------------------
 
 
 class TestProjectDir:
@@ -153,16 +153,19 @@ class TestProjectDir:
         target.mkdir(parents=True)
         assert _common.project_dir("/Users/foo/proj") == target
 
-    def test_fallback_to_closest_sibling(
+    def test_no_fallback_to_a_sibling(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Was `test_fallback_to_closest_sibling`, asserting the defect #1317
+        reports: `-Users-foo-proj-old` shares 20 characters with the cwd's
+        encoding and is a different directory. The answer is the missing path."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         root = tmp_path / ".claude" / "projects"
-        # A sibling that shares a long prefix but is not exact
         (root / "-Users-foo-proj-old").mkdir(parents=True)
         (root / "-totally-unrelated").mkdir(parents=True)
         result = _common.project_dir("/Users/foo/proj")
-        assert result.name == "-Users-foo-proj-old"
+        assert result.name == "-Users-foo-proj"
+        assert not result.exists()
 
     def test_returns_encoded_when_no_root(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
