@@ -41,7 +41,7 @@
       "cmd": "{python} {path}bluesky/like.py {args}",
       "timeout": 15,
       "description": "Like a Bluesky post.",
-      "syntax": "bluesky_like:AT_URI_OR_WEB_URL",
+      "syntax": "bluesky_like:AT_URI_OR_WEB_URL[|force]",
       "example": "bluesky_like:at://did:plc:abc/app.bsky.feed.post/3kxyz"
     },
     "bluesky_follow": {
@@ -49,7 +49,7 @@
       "cmd": "{python} {path}bluesky/follow.py {arg}",
       "timeout": 15,
       "description": "Follow a Bluesky user by handle or DID.",
-      "syntax": "bluesky_follow:HANDLE_OR_DID",
+      "syntax": "bluesky_follow:HANDLE_OR_DID[|force]",
       "example": "bluesky_follow:simonw.bsky.social"
     },
     "bluesky_repost": {

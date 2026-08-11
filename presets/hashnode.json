@@ -7,7 +7,7 @@
       "cmd": "{python} {path}hashnode/publish.py {arg}",
       "timeout": 30,
       "description": "Publish a markdown file as a post on the configured Hashnode publication.",
-      "syntax": "hashnode_publish:TITLE|MD_FILE|CANONICAL[|TAGS|COVER]",
+      "syntax": "hashnode_publish:TITLE|MD_FILE|CANONICAL[|TAGS|COVER|force]",
       "example": "hashnode_publish:My Title|/tmp/post.md|https://example.com/post|ai,programming|https://example.com/og.png",
       "default_tags": "",
       "default_cover": ""

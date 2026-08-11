@@ -12,7 +12,7 @@ Dev.to publishing, discovery, and engagement via REST API. Replaces manual `curl
 
 | Op | Syntax | What it returns |
 |----|--------|-----------------|
-| `devto_publish` | `devto_publish:TITLE\|MD_FILE\|CANONICAL[|TAGS\|COVER\|PUBLISHED]` | Published article URL + ID |
+| `devto_publish` | `devto_publish:TITLE\|MD_FILE\|CANONICAL[|TAGS\|COVER\|PUBLISHED\|force]` | Published article URL + ID |
 | `devto_list` | `devto_list[:N]` or `devto_list:USER[:N]` | Article list: title, ID, date, reactions, comments |
 | `devto_read` | `devto_read:ID_OR_SLUG_OR_URL` | Full article body + title, tags, date, reaction + comment counts |
 | `devto_browse` | `devto_browse:TAG[|N][|SORT]` | Tag feed: titles, authors, IDs, reaction counts |

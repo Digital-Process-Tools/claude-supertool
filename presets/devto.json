@@ -7,7 +7,7 @@
       "cmd": "{python} {path}devto/publish.py {arg}",
       "timeout": 30,
       "description": "Publish a markdown file as an article on Dev.to.",
-      "syntax": "devto_publish:TITLE|MD_FILE|CANONICAL[|TAGS|COVER|PUBLISHED]",
+      "syntax": "devto_publish:TITLE|MD_FILE|CANONICAL[|TAGS|COVER|PUBLISHED|force]",
       "example": "devto_publish:My Title|/tmp/post.md|https://example.com/post|ai,programming|https://example.com/og.png|true",
       "default_tags": "",
       "default_cover": ""

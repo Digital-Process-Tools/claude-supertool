@@ -16,8 +16,8 @@ Bluesky publishing, discovery, and engagement via the AT Protocol. Replaces raw 
 | `bluesky_list` | `bluesky_list[:N]` or `bluesky_list:HANDLE[|N]` | Author feed: post text, AT URI, date, like + repost counts |
 | `bluesky_read` | `bluesky_read:AT_URI_OR_WEB_URL` | Post body, author, stats, top inline replies with URIs, reply chain hints |
 | `bluesky_search` | `bluesky_search:QUERY[|N]` | Recent posts matching query: text, author, AT URI, engagement counts |
-| `bluesky_like` | `bluesky_like:AT_URI_OR_WEB_URL` | Likes a post; returns confirmation |
-| `bluesky_follow` | `bluesky_follow:HANDLE_OR_DID` | Follows a user by handle or DID; returns confirmation |
+| `bluesky_like` | `bluesky_like:AT_URI_OR_WEB_URL[\|force]` | Likes a post; returns confirmation |
+| `bluesky_follow` | `bluesky_follow:HANDLE_OR_DID[\|force]` | Follows a user by handle or DID; returns confirmation |
 | `bluesky_repost` | `bluesky_repost:AT_URI_OR_WEB_URL` | Reposts (boosts) a post to your followers; returns confirmation |
 | `bluesky_status_since` | `bluesky_status_since[:ISO_TIMESTAMP]` | Briefing: new mentions, replies, likes, follows since timestamp (auto-tracks last check) |
 
