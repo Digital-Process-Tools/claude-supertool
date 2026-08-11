@@ -227,6 +227,12 @@
       "description": "Run formatters on all staged files. Pair with validate_staged for a normalize-then-check pass. Append `verbose` for full per-file details.",
       "example": "format_staged"
     },
+    "registry": {
+      "syntax": "registry[:OP]",
+      "description": "Which ops this project actually loads, and where each definition came from — preset, project config, or a project entry merged over a preset one. `registry:OP` shows one op's merged definition with the source of every key. Answers what a hand-rolled walk over presets/*.json + .supertool.json gets wrong: a partial project override merges key-by-key, so overwriting wholesale turns an op into a stub with no cmd or syntax and drops it from every filtered count with no marker (#1356). A population that could not be fully enumerated says INCOMPLETE in the body, never a shorter list.",
+      "example": "registry:git-diff",
+      "hint": true
+    },
     "workspace": {
       "syntax": "workspace:PATH",
       "description": "One-shot IDE-style view: file + symbols + validators + siblings + git + references + tests. Opt-in (heavy). Use for first-touch on unfamiliar files.",

@@ -11,6 +11,7 @@ Ops for self-documentation and version introspection. Used primarily in session-
 | `ops` | `ops` | Full operations reference from `.supertool.json` — built-in ops, custom ops, and aliases with descriptions and examples. |
 | `version` | `version` | Show supertool version. |
 | `help` | `help:OP` | Print the full reference for a single op — syntax, full (uncompacted) description, and example — read from `.supertool.json`. Discovers an op's payload shape (e.g. `vim`'s macro grammar) without grepping source. Errors with a pointer to `ops` for an unknown or undocumented op. |
+| `registry` | `registry[:OP]` | Which ops this project loads, and where each definition came from — preset, project config, or a project entry merged over a preset one. `registry:OP` shows one op's merged definition with the source of every key. See below. |
 | `gc` | `gc[:dry\|:run][:KIND]` | Prune supertool's own caches. Bare `gc` and `gc:dry` preview; `gc:run` deletes. See below. |
 | `cwd` | `cwd:PATH` | Set the working dir for the whole call. **Must be the first op** — chdir's once before dispatch, then is stripped, so every following op resolves against `PATH`. Replaces a `cd PATH && ./supertool …` prefix (which trips the use-supertool hook and risks stale-cwd path poisoning) for cross-repo sessions. `~`/`$VAR` expanded; non-directory or non-first → error before any op runs. |
 | `repo` | `repo:OWNER/NAME` | Name the repo a call is *about*, when it is not the one the cwd stands *in*. **First op, or immediately after `cwd:`**, once per call; resolved before the op loop and exported as `SUPERTOOL_REPO`. Honoured by the `gh-*` family only — an op in the same call that cannot honour it **refuses the whole call** rather than half-applying the target. Not a `cwd:` substitute: presets still resolve from the cwd's project root. Full reference in [github.md](../presets/github.md#targeting-another-repo). |
@@ -69,6 +70,64 @@ Only **index**-derived answers flip. A bare `GIT_DIR` leaves the work tree at th
 There is no opt-out. If you meant to operate on the repo those variables name, `cd` there — or use `cwd:PATH` as the call's first op — rather than relying on the environment. The scrub is unconditional because a redirect that survives into `git push` is not something a receipt can undo after the fact.
 
 `GIT_CEILING_DIRECTORIES` and `GIT_DISCOVERY_ACROSS_FILESYSTEM` are deliberately left alone: they only *restrict* discovery, so they cannot land an op on the wrong repo — the worst they do is make it find none — and they are set on purpose by people working over slow mounts.
+
+## `registry` — which ops are loaded, and where each came from
+
+`ops` answers *what can I do*. `registry` answers *where did this definition come from*, which is a different question and had no answer in the product at all.
+
+```
+## Op registry — 50 ops (49 from presets, 1 project-only, 3 shadowed)
+Built-ins are not config entries and are not listed — `ops:roster`.
+
+### Shadowed by project config (3)
+The preset definition is still in effect; the project entry merges these keys over it.
+- dashboard  preset dashboard  + lane_prefix
+- git-diff   preset git        + red_flags_extra
+- radar      preset watch      + radar_tiers
+
+### From presets (46)
+- gh-issue            preset github
+...
+### Project config only (1)
+- oss_train  project
+
+Not enabled here: bluesky, claude-log, devto, gitlab, hashnode (5 shipped presets, 38 ops).
+```
+
+`registry:OP` narrows to one entry and attributes every key:
+
+```
+## git-diff
+Preset 'git' defines it; shadowed by 1 project key, merged over it.
+
+- cmd              preset git
+- description      preset git
+- red_flags_extra  project
+- safety           preset git
+- syntax           preset git
+- timeout          preset git
+```
+
+### Why an op and not a documented helper
+
+A project entry that names an op a preset already defines is a **partial override**: supertool merges it key-by-key, so `{"git-diff": {"red_flags_extra": [...]}}` adds one key and leaves the preset's `cmd`, `syntax` and `timeout` in force. Every hand-rolled walk over `presets/*.json` plus `.supertool.json` wrote the obvious `ops[name] = entry` instead, which replaces the shipped definition with the stub.
+
+Nothing looks wrong when it happens. The op count is unchanged — the entry does not vanish, it becomes a definition with no `cmd` and no `syntax` — so it silently stops matching every filter applied downstream. In [#1350](https://github.com/Digital-Process-Tools/claude-supertool/issues/1350) the containment audit's own registry helper did exactly this, and `git-diff` — an op that names a path and sits in the grandfather register the audit exists to drain — dropped out of the audited population. The audit printed a pass over a set that was short by the one op it was about.
+
+So the merge rule now lives in one function that the loader calls, the loader stamps where each op came from during the same walk, and `registry` renders what the loader produced. A caller re-deriving the population is re-deriving the bug.
+
+### A population that could not be enumerated says so
+
+Preset load failures — a name under `"presets"` with no file, a manifest that will not parse — reach stderr from the launcher. `registry` also carries them **in its own body**:
+
+```
+INCOMPLETE: this listing may be missing ops.
+  - preset 'gone' not found
+```
+
+In a batched call stderr is somewhere else entirely, and a short list and a complete one are byte-identical apart from the rows that are absent. Same rule as the rest of the tool: three states, not two.
+
+A config that declares `"presets"` but never passed through the loader is a third case — the population is right but nothing can be attributed. Those ops render under `### Source not known`, with the reason in the `INCOMPLETE` block. They are never quietly reported as project-only.
 
 ## `gc` — cache retention
 
