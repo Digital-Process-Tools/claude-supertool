@@ -69,14 +69,31 @@ def test_a_fragment_that_never_names_its_own_issue_is_refused(tmp_path: Path) ->
 
 
 def test_a_fragment_that_names_its_own_issue_is_collected(tmp_path: Path) -> None:
+    """A control, and it would pass against the code before this change.
+
+    It is here because the risk a refusing guard carries is the false reject,
+    and a rule with no accepting case pinned is one regex edit away from
+    refusing every fragment in the directory.
+    """
     directory = _frag_dir(tmp_path, "1192.security.md", CITES)
     assert [f.issue for f in asm.collect(directory)] == [1192]
 
 
-def test_a_url_reference_counts_as_naming_the_issue(tmp_path: Path) -> None:
-    body = "- **A thing** ([the issue](https://example.invalid/issues/1192)). Prose.\n"
-    directory = _frag_dir(tmp_path, "1192.security.md", body)
+def test_a_url_reference_counts_as_naming_the_issue_and_only_its_own(
+        tmp_path: Path) -> None:
+    """A link whose URL ends in the number, and the same link to another issue.
+
+    Both halves in one test on purpose: the accepting half alone passes
+    against the code before this change, so it pins nothing by itself.
+    """
+    template = "- **A thing** ([the issue](https://example.invalid/issues/{0})). Prose.\n"
+    directory = _frag_dir(tmp_path, "1192.security.md", template.format(1192))
     assert [f.issue for f in asm.collect(directory)] == [1192]
+
+    directory = _frag_dir(tmp_path, "1192.security.md", template.format(1184))
+    with pytest.raises(asm.BadFragment) as excinfo:
+        asm.collect(directory)
+    assert "#1192" in str(excinfo.value)
 
 
 def test_a_longer_number_containing_this_one_is_not_a_reference(tmp_path: Path) -> None:
@@ -129,7 +146,7 @@ def _adapter_verdict(tmp_path: Path, name: str, body: str) -> dict:
     directory = _frag_dir(tmp_path, name, body)
     proc = subprocess.run(
         [sys.executable, str(ADAPTER), str(directory / name)],
-        capture_output=True, text=True)
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
 
@@ -144,5 +161,26 @@ def test_the_write_time_validator_reports_the_same_finding(tmp_path: Path) -> No
 
 
 def test_the_write_time_validator_passes_a_fragment_that_cites_itself(tmp_path: Path) -> None:
+    """The adapter's false-reject control, paired with the refusal above."""
     verdict = _adapter_verdict(tmp_path, "1192.security.md", CITES)
     assert verdict.get("ok") is True or verdict.get("skipped"), verdict
+
+
+def test_both_findings_are_reported_by_the_validator_and_by_check(
+        tmp_path: Path) -> None:
+    """One body, two faults, and the two surfaces must agree on the count.
+
+    The adapter publishing one finding where `--check` publishes two is the
+    divergence it exists to not have: a write-time `1 error` followed by a
+    CI `2 findings` on an unchanged file reads as a second, thinner opinion.
+    """
+    body = "1. an ordered list, which `_entry_count` does not count\n"
+    directory = _frag_dir(tmp_path, "1192.security.md", body)
+    with pytest.raises(asm.BadFragment) as excinfo:
+        asm.collect(directory)
+    from_check = str(excinfo.value).splitlines()
+
+    verdict = _adapter_verdict(tmp_path, "1192.security.md", body)
+    assert verdict.get("ok") is False, verdict
+    assert len(verdict["errors"]) == len(from_check) == 2, (verdict, from_check)
+    assert {e["code"] for e in verdict["errors"]} == {"self-reference", "shape"}
