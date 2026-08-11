@@ -544,7 +544,12 @@ def _render_threads(number: str, comment_max: int | None) -> int:
             if trunc:
                 print(trunc)
             if c.get("url"):
-                print(c["url"])
+                # `flat()`, not raw. This permalink is the one field in this
+                # render that no other read op prints, so no existing scanner
+                # covers it — and it lands at column 0 directly under a fenced
+                # body, which is where supertool's own output belongs. A
+                # U+2028 in it renders as a line break there (#965's shape).
+                print(_untrusted.flat(str(c["url"])))
     return 0
 
 

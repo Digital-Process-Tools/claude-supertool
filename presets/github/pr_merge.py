@@ -1086,6 +1086,14 @@ def _default_branch_report(default_branch: str, repo: str,
 # how old is the base this tally was computed on (#1257)
 # ---------------------------------------------------------------------------
 
+#: One explicit string, not adjacent literals inside the argument list. The
+#: two-literal form is the missing-comma shape — inside a list, `"a" "b"` and
+#: `"a", "b"` differ by one character and mean an argument or two of them —
+#: and a reviewer flagged it here before it cost anything.
+_COMPARE_JQ = ("{behind_by, base_sha: .base_commit.sha, "
+               "base_date: .base_commit.commit.committer.date}")
+
+
 def base_distance(base: str, head_oid: str) -> tuple[int | None, str, str, str]:
     """`(behind_by, base_head_sha, base_head_date, error)` for the base branch.
 
@@ -1103,8 +1111,7 @@ def base_distance(base: str, head_oid: str) -> tuple[int | None, str, str, str]:
                               "the API reply")
     data, err = _gh_json(
         ["api", _repo_target.api_path(f"compare/{base}...{head_oid}"),
-         "--jq", "{behind_by, base_sha: .base_commit.sha, "
-                 "base_date: .base_commit.commit.committer.date}"],
+         "--jq", _COMPARE_JQ],
         timeout=30)
     if err or not isinstance(data, dict):
         return (None, "", "", err or "the compare API returned no object")
