@@ -2187,11 +2187,20 @@ def _preset_path_containment(
             return None
         return _undeclared_path_refusal(op, syntax)
     if (not isinstance(decl, dict) or not isinstance(decl.get("args"), list)
-            or not all(isinstance(i, int) and not isinstance(i, bool)
+            or not all(isinstance(i, int) and not isinstance(i, bool) and i >= 0
                        for i in decl["args"])):
+        # Negative indices are refused rather than resolved Python-style. They
+        # would read as "the last argument", which is a real shape — `between`
+        # symbol mode takes `parts[-1]` — but the core cannot honour it here:
+        # `parts[-1]` on a bare `op` call is the op NAME, so the declaration
+        # would gate a token that is never a path and skip the one that is.
+        # Refused loudly because the alternative found in review was worse:
+        # an out-of-range index was silently filtered out of the generator
+        # below, so a typo'd declaration ran the op completely unchecked while
+        # looking exactly like a declared one.
         return (
             f'ERROR: op {op!r} has a malformed "paths" declaration — expected '
-            f'{{"args": [<int>, ...], "root": "cwd"|"repo"}}.\n'
+            f'{{"args": [<non-negative int>, ...], "root": "cwd"|"repo"}}.\n'
         )
     boundary = decl.get("root", "cwd")
     if boundary not in _PATH_BOUNDARIES:

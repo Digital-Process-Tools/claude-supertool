@@ -169,6 +169,57 @@ class TestUndeclaredIsRefusedNotSkipped:
         assert RAN in _run(entry, ["/projects/1/issues"])
 
 
+class TestAMalformedDeclarationIsRefusedRatherThanIgnored:
+    """A declaration the core cannot honour must not read as a declaration.
+
+    Found in review, and it was the live hole in the first cut of this change:
+    `{"args": [-1]}` passed the shape check and was then silently dropped by
+    the `0 <= i < len(parts)` filter feeding the containment generator, so the
+    op ran **completely unchecked** while looking exactly like a gated one.
+    That is this repo's standing defect — an absence produced by the tool, read
+    as an absence in the world — reintroduced inside the fix for it.
+    """
+
+    @pytest.mark.parametrize("decl", [
+        {"args": [-1], "root": "cwd"},
+        {"args": "1", "root": "cwd"},
+        {"args": [True], "root": "cwd"},
+        {"args": ["1"], "root": "cwd"},
+        {"root": "cwd"},
+        "args=1",
+    ])
+    def test_a_declaration_the_core_cannot_honour_refuses_the_call(
+            self, decl: Any, tmp_path: Path,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        work = tmp_path / "work"
+        work.mkdir()
+        monkeypatch.chdir(work)
+        out = _run(_entry(tmp_path, paths=decl),
+                   [str(tmp_path / "outside.txt")])
+        assert out.startswith("ERROR:"), out
+        assert "malformed" in out, out
+        assert RAN not in out, out
+
+    def test_an_unknown_root_refuses_rather_than_falling_back_to_cwd(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        work = tmp_path / "work"
+        work.mkdir()
+        monkeypatch.chdir(work)
+        out = _run(_entry(tmp_path, paths={"args": [1], "root": "home"}),
+                   ["local.txt"])
+        assert out.startswith("ERROR:"), out
+        assert "'home'" in out, out
+        assert RAN not in out, out
+
+    def test_a_position_past_the_end_of_the_call_is_not_an_error(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`git-diff[:PATH]` shapes: the slot is legitimately absent."""
+        monkeypatch.chdir(tmp_path)
+        entry = _entry(tmp_path, syntax="probe:PATTERN:PATH",
+                       paths={"args": [2], "root": "cwd"})
+        assert RAN in _run(entry, ["only-one-arg"])
+
+
 class TestOptOutsStayHonoured:
 
     def test_env_opt_out_reaches_the_universal_gate(
@@ -176,18 +227,25 @@ class TestOptOutsStayHonoured:
         work = tmp_path / "work"
         work.mkdir()
         monkeypatch.chdir(work)
-        monkeypatch.setenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", "1")
         entry = _entry(tmp_path, paths={"args": [1], "root": "cwd"})
-        assert RAN in _run(entry, [str(tmp_path / "outside.txt")])
+        escaping = str(tmp_path / "outside.txt")
+        # Both halves in one test on purpose: an opt-out assertion that only
+        # checks the op ran passes just as well against a gate that was never
+        # wired up at all.
+        assert _run(entry, [escaping]).startswith("ERROR:")
+        monkeypatch.setenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", "1")
+        assert RAN in _run(entry, [escaping])
 
     def test_env_opt_out_reaches_the_repo_boundary_too(
             self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = tmp_path / "repo"
         (repo / ".git").mkdir(parents=True)
         monkeypatch.chdir(repo)
-        monkeypatch.setenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", "1")
         entry = _entry(tmp_path, paths={"args": [1], "root": "repo"})
-        assert RAN in _run(entry, [str(tmp_path / "outside.txt")])
+        escaping = str(tmp_path / "outside.txt")
+        assert _run(entry, [escaping]).startswith("ERROR:")
+        monkeypatch.setenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", "1")
+        assert RAN in _run(entry, [escaping])
 
     def test_the_refusal_names_the_opt_outs_it_honours(
             self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -204,13 +262,11 @@ class TestOptOutsStayHonoured:
         work = tmp_path / "work"
         work.mkdir()
         monkeypatch.chdir(work)
-        supertool._CONFIG = {
-            "allow_outside_cwd": True,
-            "ops": {"probe": _entry(tmp_path, paths={"args": [1],
-                                                     "root": "cwd"})},
-        }
-        out = supertool._resolve_custom_op(
-            "probe", ["probe", str(tmp_path / "outside.txt")])
+        entry = _entry(tmp_path, paths={"args": [1], "root": "cwd"})
+        escaping = str(tmp_path / "outside.txt")
+        assert _run(entry, [escaping]).startswith("ERROR:")
+        supertool._CONFIG = {"allow_outside_cwd": True, "ops": {"probe": entry}}
+        out = supertool._resolve_custom_op("probe", ["probe", escaping])
         assert out is not None and RAN in out
 
 

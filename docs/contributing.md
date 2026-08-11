@@ -117,7 +117,7 @@ Declare it:
 "paths": { "args": [1], "root": "repo" }
 ```
 
-- **`args`** — argument positions, counting the op name as `0`, exactly like `_PATH_ARG_POSITIONS`. So `claims:PATH` is `[1]` and `xml_attr:PATH:XPATH:ATTR` is also `[1]`. Only the positions you name are checked: over-gating is its own defect ([#1164](https://github.com/Digital-Process-Tools/claude-supertool/issues/1164) refused a legitimate local slice by gating a slot that held a regex).
+- **`args`** — argument positions, counting the op name as `0`, exactly like `_PATH_ARG_POSITIONS`. So `claims:PATH` is `[1]` and `xml_attr:PATH:XPATH:ATTR` is also `[1]`. Only the positions you name are checked: over-gating is its own defect ([#1164](https://github.com/Digital-Process-Tools/claude-supertool/issues/1164) refused a legitimate local slice by gating a slot that held a regex). Non-negative only — a negative index is refused rather than read Python-style, because `parts[-1]` on a bare call is the op name.
 - **`root`** — `"cwd"` (the core's boundary, and the right answer for almost everything) or `"repo"` (the repository root). `claims` needs `"repo"` because it resolves a relative argument against the git toplevel: under a cwd boundary, `claims:docs/x.md` run from `docs/` would be refused, and that call works and should.
 - **`"args": []`** — a declaration that no argument here is a filesystem path. `gl-api:PATH` means an API route, not a file. Written down rather than defaulted, because the two look identical from outside.
 
@@ -126,6 +126,8 @@ Declare it:
 The detector is the `syntax` string, matched per `_`-separated component, so `PATH`, `PATHS`, `FILE`, `@FILE`, `MD_FILE` and `TEXT_OR_FILE_OR_file://PATH` all count and `NUMBER_OR_BRANCH` does not. It only ever raises the *question* — a path hidden inside a `|`-separated blob cannot be located by reading the syntax, which is why the position is declared explicitly.
 
 Twenty shipped ops predate the rule and are grandfathered by name in `_UNDECLARED_PATH_OPS`. **That set only shrinks**, and `tests/test_preset_path_chokepoint_1287.py` fails if a name is added to it or if a new op with a path skips the declaration — so a newly written op cannot inherit the old default by being written after it.
+
+An op written as a bare command string — the `.supertool.json` shorthand, `"myop": "mytool {file}"` — carries no `syntax` and so has nothing to detect and nothing to refuse. That is deliberate and not a hole in the same sense: those ops are the caller's own config, at the same trust level as validators and presets, and they can declare a boundary by being written as an object instead.
 
 The core's opt-outs (`SUPERTOOL_ALLOW_OUTSIDE_CWD=1`, or `"allow_outside_cwd": true` in `.supertool.json`) are honoured at every boundary, and the refusal names them. The gate is `_safe_path` with a different root, not a second copy of the rule — [#882](https://github.com/Digital-Process-Tools/claude-supertool/issues/882) and [#889](https://github.com/Digital-Process-Tools/claude-supertool/issues/889) are what a second copy costs.
 
