@@ -92,6 +92,8 @@ Entries document built-in operations (`syntax`, `description`, `example`). Set `
 | `read` | `abstract`    | 0                | `1` → a read of a file over the threshold returns its tree-sitter symbol map instead of source, for every language in supertool's table. Falls back to source, with the reason, when the map is empty or no smaller. See [operations/reads.md](operations/reads.md#abstract-read) |
 | `read` | `php_abstract` | 0               | Former name of `abstract`, from when the gate was `.php`. Still enables it; either key set to `1` is enough |
 | `read` | `abstract_threshold_bytes` | `max_bytes` | File size above which the abstract read applies. Env: `SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES` |
+| `read` | `elide` | 1 | `0` → never elide a repeat read of an unchanged file. `SUPERTOOL_READ_NO_ELIDE=1` does the same for one call. See [operations/reads.md](operations/reads.md#eliding-a-repeat-read) |
+| `read` | `elide_window_seconds` | 900 | How long after content was last **returned** a byte-identical repeat may be elided. Measured from the last read that actually handed over bytes, never from the last elision. Env: `SUPERTOOL_READ_ELIDE_WINDOW_SECONDS` |
 | `grep` | `max_results` | 10               | Default result limit when not specified in the op                                        |
 | `grep` | `max_line_chars` | 500           | Max chars per output line (match or context); remainder shown as `… (+N chars)`           |
 | `grep` | `count_ceiling` | 1000           | How far past `LIMIT` a truncated grep keeps counting so it can state `N matches total`. Past the ceiling it says `N+ … (count capped at N)` rather than a number it did not reach. Never applied below `LIMIT`. Env: `SUPERTOOL_GREP_COUNT_CEILING` |

@@ -66,12 +66,14 @@
   "builtin-ops": {
     "read": {
       "syntax": "read:PATH[:OFFSET:LIMIT|:START-END|:full]",
-      "description": "Read file (300 lines, 20KB cap). Set abstract:1 to return a tree-sitter symbol map instead of raw source for any file over abstract_threshold_bytes (php, python, js/jsx, ts/tsx, go, rust, java, ruby, c, cpp, swift, kotlin, scala, lua, bash), median 5% of the source bytes; falls back to raw source and names the reason when the map would be empty or no smaller. php_abstract is the former name and still enables it \u2014 saves tokens on big files. Use :full to force raw. Threshold override: SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES=N Inline grep= filter contains ':'? Use read:@payload.toml or read:@- (fields: path, offset, limit, grep, full).",
+      "description": "Read file (300 lines, 20KB cap). Set abstract:1 to return a tree-sitter symbol map instead of raw source for any file over abstract_threshold_bytes (php, python, js/jsx, ts/tsx, go, rust, java, ruby, c, cpp, swift, kotlin, scala, lua, bash), median 5% of the source bytes; falls back to raw source and names the reason when the map would be empty or no smaller. php_abstract is the former name and still enables it \u2014 saves tokens on big files. Use :full to force raw. A repeat bare read of a BYTE-IDENTICAL file within elide_window_seconds returns a one-line elision naming the sha, the size on disk and read:PATH:full; a changed file, a windowed/grep read, and a cache that cannot be read or written are never elided. Set elide:0 or SUPERTOOL_READ_NO_ELIDE=1 to turn that off. Threshold override: SUPERTOOL_READ_ABSTRACT_THRESHOLD_BYTES=N Inline grep= filter contains ':'? Use read:@payload.toml or read:@- (fields: path, offset, limit, grep, full).",
       "example": "read:src/app/Module.py:full",
       "max_lines": 300,
       "max_bytes": 20000,
       "abstract": 0,
-      "php_abstract": 0
+      "php_abstract": 0,
+      "elide": 1,
+      "elide_window_seconds": 900
     },
     "read-grep": {
       "syntax": "read:PATH:::grep=PATTERN",

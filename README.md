@@ -246,6 +246,8 @@ Off by default. Turn it on once, per project:
 { "builtin-ops": { "read": { "abstract": 1 } } }
 ```
 
+`read:PATH` also elides a repeat read of a **byte-identical** file for 15 minutes, returning one line that carries the sha, the byte count and `read:PATH:full`. A file whose bytes changed is never elided, and neither is a read that could not consult its own cache. On this repo the measured saving is **0.0% of result bytes** — batching already prevents the pattern — so it is there for the corpus where an agent reads one file sixteen times, not for this one. [Details and the reason it is time-bounded](docs/operations/reads.md#eliding-a-repeat-read).
+
 After that, `read:PATH` on a file over `abstract_threshold_bytes` (default: the 20 KB read cap) returns that file's **symbol map** — classes, functions, methods, with line numbers, for the whole file — instead of the first 300 lines of its source. `read:PATH:full` still gives you the source, `read:PATH:::grep=…` still filters it, and an explicit offset or limit is left alone.
 
 Every language supertool has a grammar for, not just PHP: `.php .py .js .jsx .ts .tsx .go .rs .java .rb .c .h .cpp .hpp .swift .kt .scala .lua .sh .bash`. Markdown is the deliberate exception — `map:` builds its heading tree, but `read:` returns the prose, because a heading list orients you without standing in for the text underneath it. Measured over 263 real files above the threshold — Hugo, ripgrep, pdf.js, Vue, React Router, gson, RuboCop, curl, Alamofire, OkHttp, nlohmann/json, CPython's site-packages — the map costs a **median 5% of the source bytes**, 2.3% at best (TypeScript) and 17.5% at worst (Scala). Per-language table: [docs/operations/reads.md](docs/operations/reads.md#abstract-read).
