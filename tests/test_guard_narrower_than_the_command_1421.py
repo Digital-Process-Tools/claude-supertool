@@ -428,8 +428,35 @@ def test_the_command_word_list_is_empty_when_the_gate_is_off(
 # --------------------------------------------------------------------------
 
 def test_the_modules_own_annotations_resolve():
-    import typing
+    """Every name in a module-level annotation is one the module imported.
 
+    `typing.get_type_hints(_supertool)` was the first spelling of this and it is
+    wrong below 3.10: the module also uses PEP 604 unions, so on this repo's
+    minimum Python it dies with `TypeError: unsupported operand type(s) for |`
+    before it reaches any undefined name. That TypeError is about union syntax,
+    not about this defect, and the product never asks for these hints -- nothing
+    evaluates them at runtime, which is exactly why two undefined names survived.
+
+    So each annotation is evaluated on its own: a NameError is the defect and
+    fails, a TypeError from `|` on <3.10 is not and is tolerated. Per-annotation
+    rather than whole-module because a single early failure would otherwise mask
+    every name after it.
+    """
     import _supertool
 
-    typing.get_type_hints(_supertool)
+    annotations = getattr(_supertool, "__annotations__", {})
+    assert annotations, "the module declares no module-level annotations to check"
+
+    namespace = vars(_supertool)
+    undefined = []
+    for name, annotation in annotations.items():
+        if not isinstance(annotation, str):
+            continue
+        try:
+            eval(annotation, namespace)  # noqa: S307 - our own module's own text
+        except NameError as exc:
+            undefined.append((name, str(exc)))
+        except TypeError:
+            pass  # PEP 604 `X | None` is not evaluable before 3.10
+
+    assert not undefined, undefined
