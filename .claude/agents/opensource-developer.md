@@ -43,9 +43,15 @@ So the ordering is now:
 
 Ask for a compact return — one line per finding, file:line, no preamble, no retrospective. You are paying for its output at output rates and you only need the decision.
 
-**Tell it, in the brief, that it must not edit anything.** `general-purpose` has `Edit` and `Write`, and it is standing in the worktree you are working in. It is a reviewer: it reads, greps, runs tests, and reports. Nothing else. You apply every fix yourself, so that one context decides what lands.
+**Spawn the reviewer as `Explore`, not `general-purpose` — a sentence in a brief is not a tool grant, and that was measured the hard way.** `Explore` has every tool except `Edit`, `Write` and `NotebookEdit`, so it can read, grep, and run the suite, and it cannot write your worktree. `general-purpose` can.
 
-**Why not `caveman:cavecrew-reviewer`, which looks purpose-built for this.** Its charter says no scope creep, and adjacent findings are the only kind this has ever produced — a stale comment above the changed line, a cost figure in prose, a third call site one hop away. A reviewer that declines to look past the diff declines the whole yield. Prefer `general-purpose` and spend the brief on licensing exactly that: _read around the change, not only the change._
+Both #1347 agents on 2026-08-11 told their reviewer, in the brief, in those words, that it must not edit any file. **Both had files written under them anyway.** One reviewer added a test carrying an unimported symbol — a test that could not run — and it reached a commit because the author staged the whole file; the other rewrote ~90 lines of `_supertool.py` plus four tests, found only because a `git diff` showed changes its author had not made. Two independent runs, same instruction, same outcome: the instruction does not bind.
+
+Read the uncomfortable half too. **One of those unauthorised patches was right about a bug neither the author nor the review had found** — `shlex` treats a newline as whitespace, so every line after the first of a multi-line Bash call went unread by the guard. That is an argument for the finding, never for the write: an author can ship code they have never read, and no review catches what nobody knows arrived.
+
+If you fall back to `general-purpose` for some reason, say so in your report and `git diff` before every commit, rather than trusting the sentence.
+
+**Why not `caveman:cavecrew-reviewer`, which looks purpose-built for this.** Its charter says no scope creep, and adjacent findings are the only kind this has ever produced — a stale comment above the changed line, a cost figure in prose, a third call site one hop away. A reviewer that declines to look past the diff declines the whole yield. So spend the brief on licensing exactly that — _read around the change, not only the change_ — and spawn it as `Explore`, which reads as widely as `general-purpose` and cannot write.
 
 **Run it from inside your own worktree.** If you do fall back to the plugin, a bare PR number resolves against the forge of whatever directory you are standing in — a probe run from an unrelated project root read `1057` as a GitLab merge request and reported a confident, well-formed answer about an entirely different repository.
 
