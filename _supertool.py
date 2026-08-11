@@ -2013,6 +2013,16 @@ class SecurityError(Exception):
 # legitimate path well under the limit.
 _MAX_SAFE_PATH_LEN = 4096
 
+#: The opt-out sentence every containment refusal ends with. One constant
+#: rather than one copy per refusal site: `glob` refuses without naming the
+#: file it matched (#1366), so it cannot reuse `_safe_path`'s message wholesale
+#: and would otherwise have retyped this — and a retyped remedy drifts out of
+#: step with the knobs it names.
+_ALLOW_OUTSIDE_HINT = (
+    "To allow: set SUPERTOOL_ALLOW_OUTSIDE_CWD=1 (env), or add "
+    '`"allow_outside_cwd": true` to .supertool.json.'
+)
+
 
 def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None,
                root: Optional[str] = None, boundary: str = "cwd") -> str:
@@ -2103,8 +2113,7 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None,
         where = "" if root is None else f", root {base}"
         raise SecurityError(
             f"path escapes {boundary}: {p!r} (resolved to {abs_p!r}{where}). "
-            f"To allow: set SUPERTOOL_ALLOW_OUTSIDE_CWD=1 (env), or add "
-            f'`\"allow_outside_cwd\": true` to .supertool.json.'
+            + _ALLOW_OUTSIDE_HINT
         )
     return abs_p
 
@@ -2198,6 +2207,78 @@ def _gate_paths(candidates: Iterable[str], *,
     originals = list(candidates)
     err = _containment_error(originals, root=root, boundary=boundary)
     return err, [_expand_home(c) for c in originals]
+
+
+#: Stands in for a whole magic path component while a glob pattern is gated.
+#: An ordinary name with no separator and no metacharacter in it, so it moves
+#: the cursor exactly one level down and nothing else.
+_GLOB_MAGIC_STANDIN = "__supertool_glob_magic__"
+
+
+def _glob_reach(pattern: str) -> str:
+    """The deepest path a glob pattern can address, as an ordinary path.
+
+    **No glob metacharacter can invent a separator.** `*`, `?` and `[...]`
+    match within one component; `**` spans components but only ever downward.
+    So a pattern's traversal is fully determined by the `/` separators and the
+    `..` components already written in it, and replacing every magic component
+    with a plain name loses nothing the boundary cares about.
+
+    That is what makes gating the *pattern* sound where the two obvious
+    answers are not (#1366). The literal prefix before the first magic
+    character is empty in `*/../../etc/*`, so a prefix gate clears it. And
+    filtering the expanded results turns a refusal into a shorter list, which
+    is this repo's house defect: a population narrowed without saying so.
+    """
+    seps = "/" + (os.sep if os.sep != "/" else "")
+    return "/".join(
+        _GLOB_MAGIC_STANDIN if WILDCARD_CHARS.search(comp) else comp
+        for comp in re.split("[" + re.escape(seps) + "]", pattern)
+    )
+
+
+def _glob_pattern_containment_error(pattern: str) -> Optional[str]:
+    """`_containment_error` for a glob pattern, per brace branch.
+
+    Braces are expanded here because `_expand_braces` runs *inside*
+    `_glob_files`, i.e. after any gate on the pattern string: `{.,/etc}/host*`
+    reads as one contained component and fans out into two patterns, only one
+    of which the gate ever saw (#1366).
+
+    The refusal is `_containment_error`'s own — same wording, same opt-out
+    sentence, one implementation (#882, #889) — with the two echoed strings
+    rewritten to the caller's spelling, so the message names a pattern rather
+    than the stand-in this function substituted. With braces that is the
+    offending *branch*, not the whole typed string — which is the more useful
+    of the two, since it says which alternative crossed the line.
+    """
+    for sub in _expand_braces(pattern):
+        reach = _glob_reach(sub)
+        err = _containment_error([reach])
+        if err:
+            return (err.replace(repr(reach), repr(sub))
+                       .replace(_GLOB_MAGIC_STANDIN, "*"))
+    return None
+
+
+def _glob_results_escape(files: Iterable[str]) -> bool:
+    """Did any matched file resolve outside the boundary?
+
+    The one escape `_glob_reach` cannot predict: a wildcard component landing
+    on a symlink that points out of the tree. The pattern is honest and the
+    result is not, and only `realpath` on the match can tell.
+
+    Returns a bare bool on purpose. The caller must refuse the **whole call**
+    and must not name the offending file: dropping it would be the narrowed
+    list this gate exists to avoid, and printing it would disclose the very
+    path outside the boundary that the refusal is about.
+    """
+    for f in files:
+        try:
+            _safe_path(f)
+        except SecurityError:
+            return True
+    return False
 
 
 #: Registry keys whose value is a boundary this core knows how to enforce.
@@ -4615,13 +4696,25 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
     # Why refuse instead of expanding, when every other op now expands: the
     # expansion elsewhere is written back *behind* `_safe_path`, so it can only
     # name what the gate already cleared. `glob` is not in
-    # `_PATH_ARG_POSITIONS` and resolves its own pattern, so there is no gate
-    # here to sit behind — expanding would widen what the op can reach rather
-    # than fix what it can say. The honest half of #1300, chosen deliberately.
+    # `_PATH_ARG_POSITIONS` and resolves its own pattern, so the gate it sits
+    # behind is the one below rather than dispatch's — and that gate reads the
+    # pattern, not a path, so it cannot approve an expansion of one. Expanding
+    # here would widen what the op reaches rather than fix what it says. The
+    # honest half of #1300, kept deliberately after #1366.
     if pattern.startswith("~"):
         _eg = _fwd(os.path.join(os.path.expanduser("~"), "*.txt"))
         return ("ERROR: unsupported path form: glob does not expand `~` — "
                 f"pass an absolute path (e.g. glob:{_eg}).\n")
+
+    # Containment, first half: the pattern's own reach, before disk is touched
+    # (#1366). Until this landed `glob` was outside the gate entirely, so
+    # `glob:/tmp/x/*.txt` listed what `read:/tmp/x/f.txt` refused — filenames
+    # rather than bytes, which is an existence oracle across the boundary
+    # (#1135, #1142). It refuses rather than answering `(0 files)`, the zero
+    # the tool manufactures.
+    _pattern_err = _glob_pattern_containment_error(pattern)
+    if _pattern_err:
+        return _pattern_err
 
     # Auto-promote: concrete path with no wildcards that points to a file
     if not WILDCARD_CHARS.search(pattern) and os.path.isfile(pattern):
@@ -4653,6 +4746,22 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
         if files:
             midpath_note = (f"[mid-path retry: no match at repo root for "
                             f"{pattern!r} — matched {retry!r}]\n")
+    # Containment, second half: what the pattern could not predict (#1366). A
+    # wildcard component can land on a symlink pointing out of the tree, so the
+    # pattern is contained and the match is not. Checked BEFORE the cap, or a
+    # cap-length prefix would decide whether the call is refused.
+    #
+    # Refuses the whole call and names no file. Dropping the offending entries
+    # would hand back a narrowed list with an honest-looking `(N files)` header
+    # — the population-narrowed-in-silence defect this gate exists to prevent —
+    # and printing them would disclose the outside paths the refusal is about.
+    if _glob_results_escape(files):
+        return ("ERROR: path escapes cwd: " + repr(pattern) + " — "
+                + str(len(files)) + " match(es) resolve outside cwd, reached "
+                "through a symlink the pattern does not name. Refusing the "
+                "whole call: a list with those entries dropped would report a "
+                "population it had silently narrowed. " + _ALLOW_OUTSIDE_HINT
+                + chr(10))
     glob_truncated = len(files) > cap
     files = files[:cap]
     # Strip common directory prefix when 2+ files share one
@@ -20080,6 +20189,16 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         # pattern, slot 2 IS a pattern fragment, so searching a local file for
         # an absolute-path string was refused while naming a file the caller
         # never asked to open. Both branches gate the path they computed.
+        # `glob` is deliberately absent, and until #1366 the absence had no
+        # note beside it — the only unexplained one in a table where `grep`,
+        # `around` and `between` each say why. It read as a decision and was
+        # an oversight: `glob` reached no gate at all, so `glob:/tmp/x/*.txt`
+        # listed what `read:/tmp/x/f.txt` refused. Its slot 1 is a PATTERN,
+        # not a path — magic components, `**`, brace groups — so this table
+        # cannot gate it, and neither can #1287's `_resolve_custom_op`
+        # declaration gate, which only ever sees preset ops. `op_glob` gates
+        # the reach it computes and the matches it got, at the points it has
+        # them; see `_glob_reach`.
         # hover:SYMBOL:FILE, rename:OLD:NEW:FILE, resolve:SYMBOL[:FROM_FILE]
         "hover": (2,), "rename": (3,), "resolve": (2,),
         # diff:PATH1:PATH2

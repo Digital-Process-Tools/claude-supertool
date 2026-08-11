@@ -8,6 +8,13 @@ A path argument may be relative to the cwd, absolute, or start with `~` / `~user
 
 `~` that names no such user is left exactly as typed, and the refusal says so instead of blaming the working directory. Every `not found` receipt prints the string the op actually stat-ed under `tried:`, so an absolute path in that line is one the tool really opened.
 
+**A glob pattern is gated too, and by its own rule (#1366).** Until v0.34.0 `glob` was outside the boundary entirely: `glob:/tmp/x/*.txt` listed what `read:/tmp/x/f.txt` refused. Filenames rather than bytes, so what crossed was an existence oracle — layout, naming, whether a path is there at all. A pattern is not a path, so the check is in two halves and neither of them narrows a result set:
+
+- **Before disk is touched**, on the pattern's *reach* — every magic component read as one ordinary name. No glob metacharacter can invent a `/`, so only the separators and `..` you wrote move the cursor, which is why `*/../../etc/*` is refused although the literal text before its first `*` is empty. Brace groups are expanded first and each branch is checked on its own.
+- **After expansion**, on the matches, for the one case a pattern cannot predict: a wildcard landing on a symlink that points out of the tree. That refuses the **whole call** and names no file — dropping the entries would hand back a shorter list under an honest-looking `(N files)` header, and printing them would disclose the paths the refusal is about.
+
+Both say `path escapes cwd` and carry the same opt-out as every other refusal. **Neither ever renders as `(0 files)`** — a manufactured zero reads exactly like an empty directory, which is what `glob` used to say about `~`.
+
 ## Categories
 
 | Category | Ops | Page |
