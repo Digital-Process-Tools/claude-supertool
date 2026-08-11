@@ -11,9 +11,12 @@ reading a shell command as a string:
   whenever a quoted argument precedes it (#1336). It fired on this author
   twice while this file was being written, once on a python heredoc that
   merely contained the string in a fixture.
-* `supertool-no-cut.md` fires on the substring `supertool`, which in this repo
+* `supertool-no-cut.md` fired on the substring `supertool`, which in this repo
   is the **directory name** (#1221) — eight false positives on 2026-08-11,
-  none of which piped a supertool op.
+  none of which piped a supertool op. #1415 anchored that pattern to command
+  position, which removes the directory-name and mere-mention shapes; it does
+  not remove the class, because a heredoc body line that BEGINS with a
+  command-shaped string still matches a regex and cannot not.
 
 The fix is not a better regex. The command is tokenised into argv the way a
 shell would, and the match is on the command word, its subcommands and its

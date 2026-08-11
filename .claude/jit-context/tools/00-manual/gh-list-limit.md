@@ -1,7 +1,7 @@
 ---
 title: "gh issue/pr list without --limit returns one page, and a short page looks like the whole board"
 tool: Bash
-match: ~gh (issue|pr) list
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?gh[[:space:]]+(issue|pr)[[:space:]]+list
 mode: remind
 require: --limit
 ---
@@ -26,3 +26,9 @@ supertool 'gh-prs:state=open'
 ```
 
 **Neither `gh-prs` nor `radar` filters by author any more** — bare is the whole repo (#1207, then #1230 for radar's tier, which had kept the default the op dropped). This line said the opposite until 2026-08-10; adding `anyauthor` widens nothing. `gl-mrs` is the one that still narrows — see `op-defaults-that-narrow.md`.
+**Pinned to command position since #1415, and narrower is not precise.** The match
+used to be a bare substring test over the whole command, so it refused a PR body that
+merely *named* the raw command inside a quoted heredoc — twice, once while filing the
+issue about it. Anchoring stops that, and stops a path component. It does **not** stop
+a heredoc line that starts with the command: only a tokeniser can tell a body from a
+command, and that tokeniser lives in `claude-jit-context`, a separate repository.

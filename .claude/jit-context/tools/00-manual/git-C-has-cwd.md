@@ -1,7 +1,7 @@
 ---
 title: "`git -C <path>` is `cwd:` plus an op"
 tool: Bash
-match: (^|[;&|\n] *)(rtk +)?(command +)?git[[:space:]]+-c[[:space:]]+[^=[:space:]]*/
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(command[[:space:]]+)?git[[:space:]]+-c[[:space:]]+[^=[:space:]]*/
 mode: block
 ---
 

@@ -1,7 +1,7 @@
 ---
 title: "`git push` has an op"
 tool: Bash
-match: ~(^|[;&|\n] *)(rtk +)?(command +)?git[[:space:]]+([^;&|\n]*[[:space:]])?push
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(command[[:space:]]+)?git[[:space:]]+([^;&|\n]*[[:space:]])?push
 mode: block
 ---
 
