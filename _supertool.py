@@ -2079,11 +2079,17 @@ _SYNTAX_TOKEN_RE = re.compile(r"[^A-Za-z0-9_]+")
 #: without over-refusing.
 _PATH_CMD_PLACEHOLDERS = ("{file}", "{dir}")
 
-#: Preset ops that name a path in their syntax and predate the declaration
-#: (#1287). **This set only ever shrinks.** It is not a policy — it is a debt
-#: register: 24 shipped ops name a path, 4 declare a boundary, these 20 do not.
-#: Refusing them today would break every one of them in the same release that
-#: introduced the rule, so they are grandfathered *by name*, which means a
+#: Preset ops that name a path and predate the declaration (#1287). **This set
+#: only ever shrinks.** It is not a policy — it is a debt register: 24 shipped
+#: PRESET ops name a path, 5 declare a boundary, these 19 do not. It opened at
+#: 20 — see the #1351 note below for the one it has lost. Counting this repo's
+#: own `.supertool.json` as well makes it 25 and 6, the extra one being
+#: `oss_train`; all four numbers are pinned in
+#: `tests/test_cmd_placeholder_path_detector_1350.py` so this comment cannot
+#: drift again.
+#: Refusing them at the time would have broken every one of them in the same
+#: release that introduced the rule, so they are grandfathered *by name*,
+#: which means a
 #: newly written op cannot inherit the old default by being written after it —
 #: it is refused at dispatch and red in
 #: `tests/test_preset_path_chokepoint_1287.py` until it declares.

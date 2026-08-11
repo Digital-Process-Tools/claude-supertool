@@ -61,21 +61,46 @@ def _no_optout(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", raising=False)
 
 
+def _preset_registry() -> Dict[str, Dict[str, Any]]:
+    """Every op the shipped preset manifests define."""
+    ops: Dict[str, Dict[str, Any]] = {}
+    for manifest in sorted((_ROOT / "presets").glob("*.json")):
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        for name, entry in data.get("ops", {}).items():
+            if isinstance(entry, dict):
+                ops[name] = entry
+    return ops
+
+
 def _registry() -> Dict[str, Dict[str, Any]]:
     """Every op this repository ships, preset manifests AND its own config.
 
     `.supertool.json` is included on purpose: #1350's only live instance
     (`oss_train`) lives there, and a register that cannot see the instance it
     was written for is this repo's standing defect wearing a test's clothes.
+
+    **Merged key-by-key for a dict-over-dict collision, exactly as
+    `_merge_presets` does it**, not overwritten. Three entries in
+    `.supertool.json` — `dashboard`, `radar` and `git-diff` — are partial
+    overrides carrying one extra config key and no `cmd` or `syntax` at all.
+    A naive `ops[name] = entry` replaced the preset definition with the stub,
+    so `git-diff` — which names a path and is in the grandfather register —
+    fell out of every count and every audit below while the audit still
+    reported a clean pass. That is this file's own subject matter committed
+    inside the test written for it.
     """
-    ops: Dict[str, Dict[str, Any]] = {}
-    manifests = sorted((_ROOT / "presets").glob("*.json")) + [
-        _ROOT / ".supertool.json"]
-    for manifest in manifests:
-        data = json.loads(manifest.read_text(encoding="utf-8"))
-        for name, entry in data.get("ops", {}).items():
-            if isinstance(entry, dict):
-                ops[name] = entry
+    ops = _preset_registry()
+    data = json.loads((_ROOT / ".supertool.json").read_text(encoding="utf-8"))
+    for name, entry in data.get("ops", {}).items():
+        if not isinstance(entry, dict):
+            continue
+        base = ops.get(name)
+        if isinstance(base, dict):
+            merged = dict(base)
+            merged.update(entry)
+            ops[name] = merged
+        else:
+            ops[name] = entry
     return ops
 
 
@@ -167,6 +192,39 @@ class TestTheShippedRegistryIsFullyDetected:
             and not supertool._syntax_names_a_path(entry.get("syntax", ""))
         )
         assert cmd_only == ["oss_train"], cmd_only
+
+    def test_the_register_header_comment_counts_are_the_registry_counts(
+            self) -> None:
+        """`_UNDECLARED_PATH_OPS`'s header comment states "24 shipped preset
+        ops name a path, 5 declare a boundary, these 19 do not".
+
+        Pinned because it drifted the moment the register shrank: the comment
+        kept saying 4/20 while the frozenset six lines below it held 19, so one
+        block asserted two counts for the same set. A number in prose with no
+        test under it is folklore.
+
+        Both scopes are asserted, because they differ by exactly the op this
+        issue is about: the register is a statement about `presets/*.json`,
+        and adding `.supertool.json` adds `oss_train` — 25 naming a path and 6
+        declaring.
+        """
+        presets = _preset_registry()
+        named = [n for n, e in presets.items()
+                 if supertool._entry_names_a_path(e) is not None]
+        declared = [n for n in named if "paths" in presets[n]]
+        assert len(named) == 24, sorted(named)
+        assert sorted(declared) == [
+            "claims", "gl-api", "xml", "xml_attr", "xml_count"], sorted(declared)
+        assert len(supertool._UNDECLARED_PATH_OPS) == 19
+
+        whole = _registry()
+        named_all = [n for n, e in whole.items()
+                     if supertool._entry_names_a_path(e) is not None]
+        declared_all = [n for n in named_all if "paths" in whole[n]]
+        assert len(named_all) == 25, sorted(named_all)
+        assert sorted(declared_all) == [
+            "claims", "gl-api", "oss_train", "xml", "xml_attr",
+            "xml_count"], sorted(declared_all)
 
     def test_oss_train_declares_that_its_argument_is_not_a_filesystem_path(
             self) -> None:
