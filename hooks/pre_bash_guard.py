@@ -99,9 +99,15 @@ def main() -> int:
         except Exception as exc:  # pragma: no cover - defensive
             _undecided(f"the registry could not be read ({exc})")
             return 0
+        # A whole word, optionally carrying a Windows executable suffix --
+        # the same two spellings `_guard_command_word` folds together. Any
+        # OTHER dot ends the match, so `cat gh.log` does not read as `gh`:
+        # this line only decides whether to print a disclosure, and one that
+        # fires on a filename is one nobody reads.
         named = [word for word in words
-                 if re.search(r"(?<![\w.-])" + re.escape(word) + r"(?![\w-])",
-                              command)]
+                 if re.search(r"(?<![\w.-])" + re.escape(word)
+                              + r"(?:\.(?:exe|cmd|bat))?(?![\w.-])",
+                              command, re.IGNORECASE)]
         if not named:
             _nothing_to_say()
         else:

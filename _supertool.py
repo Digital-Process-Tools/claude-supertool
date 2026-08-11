@@ -15703,8 +15703,6 @@ def _guard_normalise(argv: Sequence[str], heads: FrozenSet[str]
             "`" + head + "`'s option " + repr(argv[-1]) + " takes a value and "
             "the command ends there, so what `" + head + "` would run was not "
             "read")
-    if i == 1:
-        return argv, None
     return [argv[0]] + list(argv[i:]), None
 
 

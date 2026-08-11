@@ -176,6 +176,20 @@ def test_a_help_flag_still_unclaims_everything_behind_an_option(shipped):
     assert supertool.guard_command("git -C /tmp/x --help").state == "clean"
 
 
+def test_a_help_flag_also_suppresses_the_undecided_note(shipped):
+    """The non-vacuous half of the line above.
+
+    `-C` alone already prevents a match, so `git -C P status --help` is clean
+    with or without the early return. What only the early return decides is an
+    option the table does NOT know: without it, `git --zonk status --help`
+    would be `undecided`, disclosing that the guard could not read a command
+    which asks a program to describe itself and runs nothing.
+    """
+    verdict = supertool.guard_command("git --zonk status --help")
+    assert verdict.state == "clean", verdict
+    assert verdict.notes == (), verdict.notes
+
+
 def test_the_ordinary_path_gains_no_note(shipped):
     """A disclosure under every command is one nobody reads."""
     for command in ("git status", "ls -la", "python3 -m pytest -q",
@@ -317,6 +331,28 @@ def test_powershell_is_never_denied_because_it_was_never_tokenised(tmp_path):
         hook = _run_hook(command, tmp_path,
                          tool="PowerShell")["hookSpecificOutput"]
         assert hook.get("permissionDecision") is None, (command, hook)
+
+
+@pytest.mark.parametrize("command,disclosed", [
+    ("git status", True),
+    ("git.exe status", True),
+    ("GIT.EXE status", True),
+    ("Get-Content gh.log", False),
+    ("Get-Content git.py", False),
+    ("Get-ChildItem -Filter *.github", False),
+])
+def test_the_disclosure_matches_a_binary_not_a_filename(
+        tmp_path, command, disclosed):
+    """A disclosure that fires on a filename is one nobody reads.
+
+    The word may carry a Windows executable suffix -- the same two spellings
+    `_guard_command_word` folds together -- and any other dot ends the match.
+    """
+    (tmp_path / ".supertool.json").write_text(
+        json.dumps({"ops": _preset("git")}), encoding="utf-8")
+    hook = _run_hook(command, tmp_path,
+                     tool="PowerShell")["hookSpecificOutput"]
+    assert ("additionalContext" in hook) is disclosed, (command, hook)
 
 
 def test_the_disclosure_is_off_when_the_gate_is_off(tmp_path):

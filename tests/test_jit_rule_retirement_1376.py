@@ -107,11 +107,21 @@ def test_the_guard_is_a_third_entry_and_shadows_neither_jit_hook():
     assert any(GUARD in c for c in commands), commands
 
 
-def test_the_guard_entry_matches_bash_only():
+def test_the_guard_entry_matches_every_shell_tool():
+    """`Bash` alone until #1413, which was the same defect one layer out.
+
+    Wherever the PowerShell tool is enabled Claude routes shell commands
+    through it, so a `Bash`-only matcher meant this repository's own dogfooded
+    gate never ran and said nothing -- indistinguishable from a clean pass.
+    Kept as a membership test rather than an equality one so a third shell
+    tool is added without rewriting the assertion.
+    """
     settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
     for entry in settings["hooks"]["PreToolUse"]:
         if any(GUARD in h["command"] for h in entry["hooks"]):
-            assert entry.get("matcher") == "Bash", entry
+            matcher = entry.get("matcher") or ""
+            assert "Bash" in matcher, entry
+            assert "PowerShell" in matcher, entry
             return
     raise AssertionError("no entry wires " + GUARD)
 
@@ -171,10 +181,17 @@ def test_the_guard_covers_what_each_retired_rule_forbade(
 
 _KEPT_UNCOVERED = {
     # rule -> (command it forbids, why `replaces` cannot reach it)
+    # #1421 closed the half this row used to cite: `git -C P status` is now
+    # BLOCKED, because the matcher strips git's global options before scoring.
+    # The rule is still kept, and the reason moved rather than disappeared --
+    # it also covers `git -C W diff` and `git -C W log`, and `git diff` /
+    # `git log` are recorded ABSENCES in presets/git.json (the ops answer
+    # narrower questions), so no mapping will ever claim them.
     "git-C-has-cwd.md": (
-        "git -C /tmp/x status",
-        "argv matches a contiguous token prefix and -C's value sits inside "
-        "it; no mapping can cover this until #1421"),
+        "git -C /tmp/x diff",
+        "git-diff answers a narrower question than raw git diff and is a "
+        "recorded absence, so the -C rows the guard now covers are not the "
+        "whole rule"),
     "merged-is-not-ancestry.md": (
         "git branch --merged master",
         "git-worktrees answers merge state for a WORKTREE branch, not for an "

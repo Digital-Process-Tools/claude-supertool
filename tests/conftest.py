@@ -711,6 +711,9 @@ RESET_EXEMPT_GLOBALS = (
     "_GC_DEFAULT_RETENTION_DAYS",
     "_MCP_SERVERS",
     "_MCP_STOP_CODES",
+    # Per-command-word option grammar for the raw-command guard (#1421).
+    # Read on every `guard_command` call, written by nothing.
+    "_GUARD_GLOBAL_OPTIONS",
     "_CONFIG",
     "_AT_FILE_REGISTRY",
     # Same guard, same reason: built once alongside _AT_FILE_REGISTRY inside
