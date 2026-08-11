@@ -1,6 +1,8 @@
 # Operations Reference
 
-~40 ops across five categories. Use this page for a quick "all ops at a glance" lookup, then follow the per-category links for patterns and recipes.
+44 ops across seven categories. Use this page for a quick "all ops at a glance" lookup, then follow the per-category links for patterns and recipes.
+
+Both listings below are hand-written prose over a machine-readable fact, so `tests/test_ops_index_complete_1371.py` holds them to it: every name the dispatcher accepts must appear in the Categories table *and* in the full op table, and the count above must be the real one. `registry` shipped in #1363 and reached neither list; enumerating from the product rather than from the bug report found six more in the same state.
 
 ## Path arguments
 
@@ -19,12 +21,13 @@ Both say `path escapes cwd` and carry the same opt-out as every other refusal. *
 
 | Category | Ops | Page |
 |----------|-----|------|
-| **Reads** | `read`, `read-grep`, `head`, `tail`, `wc`, `stat`, `ls`, `glob`, `tree`, `diff` | [reads.md](reads.md) |
-| **Search** | `grep`, `grep-count`, `grep_around`, `around`, `around_line`, `between` | [search.md](search.md) |
-| **Symbol map** | `map` | [map.md](map.md) |
+| **Reads** | `read`, `head`, `tail`, `wc`, `stat`, `ls`, `glob`, `tree`, `diff` | [reads.md](reads.md) |
+| **Search** | `grep`, `grep_around`, `around`, `around_line`, `between` | [search.md](search.md) |
+| **Symbol map** | `map`, `workspace`, `resolve` | [map.md](map.md) |
 | **Edits** | `edit`, `replace`, `replace_dry`, `replace_lines`, `paste`, `append`, `vim`, `batch` | [edits.md](edits.md) |
-| **Validate / Format** | `validate`, `format`, `validate_staged`, `format_staged` | — |
-| **Meta** | `cwd`, `repo`, `introduction`, `output-format`, `ops`, `ops:roster`, `help`, `version`, `gc` | [meta.md](meta.md) |
+| **Validate / Format** | `validate`, `format`, `validate_staged`, `format_staged`, `check` | — |
+| **LSP-backed** | `diag`, `hover`, `rename` | [mcp-integration.md](../mcp-integration.md) |
+| **Meta** | `cwd`, `repo`, `introduction`, `output-format`, `ops`, `ops:roster`, `ops-compact`, `registry`, `guard`, `help`, `version`, `gc` | [meta.md](meta.md) |
 
 ## Full op table
 
@@ -53,8 +56,8 @@ Both say `path escapes cwd` and carry the same opt-out as every other refusal. *
 | `around_line` | `around_line:PATH:LINE` or `around_line:PATH:LINE:N` | Show N lines (default 10) of context around a specific line number. Target line marked with `→`. |
 | `between` | `between:SYMBOL:PATH` or `between:re:START:END:PATH` | Return a chunk of a file. **Symbol mode (default):** full body of a named function/method/class via tree-sitter (PHP, Python, JS, TS, Go, Rust, Java, Ruby — a `::`-qualified query stays one symbol rather than re-reading the call as `re:` mode, but it is matched literally against the definition's own name node — PHP `Foo::bar` does not resolve, pass the bare `bar`). SYMBOL tolerates source-shaped input (`async function foo`, `public static function bar`, `foo(...)`). **Pattern mode (`re:` prefix):** inclusive line slice from first line matching START regex to first line after matching END regex (language-agnostic). |
 | `tree` | `tree:PATH` or `tree:PATH:DEPTH` | Directory structure with depth limit (default 3). Hides dotfiles. Files listed before subdirectories. |
-| `blame` | `blame:PATH:LINE` or `blame:PATH:LINE:N` | Git blame for N lines (default 5) around a specific line number. Requires git repo. |
-| `help` | `help:OP` | Full reference for one op — the same `.supertool.json` metadata `ops` lists, scoped and never compacted. An op the dispatcher accepts but no config describes says so, rather than reporting itself unknown. |
+| `git-blame` | `git-blame:PATH:LINE[:N]` | Blame for N lines (default 5) around a line. **A preset op, not a builtin** — it ships with the `git` preset and is absent where that preset is not loaded. This row said `blame` until #1371; there is no such op, and `blame:PATH:LINE` answers `unknown operation`. Full reference: [presets/git.md](../presets/git.md). |
+| `help` | `help:OP` | Full reference for one op — the same `.supertool.json` metadata `ops` lists, scoped and never compacted, **plus the `@-` payload route and the field names derived for it**. An op the dispatcher accepts but no config describes says so, rather than reporting itself unknown. |
 | `version` | `version` | Show supertool version. |
 | `gc` | `gc`, `gc:dry`, `gc:run`, `gc:run:KIND` | Prune supertool's own caches under `~/.cache/supertool`. Bare `gc` and `gc:dry` **preview** — per-kind counts and bytes, nothing deleted. `gc:run` deletes. Optional KIND scopes to `vim-cursor`, `vim-undo`, `vi-cursor` or `validators`. See [meta.md](meta.md#gc--cache-retention). |
 | `cwd` | `cwd:PATH` | Set the working dir for the whole call. **Must be the first op** — chdir's once before any dispatch (so every following op resolves against `PATH`), then is stripped. Mirrors `cd PATH && …` without the `cd` (which trips the use-supertool hook and risks stale-cwd path poisoning). `~`/`$VAR` expanded; non-directory or non-first → error before any op runs. |
@@ -71,6 +74,13 @@ Both say `path escapes cwd` and carry the same opt-out as every other refusal. *
 | `validate_staged` | `validate_staged[::tool1,tool2][:verbose]` | Run validators on all files in `git diff --cached --name-only`. Optional `tool_filter`. Append `verbose` for full per-file details. Useful as a pre-commit check. |
 | `format_staged` | `format_staged[::tool1,tool2][:verbose]` | Run formatters on all staged files. Optional `tool_filter`. Append `verbose` for full per-file details. Pair with `validate_staged` for a full normalize-then-check pass. |
 | `workspace` | `workspace:PATH` | One-shot IDE-style view: file + symbols + validators + siblings + git + references + tests. Opt-in (heavy). Use for first-touch on unfamiliar files. |
-| `resolve` | `resolve:SYMBOL` | Smart-glob resolver: PHP FQN (`\`-separated), Python dotted import, JS/TS relative path (`./`) → file on disk. Returns `external` for npm/pip packages, `not found` if no match. Used internally by workspace's Imports section. |
+| `resolve` | `resolve:SYMBOL` or `resolve:SYMBOL:FILE` | FILE is the file the import was written in, and only a Python relative import (`.`, `.utils`) needs it — resolved against that file's directory, and reported `external` without it. Smart-glob resolver: PHP FQN (`\`-separated), Python dotted import, JS/TS relative path (`./`) → file on disk. Returns `external` for npm/pip packages, `not found` if no match. Used internally by workspace's Imports section. |
+| `ops-compact` | `ops-compact` | `ops` with the per-op detail trimmed (~9KB against `ops`' ~47KB). Still over the ~7KB SessionStart hook cap and says so in its first line rather than letting the tail be cut — `ops:roster` is the form that fits. |
+| `registry` | `registry` or `registry:OP` | Which op definitions are loaded and **where each came from** — a shipped preset, this project's config, or a project entry merged over a preset. `ops` answers *what can I do*; this answers *whose definition is in effect*. `registry:OP` attributes every key of one entry. A registry that could not be fully enumerated says so instead of returning a short list. See [meta.md](meta.md#registry--which-ops-are-loaded-and-where-each-came-from). |
+| `guard` | `guard:COMMAND` | What the op registry says replaces a raw shell command — asked directly, without running anything. The command is tokenised into argv rather than pattern-matched. Three verdicts: `BLOCKED`, `OK`, and `UNDECIDED` for a command the guard could not read, which is never rendered as `OK`. See [meta.md](meta.md#guard--what-the-registry-says-replaces-a-raw-command). |
+| `check` | `check:PRESET:PATH` | Run one named op from `.supertool.json`'s `ops` section against PATH, as a standalone check. An unknown name is refused with the list of names that do exist — never answered as a check that found nothing. |
+| `diag` | `diag:PATH` | LSP diagnostics (errors, warnings, hints) for a file. Needs an `mcp.<server>.tools.diag` mapping; without one it returns an error rather than an empty diagnostic list, which would read as a clean file. See [mcp-integration.md](../mcp-integration.md). |
+| `hover` | `hover:SYMBOL:PATH` | Type signature and docs for SYMBOL. Two MCP calls per invocation — `resolve` to find the identifier position, then `hover` there — so both mappings are required. |
+| `rename` | `rename:OLD:NEW:PATH` | Workspace-atomic symbol rename across every file that references it, via the LSP's own rename. cclsp writes `.bak` backups. Requires the `rename` tool mapping. |
 
 **LLM onboarding in one call:** `./supertool 'introduction' 'output-format' 'ops'`
