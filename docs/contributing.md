@@ -141,7 +141,7 @@ If your op exists because a raw command was the wrong way to get the answer, say
 
 `glab api` is GET by default and a **write** under `-X`, `-F`, `-f` or `--input`, and supertool has no GitLab write route at any spelling. `"*"` rather than a list of those four because gl-api forwards no flags at all: a denylist of the write spellings would have left `-H`, `--hostname`, `-i`, `--output`, `--silent` — and `glab api -h` — blocked with no way past, which is a guard wedging a CLI's own help.
 
-Four things it does *not* do, each a decision rather than an omission:
+Five things it does *not* do, each a decision rather than an omission:
 
 - **It un-claims the entry, it does not allow the command.** An exclusion loses to nothing: a second, broader entry that still matches still blocks. A veto that crossed entries would let an op in a repository's own `.supertool.json` un-block a command a shipped op legitimately claims.
 - **It keys on the flag, never on its value.** `glab api -X GET` is a read and is excluded anyway. That costs a *missed block*, which is the direction this guard may be wrong in — there is no per-command way past a wrong one.
