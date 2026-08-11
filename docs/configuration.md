@@ -191,6 +191,14 @@ Set it to `false` to turn the gate off for a project. It is the **only** way off
 
 `supertool 'guard:SHELL COMMAND'` answers the same question without running anything, in three states: `BLOCKED` naming the op, `OK`, and `UNDECIDED` when the command did not tokenise, hid a substitution inside double quotes, handed a string to `eval` / `sh -c`, or the registry could not be enumerated. The hook allows on `UNDECIDED` and says so in the transcript — a gate that quietly did not run is indistinguishable from a command that complied, which is the whole reason it exists.
 
+### Which interpreter the hook runs, and what it does when there is none
+
+`hooks/pre-bash-guard.sh` tries `python3.14` down to `python3.9` on `PATH`, plus an activated virtualenv's own interpreter when `VIRTUAL_ENV` points at a directory containing `pyvenv.cfg`. The bare name `python3` is never tried: on Windows it can resolve to the App Execution Alias stub, which blocks rather than erroring, and this hook runs before every `Bash` call ([#572](https://github.com/Digital-Process-Tools/claude-supertool/issues/572)).
+
+**`SUPERTOOL_PYTHON` is not read here**, and that is the "only way off" sentence above made true rather than merely written down ([#1390](https://github.com/Digital-Process-Tools/claude-supertool/issues/1390)). It was on the ladder, the only test applied to a candidate was that `-c pass` exited 0, and every binary on the box passes that — so `SUPERTOOL_PYTHON=/usr/bin/true` turned the gate off with no output and no disclosure. A candidate now has to identify itself as a Python 3 before it is run, and the variable does not participate: it exists for supertool's own op subprocesses, and a gate deciding whether a command may run is a different trust context.
+
+**A candidate that runs and answers nothing reaches the third state**, not the clean one. The hook writes an envelope on every path including "nothing is replaced", so empty output from the interpreter means the guard did not answer, and the wrapper says so in the transcript and allows the command. Before this only an *empty ladder* produced that disclosure, so an interpreter that started and said nothing rendered exactly like a clean verdict.
+
 ## Compact mode
 
 Set `"compact": true` in `.supertool.json` to enable compact reads. When enabled, `read` ops skip blank lines and comment-only lines (`//`, `#`, `/* */`, `<!-- -->`, PHPDoc `*` lines), preserving original line numbers. Reduces token cost for exploration without losing structure.
