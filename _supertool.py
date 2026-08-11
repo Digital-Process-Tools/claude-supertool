@@ -3232,8 +3232,12 @@ def _read_elide_session_key() -> str:
 def _read_elide_state_path(file_path: str) -> str:
     """One sidecar per (session, file), so concurrent supertool processes never
     read-modify-write a shared index."""
+    # sha256, unlike the two path-only cache-name hashes below, because this
+    # key carries USER: CodeQL flags a weak hash over identity-bearing input
+    # (alert 11 on #1331). The digest is only a filename either way, but a
+    # standing alert on a shipped line is a cost paid by every later reader.
     key = f"{_read_elide_session_key()}|{os.path.realpath(file_path)}"
-    digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
     return os.path.join(str(_cache_root() / _READ_ELIDE_KIND), digest)
 
 
