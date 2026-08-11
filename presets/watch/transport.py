@@ -1185,6 +1185,32 @@ def delivery_of(last_emit: Any, refusal: str = "") -> str:
     return EMIT_UNKNOWN
 
 
+def _state_file_slots() -> list[tuple[str, str]]:
+    """`(source, id)` for every watcher state file in `STATE_DIR`. Reads only.
+
+    A directory that cannot be listed yields nothing. That is a genuine gap —
+    "no state files" and "could not look" are one answer here — and it is the
+    caller's headers that keep it honest: every one of them is phrased over
+    the files it found, never over the fleet.
+    """
+    prefix = "supertool-watch-"
+    suffix = ".state.json"
+    slots: list[tuple[str, str]] = []
+    try:
+        names = sorted(os.listdir(STATE_DIR))
+    except OSError:
+        return slots
+    for name in names:
+        if not (name.startswith(prefix) and name.endswith(suffix)):
+            continue
+        stem = name[len(prefix):-len(suffix)]
+        if "__" not in stem:
+            continue
+        source, watcher_id = stem.split("__", 1)
+        slots.append((source, watcher_id))
+    return slots
+
+
 def delivery_survey() -> list[tuple[str, str, str]]:
     """`(source, id, delivery state)` per watcher state file. Reads only (#1183).
 
@@ -1199,23 +1225,37 @@ def delivery_survey() -> list[tuple[str, str, str]]:
     wider set than `watches` renders and the header says so, because two counts
     of different things presented as one is how a board starts lying quietly.
     """
-    prefix = "supertool-watch-"
-    suffix = ".state.json"
     out: list[tuple[str, str, str]] = []
-    try:
-        names = sorted(os.listdir(STATE_DIR))
-    except OSError:
-        return out
-    for name in names:
-        if not (name.startswith(prefix) and name.endswith(suffix)):
-            continue
-        stem = name[len(prefix):-len(suffix)]
-        if "__" not in stem:
-            continue
-        source, watcher_id = stem.split("__", 1)
+    for source, watcher_id in _state_file_slots():
         state, refusal = read_state_checked(source, watcher_id)
         out.append((source, watcher_id,
                     delivery_of((state or {}).get("last_emit"), refusal)))
+    return out
+
+
+def emit_destinations() -> list[tuple[str, str, str]]:
+    """`(source, id, the socket that watcher last wrote to)` per state file.
+
+    Same population, same read-only guarantee and same non-mutating scan as
+    `delivery_survey` — kept a separate pass rather than a fourth tuple field
+    because that one's shape is a pinned contract, and two cheap reads of a
+    JSON file cost less than a migration nobody asked for.
+
+    The third element is `""` when this watcher has not published a
+    `sock_path` — it has never emitted, it was spawned by a build older than
+    #581, or its state file could not be read at all. Those are not the same
+    story as each other, but they share the only property the caller may act
+    on: **nothing here says which socket that watcher writes to**, and an
+    empty string is not permission to assume it is this process's. Reporting
+    `SOCK_PATH` as a default would be the absence read as agreement, in the
+    one place whose whole job is telling the two apart.
+    """
+    out: list[tuple[str, str, str]] = []
+    for source, watcher_id in _state_file_slots():
+        state, refusal = read_state_checked(source, watcher_id)
+        recorded = "" if refusal else (state or {}).get("sock_path")
+        out.append((source, watcher_id,
+                    recorded if isinstance(recorded, str) else ""))
     return out
 
 

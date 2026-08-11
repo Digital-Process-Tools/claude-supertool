@@ -1103,6 +1103,73 @@ straggler on the old path after an operator changes the variable is
 something a reader can find rather than something inferred from partial
 delivery.
 
+### Two sessions on one machine: both variables, or neither
+
+([#1309](https://github.com/Digital-Process-Tools/claude-supertool/issues/1309).)
+
+A second session gets a radar of its own, today, with no fan-out anywhere in
+the transport. It takes **two** environment variables, and the failure mode of
+setting only the first is the reason this section exists:
+
+```bash
+export SUPERTOOL_WATCH_SOCK=~/.claude/watch-b.sock
+export SUPERTOOL_WATCH_STATE_DIR=~/.claude/watch-b
+```
+
+`SUPERTOOL_WATCH_SOCK` alone is not enough. The poller slot is a pid file at
+`{SUPERTOOL_WATCH_STATE_DIR}/supertool-watch-{source}__{id}.pid`, claimed
+`O_CREAT|O_EXCL`, and exactly one poller may hold it (#476). Two sessions left
+on the default `/tmp` therefore share **one** set of slots — so the second
+session's `radar` claims nothing and spawns nothing, because the first
+session's pollers already hold every slot, and those pollers captured the
+*other* socket at spawn and keep it for life. Every poller is alive, every
+emit is accepted, and none of it arrives.
+
+Setting the state directory too gives the second session its own slot
+namespace, its own pollers and its own socket. The cost is honest and worth
+stating: each session polls the forge independently, so two sessions are two
+sets of API calls and two sets of rate limit, and neither de-duplicates the
+other's events. That is the trade a per-developer tool makes instead of
+running a broker.
+
+`SUPERTOOL_WATCH_STATE_DIR` travels to the poller through
+`transport.poller_env()` — a fork inherits the environment and an exec does
+not, so it is set explicitly — and `SUPERTOOL_WATCH_SOCK` rides along in the
+same copied environment.
+
+**`radar` says when a fleet is delivering somewhere else.** The delivery
+banner reads each watcher's own `sock_path` and compares it with the socket
+this process is configured for, in the same three states as everything else
+here:
+
+```
+radar: DELIVERY — 6 of 6 watcher state file(s) that emitted last wrote to a
+       socket this session does not read: /tmp/supertool-watch.sock. This
+       session reads /Users/me/.claude/watch-b.sock, so those events reached a
+       consumer that is not this one.
+```
+
+and, when a watcher emitted but published no path at all — an older build, or
+a state file that could not be read — it says *that* rather than assuming
+agreement:
+
+```
+radar: delivery — 1 of 4 watcher state file(s) that emitted do not record
+       which socket they wrote to, so nothing here says whether they reach
+       /tmp/supertool-watch.sock.
+```
+
+A fleet that all writes here prints neither line. Watchers that have never
+emitted are excluded from both counts — they have no destination to disagree
+about, and the header above already reports them. Report-only, like the rest
+of this banner: nothing is stopped, reaped or re-armed on the strength of it.
+
+The two layers underneath this are not gaps and do not need fixing. The wire
+is point-to-point with no broker, deliberately; and `claude-channel` does not
+contend for a socket somebody else owns — it exits `3` naming the path and the
+override rather than unlinking it (#550, pinned end to end by
+`tests/test_notifiers_claude_channel_550.py`).
+
 ### The status file is somebody else's text too, and `watches` renders it
 
 ([#1197](https://github.com/Digital-Process-Tools/claude-supertool/issues/1197),
