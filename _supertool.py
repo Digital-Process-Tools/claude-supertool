@@ -15254,7 +15254,7 @@ def _guard_excluded(replacement: _Replacement, argv: Sequence[str]) -> bool:
         #
         # The cost, stated because it is real: a short flag carrying a
         # clustered *value* whose text happens to spell an excluded letter is
-        # excluded too — `git push -oci.skip` reads as carrying `-f`. Telling
+        # excluded too — `git push -ofoo` reads as carrying `-f`. Telling
         # that from `-sb` needs per-flag arity this guard does not have, and it
         # errs toward allowing. `--` tokens are never expanded, which is what
         # keeps `--foo` from matching an excluded `-f`.

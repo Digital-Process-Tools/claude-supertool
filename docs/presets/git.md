@@ -77,7 +77,7 @@ It is worse on a refspec. `git push --dry-run origin feature:refs/heads/other` p
 
 **A `--` token is never expanded**, or every long flag containing an `f` would un-claim an entry excluding `-f`.
 
-**The cost, which is real:** a short flag carrying a clustered *value* is expanded too, so `git push -oci.skip` reads as carrying `-f` and is no longer claimed. Telling that from `-sb` needs per-flag arity the guard does not have. It errs toward allowing, and `git-push` forwards no push options anyway, so that particular block was already a dead end.
+**The cost, which is real:** a short flag carrying a clustered *value* is expanded too, so `git push -ofoo` reads as carrying `-f` and is no longer claimed (while `git push -oci.skip`, spelling no excluded letter, is still claimed — which is the arbitrariness, not a mitigation). Telling that from `-sb` needs per-flag arity the guard does not have. It errs toward allowing, and `git-push` forwards no push options anyway, so that particular block was already a dead end.
 
 ### `git -C <path> <subcommand>` reaches none of these mappings
 

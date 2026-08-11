@@ -25,10 +25,20 @@ NOT given to the positive `flag` matcher, where it would block more.
 
 The cost is real and named: a single-dash token is read as a cluster of
 single-letter flags, so a short flag carrying a clustered *value* whose text
-happens to contain an excluded letter is excluded too - `git push -oci.skip`
-now reads as carrying `-f`. Telling that from `-sb` needs per-flag arity the
-guard does not have, and it errs toward allowing. A double-dash token is never
+happens to contain an excluded letter is excluded too - `git push -ofoo` now
+reads as carrying `-f`, while `git push -oci.skip` spells no excluded letter
+and is still claimed. Telling those apart needs per-flag arity the guard does
+not have, and it errs toward allowing. A double-dash token is never
 expanded, which is what keeps `--foo` from matching an excluded `-f`.
+
+**Four of these are controls, not pins, and are labelled `CONTROL` where they
+sit** - they were green before this change and are green after. They are here
+because each catches a *plausible wrong version* of it: excluding `-n` on
+commit as well as on push (the half-spelling trap run backwards), matching a
+cluster letter against the initial of a long-flag entry so `git commit -am x`
+goes clean, dropping the `-`/`--` filter so a bare dash expands to nothing,
+and extending the same widening to the positive `flag` matcher. Read together
+with the pins above them, which were red on `52c3811`.
 """
 from __future__ import annotations
 
@@ -93,6 +103,20 @@ def test_a_dry_run_is_not_answered_by_an_op_that_does_the_thing(
     assert supertool.guard_command(command).state == "clean", (command, why)
 
 
+def test_a_clustered_value_is_expanded_too_and_that_is_the_cost(shipped_git):
+    """The trade-off, measured here rather than only asserted in prose.
+
+    `-ofoo` is `--push-option=foo`, not `-f`, and the guard cannot tell: it
+    spells an excluded letter, so the entry no longer claims it. `-oci.skip`
+    spells none and still is claimed - the same flag, two verdicts, decided by
+    the text of a value. That is the arbitrariness, and it is not a mitigation.
+    Both are missed blocks at worst, which is the direction stated above.
+    """
+    assert supertool.guard_command("git push -ofoo").state == "clean"
+    assert supertool.guard_command("git push -oci.skip").state == "blocked"
+
+
+# CONTROL (see the module docstring): green before this change and after.
 def test_commit_short_n_is_not_dragged_along_by_the_dry_run_exclusion(
         shipped_git):
     """`-n` is `--dry-run` on push and `--no-verify` on commit.
@@ -131,6 +155,8 @@ def test_a_clustered_short_flag_is_read_as_its_letters(
     ("git commit -am x", "COMMIT"),
     ("git push origin master", "git-push"),
 ])
+# CONTROL: catches a letter matched against a long-flag entry's initial, which
+# would send `git commit -am x` clean past `--amend`.
 def test_a_cluster_of_unexcluded_letters_is_still_claimed(
         shipped_git, command, use):
     expected = _GIT_OPS["git-commit"]["syntax"] if use == "COMMIT" else use
@@ -163,6 +189,7 @@ def test_a_double_dash_still_ends_the_option_list_for_a_cluster(
     assert supertool.guard_command("probe run -- -sb").state == "blocked"
 
 
+# CONTROL: the `-`/`--` filter lives in `_guard_is_flag`, one call up.
 def test_a_bare_dash_is_not_a_cluster_of_nothing(tmp_path, monkeypatch):
     """`-` is stdin, a positional. It has no letters, and must not become one."""
     _load(tmp_path, monkeypatch, _probe_op(
@@ -171,6 +198,7 @@ def test_a_bare_dash_is_not_a_cluster_of_nothing(tmp_path, monkeypatch):
     assert supertool.guard_command("probe run --").state == "blocked"
 
 
+# CONTROL: goes red the day the same widening is extended to `flag`.
 def test_the_positive_flag_matcher_is_not_widened(shipped_git):
     """Deliberately asymmetric: widening an exclusion blocks less, widening the
     matcher blocks more, and only one of those is the safe direction here.
