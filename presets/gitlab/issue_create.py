@@ -18,6 +18,7 @@ except ModuleNotFoundError:
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import _remote_default as _rd  # noqa: E402
+import _untrusted  # noqa: E402  (glab relays the API's own error body — #1485)
 
 
 def _glab(args: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
@@ -185,7 +186,9 @@ def main() -> int:
 
     if result.returncode != 0:
         print(f"ERROR: glab issue create failed (exit {result.returncode})")
-        print(result.stderr.strip() or result.stdout.strip())
+        # Whatever glab echoed here was written by the GitLab API, and it prints
+        # at column 0 with nothing in front of it — flatten, never relay (#1485).
+        print(_untrusted.flat(result.stderr.strip() or result.stdout.strip()))
         return 1
 
     output = result.stdout.strip()

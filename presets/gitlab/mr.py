@@ -91,7 +91,7 @@ def _glab_fail_detail(r: subprocess.CompletedProcess[str]) -> str:
     stdout empty, so the reason is there to be had — it was simply never read.
     """
     for line in (r.stderr or "").splitlines():
-        line = line.strip()
+        line = _untrusted.flat(line.strip())
         if line and line != "ERROR":
             return f"glab exit {r.returncode}: {line[:120]}"
     return f"glab exit {r.returncode}"
@@ -555,7 +555,7 @@ def _get_conflict_hunks(
         return {}, f"could not run git: {exc}"
     if result.returncode != 0 and not result.stdout:
         detail = (result.stderr or "").strip().splitlines()
-        suffix = f": {detail[0]}" if detail else ""
+        suffix = f": {_untrusted.flat(detail[0])}" if detail else ""
         return {}, f"git merge-tree failed (exit {result.returncode}){suffix}"
     if not result.stdout:
         return {}, None
@@ -630,7 +630,9 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
         return "ERROR: glab not authenticated. Run: glab auth login"
     if "403" in s or "forbidden" in s:
         return f"ERROR: permission denied for {resource} #{identifier}. Check your GitLab access token permissions."
-    return f"ERROR: glab failed for {resource} #{identifier}: {stderr.strip()}"
+    # The remote host wrote this text — flattened, never relayed raw (#1485).
+    return (f"ERROR: glab failed for {resource} #{identifier}: "
+            f"{_untrusted.flat(stderr.strip())}")
 
 
 def _render_note(note: dict, cap: int | None = COMMENT_MAX) -> str:

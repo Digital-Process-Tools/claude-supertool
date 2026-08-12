@@ -113,7 +113,9 @@ def _format_error(stderr: str, resource: str) -> str:
             f"ERROR: permission denied reading {resource}. Instance-wide runner data "
             "needs admin; project-scoped runners need Maintainer."
         )
-    return f"ERROR: glab failed reading {resource}: {stderr.strip()}"
+    # The remote host wrote this text — flattened, never relayed raw (#1485).
+    return (f"ERROR: glab failed reading {resource}: "
+            f"{_untrusted.flat(stderr.strip())}")
 
 
 def _parse_paginated_json(raw: str) -> list[dict]:
