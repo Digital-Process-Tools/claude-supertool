@@ -9,7 +9,9 @@ once instead of a fourth site guessing it again.
 **The rule: an outer budget is a hang-guard on the adapter, so it must exceed
 the adapter's own budget.** Every adapter under `validators/` already owns an
 internal `subprocess.run(..., timeout=N)` around the real tool and already has
-a stated decline for blowing it (`code: "adapter", msg: "timeout"`). So a test
+a stated decline for blowing it (`code: "adapter"`, and a message naming the
+wall in one of `_adapter_verdict.WALL_PHRASES` -- `timeout` or `timed out`;
+matching only the first is what left #1461's payload unclassifiable). So a test
 that spawns the adapter is not waiting on the tool — it is waiting on the
 adapter, which is contractually obliged to answer within its own N plus the
 cost of starting Python twice.
