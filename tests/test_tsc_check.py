@@ -147,7 +147,7 @@ def test_pretty_output_is_not_requested_from_tsc(tmp_path: Path) -> None:
     ))
     out = _run_env(str(f), env)
 
-    assert out["ok"] is False
+    assert_declined(out, context="a coloured pretty dump from tsc")
     err = out["errors"][0]
     assert err["line"] == 1, err
     assert err["col"] == 7, err
@@ -179,7 +179,7 @@ def test_an_unparseable_dump_is_a_non_verdict_not_a_syntax_finding(
     ))
     out = _run_env(str(f), env)
 
-    assert out["ok"] is False
+    assert_declined(out, context="output tsc-check cannot parse")
     assert out["count"] == 1
     err = out["errors"][0]
     assert err["code"] == "adapter", err
@@ -202,7 +202,7 @@ def test_a_silent_non_zero_exit_is_a_non_verdict(tmp_path: Path) -> None:
     env = _stub_tsc(tmp_path, "import sys\nsys.exit(2)\n")
     out = _run_env(str(f), env)
 
-    assert out["ok"] is False
+    assert_declined(out, context="a silent non-zero exit from tsc")
     assert out["errors"], out
     err = out["errors"][0]
     assert err["code"] == "adapter", out
