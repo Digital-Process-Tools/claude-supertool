@@ -332,6 +332,13 @@ def test_no_command_is_blocked_by_both_the_guard_and_the_rule(
     Read the failure as: the registry now claims this subcommand, so
     `git-C-has-cwd.md`'s `match` has to stop firing on it -- not as a bug in
     the mapping.
+
+    The guard-CLEAN half of these cases -- every `unless_flag` spelling -- is
+    VACUOUS today and is here for the day it stops being: `not (blocked and
+    fires)` holds whatever the rule does when the guard says nothing. What
+    stops that reading as coverage is `test_the_double_block_gate_is_not_
+    vacuous` below, and `_RULE_STILL_FIRES`, which asserts the flagged shapes
+    positively.
     """
     blocked = supertool.guard_command(command).state == "blocked"
     fires = _awk_matches(_pattern_for("git-C-has-cwd.md"), command)
@@ -343,13 +350,34 @@ def test_no_command_is_blocked_by_both_the_guard_and_the_rule(
 
 # The other direction, without which narrowing the pattern to nothing at all
 # would satisfy every case above. Each is guard-clean because `git diff` and
-# `git log` are recorded ABSENCES in presets/git.json, and because
-# `--porcelain` sits in git-status's `unless_flag`.
+# `git log` are recorded ABSENCES in presets/git.json, and because every flag
+# below sits in git-status's `unless_flag` -- the guard declines a flagged
+# `status` outright, so those shapes are this rule's or nobody's.
 _RULE_STILL_FIRES = [
     ("git -C /tmp/wt diff", "git-diff answers a narrower question"),
     ("git -C /tmp/wt log master..HEAD", "git-diverge answers a range"),
+    # Every `unless_flag` git-status carries, not just the one the rule's table
+    # happens to name: the guard declines all four, so all four are this rule's
+    # or nobody's, and the first draft of the narrowing left three unrefused.
     ("git -C /tmp/wt status --porcelain", "git-worktrees answers busy-ness"),
+    ("git -C /tmp/wt status --short", "same question, shorter flag"),
+    ("git -C /tmp/wt status -s", "same question, shortest flag"),
+    ("git -C /tmp/wt status -z", "same question, NUL-separated"),
 ]
+
+
+@needs_awk
+def test_the_double_block_gate_is_not_vacuous(shipped_registry):
+    """At least one derived command must actually reach the guard.
+
+    Without this, a registry that claimed no git command at all -- or a
+    `guard_command` that stopped answering -- would satisfy every case above
+    by making `blocked` false everywhere, and the gate would read as green
+    while checking nothing.
+    """
+    blocked = [c for _, c in _git_commands_the_registry_claims()
+               if supertool.guard_command(c).state == "blocked"]
+    assert len(blocked) >= 4, blocked
 
 
 @needs_awk

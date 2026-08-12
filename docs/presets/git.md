@@ -89,11 +89,11 @@ It is worse on a refspec. `git push --dry-run origin feature:refs/heads/other` p
 
 **The cost, which is real:** a short flag carrying a clustered *value* is expanded too, so `git push -ofoo` reads as carrying `-f` and is no longer claimed (while `git push -oci.skip`, spelling no excluded letter, is still claimed — which is the arbitrariness, not a mitigation). Telling that from `-sb` needs per-flag arity the guard does not have. It errs toward allowing, and `git-push` forwards no push options anyway, so that particular block was already a dead end.
 
-### `git -C <path> <subcommand>` reaches none of these mappings
+### `git -C <path> <subcommand>` reaches these mappings — since #1421, not before
 
-`argv` is matched **token-for-token against the start of a simple command**, and `-C`'s value sits between the command word and the subcommand — so `{"argv": "git status"}` cannot see `git -C /tmp/x status`. The same holds for `git -c key=value`, `--git-dir` and `--work-tree`.
+This section said the opposite until #1438, and said it four sections below the paragraph recording the fix. `argv` is matched **token-for-token against the start of a simple command**, and `-C`'s value sits between the command word and the subcommand, so `{"argv": "git status"}` could not see `git -C /tmp/x status` — the answer was the matcher stripping git's own global options before scoring, not an entry here. Same for `git -c key=value`, `--git-dir` and `--work-tree`.
 
-That is a limit of the matcher, not of this preset, and it is deliberately not papered over here: an entry of `{"argv": "git -C"}` is the only spelling `replaces` offers, and it would block `git -C W tag` and `git -C W push origin v1.2.3` alike, neither of which any op answers. The op-side answer to driving another tree is `cwd:PATH` as the first op of the call.
+The entries are unchanged, and deliberately: `{"argv": "git -C"}` was the only spelling `replaces` offered, and it would have blocked `git -C W tag` too, which no op answers. What still reaches nothing is `git -C W <sub>` for a subcommand nothing maps, and the flagged spellings each `unless_flag` declines. The op-side answer to driving another tree is `cwd:PATH` as the first op of the call, and `.claude/jit-context/tools/00-manual/git-C-has-cwd.md` says so for the shapes above that the guard does not claim.
 
 ### Nine ops declare nothing
 
