@@ -645,7 +645,10 @@ def main() -> int:
         print(f"ERROR: glab mr list failed: {exc}", file=sys.stderr)
         return 1
     if result.returncode != 0:
-        err = result.stderr.strip() or "unknown error"
+        # Flattened before either use: this reaches a receipt, because the core
+        # appends a failing preset's stderr to it (`_supertool.py`), and the
+        # writer of the text is the GitLab API (#1485).
+        err = _untrusted.flat(result.stderr.strip()) or "unknown error"
         if "not logged in" in err.lower() or "401" in err:
             print("ERROR: glab not authenticated. Run: glab auth login", file=sys.stderr)
         else:

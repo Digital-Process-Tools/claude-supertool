@@ -69,7 +69,9 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
         return "ERROR: glab not authenticated. Run: glab auth login"
     if "403" in s or "forbidden" in s:
         return f"ERROR: permission denied for {resource} #{identifier}. Check your GitLab access token permissions."
-    return f"ERROR: glab failed for {resource} #{identifier}: {stderr.strip()}"
+    # The remote host wrote this text — flattened, never relayed raw (#1485).
+    return (f"ERROR: glab failed for {resource} #{identifier}: "
+            f"{_untrusted.flat(stderr.strip())}")
 
 
 def _print_table(jobs: list[dict]) -> None:

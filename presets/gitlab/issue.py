@@ -52,7 +52,11 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
         return "ERROR: glab not authenticated. Run: glab auth login"
     if "403" in s or "forbidden" in s:
         return f"ERROR: permission denied for {resource} #{identifier}. Check your GitLab access token permissions."
-    return f"ERROR: glab failed for {resource} #{identifier}: {stderr.strip()}"
+    # `glab` echoes the GitLab API's own error body here, so the writer of this
+    # text is the remote host — flattened, never relayed raw (#1485). The shape
+    # is `presets/gitlab/api.py`'s `classify_error`.
+    return (f"ERROR: glab failed for {resource} #{identifier}: "
+            f"{_untrusted.flat(stderr.strip())}")
 
 
 def _glab_api(endpoint: str, timeout: int = 10) -> subprocess.CompletedProcess[str]:
@@ -211,11 +215,42 @@ def _download_images(image_urls: list[str], issue_number: str) -> list[str]:
     """Download GitLab upload images to local temp directory.
 
     Returns list of local file paths for successfully downloaded images.
+
+    **`issue_number` is remote input.** It is `iid` from the `glab issue view`
+    reply, so the *directory this writes into* was chosen by the server. Two
+    things follow, and #1484 was both of them at once:
+
+    - The refusal has to come **before** `os.makedirs`. A directory created is
+      already a write, and no later guard can un-create it. `../escaped` gave
+      `realpath` `/private/tmp/audit_pwned` from an `IMAGE_DIR` of
+      `/tmp/supertool-images`; an absolute `iid` makes `os.path.join` discard
+      the root outright.
+    - The containment check is anchored to `IMAGE_DIR`, which is a constant, and
+      never to `out_dir`, which is derived from the value being constrained.
+      That was the defect: `_is_inside(local_path, out_dir)` answered `True`
+      about a directory that had already escaped. `_is_inside` was correct; it
+      was asked the wrong question. Same shape as #1246, one layer down.
     """
     if not image_urls:
         return []
 
-    out_dir = os.path.join(IMAGE_DIR, issue_number)
+    # Numeric, by the whole string — a GitLab iid is a positive integer and
+    # nothing else. `str.isdigit()` is not this test: it accepts Arabic-Indic
+    # and other Unicode digits, which are not what any path this builds means.
+    if not re.fullmatch(r"[0-9]+", str(issue_number)):
+        print(f"note: skipped {len(image_urls)} attachment(s) — the issue id "
+              f"{_untrusted.flat(str(issue_number))!r} from the API reply is "
+              "not numeric, so no download directory was chosen")
+        return []
+
+    out_dir = os.path.join(IMAGE_DIR, str(issue_number))
+    if not _is_inside(out_dir, IMAGE_DIR):
+        # Unreachable through the check above, and kept anyway: it is the arm
+        # that does not depend on the id having been validated, so it still
+        # holds if the derivation moves.
+        print(f"note: skipped {len(image_urls)} attachment(s) — the download "
+              f"directory did not resolve inside {IMAGE_DIR}")
+        return []
     os.makedirs(out_dir, exist_ok=True)
 
     downloaded: list[str] = []
@@ -232,10 +267,13 @@ def _download_images(image_urls: list[str], issue_number: str) -> list[str]:
         # Decoding first means basename operates on what the name really says.
         local_name = os.path.basename(urllib.parse.unquote(upload_path))
         local_path = os.path.join(out_dir, local_name)
-        # And confirm it: a name is only usable if it actually resolves inside
-        # the directory we chose. Anything else is skipped rather than guessed at.
-        if not _is_inside(local_path, out_dir):
-            print(f"note: skipped an attachment whose name resolves outside {out_dir}")
+        # And confirm it against IMAGE_DIR, the constant — not against `out_dir`,
+        # which is derived from the API's `iid` and so cannot be its own
+        # boundary (#1484). The `out_dir` arm stays as the tighter of the two.
+        if not (_is_inside(local_path, IMAGE_DIR)
+                and _is_inside(local_path, out_dir)):
+            print("note: skipped an attachment whose name resolves outside "
+                  f"{IMAGE_DIR}")
             continue
 
         # Use glab api to download (handles auth automatically)
