@@ -99,12 +99,36 @@ while read -r _local_ref _local_sha remote_ref _remote_sha; do
     esac
 done
 
-# Three states, not two. No refs on stdin means the question was never answered
-# — some callers invoke the hook with stdin closed — and an unanswered question
-# must not read as "feature branch, skip it". Say so, then run the suite: the
-# cost of being wrong that way is three minutes, and the other way is master.
+# Three states, not two — and zero ref lines is two different things (#1242).
+#
+# Git invokes this hook with `<remote-name> <remote-url>` in argv, always. So
+# when there are no ref lines AND git is the caller, the refs were read fine
+# and there are none: that is what an already-up-to-date `git push` looks like,
+# and git runs the hook for it anyway. Nothing is being updated, so there is
+# nothing to gate — and gating it cost the full suite. Measured 2026-08-12 with
+# this hook's branches marked: a second `git-push` on a pushed feature branch
+# took the "could not read" arm and went on to ~296s of pytest, against
+# `_PUSH_TIMEOUT = 300` in presets/git/push.py. That four-second margin is the
+# coin flip #1242 was filed about, and the suite was authorising a transfer of
+# nothing. An absence the tool produced, read as an absence in the world.
+#
+# With no argv, the caller is not git and the question really was never
+# answered — some callers invoke the hook with stdin closed. That is the case
+# the fallback below was written for and it keeps it: say so, then run the
+# suite, because the cost of being wrong that way is three minutes and the
+# other way is master.
 if [ "$saw_ref" -eq 0 ]; then
-    echo "── pre-push: could not read the push refs from stdin — running the suite ──"
+    if [ "$#" -lt 2 ]; then
+        echo "── pre-push: could not read the push refs from stdin — running the suite ──"
+    elif [ -n "${PREPUSH_FULL:-}" ]; then
+        echo "── pre-push: no refs to update, but PREPUSH_FULL=1 — running the suite ──"
+    else
+        echo "── pre-push: no refs to update — nothing to push, suite NOT run here ──"
+        echo "   git ran this hook for remote '$1' and sent no ref lines, which is"
+        echo "   what an up-to-date push looks like. Nothing moves, so nothing is gated."
+        echo "   Force it locally with: PREPUSH_FULL=1 git push"
+        exit 0
+    fi
 elif [ "$target_protected" -eq 0 ] && [ -z "${PREPUSH_FULL:-}" ]; then
     echo "── pre-push: feature branch — suite NOT run here ──"
     echo "   The PR's checks are the gate, and they run in parallel while you work."

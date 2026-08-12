@@ -801,11 +801,25 @@ red PR branch is what PRs are for and the PR's checks run in parallel on
 somebody else's machine. The measured cost it removes from a feature push is
 **176.66s**, serial and blocking.
 
-Three states, not two, and each announces itself: destination is master → run;
-destination is a feature branch → skip, and say so; **stdin unreadable → run
-the suite**, because "the question was never answered" must not render as
-"feature branch, skip it". Being wrong that way costs three minutes; being
-wrong the other way costs master.
+Four states, and each announces itself: destination is master → run;
+destination is a feature branch → skip, and say so; **git handed us no refs at
+all → skip, and say so**; **something that is not git ran the hook and stdin
+was unreadable → run the suite**, because "the question was never answered"
+must not render as "feature branch, skip it". Being wrong that way costs three
+minutes; being wrong the other way costs master.
+
+The third and fourth used to be one state, and merging them was the bug
+([#1242](https://github.com/Digital-Process-Tools/claude-supertool/issues/1242)).
+Git runs this hook even when there is nothing to update — an already-up-to-date
+`git push` is the common case — and it legitimately sends zero ref lines. The
+hook read that as "I could not tell what is being pushed" and ran the whole
+suite to authorise a transfer of nothing: measured 2026-08-12 with the hook's
+branches marked, **~296s against `git-push`'s own 300s budget**, four seconds
+apart, which is the coin flip #1242 was filed about. They are distinguishable
+without guessing, and not by counting lines: **git always invokes `pre-push`
+with `<remote-name> <remote-url>` in argv**, so two args and no ref lines means
+git asked and there is nothing to gate, while no args at all means the caller
+was not git and the question really is open.
 
 - `PREPUSH_FULL=1 git push` — force the suite on a feature branch.
 - `git push --no-verify` — the blunt instrument: skips this hook and every

@@ -792,6 +792,46 @@ def _watch_target(mr: Optional[dict]) -> Optional[tuple[str, str]]:
     return source, str(mr["iid"])
 
 
+def _prepush_hook_state(flags: set[str]) -> tuple[str, str]:
+    """Would `git push` have run a local pre-push hook here? `(state, detail)`.
+
+    Three states, and the third is the one that matters (#1242). A push that
+    outlasts its budget has two causes that look identical from outside — the
+    network, and a local hook that was still running — and the receipt used to
+    name only the first. A lookup that could not answer must therefore not
+    render as "no hook", which is precisely the reading that sends someone to
+    check their connection for a suite that was running on their own laptop.
+
+    * `runs`    — detail is the hook path git resolved.
+    * `none`    — detail says why: the flag, or nothing executable there.
+    * `unknown` — detail is the git call that did not answer.
+
+    `--git-path` is asked rather than `.git/hooks` assumed: it honours
+    `core.hooksPath`, which is how this repo installs its own hook, and it
+    resolves per worktree. Nothing here changes the verdict; it changes where
+    the reader looks for the four seconds.
+    """
+    if "no-verify" in flags:
+        return "none", "--no-verify was passed, so git skipped the local hook"
+    r, why = _checked_git(["rev-parse", "--git-path", "hooks/pre-push"],
+                          "git rev-parse --git-path hooks/pre-push")
+    if r is None:
+        return "unknown", why
+    path = r.stdout.strip()
+    if not path:
+        return "unknown", ("`git rev-parse --git-path hooks/pre-push` "
+                           "answered with nothing")
+    # `os.access(X_OK)` is True for any existing file on Windows — there is no
+    # execute bit — so this reads `runs` there for a hook that is merely
+    # present. That is the right answer on that platform rather than a vacuous
+    # one: git runs hooks through sh, which does not consult a bit that does
+    # not exist. Erring toward `runs` is also the safe direction here, because
+    # this line only redirects where the reader looks; it decides no verdict.
+    if os.path.isfile(path) and os.access(path, os.X_OK):
+        return "runs", path
+    return "none", f"no executable pre-push hook at {path}"
+
+
 def _repo_root() -> str:
     """Directory holding the `supertool` wrapper and `supertool.py`."""
     return install_dir()
@@ -1370,6 +1410,15 @@ def _report_push_timeout(branch: str, head_before: str,
     not do. Only a remote that did not move gets a failing verdict, and even
     then it is reported as *unverified*, not rejected — the push may still be
     in flight server-side.
+
+    The failing arm additionally names where the budget probably went, via
+    `_prepush_hook_state` (#1242): a local pre-push hook and a hanging network
+    are indistinguishable from a clock, and this repo's own hook can spend
+    ~296s of a 300s budget. That disclosure never edits the verdict, and it
+    never retracts the in-flight caution below it — the timeout kills the whole
+    `git push`, so a hook that finished at 290s and a transfer that then began
+    are still on the table, and inferring otherwise from "a hook exists" would
+    be the same guess this op refuses everywhere else.
     """
     head_after, _head_why = _local_head()
     live, live_why = _live_remote_sha(remote, ref)
@@ -1402,6 +1451,19 @@ def _report_push_timeout(branch: str, head_before: str,
     print(f"local HEAD {head_after[:7] or 'unknown'} | "
           f"remote {remote}/{ref} at {live[:7] or 'unknown'}"
           + (f" ({live_why})" if not live and live_why else ""))
+    hook_state, hook_detail = _prepush_hook_state(flags)
+    if hook_state == "runs":
+        print(f"A local pre-push hook runs before anything is sent "
+              f"({hook_detail}), so some or all of that {_PUSH_TIMEOUT}s may "
+              "have been local — a remote that has not moved is exactly what a "
+              "push still inside its own hook looks like. This repo's hook "
+              "runs the full suite when the destination is master/main (#1242).")
+    elif hook_state == "none":
+        print(f"No local pre-push hook ran ({hook_detail}), so the "
+              f"{_PUSH_TIMEOUT}s was the push itself.")
+    else:
+        print(f"Whether a local pre-push hook ran is UNKNOWN — {hook_detail}. "
+              "This receipt is not saying none did.")
     print("The push may still be in flight — `git fetch` and re-check before "
           "retrying; do NOT force-push on a timeout alone.")
     _result(f"NOT PUSHED - UNVERIFIED  {branch} -> {remote}/{ref} - push timed "
