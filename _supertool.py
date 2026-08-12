@@ -2743,13 +2743,22 @@ _SYNTAX_TOKEN_RE = re.compile(r"[^A-Za-z0-9_]+")
 #: than a prose `syntax` string, and the one #1350 was filed about.
 #:
 #: `{arg}` is deliberately absent even though it substitutes the very same
-#: `parts[1]`. Sixteen shipped ops pass a handle, a ref, a tag, an ID or a
-#: repo slug through it and none of them takes a path, so promoting it would
-#: refuse all sixteen and gate nothing. `{file}` and `{dir}` are the
-#: placeholders whose NAME is the claim; `{arg}` is the one that declines to
-#: make it. An op that means a path and writes `{arg}` is still ungated, and
-#: that is a naming problem in the op rather than a hole the core can close
-#: without over-refusing.
+#: `parts[1]`. Twenty-four shipped ops carry `{arg}`; 8 of them name a path in
+#: `syntax` and are already held by `_syntax_names_a_path`, leaving 16 that
+#: pass a handle, a ref, a tag, an ID or a repo slug and take no path at all.
+#: Promoting `{arg}` would refuse those 16 and gate nothing. `{file}` and
+#: `{dir}` are the placeholders whose NAME is the claim; `{arg}` is the one
+#: that declines to make it. An op that means a path and writes `{arg}` is
+#: still ungated, and that is a naming problem in the op rather than a hole
+#: the core can close without over-refusing.
+#:
+#: #1357 proposed a *lint* instead — flag `{arg}` beside a PATH-shaped
+#: `syntax` — and it is not built, because the measurement says it reaches
+#: nothing: all 8 such ops are already refused by the detector unless they
+#: declare, or named in `_UNDECLARED_PATH_OPS`. It is also aimed at the wrong
+#: half. The residue is an op that MEANS a path behind a `syntax` that does
+#: not say so, and such an op is invisible to a lint keyed on the `syntax`
+#: saying so. Pinned in `tests/test_arg_placeholder_and_paths_env_1357.py`.
 _PATH_CMD_PLACEHOLDERS = ("{file}", "{dir}")
 
 #: Preset ops that name a path and predate the declaration (#1287). **This set
@@ -3392,7 +3401,15 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     # (#1347), read by the hook and never by the op's own subprocess. Without
     # it every gh-* call would carry a JSON-encoded copy of its own mapping
     # table in SUPERTOOL_REPLACES, which nothing reads.
-    _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status", "restartMcp", "replaces"}
+    # `paths` for the same reason and one more (#1357): it is the containment
+    # declaration `_preset_path_containment` has already enforced by the time
+    # this line runs, so the subprocess it would reach is the very process the
+    # declaration constrains. That is the wrong direction for the information
+    # to travel, and nothing reads SUPERTOOL_PATHS — a tree-wide grep returns
+    # zero. Reserved rather than left exported with a note, because "our own
+    # config, so harmless" is a judgement that has to be re-made by every
+    # future reader instead of once, here.
+    _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status", "restartMcp", "replaces", "paths"}
     # No scrub here any more (#714). #692 put one on this line because every
     # PRESET op is launched from it — true, and the reasoning holds, but this
     # is the launcher for half the op table. Built-ins never reach it, and core
