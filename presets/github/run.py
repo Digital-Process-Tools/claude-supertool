@@ -95,6 +95,64 @@ def steps_resolved(steps: object) -> int:
     return n
 
 
+#: Width of the `Job id` column — `job #` plus the integer. Actions job ids are
+#: 11 digits today and GitHub allocates them monotonically, so the slack is for
+#: the digit they will grow, not decoration (`gh-branch`'s `RUN_COL`, #1409).
+JOB_ID_COL = 18
+
+
+def job_id_cell(job: object) -> str:
+    """`job #<id>` for one leg, or `id unread` when the payload carried none.
+
+    **The word is minted here and nowhere else**, so the table and the
+    failed-jobs section cannot disagree about what an id is called or about
+    what its absence looks like.
+
+    `job`, never `check`, and that is established rather than inferred (#827).
+    `gh-job` answers for both of GitHub's id namespaces and they overlap in one
+    direction, which is why `gh-pr:N:status` has to decide per leg — its source
+    is a status rollup and mixes CheckRun with StatusContext. This op's source
+    cannot: `gh run view --json jobs` reads
+    `repos/{o}/{r}/actions/runs/{id}/jobs`, an Actions-jobs endpoint, and a
+    check run is in no run's job list — that is the documented reason
+    `gh-job`'s old "use gh-run to list jobs first" advice could not work
+    (`docs/presets/github.md`, the #827 table). So every id here is a job id by
+    construction of the request, and labelling it per row is a restatement of
+    that fact, not a guess about it.
+
+    The label is written per row rather than left to the column header because
+    a row gets quoted on its own, into a report or another agent's brief, where
+    the header is not travelling with it.
+
+    An unreadable id renders `id unread`, not `job #?` and not `job #None` —
+    the latter is what `.get("databaseId", "?")` printed for a key present with
+    a null value. An absence must not wear the shape of an id: the reader's
+    next move is one op on that integer, and a plausible-looking non-integer
+    buys them a 404 that reads as "no such job".
+
+    `bool` is refused with the other non-integers. `True` is an `int` in Python
+    and would render `job #True`, which is neither an id nor an absence.
+    """
+    if not isinstance(job, dict):
+        return "id unread"
+    ident = job.get("databaseId")
+    if isinstance(ident, bool) or not isinstance(ident, int):
+        return "id unread"
+    return f"job #{ident}"
+
+
+def job_id_note() -> str:
+    """What the ids in the table are for, said once beneath it (#1482).
+
+    Printed only when there is a table — a pointer at ids nobody was given
+    reads as a table that failed to render.
+    """
+    return ("Job ids: `gh-job:<id>` for one leg's log, `gh-job:<id>:fail` for "
+            "just its failing steps. These are Actions **job** ids, not check "
+            "run ids — this run's job list holds no check runs, so `gh-job` "
+            "resolves every id above in the job namespace.")
+
+
 def red_steps(job: object) -> list[str]:
     """Names of the steps that put a red leg in the failed-jobs section.
 
@@ -344,8 +402,12 @@ def main() -> int:
     # Jobs
     jobs = raw_jobs if isinstance(raw_jobs, list) else []
     if jobs:
-        print(f"\n{'Job':<40} {'Status':<12} {'Conclusion':<12} {'Duration':<10}")
-        print("-" * 74)
+        header = (f"{'Job':<40} {'Job id':<{JOB_ID_COL}} {'Status':<12} "
+                  f"{'Conclusion':<12} {'Duration':<10}")
+        print(f"\n{header}")
+        # Derived, never a literal: a rule frozen at the old width while the
+        # header grew reads as a table that has been truncated.
+        print("-" * len(header))
 
         failed: list[tuple[dict, str]] = []
         for job in jobs:
@@ -368,7 +430,8 @@ def main() -> int:
                 marker = " <!"
                 failed.append((job, state))
 
-            print(f"{_untrusted.flat(j_name):<40} {j_status:<12} "
+            print(f"{_untrusted.flat(j_name):<40} "
+                  f"{job_id_cell(job):<{JOB_ID_COL}} {j_status:<12} "
                   f"{j_conclusion:<12} {duration_str:<10}{marker}")
 
         if failed:
@@ -376,17 +439,21 @@ def main() -> int:
             print(f"\n## Failed jobs ({len(failed)}) — {breakdown}")
             for job, state in failed:
                 j_name = job.get("name", "?")
-                j_id = job.get("databaseId", "?")
                 # The state is named per leg because the heading says
                 # "Failed": a CANCELLED leg belongs in this section, and
                 # letting it read as a test failure is its own wrong answer.
-                print(f"  - {_untrusted.flat(j_name)} (job #{j_id}) — "
+                print(f"  - {_untrusted.flat(j_name)} ({job_id_cell(job)}) — "
                       f"{_checks.label(state)}")
                 names = red_steps(job)
                 for step_name in names[:_STEP_CAP]:
                     print(f"    step: {step_name}")
                 if len(names) > _STEP_CAP:
                     print(f"    +{len(names) - _STEP_CAP} more")
+
+        # Under everything that printed an id, so it covers the table and the
+        # failed-jobs section at once, and inside `if jobs:` so it is never a
+        # pointer at ids the reader was not given.
+        print(f"\n{job_id_note()}")
     elif isinstance(raw_jobs, list):
         print("\nNo jobs — GitHub reports zero jobs for this run.")
     else:
