@@ -926,6 +926,10 @@ supertool 'gh-issues:milestone=v0.27.0'    # what is in the next release
 
    **The triager must never do this** — it is explicitly forbidden from writing any `cohort-*` label (see `.claude/agents/opensource-triager.md`), because an agent that adds to a cohort destroys the freeze. Freezing is the maintainer's act, at the tag, by hand.
 
+   **`gh api -X PATCH issues/N -f 'labels[]=x'` REPLACES the label set; it does not add to it.** Measured 2026-08-12 cutting v0.37.0: #1497 was labelled `cohort-11`, then a later PATCH setting its priority and lane **silently removed `cohort-11`**, and the freeze I had just verified was wrong within minutes. Nothing errored. Use `POST issues/N/labels` to add, and re-run the invariant — **the set of open issues carrying no `cohort-` label must be empty** — *after* the last label write of the tick, not after the freeze loop. That complement query is the authoritative one: a server-side `?labels=cohort-11` filter lagged behind the POST it was checking, so it returned 13 where the complement proved 14.
+
+   **And do not pre-label the live stream.** I labelled two post-tag issues `cohort-12` as they were filed; that is a cohort still accepting members, which is the one property the mechanism exists to forbid. Removed, and the label deleted. Between tags the `no cohort- label` row is *supposed* to be non-zero — it is the live stream awaiting its freeze, not a gap.
+
 5. **The manifest is bumped in the same release.** The updater compares manifest versions and nothing else, so a tag without it delivers to nobody already installed. Bump it or ship nothing.
 
    **On `claude-supertool` the release edit is FIVE files**, and I learned the first four by reddening `master` with the release commit itself — `.claude-plugin/plugin.json`, the core `VERSION` (**`_supertool.py:119` as of v0.27.0, not `supertool.py`; the rename landed, so grep for the constant rather than the filename**, ~line 113), **`pyproject.toml`**, `CHANGELOG.md`, and `README.md`'s badge:
