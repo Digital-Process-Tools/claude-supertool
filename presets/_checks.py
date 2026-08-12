@@ -21,8 +21,22 @@ whatever GitHub or GitLab adds next; the sum cannot.
 from __future__ import annotations
 
 import re
+import sys
 from collections import Counter
+from pathlib import Path
 from typing import Iterable, List, Sequence
+
+# Appended, not inserted at 0, and only when absent. `presets/` holds an `xml`
+# package, so putting it ahead of the stdlib shadows `xml.etree` for anything
+# that later imports it — and this module is imported by nearly every preset,
+# which would have made that everyone's problem rather than `xml/query.py`'s.
+# The stdlib keeps precedence; `_untrusted` is found because only `presets/`
+# has it.
+_HERE = str(Path(__file__).parent)
+if _HERE not in sys.path:
+    sys.path.append(_HERE)
+
+import _untrusted  # noqa: E402  (every state token here is remote text — #1453)
 
 # Marker appended whenever the checks are not unanimously successful. Its job
 # is to make "not green" unmissable at a glance, so the rule stays blunt:
@@ -91,8 +105,27 @@ UNKNOWN = _UNKNOWN
 
 
 def normalize(state: object) -> str:
-    """Uppercase a raw platform state. Empty/None becomes UNKNOWN, not ''."""
-    s = str(state or "").strip().upper()
+    """Uppercase a raw platform state. Empty/None becomes UNKNOWN, not ''.
+
+    Flattened here rather than at the render, because this is the seam every
+    render comes through (#1453). `.strip()` alone removes only *leading and
+    trailing* whitespace, so an internal newline in a `conclusion`, `status` or
+    `state` survived into `summarize()`'s leftover term, into `gh-branch`'s
+    two-space-indented table, and into the five other places that print this
+    function's return value unchanged — `pr_merge.py`'s `mergeable` and
+    `mergeStateStatus` lines, `dashboard.py`'s equivalents, and `branch.py`'s
+    run conclusion. Fixing `label()` alone would have closed two of seven,
+    which is the per-call-site failure #1449 rejected one file over.
+
+    It cannot change a classification. No member of `PASSED_STATES`,
+    `FAILED_STATES`, `PENDING_STATES` or `BENIGN_STATES` contains whitespace,
+    so a token that gains a space cannot enter a set and cannot leave one.
+
+    GitHub's conclusions are enums today, which is the reasoning
+    `branch.orphan_lines()`'s comment disavows: #851 and #965 were both filed
+    after somebody reasoned that way about the field next door.
+    """
+    s = _untrusted.flat(str(state or "")).strip().upper()
     return s or _UNKNOWN
 
 
@@ -319,8 +352,17 @@ def label(state: str) -> str:
     `gh-run` prints `## Failed jobs (6) — 3 failed, 2 cancelled, 1 unknown`
     under a header saying `11 total: … 3 failed … 2 cancelled …`, and the only
     thing making those the same numbers is that both come from here.
+
+    The comma is substituted because `summarize()` promises its line "can be
+    audited by arithmetic instead of by trusting the labels", and the terms are
+    comma-separated: a state reading `x, 5 passed` renders as `1 x, 5 passed`
+    and forges a second term inside the audited list. `normalize()` has already
+    taken the newline; this takes the separator, and only here — a comma is
+    never legitimate in a state token, while it routinely is in the matrix job
+    names `shortfall()` renders (`build (ubuntu-latest, 3.11)`), where the same
+    substitution would mangle real data to defend against nothing.
     """
-    return normalize(state).lower()
+    return normalize(state).lower().replace(",", ";")
 
 
 # The spelling used inside this module since #445.
@@ -381,6 +423,17 @@ def shortfall(found: int, declared: int | None,
       legitimately carries checks belonging to no Actions run at all (external
       CI, legacy commit statuses); those are extra, never missing.
     """
+    # Caller-supplied text, flattened here rather than trusted to have been
+    # flattened by whoever called (#1451). `branch.py` hands these in already
+    # flat; `run.py`, `pr.py` and `pr_merge.py` pass leg names straight from
+    # the API and a workflow file, and `reason` is built from a child's stderr
+    # on one route. A helper that renders remote text is where the convention
+    # has to live, or the guarantee reads "flattened if you came through
+    # `branch.py`", which is not a guarantee. `flat()` is idempotent, so the
+    # caller that already flattened pays a no-op, not a second substitution.
+    missing = [_untrusted.flat(str(n)) for n in missing]
+    reason = _untrusted.flat(reason)
+
     if declared is None:
         because = f" ({reason})" if reason else ""
         return (UNVERIFIED_MARK, [
