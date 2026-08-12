@@ -1130,7 +1130,7 @@ export SUPERTOOL_WATCH_NAME=b
 #   -> SUPERTOOL_WATCH_STATE_DIR = /tmp/supertool-watch-b   (created 0700)
 ```
 
-The name is one path component matching `^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$` — a
+The name is one path component matching `^[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z` — a
 leading dot would hide the state directory from every listing, a leading dash
 reaches argv-shaped contexts, and 32 keeps the derived socket inside macOS's
 ~104-byte `AF_UNIX` limit. A name outside it is **ignored and said so**, and the
@@ -1192,10 +1192,16 @@ sets of API calls and two sets of rate limit, and neither de-duplicates the
 other's events. That is the trade a per-developer tool makes instead of
 running a broker.
 
-`SUPERTOOL_WATCH_STATE_DIR` travels to the poller through
-`transport.poller_env()` — a fork inherits the environment and an exec does
-not, so it is set explicitly — and `SUPERTOOL_WATCH_SOCK` rides along in the
-same copied environment.
+`SUPERTOOL_WATCH_STATE_DIR` and `SUPERTOOL_WATCH_SOCK` both travel to the poller
+through `transport.poller_env()`, and both are now set explicitly rather than
+one being pinned and the other riding along in the copied environment
+([#1477](https://github.com/Digital-Process-Tools/claude-supertool/issues/1477)).
+A fork inherits the environment and an exec does not, so the state directory
+always had to be pinned; under a name the socket is *derived* rather than
+inherited, and re-deriving after an exec is only equivalent while every input
+survives it. A poller that resolved a different socket from its parent is the
+#1309 split with nobody positioned to notice, so what the parent decided is
+what the child is given.
 
 **`radar` says when a fleet is delivering somewhere else.** The delivery
 banner reads each watcher's own `sock_path` and compares it with the socket

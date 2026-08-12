@@ -181,6 +181,7 @@ def _resolved_in_subprocess(env_extra: dict[str, str]) -> dict[str, str]:
     )
     out = subprocess.run([sys.executable, "-c", code],
                          capture_output=True, text=True, check=True,
+                         encoding="utf-8", errors="replace",
                          env={**os.environ, **env_extra}, cwd=str(REPO))
     return json.loads(out.stdout.strip().splitlines()[-1])
 
@@ -239,6 +240,48 @@ def test_a_derived_directory_that_cannot_be_created_is_a_named_refusal(tmp_path)
     why = naming.ensure_state_dir(r, str(blocker / "under"))
     assert why, "an uncreatable directory must not report success"
     assert str(blocker) in why, why
+
+
+def test_an_unclaimable_slot_names_the_variable_that_chose_the_directory(
+        tmp_path, monkeypatch, capsys):
+    """`cmd_watch`'s refusal told every operator to check
+    `SUPERTOOL_WATCH_STATE_DIR`. Under a name that variable is the one they
+    deliberately did not set, so the sentence sends them to the wrong knob —
+    a refusal that names the wrong cause is barely better than a silent one."""
+    import dispatcher  # noqa: PLC0415
+    import transport  # noqa: PLC0415
+
+    blocker = tmp_path / "blocked"
+    blocker.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(dispatcher, "_spawn_poller",
+                        lambda *a, **k: pytest.fail("must not spawn"))
+    monkeypatch.setattr(transport, "RESOLVED",
+                        naming.resolve({"SUPERTOOL_WATCH_NAME": "oss"}))
+    monkeypatch.setattr(transport, "STATE_DIR", str(blocker / "under"))
+
+    rc = dispatcher.cmd_watch(["gitlab-mr", "1"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert naming.NAME_ENV in out, out
+    assert "oss" in out, out
+
+
+def test_an_unclaimable_slot_under_the_default_still_names_the_state_dir_var(
+        tmp_path, monkeypatch, capsys):
+    """The pre-name sentence has to survive: nothing was derived here, so the
+    directory is the operator's or the default, and that is what to check."""
+    import dispatcher  # noqa: PLC0415
+    import transport  # noqa: PLC0415
+
+    monkeypatch.setattr(dispatcher, "_spawn_poller",
+                        lambda *a, **k: pytest.fail("must not spawn"))
+    monkeypatch.setattr(transport, "RESOLVED", naming.resolve({}))
+    monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path / "gone" / "deeper"))
+
+    rc = dispatcher.cmd_watch(["gitlab-mr", "1"])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert naming.STATE_DIR_ENV in out, out
 
 
 # --- the name reaches the report --------------------------------------------

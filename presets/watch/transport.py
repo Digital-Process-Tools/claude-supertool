@@ -39,9 +39,13 @@ import naming  # noqa: E402  (one name above the two path variables, #1477)
 # Both values now come out of `naming.resolve()` rather than being read here
 # (#1477), because the two variables are never independently useful and the pair
 # had to be kept in step in two files by hand. `SUPERTOOL_WATCH_NAME` derives
-# both; an explicit variable still overrides, and the override is reported
-# rather than taken quietly. `RESOLVED.notes` is what says so — anything
-# rendering these paths should print them.
+# both; an explicit variable still overrides, and `RESOLVED.notes` carries the
+# sentence that says so.
+#
+# **Nothing in this file prints them.** A poller is a detached background
+# process whose stdout nobody reads, so the notes surface where a human is
+# looking: `channel:health`, via `channel._channel_lines`. `radar` and `watches`
+# render these paths and do not yet render the notes — a gap, not a decision.
 RESOLVED = naming.resolve()
 SOCK_PATH = RESOLVED.sock
 # Overridable so a poller re-exec'd under its own argv (see `poller_argv`) keeps

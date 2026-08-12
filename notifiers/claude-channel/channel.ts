@@ -18,14 +18,16 @@
  * Auth model — Phase 2 v1:
  *   Localhost UDS file with mode 0600 (owner-only). Any process running as
  *   the same user can connect. Multi-user machines should use a per-user
- *   override path (set SUPERTOOL_WATCH_SOCK env var on both producers and
- *   this server).
+ *   override path: SUPERTOOL_WATCH_NAME on both producers and this server
+ *   (#1477), or SUPERTOOL_WATCH_SOCK, which overrides it.
  *
  * Socket ownership:
  *   One server owns the socket. A second refuses to start (exit 3) rather than
  *   unlink a live incumbent, which would leave it listening on an unnamed
  *   inode — alive, healthy-looking and unreachable (#550). Use
- *   SUPERTOOL_WATCH_SOCK to give a second session a channel of its own.
+ *   SUPERTOOL_WATCH_NAME to give a second session a channel of its own — it
+ *   derives the producers' state directory too, which SUPERTOOL_WATCH_SOCK
+ *   alone does not (#1309, #1477).
  */
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -58,7 +60,23 @@ const WATCH_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/;
 
 function resolveSockPath(): string {
   const explicit = process.env.SUPERTOOL_WATCH_SOCK || "";
-  const name = (process.env.SUPERTOOL_WATCH_NAME || "").trim();
+  const raw = (process.env.SUPERTOOL_WATCH_NAME || "").trim();
+  // The name is judged before precedence is applied, in the same order as
+  // `naming.resolve`. Doing it the other way round — returning early on an
+  // explicit socket — made this announce that the socket had overridden a name
+  // it had never looked at and would have refused, so the two ends fell back to
+  // the same path and told the operator two different stories about why.
+  let name = "";
+  if (raw) {
+    if (WATCH_NAME_RE.test(raw)) {
+      name = raw;
+    } else {
+      console.error(
+        `claude-channel: SUPERTOOL_WATCH_NAME is not usable as a path component ` +
+        `and was ignored; this channel is on the default socket, not a private one`,
+      );
+    }
+  }
   if (explicit) {
     if (name) {
       console.error(
@@ -69,13 +87,6 @@ function resolveSockPath(): string {
     return explicit;
   }
   if (!name) return "/tmp/supertool-watch.sock";
-  if (!WATCH_NAME_RE.test(name)) {
-    console.error(
-      `claude-channel: SUPERTOOL_WATCH_NAME is not usable as a path component ` +
-      `and was ignored; binding the default socket, not a private one`,
-    );
-    return "/tmp/supertool-watch.sock";
-  }
   return `/tmp/supertool-watch-${name}.sock`;
 }
 

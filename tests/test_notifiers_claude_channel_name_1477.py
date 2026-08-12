@@ -64,11 +64,14 @@ def _unique_name() -> str:
     return f"t1477{os.getpid()}{time.time_ns() % 100000}"
 
 
-def _run_until_bound(env_extra: dict[str, str], expect: str, timeout: float = 20.0):
-    """Start the consumer and wait for `expect` to appear. Returns whether it did.
+def _run_until_bound(env_extra: dict[str, str], expect: str,
+                     timeout: float = 20.0) -> tuple[bool, str]:
+    """Start the consumer, wait for `expect` to appear, return (bound, stderr).
 
     The socket file is the observable: `channel.ts` creates it on `listen`, and
-    which path it created is the entire question here.
+    which path it created is the entire question here. stderr comes back too
+    because what the server *says* about a name it refused is the other half —
+    a diagnostic naming the wrong cause is the defect, not the fallback.
     """
     proc = subprocess.Popen(
         ["bun", str(CHANNEL_TS)],
@@ -77,15 +80,16 @@ def _run_until_bound(env_extra: dict[str, str], expect: str, timeout: float = 20
         env={**os.environ, **env_extra},
         text=True, bufsize=1, encoding="utf-8", errors="replace",
     )
+    bound = False
     try:
         deadline = time.time() + timeout
         while time.time() < deadline:
             if os.path.exists(expect):
-                return True
+                bound = True
+                break
             if proc.poll() is not None:
-                return False
+                break
             time.sleep(0.05)
-        return False
     finally:
         proc.kill()
         proc.wait(timeout=10)
@@ -93,13 +97,15 @@ def _run_until_bound(env_extra: dict[str, str], expect: str, timeout: float = 20
             os.unlink(expect)
         except OSError:
             pass
+    return bound, (proc.stderr.read() if proc.stderr else "")
 
 
 def test_the_consumer_binds_the_socket_the_name_derives():
     name = _unique_name()
     expect = naming.sock_for(name)
-    assert _run_until_bound({"SUPERTOOL_WATCH_NAME": name,
-                             "SUPERTOOL_WATCH_SOCK": ""}, expect), (
+    bound, _ = _run_until_bound({"SUPERTOOL_WATCH_NAME": name,
+                                 "SUPERTOOL_WATCH_SOCK": ""}, expect)
+    assert bound, (
         f"channel.ts did not bind {expect}; a name that configures the producers "
         f"and not the consumer is the half-configured state this closes")
 
@@ -108,8 +114,9 @@ def test_an_explicit_socket_still_wins_on_the_consumer_side_too():
     """Two ends with two precedence rules would be a new way to disagree."""
     name = _unique_name()
     explicit = naming.sock_for(f"{name}x")
-    assert _run_until_bound({"SUPERTOOL_WATCH_NAME": name,
-                             "SUPERTOOL_WATCH_SOCK": explicit}, explicit)
+    bound, _ = _run_until_bound({"SUPERTOOL_WATCH_NAME": name,
+                                 "SUPERTOOL_WATCH_SOCK": explicit}, explicit)
+    assert bound
     assert not os.path.exists(naming.sock_for(name)), (
         "the name's path was bound as well as the override's")
 
@@ -118,8 +125,29 @@ def test_a_name_the_python_side_refuses_is_refused_here_too():
     """A name that resolves to a private channel on one end and the default on
     the other is exactly the split both ends exist to avoid."""
     assert naming.resolve({"SUPERTOOL_WATCH_NAME": "../evil"}).refusal
-    default_taken = os.path.exists(naming.DEFAULT_SOCK)
-    if default_taken:
+    if os.path.exists(naming.DEFAULT_SOCK):
         pytest.skip("the default socket is already held by a live consumer")
-    assert _run_until_bound({"SUPERTOOL_WATCH_NAME": "../evil",
-                             "SUPERTOOL_WATCH_SOCK": ""}, naming.DEFAULT_SOCK)
+    bound, err = _run_until_bound({"SUPERTOOL_WATCH_NAME": "../evil",
+                                   "SUPERTOOL_WATCH_SOCK": ""}, naming.DEFAULT_SOCK)
+    assert bound
+    assert "not usable" in err, err
+
+
+def test_an_unusable_name_is_reported_even_when_a_socket_overrides_it():
+    """The two ends have to disagree about *nothing*, diagnostics included. With
+    an explicit socket in play the old `resolveSockPath` returned before its own
+    regex ever ran, so it announced that the socket had overridden a name — a
+    name it had not looked at and would have refused. `naming.resolve` computes
+    the refusal before precedence, and says both things."""
+    name = _unique_name()
+    explicit = naming.sock_for(f"{name}y")
+    resolved = naming.resolve({"SUPERTOOL_WATCH_NAME": "../evil",
+                               "SUPERTOOL_WATCH_SOCK": explicit})
+    assert resolved.refusal, "the Python side refuses it regardless of the override"
+    assert not [n for n in resolved.notes if "overrides" in n], (
+        "there was no usable name for the socket to override")
+    bound, err = _run_until_bound({"SUPERTOOL_WATCH_NAME": "../evil",
+                                   "SUPERTOOL_WATCH_SOCK": explicit}, explicit)
+    assert bound
+    assert "not usable" in err, err
+    assert "overrides" not in err, err

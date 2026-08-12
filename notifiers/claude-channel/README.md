@@ -402,10 +402,15 @@ The refusal is deliberate: a second radar quietly replacing the first is the
 failure this is preventing. Two ways forward:
 
 - Stop the other session, or
-- give this session a channel of its own by pointing it at an unused path —
-  `SUPERTOOL_WATCH_SOCK=/tmp/supertool-watch-$$.sock`, set **both** here and on
-  every Phase 1 poller that should feed it. Pollers write to the path they are
-  given; a session and its watchers simply have to agree on one.
+- give this session a channel of its own with `SUPERTOOL_WATCH_NAME=<name>`,
+  which derives this socket *and* the producers' poller state directory from one
+  word ([#1477](https://github.com/Digital-Process-Tools/claude-supertool/issues/1477)).
+  Set it in this server's `env` block in `.mcp.json` and as a `watch_name` key on
+  the watch ops in `.supertool.json`; `channel:health` compares the two files and
+  says so when they disagree. `SUPERTOOL_WATCH_SOCK=/tmp/supertool-watch-$$.sock`
+  still works and still has to be set **both** here and on every Phase 1 poller —
+  it overrides the name, and setting only one of the pair is the failure mode the
+  name exists to remove.
 
 Concurrent sessions sharing a *single* stream of events would need a broker
 that fans one event out to every connected server. That is not this — see
@@ -423,7 +428,7 @@ outage — trading a silent bug for a loud one, which is not an improvement.
 
 | Env var                  | Default                          | Purpose                                              |
 | ------------------------ | -------------------------------- | ---------------------------------------------------- |
-| `SUPERTOOL_WATCH_NAME`   | unset                            | One name for a whole channel, deriving `/tmp/supertool-watch-<name>.sock` here and the matching poller state directory on the producers ([#1477](https://github.com/Digital-Process-Tools/claude-supertool/issues/1477)). One path component, `^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$`; anything else is ignored, reported on stderr, and the default socket is bound rather than half a private one. This is the variable to put in this server's `env` block in `.mcp.json` — nothing in `.supertool.json` reaches this process, and `channel:health` compares the two files and reports a disagreement. |
+| `SUPERTOOL_WATCH_NAME`   | unset                            | One name for a whole channel, deriving `/tmp/supertool-watch-<name>.sock` here and the matching poller state directory on the producers ([#1477](https://github.com/Digital-Process-Tools/claude-supertool/issues/1477)). One path component, `^[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z` (JavaScript's `$` is already end-of-input, so `channel.ts` spells it `$`); anything else is ignored, reported on stderr, and the default socket is bound rather than half a private one. This is the variable to put in this server's `env` block in `.mcp.json` — nothing in `.supertool.json` reaches this process, and `channel:health` compares the two files and reports a disagreement. |
 | `SUPERTOOL_WATCH_SOCK`   | `/tmp/supertool-watch.sock`      | UDS path. Set the same value on Phase 1 producers. Also the way to run a second session's channel alongside a first — see "Start-up and socket ownership". **Overrides `SUPERTOOL_WATCH_NAME`** — it is the value a running poller already captured — and says so on stderr when both are set. |
 | `SUPERTOOL_CHANNEL_ATTR_MAX`  | `2048`      | Max chars in one attribute value. Larger values are withheld and disclosed — see "Size limits". |
 | `SUPERTOOL_CHANNEL_EVENT_MAX` | `8192`      | Max chars across all of one event's attributes, keys included. |

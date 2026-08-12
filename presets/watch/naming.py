@@ -73,7 +73,13 @@ DEFAULT_STATE_DIR = BASE_DIR
 #: renders as absent; a leading dash is out because the name reaches argv-shaped
 #: contexts. 32 is long enough for `oss`, `dvsi`, `pr-1477` and short enough that
 #: the derived socket stays inside macOS's ~104-byte AF_UNIX path limit.
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
+#:
+#: `\Z`, not `$`: Python's `$` matches before a final newline, so `^…$` accepts
+#: `oss` followed by a newline as the name `oss` (#1188). The `.strip()` in
+#: `resolve` happens to hide that today, which is exactly the kind of accidental
+#: defence that guard exists to refuse — and `channel.ts` uses JavaScript's `$`,
+#: which is already strict, so the two ends only agree with `\Z` here.
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z")
 
 
 class Resolved(NamedTuple):
@@ -162,6 +168,23 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
     return Resolved(name=name, sock=sock, state_dir=state_dir,
                     notes=notes, refusal=refusal,
                     state_dir_is_derived=bool(name) and not explicit_state)
+
+
+def state_dir_provenance(resolved: Resolved) -> str:
+    """Which knob put the poller slots where they are, in the operator's words.
+
+    `cmd_watch`'s refusal used to end "Check that SUPERTOOL_WATCH_STATE_DIR names
+    a writable directory" unconditionally. Under a name that is the one variable
+    the operator deliberately did not set, so the sentence sends them to a knob
+    that is not in force — a refusal naming the wrong cause is barely better than
+    a silent one, and it is the same misdirection this file exists to remove.
+    """
+    if resolved.state_dir_is_derived:
+        return (f"{STATE_DIR_ENV} is not set — this directory was derived from "
+                f"{NAME_ENV}={resolved.name}")
+    if resolved.state_dir != DEFAULT_STATE_DIR:
+        return f"set by {STATE_DIR_ENV}"
+    return (f"the default; {NAME_ENV} or {STATE_DIR_ENV} would move it")
 
 
 def ensure_state_dir(resolved: Resolved, state_dir: str) -> str:
