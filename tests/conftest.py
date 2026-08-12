@@ -97,6 +97,27 @@ def pytest_configure(config):
     import os
     os.environ.setdefault("SUPERTOOL_ALLOW_OUTSIDE_CWD", "1")
     os.environ.setdefault("SUPERTOOL_ALLOW_VIM_SHELL", "1")
+    # No test may resolve the watch channel against whoever is running it.
+    # `presets/watch/{transport,channel,radar}` resolve `RESOLVED` at *import*,
+    # so a `SUPERTOOL_WATCH_NAME` exported in the shell lands before any fixture
+    # can intervene, and it is exported in this repo's own `.supertool.json`
+    # since #1477 — every maintainer's environment. Measured under
+    # `SUPERTOOL_WATCH_NAME=oss-supertool`: six tests red across three files,
+    # four asserting `radar`'s exact stdout (which now carries a channel banner,
+    # #1495) and two in `test_watch_sock_path_581.py` asserting the *default*
+    # socket after deleting only the override. None of the six says anything
+    # about the code, and CI exports none of the three, so the failures are
+    # invisible from the only place that is authoritative.
+    #
+    # Deleted rather than `setdefault`-ed to "": an empty value is a state
+    # `naming.resolve` reads deliberately (an operator who exports nothing gets
+    # the default rather than a refusal about a name they did not set), and a
+    # suite that pins the empty case cannot also exercise the absent one. Tests
+    # that want a channel pass an env mapping to `naming.resolve` or monkeypatch
+    # `RESOLVED`; nothing needs these to be inherited.
+    for _watch_var in ("SUPERTOOL_WATCH_NAME", "SUPERTOOL_WATCH_SOCK",
+                       "SUPERTOOL_WATCH_STATE_DIR"):
+        os.environ.pop(_watch_var, None)
     # Tests that spawn supertool as a subprocess must not delegate `read` to
     # rtk (different output format breaks byte-identical assertions). The
     # in-process _disable_rtk_and_config fixture covers same-process tests;

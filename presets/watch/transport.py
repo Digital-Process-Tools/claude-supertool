@@ -754,6 +754,73 @@ def emit_event(
         desktop_notify(_untrusted.flat(notify_title), _untrusted.flat(notify_message))
 
 
+#: What a scan of `STATE_DIR` established about the directory itself. Three
+#: states, not two, because a name derives a directory only a *spawn* creates
+#: (`naming.ensure_state_dir`) and the default is `/tmp`, which always exists:
+#: `os.listdir` here was unreachable-by-luck on the default and raised on the
+#: first read after naming a channel (#1502).
+#:
+#: `ABSENT` is a knowable fact about the world — zero watchers, nothing has ever
+#: spawned on this channel. `UNREADABLE` is the admission that the population is
+#: unknown, and a board that renders it as `ABSENT` is the absence-read-as-
+#: presence defect this preset keeps filing.
+STATE_DIR_OK = "ok"
+STATE_DIR_ABSENT = "absent"
+STATE_DIR_UNREADABLE = "unreadable"
+
+
+def _state_dir_names() -> tuple[list[str], str, str]:
+    """(sorted entries of `STATE_DIR`, one of the three states above, why not).
+
+    The single enumeration idiom for this directory. Every reader here goes
+    through it, so a state directory no spawn has created cannot raise out of
+    any of them — which is what `radar:--state` used to survive by never
+    enumerating at all, luck rather than a guard.
+
+    It creates nothing. Manufacturing the directory on a read would give a read
+    side effects and resurrect #693 for an operator-supplied
+    `SUPERTOOL_WATCH_STATE_DIR`, which is the reason only a *derived* one is
+    ever created and only on the spawn path.
+    """
+    try:
+        return sorted(os.listdir(STATE_DIR)), STATE_DIR_OK, ""
+    except FileNotFoundError:
+        return [], STATE_DIR_ABSENT, ""
+    except OSError as err:
+        # A file at the name (`NotADirectoryError` on POSIX and on Windows), a
+        # mode that excludes this uid, a vanished mount. All the same answer:
+        # it is there and the population could not be established.
+        return [], STATE_DIR_UNREADABLE, (
+            f"{STATE_DIR} could not be listed ({type(err).__name__})")
+
+
+def state_dir_status() -> tuple[str, str]:
+    """(state, why) for `STATE_DIR` alone, for a render that has to explain a
+    board with nothing on it. Reads only; creates nothing.
+
+    Its own enumeration rather than a value threaded out of `list_active_pids`,
+    which keeps that function's signature — `radar` and the `gl-mrs` tier derive
+    coverage from it. The two listings can disagree if the directory appears or
+    vanishes between them, and both orders are benign: a directory created in
+    between yields no rows and `ok`, which renders as the plain no-watchers
+    answer, and one removed in between yields no rows and `absent`, which is
+    what it now is.
+    """
+    _names, state, why = _state_dir_names()
+    return state, why
+
+
+def channel_disclosure() -> list[str]:
+    """The channel name and any override, for every surface that renders a board.
+
+    One accessor over one formatter (`naming.disclosure_lines`) so `radar`,
+    `watches` and `channel:health` cannot disagree about the same resolution —
+    the reason `delivery_of` and `DELIVERY_LABELS` live here too. `[]` when there
+    is nothing to say.
+    """
+    return naming.disclosure_lines(RESOLVED)
+
+
 def list_active_pids() -> list[dict[str, Any]]:
     """Scan /tmp for live watcher PID files. Stale entries are pruned in place.
 
@@ -779,7 +846,12 @@ def list_active_pids() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     prefix = "supertool-watch-"
     suffix = ".pid"
-    for name in sorted(os.listdir(STATE_DIR)):
+    # An absent or unlistable directory yields no rows here and is *reported* by
+    # `state_dir_status` at the render (#1502). This function's contract is the
+    # slots it found; the two states behind an empty list are the render's to
+    # tell apart, and `dispatcher.cmd_list` does.
+    names, _state, _why = _state_dir_names()
+    for name in names:
         if not (name.startswith(prefix) and name.endswith(suffix)):
             continue
         # supertool-watch-{source}__{id}.pid. Parsed before the read, because
@@ -1133,10 +1205,7 @@ def _lost_rows(covered: set[tuple[str, str]]) -> list[dict[str, Any]]:
     prefix = "supertool-watch-"
     suffix = ".state.json"
     out: list[dict[str, Any]] = []
-    try:
-        names = sorted(os.listdir(STATE_DIR))
-    except OSError:
-        return out
+    names, _state, _why = _state_dir_names()
     for name in names:
         if not (name.startswith(prefix) and name.endswith(suffix)):
             continue
@@ -1227,10 +1296,7 @@ def _state_file_slots() -> list[tuple[str, str]]:
     prefix = "supertool-watch-"
     suffix = ".state.json"
     slots: list[tuple[str, str]] = []
-    try:
-        names = sorted(os.listdir(STATE_DIR))
-    except OSError:
-        return slots
+    names, _state, _why = _state_dir_names()
     for name in names:
         if not (name.startswith(prefix) and name.endswith(suffix)):
             continue

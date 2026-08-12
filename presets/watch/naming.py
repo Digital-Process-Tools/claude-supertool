@@ -187,6 +187,39 @@ def state_dir_provenance(resolved: Resolved) -> str:
     return (f"the default; {NAME_ENV} or {STATE_DIR_ENV} would move it")
 
 
+def disclosure_lines(resolved: Resolved) -> list[str]:
+    """The channel this process is on, for any surface that renders a board.
+
+    `[]` when there is nothing to say — the default paths, no override, no
+    refused name. A banner printed on every board is one nobody reads, and on
+    the default channel there is no half-set state to disclose.
+
+    **Why a formatter here rather than a print in `transport` (#1495).** The
+    #1476/#1477 reviewer raised `notes` as computed-and-never-printed and it was
+    argued down there deliberately: `transport` is imported by a *detached
+    poller* whose stdout has no reader, so a print from it writes into nothing.
+    What was left open is exactly this — one formatter, consumed by every render
+    through `transport.channel_disclosure`, so `radar`, `watches` and
+    `channel:health` cannot disagree about the same resolution. `delivery_of`
+    lives in `transport` for the same reason.
+
+    The paths are this module's own text; the *name* is not. It arrives from an
+    op's `.supertool.json` block or from the environment, and it lands on
+    `watches`' fixed-width board, where a newline used to be able to print a
+    whole extra row at column 0 (#1423). So it is flattened here, once, rather
+    than at each of the three call sites.
+    """
+    out: list[str] = []
+    if resolved.name:
+        out.append(
+            f"name {_untrusted.flat(resolved.name)} (from {NAME_ENV}) — socket "
+            f"{resolved.sock}, poller slots {resolved.state_dir}")
+    if resolved.refusal:
+        out.append(resolved.refusal)
+    out.extend(resolved.notes)
+    return out
+
+
 def ensure_state_dir(resolved: Resolved, state_dir: str) -> str:
     """Create a *derived* state directory if it is missing. "" or why not.
 

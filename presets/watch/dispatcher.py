@@ -344,8 +344,40 @@ def cmd_list() -> int:
     cannot: an id with more than one live poller, and a poller whose PID file
     was deleted out from under it.
     """
+    # Above the board, because the board is a board *of a channel* and until
+    # #1495 it printed neither the name nor the export overriding it. Empty on
+    # the default paths with no override — a banner on every board is one nobody
+    # reads. One accessor, so this and `radar` cannot disagree.
+    for line in transport.channel_disclosure():
+        print(f"watches: {line}")
     rows, scan_ok = transport.list_watchers()
+    dir_state, dir_why = transport.state_dir_status()
+    if dir_state == transport.STATE_DIR_UNREADABLE:
+        # Printed whether or not there are rows: the pid files are the primary
+        # population and this board is built from a listing that did not happen,
+        # so neither an empty board nor a short one is evidence of absence.
+        print(f"WARNING — {dir_why}, so the poller slots recorded there could "
+              f"not be enumerated. This board is built from what the process "
+              f"scan found and nothing else; it is not evidence of absence.")
     if not rows:
+        if dir_state == transport.STATE_DIR_ABSENT:
+            # A knowable state rather than a failure, and the crash it replaces
+            # took down every other op in the same call (#1502). Nothing is
+            # created here: only a spawn creates a derived state directory, and
+            # an operator-supplied one is never manufactured at all (#693).
+            print(f"No watchers — the state directory {transport.STATE_DIR} does "
+                  f"not exist yet, so nothing has ever spawned on this channel "
+                  f"({naming.state_dir_provenance(transport.RESOLVED)}). The "
+                  f"first `watch:SOURCE:ID` or `radar` spawn creates it; no read "
+                  f"path does.")
+            if not scan_ok:
+                print(_scan_unavailable_reason())
+            return 0
+        if dir_state == transport.STATE_DIR_UNREADABLE:
+            # The WARNING above is the whole answer. `No active watchers` would
+            # be a claim about the fleet made on the strength of a listing that
+            # never ran.
+            return 0
         if not scan_ok:
             print("No watchers by PID file — and the process scan was "
                   "unavailable, so an untracked poller could not be ruled out.")

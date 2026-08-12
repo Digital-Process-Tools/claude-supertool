@@ -793,6 +793,15 @@ def health(path: str) -> tuple[int, str]:
         return RC_UNKNOWN, "\n".join([
             "channel: CANNOT DETERMINE", *head,
             "  consumer : the socket could not be probed, so nothing is known either way",
+            # #1476 established that this arm must not *claim* a holder: `peer_pid`
+            # connects, and the connect above is the one that just failed. #1495 is
+            # that it did not say so — it omitted the line the other arms print,
+            # and an omitted line reads exactly like a `no holder` line to anyone
+            # scanning for one. Three states in the render, not two: the skip and
+            # its reason, never a verdict.
+            f"             socket-holder NOT asked — {detail}. The holder check is",
+            "             the same connect, so there is nothing there to ask; this",
+            "             is a declined probe, not an absent holder",
             "", CEILING,
         ])
 

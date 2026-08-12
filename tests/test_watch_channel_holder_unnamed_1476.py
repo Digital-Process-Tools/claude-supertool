@@ -217,13 +217,22 @@ def test_the_ceiling_is_still_the_last_thing_both_arms_say(sock, monkeypatch):
 
 def test_the_socket_could_not_be_probed_arm_claims_no_holder(monkeypatch):
     """`state == "unknown"` means the connect itself failed. `peer_pid` connects
-    too, so there is nothing there to ask and this arm must not pretend to."""
+    too, so there is nothing there to ask and this arm must not pretend to.
+
+    Asserted as "names no holder" rather than as "never says the word", which is
+    what this used to be. The word was doing two jobs: the constraint below is
+    that no *holder* is claimed, while a line saying the check was **skipped and
+    why** is the opposite of a pretence — an omitted line and a `no holder` line
+    read identically to anyone scanning for one, which is #1495.
+    """
     monkeypatch.setattr(
         channel, "probe_socket",
         lambda _path: ("unknown", "OSError connecting to /nope"))
     rc, report = channel.health("/nope")
     assert rc == channel.RC_UNKNOWN
-    assert "holder" not in report, report
+    assert "socket-holder: pid" not in report, report
+    assert "socket-holder NOT resolved" not in report, report
+    assert "socket-holder NOT asked" in report, report
 
 
 # --- documentation ----------------------------------------------------------
