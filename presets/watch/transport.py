@@ -496,6 +496,20 @@ def write_json_contained(path: str, payload: Any) -> str:
     It does **not** establish a directory: that is a question about a *derived*
     state directory (#693) and belongs to the caller that knows whether it has
     one.
+
+    Two deliberate changes from the fixed-name spelling, both reviewer-raised:
+
+    * **The refusal names `path`, not the temporary.** It used to name the
+      `.tmp`, which was then a stable name an operator could go and look at.
+      The temporary is now different on every call and means nothing to a
+      reader, while the file they care about is the one that did not get
+      replaced.
+    * **There is no `ELOOP`/`EMLINK` arm any more.** It said "this is somebody
+      redirecting the write at another file", which was true of a symlink at
+      the fixed `.tmp` and cannot be true of a name `O_EXCL` just created. The
+      one way to reach that errno now is a link in the *containing directory*,
+      where that sentence would send an operator to the wrong file, so the
+      generic message is the honest one.
     """
     shown = _untrusted.flat(path)
     directory, name = os.path.split(path)
