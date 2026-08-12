@@ -905,7 +905,7 @@ def _bounded_hook_lines(lines: list[str], head: int = _HOOK_HEAD_LINES,
             + lines[-tail:])
 
 
-def _flat_lines(lines: list[str]) -> list[str]:
+def _relayed_lines(lines: list[str]) -> list[str]:
     """Each line of a child's output, kept to one line of ours (#1470).
 
     The `| ` / `> ` prefix a relay puts in front of a line, and the column-0
@@ -923,12 +923,23 @@ def _flat_lines(lines: list[str]) -> list[str]:
     goes through the same call because the seam is the same one, it costs
     nothing, and a half-flattened seam is the one that gets re-filed.
 
-    `flat`, not `scrub`: this is a line, not a block. It also neutralises ESC,
-    which is the other way to rewrite a receipt — a relayed `ESC [2K ESC [1A`
-    deletes the line above it (#851's argument, applied to a child stream).
-    Disclosed, never stripped: the forged text stays legible as `[U+2028]`.
+    ESC goes with it, which is the other way to rewrite a receipt — a relayed
+    `ESC [2K ESC [1A` deletes the line above it (#851's argument, applied to a
+    child stream). Disclosed, never stripped: the forged text stays legible as
+    `[U+2028]` and `[U+001B]`.
+
+    Tabs are kept, which is why this is not `flat()`. `flat()` drops them
+    because it renders a one-line *field* on a line the tool owns, where a tab
+    can imitate a board's column structure; a relayed transcript is neither —
+    it is the child's own lines under a prefix or a header, and no consumer
+    parses it by column. A tab cannot make a line and cannot move a cursor
+    anywhere it has not already been, so keeping it is exactly the trade
+    `scrub()` makes for a block, and dropping it would render every
+    tab-aligned hook transcript and git porcelain block as `[U+0009]` soup —
+    breaking the thing #1448 shipped four hours earlier, for no forgery it
+    prevents.
     """
-    return [_untrusted.flat(ln) for ln in lines]
+    return [_untrusted.visible(ln, keep=chr(9)) for ln in lines]
 
 
 def _report_prepush_hook(push_stdout: str, push_stderr: str,
@@ -986,7 +997,7 @@ def _report_prepush_hook(push_stdout: str, push_stderr: str,
         print("  git printed no `To` header for this push, so where its own "
               "output starts is UNKNOWN - the lines below are relayed "
               "unattributed.")
-    for ln in _flat_lines(_bounded_hook_lines(out_lines)):
+    for ln in _relayed_lines(_bounded_hook_lines(out_lines)):
         print(f"| {ln}")
     if err_lines:
         # Relayed, but NOT under the hook's name. Three processes write to this
@@ -997,7 +1008,7 @@ def _report_prepush_hook(push_stdout: str, push_stderr: str,
         # is relayed with its provenance stated as unknown rather than guessed.
         print("  stderr for this push, provenance UNKNOWN - the hook, git and "
               "the remote all write here and nothing marks the boundary:")
-        for ln in _flat_lines(_bounded_hook_lines(err_lines)):
+        for ln in _relayed_lines(_bounded_hook_lines(err_lines)):
             print(f"> {ln}")
 
 
@@ -1811,7 +1822,7 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
             if err:
                 print(f"First error: {err}")
             print("\n--- git output ---")
-            dump = _flat_lines(_untrusted.split_lines(combined.strip()))
+            dump = _relayed_lines(_untrusted.split_lines(combined.strip()))
             print("\n".join(dump) if dump else "(no output)")
             _result(f"NOT PUSHED - REJECTED (non-fast-forward)  {branch} -> "
                     f"{target} - rebase could not start")
@@ -1861,7 +1872,7 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         if err:
             print(f"First error: {err}")
         print("\n--- git output ---")
-        dump = _flat_lines(_untrusted.split_lines(combined.strip()))
+        dump = _relayed_lines(_untrusted.split_lines(combined.strip()))
         print("\n".join(dump) if dump else "(no output)")
         _result(f"NOT PUSHED - REJECTED after a clean rebase  {branch} -> {target}")
         return result.returncode
@@ -2157,7 +2168,7 @@ def _push_op() -> int:
         # that ran a test suite, and its transcript is not the receipt (#1448).
         # The two ends are the two things a reader needs: the arm the hook
         # announced, and what it refused on.
-        dumped = _flat_lines(
+        dumped = _relayed_lines(
             _bounded_hook_lines(_untrusted.split_lines(combined.strip()),
                                 _GIT_OUTPUT_HEAD_LINES,
                                 _GIT_OUTPUT_TAIL_LINES))

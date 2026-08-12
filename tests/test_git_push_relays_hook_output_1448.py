@@ -480,6 +480,25 @@ def test_a_rejected_push_does_not_forge_a_result_line_in_the_git_dump(
     assert "cafed00d" in out, "the remote's refusal text must still be readable"
 
 
+def test_a_tab_survives_the_relay(box) -> None:
+    """The other half of the trade, pinned so it is not quietly re-flattened.
+
+    `_untrusted.flat` drops tabs, and it is right to: it renders a one-line
+    field on a line the tool owns, where a tab can imitate a board's columns.
+    A relayed transcript is the child's own lines under a prefix, nobody parses
+    it by column, and a tab can neither make a line nor move a cursor anywhere
+    it has not already been. Flattening tabs here would have rendered every
+    tab-aligned hook transcript and git porcelain block as `[U+0009]` soup and
+    prevented no forgery."""
+    tab = chr(9)
+    box.install_hook(stdout_lines=["PASS" + tab + "tests/test_a.py"])
+    rc, out = box.drive_push()
+    assert box.hook_ran
+    assert rc == 0, out
+    assert "PASS" + tab + "tests/test_a.py" in out
+    assert "0009" not in out
+
+
 def test_the_first_error_line_cannot_carry_an_escape_sequence(box) -> None:
     """`First error:` is picked out of the same stream and printed at column 0,
     and the same string is interpolated into the `[result]` line itself.

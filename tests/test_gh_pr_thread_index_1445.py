@@ -161,6 +161,19 @@ def test_the_declining_line_cannot_carry_ghs_control_characters(
     assert "HTTP 403" in out, "disclosed, not stripped"
 
 
+def test_the_threads_mode_declining_line_is_flattened_too(monkeypatch, capsys):
+    """`gh-pr:N:threads` prints the same string from the same fetcher, at
+    column 0, with the branch pair on the line above it. One sink flattened
+    and the other not is the half-fixed seam #1470 is about."""
+    rc, out = _run(monkeypatch, capsys, threads=[], graphql_rc=1,
+                   flags=("threads",),
+                   graphql_stderr="HTTP 403" + chr(27) + "[2K" + chr(27) + "[1A")
+    assert rc == 1
+    assert "Threads: UNKNOWN" in out
+    assert chr(27) not in out
+    assert "HTTP 403" in out
+
+
 def test_a_real_zero_says_so_rather_than_omitting_the_line(monkeypatch, capsys):
     rc, out = _run(monkeypatch, capsys, threads=[])
     line = _threads_line(out)
