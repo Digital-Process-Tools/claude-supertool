@@ -324,13 +324,19 @@ def named_disclosure(
     the two namespaces overlap in one direction, so a `check #` labelled `job #`
     sends them to a 404 and reads as an absence.
     """
+    # Flattened here for the same reason `shortfall()` is (#1451): this
+    # renders caller-supplied leg names, and a caller that forgot is a new
+    # instance of #851 rather than a bug in its own file. `state` needs no
+    # flatten because `_label()` goes through `normalize()`, which does.
     groups: dict[str, list[tuple[str, str, str]]] = {}
     for name, state, kind, ident in entries:
         b = bucket(state)
         if b in ("passed", "pending"):
             continue
         label = "failed" if b == "failed" else _label(state)
-        groups.setdefault(label, []).append((name, kind, ident))
+        groups.setdefault(label, []).append(
+            (_untrusted.flat(str(name)), _untrusted.flat(str(kind)),
+             _untrusted.flat(str(ident))))
 
     lines: List[str] = []
     for label in sorted(groups):

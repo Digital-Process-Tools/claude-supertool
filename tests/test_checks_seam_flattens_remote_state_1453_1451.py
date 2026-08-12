@@ -107,7 +107,13 @@ def test_a_leftover_term_cannot_forge_a_second_term() -> None:
 
 
 def test_flattening_cannot_move_a_state_between_buckets() -> None:
-    """Why the seam is safe to put in the classifier, not only the renderer."""
+    """Why the seam is safe to put in the classifier, not only the renderer.
+
+    A guard, not a pin: this passes with the fix reverted, and is meant to.
+    It fails the day somebody adds a state token containing whitespace to one
+    of the four sets, which is the only thing that could make flattening in
+    `normalize()` change a verdict instead of only a render.
+    """
     for group in (_checks.PASSED_STATES, _checks.FAILED_STATES,
                   _checks.PENDING_STATES, _checks.BENIGN_STATES):
         for member in group:
@@ -141,9 +147,29 @@ def test_shortfall_flattens_the_declined_reason() -> None:
 
 
 def test_a_matrix_job_name_keeps_its_comma() -> None:
-    """The distinction that keeps the comma rule out of `shortfall()`."""
+    """The distinction that keeps the comma rule out of `shortfall()`.
+
+    A guard, not a pin: this passes with the fix reverted, and is meant to.
+    It fails the day somebody extends `label()`'s comma substitution down into
+    `shortfall()`, where it would mangle every matrix leg name GitHub emits.
+    """
     _marker, lines = _checks.shortfall(1, 2, ["build (ubuntu-latest, 3.11)"])
     assert "build (ubuntu-latest, 3.11)" in " ".join(lines)
+
+
+def test_named_disclosure_flattens_the_leg_it_names() -> None:
+    """`shortfall()`'s sibling, found by the review reading around the change.
+
+    Same file, same class, same seam: `named_disclosure()` interpolates a leg
+    name, its kind word and its id straight into a `  <label>: <text>` line.
+    `summarize()` answers "how many" and this answers "which", so it is handed
+    exactly the remote names #1451 is about — and it was the one renderer in
+    this module the two issues did not name.
+    """
+    entries = [("build\nfailed: everything is fine", "FAILURE", "job", "1"),
+               ("lint", "FAILURE", "job", "2\n  failed: nothing")]
+    for line in _checks.named_disclosure(entries):
+        assert "\n" not in line, line
 
 
 def test_flat_is_idempotent() -> None:
