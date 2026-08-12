@@ -276,6 +276,16 @@ class TestBatchFollowShellSpecialUsernames:
         "user\x00null",
     ]
 
+    #: Since #1387 a candidate line holding whitespace is refused rather than
+    #: sent — it cannot be one login, and the file is now also the output of
+    #: `gh-find-followable`, whose lines carry an inline `# ...` annotation. So
+    #: this class asserts two things where it used to assert one: what still
+    #: goes out goes out literally, and what does not go out is not *trimmed*
+    #: into something that does. A prefix of an attacker-chosen string is a
+    #: different account, and following it would be the worse outcome of the two.
+    REFUSED = [u for u in EVIL_USERNAMES if any(c.isspace() for c in u)]
+    SENT = [u for u in EVIL_USERNAMES if not any(c.isspace() for c in u)]
+
     def test_evil_usernames_passed_as_literal_args(self, monkeypatch, tmp_path):
         evil_file = tmp_path / "evil_users.txt"
         evil_file.write_text("\n".join(self.EVIL_USERNAMES) + "\n")
@@ -292,17 +302,36 @@ class TestBatchFollowShellSpecialUsernames:
         monkeypatch.setenv("SUPERTOOL_FOLLOW_DELAY", "0")
         rc = batch_follow.main(str(evil_file))
 
-        # Every call must be list form — already asserted in spy
-        assert len(calls) == len(self.EVIL_USERNAMES), \
-            f"Expected {len(self.EVIL_USERNAMES)} calls, got {len(calls)}"
-        # Each username must appear verbatim as a list element in the gh call
-        for i, (call, evil) in enumerate(zip(calls, self.EVIL_USERNAMES)):
+        assert rc == 2, "a refused line must not leave a clean exit"
+        assert len(calls) == len(self.SENT), \
+            f"Expected {len(self.SENT)} calls, got {len(calls)}"
+        # Each username that IS sent must appear verbatim as a list element
+        for i, (call, evil) in enumerate(zip(calls, self.SENT)):
             username = evil.lstrip("@")
             # The username is embedded in the endpoint "user/following/<username>"
             endpoint_args = [a for a in call if "user/following" in str(a)]
             assert endpoint_args, f"Call {i}: no user/following arg found in {call}"
             assert username in endpoint_args[0], \
                 f"Call {i}: username {username!r} not literal in endpoint {endpoint_args[0]!r}"
+
+    def test_a_refused_username_is_not_trimmed_into_a_reachable_one(
+            self, monkeypatch, tmp_path):
+        """The failure mode a silent stripper would have: `foo; touch x` -> `foo`.
+
+        `foo` is an account that may well exist and is not the one on the line
+        anybody reviewed. Nothing derived from a refused line may reach `gh`.
+        """
+        evil_file = tmp_path / "evil_users.txt"
+        evil_file.write_text("\n".join(self.REFUSED) + "\n")
+
+        calls: list[list] = []
+        monkeypatch.setattr(batch_follow.subprocess, "run",
+                            lambda args, **k: calls.append(args) or _ok())
+        monkeypatch.setenv("SUPERTOOL_FOLLOW_DELAY", "0")
+
+        assert self.REFUSED, "fixture no longer exercises the refusal"
+        assert batch_follow.main(str(evil_file)) == 2
+        assert calls == [], f"a refused line reached gh: {calls!r}"
 
 
 # ===========================================================================

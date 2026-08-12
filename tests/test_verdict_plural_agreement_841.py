@@ -58,7 +58,7 @@ def test_unconcluded_workflows_take_a_plural_verb_and_a_plural_pronoun() -> None
                {"tests": ["IN_PROGRESS"], "CodeQL": ["QUEUED"]})
     assert "`tests` has not concluded" in one
     assert "so it is neither a pass nor a fail" in one
-    assert "`CodeQL`, `tests` have not concluded" in two
+    assert "`CodeQL` and `tests` have not concluded" in two
     assert "so they are neither a pass nor a fail" in two
 
 
@@ -84,7 +84,7 @@ def test_workflows_with_no_run_on_this_head_take_a_plural_verb() -> None:
     two = _say({"tests": _DONE}, {"tests": ["SUCCESS"]},
                missing=["CodeQL", "lint"])
     assert "`CodeQL` ran on the previous head and has no run" in one
-    assert "`CodeQL`, `lint` ran on the previous head and have no run" in two
+    assert "`CodeQL` and `lint` ran on the previous head and have no run" in two
 
 
 def test_an_unread_job_list_pluralises_the_thing_that_did_not_come_back() -> None:
@@ -92,7 +92,7 @@ def test_an_unread_job_list_pluralises_the_thing_that_did_not_come_back() -> Non
     two = _say({"tests": _DONE, "CodeQL": _DONE},
                {"tests": None, "CodeQL": None})
     assert "the job list for `tests` did not come back" in one
-    assert "the job lists for `CodeQL`, `tests` did not come back" in two
+    assert "the job lists for `CodeQL` and `tests` did not come back" in two
 
 
 # ---------------------------------------------------------------------------

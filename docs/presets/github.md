@@ -105,6 +105,22 @@ The fix is the convention the rest of the repo already keeps ([#819](https://git
 
 `gh-star`, `gh-follow`, `gh-batch-star` and `gh-batch-follow` flatten too, on a narrower ground: their error arms echo `gh`'s stderr, which quotes back the name it was given, and the batch ops print it as a row in a list a reader skims for exactly the `ERR` lines a forged one imitates.
 
+### The candidates file has one line format, and both ends honour it
+
+The producers write `octo/tool  # 12 stars, a description`; until [#1387](https://github.com/Digital-Process-Tools/claude-supertool/issues/1387) `gh-batch-star` sent all of that as the repository path and `gh-batch-follow` sent `octocat  # stargazer` as the login. Both 404'd, and the pipeline the two op pairs exist to form needed a hand edit in the middle.
+
+The rule, in `presets/github/_candidates.py`, is two lines long:
+
+| Line | Read as |
+|---|---|
+| `# anything` (leading whitespace allowed) | a whole-line comment, skipped — unchanged |
+| `octo/tool  # 12 stars` | name `octo/tool`; everything from the whitespace-preceded `#` is an annotation and is dropped |
+| `evil#tool/x` | **not** a name with a comment. No `#` precedes whitespace, so nothing is stripped — and the guard then refuses the line |
+
+**The whitespace requirement is the whole safety argument.** `evil#tool/x` trimmed at the `#` is `evil`, an account that may well exist and is not the one on the line anybody reviewed. A consumer that silently strips what it does not understand is how a wrong name becomes a starred repo, so the split can only ever remove text no GitHub owner, repository or login could have contained, and anything left over that still cannot be a name — whitespace inside it, or a surviving `#` — is skipped by name rather than sent.
+
+Neither outcome is silent. The receipt says how many lines carried an annotation before the first write happens, names each skipped line with its reason, and ends on `DONE: 3 starred, 0 failed, 2 skipped`. A run with any skipped line exits **2**, not 0: it covered fewer names than the reviewed list held, and a zero there would report a partial run as a complete one.
+
 ## `:fail` on a job that did not fail
 
 `:fail` selects error blocks, which is the right question for a job that **failed** and close to the worst one for a job that was **cancelled**. A cancellation writes exactly one error line — `##[error]The operation was canceled.` — and puts everything diagnostic outside it.
@@ -259,6 +275,24 @@ Two mechanics worth knowing:
 **A listing filter beside `iids=` is refused.** `author`/`assignee`/`label`/`milestone`/`state` narrow a `gh issue list` call that does not happen on this path, so they would have been dropped and the rows printed as though they had been applied — [#864](https://github.com/Digital-Process-Tools/claude-supertool/issues/864)'s defect, one layer up.
 
 Rows also carry `[closed]` now, and `[state:?]` when gh did not answer. A bare board is `state=open` so the marker never showed; `state=all` and `iids=` both render closed issues, and a closed one that looked identical to an open one answered "is this citation still live" wrongly.
+
+**A client-side filter narrows the id feed exactly as it narrows the board.** Until [#1439](https://github.com/Digital-Process-Tools/claude-supertool/issues/1439) it did not, on the live tracker:
+
+```
+$ supertool 'gh-issues:nomilestone,per=100,iids'       -> 95 ids
+$ supertool 'gh-issues:milestone=v0.36.0,per=100,iids' -> 42 ids
+intersection: 42 — every milestoned issue also reported as unmilestoned
+$ supertool 'gh-issues:nomilestone,per=100'
+53 issue(s) | nomilestone excluded 42 of 95 fetched
+```
+
+The cause was **ordering**, not a projection: the `iids` render returned above the client-side filter block, so `external`, `stale` and `nomilestone` were all inert under it — and so were the declines those filters exist to produce. Nothing dropped the `milestone` field; both shapes come from one `gh issue list --json` call with the same fields, and the filter simply never looked at them.
+
+Three consequences of the fix:
+
+- the id feed is rendered **after** the filters, so a decline reaches it too. `gh-issues:nomilestone,iids` over a board with one unreadable milestone exits 1 with `cannot filter by nomilestone` and prints no numbers — an id feed is the shape most likely to be piped into another call rather than read, so it is the shape least able to carry a filter that silently did not run;
+- the narrowing note rides the feed as a `#` comment (`# nomilestone excluded 44 of 97 fetched`). The board stated it and the feed stated nothing, so there was no line to disagree with;
+- a filter that reads an **enriched** field (`external`, `stale`) now buys the enrichment call under `iids`, where the bare feed still buys none. That is `gl-mrs`'s rule — it applies `failed` before its own `iids` return and overrides `nopipe` for it — and the sibling had it right first. It holds on **both** routes: `gh-issues:iids=1,2,iids,external` used to decline for want of a field it had chosen not to fetch, while `gh-issues:external,iids` answered, and two spellings of one request must not disagree.
 
 ### Searching the tracker, and saying which engine answered
 
@@ -1170,6 +1204,20 @@ $ gh run list --commit 412375ae98…  --json workflowName # 2 runs  exit 0
 That is the failure the maintainer hit by hand before filing, and passing an
 abbreviation through would have reproduced it inside the op meant to insulate
 against it.
+
+**The table names the run, not only the workflow.** [#1409](https://github.com/Digital-Process-Tools/claude-supertool/issues/1409) was filed asking for a new `gh-runs:REF` op and its own author retracted the body: the ref resolution, the `--commit` exact-match trap and the declared-set comparison all already live here. What was missing was two fields on the render that exists.
+
+```
+Workflow                         Run                        Phase          Outcome        Legs
+CodeQL                           31501780284 attempt 1      concluded      success        2 total: 2 passed, …
+tests                            31507113066 attempt 2      concluded      success        15 total: 15 passed, …
+```
+
+`Run` now names the run and `Phase` carries the lifecycle word it used to hold. Both fields were already fetched — `_run_list` asks for `databaseId` and `attempt` — so this costs no extra call, and it is the route from this render to `gh-run:<id>` or `gh run rerun <id>` that previously needed a raw API call to find.
+
+**`attempt` is printed always, including on attempt 1.** A number that appears only in the interesting case cannot be told from a number the tool failed to read; an unreadable id or attempt renders `?`, never `-1` and never a defaulted `1`.
+
+A note under the table says what the two numbers mean, and it is worth stating precisely because the issue body got it wrong: a re-run is a further **attempt on the same run object**, not a second run object on the same SHA. That is why `_declared_legs.reconcilable` buys a second source exactly when the attempt is not 1 — `filter=all` holds rows the latest attempt dropped — and why the tally beside a row counts the latest attempt only. Only the newest run of each workflow on the commit is listed, so the row count is workflows, never attempts.
 
 **What commit mode does not have, it says.** `--commit` returns one commit's
 runs and no others, so the previous-head comparison — *this workflow ran last
