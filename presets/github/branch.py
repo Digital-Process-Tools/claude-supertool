@@ -252,7 +252,14 @@ def orphan_lines(selected: dict, fetched: dict) -> list:
         n = orphaned_legs(selected[name], states)
         if not n:
             continue
-        conclusion = str(selected[name].get("conclusion") or "no conclusion")
+        # Flattened for the same reason the workflow name beside it is: this
+        # sentence is two-space indented, so a newline in the field emits at
+        # column 0 and reads as the tool's own line (#851/#981). `conclusion`
+        # is an enum in practice; the convention is not conditioned on that,
+        # because both of those issues were filed after somebody reasoned that
+        # way about the field next door.
+        conclusion = _untrusted.flat(
+            str(selected[name].get("conclusion") or "no conclusion"))
         legword = _agrees(n, "leg", "legs")
         lines.append(
             f"  {_untrusted.flat(name)} — the run object concluded "
@@ -602,7 +609,11 @@ def _names(names) -> str:
     defect this repository keeps filing. Eight backticked names on one line is
     ugly; eight workflows of which three are named is wrong.
     """
-    items = [f"`{n}`" for n in names]
+    # Flattened here rather than at the four call sites, so the fifth is
+    # right too. These names reach the *verdict sentence*, which `pr_merge`
+    # republishes on the merge gate — the highest-authority line this op
+    # writes, and the one a forged newline would be worth landing in (#851).
+    items = [f"`{_untrusted.flat(str(n))}`" for n in names]
     if not items:
         return ""
     if len(items) == 1:
@@ -939,7 +950,8 @@ def _row(name: str, run: dict, jobs) -> str:
         states = [_checks.github_state(j) for j in jobs]
         tally = leg_summary(states)
     if phase == PHASE_CONCLUDED:
-        outcome = str(run.get("conclusion") or "no conclusion")
+        outcome = _untrusted.flat(
+            str(run.get("conclusion") or "no conclusion"))
         # #1408: the cell may not assert a conclusion the verdict has refused.
         # Marked rather than rewritten — `success` is what the run object says
         # and suppressing it would trade one silent disagreement for another —
