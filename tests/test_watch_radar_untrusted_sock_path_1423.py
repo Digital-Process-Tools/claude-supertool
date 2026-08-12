@@ -79,6 +79,10 @@ def test_the_forged_text_is_shown_rather_than_dropped(fleet) -> None:
 
     Trading the forged line for a silently shortened one would be the quiet
     failure bought with the loud one.
+
+    Green before the fix as well, and deliberately so: this pins the direction
+    the repair must *not* take, which no unfixed build can fail. The pins are
+    the two newline tests and the de-duplication one.
     """
     _watcher(fleet, "gitlab-mr", "evil", ACCEPTED, sock=FORGED)
     rendered = "\n".join(radar.delivery_banner())
@@ -94,7 +98,11 @@ def test_the_banner_names_where_a_printed_socket_path_came_from(fleet) -> None:
 
 
 def test_no_provenance_note_when_the_banner_prints_nobody_elses_text(fleet) -> None:
-    """A note about text that was never printed is a claim about the render."""
+    """A note about text that was never printed is a claim about the render.
+
+    Green before the fix too — the note did not exist then. Same job as the
+    test above: it bounds the repair rather than pinning the defect.
+    """
     _watcher(fleet, "gitlab-mr", "a", ACCEPTED, sock=MINE)
     banner = radar.delivery_banner()
     assert banner
