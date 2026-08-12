@@ -84,27 +84,37 @@ rather than corrected.
 from __future__ import annotations
 
 import glob as _glob
-import json
 import os
 import re
 import subprocess
 import sys
 from datetime import datetime, timezone
-from typing import Optional
+from typing import NamedTuple, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import _filter_tokens  # noqa: E402  (the one instant parser, shared with gh-prs)
-import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _untrusted  # noqa: E402  (PR titles and tag names are remote text — #851)
-import prs  # noqa: E402  (the one `gh pr list` argv — see `read_merged_prs`)
+
+# `json` (above), `_repo_target` and `prs` used to be imported and all three were
+# unused — ruff reports them F401 on demand, but no CI step runs `ruff check .`
+# (see the note in .github/workflows/tests.yml), and supertool's ruff validator
+# only reports errors an edit NEWLY introduces, so imports already dead when
+# this module was split out of since_tag.py were invisible to both. The `prs`
+# one also cited `read_merged_prs`, a function #1405 deleted. This module is a
+# library now — no `main()`, no registry entry — and the argv it once needed
+# from `prs` is built by `prs` itself.
 
 # The fields this op renders, which are not the board's. `prs._LIST_FIELDS`
 # carries `statusCheckRollup` — dozens of check runs per PR, over a page of up
 # to 500 merged ones — and none of it is read here. The shared thing is the
 # query; the payload is the caller's (#1411).
-PR_LIST_FIELDS = "number,title,mergedAt,url"
+# `mergeCommit` is what makes the boundary an identity rather than a clock —
+# see `split_tagged_commit`. One `{"oid": "<40hex>"}` per row, against
+# `statusCheckRollup`'s dozens of check runs per row, which is the field this
+# set exists to stay out of (#1411).
+PR_LIST_FIELDS = "number,title,mergedAt,url,mergeCommit"
 
 BOUNDARY_RESOLVED = "RESOLVED"
 BOUNDARY_AMBIGUOUS = "AMBIGUOUS"
@@ -158,11 +168,64 @@ def parse_instant(value: object) -> Optional[datetime]:
     return _filter_tokens.parse_iso_instant(value)
 
 
+def split_tagged_commit(rows, boundary_sha):
+    """`(rest, tagged)` — the row whose merge commit IS the tagged commit.
+
+    The boundary is a **commit**. `TAG..BRANCH` excludes it by construction, so
+    the local side never sees the PR that produced the tagged commit, and the
+    API side has to exclude the same row or the two disagree at every release.
+
+    That exclusion used to be `filter_merged`'s "strictly after", which only
+    works when the two clocks agree to the second. They do not: GitHub stamps
+    `merged_at` when it records the merge, after the commit has been written.
+    Measured across this repository's own releases — tagged commit's committer
+    date vs the release PR's `merged_at`:
+
+        v0.30.0  #1161  06:29:26Z  ==  06:29:26Z
+        v0.31.0  #1198  15:13:43Z  ==  15:13:43Z
+        v0.32.0  #1250  22:35:33Z  <   22:35:34Z    one second later
+        v0.33.0  #1289  00:39:57Z  ==  00:39:57Z
+        v0.34.0  #1403  13:34:34Z  <   13:34:35Z    one second later
+
+    So the exclusion fired on a coin flip, and on the two flips it lost the
+    release PR was counted as merged-since *and* reported absent from local
+    history — a structural UNVERIFIED with the count off by one (#1405). The
+    tagged commit's sha equalled `merge_commit_sha` in all five.
+
+    Identity, not the clock. Two rows it deliberately does NOT remove:
+
+    * A row carrying no `mergeCommit` — no identity to compare is neither a
+      match nor a mismatch, and guessing from the timestamp is the defect this
+      function replaces. It stays in, reaches `reconcile`, and renders as the
+      disagreement it is.
+    * A tagged commit that was **amended** after the merge. Its sha is no
+      longer the one the API recorded, the pairing correctly fails, and that
+      row keeps its refusal — history was rewritten under the tag and the two
+      sources genuinely do disagree.
+    """
+    if not boundary_sha:
+        return list(rows), None
+    rest = []
+    tagged = None
+    for row in rows:
+        commit = row.get("mergeCommit")
+        oid = commit.get("oid") if isinstance(commit, dict) else None
+        if oid and str(oid) == str(boundary_sha):
+            if tagged is None:
+                tagged = row
+            continue
+        rest.append(row)
+    return rest, tagged
+
+
 def filter_merged(rows, boundary):
     """`(kept, undated)` — rows merged strictly after `boundary`, in merge order.
 
-    Strictly after: the PR whose merge *is* the tagged commit is already in the
-    release, so `>=` would double-count it into the next one.
+    Strictly after, but that is no longer what excludes the tagged commit's own
+    PR — `split_tagged_commit` does, by sha, because the two clocks are up to a
+    second apart (#1405). What `>` still buys is a local re-check of the server
+    filter: `--search merged:>INSTANT` is an optimisation, this comparison is
+    the guarantee, and it is the one #1209 was filed about.
 
     `undated` is the third state. A row whose `mergedAt` will not parse has not
     been shown to be outside the window — it has not been placed at all — and
@@ -245,7 +308,7 @@ def select_tag(tags, requested: str = ""):
             "no tag on this repository has a version-shaped name (vN.N.N or "
             f"N.N.N), so none is a release boundary candidate. Tags present: "
             f"{_untrusted.flat(names)}. Name one explicitly with "
-            "gh-since-tag:TAG.")
+            "gh-prs:merged-since=TAG,state=merged.")
         return None, BOUNDARY_UNRESOLVED, notes
 
     candidates = [t for t in versioned
@@ -255,7 +318,8 @@ def select_tag(tags, requested: str = ""):
         notes.append(
             "every version-shaped tag is either off the default branch or "
             "carries a date that could not be parsed, so no default boundary "
-            "can be chosen. Name one explicitly with gh-since-tag:TAG.")
+            "can be chosen. Name one explicitly with "
+            "gh-prs:merged-since=TAG,state=merged.")
         return None, BOUNDARY_UNRESOLVED, notes
 
     candidates.sort(key=lambda t: parse_instant(t.get("commit_date")), reverse=True)
@@ -448,13 +512,18 @@ def reconcile(api_numbers, git_numbers):
 # repo: targeting — refused, because only half of it could ever be honoured
 # ---------------------------------------------------------------------------
 
-def repo_target_refusal(target) -> str:
+def repo_target_refusal(target, tag: str = "") -> str:
     """The refusal message for a `repo:OWNER/NAME` target, or ``""``.
 
-    Every other `gh-*` op can follow a repo target because everything it reads
-    comes from the API. This one does not: the boundary tag, the default-branch
-    ref, the commit-subject cross-check and `changelog.d/` are all **local**
-    reads of the cwd's clone, and only the merged-PR list takes `--repo`.
+    `gh-prs` follows a repo target because everything it reads comes from the
+    API. The release gate does not: the boundary tag, the default-branch ref,
+    the commit-subject cross-check and `changelog.d/` are all **local** reads
+    of the cwd's clone, and only the merged-PR list takes `--repo`.
+
+    The fold did not delete this hazard, it moved it onto the op with the most
+    callers — so the refusal is now scoped to the one filter that reaches the
+    clone. `merged-since=<date>` under a target is untouched and fully
+    honoured; only `merged-since=<tag>` is refused.
 
     Half a target is worse than none, and it is this op's own defect wearing a
     different hat. Measured before this refusal existed, with
@@ -473,16 +542,18 @@ def repo_target_refusal(target) -> str:
     if not value:
         return ""
     flat = _untrusted.flat(value)
+    named = _untrusted.flat(str(tag or "")) or "a tag"
     return "\n".join([
-        f"ERROR: gh-since-tag cannot be pointed at '{flat}' with a repo: "
-        f"target, and it will not answer half of the question instead.",
-        f"  Only the merged-PR list can follow the target. The boundary tag, "
-        f"the default branch, the git-history cross-check and changelog.d are "
-        f"local reads of this clone, so the count would be measured for "
-        f"'{flat}' against a tag belonging to this repository — which renders "
-        f"as an ordinary number and is not one.",
-        "  To ask about another repository, run this op from inside that "
-        "repository's clone.",
+        f"ERROR: merged-since={named} cannot be answered for '{flat}' under a "
+        f"repo: target, and half of the question will not be answered instead.",
+        f"  Only the PR list can follow the target. The boundary tag, the "
+        f"default branch, the git-history cross-check and changelog.d are "
+        f"local reads of THIS clone, so the rows would be '{flat}'s measured "
+        f"against a tag belonging to this repository — which renders as an "
+        f"ordinary number and is not one.",
+        "  Two ways through: run it from inside that repository's clone, or "
+        "pass the boundary as a date (merged-since=YYYY-MM-DD), which reads "
+        "nothing local and follows the target whole.",
     ])
 
 
@@ -572,46 +643,18 @@ def read_tags(branch_ref: str):
             # created an hour later does not move what is inside the release.
             "commit_date": deref_date or own_date,
             "tag_date": own_date if objtype == "tag" else "",
+            # Both spellings, and neither is decoration. `sha` is what renders;
+            # `full_sha` is what `split_tagged_commit` compares against the
+            # API's `mergeCommit.oid`, and seven characters are an abbreviation
+            # for a reader, not an identity for a comparison.
             "sha": (deref_sha or own_sha)[:7],
+            "full_sha": (deref_sha or own_sha),
             "reachable": (None if reachable_names is None
                           else name in reachable_names),
         })
     note = ("" if reachable_names is not None
             else "tag reachability could not be measured")
     return tags, note
-
-
-def read_merged_prs(boundary, limit: int):
-    """`(rows, reason)` — merged PRs after `boundary`, from GitHub's search index.
-
-    The instant is pushed into the search qualifier so the page is spent on rows
-    that can matter, but `filter_merged` re-checks every row locally. The server
-    filter is an optimisation; the parsed comparison is the guarantee, and it is
-    the one #1209 was filed about.
-
-    **The argv is `prs._build_list_cmd`'s, not this function's** (#1411). It was
-    built here by hand, which made this a third caller of a listing that has
-    drifted twice — #1207 put a default `author=@me` into that builder and #1230
-    found `radar` had inherited the narrow board after the op dropped it. Nothing
-    was wrong with the copy; the defect was that a second place existed for the
-    same thing to go wrong. What stays here is everything that is not the query:
-    the boundary's three states, the local-history reconcile, and the
-    `changelog.d` cross-check.
-    """
-    stamp = boundary.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
-    argv = prs._build_list_cmd(
-        {"state": "merged", "merged-since": stamp}, limit,
-        fields=PR_LIST_FIELDS)
-    ok, out, reason = _run(argv, GH_TIMEOUT)
-    if not ok:
-        return None, reason
-    try:
-        rows = json.loads(out or "[]")
-    except ValueError as exc:
-        return None, f"gh returned output that is not JSON ({exc})"
-    if not isinstance(rows, list):
-        return None, "gh returned JSON that is not a list of pull requests"
-    return rows, ""
 
 
 def read_subjects(tag_name: str, branch_ref: str):
@@ -639,7 +682,7 @@ def render(*, boundary_state, chosen, notes, rows, undated, count_text,
     the one time they disagreed it was luck that anybody did.
     """
     frag_count, frag_sections, frag_note = fragments
-    out = ["# Merged since tag", ""]
+    out = ["# Release gate", ""]
 
     if chosen is None:
         out.append(f"boundary: {boundary_state} — no tag could be chosen")
@@ -727,33 +770,120 @@ def render(*, boundary_state, chosen, notes, rows, undated, count_text,
     return out
 
 
+
 # ---------------------------------------------------------------------------
-# main
+# The boundary, resolved — what `gh-prs:merged-since=TAG` calls
 # ---------------------------------------------------------------------------
 
-def parse_args(argv):
-    """`(tag, limit, error)`. An unrecognised token is refused, not dropped."""
-    tag = ""
-    limit = DEFAULT_LIMIT
-    for token in [str(a) for a in argv if str(a) != ""]:
-        if token.startswith("per="):
-            value = token[4:]
-            if not value.isdigit() or not 1 <= int(value) <= MAX_LIMIT:
-                return "", 0, (f"per= takes a whole number between 1 and "
-                               f"{MAX_LIMIT}; got '{value}'")
-            limit = int(value)
-        elif tag:
-            return "", 0, (f"only one tag can be named; got '{tag}' and "
-                           f"'{token}'")
-        else:
-            tag = token
-    return tag, limit, ""
+class Boundary(NamedTuple):
+    """One resolved release boundary, or the reason there is not one.
+
+    `refusal` is non-empty exactly when `state` is not ``RESOLVED``, and
+    `stamp` is empty in the same cases. That pairing is the contract the fold
+    rests on: **a filter value may be refused, but it may never be picked
+    between.** `gh-since-tag` could print a count against one of two defensible
+    boundaries and label it AMBIGUOUS, because it owned the whole render. A
+    value on somebody else's listing cannot — the board underneath it would be
+    a real board, correctly built, answering a question nobody asked.
+    """
+
+    state: str
+    tag: Optional[dict]
+    instant: Optional[datetime]
+    sha: str
+    stamp: str
+    branch_ref: str
+    notes: list
+    sources: list
+    refusal: str
 
 
-def _changelog_dir() -> str:
+def _no_boundary(state, notes, sources, branch_ref, refusal, tag=None):
+    return Boundary(state=state, tag=tag, instant=None, sha="", stamp="",
+                    branch_ref=branch_ref, notes=list(notes),
+                    sources=list(sources), refusal=refusal)
+
+
+def _refusal_block(headline, notes):
+    lines = [f"ERROR: {headline}"]
+    for note in notes:
+        lines.append(f"  ! {note}")
+    return "\n".join(lines)
+
+
+def resolve_boundary(requested: str = "") -> Boundary:
+    """Resolve `merged-since=TAG` to a second-precision instant, in three states.
+
+    The three states are `select_tag`'s and the fold does not change them —
+    what changed is who they are reported to. ``AMBIGUOUS`` used to print a
+    count with a warning attached; here it refuses outright, because the thing
+    downstream is a listing rather than a verdict and a listing has no way to
+    carry "this is not a trigger input".
+
+    Local reads only, and the same ones the deleted op made: `git rev-parse`
+    for the default branch, `for-each-ref` + `tag --merged` for the tags. It
+    still never fetches — a stale `origin/master` is disclosed as the source
+    rather than corrected.
+    """
+    sources = []
+    branch_ref, branch_note = default_branch_ref()
+    sources.append(branch_note)
+
+    tags, tag_note = read_tags(branch_ref)
+    if tags is None:
+        return _no_boundary(
+            BOUNDARY_UNRESOLVED, [tag_note], sources, branch_ref,
+            _refusal_block(
+                "merged-since= names a tag and the tag list could not be read, "
+                "so there is no boundary. This is not a count of zero.",
+                [tag_note]))
+    if tag_note:
+        sources.append(tag_note)
+
+    chosen, state, notes = select_tag(tags, requested)
+    if chosen is None:
+        return _no_boundary(
+            state, notes, sources, branch_ref,
+            _refusal_block(
+                "merged-since= could not be resolved to a boundary, and the "
+                "newest tag is NOT substituted for one that does not resolve.",
+                notes))
+
+    instant = parse_instant(chosen.get("commit_date"))
+    if instant is None:
+        note = (f"the tag's commit date "
+                f"({_untrusted.flat(str(chosen.get('commit_date')))}) could not "
+                f"be parsed, so there is no instant to count from.")
+        return _no_boundary(
+            BOUNDARY_UNRESOLVED, notes + [note], sources, branch_ref,
+            _refusal_block("merged-since= resolved to a tag with no usable "
+                           "instant.", notes + [note]),
+            tag=chosen)
+
+    if state == BOUNDARY_AMBIGUOUS:
+        name = _untrusted.flat(str(chosen.get("name")))
+        return _no_boundary(
+            state, notes, sources, branch_ref,
+            _refusal_block(
+                f"merged-since= — more than one boundary is defensible here, "
+                f"and they give different counts. A filter value may be "
+                f"refused but may not be picked between, so no board is "
+                f"printed. The newest reachable candidate is '{name}'; name "
+                f"the one you mean explicitly.",
+                notes),
+            tag=chosen)
+
+    return Boundary(
+        state=state, tag=chosen, instant=instant,
+        sha=str(chosen.get("full_sha") or ""),
+        stamp=instant.strftime("%Y-%m-%dT%H:%M:%S+00:00"),
+        branch_ref=branch_ref, notes=notes, sources=sources, refusal="")
+
+
+def default_changelog_dir() -> str:
     """`changelog.d` at the repo root, not at the cwd.
 
-    The op is routinely run from a worktree subdirectory, and a relative
+    The gate is routinely reached from a worktree subdirectory, and a relative
     `changelog.d` there resolves to nothing — which `count_fragments` would
     correctly call UNKNOWN, but pointlessly.
     """
@@ -762,91 +892,148 @@ def _changelog_dir() -> str:
     return os.path.join(root, "changelog.d")
 
 
-def main() -> int:
-    tag_arg, limit, error = parse_args(sys.argv[1:])
-    if error:
-        print(f"ERROR: {error}")
-        print("Syntax: gh-since-tag[:TAG][:per=N]")
-        return 1
+def merge_order_rows(rows) -> list:
+    """The merged slice's own render — number, merge instant, title.
 
-    refusal = repo_target_refusal(_repo_target.target())
-    if refusal:
-        print(refusal)
-        return 1
+    Not the triage board. `statusCheckRollup` on a merged PR is historical,
+    `reviewDecision` is spent and `mergeable` is null, so the board's columns
+    are noise here and the field set that feeds them is a cost the release gate
+    was deliberately kept out of (#1411). What a merged slice wants instead is
+    the merge instant and merge order, which the board has never rendered.
+    """
+    out = [_untrusted.flat_note("PR titles"), _untrusted.open_marker()]
+    for row in rows:
+        out.append(f"  #{row.get('number')}  "
+                   f"{_untrusted.flat(str(row.get('mergedAt') or ''))}  "
+                   f"{_untrusted.flat(str(row.get('title') or ''))}")
+    out.append(_untrusted.close_marker())
+    return out
 
-    sources = []
-    branch_ref, branch_note = default_branch_ref()
-    sources.append(branch_note)
-    fragments = count_fragments(_changelog_dir())
 
-    def _bail(state, chosen, notes, rows=(), undated=()):
-        print("\n".join(render(
-            boundary_state=state, chosen=chosen, notes=notes, rows=list(rows),
-            undated=list(undated), count_text="?", count_state=COUNT_UNKNOWN,
-            fragments=fragments, only_api=[], only_git=[], unattributed=[],
-            sources=sources)))
-        return 1
+def not_applicable_note() -> list:
+    """The gate's own third state, on a boundary that is a date rather than a tag.
 
-    tags, tag_note = read_tags(branch_ref)
-    if tags is None:
-        return _bail(BOUNDARY_UNRESOLVED, None, [tag_note])
-    if tag_note:
-        sources.append(tag_note)
+    Printed rather than omitted. A footer silent about a check that did not run
+    is indistinguishable from one where the check passed, and that reading is
+    this codebase's most-filed defect — here it would let `merged-since=FRIDAY`
+    be mistaken for a release verdict.
+    """
+    return [
+        "release gate: NOT APPLICABLE — the boundary is a date, not a tag.",
+        "  The local-history cross-check walks TAG..BRANCH and has no tag to "
+        "walk from; the changelog.d count is a statement about a release. "
+        "Neither ran, and neither is being reported as clean.",
+        "  For the release gate: gh-prs:merged-since=v0.34.0,state=merged",
+    ]
 
-    chosen, boundary_state, notes = select_tag(tags, tag_arg)
-    if chosen is None:
-        return _bail(boundary_state, None, notes)
 
-    boundary = parse_instant(chosen.get("commit_date"))
-    if boundary is None:
-        notes.append(
-            f"the chosen tag's commit date "
-            f"({_untrusted.flat(str(chosen.get('commit_date')))}) could not be "
-            f"parsed, so no instant to count from exists.")
-        return _bail(BOUNDARY_UNRESOLVED, chosen, notes)
+def gate_exit(boundary_state: str, count_state: str) -> int:
+    """`0` only when the boundary RESOLVED **and** the count is EXACT.
 
-    api_rows, api_reason = read_merged_prs(boundary, limit)
-    if api_rows is None:
-        notes.append(f"the merged-PR list could not be read "
-                     f"({_untrusted.flat(api_reason)}), so the count is "
-                     f"UNKNOWN — not zero.")
-        return _bail(boundary_state, chosen, notes)
+    The deleted op's contract, kept across the fold because it is the release
+    trigger's actual answer and a script can gate on it. It was very nearly
+    dropped here: an ordinary `gh-prs` board always exits 0, and inheriting
+    that would have put the strongest available statement of "go" next to
+    `merged since tag: 5 (UNVERIFIED)` — a number the tool has just finished
+    saying it cannot verify. `LOWER BOUND` is not permission either: a capped
+    page reads as fewer merges than there are.
 
-    kept, undated = filter_merged(api_rows, boundary)
-    sources.append(page_note(page=len(api_rows), limit=limit))
+    Only the tag-boundary slice has a verdict, so only it consults this. Every
+    other shape of `gh-prs` still exits 0.
+    """
+    if boundary_state == BOUNDARY_RESOLVED and count_state == COUNT_EXACT:
+        return 0
+    return 1
 
-    subjects, subj_reason = read_subjects(str(chosen.get("name")), branch_ref)
-    if subjects is None:
-        only_api = []
-        only_git = []
-        unattributed = []
-        notes.append(f"the local-history cross-check did not run "
-                     f"({_untrusted.flat(subj_reason)}), so the count rests on "
-                     f"one source and is not verified.")
+
+def assess(*, rows, boundary, per_page, fetched, narrowed_by=(),
+           repo_targeted=False, changelog_dir=None):
+    """`(kept, lines, exit_code)` — the slice, the gate footer, and the verdict.
+
+    **Every conditional read states whether it ran.** `gh-prs` is this repo's
+    most-called op and this function is the only thing on it that touches the
+    local clone, so the failure to guard against is not a wrong number — it is
+    a check that quietly did not happen, reading as a check that passed. Three
+    are conditional here and each appears in the footer in every case: the
+    boundary-row exclusion, the local-history cross-check, and `changelog.d`.
+
+    A cross-check that did **not** run counts as unreconciled, so the count
+    renders ``UNVERIFIED`` rather than ``EXACT``. That is the point of the
+    state: ``EXACT`` means two sources agreed, and "I did not look" is not
+    agreement.
+    """
+    sources = list(boundary.sources)
+    notes = list(boundary.notes)
+    tag_name = str((boundary.tag or {}).get("name") or "")
+
+    # 1. The boundary row. Identity, not the clock — see `split_tagged_commit`.
+    rest, tagged = split_tagged_commit(rows, boundary.sha)
+    if tagged is not None:
+        sources.append(
+            f"boundary PR: #{tagged.get('number')} merged AS the tagged commit "
+            f"{_untrusted.flat(str((boundary.tag or {}).get('sha')))} — inside "
+            f"the release, not after it. Excluded by identity rather than by "
+            f"clock: GitHub stamps mergedAt after writing the commit, so the "
+            f"two are up to a second apart (#1405)")
+    else:
+        sources.append(
+            "boundary PR: none — no returned row's merge commit is the tagged "
+            "commit. Expected when the release was tagged on a direct push, or "
+            "when the tag is older than this page")
+
+    kept, undated = filter_merged(rest, boundary.instant)
+    sources.append(page_note(page=fetched, limit=per_page))
+
+    # 2. The cross-check. Four outcomes, and three of them are "did not run".
+    only_api, only_git, unattributed = [], [], []
+    if repo_targeted:
+        sources.append(
+            "cross-check: DID NOT RUN — a repo: target means the rows are "
+            "another repository's while the git history here is this clone's. "
+            "Two populations do not reconcile")
+        unreconciled = 1
+    elif narrowed_by:
+        sources.append(
+            f"cross-check: DID NOT RUN — {', '.join(sorted(narrowed_by))} "
+            f"narrows the API side only, so a gap against full local history "
+            f"would be an artefact of the filter rather than a finding")
         unreconciled = 1
     else:
-        git_numbers, unattributed = numbers_from_subjects(subjects)
-        only_api, only_git = reconcile(
-            {r.get("number") for r in kept if r.get("number") is not None},
-            git_numbers)
-        sources.append(f"cross-check: {len(git_numbers)} PR reference(s) in "
-                       f"{_untrusted.flat(str(chosen.get('name')))}.."
-                       f"{_untrusted.flat(branch_ref)}")
-        unreconciled = len(only_api) + len(only_git)
+        subjects, subj_reason = read_subjects(tag_name, boundary.branch_ref)
+        if subjects is None:
+            sources.append(
+                f"cross-check: DID NOT RUN — {_untrusted.flat(subj_reason)}. "
+                f"The count rests on one source and is not verified")
+            unreconciled = 1
+        else:
+            git_numbers, unattributed = numbers_from_subjects(subjects)
+            only_api, only_git = reconcile(
+                {r.get("number") for r in kept if r.get("number") is not None},
+                git_numbers)
+            unreconciled = len(only_api) + len(only_git)
+            sources.append(
+                f"cross-check: RAN and "
+                f"{'DISAGREED' if unreconciled else 'AGREED'} — "
+                f"{len(git_numbers)} PR reference(s) in "
+                f"{_untrusted.flat(tag_name)}.."
+                f"{_untrusted.flat(boundary.branch_ref)}")
 
-    state, text = count_state(kept=len(kept), limit=limit,
+    # 3. changelog.d. Read, or named as not read — never an implied zero.
+    directory = default_changelog_dir() if changelog_dir is None else changelog_dir
+    frag_count, frag_sections, frag_note = count_fragments(directory)
+    if frag_count is None:
+        sources.append(f"changelog.d: NOT READ — {frag_note}")
+    else:
+        sources.append(f"changelog.d: READ — {frag_count} fragment(s) under "
+                       f"{_untrusted.flat(directory)}")
+
+    state, text = count_state(kept=len(kept), limit=per_page,
                               undated=len(undated), unreconciled=unreconciled,
-                              page=len(api_rows))
-    print("\n".join(render(
-        boundary_state=boundary_state, chosen=chosen, notes=notes, rows=kept,
-        undated=undated, count_text=text, count_state=state,
-        fragments=fragments, only_api=only_api, only_git=only_git,
-        unattributed=unattributed, sources=sources)))
-
-    if boundary_state != BOUNDARY_RESOLVED or state != COUNT_EXACT:
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+                              page=fetched)
+    lines = render(
+        boundary_state=boundary.state, chosen=boundary.tag, notes=notes,
+        rows=kept, undated=undated, count_text=text, count_state=state,
+        fragments=(frag_count, frag_sections, frag_note),
+        only_api=only_api, only_git=only_git, unattributed=unattributed,
+        sources=sources)
+    return kept, lines, gate_exit(boundary.state, state)

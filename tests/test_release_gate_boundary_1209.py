@@ -1,4 +1,15 @@
-"""`gh-since-tag` — the release trigger's two numbers, and the zero that lied (#1209).
+"""The release gate's two numbers, and the zero that lied (#1209).
+
+Renamed from `test_github_since_tag_1209.py` in #1405, when the `gh-since-tag`
+op was deleted into `gh-prs:merged-since=TAG,state=merged`. **Every test in
+this file was retargeted, none deleted**, and that was the whole judgement: the
+file never invoked the op. It tests pure functions — instant parsing, boundary
+selection, the count's states, the fragment count, the reconcile, the render,
+the repo-target refusal — and all of them moved intact into
+`presets/github/_release_gate.py`, where they are now reached through a filter
+instead of through an op name. Nothing here was about the CLI that no longer
+exists, so nothing here had lost its subject.
+
 
 The op exists because the maintainer hand-rolled this every tick and one night it
 printed `merged since tag: 0` beside `7` unreleased fragments. The cause was a
@@ -15,7 +26,12 @@ import importlib.util
 from datetime import datetime, timezone
 from pathlib import Path
 
-PRESET_PATH = Path(__file__).parent.parent / "presets" / "github" / "since_tag.py"
+# `since_tag.py` is deleted since #1405; the judgement moved to
+# `_release_gate.py`, which is that file's own history under a new name
+# (`git log --follow`). Every test below is unchanged apart from this path —
+# the fold moved the code, not the contract.
+PRESET_PATH = (Path(__file__).parent.parent / "presets" / "github"
+               / "_release_gate.py")
 _spec = importlib.util.spec_from_file_location("github_since_tag", PRESET_PATH)
 assert _spec is not None and _spec.loader is not None
 st = importlib.util.module_from_spec(_spec)

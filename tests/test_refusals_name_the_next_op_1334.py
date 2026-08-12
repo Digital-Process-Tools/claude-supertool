@@ -243,12 +243,22 @@ def test_every_hand_written_substitute_is_an_op_this_binary_has() -> None:
     """There is no registry-derived route to these names, so this is the pin.
 
     `replaces` maps a raw shell command to an op and exists only on preset and
-    project ops; every substitute named here is a built-in, and built-ins have
-    no registry entry at all (`registry:paste` says so in as many words).
-    Nothing can derive them, so the table is written by hand and this test is
-    what fails when a target op is renamed or dropped.
+    project ops; the substitutes named here are the op the caller wanted, which
+    nothing can derive, so the tables are written by hand and this test is what
+    fails when a target op is renamed or dropped.
+
+    **The candidate set is builtins PLUS shipped preset ops** since #1405, when
+    `_OP_SYNONYMS` gained its first preset target (`gh-since-tag -> gh-prs`,
+    the op it was deleted into). Builtins alone was right while every entry was
+    one, and it was never the guarantee — the guarantee is that a named target
+    exists in something this binary ships. `_shipped_preset_ops()` is derived
+    from the preset JSON beside `supertool.py`, so widening to it keeps the
+    test's whole protective power: rename or drop `gh-prs` and this still goes
+    red. What it must NOT widen to is the loaded config's ops, which are the
+    checkout's rather than the binary's — that would pass here and fail for a
+    user whose project does not load the preset.
     """
-    valid = set(supertool._valid_op_names())
+    valid = set(supertool._valid_op_names()) | set(supertool._shipped_preset_ops())
     named = set(supertool._CREATING_OPS) | set(supertool._OP_SYNONYMS.values())
     assert named, "the tables are empty — this test would be vacuous"
     missing = sorted(n for n in named if n not in valid)

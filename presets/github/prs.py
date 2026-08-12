@@ -55,6 +55,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -65,6 +66,7 @@ import _untrusted  # noqa: E402  (the repo's remote-text convention)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _checks  # noqa: E402  (the one check classifier, shared with gh-pr / gl-mrs)
 import _proc  # noqa: E402  (the one liveness probe, shared with watch / gl-mrs)
+import _release_gate  # noqa: E402  (the release gate, folded in here — #1405)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 
 WATCH_SOURCE = "github-pr"
@@ -92,19 +94,53 @@ _FLAGS = {"nopipe", "iids", "failed", "anyauthor"}
 _FILTER_KEYS = {"author", "assignee", "label", "reviewer", "state", "per",
                 "merged-since"}
 
+# The keys that do NOT narrow the population: `state` and `merged-since` define
+# which population is being asked about, `per` sizes the page. Everything else
+# in `_FILTER_KEYS` selects a subset of it.
+#
+# The narrowing set is the complement, DERIVED rather than listed, because the
+# release gate's local-history cross-check is only valid over an unnarrowed
+# board — `git log TAG..BRANCH` has every PR in it and a filtered API page does
+# not, so a gap between them would be the filter's artefact. A key added to
+# `_FILTER_KEYS` and forgotten here would make that cross-check report `RAN and
+# AGREED` about two populations that were never comparable: a verdict reached
+# without standing, which is this file's own defect class inside the guard
+# written against it. Spelling it as a subtraction means a new key cannot be
+# forgotten, only decided.
+_NON_NARROWING_KEYS = {"state", "per", "merged-since"}
+_NARROWING_KEYS = _FILTER_KEYS - _NON_NARROWING_KEYS
+
 # The one value here that is an instant rather than a name. `merged-since=` is
 # the boundary vocabulary this op had none of, and its absence is why
 # `gh-since-tag` built its own `gh pr list` argv — a third caller of the listing
 # that drifted twice already (#1207, #1230, filed as #1411).
 #
-# **Instants only. A tag name is deliberately not accepted.** Resolving one has
-# three outcomes — RESOLVED, AMBIGUOUS, UNRESOLVED — and a listing filter has
-# two: apply the token or refuse it. There is no way here to say "two tags at
-# one instant on different commits", which is the state `gh-since-tag` exists to
-# report. Worse, this op is `repo_target: true` while a tag is a read of the
-# *local* clone, so a tag name would resolve against one repository and list
-# from another — measured, that combination printed one repo's tag beside
-# another repo's merge count (`since_tag.repo_target_refusal`).
+# **A tag name IS accepted, since #1405** — see `_VALUE_DOMAINS` below. This
+# comment used to say the opposite in bold, and both of its arguments were
+# real; recording why each stopped holding, because they are the arguments
+# anyone will re-derive when they next touch this.
+#
+# *"Resolving a tag has three outcomes — RESOLVED, AMBIGUOUS, UNRESOLVED — and
+# a listing filter has two: apply the token or refuse it."* Answered by not
+# collapsing them. AMBIGUOUS and UNRESOLVED both REFUSE and print no board, so
+# a filter value is still only applied or refused; what changed is that
+# RESOLVED carries its resolution into the render rather than being silent, and
+# the two refusals name every candidate. A filter value may be refused, it may
+# never be picked between.
+#
+# *"This op is `repo_target: true` while a tag is a read of the local clone, so
+# a tag would resolve against one repository and list from another"* — measured
+# then, and it printed one repo's tag beside another repo's merge count. That
+# is what `_tag_target_conflict` refuses outright, below. A date under a target
+# is untouched and honoured whole; only the tag spelling is refused, because
+# only it is local.
+#
+# The reason a tag had to be accepted at all is the tokeniser, not taste:
+# supertool splits an op argument on `:`, so `merged-since=2026-...T18:57:19Z`
+# loses its value before any filter is parsed, and the bare date that survives
+# is midnight UTC — 75 PRs where the tag's own instant returns 20. A tag name
+# contains no `:` and is the only colon-free spelling of a second-precision
+# boundary.
 
 # Check conclusions that mean "this PR is red".
 _FAIL_CONCLUSIONS = {
@@ -155,7 +191,7 @@ _STATES = {"open", "closed", "merged", "all"}
 _VALUE_DOMAINS: dict[str, object] = {
     "state": _STATES,
     "per": _filter_tokens.POSITIVE_INT,
-    "merged-since": _filter_tokens.ISO_INSTANT,
+    "merged-since": _filter_tokens.ISO_INSTANT_OR_TAG,
 }
 
 # `--search merged:>X` cannot match an open PR, so these are the states where
@@ -185,6 +221,79 @@ def _state_conflict(filters: dict[str, str]) -> str | None:
         f"like. An empty board there is a fact about the query, not about the "
         f"repo, so it is refused rather than printed. Add state=merged (or "
         f"state=closed / state=all)."
+    )
+
+
+class _GatePlan(NamedTuple):
+    """The boundary slice, or nothing. `is_tag` decides how much of it runs."""
+
+    value: str
+    is_tag: bool
+
+
+def _gate_plan(filters: dict[str, str]) -> "_GatePlan | None":
+    """`None` for the ordinary board — and that is the case that matters.
+
+    `gh-prs` is this repository's most-called op: radar's GitHub tier, every
+    triage tick, every agent's first call. `merged-since=` is the only thing
+    that makes it read the local clone at all, and `None` here is what
+    guarantees a caller who did not ask for a boundary pays for none of it —
+    no `git for-each-ref`, no `git log`, no `changelog.d` scan, and the board's
+    own field set unchanged.
+
+    That guard is deliberately one line with one input. This op has already
+    shipped a narrowing nobody could see (`author=@me`, #1207, and again in
+    #1230 when radar inherited it from the shared argv builder), so the
+    condition that switches its behaviour is the last place to be clever.
+    """
+    value = str(filters.get("merged-since") or "")
+    if not value:
+        return None
+    # A tag is anything the one clock cannot read as a date. The shape was
+    # already checked by `_bad_values`; this only routes.
+    return _GatePlan(value=value,
+                     is_tag=_filter_tokens.parse_iso_instant(value) is None)
+
+
+def _tag_target_conflict(value: str, target: object) -> "str | None":
+    """`merged-since=TAG` under `repo:OWNER/NAME` — refused, not half-honoured.
+
+    The deleted op refused a repo target outright and the hazard did not
+    disappear when the code moved here, it just landed on the op with the most
+    callers. Measured before that refusal existed: one repository's tag as the
+    boundary, another's merge count against it, and the first one's fragment
+    count, all under a single header.
+
+    A **date** boundary under a target is fine and is not refused — nothing
+    local is read for it, so the target is honoured whole.
+    """
+    plan = _gate_plan({"merged-since": value})
+    if plan is None or not plan.is_tag:
+        return None
+    if not str(target or "").strip():
+        return None
+    return _release_gate.repo_target_refusal(target, tag=value)
+
+
+def _boundary_flag_conflict(plan: "_GatePlan | None", flags: set) -> "str | None":
+    """`failed` beside a boundary — refused, because the data is not fetched.
+
+    The boundary slice runs on the gate's narrow field set, which carries no
+    `statusCheckRollup` on purpose: that is dozens of check runs per row over a
+    page of up to 500, and keeping the release gate out of it is #1411's own
+    decision. Answering `failed` from a field that was never requested would
+    render every row as passing.
+    """
+    if plan is None or "failed" not in flags:
+        return None
+    return (
+        "ERROR: `failed` and `merged-since=` cannot be answered together. The "
+        "boundary slice is fetched without `statusCheckRollup` — dozens of "
+        "check runs per row, over a page of up to 500 — because a merged PR's "
+        "rollup is historical and the release gate was deliberately kept off "
+        "that field set. With the field absent, `failed` would report every "
+        "row as passing, so it is refused rather than answered from data that "
+        "was never fetched. Drop one of the two."
     )
 
 
@@ -218,10 +327,13 @@ def _build_list_cmd(filters: dict[str, str], per_page: int, *,
                     fields: str = _LIST_FIELDS) -> list[str]:
     """Build the `gh pr list ... --json` argv from parsed filters.
 
-    **This is the one place the listing is spelled.** `gh-since-tag` builds no
-    argv of its own since #1411; it calls this with its own `fields` and a
-    `merged-since` boundary. The parameter is keyword-only on purpose — #1230 is
-    what a positional parameter on this function costs, and a field set is the
+    **This is the one place the listing is spelled.** Two callers, and since
+    #1405 both are in this file: the board, and the release-gate slice, which
+    passes its own `fields` and a `merged-since` boundary. `gh-since-tag` was
+    the second caller until #1411 stopped it building its own argv and #1405
+    deleted the op entirely — there is no third spelling and there has not been
+    one since. The `fields` parameter is keyword-only on purpose: #1230 is what
+    a positional parameter on this function costs, and a field set is the
     caller's render input, never a narrowing of the population.
 
     **No role filter is ever added here.** The argv narrows only by what the
@@ -668,6 +780,66 @@ def _footer(prs: list[dict], watched: set[str] | None,
     return " | ".join(parts)
 
 
+def _boundary_slice(*, rows, plan, boundary, filters, flags, per_page) -> int:
+    """Render the merged slice, and the release gate when the boundary is a tag.
+
+    Not the triage board. A merged PR's check rollup is historical, its
+    approval is spent and its `mergeable` is null, so the board's columns are
+    noise here — and the field set that fills them is what #1411 kept the
+    release gate off. What this renders instead is merge order and the merge
+    instant, which the board has never carried.
+
+    The gate itself only runs against a **tag**. Under a date boundary it says
+    so in as many words rather than staying silent, because a footer that omits
+    a check reads exactly like one where the check passed.
+    """
+    fetched = len(rows)
+    # A role or label filter narrows the API side and not local history, so a
+    # gap between them would be the filter's artefact. `assess` declines the
+    # cross-check by name rather than reporting agreement it did not measure.
+    narrowed_by = sorted(k for k in _NARROWING_KEYS if filters.get(k))
+
+    if boundary is None:
+        # A date boundary is a listing, not a verdict — so it keeps the board's
+        # own exit code. There is nothing here for a release gate to fail on.
+        instant = _filter_tokens.parse_iso_instant(plan.value)
+        kept, _undated = _release_gate.filter_merged(rows, instant)
+        lines = ([_release_gate.page_note(page=fetched, limit=per_page)]
+                 + _release_gate.not_applicable_note())
+        if narrowed_by:
+            lines.append(f"population: narrowed by {', '.join(narrowed_by)}")
+        code = 0
+    else:
+        kept, lines, code = _release_gate.assess(
+            rows=rows, boundary=boundary, per_page=per_page, fetched=fetched,
+            narrowed_by=narrowed_by,
+            repo_targeted=bool(str(_repo_target.target() or "").strip()))
+
+    if "iids" in flags:
+        # Same contract as the board's `iids`: the disclosures the caller did
+        # not choose to lose ride along as `#` comments, because a truncated
+        # list and a complete one are the same bytes downstream.
+        for line in lines:
+            print(f"# {line}")
+        for row in kept:
+            number = row.get("number")
+            if number is not None:
+                print(number)
+        return code
+
+    # Header position as well as footer, for the one disclosure the caller did
+    # not ask for. A footer is lost by exactly the consumer that truncates
+    # (#633, #635, #657), and a capped page read as a complete one is this
+    # op's own defect class. The board does the same thing for the same reason.
+    cap = _release_gate.page_note(page=fetched, limit=per_page)
+    if "PAGE FULL" in cap:
+        print(f"({cap})")
+    if boundary is None:
+        print("\n".join(_release_gate.merge_order_rows(kept)))
+    print("\n".join(lines))
+    return code
+
+
 def main_with_args(arg_str: str) -> int:
     filters, flags, unknown_tokens = _parse_args(arg_str)
     if unknown_tokens:
@@ -681,6 +853,17 @@ def main_with_args(arg_str: str) -> int:
     if conflict:
         print(conflict, file=sys.stderr)
         return 1
+
+    # The boundary slice — `None` for every ordinary board, which is the path
+    # radar and every tick take and the one nothing below may change.
+    plan = _gate_plan(filters)
+    for refusal in (_tag_target_conflict(filters.get("merged-since", ""),
+                                         _repo_target.target()),
+                    _boundary_flag_conflict(plan, flags)):
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 1
+
     iids_only = "iids" in flags
     failed_only = "failed" in flags
     enrich = "nopipe" not in flags
@@ -709,9 +892,23 @@ def main_with_args(arg_str: str) -> int:
     if "per" in filters:
         per_page = int(filters.pop("per"))
 
+    # A tag boundary is resolved to a second-precision instant BEFORE the argv
+    # is built, so `_build_list_cmd` still sees only the vocabulary it has
+    # always had. Three states, and two of them print no board at all: a filter
+    # value may be refused, but it may never be picked between.
+    boundary = None
+    if plan is not None and plan.is_tag:
+        boundary = _release_gate.resolve_boundary(plan.value)
+        if boundary.state != _release_gate.BOUNDARY_RESOLVED:
+            print(boundary.refusal, file=sys.stderr)
+            return 1
+        filters["merged-since"] = boundary.stamp
+
     try:
         result = subprocess.run(
-            _build_list_cmd(filters, per_page),
+            _build_list_cmd(filters, per_page,
+                            fields=(_LIST_FIELDS if plan is None
+                                    else _release_gate.PR_LIST_FIELDS)),
             capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
@@ -736,6 +933,10 @@ def main_with_args(arg_str: str) -> int:
         return 1
     if not isinstance(prs, list):
         prs = []
+
+    if plan is not None:
+        return _boundary_slice(rows=prs, plan=plan, boundary=boundary,
+                               filters=filters, flags=flags, per_page=per_page)
 
     _annotate(prs)
     # What the fetch returned, before any client-side filter narrows it: the
@@ -826,9 +1027,13 @@ def main_with_args(arg_str: str) -> int:
 # as three argv entries and the value is gone before any filter is parsed. The
 # generic refusal closes with "query it with the backend CLI directly and file
 # the gap", which is right when nothing can express the value and wrong here.
-_COLON_HINT = ("The one value on this op that wants a ':' is the boundary: "
-               "write `merged-since=YYYY-MM-DD` — a bare date is read as that "
-               "day at 00:00:00 UTC and needs no colon.")
+_COLON_HINT = (
+    "The one value on this op that wants a ':' is the boundary, and it has two "
+    "colon-free spellings. `merged-since=TAG` (v0.34.0) is the one that keeps "
+    "SECOND precision — the tag's own commit instant. `merged-since=YYYY-MM-DD` "
+    "is that day at 00:00:00 UTC, which for a release boundary is wrong by up "
+    "to a day in the direction of over-counting: measured against v0.35.0, the "
+    "bare date returned 75 PRs where the tag's instant returned 20 (#1405).")
 
 
 def _extra_segments_error(argv: list[str]) -> str | None:

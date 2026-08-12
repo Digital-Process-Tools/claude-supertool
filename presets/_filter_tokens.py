@@ -41,6 +41,8 @@ sentences:
 """
 from __future__ import annotations
 
+import string
+
 # Sentinel domain: the value must parse as an integer >= 1. Used for `per=`,
 # where a non-numeric value used to fall back to the default page size in
 # silence — a caller who asked for a different window and was not told they did
@@ -59,6 +61,51 @@ POSITIVE_INT_LIST = "a comma-separated list of positive integers"
 # the one that places the rows would be that defect wearing a filter's hat.
 ISO_INSTANT = ("an ISO-8601 date or instant (2026-08-09, or "
                "2026-08-09T16:07:45+00:00)")
+
+# Sentinel domain: the same, plus the name of a tag in the local clone. Used by
+# `gh-prs:merged-since=` since #1405, and it is not a convenience.
+#
+# supertool splits an op argument on ':', so `merged-since=2026-08-11T20:57:19Z`
+# arrives as three segments and the value is gone before any filter is parsed —
+# `extra_segments_error` refuses it and says in as many words that there is no
+# escape. That left a bare date as the only typable spelling, and a bare date is
+# midnight UTC: against v0.35.0's real boundary, `merged:>2026-08-11T00:00:00Z`
+# returns 75 PRs where `merged:>2026-08-11T18:57:19Z` returns 20.
+#
+# A tag name contains no ':'. It is the only colon-free spelling of a
+# second-precision boundary, which is why the release gate is expressed as one.
+ISO_INSTANT_OR_TAG = ("an ISO-8601 date or instant (2026-08-09, or "
+                      "2026-08-09T16:07:45+00:00), or the name of a tag in "
+                      "this clone (v0.34.0)")
+
+# An allowlist rather than a list of forbidden characters, because this value
+# is handed to `git` as an argument. Every spelling in this repository's own
+# history fits it: `v0.31.0`, `0.3.2`, `v1.0.0-rc1`, `release/2026-08`.
+_REF_ALLOWED = frozenset(string.ascii_letters + string.digits + "._-+/")
+
+
+def looks_like_ref(value: object) -> bool:
+    """Could this value be a tag name? **Shape only — never existence.**
+
+    Existence has three outcomes and a filter value has two, which is why the
+    two questions are asked in different places: a filter may refuse a value,
+    but it may not pick between two defensible boundaries. Resolution and its
+    three states live in `_release_gate.resolve_boundary`.
+
+    A date-shaped value is deliberately NOT a candidate ref. `2026-13-45` is a
+    typo in a date, and "no tag by that name" is the wrong sentence to hand
+    somebody who typed one — they would go looking for a tag they never meant.
+    """
+    text = str(value or "")
+    if not text or text != text.strip():
+        return False
+    if text.startswith("-"):
+        return False
+    # Four digits then a dash: the caller meant a date. Send them back to the
+    # date refusal rather than off hunting for a tag.
+    if len(text) >= 5 and text[:4].isdigit() and text[4] == "-":
+        return False
+    return all(c in _REF_ALLOWED for c in text)
 
 
 def parse_iso_instant(value: object):
@@ -288,6 +335,9 @@ def bad_values(
         elif allowed is ISO_INSTANT:
             ok = parse_iso_instant(val) is not None
             expected = ISO_INSTANT
+        elif allowed is ISO_INSTANT_OR_TAG:
+            ok = parse_iso_instant(val) is not None or looks_like_ref(val)
+            expected = ISO_INSTANT_OR_TAG
         else:
             assert isinstance(allowed, (set, frozenset))
             ok = val in allowed
