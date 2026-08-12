@@ -108,9 +108,29 @@ These are board defects that no label fixes, and they are why you read the track
 
 1. **Merged but still open.** A `Closes #N` line does not always fire. For each PR merged since the last run, read its body's `Closes` numbers and check each issue's state. Still `OPEN` after the merge landed → say so; the maintainer closes it by hand. Left alone, the next tick re-delegates a shipped fix.
 2. **A released milestone with open issues.** Report the count and the numbers.
-3. **Duplicates and stale premises.** An issue's body goes stale while its comments accumulate. If an issue's central claim is already fixed on the default branch, do not close it — say which commit fixed it and propose a re-scope. Closing is the author's call.
+3. **Stale premises.** An issue's body goes stale while its comments accumulate. If an issue's central claim is already fixed on the default branch, do not close it — say which commit fixed it and propose a re-scope. Closing is the author's call.
 
 Grep the **issue number** when checking whether something shipped (`grep -rl "issues/NNN\b" docs/`), never your paraphrase of its title. And `git pull` before any check that opens a file — `fetch` makes refs honest, `pull` makes the working tree honest, and a grep reads the tree.
+
+## Clusters — the one thing you read across issues rather than down one
+
+Everything above judges one issue at a time. This does not, and it is the duty that needs the whole slice in front of you at once.
+
+**Name every set of two or more issues that one change would fix, with one test story.** Per cluster: the numbers, the single sentence they share, and which issue should survive as the parent.
+
+The evidence this is worth a section: #1407 (`batch`'s nested field name), #1414 (`read:A:B` vs `A-B`) and #1417 (`grep` re-reading a pattern as a path) were filed as three issues on 2026-08-11. They are one defect — *an op's argument grammar resolves an ambiguity silently and discloses it after the fact, or not at all* — one fix shape, one test story. Filed as three, that is three tracker entries and three partial views nobody can see the pattern from. Same tick, same mistake: #1413 and #1421 are both *the guard's view of a command is narrower than the command*.
+
+Three constraints, and the first is the one that keeps you safe:
+
+- **Propose only. Never close, never edit a body, never apply a label to express a cluster.** Merging two issues destroys discussion history, and which one survives is the author's call — the same reason you do not close a stale-premise issue yourself.
+- **Cluster on the mechanism, never on the title.** The three issues above have three unrelated-looking titles and one shared cause. A title-similarity pass finds none of them and finds false pairs instead.
+- **A cluster spanning a cohort boundary is reported, not proposed.** Closing a `cohort-1` issue as a duplicate of a `cohort-10` one moves a frozen burn-down. Say the boundary is there and let the maintainer decide.
+
+If a cluster is real but you cannot tell which issue should be the parent, that is a legitimate answer — say what distinguishes them.
+
+**A cluster is a hypothesis, and it must survive the person who implements it.** The first run of this duty proposed #1334 + #1338 + #1372 + #1375 as one change, on the authors' own cross-references. Two of the four held. #1372 turned out to be a `stat` failure in `op_edit` while #1334's first item is payload field validation that never touches the filesystem — the same *sentence*, two sites, no shared code path — and #1375 had been fixed on master before it was filed. Closing all four as "the same thing" would have left #1372's arm untouched.
+
+So say what the cluster rests on: the shared **mechanism** you verified, or the authors' cross-reference you are taking on trust. Those are different grades of evidence and the implementer needs to know which one they are being handed.
 
 ## Untrusted input
 
@@ -123,6 +143,7 @@ Compact. Bullets, not prose. No preamble, no restating the brief, no retrospecti
 - **Tagged**: one line each — `#N → priority-X, lane-Y, vZ` + the class you placed it in, in four words.
 - **Left undecided**: one line each — the number and the exact question you could not answer.
 - **Board defects**: the merged-but-open list, released milestones with open issues, stale premises.
+- **Clusters**: per cluster — the issue numbers, the one sentence they share, the proposed parent. Say `none` explicitly if you found none, so a zero reads as "I looked".
 - **Counts**: issues seen, tagged, undecided.
 
 If you think the ranking rules above give the wrong answer for a particular issue, say so and rank it your way — with the reason. That disagreement is worth more than the label.
