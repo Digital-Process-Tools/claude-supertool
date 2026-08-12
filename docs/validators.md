@@ -1092,6 +1092,11 @@ Do not build `source_context` by hand. `validators/common/source_context.py` ret
 
 Do not split a tool's output with `str.splitlines()` either. It breaks on U+2028, U+2029, U+0085, VT and FF as well as on LF/CR/CRLF, and every analyser that emits line-oriented text frames it by LF while most echo the offending source text into the message — so one of those characters inside a string literal splits a diagnostic in two and the fragment is published as a second finding (#1486). `count` is what `_validator_regressed` subtracts, so the file under validation partly picks its own baseline. `validators/common/linebreaks.py` has the two-line `split_lines()`; SCHEMA.md §"Split a tool's output on LF, CR and CRLF" is the rule, including the case where `str.splitlines()` is still right.
 
+**And framing the lines correctly moves the problem inside one line rather than removing it** (#1500). Once those five characters are not line ends, a fragment after one of them sits on the *same* line as a real diagnostic — so a parse that anchors a trailing `at line N, col M` to the end of the line hands the location to the fragment, which is the last tail. Two rules follow, both measured on `lsp-diag`:
+
+- **Parse the first segment, disclose the rest.** Split the line on those five before matching, take the location from what precedes the first one, and carry the remainder into the message *labelled as the remainder* — a message may legitimately contain one of them, so dropping it loses evidence, and parsing it lets the file under validation choose a field.
+- **`str.strip()` deletes a leading one**, because all five are `str.isspace()`. Any probe of the form `ln.strip().startswith(OUR_PREFIX)` is therefore still forgeable after the framing fix, and the prefix `lsp-diag` probes for turns the whole receipt into `skipped` — one fragment discarding every real finding on the file. Split first, strip second.
+
 ## resolve — map a source file to its real target
 
 By default a validator runs against the file the op touched. The optional `resolve` key lets it run against a *different* file derived from that one — the canonical case is "edited a source file, run its test." `resolve` is a shell cmd that takes the edited file (`{file}`) and prints the path to run instead:

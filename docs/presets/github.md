@@ -1399,6 +1399,32 @@ fetcher is now gone and the header reads through this same three-state one, so
 the count and the bodies cannot disagree about whether there was an answer
 ([#1445](https://github.com/Digital-Process-Tools/claude-supertool/issues/1445)).
 
+**And the denominator is a page, so it says when it is only a bound.** The
+GraphQL selection is `reviewThreads(first: 100)` with `comments(first: 50)`
+inside it, and it requests no `pageInfo` — so a reply holding exactly 100 threads
+and a pull request holding exactly 100 threads are the same bytes. Both renders
+divided by what came back, which states a fetch limit as a fact about the PR
+([#1491](https://github.com/Digital-Process-Tools/claude-supertool/issues/1491)),
+directly under the line that says `0 / 0 — read, not assumed.`
+
+At the cap, every number that comes off the fetched set is printed as a floor —
+the unresolved tally as much as the total, since it is counted over the same
+truncated list:
+
+```
+Unresolved threads: at least 43 / at least 100 — the fetch stops at the first page of 100 review threads, so both numbers are floors and not counts
+  … at least 80 more not indexed here
+```
+
+Below the cap the reply *does* establish the total and it is printed bare —
+`Unresolved threads: 1 / 2`, unchanged. Qualifying a number that is known would
+be the same defect pointed the other way. Nothing here asserts that more pages
+exist; it stops asserting that they do not. The comment list inside one thread
+was the one cut in that delta that disclosed nothing at all, and `:threads` now
+closes a thread at the cap with `[the first 50 comments on this thread — the
+fetch stops there and does not establish whether more exist. This is not the end
+of the thread.]`
+
 ## A green tally is a statement about a merge-base
 
 On 2026-08-10 `master` failed **13 of 15 legs on every platform** from two pull
