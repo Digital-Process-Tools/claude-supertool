@@ -17,6 +17,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import tool_fault
+from linebreaks import split_lines
 
 # `bash -n` reports a syntax finding as `file: line N: message`. Its other
 # non-zero exits are the shell failing to get as far as parsing:
@@ -42,7 +43,7 @@ def parse_diagnostics(out: str, file: str) -> list[dict]:
     """Every located diagnostic in bash's stderr. Empty means the shell never
     got as far as parsing."""
     errors = []
-    for line in out.splitlines():
+    for line in split_lines(out):
         m = DIAGNOSTIC.search(line)
         if m:
             ln = int(m.group(1))

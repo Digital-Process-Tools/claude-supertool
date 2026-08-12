@@ -23,6 +23,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, tool_fault
+from linebreaks import split_lines
 
 TOOL = "ruby-check"
 INSTALL_HINT = "ruby not found on PATH — this file was NOT syntax-checked"
@@ -42,7 +43,7 @@ def parse_diagnostics(out: str, file: str) -> list[dict]:
     `ruby: No such file or directory -- x.rb (LoadError)` is the common shape.
     """
     errors = []
-    for line in out.splitlines():
+    for line in split_lines(out):
         m = DIAGNOSTIC.match(line)
         if m:
             lineno, msg = m.groups()

@@ -22,6 +22,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent
+from linebreaks import split_lines
 
 TOOL = "tsc-check"
 INSTALL_HINT = ("tsc not found on PATH — this file was NOT type-checked "
@@ -97,7 +98,7 @@ def main() -> None:
     errors = []
     pattern = re.compile(r"^(?:.*?)\((\d+),(\d+)\):\s+(\w+)\s+(TS\d+):\s+(.+)$")
     output = (result.stdout + result.stderr).strip()
-    for line in output.splitlines():
+    for line in split_lines(output):
         m = pattern.match(line)
         if m:
             lineno, col, severity, code, msg = m.groups()

@@ -33,6 +33,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
+from linebreaks import split_lines
 
 
 DEFAULT_RULESETS = "cleancode,codesize,controversial,design,naming,unusedcode"
@@ -129,7 +130,7 @@ def main() -> None:
 
     raw = r.stdout or ""
     errors = []
-    for line in raw.splitlines():
+    for line in split_lines(raw):
         line = line.strip()
         if not line:
             continue

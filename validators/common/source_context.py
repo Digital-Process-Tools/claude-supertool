@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import pathlib
 
+from linebreaks import split_lines
+
 
 def context_fields(file_path: str, line: int | None, radius: int = 2) -> dict:
     """Error-object fields for the source lines around `line`.
@@ -54,7 +56,7 @@ def context_fields(file_path: str, line: int | None, radius: int = 2) -> dict:
         reason = f"{type(exc).__name__} reading {file_path}: {detail}"
         return {"source_context": [],
                 "context_unavailable": " ".join(reason.split())}
-    lines = text.splitlines()
+    lines = split_lines(text)
     ctx: list[str] = []
     for offset in range(-radius, radius + 1):
         ln = line + offset
