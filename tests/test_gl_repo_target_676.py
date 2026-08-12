@@ -331,3 +331,50 @@ def test_every_project_path_in_a_targetable_op_is_substituted(rel) -> None:
                  and id(node) not in wrapped]
 
     assert unwrapped == []
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: a call's forge is also evidenced by its write ops, and a
+# payload route must name the key it actually reads
+# ---------------------------------------------------------------------------
+
+def test_a_payload_route_op_still_settles_the_forge(no_dispatch, capsys) -> None:
+    """A write op naming its own target is still evidence of which forge this
+    call is about. Reading the platform from `op`-mode ops alone let a GitLab
+    project path through a GitHub-only call unremarked — refused a line later
+    for a different reason, with the shape never mentioned."""
+    rc = supertool.main([f"repo:{TARGET}", "gh-issue-create:@.max/x.toml"])
+
+    assert rc == 1
+    assert no_dispatch == []
+    # Named, not merely refused: the payload refusal quotes `OWNER/NAME` too,
+    # so asserting that substring would pass against no change at all.
+    assert "GitLab project path" in capsys.readouterr().err
+
+
+def test_gl_issue_create_names_its_own_payload_key(no_dispatch, capsys) -> None:
+    """`gl-issue-create` takes `project`, not `repo`. Telling its caller to set
+    `repo = ...` names a field the payload validator does not read, which is a
+    worse answer than the generic refusal it used to get."""
+    rc = supertool.main(["repo:group/project", "gl-issue-create:@.max/x.toml"])
+
+    assert rc == 1
+    assert no_dispatch == []
+    err = capsys.readouterr().err
+    assert "gl-issue-create" in err
+    assert "payload" in err
+    assert "project" in err
+    assert "repo = " not in err
+
+
+def test_gh_issue_create_still_names_repo(no_dispatch, capsys) -> None:
+    assert "repo" in supertool._repo_refusal("gh-issue-create")
+
+
+def test_pipeline_not_found_says_check_once(monkeypatch) -> None:
+    """Two "check the number" clauses in one sentence, and "in this repo" twice
+    with no target — the scope helper already carries both."""
+    mod = _load("gitlab/pipeline.py", "gl_pipeline_676b")
+
+    msg = mod._format_error("404 not found", "Pipeline", "77")
+
+    assert msg.lower().count("check") == 1

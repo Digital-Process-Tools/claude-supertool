@@ -63,7 +63,7 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     s = stderr.lower()
     if "404" in s or "not found" in s or "could not resolve" in s:
         return (f"ERROR: {resource} #{identifier} not found "
-                f"{_repo_target.not_found_scope()}. Check the ID. "
+                f"{_repo_target.not_found_scope()}. "
                 f"{_repo_target.gl_not_found_hint()}")
     if "401" in s or "unauthorized" in s or "glpat_" in s or "authenticate" in s or "bad token" in s or "token expired" in s:
         return "ERROR: glab not authenticated. Run: glab auth login"

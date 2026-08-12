@@ -619,8 +619,13 @@ def _repo_target_platform(ops: List[str]) -> str | None:
     """
     presets = _shipped_preset_ops()
     modes = _repo_target_modes()
+    # Every op that has a repo dimension at all, not only the ones that take
+    # it from this op. A `payload`-mode write op is refused a few lines below,
+    # but it is still evidence of which forge the call is about — reading only
+    # `op`-mode ops let a GitLab project path through a GitHub-only call with
+    # the shape never mentioned, and the reader sent to the wrong fix.
     found = {presets.get(a.split(":", 1)[0], "")
-             for a in ops if modes.get(a.split(":", 1)[0]) == "op"}
+             for a in ops if a.split(":", 1)[0] in modes}
     if not found:
         return None
     if len(found) > 1:
@@ -660,10 +665,16 @@ def _repo_refusal(op: str) -> str:
     op with its own payload key wants the target moved, an op with no repo
     dimension at all wants the target dropped or the call split.
     """
-    if _repo_target_modes().get(op) == "payload":
+    mode = _repo_target_modes().get(op) or ""
+    if mode.split(":", 1)[0] == "payload":
+        # `payload` alone means the key is `repo`; `payload:KEY` names another.
+        # The key is quoted from the manifest rather than assumed, because
+        # `gl-issue-create` reads `project` and telling its caller to set
+        # `repo` names a field its payload validator does not look at.
+        key = mode.split(":", 1)[1] if ":" in mode else "repo"
         return (
             f"repo: {op!r} takes its repo target in the payload "
-            f'(repo = "OWNER/NAME"), not from a repo: op — so there is one '
+            f"({key} = ...), not from a repo: op — so there is one "
             f"place the target comes from. Set it there and drop the repo: op.\n"
         )
     return (

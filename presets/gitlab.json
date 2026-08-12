@@ -45,6 +45,7 @@
       "safety": "acts",
       "cmd": "{python} {path}gitlab/issue_create.py {arg}",
       "timeout": 30,
+      "repo_target": "payload:project",
       "description": "Create a GitLab issue from a JSON/TOML payload file. Supports milestone_id, labels, assignee_ids, estimate (quick action), and issue links.",
       "syntax": "gl-issue-create:@FILE",
       "example": "gl-issue-create:@.max/new-issue.json",

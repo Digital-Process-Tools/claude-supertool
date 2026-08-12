@@ -326,7 +326,7 @@ The filter grammar and row layout are shared with `gh-prs` ([#628](https://githu
 
 ### Why there is no `gl-issues` yet
 
-GitLab's issue payload carries `updated_at` and nothing else about the body, so the staleness signal has no GitLab equivalent; and it has no `authorAssociation`, so membership needs a per-author API call. A `gl-issues` today would ship with both flagship signals permanently `?` — the wrapper #769 argues earns nothing — and [#676](https://github.com/Digital-Process-Tools/claude-supertool/issues/676) also leaves it unable to target another repo, since `glab api` has no `--repo`.
+GitLab's issue payload carries `updated_at` and nothing else about the body, so the staleness signal has no GitLab equivalent; and it has no `authorAssociation`, so membership needs a per-author API call. A `gl-issues` today would ship with both flagship signals permanently `?` — the wrapper #769 argues earns nothing. Targeting another project is no longer among the reasons: [#676](https://github.com/Digital-Process-Tools/claude-supertool/issues/676) shipped that for the GitLab read ops, and `glab api` having no `--repo` turned out not to block it — the project is a path segment, so the target substitutes into `projects/:id` (see [Targeting another project](gitlab.md#targeting-another-project)). The two payload signals are the whole argument now.
 
 ## The PR diff, in the shape a reviewer walks it
 
@@ -439,7 +439,7 @@ repo: 'gh-issue-create' takes its repo target in the payload (repo = "OWNER/NAME
 repo: op — so there is one place the target comes from. Set it there and drop the repo: op.
 ```
 
-Both fail before any op runs. A target that quietly applied to part of a call is the shape of the bug this fixed, so it is not the fix's behaviour either. Ops opt in via `"repo_target": true` in the preset manifest (`"payload"` for those routing it through their own payload), which is also what makes the refusal able to name *which* of the two problems you have.
+Both fail before any op runs. A target that quietly applied to part of a call is the shape of the bug this fixed, so it is not the fix's behaviour either. Ops opt in via `"repo_target": true` in the preset manifest (`"payload"` for those routing it through their own payload, or `"payload:KEY"` when that key is not called `repo` — `gl-issue-create` reads `project`), which is also what makes the refusal able to name *which* of the two problems you have, and which field to set.
 
 ### The error names the door, not just the wall
 
