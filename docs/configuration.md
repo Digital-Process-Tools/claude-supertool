@@ -186,7 +186,7 @@ The script receives `SUPERTOOL_LINES=80` and `SUPERTOOL_ERROR_PATTERNS=ERROR,FAI
 
 ## `raw_command_guard` — the shipped raw-command block
 
-Default on. A `PreToolUse` hook shipped with the plugin (`hooks/pre-bash-guard.sh`) refuses any `Bash` command an op declares it replaces, quoting the op's own description. The mapping is the `replaces` key on each op's registry entry — see the Op schema in [contributing.md](contributing.md).
+Default on. A `PreToolUse` hook shipped with the plugin (`hooks/pre-bash-guard.sh`) refuses any `Bash` command an op declares it replaces, quoting the op's own description. It matches `Bash|PowerShell` since [#1413](https://github.com/Digital-Process-Tools/claude-supertool/issues/1413); a PowerShell command is never refused, because a POSIX tokeniser reading PowerShell quoting would deny the wrong commands. It is disclosed as undecided only when its text names a binary some op supersedes; a PowerShell call naming nothing mapped gets no line at all, since a disclosure printed under every call is one nobody reads. **That does not reach a native-Windows host with no Git Bash**, where the `bash` in the hook command resolves to the WSL launcher stub and the hook never executes at all — [#1378](https://github.com/Digital-Process-Tools/claude-supertool/issues/1378) is that gap and is unaffected by this. The mapping is the `replaces` key on each op's registry entry — see the Op schema in [contributing.md](contributing.md).
 
 ```json
 {
@@ -200,7 +200,7 @@ Set it to `false` to turn the gate off for a project. It is the **only** way off
 
 ```json
 {
-  "matcher": "Bash",
+  "matcher": "Bash|PowerShell",
   "hooks": [
     {
       "type": "command",
@@ -213,7 +213,7 @@ Set it to `false` to turn the gate off for a project. It is the **only** way off
 
 Three things about that snippet are load-bearing. `CLAUDE_PLUGIN_ROOT` is set explicitly, because the script defaults to it and a value inherited from an unrelated plugin install would point the hook at a different tree. It is its **own entry** rather than a second command inside an existing one, so one script's failure is not another's silence — every matching `PreToolUse` hook runs and any `deny` stops the call. And the missing-file branch should print a decline envelope rather than nothing: empty output is indistinguishable from a clean verdict, which is the failure the guard's own third state exists for.
 
-`supertool 'guard:SHELL COMMAND'` answers the same question without running anything, in three states: `BLOCKED` naming the op, `OK`, and `UNDECIDED` when the command did not tokenise, hid a substitution inside double quotes, handed a string to `eval` / `sh -c`, or the registry could not be enumerated. The hook allows on `UNDECIDED` and says so in the transcript — a gate that quietly did not run is indistinguishable from a command that complied, which is the whole reason it exists.
+`supertool 'guard:SHELL COMMAND'` answers the same question without running anything, in three states: `BLOCKED` naming the op, `OK`, and `UNDECIDED` when the command did not tokenise, hid a substitution inside double quotes, handed a string to `eval` / `sh -c`, carried a pre-subcommand global option the matcher has no grammar for ([#1421](https://github.com/Digital-Process-Tools/claude-supertool/issues/1421)), or the registry could not be enumerated. The hook adds one more of its own: a command routed through the **PowerShell** tool, whose quoting a POSIX tokeniser cannot read ([#1413](https://github.com/Digital-Process-Tools/claude-supertool/issues/1413)). The hook allows on `UNDECIDED` and says so in the transcript — a gate that quietly did not run is indistinguishable from a command that complied, which is the whole reason it exists.
 
 ### Which interpreter the hook runs, and what it does when there is none
 

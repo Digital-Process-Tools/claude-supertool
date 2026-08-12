@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""PreToolUse(Bash) — refuse a raw command the op registry says it replaces (#1347).
+"""PreToolUse(Bash|PowerShell) — refuse a raw command the registry replaces (#1347).
 
 The enforcement ships **with supertool**, so every plugin user gets the same
 gate rather than each repo hand-writing regexes for the conventions it wants.
@@ -24,11 +24,31 @@ the third state existing in this file and not surviving the layer below it.
 The clean envelope carries `hookEventName` and no decision, so what the caller
 sees is unchanged; what the *wrapper* sees is the difference between an answer
 and an absence.
+
+**A shell that is not Bash gets the third state, never a decision** (#1413).
+`hooks.json` used to match `Bash` alone, so wherever the PowerShell tool is
+enabled — Claude then treats PowerShell as the primary shell and routes shell
+commands through it — this hook never ran, and a hook that never runs is
+indistinguishable at the call site from one that ran and approved. The matcher
+is now `Bash|PowerShell`, and the answer for PowerShell is `undecided`: the
+tokeniser below is POSIX, PowerShell quoting, escaping and its backtick
+continuation are not, and a mis-tokenised command produces a false DENY whose
+only escape is `raw_command_guard: false` for the whole repository. Reading
+that shell properly needs a second tokeniser and a `replaces` schema that says
+which shell each `argv` is written in; that is a larger change than disclosing
+the gap, and it stays unbuilt on purpose.
+
+The disclosure is **narrowed to commands that name a replaced binary**, taken
+from the registry rather than from a second hardcoded list. An
+`additionalContext` line under every PowerShell call anyone writes is one
+nobody reads, which is the same silence with a token cost — the reasoning
+`_guard_segments` already applies to a `$` in an argument.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 
 
@@ -57,9 +77,7 @@ def main() -> int:
         _undecided(f"the hook input did not parse ({exc})")
         return 0
 
-    if event.get("tool_name") not in (None, "Bash"):
-        _nothing_to_say()
-        return 0
+    tool_name = event.get("tool_name")
     command = (event.get("tool_input") or {}).get("command")
     if not isinstance(command, str) or not command.strip():
         _nothing_to_say()
@@ -73,6 +91,32 @@ def main() -> int:
         import _supertool
     except Exception as exc:  # pragma: no cover - a broken install
         _undecided(f"supertool could not be imported from {root} ({exc})")
+        return 0
+
+    if tool_name not in (None, "Bash"):
+        try:
+            words = _supertool.guard_command_words()
+        except Exception as exc:  # pragma: no cover - defensive
+            _undecided(f"the registry could not be read ({exc})")
+            return 0
+        # A whole word, optionally carrying a Windows executable suffix --
+        # the same two spellings `_guard_command_word` folds together. Any
+        # OTHER dot ends the match, so `cat gh.log` does not read as `gh`:
+        # this line only decides whether to print a disclosure, and one that
+        # fires on a filename is one nobody reads.
+        named = [word for word in words
+                 if re.search(r"(?<![\w.-])" + re.escape(word)
+                              + r"(?:\.(?:exe|cmd|bat))?(?![\w.-])",
+                              command, re.IGNORECASE)]
+        if not named:
+            _nothing_to_say()
+        else:
+            _undecided(
+                f"it was routed through the {tool_name} tool, whose quoting "
+                f"this POSIX tokeniser does not read, and it names "
+                + ", ".join(named)
+                + " - binaries some op supersedes. Ask supertool "
+                  "'guard:COMMAND' for the verdict")
         return 0
 
     try:
