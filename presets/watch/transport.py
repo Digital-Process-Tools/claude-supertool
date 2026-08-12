@@ -396,31 +396,6 @@ def emit_socket(payload: dict[str, Any]) -> Emit:
     return Emit(EMIT_ACCEPTED, f"{SOCK_PATH} accepted the bytes")
 
 
-#: State directories this process has already put through `ensure`, keyed on the
-#: path. Only successes are remembered: a refusal re-asks, so removing a squatter
-#: heals the channel without a restart, and a directory deleted under a running
-#: poller is not the shape this memo can get wrong (the write refuses and says
-#: so). One entry in practice — `STATE_DIR` is a module constant.
-_ESTABLISHED: set[str] = set()
-
-
-def _establish_state_dir() -> str:
-    """Empty when this process may write into `STATE_DIR`, else why not (#1540).
-
-    `claim_pidfile` calls `naming.ensure_state_dir` directly and is deliberately
-    left doing so: it runs once per spawn, so it has nothing to memoize, and a
-    poller re-claiming a slot after its directory was removed must re-create it
-    rather than be told by a cache that it exists.
-    """
-    if STATE_DIR in _ESTABLISHED:
-        return ""
-    why = naming.ensure_state_dir(RESOLVED, STATE_DIR)
-    if why:
-        return why
-    _ESTABLISHED.add(STATE_DIR)
-    return ""
-
-
 def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> str:
     """Atomically replace the status file. "" when it landed, else why not.
 
@@ -445,10 +420,15 @@ def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> str:
       #1200 — the asymmetry was the whole bug. It is the only guard the
       **unnamed** default gets, where the state files sit loose in
       world-writable `/tmp` and there is no derived directory to establish.
-    * `_establish_state_dir`, once per process, for the **named** channel: a
-      squatter who owns the directory rather than planting a link inside it.
-      `ensure` is a syscall trio and this runs per event, which is why it is
-      memoized rather than moved into the poll loop's hot path unconditionally.
+    * `naming.ensure_state_dir` for the **named** channel: a squatter who owns
+      the directory rather than planting a link inside it. Asked **on every
+      write, not memoized.** A first draft cached the successful answer, which
+      is the shape this repo keeps filing: `O_NOFOLLOW` guards the final
+      component only, so a cached "established" would let a directory swapped
+      after the first write be followed on every write after it, and the cache
+      would be reporting an old measurement as a current fact. Re-asking costs
+      an `mkdir` that fails `EEXIST`, one `open`, one `fchmod` and one `fstat`,
+      against a poll tick measured in seconds.
 
     `os.replace` needs no guard of its own: rename does not follow a symlink at
     its final component, so a link planted at `<name>.state.json` is replaced
@@ -464,7 +444,7 @@ def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> str:
     `record_death` reported a death as recorded and `clear_deaths` reported a
     ledger as acknowledged, both off an `OSError` this function had discarded.
     """
-    why = _establish_state_dir()
+    why = naming.ensure_state_dir(RESOLVED, STATE_DIR)
     if why:
         return why
     path = state_path(source, watcher_id)

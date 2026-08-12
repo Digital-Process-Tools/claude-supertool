@@ -1140,13 +1140,29 @@ the planter's directory. The leaf is now created non-recursively and then held
 open `O_RDONLY | O_DIRECTORY | O_NOFOLLOW`, `fchmod`ed and asked about its
 ownership and mode through that one descriptor (`presets/_image_root`, shared
 with `gl-issue`). A symlink, a reparse point, a file, another uid's directory, or
-a mode group or other can reach is a refusal that says which, and no poller slot
-is claimed there.
+a mode group or other can reach is a refusal that says which, and nothing is
+written there.
+
+**That check reached only the poller until #1540**, because `claim_pidfile` was
+its only caller and `claim_pidfile` is the only path that spawns one.
+`transport.write_state` is reached from `record_death` and `clear_deaths` in
+*reader* processes — `watches`, `unwatch`, the `radar` heal — and it opened
+`<name>.state.json.tmp` by name, so a symlink planted at that name was followed
+and any file you can write was truncated and refilled with state JSON whose
+`last_event.payload` is remote text. Every write now establishes the directory
+and opens the `.tmp` `O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW`, the write mirror of
+the `O_RDONLY|O_NOFOLLOW` the reads have carried since #1197/#1200, and reports
+the refusal instead of discarding it.
 
 **Not closed:** another local uid can still squat `/tmp/supertool-watch-<name>`
-ahead of you with a directory of their own; you get the refusal instead of a
-write into it, and that channel does not work until it is removed. The same
-residual `docs/presets/gitlab.md` discloses for the attachment root.
+ahead of you with a directory of their own; *every* write to that channel — a
+poller claiming a slot, and a reader recording a death or clearing a ledger —
+gets the refusal instead of landing in it, and the channel does not work until
+it is removed. The same residual `docs/presets/gitlab.md` discloses for the
+attachment root. Separately, this whole section is about a **derived** state
+directory: `SUPERTOOL_WATCH_STATE_DIR` and the unnamed `/tmp` default are
+somebody else's path and are never established (#693), so there the per-name
+`O_NOFOLLOW` on each open is the entire boundary.
 
 On **Windows** there is no `O_NOFOLLOW` and no directory descriptor, so the check
 is `os.lstat` — which does not follow the final component — and the ownership and

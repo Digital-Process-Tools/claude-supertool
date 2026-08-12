@@ -25,7 +25,7 @@ Two halves, and the split matters because they cover different populations:
 * `O_NOFOLLOW` on the `.tmp` open covers **every** channel, including the
   unnamed default where the state files sit loose in world-writable `/tmp` and
   there is no derived directory to establish at all. This is the reachable step.
-* establishing the derived directory once per process covers the **named**
+* establishing the derived directory on every write covers the **named**
   channel's remaining shape: a squatter who owns the directory rather than
   planting a link inside it. That is the residual `naming.ensure_state_dir`
   already claimed was closed, and for readers it was not.
@@ -69,10 +69,6 @@ def _channel(monkeypatch, tmp_path, make: bool = True):
     """
     resolved = naming.resolve({naming.NAME_ENV: "oss"})
     assert resolved.state_dir_is_derived, "the fixture stopped exercising the derived path"
-    # No cache to clear: `pytest` hands every test its own `tmp_path`, so the
-    # per-process memo `write_state` keeps is keyed on a string no other test in
-    # this file has used. Reaching into that private to reset it would couple
-    # every assertion here to the shape of the fix rather than to its effect.
     root = tmp_path / "supertool-watch-oss"
     if make:
         root.mkdir(mode=0o700)
@@ -198,9 +194,15 @@ def test_a_missing_derived_directory_is_created_by_the_first_write(
 
 def test_a_supplied_state_directory_is_still_never_created(tmp_path, monkeypatch):
     """#693 survives: only a derived directory is established, so an operator's
-    own path stays their business and the write simply fails as it always did.
-    The `O_NOFOLLOW` half still covers that population -- it is the only half
-    the unnamed `/tmp` default ever gets."""
+    own path stays their business and the write simply fails. The `O_NOFOLLOW`
+    half still covers that population -- it is the only half the unnamed `/tmp`
+    default ever gets.
+
+    The `not target.exists()` half of this **would pass with the production
+    change reverted**, because the old `open(tmp, "w")` also raised
+    `FileNotFoundError` and swallowed it. What makes it evidence is the returned
+    refusal: the old spelling returned `None` from every arm, so a caller could
+    not tell this from a write that landed."""
     target = tmp_path / "supplied"
     resolved = naming.resolve({naming.NAME_ENV: "oss",
                                naming.STATE_DIR_ENV: str(target)})
@@ -208,9 +210,11 @@ def test_a_supplied_state_directory_is_still_never_created(tmp_path, monkeypatch
     monkeypatch.setattr(transport, "RESOLVED", resolved)
     monkeypatch.setattr(transport, "STATE_DIR", str(target))
 
-    transport.write_state("gh-prs", "x", {"cursor": 1})
+    why = transport.write_state("gh-prs", "x", {"cursor": 1})
 
     assert not target.exists()
+    assert why, "a write that reached no disk at all was reported as having landed"
+    assert str(target) in why, why
 
 
 def test_the_change_is_documented():

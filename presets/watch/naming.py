@@ -338,8 +338,8 @@ def ensure_state_dir(resolved: Resolved, state_dir: str) -> str:
     poller were the only thing that ever wrote here. `transport.write_state` is
     reached from `record_death` and `clear_deaths` in *reader* processes —
     `watches`, `unwatch`, the `radar` heal — none of which claim a slot, and it
-    opened `<path>.tmp` by name. `write_state` now establishes the directory
-    itself, once per process, and opens the `.tmp` `O_NOFOLLOW`.
+    opened `<path>.tmp` by name. `write_state` now calls this itself on every
+    write, and opens the `.tmp` `O_NOFOLLOW`.
 
     **Not closed, stated at the width it actually has.** Another local uid can
     squat `/tmp/supertool-watch-<name>` ahead of us with a directory of their
