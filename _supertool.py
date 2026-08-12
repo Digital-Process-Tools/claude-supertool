@@ -21756,14 +21756,30 @@ def _missing_field_create_clause(op: str, name: str,
     typo on a file that IS there keeps the message it had — naming `paste` there
     would point at whole-file overwrite as the remedy for a forgotten argument,
     which is the `misdirects` trade this must not make.
+
+    **The stat runs behind the containment gate, and that is not optional.**
+    This helper is reached from `_at_file_to_parts`, which converts a payload
+    into positional parts *before* dispatch applies `_op_path_gate`. Stating
+    "there is no file at X" for an X outside the boundary would make the refusal
+    text differ by whether an out-of-boundary file exists — an existence oracle
+    for exactly the paths every other route refuses to answer about, and one
+    this clause would have introduced. Raised in review of the first commit.
+
+    `_containment_error` rather than a second copy of the rule (#882 is the
+    filing about what a second copy costs). The tightest boundary is used —
+    root=cwd, the default — so an op that dispatch would gate against the repo
+    root instead can lose the hint on a path it would have allowed. That is a
+    silent hint, not a wrong one, and it is the safe direction.
     """
     if op not in _PAYLOAD_OPS_THAT_CANNOT_CREATE:
         return ""
     path = lower_payload.get("path")
     if not isinstance(path, str) or not path:
         return ""
+    if _containment_error([path]):
+        return ""
     try:
-        if os.path.exists(os.path.expanduser(path)):
+        if os.path.exists(_expand_home(path)):
             return ""
     except (OSError, ValueError):
         return ""

@@ -176,6 +176,42 @@ def test_edit_payload_missing_old_on_an_existing_path_still_names_the_field(
     assert "paste" not in out, out
 
 
+def test_the_payload_clause_does_not_answer_across_the_containment_boundary(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The clause must not become an existence oracle for paths cwd cannot reach.
+
+    Raised by review of the first commit. `_missing_field_create_clause` stats
+    the payload's own `path`, and it runs inside `_at_file_to_parts` — before
+    dispatch applies the containment gate. On a project without
+    `allow_outside_cwd`, that made the refusal text differ by whether an
+    out-of-boundary file exists, which is a fact the caller is not allowed to
+    ask for through any other route.
+
+    The two outputs must be byte-identical: the clause answers or declines on
+    containment alone, never on what it found there.
+    """
+    # conftest sets SUPERTOOL_ALLOW_OUTSIDE_CWD=1 for the whole suite, which is
+    # what makes tmp_path fixtures usable at all. Dropping it here is the
+    # documented way to exercise the gate (tests/conftest.py, #92-98) — without
+    # it this test asserts nothing about containment and passes either way.
+    monkeypatch.delenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", raising=False)
+    monkeypatch.chdir(tmp_path)
+    outside = tmp_path.parent / f"{tmp_path.name}_outside"
+    outside.mkdir()
+    present = outside / "present.py"
+    present.write_text("hello\n")
+    absent = outside / "absent.py"
+
+    _stdin(monkeypatch, {"path": str(present), "new": "hi"})
+    out_present = supertool.dispatch("edit:@-")
+    _stdin(monkeypatch, {"path": str(absent), "new": "hi"})
+    out_absent = supertool.dispatch("edit:@-")
+
+    assert "there is no file at" not in out_absent, out_absent
+    assert out_present == out_absent, (out_present, out_absent)
+
+
 # ---------------------------------------------------------------------------
 # grep LIMIT 0: name both spellings the refusal says it will not guess between
 # ---------------------------------------------------------------------------
