@@ -28,20 +28,29 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _proc
 
 import _proc  # noqa: E402  (the one liveness probe, shared with gl-mrs / gh-prs)
 import _untrusted  # noqa: E402  (the repo's remote-text convention)
+import naming  # noqa: E402  (one name above the two path variables, #1477)
 
-# Overridable (#581): the Phase 2 consumer (channel.ts:35) already reads this
-# variable, and four shipped surfaces — the #550 refusal message and three
-# lines in notifiers/claude-channel/README.md, one of them a security claim
+# Overridable (#581): the Phase 2 consumer (channel.ts) already reads
+# SUPERTOOL_WATCH_SOCK, and four shipped surfaces — the #550 refusal message and
+# three lines in notifiers/claude-channel/README.md, one of them a security claim
 # about per-user isolation — tell an operator to set it here too. It never
-# worked: this was a plain constant. Matches STATE_DIR's `or` idiom below so
-# an operator exporting an empty string gets the default, not a connect() to "".
-SOCK_PATH = os.environ.get("SUPERTOOL_WATCH_SOCK") or "/tmp/supertool-watch.sock"
+# worked: this was a plain constant.
+#
+# Both values now come out of `naming.resolve()` rather than being read here
+# (#1477), because the two variables are never independently useful and the pair
+# had to be kept in step in two files by hand. `SUPERTOOL_WATCH_NAME` derives
+# both; an explicit variable still overrides, and the override is reported
+# rather than taken quietly. `RESOLVED.notes` is what says so — anything
+# rendering these paths should print them.
+RESOLVED = naming.resolve()
+SOCK_PATH = RESOLVED.sock
 # Overridable so a poller re-exec'd under its own argv (see `poller_argv`) keeps
 # writing where its parent was writing. Without it, exec would move a test's
 # poller from the test's tmp dir to the real /tmp — a fork inherits monkeypatched
 # module state, an exec does not.
-STATE_DIR = os.environ.get("SUPERTOOL_WATCH_STATE_DIR") or "/tmp"
-STATE_DIR_ENV = "SUPERTOOL_WATCH_STATE_DIR"
+STATE_DIR = RESOLVED.state_dir
+STATE_DIR_ENV = naming.STATE_DIR_ENV
+SOCK_ENV = naming.SOCK_ENV
 
 # The sub-op a poller runs under, and the path that identifies it in `ps`. A
 # poller is forked, so without an exec it wears *its parent's* argv: every
@@ -244,6 +253,15 @@ def claim_pidfile(source: str, watcher_id: str) -> int:
     while a slot nobody can claim leaves the population unwatched, and an
     unwatched population renders exactly like one with nothing to report.
     """
+    # A state directory *derived from a name* is one nobody has made yet, and
+    # `os.open` inside a missing directory raises ENOENT — which lands correctly
+    # in `CLAIM_UNKNOWN` and tells the operator to check a variable they
+    # deliberately did not set. Only a derived one is created: a path the
+    # operator supplied, or the `/tmp` default, stays unanswerable rather than
+    # being manufactured (#693). Created here rather than at import, because a
+    # module must not make directories because somebody imported it (#1477).
+    if naming.ensure_state_dir(RESOLVED, STATE_DIR):
+        return CLAIM_UNKNOWN
     for _ in range(2):
         try:
             fd = os.open(pid_path(source, watcher_id),
@@ -855,6 +873,12 @@ def poller_env() -> dict[str, str]:
     """Environment for an exec'd poller: the caller's, plus where state lives."""
     env = dict(os.environ)
     env[STATE_DIR_ENV] = STATE_DIR
+    # Both halves, for the same reason the state dir was pinned here alone: an
+    # exec re-derives from the environment, and re-deriving is only equivalent
+    # while every input survives. Under a name it is a third variable that has
+    # to survive, and a poller that resolved a different socket from its parent
+    # is the #1309 split with nobody to notice it. Pin what was decided (#1477).
+    env[SOCK_ENV] = SOCK_PATH
     return env
 
 

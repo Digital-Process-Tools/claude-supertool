@@ -32,7 +32,54 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import * as fs from "node:fs";
 import * as net from "node:net";
 
-const SOCK_PATH = process.env.SUPERTOOL_WATCH_SOCK || "/tmp/supertool-watch.sock";
+/**
+ * One name above the two path variables (#1477).
+ *
+ * A named channel used to be `SUPERTOOL_WATCH_SOCK` here and
+ * `SUPERTOOL_WATCH_STATE_DIR` on the producers, and setting only one is worse
+ * than setting neither (#1309). `SUPERTOOL_WATCH_NAME` derives both.
+ *
+ * This end matters more than it looks. A name reaches every poller, `radar` and
+ * `channel:health` through supertool's config-to-env route, and it cannot reach
+ * here at all: this server is spawned by the harness from `.mcp.json`. If it
+ * only understood a full socket path, a name would configure three of four
+ * surfaces — the half-configured state, through a new door. So it reads the
+ * same variable, applies the same precedence, and must derive the same path as
+ * `presets/watch/naming.py`; `tests/test_notifiers_claude_channel_name_1477.py`
+ * asserts against that module's own derivation rather than respelling it here.
+ *
+ * Precedence: an explicit `SUPERTOOL_WATCH_SOCK` wins, because it is the value
+ * a *running* poller already captured and cannot migrate away from. An
+ * unusable name falls back to the default and says so on stderr — the same
+ * choice the Python side makes, and the two ends resolving differently is the
+ * one outcome neither can afford.
+ */
+const WATCH_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/;
+
+function resolveSockPath(): string {
+  const explicit = process.env.SUPERTOOL_WATCH_SOCK || "";
+  const name = (process.env.SUPERTOOL_WATCH_NAME || "").trim();
+  if (explicit) {
+    if (name) {
+      console.error(
+        `claude-channel: SUPERTOOL_WATCH_SOCK is set and overrides ` +
+        `SUPERTOOL_WATCH_NAME=${name}; binding ${explicit}`,
+      );
+    }
+    return explicit;
+  }
+  if (!name) return "/tmp/supertool-watch.sock";
+  if (!WATCH_NAME_RE.test(name)) {
+    console.error(
+      `claude-channel: SUPERTOOL_WATCH_NAME is not usable as a path component ` +
+      `and was ignored; binding the default socket, not a private one`,
+    );
+    return "/tmp/supertool-watch.sock";
+  }
+  return `/tmp/supertool-watch-${name}.sock`;
+}
+
+const SOCK_PATH = resolveSockPath();
 
 /**
  * The shape a Phase 1 poller is *meant* to send. Nothing enforces it: lines

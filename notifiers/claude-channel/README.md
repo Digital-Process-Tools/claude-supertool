@@ -423,7 +423,8 @@ outage — trading a silent bug for a loud one, which is not an improvement.
 
 | Env var                  | Default                          | Purpose                                              |
 | ------------------------ | -------------------------------- | ---------------------------------------------------- |
-| `SUPERTOOL_WATCH_SOCK`   | `/tmp/supertool-watch.sock`      | UDS path. Set the same value on Phase 1 producers. Also the way to run a second session's channel alongside a first — see "Start-up and socket ownership". |
+| `SUPERTOOL_WATCH_NAME`   | unset                            | One name for a whole channel, deriving `/tmp/supertool-watch-<name>.sock` here and the matching poller state directory on the producers ([#1477](https://github.com/Digital-Process-Tools/claude-supertool/issues/1477)). One path component, `^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$`; anything else is ignored, reported on stderr, and the default socket is bound rather than half a private one. This is the variable to put in this server's `env` block in `.mcp.json` — nothing in `.supertool.json` reaches this process, and `channel:health` compares the two files and reports a disagreement. |
+| `SUPERTOOL_WATCH_SOCK`   | `/tmp/supertool-watch.sock`      | UDS path. Set the same value on Phase 1 producers. Also the way to run a second session's channel alongside a first — see "Start-up and socket ownership". **Overrides `SUPERTOOL_WATCH_NAME`** — it is the value a running poller already captured — and says so on stderr when both are set. |
 | `SUPERTOOL_CHANNEL_ATTR_MAX`  | `2048`      | Max chars in one attribute value. Larger values are withheld and disclosed — see "Size limits". |
 | `SUPERTOOL_CHANNEL_EVENT_MAX` | `8192`      | Max chars across all of one event's attributes, keys included. |
 | `SUPERTOOL_CHANNEL_LINE_MAX`  | `1048576`   | Max chars buffered for one NDJSON line before it is refused and the connection resyncs. |
