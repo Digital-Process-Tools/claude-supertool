@@ -78,8 +78,13 @@ def _file_suffixes(fn) -> set:
     return out
 
 
-def _asserts_a_verdict(fn) -> bool:
-    """A positive ``"<verdict>" in out`` comparison, not a negated one."""
+def _first_verdict_assertion(fn):
+    """Line of the earliest positive ``"<verdict>" in out``, or ``None``.
+
+    Positive only: a site asserting a verdict is *absent* is satisfied by a
+    timeout decline and is not exposed to the budget.
+    """
+    lines = []
     for node in ast.walk(fn):
         if not isinstance(node, ast.Compare):
             continue
@@ -90,17 +95,45 @@ def _asserts_a_verdict(fn) -> bool:
         if not any(node.left.value.startswith(v) for v in VERDICT_ASSERTIONS):
             continue
         if any(isinstance(op, ast.In) for op in node.ops):
-            return True
-    return False
+            lines.append(node.lineno)
+    return min(lines) if lines else None
 
 
-def _gated(fn) -> bool:
+def _gated_before(fn, lineno) -> bool:
+    """Is there a real CALL to the gate in ``fn``, above ``lineno``?
+
+    Both halves are load-bearing, and a bare name search fails both -- the
+    lesson `_called_before` in tests/test_symlink_gating_register_1232.py was
+    written for. A mention that is not a call (a `monkeypatch.setattr` target,
+    a reference in a message) gates nothing, and a call placed BELOW the
+    assertion it is meant to guard gates nothing either: the assertion runs
+    first and reddens the leg exactly as #1360 did.
+    """
     for node in ast.walk(fn):
-        if isinstance(node, ast.Attribute) and node.attr == GATE:
-            return True
-        if isinstance(node, ast.Name) and node.id == GATE:
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+        if name == GATE and node.lineno < lineno:
             return True
     return False
+
+
+def _sites_in_source(source: str):
+    """``[(test name, gated?), ...]`` for one module's source text."""
+    sites = []
+    for fn in ast.parse(source).body:
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not fn.name.startswith("test_"):
+            continue
+        lineno = _first_verdict_assertion(fn)
+        if lineno is None:
+            continue
+        if not _file_suffixes(fn):
+            continue
+        sites.append((fn.name, _gated_before(fn, lineno)))
+    return sites
 
 
 def _population():
@@ -113,18 +146,7 @@ def _population():
     """
     found = {}
     for path in sorted(TESTS.glob("test_*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        sites = []
-        for fn in tree.body:
-            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if not fn.name.startswith("test_"):
-                continue
-            if not _asserts_a_verdict(fn):
-                continue
-            if not _file_suffixes(fn):
-                continue
-            sites.append((fn.name, _gated(fn)))
+        sites = _sites_in_source(path.read_text(encoding="utf-8"))
         if sites:
             found[path.name] = sites
     return found
@@ -236,6 +258,55 @@ def test_every_site_that_demands_a_lint_verdict_is_budget_gated() -> None:
         "without calling `_lint_budget.require_lint_verdict(out)` first, so a "
         "runner that blows the budget reddens them instead of counting them "
         "(#1360): " + repr(ungated))
+
+
+#: A gate below the assertion it guards, and a gate that is only mentioned.
+#: Both are certified by a bare name search, and neither gates anything.
+_UNGATED_SHAPES = {
+    "below the assertion": """
+def test_x(tmp_path):
+    f = tmp_path / "x.py"
+    out = supertool.op_vim(str(f), "G")
+    assert "POST-EDIT LINT FAILED" in out
+    _lint_budget.require_lint_verdict(out)
+""",
+    "mentioned, never called": """
+def test_x(tmp_path):
+    f = tmp_path / "x.py"
+    out = supertool.op_vim(str(f), "G")
+    handler = _lint_budget.require_lint_verdict
+    assert "POST-EDIT LINT FAILED" in out
+""",
+}
+
+_GATED_SHAPE = """
+def test_x(tmp_path):
+    f = tmp_path / "x.py"
+    out = supertool.op_vim(str(f), "G")
+    _lint_budget.require_lint_verdict(out)
+    assert "POST-EDIT LINT FAILED" in out
+"""
+
+
+def test_the_register_rejects_a_gate_that_cannot_gate() -> None:
+    """Order and callness are both load-bearing (#1232's `_called_before`).
+
+    A gate below the assertion it guards is the #1360 failure verbatim -- the
+    assertion runs first -- and a name that is never called gates nothing at
+    all. A classifier blind to either certifies the site, and the register then
+    reports a coverage it does not have.
+    """
+    for label, source in _UNGATED_SHAPES.items():
+        sites = _sites_in_source(source)
+        assert sites, label + ": the classifier stopped seeing the site at all"
+        assert sites == [("test_x", False)], (
+            label + ": certified as gated, but the verdict assertion still runs "
+            "first / the gate is never called: " + repr(sites))
+
+
+def test_the_register_accepts_the_gate_placed_correctly() -> None:
+    """The counterpart, so the test above cannot pass by rejecting everything."""
+    assert _sites_in_source(_GATED_SHAPE) == [("test_x", True)]
 
 
 def test_the_register_is_not_vacuously_empty() -> None:
