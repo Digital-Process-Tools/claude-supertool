@@ -26,19 +26,20 @@ until it is removed, which is the correct side of the trade and the same
 residual `docs/presets/gitlab.md` discloses for the attachment root.
 
 **Windows.** `os.symlink` needs a privilege there and `st_uid` is a constant, so
-the symlink arms carry `require_symlink()` and the ownership arm is exercised
-through `_image_root.refusal`, a pure function of a stat result. A skip on the
-ownership arm would report a coverage this suite does not have on the one
-platform whose reds are load-bearing here. The file-at-the-name arm needs
-neither and runs everywhere.
+the two symlink arms carry `require_symlink()`. The ownership arm moves *our*
+uid instead of the directory's -- `_image_root._euid` is patched -- which reaches
+it from the caller on every platform; a `skipif` there would report a coverage
+this suite does not have on the one platform whose reds are load-bearing here,
+and asserting it against a fabricated stat would restate #1493's file and pass
+with this change reverted. The mode arm is the one genuine skip: the permission
+bits are synthesized on Windows, so there is nothing to measure. The
+file-at-the-name arm runs everywhere.
 """
 from __future__ import annotations
 
-import importlib.util
 import os
 import stat
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -56,15 +57,6 @@ import naming  # noqa: E402
 #: Whether this platform can answer "who owns this" at all. Probed rather than
 #: read off `os.name`, because the capability is the question.
 POSIX_OWNERSHIP = hasattr(os, "geteuid")
-
-
-def _image_root():
-    spec = importlib.util.spec_from_file_location(
-        "image_root_1518", REPO / "presets" / "_image_root.py")
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def _derived(name: str = "oss"):
@@ -123,6 +115,12 @@ def test_a_symlinked_state_directory_gets_no_pid_file_written_through_it(
 # ---------------------------------------------------------------------------
 
 def test_a_plain_file_on_the_derived_name_is_a_refusal_not_a_traceback(tmp_path):
+    """**This one passed before the fix too**, and is kept deliberately: it is
+    the only hostile-name arm reachable on a runner with no symlink privilege,
+    and the refusal it pins changed wording under the new boundary. Recorded
+    here rather than left for a reader to discover, because a test that would
+    pass if the code did nothing is not evidence and must not be counted as
+    any."""
     root = tmp_path / "supertool-watch-oss"
     root.write_text("not a directory", encoding="utf-8")
 
@@ -149,18 +147,22 @@ def test_a_directory_left_loose_by_an_earlier_run_is_tightened(tmp_path):
         root, oct(mode))
 
 
-def test_a_root_owned_by_another_uid_is_refused():
-    """Through the predicate, not the filesystem: a test cannot chown to a uid
-    it does not have, and `st_uid` is meaningless on Windows. Skipping here
-    would report a coverage the suite does not have."""
-    mod = _image_root()
-    st = types.SimpleNamespace(
-        st_mode=stat.S_IFDIR | 0o700, st_uid=4242, st_reparse_tag=0)
+def test_a_root_owned_by_another_uid_is_refused(tmp_path, monkeypatch):
+    """Driven through `ensure_state_dir`, by moving *our* uid rather than the
+    directory's: a test cannot chown to a uid it does not have, and `st_uid` is
+    a constant on Windows. Patching the module's own `_euid` is what makes this
+    arm reachable from the caller on every platform — asserting it against a
+    fabricated stat would restate `test_attachment_root_ownership_1493.py` and
+    would pass with this file's production change reverted."""
+    root = tmp_path / "supertool-watch-oss"
+    root.mkdir()
+    monkeypatch.setattr(naming._image_root, "_euid", lambda: 4242)
 
-    why = mod.refusal(st, uid=1000)
+    why = naming.ensure_state_dir(_derived(), str(root))
 
     assert why, "a directory owned by another uid was accepted as our root"
     assert "4242" in why, why
+    assert "no poller slot can be claimed there" in why, why
 
 
 # ---------------------------------------------------------------------------
