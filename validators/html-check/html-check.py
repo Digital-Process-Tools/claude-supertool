@@ -42,7 +42,7 @@ import time
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from source_context import source_context
+from source_context import context_fields
 from refusal import absent, tool_fault, skipped
 
 TIMEOUT_S = 30
@@ -404,7 +404,7 @@ def check_block(start_line: int, content: str, html_file: str) -> dict | None:
             err = {"line": line, "col": None, "severity": "error",
                    "code": "syntax", "msg": msg[:300]}
             if line is not None:
-                err["source_context"] = source_context(html_file, line)
+                err.update(context_fields(html_file, line))
             return err
         return {"line": None, "col": None, "severity": "error", "code": "adapter",
                 "msg": tool_fault("node --check", r.returncode, out)}

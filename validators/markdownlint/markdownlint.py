@@ -20,7 +20,7 @@ import time
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from source_context import source_context
+from source_context import context_fields
 from refusal import absent
 
 TOOL = "markdownlint"
@@ -107,7 +107,7 @@ def main() -> None:
                 "code": code,
                 "msg": msg.strip()[:300],
             }
-            err["source_context"] = source_context(file, ln)
+            err.update(context_fields(file, ln))
             errors.append(err)
 
     if not errors and output:

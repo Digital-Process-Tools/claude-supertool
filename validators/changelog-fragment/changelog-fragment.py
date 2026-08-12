@@ -40,7 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
 from refusal import required, required_but_absent, skipped  # noqa: E402
-from source_context import source_context  # noqa: E402
+from source_context import context_fields  # noqa: E402
 
 TOOL = "changelog-fragment"
 
@@ -98,9 +98,7 @@ def _error(target: str, name: str, message: str, code: str) -> dict:
     line = _line_of(name, message)
     err = {"line": line, "col": None, "severity": "error",
            "code": code, "msg": message}
-    context = source_context(target, line)
-    if context:
-        err["source_context"] = context
+    err.update(context_fields(target, line))
     return err
 
 

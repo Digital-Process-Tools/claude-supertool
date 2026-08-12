@@ -14,7 +14,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import pathlib
 import socket
 import sys
 import time
@@ -45,6 +44,7 @@ import _spawn  # noqa: E402  (#451: one daemon per (kind, config fingerprint))
 
 _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "common"))
 import refusal as _refusal  # noqa: E402
+from source_context import context_fields  # noqa: E402
 
 
 def sock_paths(cwd: str, name: str) -> tuple[str, str]:
@@ -133,22 +133,6 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
         raise RuntimeError("no id=2 response received within timeout")
 
 
-def source_context(file_path: str, error_line: int | None) -> list[str]:
-    if error_line is None or error_line <= 0:
-        return []
-    try:
-        lines = pathlib.Path(file_path).read_text(errors="replace", encoding="utf-8").splitlines()
-    except OSError:
-        return []
-    ctx = []
-    for offset in range(-2, 3):
-        ln = error_line + offset
-        if 1 <= ln <= len(lines):
-            prefix = f"{ln}\u2192" if offset == 0 else f"{ln}:"
-            ctx.append(f"{prefix} {lines[ln - 1]}")
-    return ctx
-
-
 def is_refusal(msg: str) -> bool:
     return _refusal.is_refusal(msg, SKIP_PATTERNS_ENV)
 
@@ -196,7 +180,7 @@ def format_response(file_path: str, mcp_resp: dict, dur_ms: int) -> dict:
                 "severity": "error",
                 "code": e.get("identifier") or "phpstan",
                 "msg": _msg,
-                "source_context": source_context(file_path, line_int),
+                **context_fields(file_path, line_int),
             })
     elif exit_code != 0:
         msg = structured.get("error") or f"phpstan exit {exit_code}"

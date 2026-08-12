@@ -20,7 +20,7 @@ import pathlib
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from source_context import source_context
+from source_context import context_fields
 from refusal import is_refusal, skipped
 
 # Extra refusal substrings (comma-separated), opt-in per repo.
@@ -160,7 +160,7 @@ def main() -> None:
                 "severity": "error",
                 "code": m.get("identifier"),
                 "msg": m.get("message", ""),
-                "source_context": source_context(file, line),
+                **context_fields(file, line),
             })
 
     emit({
