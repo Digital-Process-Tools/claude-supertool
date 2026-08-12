@@ -99,6 +99,74 @@ def test_crash_is_not_reported_as_a_successful_invalidation(
 
 
 @posix_only
+def test_detail_never_carries_terminal_escape_sequences(tmp_path, monkeypatch) -> None:
+    """`detail` is text, not a terminal stream (#1333).
+
+    CPython colourises its own tracebacks from 3.13 on, and `_colorize` honours
+    `FORCE_COLOR` **before** it asks whether the stream is a tty — so a parent
+    with `FORCE_COLOR` in its environment gets an escape-laden traceback out of
+    a child whose stderr is a pipe. Not hypothetical: this repo's own agent
+    harness exports `FORCE_COLOR=3`, and the assertion in the test above failed
+    locally for exactly that reason while every CI leg (3.9-3.12, no colourising
+    traceback machinery) stayed green. An environment two conditions wide, not a
+    version range.
+
+    `detail` is printed into a debug line and read by a human, so escapes out of
+    a child process end up steering the reader's terminal. It is stripped rather
+    than suppressed at the source: unsetting `FORCE_COLOR` for the child would
+    have to enumerate every layer that might colour, and `stop.py` is not the
+    only thing whose stderr lands here.
+
+    Pinned with a script that colours its own stderr rather than relying on the
+    interpreter to do it, so it asserts the same thing on every version.
+    """
+    monkeypatch.setenv("SUPERTOOL_RUNTIME_DIR", str(tmp_path / "rt"))
+    coloured = "\x1b[1;35mRuntimeError\x1b[0m: \x1b[35mrefused to stop\x1b[0m\n"
+    script = tmp_path / "coloured_stop.py"
+    script.write_text(
+        "import sys\n"
+        f"sys.stderr.write({coloured!r})\n"
+        "sys.exit(3)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(supertool, "_MCP_STOP_SCRIPT", str(script))
+
+    outcome = supertool._mcp_stop_server("php-lsp")
+
+    assert outcome.ok is False
+    assert outcome.code == "failed"
+    assert "\x1b" not in outcome.detail, outcome.detail
+    assert outcome.detail == "RuntimeError: refused to stop"
+
+
+@posix_only
+def test_the_detail_cap_is_spent_on_text_not_escapes(tmp_path, monkeypatch) -> None:
+    """The 500-character budget must buy 500 characters a reader can see (#1333).
+
+    Arithmetic, with 120 lines of `Lnnn`: stripped they are 5 bytes each, so
+    about 100 of them fit the cap. Coloured they are 14 bytes each and about 35
+    fit — the cap keeps the tail, so two thirds of the context is evicted by
+    bytes that render as nothing at all.
+    """
+    monkeypatch.setenv("SUPERTOOL_RUNTIME_DIR", str(tmp_path / "rt"))
+    script = tmp_path / "noisy_stop.py"
+    script.write_text(
+        "import sys\n"
+        "for i in range(120):\n"
+        "    sys.stderr.write('\\x1b[31mL%03d\\x1b[0m\\n' % i)\n"
+        "sys.exit(3)\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(supertool, "_MCP_STOP_SCRIPT", str(script))
+
+    outcome = supertool._mcp_stop_server("php-lsp")
+
+    assert "\x1b" not in outcome.detail, outcome.detail
+    assert len(outcome.detail) <= supertool._MCP_STOP_DETAIL_CAP
+    assert outcome.detail.count("\n") + 1 >= 90, outcome.detail
+
+
+@posix_only
 def test_a_real_no_daemon_run_is_still_benign(tmp_path, monkeypatch) -> None:
     """End to end against the real stop.py: nothing running is still `ok`.
 

@@ -6,6 +6,16 @@ reason — rather than the `ok: true` it emitted until #1202, which was a clean
 verdict about a file nothing type-checked. Name this validator in
 `$SUPERTOOL_REQUIRE_VALIDATORS` to turn that absence into a loud error instead.
 
+**`--pretty false` is load-bearing, not tidiness (#1499).** TypeScript 5.x
+defaults to pretty output whether or not stdout is a tty: ANSI-coloured, four
+lines per diagnostic, a caret rule under the offending column, and a trailing
+`Found N errors` tally. Its shape is `file:line:col - error TSxxxx: msg`, which
+is not the `file(line,col): error TSxxxx: msg` the parse below reads — so
+stripping the colour off it would not make it parseable. Only asking for the
+plain form does. The strip is still applied, because it is `--pretty false` that
+happens to remove the colour today and nothing tsc documents guarantees the two
+stay coupled; a `tsc` shim, or a future default, can colour the plain form too.
+
 Usage:  tsc-check.py <file>
 """
 
@@ -35,6 +45,27 @@ INSTALL_HINT = ("tsc not found on PATH — this file was NOT type-checked "
 # they need to decide which (#658).
 TIMEOUT_S = 30
 
+# CSI sequences, OSC strings (BEL- or ST-terminated) and the two-character
+# escapes. Not just SGR colour: an OSC that retitles the reader's terminal is
+# exactly the kind of thing an adapter must not republish into a `msg`.
+# Each complete form is followed by its incomplete one — a CSI or OSC with no
+# terminator, and last a lone ESC — which is what a stream cut mid-sequence
+# leaves behind. Without them "no escape survives" is not the invariant it reads
+# as. **The order carries weight in both directions.** Complete before
+# incomplete, so a terminated sequence is consumed whole. And the unterminated
+# OSC before the two-character escapes, because `]` is 0x5D and therefore inside
+# `[@-Z\\-_]`: with that class first, `\x1b]0;title` lost its two-byte
+# introducer and published `0;title` as text.
+ANSI_RE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\[[0-?]*[ -/]*"
+    r"|\][^\x07\x1b]*(?:\x07|\x1b\\)|\][^\x07\x1b]*"
+    r"|[@-Z\\-_]|)"
+)
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_RE.sub("", text)
+
 
 def emit(d: dict) -> None:
     print(json.dumps(d))
@@ -58,7 +89,7 @@ def main() -> None:
 
     try:
         result = subprocess.run(
-            ["tsc", "--noEmit", "--skipLibCheck", file],
+            ["tsc", "--noEmit", "--skipLibCheck", "--pretty", "false", file],
             capture_output=True,
             text=True,
             timeout=TIMEOUT_S, encoding="utf-8", errors="replace",
@@ -94,10 +125,11 @@ def main() -> None:
               "errors": [], "duration_ms": duration})
         return
 
-    # Parse tsc output: "file(line,col): error TSxxxx: message"
+    # Parse tsc output: "file(line,col): error TSxxxx: message" — the shape
+    # `--pretty false` above is what guarantees.
     errors = []
     pattern = re.compile(r"^(?:.*?)\((\d+),(\d+)\):\s+(\w+)\s+(TS\d+):\s+(.+)$")
-    output = (result.stdout + result.stderr).strip()
+    output = strip_ansi(result.stdout + result.stderr).strip()
     for line in split_lines(output):
         m = pattern.match(line)
         if m:
@@ -113,9 +145,30 @@ def main() -> None:
             err.update(context_fields(file, ln))
             errors.append(err)
 
-    if not errors and output:
+    # tsc objected and nothing in what it said could be placed in this file.
+    # `code: "adapter"` rather than `"syntax"`, which asserted a syntax error had
+    # been found here — a claim this arm cannot make, published with `line: null`
+    # and `count: 1` however many diagnostics the dump actually held (#1499). The
+    # core reads `adapter` on every error as "no verdict was obtained"
+    # (`_validator_not_checked`), which is the third state, reached without the
+    # `skipped` that would drop `errors` and lose tsc's objection with it —
+    # `validators/SCHEMA.md` §"A located diagnostic still has to be about *this*
+    # file (#754)".
+    #
+    # Reached with `output` empty too. `ok: false, count: 0, errors: []` was a
+    # verdict of "not clean" carrying nothing to act on, and one the core could
+    # not recognise as an absence either, because it looks for the reason on an
+    # error that was not there.
+    if not errors:
+        if output:
+            said = ("its output could not be parsed: "
+                    + " ".join(output.split())[:200])
+        else:
+            said = "said nothing at all"
         errors = [{"line": None, "col": None, "severity": "error",
-                   "code": "syntax", "msg": output[:300]}]
+                   "code": "adapter",
+                   "msg": f"tsc exited {result.returncode} and {said} — this "
+                          f"file was NOT type-checked"}]
 
     emit({"tool": "tsc-check", "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": duration})
