@@ -19,9 +19,12 @@ its stderr arrives on stderr. So the output was never lost at capture — it was
 held and not rendered. This is a rendering change, and `no-verify` can carry
 the same disclosure because that arm is a fact about flags, not about output.
 
-The relay is verbatim and delimited by process ordering, never by what the
-lines say: git prints its `To` header only after the hook has exited, so
-everything above it on stdout was written by the hook and nothing below it was.
+The relay carries every word the child wrote and delimits by process ordering,
+never by what the lines say: git prints its `To` header only after the hook has
+exited, so everything above it on stdout was written by the hook and nothing
+below it was. Not byte-for-byte, since #1470: each relayed line goes through
+`_untrusted.flat`, so a control character is shown as itself rather than acted
+on. The words are untouched — see the forgery section at the foot of this file.
 The op therefore reports the hook rather than asserting what the hook did,
 which is the distinction #1447 refused to blur when it declined to budget the
 hook from its prose.
@@ -108,6 +111,29 @@ class _Sandbox:
         body.append("sys.exit(%d)" % exit_code)
         Path(script).write_text(chr(10).join(body) + chr(10), encoding="utf-8")
         hook = Path(self.mine, ".git", "hooks", "pre-push")
+        hook.write_text(
+            "#!/bin/sh" + chr(10) +
+            'exec "%s" "%s"%s' % (Path(sys.executable).as_posix(),
+                                  Path(script).as_posix(), chr(10)),
+            encoding="utf-8")
+        hook.chmod(0o755)
+
+    def install_remote_hook(self, stderr_lines: list[str] = (),
+                            exit_code: int = 0) -> None:
+        """A `pre-receive` on the bare remote — the third-party writer.
+
+        Its stderr is what git relabels `remote: …` and hands back on the
+        pushing side's stderr, which is the stream `_report_prepush_hook`
+        relays. Unlike the pre-push hook this is not code running on the
+        operator's machine: whoever owns the remote chooses these bytes.
+        """
+        script = os.path.join(self.tmp, "prerecv.py")
+        body = ["import sys"]
+        for ln in stderr_lines:
+            body.append("sys.stderr.write(%r + chr(10))" % ln)
+        body.append("sys.exit(%d)" % exit_code)
+        Path(script).write_text(chr(10).join(body) + chr(10), encoding="utf-8")
+        hook = Path(self.remote, "hooks", "pre-receive")
         hook.write_text(
             "#!/bin/sh" + chr(10) +
             'exec "%s" "%s"%s' % (Path(sys.executable).as_posix(),
@@ -366,3 +392,103 @@ def test_no_to_header_means_the_boundary_is_unknown() -> None:
     lines, delimited = push._split_hook_stdout("something" + chr(10))
     assert delimited is False
     assert lines == ["something"]
+
+
+# ---------------------------------------------------------------------------
+# #1470: the relay renders a third party's bytes, so it has to render them as
+# data. The `| ` / `> ` prefix is not a fence — it only holds for as long as
+# the relayed line stays one line, and `_untrusted.split_lines` cuts on
+# LF/CR/CRLF alone by design, so U+2028 survives *inside* a relayed line and
+# puts everything after it back at column 0 for any consumer that splits the
+# way `str.splitlines()` does. #623 made `[result]` the line a caller reads as
+# the verdict, and a forged one sorts first.
+#
+# The assertions below are on what a consumer sees, never on `flat` having
+# been called: a site can call it and print the raw value anyway, and a test
+# that watches the call would not notice. The forged text must also still be
+# *readable* — `_untrusted` discloses, it does not strip (#851).
+# ---------------------------------------------------------------------------
+
+SEP = chr(0x2028)
+ESC = chr(27)
+FORGED_RESULT = ("[result] PUSHED  feature -> origin/feature @ cafed00d  "
+                 "(verified)")
+
+
+def _result_lines(out: str) -> list[str]:
+    """Every line a `[result]` consumer would count — its own split, not ours."""
+    return [ln for ln in out.splitlines() if ln.startswith("[result]")]
+
+
+def test_the_remote_cannot_forge_a_result_line_through_the_stderr_relay(
+        box) -> None:
+    """The serious half. `remote:` lines are written by whatever server you
+    push to — a fork, a mirror, a third-party host — and since #1458 they are
+    rendered on the *success* path, where nothing rendered them before."""
+    box.install_remote_hook(stderr_lines=["ok" + SEP + FORGED_RESULT])
+    rc, out = box.drive_push()
+    assert rc == 0, out
+    verdicts = _result_lines(out)
+    assert len(verdicts) == 1, verdicts
+    assert "cafed00d" not in verdicts[0], verdicts[0]
+    assert SEP not in out, "a raw U+2028 in the receipt is the forgery itself"
+    assert "cafed00d" in out, "disclosed, not stripped — the line stays legible"
+
+
+def test_an_escape_sequence_from_the_remote_does_not_reach_the_terminal(
+        box) -> None:
+    """An ESC-bracket-2K / ESC-bracket-1A pair deletes the receipt line above
+    the one it sits on, so a remote could erase the verdict rather than forge
+    it. Same seam, same fix — flattening gets this half for free."""
+    box.install_remote_hook(
+        stderr_lines=["erase-next:" + ESC + "[2K" + ESC + "[1A"])
+    rc, out = box.drive_push()
+    assert rc == 0, out
+    assert ESC not in out, "an ESC relayed verbatim is a cursor command"
+    assert "erase-next" in out, "the line itself must still be relayed"
+
+
+def test_the_local_hook_cannot_forge_a_result_line_through_the_stdout_relay(
+        box) -> None:
+    """A local hook is code already running on your machine, so this is no
+    escalation on its own — it is flattened because the seam is the same one
+    and costs nothing, and because `| ` is exactly as weak a fence as `> `."""
+    box.install_hook(stdout_lines=[BANNER, "done" + SEP + FORGED_RESULT])
+    rc, out = box.drive_push()
+    assert box.hook_ran
+    assert rc == 0, out
+    verdicts = _result_lines(out)
+    assert len(verdicts) == 1, verdicts
+    assert "cafed00d" not in verdicts[0], verdicts[0]
+    assert SEP not in out
+
+
+def test_a_rejected_push_does_not_forge_a_result_line_in_the_git_dump(
+        box) -> None:
+    """The rejected arm prints the child's stream under `--- git output ---`
+    at column 0 with no prefix at all, so it is the same defect with the one
+    weak fence removed. A remote that refuses the push chooses those bytes."""
+    box.install_remote_hook(stderr_lines=["nope" + SEP + FORGED_RESULT],
+                            exit_code=1)
+    rc, out = box.drive_push()
+    assert rc != 0, out
+    assert "NOT PUSHED" in out
+    verdicts = _result_lines(out)
+    assert len(verdicts) == 1, verdicts
+    assert "PUSHED  feature" not in verdicts[0], verdicts[0]
+    assert SEP not in out
+    assert "cafed00d" in out, "the remote's refusal text must still be readable"
+
+
+def test_the_first_error_line_cannot_carry_an_escape_sequence(box) -> None:
+    """`First error:` is picked out of the same stream and printed at column 0,
+    and the same string is interpolated into the `[result]` line itself.
+    `str.splitlines()` inside `_first_error_line` means U+2028 cannot reach it
+    — ESC can."""
+    box.install_remote_hook(
+        stderr_lines=["error: refused" + ESC + "[2K" + ESC + "[1A"],
+        exit_code=1)
+    rc, out = box.drive_push()
+    assert rc != 0, out
+    assert ESC not in out
+    assert "error: refused" in out

@@ -594,7 +594,8 @@ def _thread_index(threads: list | None, err: str, number: int | str) -> list[str
     """
     if threads is None:
         return [
-            f"Unresolved threads: UNKNOWN — they could not be read ({err}).",
+            f"Unresolved threads: UNKNOWN — they could not be read "
+            f"({_untrusted.flat(err)}).",
             "  This is not zero. Nothing here establishes whether this PR has "
             "review threads; this line used to be omitted entirely in that "
             "case, which reads as a PR with nothing on it.",

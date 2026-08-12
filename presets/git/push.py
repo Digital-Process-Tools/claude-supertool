@@ -173,9 +173,11 @@ def _checked_git(args: list[str], label: str = "") -> tuple[
     except OSError as exc:
         return None, f"`{cmd}` did not complete — {exc}"
     if r.returncode == TIMEOUT_RC:
-        return None, f"`{cmd}` did not complete — {r.stderr.strip()}"
+        return None, (f"`{cmd}` did not complete — "
+                      + _untrusted.flat(r.stderr.strip()))
     if r.returncode != 0:
-        why = _first_error_line((r.stdout or "") + "\n" + (r.stderr or ""))
+        why = _untrusted.flat(
+            _first_error_line((r.stdout or "") + "\n" + (r.stderr or "")))
         return None, (f"`{cmd}` exited {r.returncode}"
                       + (f" — {why}" if why else ""))
     return r, ""
@@ -903,6 +905,32 @@ def _bounded_hook_lines(lines: list[str], head: int = _HOOK_HEAD_LINES,
             + lines[-tail:])
 
 
+def _flat_lines(lines: list[str]) -> list[str]:
+    """Each line of a child's output, kept to one line of ours (#1470).
+
+    The `| ` / `> ` prefix a relay puts in front of a line, and the column-0
+    dump under `--- git output ---`, are the only thing separating a third
+    party's bytes from supertool's own output — and a prefix holds only for as
+    long as the line stays one line. `_untrusted.split_lines` cuts on LF / CR /
+    CRLF alone, by design (#1081), so a U+2028 survives *inside* a relayed line
+    and puts everything after it back at column 0 for every consumer that
+    splits the way `str.splitlines()` does. #623 made `[result]` the line a
+    caller reads as the verdict, and a forged one sorts first.
+
+    `remote:` lines are written by whatever server you push to, so on the
+    stderr path the text is a third party's outright. The local pre-push hook
+    is code already running on this machine and is no escalation on its own; it
+    goes through the same call because the seam is the same one, it costs
+    nothing, and a half-flattened seam is the one that gets re-filed.
+
+    `flat`, not `scrub`: this is a line, not a block. It also neutralises ESC,
+    which is the other way to rewrite a receipt — a relayed `ESC [2K ESC [1A`
+    deletes the line above it (#851's argument, applied to a child stream).
+    Disclosed, never stripped: the forged text stays legible as `[U+2028]`.
+    """
+    return [_untrusted.flat(ln) for ln in lines]
+
+
 def _report_prepush_hook(push_stdout: str, push_stderr: str,
                          flags: set[str], relay: bool = True) -> None:
     """Relay what the local pre-push hook said, so the gate discloses itself.
@@ -958,7 +986,7 @@ def _report_prepush_hook(push_stdout: str, push_stderr: str,
         print("  git printed no `To` header for this push, so where its own "
               "output starts is UNKNOWN - the lines below are relayed "
               "unattributed.")
-    for ln in _bounded_hook_lines(out_lines):
+    for ln in _flat_lines(_bounded_hook_lines(out_lines)):
         print(f"| {ln}")
     if err_lines:
         # Relayed, but NOT under the hook's name. Three processes write to this
@@ -969,7 +997,7 @@ def _report_prepush_hook(push_stdout: str, push_stderr: str,
         # is relayed with its provenance stated as unknown rather than guessed.
         print("  stderr for this push, provenance UNKNOWN - the hook, git and "
               "the remote all write here and nothing marks the boundary:")
-        for ln in _bounded_hook_lines(err_lines):
+        for ln in _flat_lines(_bounded_hook_lines(err_lines)):
             print(f"> {ln}")
 
 
@@ -1744,7 +1772,7 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
     if fetched.returncode != 0:
         combined = (fetched.stdout or "") + "\n" + (fetched.stderr or "")
         print(f"Status: PUSH REJECTED ✗ — fetch of {target} failed, cannot rebase")
-        err = _first_error_line(combined)
+        err = _untrusted.flat(_first_error_line(combined))
         if err:
             print(f"First error: {err}")
         print("Hint: remote unreachable or ref gone — check connectivity, then retry.")
@@ -1779,11 +1807,12 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         if not files:
             _git(["rebase", "--abort"])  # nothing to keep paused; restore clean
             print(f"Status: PUSH REJECTED ✗ — rebase onto {target} could not start")
-            err = _first_error_line(combined)
+            err = _untrusted.flat(_first_error_line(combined))
             if err:
                 print(f"First error: {err}")
             print("\n--- git output ---")
-            print(combined.strip() or "(no output)")
+            dump = _flat_lines(_untrusted.split_lines(combined.strip()))
+            print("\n".join(dump) if dump else "(no output)")
             _result(f"NOT PUSHED - REJECTED (non-fast-forward)  {branch} -> "
                     f"{target} - rebase could not start")
             return rebase.returncode
@@ -1828,11 +1857,12 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
     if result.returncode != 0:
         combined = (result.stdout or "") + "\n" + (result.stderr or "")
         print("Status: PUSH REJECTED ✗ (after rebase)")
-        err = _first_error_line(combined)
+        err = _untrusted.flat(_first_error_line(combined))
         if err:
             print(f"First error: {err}")
         print("\n--- git output ---")
-        print(combined.strip() or "(no output)")
+        dump = _flat_lines(_untrusted.split_lines(combined.strip()))
+        print("\n".join(dump) if dump else "(no output)")
         _result(f"NOT PUSHED - REJECTED after a clean rebase  {branch} -> {target}")
         return result.returncode
 
@@ -2084,7 +2114,7 @@ def _push_op() -> int:
                     "rebase recovery", branch, f"{remote_name}/{remote_ref}")
 
         print("Status: PUSH REJECTED ✗")
-        err = _first_error_line(combined)
+        err = _untrusted.flat(_first_error_line(combined))
         if err:
             print(f"First error: {err}")
         # Every hint below reads git's own ref status, not the merged stream —
@@ -2115,7 +2145,9 @@ def _push_op() -> int:
                   "would not help. The output below is what stopped it; "
                   "`git-push:no-verify` skips a local hook.")
         # State line only: the dump below already carries the hook's own words
-        # verbatim. What it cannot say is whether a hook was in the picture at
+        # (flattened per line since #1470, never summarised or cut — only its
+        # control characters are shown as themselves). What it cannot say is
+        # whether a hook was in the picture at
         # all — which is precisely the fork the hint above declines to guess
         # between, and it was left to the reader to resolve (#1448).
         _report_prepush_hook(result.stdout or "", result.stderr or "", flags,
@@ -2125,9 +2157,10 @@ def _push_op() -> int:
         # that ran a test suite, and its transcript is not the receipt (#1448).
         # The two ends are the two things a reader needs: the arm the hook
         # announced, and what it refused on.
-        dumped = _bounded_hook_lines(_untrusted.split_lines(combined.strip()),
-                                     _GIT_OUTPUT_HEAD_LINES,
-                                     _GIT_OUTPUT_TAIL_LINES)
+        dumped = _flat_lines(
+            _bounded_hook_lines(_untrusted.split_lines(combined.strip()),
+                                _GIT_OUTPUT_HEAD_LINES,
+                                _GIT_OUTPUT_TAIL_LINES))
         print("\n".join(dumped) if dumped else "(no output)")
         _result(f"NOT PUSHED - REJECTED  {branch} -> {remote_name}/{remote_ref}"
                 + (f" - {err}" if err else ""))
