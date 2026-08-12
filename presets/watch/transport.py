@@ -754,6 +754,56 @@ def emit_event(
         desktop_notify(_untrusted.flat(notify_title), _untrusted.flat(notify_message))
 
 
+#: Re-exported from `naming`, which owns the classifier because `channel.py`
+#: enumerates the same directory (#1502). Aliases rather than copies: two
+#: spellings of a three-state answer is two places for them to drift apart.
+STATE_DIR_OK = naming.STATE_DIR_OK
+STATE_DIR_ABSENT = naming.STATE_DIR_ABSENT
+STATE_DIR_UNREADABLE = naming.STATE_DIR_UNREADABLE
+
+
+def _state_dir_names() -> tuple[list[str], str, str]:
+    """(sorted entries of `STATE_DIR`, one of the three states above, why not).
+
+    The single enumeration idiom in this module. Every reader here goes through
+    it, so a state directory no spawn has created cannot raise out of any of
+    them — which is what `radar:--state` used to survive by never enumerating at
+    all, luck rather than a guard. The classification itself is
+    `naming.state_dir_listing`, shared with `channel.py`.
+
+    `STATE_DIR` is read at call time rather than passed, because callers
+    monkeypatch this module's constant.
+    """
+    return naming.state_dir_listing(STATE_DIR)
+
+
+def state_dir_status() -> tuple[str, str]:
+    """(state, why) for `STATE_DIR` alone, for a render that has to explain a
+    board with nothing on it. Reads only; creates nothing.
+
+    Its own enumeration rather than a value threaded out of `list_active_pids`,
+    which keeps that function's signature — `radar` and the `gl-mrs` tier derive
+    coverage from it. The two listings can disagree if the directory appears or
+    vanishes between them, and both orders are benign: a directory created in
+    between yields no rows and `ok`, which renders as the plain no-watchers
+    answer, and one removed in between yields no rows and `absent`, which is
+    what it now is.
+    """
+    _names, state, why = _state_dir_names()
+    return state, why
+
+
+def channel_disclosure() -> list[str]:
+    """The channel name and any override, for every surface that renders a board.
+
+    One accessor over one formatter (`naming.disclosure_lines`) so `radar`,
+    `watches` and `channel:health` cannot disagree about the same resolution —
+    the reason `delivery_of` and `DELIVERY_LABELS` live here too. `[]` when there
+    is nothing to say.
+    """
+    return naming.disclosure_lines(RESOLVED)
+
+
 def list_active_pids() -> list[dict[str, Any]]:
     """Scan /tmp for live watcher PID files. Stale entries are pruned in place.
 
@@ -779,7 +829,12 @@ def list_active_pids() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     prefix = "supertool-watch-"
     suffix = ".pid"
-    for name in sorted(os.listdir(STATE_DIR)):
+    # An absent or unlistable directory yields no rows here and is *reported* by
+    # `state_dir_status` at the render (#1502). This function's contract is the
+    # slots it found; the two states behind an empty list are the render's to
+    # tell apart, and `dispatcher.cmd_list` does.
+    names, _state, _why = _state_dir_names()
+    for name in names:
         if not (name.startswith(prefix) and name.endswith(suffix)):
             continue
         # supertool-watch-{source}__{id}.pid. Parsed before the read, because
@@ -1133,10 +1188,7 @@ def _lost_rows(covered: set[tuple[str, str]]) -> list[dict[str, Any]]:
     prefix = "supertool-watch-"
     suffix = ".state.json"
     out: list[dict[str, Any]] = []
-    try:
-        names = sorted(os.listdir(STATE_DIR))
-    except OSError:
-        return out
+    names, _state, _why = _state_dir_names()
     for name in names:
         if not (name.startswith(prefix) and name.endswith(suffix)):
             continue
@@ -1227,10 +1279,7 @@ def _state_file_slots() -> list[tuple[str, str]]:
     prefix = "supertool-watch-"
     suffix = ".state.json"
     slots: list[tuple[str, str]] = []
-    try:
-        names = sorted(os.listdir(STATE_DIR))
-    except OSError:
-        return slots
+    names, _state, _why = _state_dir_names()
     for name in names:
         if not (name.startswith(prefix) and name.endswith(suffix)):
             continue

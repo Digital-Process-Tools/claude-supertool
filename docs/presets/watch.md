@@ -1146,14 +1146,48 @@ directory is created: a `SUPERTOOL_WATCH_STATE_DIR` the operator supplied stays
 unanswerable when it is missing, and `watch` reports that rather than
 manufacturing it ([#693](https://github.com/Digital-Process-Tools/claude-supertool/issues/693)).
 
+**And no read path creates it either, so the reads have to answer over a
+directory that is not there yet.** Between naming a channel and the first
+successful spawn the derived directory does not exist, which used to be an
+uncaught `FileNotFoundError` out of `watches` that refused every other op in the
+same call ([#1502](https://github.com/Digital-Process-Tools/claude-supertool/issues/1502)).
+The default state directory is `/tmp` itself, so that enumeration never fired
+until somebody set a name. Three states now, as everywhere else here:
+
+```
+No watchers — the state directory /tmp/supertool-watch-oss does not exist yet, so
+nothing has ever spawned on this channel (SUPERTOOL_WATCH_STATE_DIR is not set —
+this directory was derived from SUPERTOOL_WATCH_NAME=oss). The first
+`watch:SOURCE:ID` or `radar` spawn creates it; no read path does.
+```
+
+An absent directory is a knowable fact about the world — zero watchers. A
+directory that exists and could not be listed is *unknown*, and `watches` prints
+a warning for it and never the words `No active watchers`, which would be a claim
+about the fleet made on the strength of a listing that never ran. Creating it on
+a read instead would give a read side effects and resurrect #693 for the supplied
+case.
+
 **Precedence, and it is printed rather than assumed.** An explicit
 `SUPERTOOL_WATCH_SOCK` or `SUPERTOOL_WATCH_STATE_DIR` **overrides** the name.
 Not because an export is more authoritative in principle, but because it is the
 value a *running* poller already captured and cannot migrate away from: making
-the name win would move the paths out from under a live fleet. `channel:health`
-prints the override, naming both the path in force and the path the name would
-have produced. A name losing silently to a stale export is exactly the silence
-this whole section is about.
+the name win would move the paths out from under a live fleet. **All three
+surfaces print it** — `channel:health`, and since
+[#1495](https://github.com/Digital-Process-Tools/claude-supertool/issues/1495)
+the two boards an operator actually opens a tick with:
+
+```
+radar: name oss (from SUPERTOOL_WATCH_NAME) — socket /tmp/supertool-watch.sock, poller slots /tmp/supertool-watch-oss
+radar: SUPERTOOL_WATCH_SOCK is set and overrides the name: the socket is /tmp/supertool-watch.sock, not /tmp/supertool-watch-oss.sock
+```
+
+`watches` prints the same lines under its own `watches:` prefix, from the same
+formatter, so the surfaces cannot disagree about one resolution. Nothing is
+printed on the default paths with no override — a header on every board is one
+nobody reads. A name losing silently to a stale export is exactly the silence
+this whole section is about, and until #1495 the boards were where it still
+happened.
 
 **The name has two homes, and the check is the deliverable.** A key in
 `.supertool.json` reaches every poller, `radar` and `channel:health` through the
@@ -1529,6 +1563,25 @@ send an operator to different places — and `none recorded an emit into this
 socket` is never printed when files were present and unread. Declining the
 whole listing on one bad file was the alternative and is the worse trade: a
 single `ln -s` in `/tmp` would then erase every other watcher from the report.
+
+**The directory is the fourth reading and was missed the first time**
+([#1502](https://github.com/Digital-Process-Tools/claude-supertool/issues/1502)).
+The three states above are all about individual *files*; the listing that
+produces them had two, because an absent directory and one that could not be
+listed both came back as an empty list and the render then printed `none
+recorded an emit into this socket`. On a freshly named channel that is the
+normal state — only a spawn creates the derived directory — and this arm is
+where such a channel lands, so the strongest false claim on the report was also
+the likeliest one. It now says which:
+
+```
+  watchers : not established — the state directory /tmp/supertool-watch-oss does not
+             exist yet, so nothing has ever spawned on this channel
+```
+
+`naming.state_dir_listing` is the single classifier, shared with `transport.py`,
+because the two files enumerate the same directory and the first fix for #1502
+was scoped to one of them.
 
 **An unread row is not claimed for this socket.** The readable rows are
 filtered by the `sock_path` each watcher publishes, but that field is *inside*

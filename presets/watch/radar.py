@@ -384,6 +384,24 @@ _DELIVERY_FOOTNOTE = (
 )
 
 
+def channel_banner() -> list[str]:
+    """The channel this board is a board *of*, above the board (#1495).
+
+    Radar printed `SOCK_PATH` and `STATE_DIR` as bare paths and never the name,
+    so a named channel with a stale `SUPERTOOL_WATCH_SOCK` exported rendered as
+    a healthy board with no statement that the name was not in force — #1477's
+    half-set knob, relocated one surface over.
+
+    `[]` on the default paths with no override, like every other note in this
+    preset: a header printed every time is a header nobody reads. Prefixed
+    `radar:` because every line radar writes about itself is, so a reader can
+    tell the tool's words from a tier's. Read-only, and the resolution comes
+    through the one `transport` accessor `watches` uses, so the two boards
+    cannot disagree about the same channel.
+    """
+    return ["radar: " + line for line in transport.channel_disclosure()]
+
+
 def delivery_banner() -> list[str]:
     """The fleet's worst delivery state, above the board. Report-only (#1183).
 
@@ -527,7 +545,8 @@ def state_main(arg: str = "") -> int:
     lines, failures = tier_states(arg)
     # Above the tier blocks: the reader this protects is the one who acts on the
     # first thing they read. Read-only, like everything else on this route.
-    banner = delivery_banner()
+    # The channel first, because it says which fleet the delivery banner counted.
+    banner = channel_banner() + delivery_banner()
     if banner:
         print("\n".join(banner))
     if lines:
@@ -558,7 +577,7 @@ def main(argv: list[str] | None = None) -> int:
     lines, _all_ok, failures = tier_reports(arg)
     for line in failures:
         print(line, file=sys.stderr)
-    banner = delivery_banner()
+    banner = channel_banner() + delivery_banner()
     if banner:
         print("\n".join(banner))
     if lines:
