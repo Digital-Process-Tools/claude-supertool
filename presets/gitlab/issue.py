@@ -223,10 +223,12 @@ def _is_inside(candidate: str, directory: str) -> bool:
     ours. It is a containment test, not an ownership test, and it never was one.
     `_image_root.ensure` is what establishes the root; every call here is
     against a root that came back from it.
+
+    The implementation moved to `_image_root.is_inside` when `gh-issue` needed
+    the same test (#1506). This name stays because it is what this module's call
+    sites and its tests use.
     """
-    root = os.path.realpath(directory)
-    target = os.path.realpath(candidate)
-    return target == root or target.startswith(root + os.sep)
+    return _image_root.is_inside(candidate, directory)
 
 
 def _download_images(image_urls: list[str], issue_number: str) -> list[str]:

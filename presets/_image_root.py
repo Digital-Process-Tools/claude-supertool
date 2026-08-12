@@ -6,12 +6,12 @@
 
 * **A fixed name in a shared, world-writable directory.** Any local user can
   take that name before we do -- as a directory of their own, or as a symlink
-  pointing anywhere. `presets/gitlab/issue.py`'s `_is_inside` realpaths *both*
-  of its arguments, which is correct for the leaf and says nothing at all about
-  the root: a symlink planted at the root is resolved through on both sides, so
-  containment answers `True` about the attacker's directory just as readily as
-  about ours. The check was never wrong. Nothing established what it was
-  checking against, and that is what this module is.
+  pointing anywhere. `is_inside` below realpaths *both* of its arguments, which
+  is correct for the leaf and says nothing at all about the root: a symlink
+  planted at the root is resolved through on both sides, so containment answers
+  `True` about the attacker's directory just as readily as about ours. The check
+  was never wrong. Nothing established what it was checking against, and that is
+  what the rest of this module is.
 * **A hardcoded POSIX literal.** A leading-slash path is anchored to the current
   drive on Windows, so it landed in a `tmp/supertool-images` at the drive root
   rather than under the platform temp directory.
@@ -147,6 +147,33 @@ def refusal(st, uid=_UNSET) -> str:
         return ("its mode is {0} -- group or other can reach it, and the chmod "
                 "to 0700 did not take".format(oct(mode)))
     return ""
+
+
+def is_inside(candidate: str, directory: str) -> bool:
+    """True when `candidate` really resolves inside `directory`.
+
+    Compared after realpath on both sides, and with a trailing separator on the
+    directory so a sibling like `<temp>/images-other` cannot pass as
+    `<temp>/images`.
+
+    **What this establishes, and what it does not (#1493).** Realpathing both
+    sides is right for the *leaf*: it is what makes a `..` or a symlink in a
+    remote-chosen name resolve to where the write would actually land, and be
+    compared against where the root actually is. It establishes nothing whatever
+    about `directory` being a directory anyone should write into -- a symlink
+    planted at the root itself is resolved through on *both* sides, so this
+    answers `True` about the attacker's directory exactly as readily as about
+    ours. It is a containment test, not an ownership test, and it never was one.
+    `ensure` is what establishes the root; every call to this belongs against a
+    root that came back from it.
+
+    It lives here rather than once per forge preset because both `gl-issue` and
+    `gh-issue` ask it about a root this module hands out, and two copies of a
+    containment test are two chances for one of them to drift (#1506).
+    """
+    root = os.path.realpath(directory)
+    target = os.path.realpath(candidate)
+    return target == root or target.startswith(root + os.sep)
 
 
 def ensure(root: str) -> Tuple[Optional[str], str]:

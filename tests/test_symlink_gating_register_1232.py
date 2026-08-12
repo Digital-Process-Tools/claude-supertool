@@ -237,6 +237,8 @@ REGISTER = {
     'tests/test_edge_cases_vim.py::test_symlink_path_edits_target_and_preserves_symlink': B,
     'tests/test_entry_point_shim_931.py::test_entry_point_survives_a_symlink_from_an_unrelated_cwd': B,
     'tests/test_gc_474.py::test_entry_whose_stat_fails_is_kept_and_reported': A,
+    'tests/test_gh_issue_attachment_root_1506.py::test_a_root_that_is_a_symlink_gets_no_bytes_written_through_it': B,
+    'tests/test_gh_issue_attachment_root_1506.py::test_a_symlink_planted_at_the_per_issue_directory_is_not_written_through': B,
     'tests/test_git_env_leak_416.py::_build_project': E,
     'tests/test_git_state_guard.py::_guarded_project': E,
     'tests/test_git_timeout_disclosure_650.py::_git_only_path': P,

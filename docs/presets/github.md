@@ -1043,6 +1043,26 @@ The leg list is fetched a page at a time; a matrix wider than 100 legs is disclo
 
 `gl-issue`'s related-MR section answers the same question — see [gitlab.md](gitlab.md).
 
+### The attachment root, and the number the API joined onto it
+
+`gh-issue` fetches an issue's markdown images to disk and prints the paths under `## Images` for a reader to open — the `#817` destination policy decides *where they may come from*, and until [#1506](https://github.com/Digital-Process-Tools/claude-supertool/issues/1506) nothing decided where they landed. `IMAGE_DIR` was the literal `/tmp/supertool-images/gh`: a fixed name in a shared, world-writable directory, so any local user can take it first, as a directory of their own or as a symlink pointing anywhere. And `os.path.join(IMAGE_DIR, issue_number)` took `number` straight out of the `gh issue view --json` reply with no numeric check and no containment check at all — an absolute number makes `os.path.join` discard the root outright, and `../x` resolved outside it. The basename was sanitized; the directory component was whatever the remote said. Both are the defects [#1493](https://github.com/Digital-Process-Tools/claude-supertool/issues/1493) and [#1484](https://github.com/Digital-Process-Tools/claude-supertool/issues/1484) fixed for `gl-issue`, in the file next door.
+
+Three checks now, and the order is most of the fix:
+
+| Check | Why there |
+| --- | --- |
+| the number is numeric by the whole string | Before the root is created. A directory created is already a write, and no later guard un-creates it. `str.isdigit()` is not this test — it accepts Arabic-Indic digits. |
+| the root is one this process made and can prove it owns | Containment cannot answer it: `realpath` on both sides resolves *through* a symlink planted at the root, so it approves the attacker's directory as readily as ours. |
+| every leaf resolves inside **that root** | Never inside the derived per-issue directory, which is built from the value being constrained. That anchoring was #1484. |
+
+The root is `<platform temp dir>/supertool-images-<uid>-gh` — a sibling of `gl-issue`'s, so each is established in its own right rather than one being a child of the other. `presets/_image_root.py` owns the establishment and the containment test for both ops.
+
+A destination refusal is a refusal, with a reason, and it still produces one line per URL: a root that cannot be established or a leaf that does not resolve inside it is `REFUSED` rather than dropped, because a URL that vanishes from the section reads as an issue that did not have that image. The footer says whether the URL or the destination on this machine was refused.
+
+**A refused image still leaves no per-issue directory.** `_http.download` creates the destination's parent only after the body has passed the policy and the byte cap, so `<root>/<number>/` never appears for an issue whose every image was refused. The *root* is created up front, because it is the boundary those destinations are checked against and a boundary that does not exist yet cannot be proven to be anybody's; it is per-user and records nothing about which issue was read.
+
+**Not closed:** another local uid can squat `<temp>/supertool-images-<your uid>-gh` ahead of you, and the op then refuses rather than writing into it — the same trade `gl-issue` makes, and the same correct side of it.
+
 ### `gh-job:...:grep:` bounds its own output, and says when it did
 
 Identical to `gl-job`'s — see
