@@ -15270,6 +15270,12 @@ _GUARD_DESC_CAP = 320
 _GUARD_USE_CAP = 200
 _GUARD_TEXT_BUDGET = 1200
 _GUARD_MAX_MATCHES = 5
+#: And the same question about the notes, which are rendered on a block too.
+#: A note may quote its own segment, so a chained command yields one distinct
+#: note per segment: `git commit -m -h -m tagN` repeated 200 times produced 200
+#: of them and a 61,942-character refusal — the per-match multiplication above,
+#: re-entered through a second door. They spend from the same budget.
+_GUARD_MAX_NOTES = 3
 
 
 class GuardMatch(NamedTuple):
@@ -15586,6 +15592,59 @@ def _guard_is_flag(token: str) -> bool:
     return token.startswith("-") and token not in ("-", "--")
 
 
+def _guard_help_state(argv: Sequence[str]) -> str:
+    """Is a help flag here a request for help, its neighbour's value, or absent?
+
+    ``help``   a help flag stands where a program reads one — first in the
+               option slice, or after a positional. `git push origin -h`,
+               `gh issue list -h` and `git commit --help` all print usage and
+               run nothing, so no op supersedes them (#1430).
+    ``value``  the only help flag present sits immediately after another
+               flag, where it may be that flag's value rather than a request.
+               `git commit -m -h` commits with the message `-h`; `git push
+               origin -o -h main` pushes with the push-option `-h`. Measured on
+               git 2.46.2 / gh 2.50.0, not reasoned.
+    ``none``   no help flag in the option slice at all.
+
+    The v0.36.0 round-1 audit found `-h` un-claiming all 28 mappings from any
+    slot, because the scan ran over `_guard_options` — the argv up to a bare
+    `--`, i.e. **every** token — and asked only whether one equalled `-h`.
+    Restricting it to flag-shaped tokens, the obvious repair, is a no-op:
+    `-h` and `--help` are flag-shaped wherever they stand.
+
+    ``value`` is deliberately not a fourth answer meaning "allow". Telling an
+    option's value from a request needs per-subcommand arity this guard does
+    not carry and will not grow (`_GUARD_GLOBAL_OPTIONS` says why case work per
+    utility goes stale one utility at a time). So the ambiguous case is scored
+    and blocked, with a note: a wrong block on `git push --force -h` is legible
+    and one flag away from a working `git push -h`, while the other direction
+    is a silent `git push`. Only the guard's *positive* claim can be wrong here
+    — `clean` asserting nothing is replaced about a command that pushes is the
+    absence-read-as-presence defect this repository keeps filing.
+    """
+    options = _guard_options(argv)
+    ambiguous = False
+    for i, token in enumerate(options):
+        if token.split("=", 1)[0] not in _GUARD_HELP_FLAGS:
+            continue
+        # A positional before it (or nothing) means no option is waiting on a
+        # value, so this token is read as a flag. One unambiguous help flag
+        # decides the whole argv: `git commit --help -m -h` opens the man page.
+        #
+        # A help flag before it counts as unambiguous too, and this is the one
+        # arity fact the guard can state without a per-subcommand table: no
+        # spelling of `-h` or `--help` takes a value, so nothing behind one is
+        # in a value slot. Without it `git commit -m -h --help` was `value` —
+        # measured, it prints usage and commits nothing (exit 129) — and the
+        # comment above claimed an order-independence the code did not have.
+        prev = options[i - 1] if i else ""
+        if (i == 0 or not _guard_is_flag(prev)
+                or prev.split("=", 1)[0] in _GUARD_HELP_FLAGS):
+            return "help"
+        ambiguous = True
+    return "value" if ambiguous else "none"
+
+
 def _guard_options(argv: Sequence[str]) -> List[str]:
     """The argv slice a program would read options out of.
 
@@ -15685,11 +15744,12 @@ def _guard_normalise(argv: Sequence[str], heads: FrozenSet[str]
     head = _guard_command_word(argv[0])
     if head not in heads:
         return argv, None
-    for token in _guard_options(argv):
-        # A help flag un-claims every entry anyway (#1430), so there is
-        # nothing to normalise for and nothing to disclose.
-        if token.split("=", 1)[0] in _GUARD_HELP_FLAGS:
-            return argv, None
+    # A help flag un-claims every entry anyway (#1430), so there is nothing to
+    # normalise for and nothing to disclose. Only the unambiguous reading: a
+    # help token in a value slot leaves a real invocation behind, and
+    # `git -C /tmp/x commit -m -h` has to be normalised to reach it.
+    if _guard_help_state(argv) == "help":
+        return argv, None
     table = _GUARD_GLOBAL_OPTIONS.get(head, {})
     values = table.get("value", ())
     booleans = table.get("boolean", ())
@@ -15765,12 +15825,13 @@ def _guard_excluded(replacement: _Replacement, argv: Sequence[str]) -> bool:
     past only by `raw_command_guard: false`, which disarms every other
     mapping in the repository with it.
 
-    A help flag un-claims every entry, whatever it declares — see
-    `_GUARD_HELP_FLAGS`.
+    A help flag un-claims every entry, whatever it declares, and is **not**
+    handled here — it is a property of the whole segment rather than of one
+    entry, so `guard_command` applies it once via `_guard_help_state`. It lived
+    in this loop until the v0.36.0 round-1 audit, where scanning every token of
+    `_guard_options` for `-h` let a help flag in a value slot un-claim all 28
+    mappings.
     """
-    for token in _guard_options(argv):
-        if token.split("=", 1)[0] in _GUARD_HELP_FLAGS:
-            return True
     if not replacement.unless_flag:
         return False
     for token in _guard_options(argv):
@@ -15974,6 +16035,23 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
                 scored.append((score, replacement))
         if not scored:
             continue
+        # Asked once per segment rather than per entry: a help flag un-claims
+        # every mapping or none of them, and asking it after scoring keeps both
+        # the exclusion and its note off segments nothing claimed — a wrapper
+        # suffix candidate like `-m -h` is not an invocation to disclose about.
+        help_state = _guard_help_state(scoring)
+        if help_state == "help":
+            continue
+        if help_state == "value":
+            ambiguity = (
+                "a help flag in `" + _flat_field(" ".join(scoring)) + "` sits "
+                "immediately after another flag, where it may be that option's "
+                "value rather than a request for help — `git commit -m -h` "
+                "commits — so it was NOT read as un-claiming the op named "
+                "above; re-run with the help flag first if help is what you "
+                "meant")
+            if ambiguity not in notes:
+                notes.append(ambiguity)
         best = max(score for score, _ in scored)
         for score, replacement in scored:
             if score != best:
@@ -16069,6 +16147,30 @@ def guard_refusal(verdict: GuardVerdict) -> str:
         lines.append(f"and {hidden} further replaced invocation(s) in this "
                      f"command are not detailed here — `supertool 'ops'` "
                      f"lists every op.")
+        lines.append("")
+    # What the guard could not read is printed on a BLOCK too, not only on an
+    # `undecided`. A note is why some part of this command was unreadable — a
+    # dropped `replaces` entry, an expanded command word, a help flag in a
+    # value slot — and dropping it here made a positive match render as though
+    # nothing had been left unanswered. Quoted through `_guard_quote` because a
+    # registry-derived note carries an op name somebody else wrote (#1391).
+    shown_notes = 0
+    for note in verdict.notes:
+        if shown_notes >= _GUARD_MAX_NOTES or spent >= _GUARD_TEXT_BUDGET:
+            break
+        text = _guard_quote(note, min(_GUARD_DESC_CAP,
+                                      _GUARD_TEXT_BUDGET - spent))
+        if not text:
+            break
+        spent += len(text)
+        shown_notes += 1
+        lines.append("Also: " + text)
+    hidden_notes = len(verdict.notes) - shown_notes
+    if hidden_notes:
+        lines.append(f"and {hidden_notes} further note(s) about what this "
+                     f"matcher could not read are not shown — "
+                     f"supertool 'guard:COMMAND' prints one segment at a time.")
+    if verdict.notes:
         lines.append("")
     if any(match.project for match in verdict.matches[:shown]):
         lines.append("The description and `Use:` lines above are quoted from "
