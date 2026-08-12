@@ -832,6 +832,134 @@ def _prepush_hook_state(flags: set[str]) -> tuple[str, str]:
     return "none", f"no executable pre-push hook at {path}"
 
 
+# How much of a hook transcript the receipt carries. Head *and* tail, not a
+# plain tail: `.githooks/pre-push` announces which arm it took on its FIRST
+# line (`feature branch — suite NOT run here`, the full-suite banner) and
+# reports the outcome on its LAST (`✓ Tests passed. Pushing.`), so a tail alone
+# would drop the disclosure this exists to surface. The master path is ~9,600
+# tests of pytest output; the feature path is two lines and is never elided.
+_HOOK_HEAD_LINES = 3
+_HOOK_TAIL_LINES = 12
+
+# The same bound on the arm a reader has to act on — the push git refused,
+# where `--- git output ---` dumps the child's whole output. Wider, because
+# that dump is the only evidence of *why* it was refused: pytest names the
+# failing tests in its summary at the very end, and the hook names the arm it
+# took at the very start. Measured 2026-08-12 pushing to a local `master`: the
+# unbounded dump was an 11,449-item pytest run, ~11,000 lines, in a receipt.
+_GIT_OUTPUT_HEAD_LINES = 5
+_GIT_OUTPUT_TAIL_LINES = 30
+
+
+def _split_hook_stdout(push_stdout: str) -> tuple[list[str], bool]:
+    """The child's stdout written before git's own porcelain block.
+
+    Returns `(lines, delimited)`. A pre-push hook inherits git's stdout, so the
+    two writers share one stream — but not one moment. Git runs the hook to
+    completion before it contacts the remote, and only then prints its
+    `--porcelain` header, `To <url>`. Every line above that header was written
+    by the hook and none below it was. That is process ordering, not a guess
+    about what a hook is likely to say: it asks which process was still the
+    writer, never what the words mean — the same channel discipline #641
+    established for the rebase decision.
+
+    Scanned from the end because git prints exactly one such header per push,
+    after the hook has exited. A hook line of its own that starts with `To`
+    therefore cannot move the boundary, which a forward scan would let it do.
+
+    `delimited` is False when there is no header at all — a push a hook blocked
+    never reaches the remote — and the caller must then say the boundary is
+    unknown rather than claim the whole stream for the hook.
+    """
+    # `_untrusted.split_lines`, not `str.splitlines()`: this is a transcript
+    # being relayed, so a line is what the writer terminated with LF/CR/CRLF
+    # and nothing else. `str.splitlines()` also breaks on U+2028, U+0085 and
+    # the vertical tab, which would silently re-cut a hook's own line — and
+    # cutting it is what pushes content past the head/tail bound and out of
+    # the receipt.
+    lines = _untrusted.split_lines(push_stdout)
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].startswith("To "):
+            return lines[:i], True
+    return lines, False
+
+
+def _bounded_hook_lines(lines: list[str], head: int = _HOOK_HEAD_LINES,
+                        tail: int = _HOOK_TAIL_LINES) -> list[str]:
+    """`lines`, elided in the middle if long — and never silently."""
+    if len(lines) <= head + tail + 1:
+        return lines
+    return (lines[:head]
+            + [f"... {len(lines) - head - tail} line(s) not shown - first "
+               f"{head} and last {tail} kept (a hook announces its arm first "
+               "and its outcome last); re-run the push by hand to see all "
+               "of it"]
+            + lines[-tail:])
+
+
+def _report_prepush_hook(push_stdout: str, push_stderr: str,
+                         flags: set[str], relay: bool = True) -> None:
+    """Relay what the local pre-push hook said, so the gate discloses itself.
+
+    Since #894 and #1242 this repo's hook is *selective* — it runs the full
+    suite for master/main and deliberately skips it for a feature branch — and
+    it says which arm it took every time. None of that reached the operator: the
+    op captured the child's streams and rendered only its own receipt, so a 7s
+    push that skipped the suite and a 227s push that ran ~9,600 tests produced
+    the same shape (#1448). A selective gate whose selection is invisible is
+    indistinguishable from no gate, and "it pushed fine" then carries an implied
+    local-green claim it never earned.
+
+    Measured 2026-08-12 before choosing between the two candidate fixes: the
+    hook's output is captured, not discarded — its stdout arrives above git's
+    `To` header and its stderr on stderr. So this is a rendering change, and it
+    relays rather than summarises. Summarising from `_prepush_hook_state` plus
+    the elapsed time would be the op *asserting* what the hook did, which is the
+    inference #1447 refused when it declined to budget the hook from its prose.
+
+    The state line above the relay is a claim about configuration — would git
+    run a hook here — not about what happened, and it carries all three states.
+    It is what makes an empty relay readable: a hook that printed nothing and no
+    hook at all are different facts, and silence renders identically for both.
+
+    `relay=False` prints the state line only, for the rejected arm, which
+    already dumps the child's whole output under `--- git output ---`.
+    """
+    state, detail = _prepush_hook_state(flags)
+    if state == "none":
+        print(f"Pre-push hook: none ran - {detail}. "
+              "Nothing gated this push locally.")
+    elif state == "unknown":
+        print(f"Pre-push hook: whether one ran is UNKNOWN - {detail}. "
+              "This receipt is not saying none did.")
+    else:
+        print(f"Pre-push hook: ran ({detail})")
+    if not relay:
+        return
+    out_lines, delimited = _split_hook_stdout(push_stdout or "")
+    while out_lines and not out_lines[-1].strip():
+        out_lines.pop()
+    err_lines = _untrusted.split_lines(push_stderr or "")
+    while err_lines and not err_lines[-1].strip():
+        err_lines.pop()
+    if not out_lines and not err_lines:
+        if state == "runs":
+            print("  It printed nothing, so this receipt cannot say which arm "
+                  "it took - the hook's own disclosure is the only evidence of "
+                  "that, and there was none.")
+        return
+    if out_lines and not delimited:
+        print("  git printed no `To` header for this push, so where its own "
+              "output starts is UNKNOWN - the lines below are relayed "
+              "unattributed.")
+    for ln in _bounded_hook_lines(out_lines):
+        print(f"| {ln}")
+    if err_lines:
+        print("  and on stderr, which git shares with the hook:")
+        for ln in _bounded_hook_lines(err_lines):
+            print(f"| {ln}")
+
+
 def _repo_root() -> str:
     """Directory holding the `supertool` wrapper and `supertool.py`."""
     return install_dir()
@@ -1464,6 +1592,17 @@ def _report_push_timeout(branch: str, head_before: str,
     else:
         print(f"Whether a local pre-push hook ran is UNKNOWN — {hook_detail}. "
               "This receipt is not saying none did.")
+    if hook_state != "none":
+        # Named as an absence rather than left blank, because this receipt now
+        # relays the hook's own lines everywhere else (#1448) and their absence
+        # here would otherwise read as a hook that said nothing. It is not
+        # rendered: `_git` kills the child on timeout and returns no captured
+        # output, so what the hook had already printed is gone before this
+        # function is reached. The output IS held by `TimeoutExpired` — a
+        # separate fix, in a helper eleven git presets share.
+        print("What the hook printed before the clock expired is NOT part of "
+              "this receipt: the push was killed and its output went with it. "
+              "No relay here is not a hook that stayed silent.")
     print("The push may still be in flight — `git fetch` and re-check before "
           "retrying; do NOT force-push on a timeout alone.")
     _result(f"NOT PUSHED - UNVERIFIED  {branch} -> {remote}/{ref} - push timed "
@@ -1907,6 +2046,11 @@ def _push_op() -> int:
         head_after, _ = _local_head()
         live, _ = _live_remote_sha(remote_name, remote_ref)
         if live and head_after and live == head_after:
+            # This arm exists because a hook amended HEAD and pushed the fixed
+            # commit itself, so the hook's own words are the whole explanation
+            # for a rewritten local HEAD (#1448).
+            _report_prepush_hook(result.stdout or "", result.stderr or "",
+                                 flags)
             _report_hook_pushed(head_before, head_after,
                                  remote_name, remote_ref, live, branch, flags)
             return 0
@@ -1957,12 +2101,28 @@ def _push_op() -> int:
                   "pre-push hook, or transport). Not a divergence: a rebase "
                   "would not help. The output below is what stopped it; "
                   "`git-push:no-verify` skips a local hook.")
+        # State line only: the dump below already carries the hook's own words
+        # verbatim. What it cannot say is whether a hook was in the picture at
+        # all — which is precisely the fork the hint above declines to guess
+        # between, and it was left to the reader to resolve (#1448).
+        _report_prepush_hook(result.stdout or "", result.stderr or "", flags,
+                             relay=False)
         print("\n--- git output ---")
-        print(combined.strip() or "(no output)")
+        # Bounded, because the commonest thing that stops a push here is a hook
+        # that ran a test suite, and its transcript is not the receipt (#1448).
+        # The two ends are the two things a reader needs: the arm the hook
+        # announced, and what it refused on.
+        dumped = _bounded_hook_lines(_untrusted.split_lines(combined.strip()),
+                                     _GIT_OUTPUT_HEAD_LINES,
+                                     _GIT_OUTPUT_TAIL_LINES)
+        print("\n".join(dumped) if dumped else "(no output)")
         _result(f"NOT PUSHED - REJECTED  {branch} -> {remote_name}/{remote_ref}"
                 + (f" - {err}" if err else ""))
         return result.returncode
 
+    # Above the status line, not below it: the hook ran before the push, and a
+    # receipt is read from the bottom (#623) — the verdict stays last.
+    _report_prepush_hook(result.stdout or "", result.stderr or "", flags)
     print("Status: pushed ✓")
     _note_landed(branch, remote_name, remote_ref)
     force_note = ""

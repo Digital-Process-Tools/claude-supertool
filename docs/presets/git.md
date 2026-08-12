@@ -486,7 +486,37 @@ local hook.
 [result] NOT PUSHED - REJECTED  feat -> origin/feat - <the hook's first error line>
 ```
 
+That dump is bounded — first five lines and last thirty, with the elision counted ([#1448](https://github.com/Digital-Process-Tools/claude-supertool/issues/1448)). Unbounded it printed the child's entire output, and the commonest thing that stops a push is a hook running a test suite: measured against a local `master`, that was an 11,449-item pytest transcript pasted into a receipt. The two ends are the two things you need — the arm the hook announced at the top, and what it refused on at the bottom.
+
 `[remote rejected]` (protected branch, pre-receive hook) is likewise never treated as a divergence — it keeps its own "a rebase will not help" hint.
+
+### The hook says which arm it took, and the receipt now carries it
+
+A pre-push hook is often a *selective* gate. This repo's own runs the full suite when the destination is `master`/`main` and deliberately skips it for a feature branch, announcing which it did every time. None of those lines used to reach you ([#1448](https://github.com/Digital-Process-Tools/claude-supertool/issues/1448)): the op captured the child's streams and printed only its own receipt, so a 7.45s push that skipped the suite and a 226.99s push that ran ~9,600 tests came out the same shape. A selective gate whose selection is invisible is indistinguishable from no gate, and "it pushed fine" then implies a local green nobody earned.
+
+```
+Pre-push hook: ran (.githooks/pre-push)
+| ── pre-push: feature branch — suite NOT run here ──
+|    The PR's checks are the gate, and they run in parallel while you work.
+|    Force it locally with: PREPUSH_FULL=1 git push
+Status: pushed ✓
+```
+
+The `|` lines are the hook's, verbatim. The op relays rather than summarises: reconstructing what the hook did from its own state lookup and the elapsed time would be the op asserting a fact it never observed, which is what it declines to do everywhere else. Provenance comes from process ordering, not from reading the words — git prints its `To <url>` porcelain header only after the hook has exited, so stdout above that header is the hook's and nothing below it is. If git printed no header, the receipt says the boundary is unknown rather than claiming the stream for the hook.
+
+A long transcript — the `master` path is thousands of pytest lines — keeps its first three and last twelve, because a hook announces its arm on the first line and its outcome on the last. The elision names how many lines it dropped.
+
+The line above the relay has three states, and it is a claim about configuration rather than about what happened:
+
+| Line | Means |
+| --- | --- |
+| `Pre-push hook: ran (<path>)` | git would run that hook here, and what follows is what it wrote |
+| `Pre-push hook: none ran - <why>. Nothing gated this push locally.` | no executable hook, or you passed `no-verify` |
+| `Pre-push hook: whether one ran is UNKNOWN - <why>` | git did not answer where the hook lives; not a claim that none ran |
+
+`ran` with nothing after it gets its own sentence — *it printed nothing, so this receipt cannot say which arm it took* — because a silent hook and an absent one otherwise render identically.
+
+One arm carries no relay and says so. A push that outlasts `_PUSH_TIMEOUT` is killed and its captured output dies with it, so the timeout receipt states that the hook's words were never captured rather than leaving a blank that reads as a hook with nothing to say.
 
 ## Occupancy has three states, and `idle` is the one that must be earned
 
