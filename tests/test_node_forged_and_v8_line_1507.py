@@ -108,7 +108,11 @@ def _receipt(mod, monkeypatch, capsys, target, stderr, rc: int = 1) -> dict:
 
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
     if hasattr(mod, "shutil"):  # html-check gates on it; node-check does not
-        monkeypatch.setattr(mod.shutil, "which", lambda _n: "/usr/bin/node")
+        # A truthy return is the whole contract here — the value is never
+        # spawned, because `subprocess.run` is mocked above. Returning the bare
+        # name rather than a POSIX absolute keeps a platform literal out of a
+        # file that runs on the Windows legs too.
+        monkeypatch.setattr(mod.shutil, "which", lambda n: n)
     monkeypatch.setattr(mod.sys, "argv", ["adapter", str(target)])
     mod.main()
     return json.loads(capsys.readouterr().out.strip().split(LF)[-1])

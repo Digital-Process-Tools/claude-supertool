@@ -74,9 +74,17 @@ def file_line(file: str, node_line: int | None) -> int | None:
 
     **A file that cannot be read keeps node's number.** It is the right number
     for every file holding neither character, which is nearly all of them, and
-    the same failure reaches `context_fields`, which discloses it as
-    `context_unavailable` (#1446). Dropping a true location over an unrelated
-    `open()` would be the trade this repo keeps refusing.
+    the same failure normally reaches `context_fields` too, which discloses it
+    as `context_unavailable` (#1446). Dropping a true location over an
+    unrelated `open()` would be the trade this repo keeps refusing.
+
+    That "normally" is the honest word and not a hedge: the two reads are
+    independent, so a failure transient enough to clear between them leaves an
+    unmapped — possibly V8-inflated — number rendered against real source. The
+    trade is taken knowingly, because the alternative discards a correct
+    location on every ordinary file over a read blip. `html-check` has no such
+    window and does not need this arm: it maps against `padded`, the exact
+    text it handed node, and never reads the file a second time.
     """
     if node_line is None:
         return None
