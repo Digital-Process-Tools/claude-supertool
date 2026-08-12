@@ -132,7 +132,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, MutableMapping, NamedTuple, Optional, Sequence, Tuple
 
-VERSION = "0.35.0"
+VERSION = "0.36.0"
 
 
 def _fwd(p: str) -> str:
