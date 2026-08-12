@@ -921,9 +921,28 @@ def not_applicable_note() -> list:
     ]
 
 
+def gate_exit(boundary_state: str, count_state: str) -> int:
+    """`0` only when the boundary RESOLVED **and** the count is EXACT.
+
+    The retired op's contract, kept across the fold because it is the release
+    trigger's actual answer and a script can gate on it. It was very nearly
+    dropped here: an ordinary `gh-prs` board always exits 0, and inheriting
+    that would have put the strongest available statement of "go" next to
+    `merged since tag: 5 (UNVERIFIED)` — a number the tool has just finished
+    saying it cannot verify. `LOWER BOUND` is not permission either: a capped
+    page reads as fewer merges than there are.
+
+    Only the tag-boundary slice has a verdict, so only it consults this. Every
+    other shape of `gh-prs` still exits 0.
+    """
+    if boundary_state == BOUNDARY_RESOLVED and count_state == COUNT_EXACT:
+        return 0
+    return 1
+
+
 def assess(*, rows, boundary, per_page, fetched, narrowed_by=(),
            repo_targeted=False, changelog_dir=None):
-    """`(kept, lines)` — the boundary slice in merge order, and the gate footer.
+    """`(kept, lines, exit_code)` — the slice, the gate footer, and the verdict.
 
     **Every conditional read states whether it ran.** `gh-prs` is this repo's
     most-called op and this function is the only thing on it that touches the
@@ -1011,4 +1030,4 @@ def assess(*, rows, boundary, per_page, fetched, narrowed_by=(),
         fragments=(frag_count, frag_sections, frag_note),
         only_api=only_api, only_git=only_git, unattributed=unattributed,
         sources=sources)
-    return kept, lines
+    return kept, lines, gate_exit(boundary.state, state)

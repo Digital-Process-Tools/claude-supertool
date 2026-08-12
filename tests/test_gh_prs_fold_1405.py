@@ -184,7 +184,7 @@ def _boundary(**over):
 
 def test_the_cross_check_says_it_ran_and_agreed() -> None:
     rg._run = _fake_git(tags_out="", subjects_out="after (#1404)\n")
-    kept, lines = rg.assess(rows=ROWS, boundary=_boundary(), per_page=50,
+    kept, lines, _code = rg.assess(rows=ROWS, boundary=_boundary(), per_page=50,
                             fetched=2, narrowed_by=[], repo_targeted=False,
                             changelog_dir="/nonexistent")
     text = "\n".join(lines)
@@ -196,7 +196,7 @@ def test_the_cross_check_says_it_ran_and_agreed() -> None:
 
 def test_the_boundary_row_is_named_rather_than_silently_dropped() -> None:
     rg._run = _fake_git(tags_out="", subjects_out="after (#1404)\n")
-    _kept, lines = rg.assess(rows=ROWS, boundary=_boundary(), per_page=50,
+    _kept, lines, _code = rg.assess(rows=ROWS, boundary=_boundary(), per_page=50,
                              fetched=2, narrowed_by=[], repo_targeted=False,
                              changelog_dir="/nonexistent")
     text = "\n".join(lines)
@@ -207,7 +207,7 @@ def test_the_boundary_row_is_named_rather_than_silently_dropped() -> None:
 def test_a_narrowed_population_makes_the_cross_check_decline_by_name() -> None:
     """A role filter narrows the API side only, so any gap is the filter's."""
     rg._run = _fake_git(tags_out="", subjects_out="after (#1404)\n")
-    _kept, lines = rg.assess(rows=ROWS, boundary=_boundary(), per_page=50,
+    _kept, lines, _code = rg.assess(rows=ROWS, boundary=_boundary(), per_page=50,
                              fetched=2, narrowed_by=["author"],
                              repo_targeted=False, changelog_dir="/nonexistent")
     text = "\n".join(lines)
@@ -217,7 +217,7 @@ def test_a_narrowed_population_makes_the_cross_check_decline_by_name() -> None:
 
 def test_a_repo_target_makes_the_cross_check_decline_by_name() -> None:
     rg._run = _fake_git(tags_out="", subjects_out="after (#1404)\n")
-    _kept, lines = rg.assess(rows=ROWS, boundary=_boundary(), per_page=50,
+    _kept, lines, _code = rg.assess(rows=ROWS, boundary=_boundary(), per_page=50,
                              fetched=2, narrowed_by=[], repo_targeted=True,
                              changelog_dir="/nonexistent")
     assert "cross-check: DID NOT RUN" in "\n".join(lines)
@@ -225,7 +225,7 @@ def test_a_repo_target_makes_the_cross_check_decline_by_name() -> None:
 
 def test_a_cross_check_that_could_not_run_is_unverified_not_agreement() -> None:
     rg._run = _fake_git(tags_out="", subjects_ok=False)
-    _kept, lines = rg.assess(rows=ROWS, boundary=_boundary(), per_page=50,
+    _kept, lines, _code = rg.assess(rows=ROWS, boundary=_boundary(), per_page=50,
                              fetched=2, narrowed_by=[], repo_targeted=False,
                              changelog_dir="/nonexistent")
     text = "\n".join(lines)
@@ -234,7 +234,7 @@ def test_a_cross_check_that_could_not_run_is_unverified_not_agreement() -> None:
 
 def test_a_changelog_dir_that_was_not_read_says_so_rather_than_counting_zero() -> None:
     rg._run = _fake_git(tags_out="", subjects_out="after (#1404)\n")
-    _kept, lines = rg.assess(rows=ROWS, boundary=_boundary(), per_page=50,
+    _kept, lines, _code = rg.assess(rows=ROWS, boundary=_boundary(), per_page=50,
                              fetched=2, narrowed_by=[], repo_targeted=False,
                              changelog_dir="/nonexistent")
     text = "\n".join(lines)
@@ -251,7 +251,7 @@ def test_the_contradiction_survives_the_fold(tmp_path) -> None:
     for n in range(7):
         (tmp_path / f"{1200 + n}.fixed.md").write_text("x", encoding="utf-8")
     rg._run = _fake_git(tags_out="", subjects_out="")
-    _kept, lines = rg.assess(rows=[], boundary=_boundary(), per_page=50,
+    _kept, lines, _code = rg.assess(rows=[], boundary=_boundary(), per_page=50,
                              fetched=0, narrowed_by=[], repo_targeted=False,
                              changelog_dir=str(tmp_path))
     text = "\n".join(lines)
@@ -262,7 +262,7 @@ def test_the_contradiction_survives_the_fold(tmp_path) -> None:
 def test_a_real_disagreement_still_refuses(tmp_path) -> None:
     """Narrowing the structural case must not silence the genuine one."""
     rg._run = _fake_git(tags_out="", subjects_out="")
-    _kept, lines = rg.assess(rows=ROWS, boundary=_boundary(), per_page=50,
+    _kept, lines, _code = rg.assess(rows=ROWS, boundary=_boundary(), per_page=50,
                              fetched=2, narrowed_by=[], repo_targeted=False,
                              changelog_dir=str(tmp_path))
     text = "\n".join(lines)
@@ -273,7 +273,7 @@ def test_a_real_disagreement_still_refuses(tmp_path) -> None:
 
 def test_a_full_page_is_still_a_lower_bound_under_the_boundary() -> None:
     rg._run = _fake_git(tags_out="", subjects_out="after (#1404)\n")
-    _kept, lines = rg.assess(rows=ROWS, boundary=_boundary(), per_page=2,
+    _kept, lines, _code = rg.assess(rows=ROWS, boundary=_boundary(), per_page=2,
                              fetched=2, narrowed_by=[], repo_targeted=False,
                              changelog_dir="/nonexistent")
     assert "PAGE FULL" in "\n".join(lines)
@@ -311,6 +311,44 @@ def test_a_tag_boundary_is_the_release_gate() -> None:
     plan = prs._gate_plan({"merged-since": "v0.34.0", "state": "merged"})
     assert plan is not None
     assert plan.is_tag is True
+
+
+def test_a_count_that_is_not_exact_keeps_the_non_zero_exit() -> None:
+    """The gate's exit code is the release trigger's actual answer.
+
+    `gh-since-tag` exited 0 only when the boundary was RESOLVED **and** the
+    count EXACT, so a script could gate on it. The fold nearly dropped that: a
+    board returns 0, and `merged since tag: 5 (UNVERIFIED)` would have exited 0
+    beside it — the strongest available statement of "go" attached to a number
+    the tool has just said it cannot verify. Found by review, not by me.
+
+    `gh-prs` still exits 0 for every ordinary board; only the boundary slice
+    carries a verdict, because only it has one.
+    """
+    # Both sources agreed and the page was not full: a trigger input.
+    rg._run = _fake_git(tags_out="", subjects_out="after (#1404)\n")
+    _kept, _lines, code = rg.assess(
+        rows=ROWS, boundary=_boundary(), per_page=50, fetched=2,
+        narrowed_by=[], repo_targeted=False, changelog_dir="/nonexistent")
+    assert code == 0
+
+    # The cross-check declined, so the count is UNVERIFIED and must not exit 0.
+    _kept, lines, code = rg.assess(
+        rows=ROWS, boundary=_boundary(), per_page=50, fetched=2,
+        narrowed_by=["author"], repo_targeted=False,
+        changelog_dir="/nonexistent")
+    assert rg.COUNT_UNVERIFIED in "\n".join(lines)
+    assert code == 1
+
+
+def test_an_ambiguous_boundary_could_never_reach_a_zero_exit() -> None:
+    """It refuses before any board is fetched, so there is nothing to exit 0 on."""
+    rg._run = _fake_git(
+        tags_out=_tags_line() + "\n" + _tags_line("v0.34.1", sha="b" * 40) + "\n",
+        merged_out="v0.34.0\nv0.34.1\n")
+    boundary = rg.resolve_boundary("")
+    assert boundary.state == rg.BOUNDARY_AMBIGUOUS
+    assert boundary.stamp == ""
 
 
 def test_the_narrowing_keys_are_derived_from_the_filter_set_not_listed() -> None:

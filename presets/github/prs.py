@@ -779,14 +779,17 @@ def _boundary_slice(*, rows, plan, boundary, filters, flags, per_page) -> int:
     narrowed_by = sorted(k for k in _NARROWING_KEYS if filters.get(k))
 
     if boundary is None:
+        # A date boundary is a listing, not a verdict — so it keeps the board's
+        # own exit code. There is nothing here for a release gate to fail on.
         instant = _filter_tokens.parse_iso_instant(plan.value)
         kept, _undated = _release_gate.filter_merged(rows, instant)
         lines = ([_release_gate.page_note(page=fetched, limit=per_page)]
                  + _release_gate.not_applicable_note())
         if narrowed_by:
             lines.append(f"population: narrowed by {', '.join(narrowed_by)}")
+        code = 0
     else:
-        kept, lines = _release_gate.assess(
+        kept, lines, code = _release_gate.assess(
             rows=rows, boundary=boundary, per_page=per_page, fetched=fetched,
             narrowed_by=narrowed_by,
             repo_targeted=bool(str(_repo_target.target() or "").strip()))
@@ -801,7 +804,7 @@ def _boundary_slice(*, rows, plan, boundary, filters, flags, per_page) -> int:
             number = row.get("number")
             if number is not None:
                 print(number)
-        return 0
+        return code
 
     # Header position as well as footer, for the one disclosure the caller did
     # not ask for. A footer is lost by exactly the consumer that truncates
@@ -813,7 +816,7 @@ def _boundary_slice(*, rows, plan, boundary, filters, flags, per_page) -> int:
     if boundary is None:
         print("\n".join(_release_gate.merge_order_rows(kept)))
     print("\n".join(lines))
-    return 0
+    return code
 
 
 def main_with_args(arg_str: str) -> int:
