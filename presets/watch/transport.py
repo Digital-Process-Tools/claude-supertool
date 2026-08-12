@@ -468,8 +468,11 @@ def read_state(source: str, watcher_id: str) -> dict[str, Any]:
     strings in this dict travel straight back to disk through `write_state` on
     the next tick, `source_state` among them — a poller's private resume cursor,
     not report text. Flattening at the read would trade a render bug for
-    permanent state corruption. The two renders that print these strings
-    (`dispatcher.cmd_list`, `tiers.gl_mrs.feed_error`) flatten at the render.
+    permanent state corruption. The renders that print these strings
+    (`dispatcher.cmd_list`, `tiers.gl_mrs.feed_error`, and since #1309
+    `radar._destination_lines` over `sock_path`) flatten at the render — that
+    last one did not until #1423, and a count in this sentence is exactly what
+    let it be added without anyone noticing the convention had a third site.
     """
     state, _ = read_state_checked(source, watcher_id)
     return state if state is not None else {}

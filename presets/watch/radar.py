@@ -83,6 +83,8 @@ from pathlib import Path
 _HERE = Path(__file__).parent
 
 sys.path.insert(0, str(_HERE))
+sys.path.insert(0, str(_HERE.parent))  # for _untrusted
+import _untrusted  # noqa: E402  (the state files are somebody else's text, #1423)
 import dispatcher  # noqa: E402
 import transport  # noqa: E402
 
@@ -463,6 +465,21 @@ def _destination_lines(rows: list[tuple[str, str, str]]) -> list[str]:
     only that nothing here establishes where that watcher writes, which is
     exactly true of a slot whose file has gone — but it is why this must not
     be read as "these watchers are running an old build".
+
+    A recorded path is somebody else's text and is not verifiable from here
+    (#1423). `STATE_DIR` defaults to `/tmp`, so a co-tenant can plant a state
+    file, and a `sock_path` holding a newline used to print a whole extra line
+    at column 0 — a forged `delivery — all N accepted`, which is the
+    false-clean claim this banner exists to prevent. Two answers, because
+    flattening alone would leave radar asserting a path it cannot check:
+
+      * `_untrusted.flat` on every path, so nothing from a state file reaches
+        column 0 where the tool speaks. Flattened *before* the set, not after:
+        de-duplicating raw values leaves two entries that render identically;
+      * the provenance said out loud above the line, once, the way
+        `list_watchers` and `channel` say it over the same directory. `repr`
+        would be the wrong trade on a line whose job is to tell an operator
+        which socket to go and look at.
     """
     emitted = [(source, wid) for source, wid, state in rows
                if state != transport.DELIVERY_NO_EMIT]
@@ -470,13 +487,20 @@ def _destination_lines(rows: list[tuple[str, str, str]]) -> list[str]:
         return []
     recorded = {(source, wid): path
                 for source, wid, path in transport.emit_destinations()}
-    here = transport.SOCK_PATH
+    # The comparison is against the raw value; only the render is flattened.
+    here = _untrusted.flat(transport.SOCK_PATH)
     elsewhere = [slot for slot in emitted
-                 if recorded.get(slot, "") not in ("", here)]
+                 if recorded.get(slot, "") not in ("", transport.SOCK_PATH)]
     unrecorded = [slot for slot in emitted if not recorded.get(slot, "")]
     out: list[str] = []
     if elsewhere:
-        others = sorted({recorded[slot] for slot in elsewhere})
+        others = sorted({_untrusted.flat(recorded[slot]) for slot in elsewhere})
+        # Above the line it is about, like every other note in this preset: the
+        # reader this protects is the one who acts on the first thing they read.
+        # Only on the arm that prints somebody else's text — a note on a line
+        # radar wrote itself would be a claim about the render, not the source.
+        out.append("       " + _untrusted.flat_note(
+            "the socket path(s)", "the watchers' own state files"))
         out.append(
             f"radar: DELIVERY — {len(elsewhere)} of {len(emitted)} watcher "
             f"state file(s) that emitted last wrote to a socket this session "
