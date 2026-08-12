@@ -130,7 +130,8 @@ def test_the_residue_the_lint_does_not_reach():
     Still ungated, deliberately, and **the proposed lint would not have moved
     this line** — it keys on a PATH-shaped `syntax`, which this entry does not
     have. Recorded rather than fixed: closing it means widening `{arg}` into a
-    path signal, which refuses 16 shipped ops that take no path.
+    path signal, which refuses 13 shipped ops that take no path (16 until #873
+    moved three multi-token ops to `{args}`).
     """
     entry = {"cmd": "cat {arg}", "syntax": "probe:TARGET"}
     assert supertool._entry_names_a_path(entry) is None

@@ -24,9 +24,11 @@ was honoured, and refusing there reaches 15 tests across 6 files plus every
 `check:PRESET:PATH` whose entry takes no path. Filed separately.
 
 **Preset ops take the same route** — `_resolve_custom_op`, one substitution
-pass. Zero shipped presets write `{file}` (grep over 160 preset files); 58 write
-`{args}` or `{argjoin}` and get every token, 24 write `{arg}` and get one, 4
-write no argument placeholder at all. So the difference is not the kind of op,
+pass. Zero shipped presets write `{file}` (grep over 160 preset files); before
+this change 58 wrote `{args}` or `{argjoin}` and got every token, 24 wrote
+`{arg}` and got one, 4 wrote no argument placeholder at all. The three ops
+repaired below move the split to 61/21/4, which is what the population test at
+the bottom of this file pins. So the difference is not the kind of op,
 it is which placeholder its author picked, and that is the trap: `{args}` is the
 pass-through, `{file}`/`{arg}`/`{dir}` are single-token by definition.
 
