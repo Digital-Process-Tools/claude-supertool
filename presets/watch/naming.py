@@ -54,6 +54,7 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _untrusted
 
+import _image_root  # noqa: E402  (a root created by us and proven ours, #1493/#1518)
 import _untrusted  # noqa: E402  (a name is operator text on a rendered surface, #1423)
 
 NAME_ENV = "SUPERTOOL_WATCH_NAME"
@@ -303,15 +304,43 @@ def ensure_state_dir(resolved: Resolved, state_dir: str) -> str:
     monkeypatch the module constant; the flag says whether creating is allowed,
     the argument says where.
 
-    `0700`, not `/tmp`'s mode. `mode=` applies only to directories this call
-    creates — a small piece of the #1184 family bought for free, not a claim to
-    have closed it.
+    **Creating it is not the same as establishing it, and this used to be
+    `os.makedirs(state_dir, mode=0o700, exist_ok=True)` (#1518).** The derived
+    leaf is `/tmp/supertool-watch-<name>`, `/tmp` is world-writable, and the name
+    is public — `6047d98` commits `"watch_name": "oss-supertool"` to this repo's
+    own `.supertool.json`. `exist_ok=True` accepts whatever already holds that
+    name and `makedirs` reaches it through `os.path.isdir`, which follows
+    symlinks, so a link planted at the leaf was adopted in silence and
+    `claim_pidfile`'s `O_CREAT|O_EXCL` then wrote the pid file inside the
+    planter's directory, where it is a perfectly ordinary new file. `mode=0o700`
+    applies only to directories that call creates, so in the pre-taken case it
+    was never a defence.
+
+    `_image_root.ensure` is the boundary instead of a third hand-rolled one: it
+    creates the leaf non-recursively, holds it open `O_RDONLY | O_DIRECTORY |
+    O_NOFOLLOW`, `fchmod`s it and then asks *that descriptor* about ownership and
+    mode, so the tightening and the two checks are three questions about one
+    object rather than three path resolutions that can each answer about
+    something different. Its Windows branch declines the arms `st_uid` and
+    synthesized permission bits cannot answer, rather than faking them.
+
+    **Reused rather than reproduced, and the name is the only thing that does not
+    fit.** The module was written for `gl-issue`'s attachment root (#1493) and
+    everything it exports beyond `default_root` is about a directory, not about
+    images; the shape it wants — a fixed leaf under a directory that already
+    exists, created by us, written by path afterwards — is exactly this caller's.
+    What differs here is that the leaf is public and committed rather than
+    per-uid, which makes the residual below more likely, not different in kind.
+
+    **Not closed:** another local uid can squat `/tmp/supertool-watch-<name>`
+    ahead of us with a directory of their own, and we then refuse rather than
+    write into it — no poller spawns on that channel until it is removed. That is
+    the correct side of the trade and it is named, not fixed, the same way
+    `docs/presets/gitlab.md` names it for the attachment root.
     """
     if not resolved.state_dir_is_derived:
         return ""
-    try:
-        os.makedirs(state_dir, mode=0o700, exist_ok=True)
-    except OSError as err:
-        return (f"{state_dir} could not be created ({type(err).__name__}) — "
-                f"no poller slot can be claimed there")
+    _root, why = _image_root.ensure(state_dir)
+    if why:
+        return f"{why} — no poller slot can be claimed there"
     return ""

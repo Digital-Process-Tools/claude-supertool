@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""The one attachment root, created by this process and proven ours (#1493).
+"""A root created by this process and proven ours (#1493).
+
+Two callers, and the name is the older one: `gl-issue`'s attachment root, which
+is what `default_root` and `ROOT_PREFIX` are for, and `presets/watch/naming.py`'s
+derived state directory, which brings its own path and uses `ensure`/`refusal`
+only (#1518). Everything below the `default_root` line is about a directory, not
+about images. The rest of this docstring is written from the attachment root
+because that is the case that produced it; the second caller's leaf is public and
+committed rather than per-uid, which makes the squat residual below more likely
+to be hit, not different in kind.
 
 `gl-issue` downloaded issue attachments under the literal
 `"/tmp/supertool-images"`. Two defects live in that one constant:
