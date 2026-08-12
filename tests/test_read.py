@@ -72,8 +72,17 @@ def test_read_reports_more_lines_available(tmp_path: Path) -> None:
 
 
 def test_read_directory_returns_error(tmp_path: Path) -> None:
+    """A directory is refused as a directory, not reported missing (#1334).
+
+    This used to assert `file not found` about a path that is plainly there —
+    the shared helper had two states where it needed three, and the assertion
+    pinned the wrong one. What matters here is that a directory is an ERROR and
+    is never read; what it is called is now the truth rather than an absence.
+    """
     out = supertool.op_read(str(tmp_path))
-    assert "ERROR: file not found" in out
+    assert out.startswith("ERROR:"), out
+    assert "is a directory" in out, out
+    assert "not found" not in out, out
 
 
 def test_read_grep_filter(tmp_path: Path) -> None:
