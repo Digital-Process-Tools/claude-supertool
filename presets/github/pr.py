@@ -384,10 +384,12 @@ def _local_branch_check(source: str) -> str:
 
 
 #: How many threads the dashboard index renders before it stops and says how
-#: many it withheld. The GraphQL selection caps at 100; a PR carrying more
-#: index rows than this is past what belongs in a header, and `:threads` is one
-#: call away. The cap is disclosed rather than silent — a list that stops
-#: without saying so is the same defect this whole change is about.
+#: many it withheld. The GraphQL selection caps at `THREADS_PAGE_MAX` below (the
+#: number used to be hand-copied into this sentence); a PR carrying more index
+#: rows than this is past what belongs in a header, and `:threads` is one call
+#: away. The cap is disclosed rather than silent — a list that stops without
+#: saying so is the same defect this whole change is about, and the withheld
+#: count itself is a floor once the *fetch* stopped short too (#1491).
 THREAD_INDEX_MAX = 20
 
 #: Characters of a thread's first comment kept on its index row. The row is an
@@ -396,14 +398,30 @@ THREAD_INDEX_MAX = 20
 THREAD_EXCERPT_MAX = 90
 
 
-#: `first: 100` on threads matches the count query below; `first: 50` on the
-#: comments inside one is well past anything observed and is stated so a future
-#: reader knows it is a cap and not "all of them".
+#: The `first:` on the threads selection. **A page, not a total.** The query
+#: requests no `pageInfo`, so a reply holding exactly this many threads and a PR
+#: holding exactly this many threads are the same bytes — and both renders used
+#: to divide by `len(threads)`, which states a fetch limit as a fact about the
+#: pull request (#1491). They compare against this constant now and print a
+#: floor instead. Named rather than left as a literal inside the query string
+#: because that inference is only sound while the two agree, and until #1491
+#: nothing made them: the number was hand-copied into a comment as well.
+THREADS_PAGE_MAX = 100
+
+#: The `first:` on the comments inside one thread. Well past anything observed,
+#: and the same reading: a thread at this cap had its comment list cut and
+#: `gh-pr:N:threads` said nothing at all (#1491). The old comment here said the
+#: cap was "stated so a future reader knows it is a cap" — stated to the reader
+#: of this file, not to the operator reading the receipt.
+COMMENTS_PAGE_MAX = 50
+
 _THREADS_QUERY = (
     "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
-    "{pullRequest(number:$n){reviewThreads(first:100){nodes{"
+    "{pullRequest(number:$n){reviewThreads(first:"
+    + str(THREADS_PAGE_MAX) + "){nodes{"
     "isResolved isOutdated path line originalLine "
-    "comments(first:50){nodes{body createdAt url author{login}}}"
+    "comments(first:" + str(COMMENTS_PAGE_MAX) + "){nodes{body createdAt url "
+    "author{login}}}"
     "}}}}}"
 )
 
@@ -459,6 +477,28 @@ def _fetch_review_threads_detailed(
     return (node["nodes"], "")
 
 
+def _thread_page_floors(threads: list, unresolved: int) -> tuple[str, str, str]:
+    """`(unresolved, total, note)` — as counts, or as floors at the page cap.
+
+    `reviewThreads(first: N)` carries no `pageInfo`, so a reply of exactly N
+    threads is indistinguishable from a PR of exactly N threads. Both numbers
+    are then bounds and neither is a count: the unresolved tally is off the same
+    truncated set as the denominator. `at least` is true in both readings and is
+    the only claim the reply supports — the three-state rule (`docs/validators.md`,
+    "Declining instead of guessing") applied to a number rather than a verdict.
+
+    Below the cap the reply *does* establish the total, and it is printed bare.
+    Qualifying a number that is known would be the same defect pointed the other
+    way: a reader who cannot tell `0 / 0` from `0 / at least 0` learns nothing
+    from either.
+    """
+    if len(threads) < THREADS_PAGE_MAX:
+        return (str(unresolved), str(len(threads)), "")
+    return (f"at least {unresolved}", f"at least {len(threads)}",
+            f" — the fetch stops at the first page of {THREADS_PAGE_MAX} "
+            f"review threads, so both numbers are floors and not counts")
+
+
 def _render_threads(number: str, comment_max: int | None) -> int:
     """`gh-pr:N:threads` — the review comments the dashboard only counts.
 
@@ -512,7 +552,8 @@ def _render_threads(number: str, comment_max: int | None) -> int:
         return 0
 
     unresolved = sum(1 for t in threads if not t.get("isResolved"))
-    print(f"Threads: {unresolved} unresolved of {len(threads)}")
+    shown, total, floor_note = _thread_page_floors(threads, unresolved)
+    print(f"Threads: {shown} unresolved of {total}{floor_note}")
     # Unresolved first: the resolved ones are history and the unresolved ones
     # are the reason anybody ran this.
     ordered = sorted(threads, key=lambda t: bool(t.get("isResolved")))
@@ -544,6 +585,14 @@ def _render_threads(number: str, comment_max: int | None) -> int:
                 # body, which is where supertool's own output belongs. A
                 # U+2028 in it renders as a line break there (#965's shape).
                 print(_untrusted.flat(str(c["url"])))
+        # The comment list has its own page cap and used to stop at it in
+        # silence — the one cut in this delta that disclosed nothing at all
+        # (#1491). A thread cut here reads as a thread that ended.
+        if len(comments) >= COMMENTS_PAGE_MAX:
+            print()
+            print(f"[the first {COMMENTS_PAGE_MAX} comments on this thread — "
+                  f"the fetch stops there and does not establish whether more "
+                  f"exist. This is not the end of the thread.]")
     return 0
 
 
@@ -608,7 +657,8 @@ def _thread_index(threads: list | None, err: str, number: int | str) -> list[str
         return ["Unresolved threads: 0 / 0 — read, not assumed."]
 
     unresolved = sum(1 for t in threads if not t.get("isResolved"))
-    out = [f"Unresolved threads: {unresolved} / {len(threads)}"]
+    shown, total, floor_note = _thread_page_floors(threads, unresolved)
+    out = [f"Unresolved threads: {shown} / {total}{floor_note}"]
     ordered = sorted(threads, key=lambda t: bool(t.get("isResolved")))
     for t in ordered[:THREAD_INDEX_MAX]:
         state = "resolved  " if t.get("isResolved") else "UNRESOLVED"
@@ -634,7 +684,10 @@ def _thread_index(threads: list | None, err: str, number: int | str) -> list[str
                    f"{_thread_excerpt(t)}")
     withheld = len(ordered) - THREAD_INDEX_MAX
     if withheld > 0:
-        out.append(f"  … {withheld} more not indexed here")
+        # Off the same truncated set as the denominator, so at the page cap this
+        # under-reports by whatever the fetch did not see (#1491).
+        at_least = "at least " if len(threads) >= THREADS_PAGE_MAX else ""
+        out.append(f"  … {at_least}{withheld} more not indexed here")
     out.append(f"  bodies: gh-pr:{number}:threads — the rows above are one "
                f"line each, not the finding")
     return out
