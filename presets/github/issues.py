@@ -1158,8 +1158,15 @@ def _lookup_iids(
         return 1
 
     # Under the numbers-only render nothing derived is printed, so the
-    # enrichment half of the query is not paid for.
-    enrich = "nopipe" not in flags and not numbers_only
+    # enrichment half of the query is not paid for — unless a client-side
+    # filter reads one of those fields, which is the same rule the listing
+    # route applies (#1439). Without the second clause this route skipped the
+    # fetch and then declined for want of the field it had chosen not to get,
+    # so `iids=1,2,iids,external` refused what `external,iids` answered: two
+    # spellings of one request disagreeing, which is the asymmetry #1439 asks
+    # to be closed where the projection and the filter set are reconciled.
+    enrich = "nopipe" not in flags and (
+        not numbers_only or bool(flags & _ENRICHED_FLAGS))
     results, reason = _fetch_lookup(pair[0], pair[1], numbers, cfg["chunk"], enrich)
 
     rows: list[dict] = []

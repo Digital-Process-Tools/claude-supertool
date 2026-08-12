@@ -292,7 +292,7 @@ Three consequences of the fix:
 
 - the id feed is rendered **after** the filters, so a decline reaches it too. `gh-issues:nomilestone,iids` over a board with one unreadable milestone exits 1 with `cannot filter by nomilestone` and prints no numbers — an id feed is the shape most likely to be piped into another call rather than read, so it is the shape least able to carry a filter that silently did not run;
 - the narrowing note rides the feed as a `#` comment (`# nomilestone excluded 44 of 97 fetched`). The board stated it and the feed stated nothing, so there was no line to disagree with;
-- a filter that reads an **enriched** field (`external`, `stale`) now buys the enrichment call under `iids`, where the bare feed still buys none. That is `gl-mrs`'s rule — it applies `failed` before its own `iids` return and overrides `nopipe` for it — and the sibling had it right first.
+- a filter that reads an **enriched** field (`external`, `stale`) now buys the enrichment call under `iids`, where the bare feed still buys none. That is `gl-mrs`'s rule — it applies `failed` before its own `iids` return and overrides `nopipe` for it — and the sibling had it right first. It holds on **both** routes: `gh-issues:iids=1,2,iids,external` used to decline for want of a field it had chosen not to fetch, while `gh-issues:external,iids` answered, and two spellings of one request must not disagree.
 
 ### Searching the tracker, and saying which engine answered
 

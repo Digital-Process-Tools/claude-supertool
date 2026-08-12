@@ -209,6 +209,44 @@ def test_external_under_iids_buys_the_enrichment_it_needs(
     assert _numbers(lines) == [1, 2, 3, 4], lines
 
 
+def test_the_named_population_route_buys_it_too(
+        monkeypatch: Any, capsys: Any) -> None:
+    """`iids=N,N,N,iids,external` must not decline what `external,iids` answers.
+
+    Found by the review of this change. `_lookup_iids` gates its half of the
+    GraphQL query on `not numbers_only` alone, so the named-population route
+    skipped enrichment even when a filter that reads an enriched field was
+    asked for, and then declined for want of the field it had chosen not to
+    fetch. A decline is honest and is still the wrong answer here: the op can
+    answer, and the two spellings of one request disagreed. #1439 asks for the
+    rule at the point the projection and the filter set are reconciled, not a
+    special case per route.
+    """
+    calls: dict[str, int] = {"n": 0}
+
+    def _lookup(owner, name, numbers, chunk, enrich):
+        calls["n"] += 1
+        assert enrich, "the lookup was asked for rows without the field the filter needs"
+        return ({n: ("issue", {
+            "number": n, "title": f"issue {n}", "state": "OPEN",
+            "author": {"login": "someone"}, "labels": {"nodes": []},
+            "assignees": {"nodes": []}, "milestone": None,
+            "createdAt": "2026-08-01T00:00:00Z",
+            "updatedAt": "2026-08-01T00:00:00Z",
+            "comments": {"totalCount": 0, "nodes": []},
+            "url": f"{REPO}/issues/{n}",
+            "authorAssociation": "NONE", "lastEditedAt": None,
+            "timelineItems": {"nodes": []},
+        }) for n in numbers}, None)
+
+    monkeypatch.setattr(issues, "_fetch_lookup", _lookup)
+    monkeypatch.setattr(issues, "_lookup_repo", lambda: (("o", "r"), None))
+    assert issues.main_with_args("iids=1,2,external,iids") == 0
+    lines, err = _out(capsys)
+    assert calls["n"] == 1, (calls, err)
+    assert _numbers(lines) == [1, 2], (lines, err)
+
+
 def test_a_bare_id_feed_still_pays_for_no_enrichment_at_all(
         monkeypatch: Any, capsys: Any) -> None:
     """The control. `iids` alone is the cheap shape and must stay cheap."""
