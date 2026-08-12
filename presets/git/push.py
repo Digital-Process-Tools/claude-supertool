@@ -1822,7 +1822,14 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
             if err:
                 print(f"First error: {err}")
             print("\n--- git output ---")
-            dump = _relayed_lines(_untrusted.split_lines(combined.strip()))
+            # Bounded, like every other dump of a child's stream in this file
+            # (#1490). No hook disclosure here on purpose: no push of this
+            # route's own has run yet, so there is nothing about a hook this
+            # arm could state that would be about the failure it is reporting.
+            dump = _relayed_lines(
+                _bounded_hook_lines(_untrusted.split_lines(combined.strip()),
+                                    _GIT_OUTPUT_HEAD_LINES,
+                                    _GIT_OUTPUT_TAIL_LINES))
             print("\n".join(dump) if dump else "(no output)")
             _result(f"NOT PUSHED - REJECTED (non-fast-forward)  {branch} -> "
                     f"{target} - rebase could not start")
@@ -1871,12 +1878,29 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         err = _untrusted.flat(_first_error_line(combined))
         if err:
             print(f"First error: {err}")
+        # State line only, exactly as the straight route's rejected arm does it
+        # (#1490): the dump below already carries the child's own words, and
+        # what it cannot say is whether a hook was in the picture at all.
+        _report_prepush_hook(result.stdout or "", result.stderr or "", flags,
+                             relay=False)
         print("\n--- git output ---")
-        dump = _relayed_lines(_untrusted.split_lines(combined.strip()))
+        # Bounded (#1490). This is the arm where the transcript is largest: a
+        # push rejected after a clean rebase is a push whose hook has just run
+        # the suite, and #1454 measured the unbounded case at ~11,000 lines.
+        dump = _relayed_lines(
+            _bounded_hook_lines(_untrusted.split_lines(combined.strip()),
+                                _GIT_OUTPUT_HEAD_LINES,
+                                _GIT_OUTPUT_TAIL_LINES))
         print("\n".join(dump) if dump else "(no output)")
         _result(f"NOT PUSHED - REJECTED after a clean rebase  {branch} -> {target}")
         return result.returncode
 
+    # Above the status line, for the same reason the straight route puts it
+    # there: the hook ran before the push and a receipt is read from the bottom
+    # (#623), so the verdict stays last. This route printed no hook line at all
+    # until #1490 — and a push that lands after a rebase is precisely a push
+    # whose hook just ran, so it was the receipt most in need of one.
+    _report_prepush_hook(result.stdout or "", result.stderr or "", flags)
     print("Status: pushed ✓ (rebased onto remote)")
     _note_landed(branch, remote_name, remote_ref)
     _success_receipt(branch, remote_before, upstream, flags, remote_name,

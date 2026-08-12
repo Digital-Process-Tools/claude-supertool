@@ -631,16 +631,86 @@ def remote_branch_names():
     turn into "never pushed", which is the local half of the same mistake this
     column is about.
 
+    `names` is a **mapping** of stripped branch name → the full remote ref it
+    was seen at, not a bare set (#1496). Membership is what every caller reads
+    and is unchanged; the value is what `unpushed_for` needs, because a stripped
+    name is not a rev and `@{upstream}` cannot stand in for it — `git worktree
+    add -b X … master` writes an upstream of `origin/master` for a branch that
+    has never left the machine, so measuring against it would compare X to the
+    wrong ref and answer confidently.
+
     Even when it answers, this is *local* knowledge: remote-tracking refs are
     written by fetch and push, so a branch pushed from another clone since the
     last fetch here looks unpushed. The wording in `tracker_for` says so rather
     than pretending the ref set is the remote.
     """
-    res = _git(["for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/"])
+    res = _git(["for-each-ref", "--format=%(refname)", "refs/remotes/"])
     if res.returncode != 0:
         why = (res.stderr or "").strip().splitlines()
         return None, (why[0] if why else f"git for-each-ref exited {res.returncode}")
-    return {line.strip() for line in res.stdout.splitlines() if line.strip()}, ""
+    names = {}
+    for line in res.stdout.splitlines():
+        ref = line.strip()
+        # `refs/remotes/<remote>/<name>` — the same three components
+        # `%(refname:strip=3)` used to drop, kept here so the ref survives.
+        parts = ref.split("/", 3)
+        if len(parts) != 4 or not parts[3]:
+            continue
+        # Two remotes can carry the same branch name. `origin` wins rather than
+        # whichever sorts first, so the measurement is taken against the remote
+        # the row is about; before this the key was all there was and the
+        # question did not arise.
+        if parts[3] not in names or parts[2] == "origin":
+            names[parts[3]] = ref
+    return names, ""
+
+
+class Sync:
+    """Is a branch in sync with its own remote ref? `ahead` commits, or `None`.
+
+    `None` is the state the old rendering never had: `ahead == 0` and "the
+    count could not be taken" are different facts, and only one of them
+    licenses the word *published* (#1496).
+    """
+
+    __slots__ = ("ahead", "why")
+
+    def __init__(self, ahead, why: str = "") -> None:
+        self.ahead = ahead
+        self.why = why
+
+    def __repr__(self) -> str:
+        return f"Sync({self.ahead!r}, {self.why!r})"
+
+
+def unpushed_for(branch: str, remote_ref: str) -> Sync:
+    """Commits on `branch` that are not on `remote_ref`, as a `Sync`.
+
+    Ahead only. *Behind* is a fact about the remote having moved and says
+    nothing about whether this tree's work survives being discarded, which is
+    the question the publication line is read for.
+
+    Every way of not getting an answer — no ref to measure against, a ref that
+    does not resolve, git failing, a count that is not a number — returns
+    `ahead=None` with the reason. `0` is reserved for a count that was actually
+    taken, because `0` is what the caller turns into "published".
+    """
+    if not branch or not remote_ref:
+        return Sync(None, "no remote ref to measure this branch against")
+    res = _git(["rev-list", "--count", f"{remote_ref}..refs/heads/{branch}"])
+    if res.returncode != 0:
+        # `_untrusted.split_lines`, not `str.splitlines()`: this is git's own
+        # stderr about refs a remote named, and it is rendered as one line of
+        # the board. A U+2028 in it must not re-cut the message the reader is
+        # shown — the same reason the rest of this family narrowed (#1081).
+        why = _untrusted.split_lines((res.stderr or "").strip())
+        return Sync(None, (why[0] if why else
+                           f"git rev-list exited {res.returncode}"))
+    text = res.stdout.strip()
+    if not text.isdigit():
+        return Sync(None, "git rev-list --count answered with "
+                          f"{text[:40]!r}, which is not a count")
+    return Sync(int(text), "")
 
 
 def _pr_detail(pr: dict) -> str:
@@ -656,7 +726,8 @@ def _pr_detail(pr: dict) -> str:
     return " · ".join(bits)
 
 
-def tracker_for(branch: str, index, remote_branches, remote_why: str = "") -> Tracker:
+def tracker_for(branch: str, index, remote_branches, remote_why: str = "",
+                sync: "Sync | None" = None) -> Tracker:
     """Which of the four answers holds for this worktree's branch.
 
     Order matters. The lookup's own failure is consulted **first**, because
@@ -704,14 +775,69 @@ def tracker_for(branch: str, index, remote_branches, remote_why: str = "") -> Tr
                        "state after a merge). Either way there is no open PR to find. "
                        "(Local knowledge: remote refs are only as fresh as the last fetch.)")
 
+    # A remote-tracking ref exists. That is NOT the same claim as "the work is
+    # published", and printing it as one was #1496: the live clone on `master`
+    # was one commit ahead of `origin/master` and the row read `the work is
+    # published but unproposed`. Read by somebody deciding whether a tree can
+    # be discarded, `published` reads as `safe to remove`.
+    if sync is None:
+        return Tracker(TRACKER_NONE, "no open PR",
+                       "a remote-tracking ref exists for this branch and no open PR "
+                       "tracks it. Whether the branch is in SYNC with that ref was "
+                       "not measured here, so no publication claim is made about "
+                       "this branch")
+    if sync.ahead is None:
+        return Tracker(TRACKER_NONE, "no open PR",
+                       "a remote-tracking ref exists for this branch and no open PR "
+                       "tracks it. Whether every local commit is on that ref is "
+                       f"UNKNOWN ({sync.why}) — so this declines rather than "
+                       "calling the work published")
+    if sync.ahead > 0:
+        return Tracker(TRACKER_NONE, f"{sync.ahead} unpushed, no open PR",
+                       f"a remote-tracking ref exists, but {sync.ahead} commit(s) "
+                       "here are NOT on it and no open PR tracks the branch — the "
+                       "work is NOT published: those commits exist only in this "
+                       "clone")
     return Tracker(TRACKER_NONE, "no open PR",
-                   "the branch is pushed and no open PR tracks it — the work is "
-                   "published but unproposed")
+                   "the branch is pushed, in sync with its remote ref, and no open "
+                   "PR tracks it — the work is published but unproposed")
 
 
 # ── rendering ────────────────────────────────────────────────────────────
 
-def render(rows: list) -> str:
+def _sync_for(branch: str, remote_names) -> "Sync | None":
+    """The publication measurement for one row, or `None` if there is none to make.
+
+    `None` for a branch with no remote ref (the row says that already) and for a
+    caller that handed a bare set rather than the `remote_branch_names` mapping
+    — in both cases the count was not taken, and `tracker_for` says so instead
+    of inferring it.
+
+    One `git rev-list --count` per *pushed* branch, local and cheap. It is not
+    batched into the single `for-each-ref` above because a count per ref is what
+    is being asked for, and it costs no network.
+    """
+    if not branch or not isinstance(remote_names, dict):
+        return None
+    ref = remote_names.get(branch)
+    return unpushed_for(branch, ref) if ref else None
+
+
+def _exit_note(code: int, why: str) -> str:
+    """The line that makes the exit status attributable (#1496).
+
+    A non-zero naming nothing in the body and a zero hiding something are the
+    same defect: a caller gating on the status and a caller reading the render
+    disagreed about the same call, and the render was the one with no way to
+    settle it. This does not change any code — it says which line produced it.
+    """
+    return (f"[exit {code}] {why}. This integer is the occupancy answer "
+            f"compressed into one and nothing more "
+            f"({EXIT_IDLE} = idle, {EXIT_OCCUPIED} = occupied, "
+            f"{EXIT_UNKNOWN} = cannot tell, or the op could not answer at all)")
+
+
+def render(rows: list, exit_note: str = "") -> str:
     """The board, and the guarantee it makes about its own shape.
 
     **A row is one line plus one line per piece of evidence, whatever it is
@@ -786,6 +912,11 @@ def render(rows: list) -> str:
     # state was never established must be visible from `| tail -1`, or the
     # summary is where the missing answer disappears (#1229).
     merge_part = (f", {unknown_merges} merge unknown" if unknown_merges else "")
+    # Above `[result]`, never below it: that line is what `gh-pr-merge` and
+    # every `| tail -1` reader take the tally off, so the exit disclosure sits
+    # next to it rather than after it (#1496).
+    if exit_note:
+        out.append(exit_note)
     out.append(
         f"[result] {tally[STATE_OCCUPIED]} occupied, {tally[STATE_IDLE]} idle, "
         f"{tally[STATE_UNKNOWN]} cannot tell{tracker_part}{merge_part} — "
@@ -857,11 +988,18 @@ def main() -> int:
     if wanted.startswith("-"):
         print(f"ERROR: refused — PATH must name a worktree, not an option: {wanted!r}")
         print("  usage: worktrees.py [PATH]   (inspection only; nothing is removed)")
+        # Every return from here down names its own code (#1496): an unattributed
+        # status is unreadable whether the cause is a refusal, a failure or a
+        # verdict, and the reader cannot tell which without being told.
+        print(_exit_note(EXIT_UNKNOWN, "nothing was inspected — the argument was "
+                                       "refused, see the ERROR above"))
         return EXIT_UNKNOWN
 
     listing = _git(["worktree", "list", "--porcelain"])
     if listing.returncode != 0:
         print(f"ERROR: git worktree list failed ({listing.returncode}): {listing.stderr.strip()}")
+        print(_exit_note(EXIT_UNKNOWN, "the op could not answer at all — git did "
+                                       "not list the worktrees, see the ERROR above"))
         return EXIT_UNKNOWN
 
     entries = parse_worktree_list(listing.stdout)
@@ -875,6 +1013,11 @@ def main() -> int:
             print(f"# git-worktrees\n\ncannot tell   {shown}")
             print(f"             · {shown} is not a worktree of this repository — "
                   "nothing was inspected, so nothing is claimed")
+            print(_exit_note(EXIT_UNKNOWN, "nothing was inspected because that "
+                                           "PATH is not a worktree of this "
+                                           "repository, so the answer is "
+                                           "`cannot tell` — the op itself did "
+                                           "not fail"))
             return EXIT_UNKNOWN
 
     ancestors, ancestors_why, base = _merged_branches()
@@ -892,22 +1035,27 @@ def main() -> int:
     memo: dict = {}
     rows = [(entry,
              assess(entry, scan=_cwd_scan(entry["path"], memo)),
-             tracker_for(entry.get("branch") or "", index, remote_names, remote_why)
+             tracker_for(entry.get("branch") or "", index, remote_names,
+                         remote_why,
+                         sync=_sync_for(entry.get("branch") or "", remote_names))
              if want_pr else None,
              merged_for(entry.get("branch") or "", ancestors, merged_prs,
                         ancestors_why=ancestors_why, base=base))
             for entry in entries]
-    print(render(rows))
-
-    if wanted:
-        if len(rows) == 1:
-            state = rows[0][1].state
-            # The exit code stays a statement about *occupancy* only. A tracker
-            # that did not answer says nothing about whether the tree is safe
-            # to enter, and folding it in here would make `git-worktrees:PATH`
-            # refuse a free worktree because GitHub was down.
-            return {STATE_IDLE: EXIT_IDLE,
-                    STATE_OCCUPIED: EXIT_OCCUPIED}.get(state, EXIT_UNKNOWN)
+    # The code is decided before the render so the render can disclose it. Every
+    # arm below is unchanged in what it returns (#1282's included); what is new
+    # is that the body names the integer and what produced it (#1496).
+    if wanted and len(rows) == 1:
+        state = rows[0][1].state
+        # The exit code stays a statement about *occupancy* only. A tracker
+        # that did not answer says nothing about whether the tree is safe
+        # to enter, and folding it in here would make `git-worktrees:PATH`
+        # refuse a free worktree because GitHub was down.
+        code = {STATE_IDLE: EXIT_IDLE,
+                STATE_OCCUPIED: EXIT_OCCUPIED}.get(state, EXIT_UNKNOWN)
+        why = ("the occupancy verdict for the one worktree asked about is "
+               f"`{state}` — the op itself did not fail")
+    elif wanted:
         # More than one row: the filter above is ancestor-or-descendant, so a
         # nested layout pulls in the trees above and below the named one and
         # the board is no longer about it. Returning the idle code here printed
@@ -915,8 +1063,17 @@ def main() -> int:
         # cleanup arm read that code as permission to delete the directory.
         # `cannot tell` is the only honest answer for a board of many, and it
         # is what the render already says.
-        return EXIT_UNKNOWN
-    return EXIT_IDLE
+        code = EXIT_UNKNOWN
+        why = (f"the PATH given matched {len(rows)} worktrees (the filter is "
+               "ancestor-or-descendant), so no row here is an answer about it "
+               "— the op itself did not fail")
+    else:
+        code = EXIT_IDLE
+        why = ("no PATH was given, so this is the whole board and the status is "
+               "not a verdict about any tree in it — read the rows; the op "
+               "itself did not fail")
+    print(render(rows, exit_note=_exit_note(code, why)))
+    return code
 
 
 if __name__ == "__main__":
