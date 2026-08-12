@@ -93,6 +93,12 @@ def parse_cclsp_diagnostics(text: str, file: str) -> list[dict]:
         return []
 
     errors: list[dict] = []
+    #: Remainders from lines that produced no record of their own. Kept, because
+    #: an absence produced by the tool is the defect this fix is about and the
+    #: first cut of it dropped them silently; attached to a record rather than
+    #: becoming one, because `count` is what `_validator_regressed` subtracts
+    #: and a fragment minting a record is #1486.
+    orphans: list[str] = []
     for physical in split_lines(text):
         # Only the first segment is parsed, and the remainder is disclosed
         # rather than dropped (#1500). Everything after an inline break is the
@@ -102,6 +108,11 @@ def parse_cclsp_diagnostics(text: str, file: str) -> list[dict]:
         line = head.strip()
         note = remainder_note(rest)
         if not line:
+            # Nothing the server framed precedes the break, so there is no
+            # diagnostic to place here and the fragment must not become one.
+            # It is still text the tool sent, so it is carried, not dropped.
+            if note:
+                orphans.append(note)
             continue
         # Pattern 1: "• [severity] message at line X, col Y" or "at X:Y"
         m = re.search(r"\[?\b(error|warning|info|hint)\b\]?\s*[:\s]*(.+?)(?:\s+at\s+line\s+(\d+)(?:[,\s]+(?:col(?:umn)?\s+)?(\d+))?|\s+(\d+):(\d+))\s*$",
@@ -120,6 +131,13 @@ def parse_cclsp_diagnostics(text: str, file: str) -> list[dict]:
             errors.append({"line": int(m.group(1)), "col": int(m.group(2)),
                            "severity": m.group(3).lower(),
                            "code": "lsp", "msg": m.group(4).strip() + note})
+    if orphans and errors:
+        # On the last record, not on the one each orphan happened to follow: the
+        # label already says the text is neither a location nor a finding, and
+        # threading provenance per record buys nothing a reader would act on.
+        # With no record at all they fall through to the advisory below, which
+        # carries the whole text verbatim.
+        errors[-1]["msg"] += "".join(orphans)
     if not errors:
         # Unrecognized but non-empty → keep the text as a single advisory
         if not text.startswith("diag:"):  # ignore supertool's own error messages

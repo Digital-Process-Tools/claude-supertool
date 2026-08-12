@@ -88,7 +88,13 @@ def test_index_at_the_page_cap_states_a_floor_not_a_total() -> None:
 def test_index_below_the_page_cap_is_an_unqualified_count() -> None:
     """The regression guard. Qualifying a number the reply *does* establish
     would be the same defect pointed the other way — a reader who cannot tell
-    `0 / 0` from `0 / at least 0` learns nothing from either."""
+    `0 / 0` from `0 / at least 0` learns nothing from either.
+
+    This and the two other `below_the_..._cap` cases below would pass with the
+    production change reverted, deliberately: what they pin is the half that had
+    to stay the same, and the failure mode they guard against is a fix that
+    hedges every number instead of the ones the reply cannot establish.
+    """
     line = _index([_thread(1), _thread(2, resolved=True)]).splitlines()[0]
     assert line == "Unresolved threads: 1 / 2", line
     assert "at least" not in line

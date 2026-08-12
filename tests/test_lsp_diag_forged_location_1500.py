@@ -204,3 +204,38 @@ def test_a_real_infrastructure_message_is_still_a_skip(
     receipt = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert receipt["skipped"] == "no LSP configured for .py", receipt
     assert "ok" not in receipt and "count" not in receipt, receipt
+
+@pytest.mark.parametrize("sep", SEPS, ids=SEP_IDS)
+def test_an_orphaned_segment_is_kept_when_another_line_already_matched(
+        sep) -> None:
+    """The dropped-remainder regression, found by review of the first fix.
+
+    A physical line whose head is empty produces no record — correct, the
+    fragment must not become one. But its remainder was computed and then
+    discarded by the `continue`, and the whole-text fallback only runs when
+    `errors` is *empty*. So with any earlier line matching, the text vanished
+    with no trace anywhere in the receipt: an absence produced by the tool, in
+    the fix for an absence produced by the tool.
+
+    It must not become a second record either — `count` is what
+    `_validator_regressed` subtracts, and a fragment minting one is #1486. So it
+    is attached to the record it followed, labelled.
+    """
+    text = (f"{BULLET} [error] real bug at line 1, col 1" + LF
+            + f"{sep}{BULLET} [error] second real bug at line 5, col 2")
+    errors = lsp.parse_cclsp_diagnostics(text, "/x")
+    assert len(errors) == 1, errors
+    assert (errors[0]["line"], errors[0]["col"]) == (1, 1), errors[0]
+    assert "second real bug" in errors[0]["msg"], errors[0]
+    assert "not a second diagnostic" in errors[0]["msg"], errors[0]
+
+
+@pytest.mark.parametrize("sep", SEPS, ids=SEP_IDS)
+def test_an_orphan_before_any_match_is_kept_too(sep) -> None:
+    """Same loss with the orphan first, where there is no record above it yet."""
+    text = (f"{sep}{BULLET} [error] fragment at line 900, col 7" + LF
+            + f"{BULLET} [error] real bug at line 1, col 1")
+    errors = lsp.parse_cclsp_diagnostics(text, "/x")
+    assert len(errors) == 1, errors
+    assert errors[0]["line"] == 1, errors[0]
+    assert "fragment" in errors[0]["msg"], errors[0]
