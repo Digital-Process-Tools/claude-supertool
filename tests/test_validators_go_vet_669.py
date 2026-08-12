@@ -375,6 +375,60 @@ def test_an_absolute_reported_path_needs_no_base() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The load-failure prefix, asserted from any platform
+# ---------------------------------------------------------------------------
+
+def _go_vet():
+    """The adapter as a module, so its parser can be fed captured output."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("go_vet_adapter", ADAPTER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+#: What `go vet` printed on the four windows-latest legs of PR #1443, copied
+#: from the job log. The go command names the *tool binary* in this prefix, and
+#: on Windows that binary is `vet.exe` — the only difference from the POSIX
+#: line below, path separator aside.
+WIN_LOAD_FAILURE = (
+    "# example.com/probe/pkg\n"
+    + r"vet.exe: .\a.go:3:12: undefined: definitelyNotDefined" + "\n")
+POSIX_LOAD_FAILURE = (
+    "# example.com/probe/pkg\n"
+    "vet: ./a.go:3:12: undefined: definitelyNotDefined\n")
+
+
+@pytest.mark.parametrize("output", [POSIX_LOAD_FAILURE, WIN_LOAD_FAILURE])
+def test_the_load_failure_prefix_is_recognised_under_either_binary_name(
+        tmp_path: Path, output: str) -> None:
+    """`vet:` on POSIX, `vet.exe:` on Windows — the same load failure.
+
+    The prefix is the only thing telling a package that does not type-check
+    from an ordinary vet diagnostic; it is go's own distinction and the sole
+    severity signal the text output carries. Miss it and the non-greedy path
+    group swallows `vet.exe: ` whole, so the finding is attributed to a file
+    whose name starts with `vet.exe: ` — which is not the file under
+    validation, so it is published as a *sibling*'s `warning`, and a package
+    that will not compile reads as a suspicious construct somewhere else.
+    Four red Windows legs on PR #1443, green on the other eighteen, from one
+    four-character difference.
+
+    Asserted by feeding the parser captured output rather than by branching on
+    `os.name`, so both shapes are pinned on every runner.
+    """
+    mod = _go_vet()
+    (tmp_path / "a.go").write_text(NO_TYPE_CHECK, encoding="utf-8")
+    errors = mod._parse(output, target=str(tmp_path / "a.go"), base=str(tmp_path))
+    assert len(errors) == 1, errors
+    err = errors[0]
+    assert err["severity"] == "error", err
+    assert err["code"] == "load", err
+    assert err["line"] == 3 and err["col"] == 12, err
+    assert err["msg"] == "undefined: definitelyNotDefined", err
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 

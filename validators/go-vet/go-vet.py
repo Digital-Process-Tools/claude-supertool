@@ -62,8 +62,17 @@ MAX_ERRORS = 50
 #: `./a.go:6:2: msg`, `pkg/a.go:6:2: msg`, `vet: a.go:3:12: msg`, and the
 #: Windows shapes of each. The path group is non-greedy so a drive letter's
 #: colon is not mistaken for the line separator.
+#:
+#: **The load prefix is the tool binary's own name, so on Windows it is
+#: `vet.exe: `.** Matching only `vet: ` there leaves the prefix inside the path
+#: group — the diagnostic then names a file called `vet.exe: .\a.go`, which is
+#: not the file under validation, so a package that does not compile is
+#: published as some sibling's `warning`. Four red windows-latest legs on PR
+#: #1443 and green on the other eighteen; `tests/test_validators_go_vet_669.py`
+#: pins both spellings from any runner.
 DIAG = re.compile(
-    r"^(?P<load>vet:\s+)?(?P<path>.+?):(?P<line>\d+):(?P<col>\d+):\s*(?P<msg>.*)$")
+    r"^(?P<load>vet(?:\.exe)?:\s+)?(?P<path>.+?):(?P<line>\d+):(?P<col>\d+):"
+    r"\s*(?P<msg>.*)$")
 
 
 def emit(d: dict) -> None:
