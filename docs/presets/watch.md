@@ -1130,6 +1130,30 @@ export SUPERTOOL_WATCH_NAME=b
 #   -> SUPERTOOL_WATCH_STATE_DIR = /tmp/supertool-watch-b   (created 0700)
 ```
 
+**`created 0700` used to be a claim about one moment and is now a claim about the
+directory (#1518).** `os.makedirs(..., mode=0o700, exist_ok=True)` applies its
+mode only when it is the caller that creates the leaf, and `exist_ok=True`
+adopts whatever already holds the name — through `os.path.isdir`, which follows
+symlinks. Since the derived leaf sits in world-writable `/tmp` under a public
+name, a symlink planted there was adopted and every pid and state file landed in
+the planter's directory. The leaf is now created non-recursively and then held
+open `O_RDONLY | O_DIRECTORY | O_NOFOLLOW`, `fchmod`ed and asked about its
+ownership and mode through that one descriptor (`presets/_image_root`, shared
+with `gl-issue`). A symlink, a reparse point, a file, another uid's directory, or
+a mode group or other can reach is a refusal that says which, and no poller slot
+is claimed there.
+
+**Not closed:** another local uid can still squat `/tmp/supertool-watch-<name>`
+ahead of you with a directory of their own; you get the refusal instead of a
+write into it, and that channel does not work until it is removed. The same
+residual `docs/presets/gitlab.md` discloses for the attachment root.
+
+On **Windows** there is no `O_NOFOLLOW` and no directory descriptor, so the check
+is `os.lstat` — which does not follow the final component — and the ownership and
+mode arms are skipped rather than faked, because `st_uid` is a constant there and
+the permission bits are synthesized. That branch is reasoned from CPython's
+documented behaviour, not observed on a Windows host.
+
 The name is one path component matching `^[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z` — a
 leading dot would hide the state directory from every listing, a leading dash
 reaches argv-shaped contexts, and 32 keeps the derived socket inside macOS's

@@ -932,7 +932,7 @@ supertool 'gh-issues:milestone=v0.27.0'    # what is in the next release
 
 5. **The manifest is bumped in the same release.** The updater compares manifest versions and nothing else, so a tag without it delivers to nobody already installed. Bump it or ship nothing.
 
-   **On `claude-supertool` the release edit is FIVE files**, and I learned the first four by reddening `master` with the release commit itself — `.claude-plugin/plugin.json`, the core `VERSION` (**`_supertool.py:119` as of v0.27.0, not `supertool.py`; the rename landed, so grep for the constant rather than the filename**, ~line 113), **`pyproject.toml`**, `CHANGELOG.md`, and `README.md`'s badge:
+   **On `claude-supertool` the release edit is FIVE files**, and I learned the first four by reddening `master` with the release commit itself — `.claude-plugin/plugin.json`, the core `VERSION` (**`_supertool.py:142` as of v0.38.0, not `supertool.py`; the rename landed, so grep for the constant rather than the filename** — this said `:119` and `~line 113`, both stale, and the only reason that cost nothing is that the same sentence says to grep), **`pyproject.toml`**, `CHANGELOG.md`, and `README.md`'s badge:
 
    ```
    FAILED tests.test_mcp_config_279.test_plugin_manifest_version_matches_code

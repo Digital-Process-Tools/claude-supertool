@@ -119,6 +119,21 @@ export SUPERTOOL_WATCH_NAME=oss
 #   -> SUPERTOOL_WATCH_STATE_DIR = /tmp/supertool-watch-oss   (created 0700)
 ```
 
+The state directory is created non-recursively, then held open
+`O_RDONLY | O_DIRECTORY | O_NOFOLLOW`, `fchmod`ed to `0700` and checked for
+ownership and mode through that descriptor — so `0700` is a fact about the
+directory the pollers write into rather than about the moment it was made
+(#1518; the same `presets/_image_root` boundary `gl-issue` uses). A symlink, a
+file, a foreign-owned directory or one group or other can still reach is a
+**refusal** naming which of those it was, and no poller slot is claimed there.
+
+**Not closed:** `/tmp` is world-writable and the derived name is public, so
+another local uid can take `/tmp/supertool-watch-<name>` before you do. You then
+get the refusal rather than a write into their directory, and that channel stays
+unusable until it is removed. That is the correct side of the trade and it is
+named, not fixed — the same residual `docs/presets/gitlab.md` discloses for the
+attachment root.
+
 It is an ordinary environment variable, so a non-reserved key in an op's
 `.supertool.json` block reaches it with no plumbing at all
 (`docs/contributing.md`, "Extra config keys as environment variables"):
