@@ -171,14 +171,21 @@ def test_a_skipping_hook_says_so_on_the_receipt(box) -> None:
     assert "PREPUSH_FULL=1" in out, "the override the hook named is part of it"
 
 
-def test_a_hook_that_writes_to_stderr_is_relayed_too(box) -> None:
-    """Most hooks in the wild write their advice to stderr. Relaying only
-    stdout would leave the same silence for them."""
+def test_a_hook_that_writes_to_stderr_is_relayed_but_not_attributed(box) -> None:
+    """Most hooks in the wild write their advice to stderr, so dropping that
+    stream would leave them exactly as silent as before. It cannot be claimed
+    for the hook either: git and the remote's own hooks write there too and
+    nothing marks where one stops, which is precisely what the `To` header
+    does on stdout. Relayed, with the provenance declined out loud."""
     box.install_hook(stderr_lines=["-- pre-push: 42 checks, all green --"])
     rc, out = box.drive_push()
     assert box.hook_ran
     assert rc == 0, out
     assert "42 checks, all green" in out
+    assert "provenance UNKNOWN" in out
+    relayed = [ln for ln in out.splitlines()
+               if "42 checks" in ln]
+    assert relayed and all(ln.startswith(">") for ln in relayed), relayed
 
 
 def test_gits_own_porcelain_block_is_not_attributed_to_the_hook(box) -> None:
@@ -312,6 +319,23 @@ def test_a_timeout_with_no_hook_does_not_apologise_for_a_missing_relay(
         push._report_push_timeout("fix/1", "c" * 40, "origin",
                                   "refs/heads/fix/1", set())
     assert "NOT part of this receipt" not in buf.getvalue()
+
+
+def test_a_hook_lookup_that_did_not_answer_is_not_a_hook_that_did_not_run(
+        box, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The third state on the arm the operator actually reads. `unknown` and
+    `none` differ by exactly the thing this receipt exists to stop implying —
+    that nothing gated the push."""
+    box.install_hook(stdout_lines=[BANNER])
+    monkeypatch.setattr(push, "_checked_git",
+                        lambda *a, **k: (None, "`git rev-parse` exited 128"))
+    rc, out = box.drive_push()
+    assert rc == 0, out
+    assert "UNKNOWN" in out
+    assert "rev-parse" in out
+    assert "not saying none did" in out
+    assert "Nothing gated this push locally" not in out
+    assert BANNER in out, "the relay does not depend on the lookup answering"
 
 
 # ---------------------------------------------------------------------------

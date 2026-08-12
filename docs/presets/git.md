@@ -502,7 +502,9 @@ Pre-push hook: ran (.githooks/pre-push)
 Status: pushed ✓
 ```
 
-The `|` lines are the hook's, verbatim. The op relays rather than summarises: reconstructing what the hook did from its own state lookup and the elapsed time would be the op asserting a fact it never observed, which is what it declines to do everywhere else. Provenance comes from process ordering, not from reading the words — git prints its `To <url>` porcelain header only after the hook has exited, so stdout above that header is the hook's and nothing below it is. If git printed no header, the receipt says the boundary is unknown rather than claiming the stream for the hook.
+The `|` lines are the hook's, verbatim. Its **stderr** is relayed too — many hooks write their advice there, and dropping the stream would leave those exactly as silent as before — but under `>` and under a heading that declines the provenance, because git and the remote's own hooks write to stderr as well and nothing marks where one stops. The `To` header is what makes stdout attributable; stderr has no equivalent, so the receipt says `provenance UNKNOWN` rather than guessing.
+
+The op relays rather than summarises: reconstructing what the hook did from its own state lookup and the elapsed time would be the op asserting a fact it never observed, which is what it declines to do everywhere else. Provenance comes from process ordering, not from reading the words — git prints its `To <url>` porcelain header only after the hook has exited, so stdout above that header is the hook's and nothing below it is. If git printed no header, the receipt says the boundary is unknown rather than claiming the stream for the hook.
 
 A long transcript — the `master` path is thousands of pytest lines — keeps its first three and last twelve, because a hook announces its arm on the first line and its outcome on the last. The elision names how many lines it dropped.
 

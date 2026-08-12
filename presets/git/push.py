@@ -886,14 +886,20 @@ def _split_hook_stdout(push_stdout: str) -> tuple[list[str], bool]:
 
 def _bounded_hook_lines(lines: list[str], head: int = _HOOK_HEAD_LINES,
                         tail: int = _HOOK_TAIL_LINES) -> list[str]:
-    """`lines`, elided in the middle if long — and never silently."""
+    """`lines`, elided in the middle if long — and never silently.
+
+    Both ends are kept rather than a tail, because both ends carry the answer:
+    a hook announces which arm it took on its first line and its outcome on its
+    last, and a pytest run names the failing tests in a summary at the very end.
+    The message itself says only what was dropped — this is also the generic
+    dump for a push git refused, where no hook need be involved at all.
+    """
     if len(lines) <= head + tail + 1:
         return lines
     return (lines[:head]
             + [f"... {len(lines) - head - tail} line(s) not shown - first "
-               f"{head} and last {tail} kept (a hook announces its arm first "
-               "and its outcome last); re-run the push by hand to see all "
-               "of it"]
+               f"{head} and last {tail} kept; re-run the push by hand to see "
+               "all of it"]
             + lines[-tail:])
 
 
@@ -955,9 +961,16 @@ def _report_prepush_hook(push_stdout: str, push_stderr: str,
     for ln in _bounded_hook_lines(out_lines):
         print(f"| {ln}")
     if err_lines:
-        print("  and on stderr, which git shares with the hook:")
+        # Relayed, but NOT under the hook's name. Three processes write to this
+        # stream — the hook, git, and the remote's own hooks through `remote:`
+        # — and unlike stdout there is no header marking where one stops. A
+        # hook that writes its advice to stderr is common enough that dropping
+        # the stream would leave those hooks exactly as silent as before, so it
+        # is relayed with its provenance stated as unknown rather than guessed.
+        print("  stderr for this push, provenance UNKNOWN - the hook, git and "
+              "the remote all write here and nothing marks the boundary:")
         for ln in _bounded_hook_lines(err_lines):
-            print(f"| {ln}")
+            print(f"> {ln}")
 
 
 def _repo_root() -> str:
