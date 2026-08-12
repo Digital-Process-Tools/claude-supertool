@@ -308,9 +308,18 @@ class TestDispatch:
 
 
 class TestThisRepoIsTheInstance:
-    """The three live partial overrides, pinned against the shipped files."""
+    """The live partial overrides, pinned against the shipped files.
 
-    def test_the_three_shadowed_ops_are_still_the_three(self) -> None:
+    The set is a register, not a limit: it grows when this repo deliberately
+    adds a config key to a shipped op. `watches` and `channel` joined on
+    2026-08-12 carrying `watch_name`, which is how #1477's channel name reaches
+    those two surfaces at all (`presets/watch/README.md`). Update the list with
+    the reason; never relax the assertion, because a shadowing entry that
+    nobody registered is exactly the stub-replacing-a-definition defect this
+    file exists for.
+    """
+
+    def test_the_shadowed_ops_are_still_the_registered_set(self) -> None:
         config = json.loads(
             (_ROOT / ".supertool.json").read_text(encoding="utf-8"))
         preset_ops: Dict[str, str] = {}
@@ -322,7 +331,9 @@ class TestThisRepoIsTheInstance:
                 preset_ops[op_name] = name
         shadowed = sorted(n for n, e in config["ops"].items()
                           if isinstance(e, dict) and n in preset_ops)
-        assert shadowed == ["dashboard", "git-diff", "radar"], shadowed
+        assert shadowed == [
+            "channel", "dashboard", "git-diff", "radar", "watches",
+        ], shadowed
 
     def test_a_naive_walk_loses_git_diff_from_the_path_naming_set(self) -> None:
         """The measurement in this file's docstring, re-derived. Retire this
