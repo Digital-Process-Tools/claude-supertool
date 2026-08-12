@@ -162,9 +162,12 @@ built-in ops → custom ops (including preset ops) → aliases. Built-ins always
 | `{dir}`     | Directory of `{file}`                             | `ls {dir}`                            |
 | `{arg}`     | First argument (one argv token)                   | `glab issue view {arg}`               |
 | `{args}`    | All arguments, expanded to N argv tokens          | `python3 tool.py {args}`              |
+| `{argjoin}` | All arguments rejoined with `:::`, one argv token  | `python3 tool.py {argjoin}`           |
 | `{path}`    | Preset directory with trailing `/` (presets only) | `python3 {path}gitlab/issue.py {arg}` |
 
 Use `{file}`/`{dir}` for file operations, `{arg}`/`{args}` for non-file arguments (issue numbers, job IDs, etc.).
+
+**`{file}`, `{dir}` and `{arg}` take exactly one token, and a token they cannot reach is now refused** ([#873](https://github.com/Digital-Process-Tools/claude-supertool/issues/873)). `op:all:dry` against `"cmd": "tool.py {arg}"` used to run as `argv == ["all"]` — the `:dry` vanished silently, which in the filed case meant a dry-run flag was dropped and the op pushed for real. The op is now declined before it runs, with the dropped text named. If your op takes more than one `:`-separated argument, write `{args}` (each token its own argv word) or `{argjoin}` (all tokens rejoined with `:::` as one word).
 
 ## Extra config keys as environment variables
 

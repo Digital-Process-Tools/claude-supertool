@@ -2753,16 +2753,19 @@ _PATH_SYNTAX_COMPONENTS = frozenset(("PATH", "PATHS", "FILE", "FILES"))
 _SYNTAX_TOKEN_RE = re.compile(r"[^A-Za-z0-9_]+")
 
 #: The core's own path placeholders in a `cmd` template. `{file}` is
-#: `parts[1]`; `{dir}` is its `os.path.dirname`. Both are substituted by
+#: `parts[1]` — the FIRST token only, and since #873 a caller token neither it
+#: nor `{arg}`/`{dir}` can reach is refused rather than dropped.
+#: `{dir}` is its `os.path.dirname`. Both are substituted by
 #: `_resolve_custom_op` below, so an op writing either has already told the
 #: core which argument it means a filesystem path to be — a stronger signal
 #: than a prose `syntax` string, and the one #1350 was filed about.
 #:
 #: `{arg}` is deliberately absent even though it substitutes the very same
-#: `parts[1]`. Twenty-four shipped ops carry `{arg}`; 8 of them name a path in
-#: `syntax` and are already held by `_syntax_names_a_path`, leaving 16 that
-#: pass a handle, a ref, a tag, an ID or a repo slug and take no path at all.
-#: Promoting `{arg}` would refuse those 16 and gate nothing. `{file}` and
+#: `parts[1]`. Twenty-one shipped ops carry `{arg}` (24 until #873 moved three
+#: multi-token ops to `{args}`); 8 of them name a path in `syntax` and are
+#: already held by `_syntax_names_a_path`, leaving 13 that pass a handle, a
+#: ref, a tag, an ID or a repo slug and take no path at all.
+#: Promoting `{arg}` would refuse those 13 and gate nothing. `{file}` and
 #: `{dir}` are the placeholders whose NAME is the claim; `{arg}` is the one
 #: that declines to make it. An op that means a path and writes `{arg}` is
 #: still ungated, and that is a naming problem in the op rather than a hole
@@ -2776,6 +2779,83 @@ _SYNTAX_TOKEN_RE = re.compile(r"[^A-Za-z0-9_]+")
 #: not say so, and such an op is invisible to a lint keyed on the `syntax`
 #: saying so. Pinned in `tests/test_arg_placeholder_and_paths_env_1357.py`.
 _PATH_CMD_PLACEHOLDERS = ("{file}", "{dir}")
+
+#: Placeholders that consume EVERY caller token — `parts[1:]`, all of it.
+_ALL_ARGS_PLACEHOLDERS = ("{args}", "{argjoin}")
+
+#: Placeholders that consume exactly `parts[1]` and nothing after it. `{dir}`
+#: is its `os.path.dirname`, which is still that one token.
+_ONE_ARG_PLACEHOLDERS = ("{file}", "{dir}", "{arg}")
+
+
+def _unconsumed_arg_tokens(cmd_template: str, parts: List[str]) -> List[str]:
+    """Caller tokens the `cmd` template has no placeholder to carry (#873).
+
+    The op string is split on every ':' before it gets here, so `parts` holds
+    everything the caller typed. What reaches the subprocess is whatever the
+    template asks for, and a template writing only `{file}`/`{dir}`/`{arg}`
+    asks for `parts[1]` — `op:all:dry` used to run as `argv == ["all"]` with
+    no warning, no error and no mention in the receipt. `:dry` was a safety
+    flag in the filed case: the op pushed for real while its caller read the
+    receipt as a dry run.
+
+    Returns [] when nothing is lost, which includes the case where every
+    unconsumed token is empty — `op:all:` carries no text to lose, and
+    refusing a bare trailing separator would be noise rather than disclosure.
+
+    **A template with NO argument placeholder is deliberately not held here**,
+    even though `op:x` against `"cmd": "make lint"` drops `x` just as silently.
+    That is a different claim: this op never said it takes an argument, so
+    nothing in its receipt can read as a flag that was honoured — which is the
+    specific harm #873 was filed about. It is also a much wider net: measured
+    on the full suite, 15 tests across 6 files hand a throwaway token to a
+    placeholder-free `cmd`, and `op_check` forwards its path to whatever entry
+    the caller named whether or not that entry can use one. Refusing there is
+    worth doing and is filed separately rather than ridden in on this diff.
+    """
+    if any(p in cmd_template for p in _ALL_ARGS_PLACEHOLDERS):
+        return []
+    if not any(p in cmd_template for p in _ONE_ARG_PLACEHOLDERS):
+        return []
+    extra = list(parts[2:])
+    return extra if any(extra) else []
+
+
+def _dropped_tokens_refusal(
+        op: str, entry: Any, cmd_template: str, dropped: List[str]) -> str:
+    """Name the text that will not be passed, and what would pass it.
+
+    Refused rather than passed through: widening a single-token placeholder to
+    the whole remainder would interpolate `parts[2:]` into `{file}`, a slot the
+    `"paths"` declaration gates at index 1 only — a second path arriving
+    downstream of the containment check, which is #1135's shape. It would also
+    change what every existing `{arg}` op receives. `{args}` is already the
+    pass-through, so the fix is to say which one the template asked for.
+    """
+    sep = _ARG_SEP[0] or ":"
+    used = [p for p in _ONE_ARG_PLACEHOLDERS if p in cmd_template]
+    reach = (f"substitutes {', '.join(used)}, which is the FIRST argument token "
+             f"and nothing after it"
+             if used else
+             "substitutes no argument placeholder, so no argument token reaches it")
+    syntax = entry.get("syntax") if isinstance(entry, dict) else None
+    lines = [
+        f"ERROR: op {op!r} was given {len(dropped)} argument token(s) its cmd "
+        f"cannot reach: {sep.join(dropped)!r}.",
+        f"       The template {reach}.",
+        "       Refused rather than dropped (#873): a discarded ':dry' once ran "
+        "an op in live mode",
+        "       while its receipt read as a dry run.",
+        "       To take every token, write {args} (one shell-quoted argv word "
+        "per token) or",
+        "       {argjoin} (every token rejoined with ':::' as a single "
+        "argument) in the cmd.",
+        "       To carry several fields inside the first token, separate them "
+        "with ',' or '|'.",
+    ]
+    if isinstance(syntax, str) and syntax:
+        lines.append(f"       This op documents: {syntax}")
+    return chr(10).join(lines) + chr(10)
 
 #: Preset ops that name a path and predate the declaration (#1287). **This set
 #: only ever shrinks.** It is not a policy — it is a debt register: 24 shipped
@@ -3390,6 +3470,17 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     _paths = _preset_path_containment(op, entry, parts)
     if _paths:
         return _paths
+
+    # #873 — a token the template cannot carry is refused, not discarded. Kept
+    # DOWNSTREAM of the containment gate above on purpose: this adds no path
+    # slot and moves none, and a call that both escapes the boundary and drops
+    # a token must still report the escape, which is the more severe of the
+    # two. Above the subprocess for the same reason as the gate — once the op
+    # has run under an argument list nobody asked for, the damage is done and
+    # its output is indistinguishable from the one the caller meant.
+    _dropped = _unconsumed_arg_tokens(cmd_template, parts)
+    if _dropped:
+        return _dropped_tokens_refusal(op, entry, cmd_template, _dropped)
 
     # Build the command — substitute {file}, {dir}, {arg}, {args}, {argjoin},
     # {python} in ONE pass. Chained str.replace calls would rescan the text a
