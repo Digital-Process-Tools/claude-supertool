@@ -487,9 +487,15 @@ def _git_version() -> str:
     return (r.stdout or "").strip() or "git (version unreadable)"
 
 
-def assert_esc_reached_the_render(out: str) -> None:
+#: how git spells an ESC it refuses to forward. `strbuf_add_sanitized()` emits
+#: `^` followed by `0x40 + the byte`, and 0x40 + 0x1B is `[`. Deriving it here
+#: rather than writing the two characters keeps the arithmetic checkable.
+CARET_ESC = "^" + chr(0x40 + 0x1B)
+
+
+def assert_esc_reached_the_render(out: str, marker: str) -> None:
     """The same positive assertion as U+2028, on a payload a transport may
-    refuse to carry — so it has three states rather than two.
+    refuse to carry — so it has four states rather than two.
 
     U+2028 is not a control character, so no git touches it. ESC is, and git
     2.55 added `strbuf_add_sanitized()` to `demultiplex_sideband()`: by
@@ -501,22 +507,44 @@ def assert_esc_reached_the_render(out: str) -> None:
     skip that says so — never a pass. A runner limit rendered as a product
     verdict is #1205 / #1218.
 
-    Three states, discriminated from the receipt alone:
+    **The skip is granted on evidence, never on an absence.** A first cut
+    skipped whenever no disclosure appeared, which would have turned a relay
+    that *deleted* an ESC — a real product defect, and the exact shape this
+    whole file exists to catch — into a green skip blaming somebody's git.
+    So the transport has to leave its fingerprint: git does not drop what it
+    refuses to forward, it caret-notates it, and `CARET_ESC` on the line
+    carrying `marker` is that fingerprint. No fingerprint and no disclosure
+    means the bytes went missing between the hook and the render, which is
+    ours, and it fails.
 
-    * a raw ESC in the receipt — the relay failed to flatten. A finding.
+    Four states, each on evidence rather than on its absence:
+
+    * a raw ESC in the receipt — the relay did not flatten. A finding.
     * the `[U+001B]` disclosure — an ESC reached the render and was
       flattened. The only outcome that proves anything.
-    * neither — the transport never delivered it. Skipped, naming the git.
+    * git's `CARET_ESC` on the relayed line — the transport refused to carry
+      it. Skipped, naming the git.
+    * none of the three — the ESC vanished in our own code. A finding.
     """
     assert ESC not in out, "an ESC relayed verbatim is a cursor command"
-    if "[U+001B]" in out or chr(0x241B) in out:
+    carrying = [ln for ln in out.splitlines() if marker in ln]
+    assert carrying, "no relayed line carries %r at all" % marker
+    if any("[U+001B]" in ln or chr(0x241B) in ln for ln in carrying):
         return
-    pytest.skip(
-        "%s did not deliver a raw ESC through the `remote:` sideband even "
-        "with sideband.allowControlCharacters=true, so nothing on this leg "
-        "exercised the relay's flattening of one; the local-hook ESC case "
-        "pins the same seam with no transport in front of it"
-        % _git_version())
+    if any(CARET_ESC in ln for ln in carrying):
+        pytest.skip(
+            "%s caret-notated the ESC (%r) instead of forwarding it through "
+            "the `remote:` sideband, even with "
+            "sideband.allowControlCharacters=true, so nothing on this leg "
+            "exercised the relay's flattening of one; the local-hook ESC "
+            "case pins the same seam with no transport in front of it"
+            % (_git_version(), CARET_ESC))
+    raise AssertionError(
+        "the ESC vanished between the hook and the render, and the transport "
+        "did not do it: %s leaves %r behind when it refuses to forward one, "
+        "and there is none on %r. A control character dropped instead of "
+        "disclosed is the defect this file exists to catch."
+        % (_git_version(), CARET_ESC, carrying))
 
 
 def test_the_remote_cannot_forge_a_result_line_through_the_stderr_relay(
@@ -545,7 +573,7 @@ def test_an_escape_sequence_from_the_remote_does_not_reach_the_terminal(
     rc, out = box.drive_push()
     assert rc == 0, out
     assert "erase-next" in out, "the line itself must still be relayed"
-    assert_esc_reached_the_render(out)
+    assert_esc_reached_the_render(out, "erase-next")
 
 
 def test_a_local_hooks_escape_sequence_does_not_reach_the_terminal(box) -> None:
@@ -553,9 +581,12 @@ def test_a_local_hooks_escape_sequence_does_not_reach_the_terminal(box) -> None:
 
     A local pre-push hook's stdout is inherited by git and captured by the op
     directly — it never crosses the sideband, so no git version sanitises it
-    and this pins the flattening on all 22 legs unconditionally. The remote
-    case above is the one that matters for *who chooses the bytes*; this one
-    is the one that cannot be taken away by a git release.
+    and this pins the flattening on all twelve pytest legs unconditionally
+    (3 OS x 4 Python, `.github/workflows/tests.yml`; the 22 checks on a PR
+    include coverage and the notifier jobs, which is a different count).
+
+    The remote case above is the one that matters for *who chooses the
+    bytes*; this one is the one no git release can take away.
     """
     box.install_hook(stdout_lines=[BANNER,
                                    "erase-prev:" + ESC + "[2K" + ESC + "[1A"])
@@ -633,7 +664,7 @@ def test_the_first_error_line_cannot_carry_an_escape_sequence(box) -> None:
     rc, out = box.drive_push()
     assert rc != 0, out
     assert "error: refused" in out
-    assert_esc_reached_the_render(out)
+    assert_esc_reached_the_render(out, "error: refused")
 
 
 # ---------------------------------------------------------------------------
