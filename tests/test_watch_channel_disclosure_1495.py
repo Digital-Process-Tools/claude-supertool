@@ -134,9 +134,28 @@ def test_a_name_is_flattened_before_it_reaches_a_board() -> None:
     assert "\nradar: all fine" not in _blob(resolved)
 
 
-def test_one_accessor_so_the_two_boards_cannot_disagree() -> None:
-    assert transport.channel_disclosure() == naming.disclosure_lines(
-        transport.RESOLVED)
+def test_one_accessor_so_the_two_boards_cannot_disagree(
+        monkeypatch, tmp_path, capsys) -> None:
+    """Asserted over the two *renders*, not over the accessor's own body.
+
+    The first version of this compared `transport.channel_disclosure()` with
+    `naming.disclosure_lines(transport.RESOLVED)` — which is that function's one
+    line, so it held for any content whatsoever, including none. The claim worth
+    pinning is that `radar` and `watches` put the same resolution in front of a
+    reader, which is what "cannot disagree" means to the operator.
+    """
+    monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(transport, "scan_poller_pids", lambda: ({}, True))
+    monkeypatch.setattr(transport, "ps_scan_supported", lambda: True)
+    monkeypatch.setattr(transport, "RESOLVED", naming.resolve(STALE_OVERRIDE))
+
+    body = [line[len("radar: "):] for line in radar.channel_banner()]
+    assert body, "the named channel produced no disclosure at all"
+
+    assert dispatcher.cmd_list() == 0
+    watches_out = capsys.readouterr().out
+    for line in body:
+        assert f"watches: {line}" in watches_out, (line, watches_out)
 
 
 # --- watches ----------------------------------------------------------------

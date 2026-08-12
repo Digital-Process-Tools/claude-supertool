@@ -1564,6 +1564,25 @@ socket` is never printed when files were present and unread. Declining the
 whole listing on one bad file was the alternative and is the worse trade: a
 single `ln -s` in `/tmp` would then erase every other watcher from the report.
 
+**The directory is the fourth reading and was missed the first time**
+([#1502](https://github.com/Digital-Process-Tools/claude-supertool/issues/1502)).
+The three states above are all about individual *files*; the listing that
+produces them had two, because an absent directory and one that could not be
+listed both came back as an empty list and the render then printed `none
+recorded an emit into this socket`. On a freshly named channel that is the
+normal state — only a spawn creates the derived directory — and this arm is
+where such a channel lands, so the strongest false claim on the report was also
+the likeliest one. It now says which:
+
+```
+  watchers : not established — the state directory /tmp/supertool-watch-oss does not
+             exist yet, so nothing has ever spawned on this channel
+```
+
+`naming.state_dir_listing` is the single classifier, shared with `transport.py`,
+because the two files enumerate the same directory and the first fix for #1502
+was scoped to one of them.
+
 **An unread row is not claimed for this socket.** The readable rows are
 filtered by the `sock_path` each watcher publishes, but that field is *inside*
 the file, so a file that could not be read cannot be attributed to this socket

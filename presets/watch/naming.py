@@ -187,6 +187,68 @@ def state_dir_provenance(resolved: Resolved) -> str:
     return (f"the default; {NAME_ENV} or {STATE_DIR_ENV} would move it")
 
 
+#: What a scan of the state directory established about the directory itself.
+#: Three states, not two, because a name derives a directory only a *spawn*
+#: creates (`ensure_state_dir`) while the default is `/tmp`, which always exists:
+#: `os.listdir` was unreachable-by-luck on the default and raised on the first
+#: read after naming a channel (#1502).
+#:
+#: `ABSENT` is a knowable fact about the world — zero watchers, nothing has ever
+#: spawned on this channel. `UNREADABLE` is the admission that the population is
+#: unknown. A reader that collapses the second into the first prints a claim
+#: about the fleet on the strength of a listing that never happened, which is
+#: this preset's most-filed defect.
+STATE_DIR_OK = "ok"
+STATE_DIR_ABSENT = "absent"
+STATE_DIR_UNREADABLE = "unreadable"
+
+
+def state_dir_listing(state_dir: str) -> tuple[list[str], str, str]:
+    """(sorted entries, one of the three states above, why not). Creates nothing.
+
+    Here rather than in `transport`, because `transport` and `channel` both
+    enumerate this directory and `channel.py` already says of it that "a second
+    convention for it would be one more thing to keep in step". Two copies of a
+    three-state classifier is two places to get it wrong, and #1502's first fix
+    was scoped to `transport.py` while `channel.stranded_watchers` still turned
+    an unlistable directory into `none recorded an emit into this socket`.
+
+    Takes the directory rather than reading a module constant: each module
+    resolves its own, and the tests monkeypatch each module's.
+
+    It creates nothing. Manufacturing the directory on a read would give a read
+    side effects and resurrect #693 for an operator-supplied
+    `SUPERTOOL_WATCH_STATE_DIR`, which is why only a *derived* one is created and
+    only on the spawn path.
+    """
+    try:
+        return sorted(os.listdir(state_dir)), STATE_DIR_OK, ""
+    except FileNotFoundError:
+        return [], STATE_DIR_ABSENT, ""
+    except OSError as err:
+        # A file at the name (`NotADirectoryError` on POSIX and on Windows), a
+        # mode that excludes this uid, a vanished mount. All the same answer: it
+        # is there and the population could not be established. `FileNotFoundError`
+        # is caught above and is not reachable here, which is what keeps "nothing
+        # spawned yet" from absorbing "could not look".
+        return [], STATE_DIR_UNREADABLE, (
+            f"{state_dir} could not be listed ({type(err).__name__})")
+
+
+def state_dir_absence_note(state_dir: str, state: str, why: str) -> str:
+    """One sentence for a reader whose listing found nothing, or "" for `ok`.
+
+    Shared so the two surfaces that say it cannot word it differently, and so a
+    third one cannot omit it.
+    """
+    if state == STATE_DIR_ABSENT:
+        return (f"the state directory {state_dir} does not exist yet, so nothing "
+                f"has ever spawned on this channel")
+    if state == STATE_DIR_UNREADABLE:
+        return f"{why}, so nothing here is evidence of absence"
+    return ""
+
+
 def disclosure_lines(resolved: Resolved) -> list[str]:
     """The channel this process is on, for any surface that renders a board.
 

@@ -535,10 +535,11 @@ def stranded_watchers(path: str) -> list[Stranded]:
     still never renders "I could not look" as "there was nothing to see".
     """
     rows: list[Stranded] = []
-    try:
-        names = sorted(os.listdir(STATE_DIR))
-    except OSError:
-        return rows
+    # The directory-level answer is `_render_stranded`'s to report — that is
+    # where the sentence about the population is written — so this only needs the
+    # names, and it needs them from the one classifier rather than a second local
+    # `except OSError` that could disagree with it (#1502).
+    names, _dir_state, _dir_why = naming.state_dir_listing(STATE_DIR)
     for name in names:
         if not (name.startswith("supertool-watch-") and name.endswith(".state.json")):
             continue
@@ -575,10 +576,22 @@ def _render_stranded(path: str) -> list[str]:
     any byte but `/` and NUL, newline included — so all three go through
     `_untrusted` (#1191, same boundary as #1187).
     """
+    # #1191 gave every unreadable *file* its own line and left the directory
+    # itself with two states: `stranded_watchers` returns `[]` both for a
+    # directory that held no state file and for one it could not list at all. On
+    # a freshly named channel the second is the normal case — only a spawn
+    # creates the derived directory — and this arm is exactly where such a
+    # channel lands, so the strongest false claim on the report was also the
+    # likeliest (#1502). Classified before the rows are read, because the
+    # sentence below is a claim about the population and not about any file.
+    _names, dir_state, dir_why = naming.state_dir_listing(STATE_DIR)
+    declined = naming.state_dir_absence_note(STATE_DIR, dir_state, dir_why)
     rows = stranded_watchers(path)
     found = [row for row in rows if not row.refusal]
     refused = [row for row in rows if row.refusal]
     if not found and not refused:
+        if declined:
+            return [f"  watchers : not established — {declined}"]
         return ["  watchers : none recorded an emit into this socket"]
 
     if found:

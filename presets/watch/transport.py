@@ -754,44 +754,27 @@ def emit_event(
         desktop_notify(_untrusted.flat(notify_title), _untrusted.flat(notify_message))
 
 
-#: What a scan of `STATE_DIR` established about the directory itself. Three
-#: states, not two, because a name derives a directory only a *spawn* creates
-#: (`naming.ensure_state_dir`) and the default is `/tmp`, which always exists:
-#: `os.listdir` here was unreachable-by-luck on the default and raised on the
-#: first read after naming a channel (#1502).
-#:
-#: `ABSENT` is a knowable fact about the world — zero watchers, nothing has ever
-#: spawned on this channel. `UNREADABLE` is the admission that the population is
-#: unknown, and a board that renders it as `ABSENT` is the absence-read-as-
-#: presence defect this preset keeps filing.
-STATE_DIR_OK = "ok"
-STATE_DIR_ABSENT = "absent"
-STATE_DIR_UNREADABLE = "unreadable"
+#: Re-exported from `naming`, which owns the classifier because `channel.py`
+#: enumerates the same directory (#1502). Aliases rather than copies: two
+#: spellings of a three-state answer is two places for them to drift apart.
+STATE_DIR_OK = naming.STATE_DIR_OK
+STATE_DIR_ABSENT = naming.STATE_DIR_ABSENT
+STATE_DIR_UNREADABLE = naming.STATE_DIR_UNREADABLE
 
 
 def _state_dir_names() -> tuple[list[str], str, str]:
     """(sorted entries of `STATE_DIR`, one of the three states above, why not).
 
-    The single enumeration idiom for this directory. Every reader here goes
-    through it, so a state directory no spawn has created cannot raise out of
-    any of them — which is what `radar:--state` used to survive by never
-    enumerating at all, luck rather than a guard.
+    The single enumeration idiom in this module. Every reader here goes through
+    it, so a state directory no spawn has created cannot raise out of any of
+    them — which is what `radar:--state` used to survive by never enumerating at
+    all, luck rather than a guard. The classification itself is
+    `naming.state_dir_listing`, shared with `channel.py`.
 
-    It creates nothing. Manufacturing the directory on a read would give a read
-    side effects and resurrect #693 for an operator-supplied
-    `SUPERTOOL_WATCH_STATE_DIR`, which is the reason only a *derived* one is
-    ever created and only on the spawn path.
+    `STATE_DIR` is read at call time rather than passed, because callers
+    monkeypatch this module's constant.
     """
-    try:
-        return sorted(os.listdir(STATE_DIR)), STATE_DIR_OK, ""
-    except FileNotFoundError:
-        return [], STATE_DIR_ABSENT, ""
-    except OSError as err:
-        # A file at the name (`NotADirectoryError` on POSIX and on Windows), a
-        # mode that excludes this uid, a vanished mount. All the same answer:
-        # it is there and the population could not be established.
-        return [], STATE_DIR_UNREADABLE, (
-            f"{STATE_DIR} could not be listed ({type(err).__name__})")
+    return naming.state_dir_listing(STATE_DIR)
 
 
 def state_dir_status() -> tuple[str, str]:

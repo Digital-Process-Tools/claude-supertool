@@ -374,9 +374,13 @@ def cmd_list() -> int:
                 print(_scan_unavailable_reason())
             return 0
         if dir_state == transport.STATE_DIR_UNREADABLE:
-            # The WARNING above is the whole answer. `No active watchers` would
-            # be a claim about the fleet made on the strength of a listing that
-            # never ran.
+            # The WARNING above is the whole answer about the directory. `No
+            # active watchers` would be a claim about the fleet made on the
+            # strength of a listing that never ran — but the process scan is a
+            # *second*, independent gap, and reporting one of two blindnesses is
+            # how a board starts lying quietly. Both arms disclose it.
+            if not scan_ok:
+                print(_scan_unavailable_reason())
             return 0
         if not scan_ok:
             print("No watchers by PID file — and the process scan was "

@@ -33,6 +33,7 @@ for _dir in (str(WATCH_DIR), str(REPO / "presets"), str(REPO / "tests")):
     if _dir not in sys.path:
         sys.path.insert(0, _dir)
 
+import naming  # noqa: E402
 from _changelog_findable import assert_change_is_findable  # noqa: E402
 
 
@@ -46,6 +47,7 @@ def _module(name: str, path: Path):
 
 dispatcher = _module("watch_dispatcher_1502", WATCH_DIR / "dispatcher.py")
 transport = dispatcher.transport
+channel = _module("watch_channel_1502", WATCH_DIR / "channel.py")
 
 
 def _quiet_fleet(monkeypatch) -> None:
@@ -211,25 +213,86 @@ def test_an_absent_directory_still_discloses_an_unavailable_process_scan(
     assert "process scan" in out, out
 
 
+# --- the same class one file over -------------------------------------------
+#
+# `channel.stranded_watchers` never raised — it has caught `OSError` since #1191
+# — so it is not the #1502 crash. It is the #1502 *reading*: the guard returns an
+# empty list for a directory that is absent and for one that could not be read,
+# and `_render_stranded` then prints `none recorded an emit into this socket`,
+# which is a claim about the fleet built on a listing that never happened. The
+# per-file third state was the whole of #1191 and the directory-level one was
+# left out, so the surface most likely to be read on a fresh named channel — the
+# `no-listener` arm, which is where a channel with nothing spawned lands — makes
+# the strongest false claim.
+
+
+def _stranded_over(monkeypatch, state_dir: str) -> list[str]:
+    monkeypatch.setattr(channel, "STATE_DIR", state_dir)
+    return channel._render_stranded("/tmp/whatever.sock")
+
+
+def test_the_watcher_listing_declines_over_an_absent_state_directory(
+        monkeypatch, tmp_path) -> None:
+    lines = _stranded_over(monkeypatch, str(_absent(tmp_path)))
+    blob = "\n".join(lines)
+    assert "none recorded an emit into this socket" not in blob, blob
+    assert "does not exist" in blob, blob
+
+
+def test_the_watcher_listing_declines_over_an_unreadable_state_directory(
+        monkeypatch, tmp_path) -> None:
+    def boom(_path):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(channel.os, "listdir", boom)
+    blob = "\n".join(_stranded_over(monkeypatch, str(tmp_path)))
+    assert "none recorded an emit into this socket" not in blob, blob
+    assert "could not be listed" in blob, blob
+
+
+def test_a_present_empty_state_directory_still_records_no_emit(
+        monkeypatch, tmp_path) -> None:
+    """The negative control. A directory that exists and holds no state file is
+    a real, established `none recorded an emit` — that answer must survive."""
+    lines = _stranded_over(monkeypatch, str(tmp_path))
+    assert lines == ["  watchers : none recorded an emit into this socket"], lines
+
+
 # --- the sweep --------------------------------------------------------------
 
-def test_every_state_dir_enumeration_in_transport_is_guarded() -> None:
+def test_every_state_dir_enumeration_in_the_preset_is_classified() -> None:
     """`radar:--state` survived this by never enumerating, which is luck rather
-    than a guard. The named class is an unguarded enumeration, so the file is
-    swept for the class rather than for the one instance that was reported."""
-    text = (WATCH_DIR / "transport.py").read_text(encoding="utf-8")
-    tree = ast.parse(text)
-    guard = next(node for node in ast.walk(tree)
-                 if isinstance(node, ast.FunctionDef)
-                 and node.name == "_state_dir_names")
-    span = range(guard.lineno, (guard.end_lineno or guard.lineno) + 1)
-    outside = [f"transport.py:{n}: {line.strip()}"
-               for n, line in enumerate(text.splitlines(), 1)
-               if "os.listdir(" in line and n not in span]
-    assert outside == [], (
+    than a guard. So the preset is swept for the class rather than for the one
+    instance that was reported — and scoped to the whole directory, not to
+    `transport.py`, because the first version of this test was scoped to the one
+    file and passed while `channel.py` still held the identical pattern.
+
+    One classifier, so no reader can invent a fourth answer or collapse absent
+    into unreadable. `naming.state_dir_listing` is the only place `os.listdir`
+    may name the state directory.
+    """
+    classifier = WATCH_DIR / "naming.py"
+    findings = []
+    for path in sorted(WATCH_DIR.rglob("*.py")):
+        if path == classifier:
+            continue
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if "os.listdir(" in line:
+                findings.append(
+                    f"{path.relative_to(WATCH_DIR).as_posix()}:{n}: {line.strip()}")
+    assert findings == [], (
         "every enumeration of the state directory must go through "
-        "`_state_dir_names`, so a directory no spawn has created cannot raise "
-        "out of any reader: " + str(outside))
+        "`naming.state_dir_listing`, which is the only thing that can tell a "
+        "directory nothing has spawned into from one that could not be read: "
+        + str(findings))
+
+
+def test_the_classifier_is_shared_rather_than_reimplemented() -> None:
+    """Two copies of a three-state classifier is two places to get it wrong, and
+    `channel.py` already says of this directory that "a second convention for it
+    would be one more thing to keep in step"."""
+    assert transport.STATE_DIR_ABSENT == naming.STATE_DIR_ABSENT
+    assert transport.STATE_DIR_UNREADABLE == naming.STATE_DIR_UNREADABLE
+    assert transport.STATE_DIR_OK == naming.STATE_DIR_OK
 
 
 def test_the_change_is_findable() -> None:
