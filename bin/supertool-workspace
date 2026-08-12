@@ -1,0 +1,48 @@
+#!/bin/sh
+# Open a Claude session over THIS clone's radar, with the watch channel armed.
+#
+# Two things have to be true at once and neither is the default:
+#
+#   * `radar` reads its tiers from the CWD's project root, so the directory IS
+#     the board selection — started anywhere else it opens some other repo's
+#     radar, or refuses.
+#   * `<channel>` events only reach a session started with the development
+#     channel flag. Without it the pollers still spawn and still emit, and
+#     nothing reads them: a board that looks armed and delivers nothing.
+#
+# The clone is resolved from this script's own location, never from $HOME, so a
+# symlink into ~/.local/bin works for any checkout — the same route `supertool`
+# already takes. Install:
+#
+#     ln -sf "$PWD/bin/supertool-workspace" ~/.local/bin/supertool-workspace
+#
+# Check delivery once inside, before trusting a green board:
+#
+#     supertool 'channel:health'      # FORWARDING | NOT DELIVERING | CANNOT DETERMINE
+#
+# Any arguments are passed through to `claude`.
+set -eu
+
+# `dirname "$0"` on the symlink gives ~/.local/bin, so read the link first.
+# `readlink -f` is not portable to macOS's stock readlink; walk it instead.
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *)  self=$(dirname "$self")/$link ;;
+    esac
+done
+root=$(CDPATH= cd -- "$(dirname -- "$self")/.." && pwd -P)
+
+if [ ! -f "$root/.supertool.json" ]; then
+    echo "supertool-workspace: $root is not a supertool project root" >&2
+    echo "  (no .supertool.json — this script must stay inside the clone it opens)" >&2
+    exit 1
+fi
+
+cd "$root"
+exec claude \
+    --dangerously-load-development-channels server:claude-channel \
+    "$@" \
+    "/opensource-manager"
