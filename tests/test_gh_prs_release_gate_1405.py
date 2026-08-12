@@ -27,11 +27,11 @@ identity now, not as a clock.
 
 ## The fold
 
-`gh-since-tag` is retired into `gh-prs:merged-since=TAG`. The tests for the
+`gh-since-tag` is deleted into `gh-prs:merged-since=TAG`. The tests for the
 judgement that moved — boundary resolution, the reconcile, the fragment count —
-stay in `tests/test_github_since_tag_1209.py` against `_release_gate`, which is
-the same code under a new name. What is new here is the boundary's identity rule
-and the module surface `gh-prs` consumes.
+stay in `tests/test_release_gate_boundary_1209.py` against `_release_gate`,
+which is the same code under a new name. What is new here is the boundary's
+identity rule and the module surface `gh-prs` consumes.
 """
 from __future__ import annotations
 

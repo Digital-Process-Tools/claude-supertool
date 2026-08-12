@@ -377,12 +377,54 @@ def test_a_date_boundary_says_the_gate_did_not_apply_rather_than_staying_silent(
 
 
 # ---------------------------------------------------------------------------
-# 6. The retired op still answers, rather than becoming an unknown token
+# 6. The op is deleted, and the NAME still teaches its substitute
 # ---------------------------------------------------------------------------
 
-def test_gh_since_tag_is_gone_from_the_registry_as_a_working_op() -> None:
+def test_gh_since_tag_is_gone_from_the_registry_and_from_disk() -> None:
+    """Deleted, not deprecated. No entry, no file, no `{python} ... {args}`."""
     import json
     registry = json.loads((PRESETS / "github.json").read_text(encoding="utf-8"))
-    entry = registry["ops"]["gh-since-tag"]
-    assert entry["description"].startswith("RETIRED")
-    assert "merged-since=" in entry["description"]
+    assert "gh-since-tag" not in registry["ops"]
+    assert not (PRESETS / "github" / "since_tag.py").exists()
+
+
+def test_the_deleted_name_still_names_its_substitute() -> None:
+    """A deletion and a hole differ by exactly this line.
+
+    Without it, `gh-since-tag` answers `unknown operation` followed by 42
+    builtin names, none of which is the answer — the tool under-reporting its
+    own capability, which is what #614 and #1334 are both about. `_OP_SYNONYMS`
+    is the existing mechanism and it needed no new machinery: `_near_miss_ops`
+    already searches builtins PLUS the loaded config's ops, so a preset target
+    resolves. What blocked it was the pinning test in
+    `tests/test_refusals_name_the_next_op_1334.py`, which measured targets
+    against builtins alone; it now admits shipped preset ops and keeps the same
+    guarantee.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "st_for_1405", PRESETS.parent / "_supertool.py")
+    assert spec is not None and spec.loader is not None
+    st = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(st)
+
+    assert st._OP_SYNONYMS.get("gh-since-tag") == "gh-prs"
+    # And the target is real — a synonym pointing at nothing is the hole again.
+    assert "gh-prs" in st._shipped_preset_ops()
+
+
+def test_the_substitute_is_an_op_name_so_the_invocation_lives_where_it_lands() -> None:
+    """A synonym carries a NAME; the release gate needs a whole invocation.
+
+    `write -> paste` is a complete answer. `gh-since-tag -> gh-prs` is not: the
+    caller still needs `merged-since=TAG,state=merged`. Rather than widening
+    the synonym table into a second mechanism, the rest of the sentence sits
+    where the pointer sends them — so `gh-prs`'s syntax line and the opening of
+    its description both carry it, and this test is what stops that rotting.
+    """
+    import json
+    registry = json.loads((PRESETS / "github.json").read_text(encoding="utf-8"))
+    entry = registry["ops"]["gh-prs"]
+    assert "merged-since=TAG,state=merged" in entry["syntax"]
+    assert "merged-since=TAG,state=merged" in entry["description"][:400]
+    assert "gh-since-tag" in entry["description"][:400]

@@ -33,9 +33,11 @@ sys.path.insert(0, str(PRESETS / "github"))
 import _filter_tokens  # noqa: E402
 import prs  # noqa: E402
 
-# #1405 folded `gh-since-tag` into this filter and retired the op. `since_tag.py`
-# is a tombstone; the module these tests are about is `_release_gate.py`, which
-# is the same file under a new name. TWO ASSERTIONS BELOW ARE DELIBERATELY
+# #1405 folded `gh-since-tag` into this filter and DELETED the op —
+# `presets/github/since_tag.py` and its registry entry are both gone, and the
+# name is kept pointing at `gh-prs` by `_supertool._OP_SYNONYMS`. The module
+# these tests are about is `_release_gate.py`, which is that file under a new
+# name. TWO ASSERTIONS BELOW ARE DELIBERATELY
 # REVERSED by that fold and say so where they sit — they were right for the
 # shape #1411 left behind and they are wrong for this one.
 _spec = importlib.util.spec_from_file_location(

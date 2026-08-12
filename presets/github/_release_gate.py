@@ -814,7 +814,7 @@ def resolve_boundary(requested: str = "") -> Boundary:
     downstream is a listing rather than a verdict and a listing has no way to
     carry "this is not a trigger input".
 
-    Local reads only, and the same ones the retired op made: `git rev-parse`
+    Local reads only, and the same ones the deleted op made: `git rev-parse`
     for the default branch, `for-each-ref` + `tag --merged` for the tags. It
     still never fetches — a stale `origin/master` is disclosed as the source
     rather than corrected.
@@ -924,7 +924,7 @@ def not_applicable_note() -> list:
 def gate_exit(boundary_state: str, count_state: str) -> int:
     """`0` only when the boundary RESOLVED **and** the count is EXACT.
 
-    The retired op's contract, kept across the fold because it is the release
+    The deleted op's contract, kept across the fold because it is the release
     trigger's actual answer and a script can gate on it. It was very nearly
     dropped here: an ordinary `gh-prs` board always exits 0, and inheriting
     that would have put the strongest available statement of "go" next to

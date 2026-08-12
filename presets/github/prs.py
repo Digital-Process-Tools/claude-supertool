@@ -240,7 +240,7 @@ def _gate_plan(filters: dict[str, str]) -> "_GatePlan | None":
 def _tag_target_conflict(value: str, target: object) -> "str | None":
     """`merged-since=TAG` under `repo:OWNER/NAME` — refused, not half-honoured.
 
-    The retired op refused a repo target outright and the hazard did not
+    The deleted op refused a repo target outright and the hazard did not
     disappear when the code moved here, it just landed on the op with the most
     callers. Measured before that refusal existed: one repository's tag as the
     boundary, another's merge count against it, and the first one's fragment

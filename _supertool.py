@@ -2021,10 +2021,26 @@ def _valid_op_names() -> List[str]:
 # of it.
 # `vi` — lingers in `_BUILTIN_OPS` from before the op was renamed `vim`, and no
 # branch handles it; `_valid_op_names()` drops it for that reason.
+# `gh-since-tag` — deleted in #1405, folded into `gh-prs` as the `merged-since=`
+# filter. The strongest receipt available: the name did not drift, the op was
+# removed into this one. It is the first entry whose target is a PRESET op
+# rather than a builtin, which `_near_miss_ops` already supported — its
+# candidate set is `_valid_op_names()` PLUS the loaded config's ops — while the
+# table's pinning test measured targets against builtins alone. That test now
+# admits shipped preset ops, from `_shipped_preset_ops()`, so it keeps exactly
+# the guarantee it had: a target that is renamed or dropped still fails it.
 #
 # Additions belong here only with that kind of receipt. Anything inferable is
 # inferred below instead, where the rule can be stated and argued with.
-_OP_SYNONYMS = {"write": "paste", "vi": "vim"}
+#
+# **A synonym carries a NAME, not an invocation.** `write -> paste` is a whole
+# answer because `paste` alone is what the caller wanted. `gh-since-tag ->
+# gh-prs` is not: the board is the right op and `merged-since=TAG,state=merged`
+# is the rest of the sentence, and this table has nowhere to put it. What
+# closes that gap is `_shipped_preset_ops()`'s own description, which the
+# unknown-op message already prints for a preset op, so the registry entry for
+# `gh-prs` names the filter in its first two lines rather than burying it.
+_OP_SYNONYMS = {"write": "paste", "vi": "vim", "gh-since-tag": "gh-prs"}
 
 # The ops that bring a file into existence, in the order a refusal should offer
 # them (#1334, #1372). `paste` writes a whole file and its parent dirs; `append`
