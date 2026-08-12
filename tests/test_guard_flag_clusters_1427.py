@@ -11,14 +11,15 @@ refusal pushes *the current branch to its own upstream* - a ref nobody named.
 
 `git commit --dry-run` is the same shape and was found while fixing it.
 
-**Clustered short flags defeated every exclusion.** `_guard_excluded` compared
+**Clustered short flags defeated every exclusion.** `_guard_is_exclusion`
+(`_guard_excluded` when this was written) compared
 `token.split("=", 1)[0]` against the list, so `-sb` was not `-s` even though
 `-sb` is the common spelling of the intent `-s` was excluded for. That gap
 existed for every short flag on every entry, present and future, so it is
 fixed in the matcher rather than enumerated per entry.
 
 Widening an exclusion makes the guard block *less*, which is the direction it
-is allowed to be wrong in (`_guard_excluded`'s own docstring): a wrong block
+is allowed to be wrong in (`_guard_is_exclusion`'s own docstring): a wrong block
 has no per-command escape, a missed block costs a raw call. That is the whole
 argument for doing it in the mechanism, and the reason the same treatment is
 NOT given to the positive `flag` matcher, where it would block more.
