@@ -55,7 +55,8 @@ INSTALL_HINT = ("go not found on PATH — this package was NOT vetted "
                 "(install the Go toolchain from https://go.dev/dl/)")
 TIMEOUT = 60
 #: More findings than anyone reads in a post-edit receipt. `count` still
-#: reports the full number.
+#: reports the full number, and the cut is disclosed in the last published
+#: slot rather than left for a reader to infer by comparing two numbers.
 MAX_ERRORS = 50
 
 #: `./a.go:6:2: msg`, `pkg/a.go:6:2: msg`, `vet: a.go:3:12: msg`, and the
@@ -107,6 +108,19 @@ def _unplaceable(reported: str, line: str, col: str, msg: str) -> dict:
                    f"not tell whether that is the file under validation: {msg}"}
 
 
+def _truncation_notice(hidden: int) -> dict:
+    """The cut, said out loud.
+
+    A capped list read as a whole list is this repo's own defect in miniature:
+    an absence the adapter produced, indistinguishable from an absence in the
+    package. `count` carries the real total, but nobody compares a number at
+    the top of a receipt against the number of rows underneath it.
+    """
+    return {"line": None, "col": None, "severity": "warning", "code": "adapter",
+            "msg": f"{hidden} further go vet finding(s) in this package are not "
+                   f"shown — `count` reports the full number"}
+
+
 def _parse(output: str, target: str, base: str) -> list:
     errors = []
     for raw in output.splitlines():
@@ -136,8 +150,13 @@ def _parse(output: str, target: str, base: str) -> list:
         else:
             err = _unplaceable(reported, line, col, msg)
             err["severity"] = severity
-        errors.append(err)
-    return errors
+        # Rank, not sort key: findings about the file under validation come
+        # first so the cap below cannot eat the reason this ran at all. go vet
+        # emits in file order, so a target late in the alphabet is exactly the
+        # one a naive cut loses. Within a rank the tool's own order is kept.
+        errors.append((0 if where == "this" else 1, err))
+    errors.sort(key=lambda pair: pair[0])
+    return [err for _, err in errors]
 
 
 def main() -> None:
@@ -215,8 +234,13 @@ def main() -> None:
         emit(_adapter_error(file, tool_fault(TOOL, proc.returncode, output), ms()))
         return
 
+    published = errors
+    if len(errors) > MAX_ERRORS:
+        published = errors[:MAX_ERRORS - 1]
+        published.append(_truncation_notice(len(errors) - len(published)))
+
     emit({"tool": TOOL, "file": file, "ok": False, "count": len(errors),
-          "errors": errors[:MAX_ERRORS], "duration_ms": ms()})
+          "errors": published, "duration_ms": ms()})
 
 
 if __name__ == "__main__":

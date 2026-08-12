@@ -479,6 +479,14 @@ adapter invented; the text output carries no other severity signal.
 batch it therefore runs once per `(validator, path)` at the end of the call
 rather than after every edit.
 
+**The receipt is capped at 50 findings, and the file you edited is never the
+one cut.** go vet emits in file order, so a target late in the alphabet in a
+package with dozens of pre-existing findings is exactly the one a naive cut
+loses — `count: 61, ok: false`, and not one row about your line. Findings about
+the file under validation are ordered first, and when anything is dropped the
+last published row says how many, rather than leaving a reader to notice that
+`count` and the number of rows disagree.
+
 ### shellcheck — and the bug in the issue that asked for it
 
 `bash-check` runs `bash -n` and answers "does this parse". `shellcheck`

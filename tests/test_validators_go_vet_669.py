@@ -240,6 +240,44 @@ def test_analyzer_findings_are_not_published_as_errors(tmp_path: Path) -> None:
     assert out["errors"][0]["severity"] == "warning", describe(out)
 
 
+@needs_go
+def test_the_edited_files_own_finding_survives_a_crowded_package(tmp_path: Path) -> None:
+    """The receipt is capped. The cap must not eat the reason you are reading it.
+
+    A package with more pre-existing vet findings than the cap publishes a
+    receipt in which the file you just edited does not appear — `count: 56,
+    ok: false` and not one word about your line. That is this repo's own defect
+    wearing a cap: the finding is absent from the output and reads as absent
+    from the file. Findings about the file under validation are ordered first.
+    """
+    # `z.go`, not `a.go`: go vet emits diagnostics in file order, so a target
+    # that sorts first survives any cap by luck and the assertion below would
+    # hold against an adapter that does no ordering at all.
+    files = {"pkg/z.go": BAD_PRINTF}
+    for i in range(60):
+        files[f"pkg/s{i:02d}.go"] = BAD_PRINTF.replace("func Bad(", f"func Sib{i:02d}(")
+    root = _module(tmp_path, files)
+    out = _run(root / "pkg" / "z.go")
+    assert_declined(out, context="a package with more findings than the cap")
+    assert out["count"] > len(out["errors"]), describe(out)
+    assert out["errors"][0]["line"] == BAD_LINE, describe(out)
+
+
+@needs_go
+def test_a_truncated_receipt_says_it_was_truncated(tmp_path: Path) -> None:
+    """Cutting the list silently is an absence produced by the adapter, read as
+    an absence in the package. `count` alone does not say it — a reader who
+    sees fifty rows has no reason to compare them against a number."""
+    files = {"pkg/a.go": BAD_PRINTF}
+    for i in range(60):
+        files[f"pkg/s{i:02d}.go"] = BAD_PRINTF.replace("func Bad(", f"func Sib{i:02d}(")
+    root = _module(tmp_path, files)
+    out = _run(root / "pkg" / "a.go")
+    tail = out["errors"][-1]
+    assert tail["code"] == "adapter", describe(out)
+    assert "not shown" in tail["msg"], describe(out)
+
+
 # ---------------------------------------------------------------------------
 # Adapter faults are never findings
 # ---------------------------------------------------------------------------
