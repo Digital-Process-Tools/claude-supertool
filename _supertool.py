@@ -19176,7 +19176,43 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
         except OSError:
             pre_content = None
 
-    before = _validators_run_batch(applicable, path) if applicable else {}
+    # A file that did not exist has no pre-op state, so there is nothing here
+    # for any adapter to measure and the honest baseline is the absence #832
+    # already renders as `?` (#1466). Most of the 36 adapters reach that on
+    # their own: handed a missing path they emit `code: "adapter"`, which
+    # `_validator_not_checked` routes to the same place. Three do not, because
+    # "this file does not exist" is a finding in their own vocabulary rather
+    # than an adapter fault -- ruff calls it `E902`, `tsc-check` `TS6053`,
+    # `prettier-check` `formatting` -- and the core accepted those fabricated
+    # `count: 1`s as measurements. `paste` on a new .py file printed
+    # `ruff : 1 -> 0 (-1) OK`: an improvement claimed over a file that was not
+    # there, next to `py-syntax : ? -> 0` in the same block, the two rows
+    # disagreeing about whether the file had a past.
+    #
+    # Gated here rather than in those three adapters, because the fix in an
+    # adapter is one adapter's memory -- the shape #1202 had to undo across
+    # sixteen of them -- and the core already knows the answer for all of
+    # them: `_pre_existed` is sampled above the op for the rollback arms.
+    #
+    # The `1` is arithmetic as well as prose. `_validator_regressed` subtracts
+    # it, and an invented baseline of 1 against a real post-write finding of 1
+    # is equal counts and equal `ok`, so a finding this op introduced into a
+    # file it created whole was excused as `(pre-existing -- not from this
+    # edit)`. The sign only ever runs that way -- a fabricated baseline is
+    # HIGHER than the true zero, so it suppresses regressions and cannot
+    # manufacture one -- which is why the DEFECT misreports rather than
+    # destroys. Removing it restores the arm, though, which is a behaviour
+    # change and not only a display one: for those three a finding on a created
+    # file now regresses, so `[left on disk]` fires where it could not before
+    # (ruff is the case `_left_on_disk_line` names by name, and was inert for
+    # ruff until this) and a `rollback_on_fail` registration would unlink the
+    # create. No shipped registration reaches the second -- every
+    # `rollback_on_fail` validator in both config files answers a missing file
+    # with `code: "adapter"` or `skipped`, so its baseline was already absent
+    # -- and `tests/test_new_file_has_no_baseline_1466.py` audits that
+    # intersection rather than trusting it.
+    before = (_validators_run_batch(applicable, path)
+              if applicable and _pre_existed else {})
 
     body = do_op()
 
@@ -19248,8 +19284,9 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     # and cclsp's diagnostics cache is never invalidated for the daemon's life
     # — so a validator querying it now is being answered about the pre-edit
     # bytes (#482). Two conditions clear the flag: a file that did not exist
-    # pre-op was never opened by the baseline, and a daemon just SIGTERM'd for
-    # a new file (#239) comes back cold with the current bytes indexed.
+    # pre-op has no baseline pass at all since #1466 -- and had none that could
+    # open it before that -- and a daemon just SIGTERM'd for a new file (#239)
+    # comes back cold with the current bytes indexed.
     _doc_maybe_stale = _pre_existed and not _new_file_servers
     after_results = (_validators_run_batch(applicable, path, _doc_maybe_stale)
                      if applicable else {})
