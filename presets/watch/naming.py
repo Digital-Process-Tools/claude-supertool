@@ -339,7 +339,10 @@ def ensure_state_dir(resolved: Resolved, state_dir: str) -> str:
     reached from `record_death` and `clear_deaths` in *reader* processes —
     `watches`, `unwatch`, the `radar` heal — none of which claim a slot, and it
     opened `<path>.tmp` by name. `write_state` now calls this itself on every
-    write, and opens the `.tmp` `O_NOFOLLOW`.
+    write, and writes through a `tempfile.mkstemp` temporary whose name nobody
+    can predict and whose `O_CREAT|O_EXCL` create cannot adopt an existing one
+    (#1542 — the `O_NOFOLLOW` that fix first used is `0` on Windows, so it
+    followed the link there while POSIX was green).
 
     **Not closed, stated at the width it actually has.** Another local uid can
     squat `/tmp/supertool-watch-<name>` ahead of us with a directory of their
@@ -350,9 +353,11 @@ def ensure_state_dir(resolved: Resolved, state_dir: str) -> str:
     root. Two things this does not reach at all: an operator-supplied or default
     `state_dir` is somebody else's path and is never established (#693), so on
     the unnamed default the state files sit loose in world-writable `/tmp` and
-    each name's own `O_NOFOLLOW` is the whole boundary; and on Windows there is
-    no `O_NOFOLLOW`, so `_image_root`'s `lstat` on the directory is all there is
-    and the per-file arm declines rather than pretending.
+    each name's own containment is the whole boundary; and on Windows there is
+    no `O_NOFOLLOW` at all, so `_image_root`'s `lstat` on the directory is all
+    there is on the directory side, and on the file side the containment must
+    not depend on that flag — which is why the write goes through an
+    unpredictable `O_EXCL` temporary rather than a guarded fixed name (#1542).
     """
     if not resolved.state_dir_is_derived:
         return ""

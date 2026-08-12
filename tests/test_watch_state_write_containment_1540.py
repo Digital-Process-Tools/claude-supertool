@@ -22,18 +22,29 @@ real `/tmp`, where a live watch fleet runs.
 
 Two halves, and the split matters because they cover different populations:
 
-* `O_NOFOLLOW` on the `.tmp` open covers **every** channel, including the
-  unnamed default where the state files sit loose in world-writable `/tmp` and
-  there is no derived directory to establish at all. This is the reachable step.
+* containing the `.tmp` open covers **every** channel, including the unnamed
+  default where the state files sit loose in world-writable `/tmp` and there is
+  no derived directory to establish at all. This is the reachable step.
 * establishing the derived directory on every write covers the **named**
   channel's remaining shape: a squatter who owns the directory rather than
   planting a link inside it. That is the residual `naming.ensure_state_dir`
   already claimed was closed, and for readers it was not.
 
-**Windows.** `O_NOFOLLOW` does not exist there and `_NOFOLLOW` is already `0`,
-so the two symlink arms carry `require_symlink()` rather than a `skipif` that
-would report a coverage this suite does not have. The ownership arm moves *our*
-uid (`_image_root._euid`) exactly as `test_watch_state_dir_containment_1518.py`
+**Windows, and it is not a footnote here -- it is where this fix was wrong
+(#1542).** The first cut opened a fixed `<path>.tmp` with `O_NOFOLLOW`. That
+flag does not exist on Windows, `_NOFOLLOW` is `getattr(os, "O_NOFOLLOW", 0)` and
+so `0` there, and the two symlink arms above went red on all three
+`windows-latest` legs with the victim overwritten -- a guard that cannot run
+rendering as a guard that passed. Containment therefore may not depend on it:
+the write goes through a `tempfile.mkstemp` temporary whose name carries ~40
+random bits and whose `O_CREAT|O_EXCL` create cannot adopt an existing name, on
+every platform. `_without_o_nofollow` below emulates the platform *here*, so the
+Windows red is reproducible on a machine that has the flag rather than only
+observable one CI matrix at a time.
+
+The symlink arms carry `require_symlink()` rather than a `skipif` that would
+report a coverage this suite does not have. The ownership arm moves *our* uid
+(`_image_root._euid`) exactly as `test_watch_state_dir_containment_1518.py`
 does, so it runs everywhere; `_image_root.refusal` declines that arm on a
 platform where `st_uid` is a constant, which is the honest grade and not a pass.
 """
@@ -42,6 +53,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from _changelog_findable import assert_change_is_findable
@@ -117,6 +129,62 @@ def test_the_reader_path_writes_nothing_through_a_planted_symlink(tmp_path, monk
         "record_death wrote through the link into {0}".format(victim))
 
 
+def _without_o_nofollow(monkeypatch):
+    """Emulate a platform that has no `O_NOFOLLOW` at all -- i.e. Windows.
+
+    `transport._NOFOLLOW` is `getattr(os, "O_NOFOLLOW", 0)` and `tempfile`
+    builds its own open flags the same way, so on Windows *both* are already
+    what this sets them to. Asserting the attribute exists first, because a
+    monkeypatch that silently patched nothing would emulate the platform by
+    doing nothing and report a coverage this suite does not have.
+    """
+    assert hasattr(tempfile, "_bin_openflags"), (
+        "tempfile no longer exposes _bin_openflags -- this test emulates nothing")
+    monkeypatch.setattr(transport, "_NOFOLLOW", 0)
+    monkeypatch.setattr(tempfile, "_bin_openflags",
+                        tempfile._bin_openflags & ~getattr(os, "O_NOFOLLOW", 0))
+
+
+def test_a_planted_symlink_is_not_written_through_without_o_nofollow(
+        tmp_path, monkeypatch):
+    """The Windows red on PR #1542, reproduced on a platform that has the flag.
+
+    `O_NOFOLLOW` does not exist on Windows, so the guard `_NOFOLLOW` spells
+    degraded to `0` there and the open followed the reparse point in silence --
+    a guard that cannot run rendering as a guard that passed, on the three
+    `windows-latest` legs of job #94267071435. Containment may therefore not
+    *depend* on that flag: the `.tmp` name carries the randomness `O_NOFOLLOW`
+    cannot, and `O_EXCL` refuses any name that already exists.
+    """
+    require_symlink()
+    _channel(monkeypatch, tmp_path)
+    victim = _victim(tmp_path)
+    os.symlink(victim, transport.state_path("gh-prs", "x") + ".tmp")
+    _without_o_nofollow(monkeypatch)
+
+    transport.write_state("gh-prs", "x", {"last_event": {"payload": "REMOTE TEXT"}})
+
+    assert victim.read_text(encoding="utf-8") == INTACT, (
+        "the write followed a planted symlink on a platform without O_NOFOLLOW "
+        "and overwrote {0}".format(victim))
+
+
+def test_the_reader_path_writes_nothing_through_a_link_without_o_nofollow(
+        tmp_path, monkeypatch):
+    """`record_death`'s half of the same, since that is the call the issue
+    reaches this file through and the one that went red on Windows."""
+    require_symlink()
+    _channel(monkeypatch, tmp_path)
+    victim = _victim(tmp_path)
+    os.symlink(victim, transport.state_path("gl-mrs", "21803") + ".tmp")
+    _without_o_nofollow(monkeypatch)
+
+    transport.record_death("gl-mrs", "21803", 4242)
+
+    assert victim.read_text(encoding="utf-8") == INTACT, (
+        "record_death wrote through the link into {0}".format(victim))
+
+
 # ---------------------------------------------------------------------------
 # 2. The other half: a directory somebody else owns
 # ---------------------------------------------------------------------------
@@ -175,8 +243,36 @@ def test_an_ordinary_write_still_publishes_and_reads_back(tmp_path, monkeypatch)
     transport.write_state("gh-prs", "x", {"cursor": 12})
 
     assert transport.read_state("gh-prs", "x") == {"cursor": 12}
-    assert (root / "supertool-watch-gh-prs__x.state.json.tmp").exists() is False, (
-        "the temporary file survived the replace")
+    # Globbed rather than named: the temporary carries ~40 random bits since
+    # #1542, so an assertion against the old fixed `<name>.state.json.tmp`
+    # would pass by looking for a name nothing writes any more.
+    survivors = sorted(p.name for p in root.glob("*.tmp"))
+    assert survivors == [], "a temporary file survived the replace: {0}".format(survivors)
+
+
+def test_a_symlink_at_the_final_state_name_is_replaced_not_written_through(
+        tmp_path, monkeypatch):
+    """`os.replace`'s own claim, asserted rather than commented.
+
+    `write_state` opens a temporary and renames it onto
+    `<name>.state.json`. On POSIX `rename(2)` replaces a symlink at the
+    destination rather than following it, so the victim survives -- **observed
+    here**. On Windows `os.replace` is `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`
+    and the same claim is only **reasoned**; this test is what makes the
+    `windows-latest` leg answer it, which is the only observation available to
+    anyone working on macOS.
+    """
+    require_symlink()
+    _channel(monkeypatch, tmp_path)
+    victim = _victim(tmp_path)
+    os.symlink(victim, transport.state_path("gh-prs", "x"))
+    _without_o_nofollow(monkeypatch)
+
+    transport.write_state("gh-prs", "x", {"last_event": {"payload": "REMOTE TEXT"}})
+
+    assert victim.read_text(encoding="utf-8") == INTACT, (
+        "the replace followed a link planted at the final name and overwrote "
+        "{0}".format(victim))
 
 
 def test_a_missing_derived_directory_is_created_by_the_first_write(

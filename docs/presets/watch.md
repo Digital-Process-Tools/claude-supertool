@@ -1149,10 +1149,26 @@ its only caller and `claim_pidfile` is the only path that spawns one.
 *reader* processes — `watches`, `unwatch`, the `radar` heal — and it opened
 `<name>.state.json.tmp` by name, so a symlink planted at that name was followed
 and any file you can write was truncated and refilled with state JSON whose
-`last_event.payload` is remote text. Every write now establishes the directory
-and opens the `.tmp` `O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW`, the write mirror of
-the `O_RDONLY|O_NOFOLLOW` the reads have carried since #1197/#1200, and reports
-the refusal instead of discarding it.
+`last_event.payload` is remote text. Every write now establishes the directory,
+writes through a temporary nobody can predict, and reports the refusal instead
+of discarding it.
+
+**The temporary's name is the guard, and `O_NOFOLLOW` on a fixed one was not
+(#1542).** The first fix opened `<name>.state.json.tmp` with
+`O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW`, the write mirror of the
+`O_RDONLY|O_NOFOLLOW` the reads have carried since #1197/#1200. That flag does
+not exist on Windows: `getattr(os, "O_NOFOLLOW", 0)` is `0` there, the open
+followed the planted reparse point in silence, and three `windows-latest` legs
+overwrote the victim while ubuntu and macOS were green — a guard that cannot run
+rendering as a guard that passed, which is the defect this repo keeps filing,
+arriving inside the fix for it. The temporary now comes from
+`tempfile.mkstemp`: ~40 random bits in the name, `O_CREAT|O_EXCL` so the name
+comes into existence with our create and no window exists in which anything
+could have been planted at it, `O_NOFOLLOW` and `O_BINARY` added where the
+platform has them. A guarantee on every platform rather than a check that
+degrades on one. The residual is litter, not exposure — a hard kill between the
+create and the rename leaves one `<name>.state.json.<random>.tmp` that nothing
+collects, where a fixed name was reused by the next write.
 
 **Not closed:** another local uid can still squat `/tmp/supertool-watch-<name>`
 ahead of you with a directory of their own; *every* write to that channel — a
@@ -1161,8 +1177,9 @@ gets the refusal instead of landing in it, and the channel does not work until
 it is removed. The same residual `docs/presets/gitlab.md` discloses for the
 attachment root. Separately, this whole section is about a **derived** state
 directory: `SUPERTOOL_WATCH_STATE_DIR` and the unnamed `/tmp` default are
-somebody else's path and are never established (#693), so there the per-name
-`O_NOFOLLOW` on each open is the entire boundary.
+somebody else's path and are never established (#693), so there the temporary's
+unpredictable name is the entire boundary on the write side and `O_NOFOLLOW` —
+where it exists — is the whole of it on the read side.
 
 On **Windows** there is no `O_NOFOLLOW` and no directory descriptor, so the check
 is `os.lstat` — which does not follow the final component — and the ownership and

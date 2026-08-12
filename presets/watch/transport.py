@@ -20,6 +20,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -78,13 +79,22 @@ DEATH_RESPAWN_LIMIT = 3
 # such flag, and 0 leaves the open otherwise unchanged.
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
-# What the builtin `open()` passes and `os.open()` does not: on Windows a
-# descriptor without it is in the CRT's *text* mode, and the `TextIOWrapper` over
-# it translates the newline a second time — every state file written through
-# `os.open` would carry CR CR LF. Legal JSON whitespace, so nothing would go red;
-# the file would simply stop matching the one the builtin used to write. 0 on
-# POSIX, where there is no such mode (#1540).
-_BINARY = getattr(os, "O_BINARY", 0)
+# The state file's temporary name, which is where the write is contained (#1540,
+# #1542). `tempfile.mkstemp` is the boundary rather than a fourth hand-rolled
+# open, because its documented contract is exactly the one wanted here — the name
+# carries ~40 bits nobody can predict, and the open is
+# `O_RDWR|O_CREAT|O_EXCL` plus `O_NOFOLLOW` and `O_BINARY` **where the platform
+# has them**, at mode 0o600. `O_EXCL` is what makes it a guarantee instead of a
+# check: the name comes into existence with our create, so there is no window in
+# which anything could have been planted at it and nothing to verify afterwards.
+#
+# `O_BINARY` matters and is easy to lose: without it a Windows descriptor is in
+# the CRT's *text* mode and the `TextIOWrapper` over it translates the newline a
+# second time, so every state file would carry CR CR LF. Legal JSON whitespace,
+# so nothing goes red; the file simply stops matching the one the builtin
+# `open()` writes. `mkstemp(text=False)` passes it, which is why this route is
+# used rather than an `os.open` that would have to remember to.
+_STATE_TMP_SUFFIX = ".tmp"
 
 # `claim_pidfile` could not answer: the open failed, no file was created, and
 # nothing here knows who — if anyone — holds the slot. Distinct from `0` ("it is
@@ -415,11 +425,21 @@ def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> str:
     Two guards, because they cover different populations and neither subsumes
     the other:
 
-    * `O_NOFOLLOW` on the `.tmp`, the write mirror of the `O_RDONLY|O_NOFOLLOW`
-      `read_state_checked` and `read_pid_checked` have carried since #1197 and
-      #1200 — the asymmetry was the whole bug. It is the only guard the
-      **unnamed** default gets, where the state files sit loose in
+    * **An unpredictable temporary name, created `O_CREAT|O_EXCL`** — the only
+      guard the **unnamed** default gets, where the state files sit loose in
       world-writable `/tmp` and there is no derived directory to establish.
+      This was `O_NOFOLLOW` on a fixed `<path>.tmp`, the write mirror of the
+      `O_RDONLY|O_NOFOLLOW` `read_state_checked` and `read_pid_checked` have
+      carried since #1197 and #1200, and that asymmetry was the original bug —
+      but `O_NOFOLLOW` does not exist on Windows, `getattr(os, "O_NOFOLLOW", 0)`
+      is `0` there, and a guard that cannot run renders as a guard that passed:
+      three `windows-latest` legs of #1542 followed the planted link and
+      overwrote the victim while ubuntu and macOS were green (job
+      #94267071435). A flag that half the platforms lack cannot be the
+      boundary. A name nobody can predict cannot be pre-taken, and `O_EXCL`
+      refuses even a lucky guess, on every platform and with no flag to
+      degrade. `O_NOFOLLOW` is still passed where it exists — `mkstemp` adds it
+      — as the second line, not the first.
     * `naming.ensure_state_dir` for the **named** channel: a squatter who owns
       the directory rather than planting a link inside it. Asked **on every
       write, not memoized.** A first draft cached the successful answer, which
@@ -430,15 +450,28 @@ def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> str:
       an `mkdir` that fails `EEXIST`, one `open`, one `fchmod` and one `fstat`,
       against a poll tick measured in seconds.
 
-    `os.replace` needs no guard of its own: rename does not follow a symlink at
-    its final component, so a link planted at `<name>.state.json` is replaced
-    rather than written through.
+    `os.replace` is claimed to need no guard of its own: rename does not follow
+    a symlink at its final component, so a link planted at `<name>.state.json`
+    is replaced rather than written through. **Observed on POSIX, reasoned on
+    Windows** — `os.replace` is `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` there
+    and a reparse point at the destination is believed to be replaced rather
+    than traversed, which nobody here can run. The final-name arm of
+    `tests/test_watch_state_write_containment_1540.py` exists to let the
+    Windows leg answer that instead of this comment.
 
-    **A refused open does not unlink what it refused.** Same reading as
-    `read_state_checked`: a symlink at this name is evidence, and quietly
-    deleting it would repair the channel while destroying the only trace that
-    somebody planted it. The `unlink` below is for a `.tmp` *this* call created
-    and could not finish writing.
+    **Nothing planted is unlinked.** Same reading as `read_state_checked`: a
+    symlink at one of these names is evidence, and quietly deleting it would
+    repair the channel while destroying the only trace that somebody planted
+    it. The `unlink` below can only ever remove a file `mkstemp` created in
+    this call, since `O_EXCL` means no pre-existing name was opened at all.
+
+    **The residual is litter, not exposure.** A fixed `.tmp` was reused by the
+    next write; an unpredictable one is not, so a hard kill (SIGKILL, OOM,
+    reboot) between the create and the `os.replace` leaves one
+    `<name>.state.json.<random>.tmp` behind that nothing collects. Every
+    *handled* failure below unlinks. Named rather than swept, because a sweep
+    of files it cannot attribute is a delete this function has no business
+    doing.
 
     Returning the refusal rather than swallowing it is the other half of #1540:
     `record_death` reported a death as recorded and `clear_deaths` reported a
@@ -448,36 +481,46 @@ def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> str:
     if why:
         return why
     path = state_path(source, watcher_id)
-    tmp = f"{path}.tmp"
-    shown = _untrusted.flat(tmp)
+    shown = _untrusted.flat(path)
+    directory, name = os.path.split(path)
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW | _BINARY,
-                     0o600)
+        fd, tmp = tempfile.mkstemp(prefix=f"{name}.", suffix=_STATE_TMP_SUFFIX,
+                                   dir=directory)
     except OSError as err:
-        if err.errno in (errno.ELOOP, errno.EMLINK):
-            return (f"{shown} is a symlink and was not followed — a state file is "
-                    "written in place by its own poller, so this is somebody "
-                    "redirecting the write at another file")
+        # A missing or squatted directory lands here, and so does an
+        # unwritable one. `mkstemp` retries a colliding name 20 times before
+        # raising, so `FileExistsError` here is not a lost race.
         return f"{shown} could not be opened for writing ({type(err).__name__})"
     try:
         handle = os.fdopen(fd, "w", encoding="utf-8")
     except OSError as err:
-        # `O_NOFOLLOW` refuses a symlink and not a directory, so `os.open` can
-        # hand back a descriptor `fdopen` will not take — and it does not take
-        # the descriptor on the failing arm either (#1184's own reviewer).
+        # `os.fdopen` does not take the descriptor on its failing arm (#1184's
+        # own reviewer), so both the fd and the file we just created are ours
+        # to clean up.
         os.close(fd)
+        _discard(tmp)
         return f"{shown} could not be opened for writing ({type(err).__name__})"
     try:
         with handle as f:
             json.dump(state, f, indent=2)
         os.replace(tmp, path)
     except OSError as err:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        _discard(tmp)
         return f"{shown} could not be written ({type(err).__name__})"
     return ""
+
+
+def _discard(tmp: str) -> None:
+    """Remove a temporary file this process created. Silent on failure.
+
+    Only ever called on a path `mkstemp` returned, which is why it may unlink
+    at all: `O_EXCL` means the name did not exist before this call, so there is
+    no chance of removing somebody else's planted evidence.
+    """
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
 
 
 def read_state_checked(source: str, watcher_id: str) -> tuple[dict[str, Any] | None, str]:
