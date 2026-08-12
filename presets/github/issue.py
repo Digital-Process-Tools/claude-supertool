@@ -200,6 +200,18 @@ def _download_images(image_urls: list[str], issue_number: str) -> list[ImageResu
     was read, and outlives the call either way. So the empty directory that used
     to be forbidden is the one that carried the information, and it still never
     appears.
+
+    **`gl-issue` calls `ensure` a second time on the per-issue directory and
+    this does not, deliberately.** That second call is what would create
+    `<root>/<number>` up front, which is exactly the record a refused issue must
+    not leave — `gl-issue` has no equivalent property to keep, because it writes
+    through `glab` rather than through `_http.download`. What the second call
+    buys there is covered here by the leaf check instead: a link planted at
+    `<root>/<number>` resolves outside the root, so `is_inside(local_path, root)`
+    refuses every URL before `download` is reached. What is *not* replaced is the
+    `0700` on the per-issue directory itself — `os.makedirs` leaves it at the
+    umask default. That is not load-bearing inside a root only we can traverse,
+    which is the whole reason the root's mode is checked and this one's is not.
     """
     if not image_urls:
         return []
