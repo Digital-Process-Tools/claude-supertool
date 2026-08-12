@@ -117,6 +117,17 @@ def _unplaceable(reported: str, line: str, col: str, msg: str) -> dict:
                    f"not tell whether that is the file under validation: {msg}"}
 
 
+def _os_reason(exc: OSError) -> str:
+    """The OS's own words for a failed spawn, or a sentence saying it gave none.
+
+    `OSError.strerror` is `None` for a raise carrying no errno, and an f-string
+    renders that as the word `None` — "go vet could not be run: OSError — None"
+    reads as a reason that was reported and happened to be None. The absence is
+    the adapter's to disclose, not the reader's to decode.
+    """
+    return exc.strerror or str(exc) or "the OS reported no reason"
+
+
 def _truncation_notice(hidden: int) -> dict:
     """The cut, said out loud.
 
@@ -215,7 +226,7 @@ def main() -> None:
         # message reads the same shape everywhere.
         emit(_adapter_error(
             file,
-            f"go vet could not be run: {exc.__class__.__name__} — {exc.strerror}",
+            f"go vet could not be run: {exc.__class__.__name__} — {_os_reason(exc)}",
             ms()))
         return
 

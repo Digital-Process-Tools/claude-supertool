@@ -374,6 +374,61 @@ def test_an_absolute_reported_path_needs_no_base() -> None:
     assert pp.attribute("/ws/pkg/b.go", target="/ws/pkg/a.go", base="") == "other"
 
 
+class _ResolutionRefused:
+    """A `Path` whose `resolve()` the OS declines.
+
+    `Path.resolve(strict=False)` swallows a missing path, a symlink loop and an
+    over-long name on POSIX, so the handler under test is reachable in practice
+    only on Windows — `_getfinalpathname` raises there and CPython's non-strict
+    fallback catches `FileNotFoundError` alone, letting `PermissionError` and
+    `OSError [WinError 123]` through. Injected rather than provoked, for the
+    reason the rest of this section is: a platform behaviour pinned only on
+    that platform is pinned only where it was already going to be noticed.
+    """
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def resolve(self):
+        raise PermissionError(13, "Permission denied")
+
+
+def test_a_resolution_the_os_refused_is_unknown_not_another_file(monkeypatch) -> None:
+    """An incomplete comparison must not produce a confident `"other"`.
+
+    `resolve()` is what catches two spellings of one file — a `subst` drive, a
+    symlinked root. When the OS refuses to canonicalise, the equality test runs
+    against the unresolved spellings alone, so a non-match no longer rules out
+    an alias. `"other"` is a positive claim — "another file in this package" is
+    published verbatim to the reader — and this module's contract says only
+    `"other"` is entitled to make it.
+
+    A *match* is still trusted: an incomplete comparison that nevertheless
+    matched is positive evidence, while a non-match under one is not negative
+    evidence. So `"this"` survives a refused resolution and `"other"` does not.
+    """
+    pp = _pkg_paths()
+    monkeypatch.setattr(pp, "Path", _ResolutionRefused)
+    assert pp.attribute("/ws/pkg/b.go", target="/ws/pkg/a.go", base="") == "unknown"
+    assert pp.attribute("/ws/pkg/a.go", target="/ws/pkg/a.go", base="") == "this"
+
+
+def test_a_refused_resolution_on_a_path_nobody_tried_to_resolve_changes_nothing(
+        monkeypatch) -> None:
+    """Not attempted is not the same as attempted and failed.
+
+    A Windows-shaped path on a POSIX runner is absolute under `ntpath` and not
+    under `os.path`, so no resolution is attempted and none can fail. Folding
+    that into the same third state would demote every cross-platform
+    attribution this section asserts.
+    """
+    import ntpath
+    pp = _pkg_paths()
+    monkeypatch.setattr(pp, "Path", _ResolutionRefused)
+    assert pp.attribute(r"pkg\b.go", target=r"D:\ws\pkg\a.go", base=r"D:\ws",
+                        normcase=ntpath.normcase) == "other"
+
+
 # ---------------------------------------------------------------------------
 # The load-failure prefix, asserted from any platform
 # ---------------------------------------------------------------------------
@@ -426,6 +481,38 @@ def test_the_load_failure_prefix_is_recognised_under_either_binary_name(
     assert err["code"] == "load", err
     assert err["line"] == 3 and err["col"] == 12, err
     assert err["msg"] == "undefined: definitelyNotDefined", err
+
+
+@needs_go
+def test_a_spawn_failure_the_os_did_not_explain_still_names_a_reason(
+        tmp_path: Path, monkeypatch, capsys) -> None:
+    """`OSError.strerror` is `None` on some raises, and `f"{None}"` is "None".
+
+    "go vet could not be run: OSError — None" tells a reader that a reason was
+    reported and that the reason was the word None. The adapter must say the OS
+    supplied none instead: the absence is the adapter's to disclose, not the
+    reader's to decode.
+    """
+    mod = _go_vet()
+    root = _module(tmp_path, {"pkg/a.go": CLEAN})
+
+    class _Boom:
+        TimeoutExpired = subprocess.TimeoutExpired
+
+        @staticmethod
+        def run(*args, **kwargs):
+            raise OSError()  # no errno, no strerror — both None
+
+    monkeypatch.setattr(mod, "subprocess", _Boom)
+    monkeypatch.setattr(sys, "argv", ["go-vet.py", str(root / "pkg" / "a.go")])
+    mod.main()
+    out = json.loads(capsys.readouterr().out)
+    msg = out["errors"][0]["msg"]
+    assert out["ok"] is False, out
+    assert "OSError" in msg, msg
+    assert "None" not in msg, msg
+    reason = msg.split("—")[-1].strip()
+    assert len(reason) > 3, f"the reason clause is empty or a stub: {msg!r}"
 
 
 # ---------------------------------------------------------------------------
