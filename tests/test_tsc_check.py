@@ -80,6 +80,51 @@ def _run_env(file_path: str, env: dict) -> dict:
     return json.loads(result.stdout)
 
 
+def _adapter_module():
+    """Import the adapter for its module-level constants (hyphenated filename)."""
+    import importlib.util  # noqa: PLC0415
+
+    spec = importlib.util.spec_from_file_location("tsc_check_1499", ADAPTER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize("raw, want", [
+    ("\x1b[91merror\x1b[0m", "error"),                      # CSI / SGR
+    ("\x1b]0;a title\x07keep", "keep"),                     # OSC, BEL-terminated
+    ("\x1b]0;a title\x1b\\keep", "keep"),                   # OSC, ST-terminated
+    ("\x1bMkeep", "keep"),                                  # two-character escape
+    ("kept\x1b[1;3", "kept"),                               # CSI cut mid-sequence
+    ("kept\x1b]0;unterminat", "kept"),                      # OSC with no terminator
+    ("kept\x1b", "kept"),                                   # a lone trailing ESC
+    ("no escapes here", "no escapes here"),
+])
+def test_strip_ansi_leaves_no_escape_behind(raw: str, want: str) -> None:
+    """The invariant is "no ESC survives", so the truncated forms count (#1499).
+
+    A stream cut mid-sequence — a child killed while writing — leaves a CSI with
+    no final byte. Matching only the complete forms would let that through, and
+    every caller reads the result as text.
+    """
+    mod = _adapter_module()
+    assert mod.strip_ansi(raw) == want
+    assert "\x1b" not in mod.strip_ansi(raw)
+
+
+def test_the_adapter_and_the_core_strip_the_same_escapes() -> None:
+    """One definition, stated twice, pinned equal rather than trusted (#1499).
+
+    `validators/` runs with only `validators/common` on `sys.path`, so an adapter
+    can import neither the core nor `presets/`. Same constraint and same remedy
+    as `validators/common/linebreaks.py` against `_LINE_BREAK_PATTERN` (#1486):
+    without this, a fix to one of the two silently reopens the gap in the other.
+    """
+    import supertool  # noqa: PLC0415
+
+    assert _adapter_module().ANSI_RE.pattern == supertool._ANSI_ESCAPE_RE.pattern
+
+
 @stub_capable
 def test_pretty_output_is_not_requested_from_tsc(tmp_path: Path) -> None:
     """A tsc that defaults to pretty must still yield a located finding (#1499).
@@ -159,8 +204,12 @@ def test_a_silent_non_zero_exit_is_a_non_verdict(tmp_path: Path) -> None:
 
     assert out["ok"] is False
     assert out["errors"], out
-    assert out["errors"][0]["code"] == "adapter", out
-    assert "NOT type-checked" in out["errors"][0]["msg"], out
+    err = out["errors"][0]
+    assert err["code"] == "adapter", out
+    assert "NOT type-checked" in err["msg"], out
+    # Not "its output could not be parsed": nothing was offered to parse, and
+    # the two arms are different facts about what tsc did.
+    assert "said nothing at all" in err["msg"], out
 
 
 # ---------------------------------------------------------------------------

@@ -48,8 +48,18 @@ TIMEOUT_S = 30
 # CSI sequences, OSC strings (BEL- or ST-terminated) and the two-character
 # escapes. Not just SGR colour: an OSC that retitles the reader's terminal is
 # exactly the kind of thing an adapter must not republish into a `msg`.
+# Each complete form is followed by its incomplete one — a CSI or OSC with no
+# terminator, and last a lone ESC — which is what a stream cut mid-sequence
+# leaves behind. Without them "no escape survives" is not the invariant it reads
+# as. **The order carries weight in both directions.** Complete before
+# incomplete, so a terminated sequence is consumed whole. And the unterminated
+# OSC before the two-character escapes, because `]` is 0x5D and therefore inside
+# `[@-Z\\-_]`: with that class first, `\x1b]0;title` lost its two-byte
+# introducer and published `0;title` as text.
 ANSI_RE = re.compile(
-    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])"
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\[[0-?]*[ -/]*"
+    r"|\][^\x07\x1b]*(?:\x07|\x1b\\)|\][^\x07\x1b]*"
+    r"|[@-Z\\-_]|)"
 )
 
 
@@ -150,12 +160,15 @@ def main() -> None:
     # not recognise as an absence either, because it looks for the reason on an
     # error that was not there.
     if not errors:
-        excerpt = " ".join(output.split())[:200] if output else "no output"
+        if output:
+            said = ("its output could not be parsed: "
+                    + " ".join(output.split())[:200])
+        else:
+            said = "said nothing at all"
         errors = [{"line": None, "col": None, "severity": "error",
                    "code": "adapter",
-                   "msg": f"tsc exited {result.returncode} and its output could "
-                          f"not be parsed — this file was NOT type-checked: "
-                          f"{excerpt}"}]
+                   "msg": f"tsc exited {result.returncode} and {said} — this "
+                          f"file was NOT type-checked"}]
 
     emit({"tool": "tsc-check", "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": duration})

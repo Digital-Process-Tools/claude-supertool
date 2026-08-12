@@ -23524,8 +23524,20 @@ _MCP_STOP_DETAIL_CAP = 500
 # a child steers the reader's terminal, and the cap below keeps the **last** 500
 # characters — every escape byte is budget spent on something that renders as
 # nothing, so a long enough coloured traceback evicts the exception line.
+#
+# Held equal to `validators/tsc-check/tsc-check.py`'s `ANSI_RE` by a test, the way
+# `validators/common/linebreaks.py` is held equal to `_LINE_BREAK_PATTERN` (#1486):
+# an adapter runs with only `validators/common` on `sys.path` and cannot import
+# the core, so one definition has to be stated twice and pinned rather than
+# trusted. Each complete form is followed by its incomplete one — a CSI or OSC
+# with no terminator, and last a lone ESC — which is what a stream cut
+# mid-sequence leaves behind; without them "no escape survives" is not the
+# invariant it reads as. The order carries weight in both directions, and the
+# reasoning is on the adapter's copy.
 _ANSI_ESCAPE_RE = re.compile(
-    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])"
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\[[0-?]*[ -/]*"
+    r"|\][^\x07\x1b]*(?:\x07|\x1b\\)|\][^\x07\x1b]*"
+    r"|[@-Z\\-_]|)"
 )
 
 
