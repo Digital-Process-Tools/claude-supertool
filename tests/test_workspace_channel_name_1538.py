@@ -71,8 +71,12 @@ def test_the_name_reaches_the_consumer_without_being_written_into_the_artifact()
         f"The producers' name ({sorted(declared)}) belongs in .supertool.json and "
         f"reaches the consumer through bin/supertool-workspace's export (#1541)."
     )
+    # A text read, deliberately, and the weaker half of the pair: the behavioural
+    # pin runs the launcher against a stub `claude` and is POSIX-only, so on
+    # Windows this is the only thing standing between a deleted export and a
+    # green suite.
     launcher = LAUNCHER.read_text(encoding="utf-8")
-    assert NAME_ENV in launcher and ".supertool.json" in launcher, (
+    assert f"export {NAME_ENV}" in launcher and "watch_name" in launcher, (
         f"nothing carries {NAME_ENV} to the consumer any more: the launcher must "
         f"read it from .supertool.json and export it, or the two ends bind "
         f"different sockets and every emitted event is lost at the source."
@@ -103,7 +107,8 @@ def test_the_launcher_exists_and_ships_executable() -> None:
     try:
         proc = subprocess.run(
             ["git", "ls-files", "-s", "--", "bin/supertool-workspace"],
-            cwd=str(ROOT), capture_output=True, text=True, timeout=60)
+            cwd=str(ROOT), capture_output=True, text=True, timeout=60,
+            encoding="utf-8", errors="replace")
     except OSError as err:  # git absent: Windows raises FileNotFoundError here
         raise AssertionError(
             f"git could not be run ({type(err).__name__}), so the committed mode "

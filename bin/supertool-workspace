@@ -58,6 +58,11 @@ cd "$root"
 # than hardcoding a second copy is the point — the ops and the consumer cannot
 # then drift apart. Exactly one distinct name is exported; disagreeing op blocks
 # are a state this script cannot resolve, so it says so and exports nothing.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "supertool-workspace: python3 is not on PATH, so the watch_name in" \
+         "$root/.supertool.json was not read — this session is on the default" \
+         "channel and its consumer will not hear this clone's pollers" >&2
+fi
 name=$(python3 - "$root/.supertool.json" <<'READ_NAME'
 import json, sys
 

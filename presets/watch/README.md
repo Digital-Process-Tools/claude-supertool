@@ -131,7 +131,11 @@ It is an ordinary environment variable, so a non-reserved key in an op's
 
 **That configures three of the four surfaces, and the fourth is the one that
 matters.** `claude-channel` is spawned by the harness from `.mcp.json`, never by
-supertool, so no config key reaches it. Give it the same name there:
+supertool, so no config key reaches it. Two routes do:
+
+```sh
+SUPERTOOL_WATCH_NAME=oss claude ...   # inherited by the servers the harness spawns
+```
 
 ```json
 { "mcpServers": { "claude-channel": {
@@ -140,11 +144,22 @@ supertool, so no config key reaches it. Give it the same name there:
     "env": { "SUPERTOOL_WATCH_NAME": "oss" } } } }
 ```
 
+**Prefer the export, and never write the name into an `.mcp.json` that ships.**
+A plugin's own `.mcp.json` installs for everybody, so a name true of one checkout
+puts every other user's consumer on a socket their own pollers never bind — this
+repository did exactly that and took it back out in
+[#1541](https://github.com/Digital-Process-Tools/claude-supertool/issues/1541).
+`bin/supertool-workspace` is the export route: it reads the one `watch_name` its
+clone declares and exports it before launching. The `env` block is for an
+`.mcp.json` you wrote for your own project root and ship to nobody.
+
 A name in one file and not the other *is* the half-configured state, arriving
 through a new door — so `channel:health` reads `.mcp.json` (plugin root and cwd)
-and compares the socket it declares against the one this process uses. Three
-states: they agree, they disagree with both paths named, or the file could not
-be read, which is said rather than rendered as agreement.
+and compares the socket it declares against the one this process uses. Four
+states: they agree; they disagree, with both paths named; the file declares no
+channel variable at all, so the consumer inherits an environment this op cannot
+read and that is said as unknown; or the file could not be read. Only the first
+is ever silent.
 
 **Precedence: an explicit `SUPERTOOL_WATCH_SOCK` or `SUPERTOOL_WATCH_STATE_DIR`
 overrides the name, and the report says so.** Not because an export is more

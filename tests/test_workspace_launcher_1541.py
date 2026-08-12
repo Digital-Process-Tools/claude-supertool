@@ -141,7 +141,8 @@ def _launch(tmp_path: Path, *args: str, watch_name: str | None = "probe-name",
 
     proc = subprocess.run([str(root / "bin" / "supertool-workspace"), *args],
                           cwd=str(tmp_path), env=env, capture_output=True,
-                          text=True, timeout=60)
+                          text=True, timeout=60, encoding="utf-8",
+                          errors="replace")
     argv_file = tmp_path / "argv.txt"
     assert argv_file.exists(), (
         f"the stub claude never ran (rc={proc.returncode}): {proc.stderr}")
@@ -253,7 +254,8 @@ def test_the_refusal_still_fires_outside_a_project_root(tmp_path: Path) -> None:
     env = _env_for(tmp_path, _stub_claude(tmp_path))
     proc = subprocess.run([str(root / "bin" / "supertool-workspace")],
                           cwd=str(tmp_path), env=env, capture_output=True,
-                          text=True, timeout=60)
+                          text=True, timeout=60, encoding="utf-8",
+                          errors="replace")
     assert proc.returncode != 0, proc.stdout
     assert not (tmp_path / "argv.txt").exists(), "claude was launched anyway"
 

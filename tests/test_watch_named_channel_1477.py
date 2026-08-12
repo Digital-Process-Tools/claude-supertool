@@ -359,8 +359,16 @@ def _mcp(tmp_path: Path, env: dict | None, *, name: str = "claude-channel") -> P
     return tmp_path
 
 
-def test_a_name_with_no_consumer_env_block_is_the_half_configured_state(tmp_path):
-    """Three of four surfaces configured is the defect this closes, rebuilt."""
+def test_a_name_with_no_consumer_env_block_is_never_silence(tmp_path):
+    """Three of four surfaces configured is the defect this closes, rebuilt.
+
+    It used to be reported as a flat disagreement, and since #1541 it is reported
+    as unknown — the consumer inherits the launching session's environment, which
+    no process here can read. What has to hold either way, and is what this pins,
+    is that the file is named and the default socket it would otherwise land on is
+    named. Silence is the one answer that would let a half-configured channel read
+    as a healthy one.
+    """
     root = _mcp(tmp_path, None)
     lines = channel.consumer_lines(naming.resolve({"SUPERTOOL_WATCH_NAME": "oss"}),
                                    roots=[root])
