@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
 import _checks  # noqa: E402  (the shared CI vocabulary, incl. NO_PIPELINE — #815)
+import _image_root  # noqa: E402  (the attachment root, created and proven ours — #1493)
 import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 
@@ -26,7 +27,13 @@ DESCRIPTION_MAX = 3000
 # the numbers being wrong rather than as a ceiling being hit (#635).
 RELATED_MRS_MAX = 10
 COMMENT_MAX = 1000
-IMAGE_DIR = "/tmp/supertool-images"
+# Not a literal, and not shared. `/tmp/supertool-images` was a fixed name in a
+# world-writable directory — any local user could take it first, as a directory
+# of their own or as a symlink — and it was POSIX-only besides (#1493). The root
+# is per-user, under the platform temp directory, and `_image_root.ensure` is
+# what establishes it before anything is written; see that module for the
+# trade-off against a per-invocation `mkdtemp()`.
+IMAGE_DIR = _image_root.default_root()
 
 
 def _glab(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
@@ -205,6 +212,17 @@ def _is_inside(candidate: str, directory: str) -> bool:
 
     Compared after realpath on both sides, and with a trailing separator on the
     directory so a sibling like `/tmp/images-other` cannot pass as `/tmp/images`.
+
+    **What this establishes, and what it does not (#1493).** Realpathing both
+    sides is right for the *leaf*: it is what makes a `..` or a symlink in the
+    remote-chosen name resolve to where the write would actually land, and be
+    compared against where the root actually is. It establishes nothing whatever
+    about `directory` being a directory anyone should write into — a symlink
+    planted at the root itself is resolved through on *both* sides, so this
+    answers `True` about the attacker's directory exactly as readily as about
+    ours. It is a containment test, not an ownership test, and it never was one.
+    `_image_root.ensure` is what establishes the root; every call here is
+    against a root that came back from it.
     """
     root = os.path.realpath(directory)
     target = os.path.realpath(candidate)
@@ -225,11 +243,19 @@ def _download_images(image_urls: list[str], issue_number: str) -> list[str]:
       `realpath` `/private/tmp/audit_pwned` from an `IMAGE_DIR` of
       `/tmp/supertool-images`; an absolute `iid` makes `os.path.join` discard
       the root outright.
-    - The containment check is anchored to `IMAGE_DIR`, which is a constant, and
-      never to `out_dir`, which is derived from the value being constrained.
-      That was the defect: `_is_inside(local_path, out_dir)` answered `True`
-      about a directory that had already escaped. `_is_inside` was correct; it
-      was asked the wrong question. Same shape as #1246, one layer down.
+    - The containment check is anchored to the root, never to `out_dir`, which is
+      derived from the value being constrained. That was the defect:
+      `_is_inside(local_path, out_dir)` answered `True` about a directory that
+      had already escaped. `_is_inside` was correct; it was asked the wrong
+      question. Same shape as #1246, one layer down.
+
+    **And the root is established before either of those, because a boundary
+    nobody owns is not a boundary (#1493).** `IMAGE_DIR` was a fixed name in a
+    world-writable `/tmp`, and `_is_inside` realpaths both sides — so a symlink
+    planted at the root got resolved through twice and containment approved a
+    directory belonging to whoever planted it. `_image_root.ensure` returns a
+    root this process created and can prove it owns, or a reason it could not;
+    every check below is against what it returned, not against the constant.
     """
     if not image_urls:
         return []
@@ -243,15 +269,34 @@ def _download_images(image_urls: list[str], issue_number: str) -> list[str]:
               "not numeric, so no download directory was chosen")
         return []
 
-    out_dir = os.path.join(IMAGE_DIR, str(issue_number))
-    if not _is_inside(out_dir, IMAGE_DIR):
+    # The root, before the id is joined onto anything. `_is_inside` compares two
+    # resolved paths and cannot tell whose directory the root is; establishing
+    # that is a separate question and it is asked here (#1493).
+    root, why = _image_root.ensure(IMAGE_DIR)
+    if root is None:
+        print(f"note: skipped {len(image_urls)} attachment(s) — no attachment "
+              f"root this process owns could be established: {why}")
+        return []
+
+    out_dir = os.path.join(root, str(issue_number))
+    if not _is_inside(out_dir, root):
         # Unreachable through the check above, and kept anyway: it is the arm
         # that does not depend on the id having been validated, so it still
         # holds if the derivation moves.
         print(f"note: skipped {len(image_urls)} attachment(s) — the download "
-              f"directory did not resolve inside {IMAGE_DIR}")
+              f"directory did not resolve inside {root}")
         return []
-    os.makedirs(out_dir, exist_ok=True)
+    # The per-issue directory goes through the same establishment as the root,
+    # rather than an `os.makedirs(exist_ok=True)` that accepts whatever is on the
+    # name. Only we can plant something inside a 0700 root we own — but a root an
+    # *earlier*, looser run left behind could have had a link planted in it
+    # before this call tightened it, and `os.path.islink` does not see a Windows
+    # junction. `ensure` answers both, on both platforms, in one spelling.
+    out_dir, why = _image_root.ensure(out_dir)
+    if out_dir is None:
+        print(f"note: skipped {len(image_urls)} attachment(s) — the per-issue "
+              f"directory could not be established: {why}")
+        return []
 
     downloaded: list[str] = []
     for url in image_urls:
@@ -267,13 +312,13 @@ def _download_images(image_urls: list[str], issue_number: str) -> list[str]:
         # Decoding first means basename operates on what the name really says.
         local_name = os.path.basename(urllib.parse.unquote(upload_path))
         local_path = os.path.join(out_dir, local_name)
-        # And confirm it against IMAGE_DIR, the constant — not against `out_dir`,
+        # And confirm it against the established root — not against `out_dir`,
         # which is derived from the API's `iid` and so cannot be its own
         # boundary (#1484). The `out_dir` arm stays as the tighter of the two.
-        if not (_is_inside(local_path, IMAGE_DIR)
+        if not (_is_inside(local_path, root)
                 and _is_inside(local_path, out_dir)):
             print("note: skipped an attachment whose name resolves outside "
-                  f"{IMAGE_DIR}")
+                  f"{root}")
             continue
 
         # Use glab api to download (handles auth automatically)
