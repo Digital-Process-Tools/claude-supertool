@@ -98,9 +98,6 @@ _ABSENT = {
     "gh-check": "its raw form is `gh api .../check-runs/<id>`, and `gh api` "
                 "is the escape hatch the whole schema depends on staying "
                 "unclaimed",
-    "gh-since-tag": "no single raw command produces it: a merged-PR list, a "
-                    "local tag resolution and a `changelog.d/` count, "
-                    "reconciled against each other (#1209)",
     "gh-follow": "sits on `gh api -X PUT user/following/<login>`; `gh` has no "
                  "CLI verb for it",
     "gh-following": "sits on `gh api user/following`; `gh` has no CLI verb "
