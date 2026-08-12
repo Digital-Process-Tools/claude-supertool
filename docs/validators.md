@@ -195,6 +195,7 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | TypeScript (`.ts`)  | `tsc-check`      | `tsc` (`npm install -g typescript`)| `--noEmit` — no output files written       |
 | TypeScript (`.tsx`) | `tsc-check-tsx`  | `tsc` (`npm install -g typescript`)| Separate entry needed for `.tsx`           |
 | Go                  | `gofmt-check`    | `gofmt` (ships with Go)            | Fails on formatting diff, not just syntax  |
+| Go — semantics | `go-vet`         | `go` (ships with Go)               | `go vet` over the file's **package**. Ships with the toolchain, so it costs no install a Go repo has not already paid. A file in no module is `skipped`, never `ok` — see below |
 | Terraform           | `terraform-check`| `terraform` CLI                    | Uses `terraform validate`                  |
 | Rust                | `cargo-check`    | `cargo` (ships with Rust)          | Uses `cargo check` — full type resolution  |
 | PHP — static  | `phpstan`        | `phpstan` binary (PATH or via `PHPSTAN_BIN` env)  | Env-configured. See [README](../validators/phpstan/README.md) |
@@ -436,6 +437,47 @@ keys on that. Escalating every skip under `'*'` would redden ordinary edits
 nobody meant to gate, and a gate that cries wolf is the quiet bug traded for a
 louder one rather than fixed — the same trade this whole section declines. A
 tool that is genuinely absent still escalates through `refusal.required()`.
+
+### go-vet — a package verdict, delivered one file at a time (#669)
+
+`gofmt-check` was Go's only bundled validator and it answers a formatting
+question. `fmt.Printf("%d", someString)`, a `sync.Mutex` copied by value, a
+struct tag that does not parse — all of them gofmt clean, all of them caught by
+`go vet`. #669 recorded Go as the language whose semantics were entirely
+unchecked; this is the cheap half of closing that, because `go vet` ships with
+the toolchain. A repo that can build Go can already run it.
+
+Two things follow from `go vet` being **package-scoped**, and both are contract,
+not implementation detail.
+
+**A diagnostic in a sibling file is published, and it is not published as
+yours.** Handed `pkg/a.go`, the adapter runs vet over `pkg` and gets back
+findings for `pkg/b.go` too. Dropping them would leave a clean-looking file in a
+package vet rejects; publishing them under `a.go`'s name with `b.go`'s line
+number is three false statements about a file that is fine. So the finding
+survives with `line`/`col` null, `code: "adapter"` and no `source_context` —
+`validators/SCHEMA.md` §"A located diagnostic still has to be about *this* file
+(#754)". `adapter` is also what stops a sibling's defect from rolling back your
+edit or poisoning a cache keyed on your file's content.
+
+**A file in no module is `skipped`, never `ok`.** Outside a module `go vet`
+refuses with `go.mod file not found` and exits 1. Read as a finding it blames
+the file; read as a pass it is this repo's most-filed defect wearing a Go hat.
+It is a plain `skipped` and — unlike an absent toolchain — it does **not**
+escalate under `$SUPERTOOL_REQUIRE_VALIDATORS`: the toolchain is installed and
+working, and the reason the gate did not run is the layout, not the CI image.
+
+`rollback_on_fail` is `false`. A vet finding is a suspicious construct, not a
+broken file; reverting an edit over a shadowed variable destroys work to fix
+nothing. Contrast `terraform-check`, where the file genuinely does not parse.
+The severity axis carries the same distinction: vet's `vet: `-prefixed lines are
+load failures — the package did not type-check — and are published as `error`,
+while analyzer diagnostics are `warning`. That is go's own split, not one this
+adapter invented; the text output carries no other severity signal.
+
+`tier: "slow"`, because vet compiles the package's dependencies. In a multi-op
+batch it therefore runs once per `(validator, path)` at the end of the call
+rather than after every edit.
 
 ### shellcheck — and the bug in the issue that asked for it
 
