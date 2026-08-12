@@ -585,10 +585,29 @@ def _run_conclusion(run: object) -> str:
 
 
 def _names(names) -> str:
-    items = list(names)
+    """The workflow names as an English list — the last separator is `and`.
+
+    A comma-separated list with no conjunction is the shape a **truncated**
+    list has, and this one is interpolated into the sentence whose whole job is
+    to say whether the commit is cleared (#1374). The reader's question at that
+    moment is "is that all of them"; `` `CodeQL`, `changelog`, `tests` ``
+    answers it wrong for free, and it costs nothing to answer it right.
+
+    **Not capped**, deliberately, and this is the second half of #1374's
+    question. `scope_clause` caps at `_checks.NAMED_CAP` and discloses the
+    remainder, because the names there are a *supplementary* list under a
+    verdict the reader has already got. These names are the verdict's own
+    subject — they are what the reader has to act on — and a shortened subject
+    inside a not-concluded sentence is exactly the absence-produced-by-the-tool
+    defect this repository keeps filing. Eight backticked names on one line is
+    ugly; eight workflows of which three are named is wrong.
+    """
+    items = [f"`{n}`" for n in names]
+    if not items:
+        return ""
     if len(items) == 1:
-        return f"`{items[0]}`"
-    return ", ".join(f"`{n}`" for n in items)
+        return items[0]
+    return f"{', '.join(items[:-1])} and {items[-1]}"
 
 
 def _agrees(n: int, singular: str, plural: str) -> str:
@@ -842,6 +861,67 @@ def _reconcile(repo: str, selected: dict, fetched: dict) -> tuple:
 # render
 # ---------------------------------------------------------------------------
 
+#: Width of the `Run` column — the id plus ` attempt N`. Run ids are 11 digits
+#: today and GitHub allocates them monotonically, so the slack is for the digit
+#: it will grow, not decoration. A column narrower than its content does not
+#: truncate here, it pushes the next one right and un-aligns the table.
+RUN_COL = 26
+PHASE_COL = 14
+
+
+def run_cell(run: object) -> str:
+    """`<id> attempt <n>` — the run this row is about, named so it can be used.
+
+    Until #1409 the table named workflows and never named runs, so there was no
+    route from this render to `gh-run:<id>` or to a re-run without a raw API
+    call. Both fields were already fetched by `_run_list`; only the render was
+    missing.
+
+    `attempt` is printed **always**, including on attempt 1. A number that
+    appears only when it is interesting cannot be told from a number the tool
+    failed to read, and that pair is the defect this repository keeps filing.
+    An unreadable id or attempt is `?` — never `-1` (what `_run_id` answers for
+    an absence) and never a defaulted `1`.
+    """
+    rid = _run_id(run)
+    ident = str(rid) if rid >= 0 else "id ?"
+    attempt = "?"
+    if isinstance(run, dict):
+        try:
+            attempt = str(int(run.get("attempt")))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            attempt = "?"
+    return f"{ident} attempt {attempt}"
+
+
+def table_header() -> str:
+    """The column names. `Run` names the run; `Phase` is what `Run` used to hold.
+
+    Split rather than crammed: the lifecycle word is the answer to "is this
+    still moving" (#615 comment 1) and the id is the answer to "what do I call
+    it next", and one column cannot carry both without a reader parsing it.
+    """
+    return (f"{'Workflow':<32} {'Run':<{RUN_COL}} {'Phase':<{PHASE_COL}} "
+            f"{'Outcome':<14} Legs")
+
+
+def run_id_note() -> str:
+    """What the two new numbers are for, said once under the table.
+
+    The `attempt` half is stated carefully because the issue that asked for it
+    got it wrong: a re-run is a further **attempt on the same run object**, not
+    a second run object on the same SHA — which is why
+    `_declared_legs.reconcilable` pays for a second source exactly when the
+    attempt is not 1, and why the tally on the row is the latest attempt only.
+    """
+    return ("Run ids: `gh-run:<id>` for one run's legs, `gh run rerun <id>` to "
+            "retry it. `attempt N` is GitHub's `run_attempt` — N > 1 means the "
+            "run was re-run and the tally beside it counts the latest attempt "
+            "only, so legs from an earlier attempt are NOT in it. Only the "
+            "newest run of each workflow on this commit is listed, so the row "
+            "count is workflows, never attempts.")
+
+
 def _row(name: str, run: dict, jobs) -> str:
     """One workflow's row. The name is flattened because it is not ours (#851).
 
@@ -870,7 +950,8 @@ def _row(name: str, run: dict, jobs) -> str:
         outcome = "not yet"
     else:
         outcome = "not read"
-    return f"{name:<32} {phase:<14} {outcome:<14} {tally}"
+    return (f"{name:<32} {run_cell(run):<{RUN_COL}} {phase:<{PHASE_COL}} "
+            f"{outcome:<14} {tally}")
 
 
 def main() -> int:
@@ -990,10 +1071,12 @@ def main() -> int:
         # below it — the table and the previous-head list — carries names, and
         # everything above it is this op's own arithmetic.
         print(_untrusted.flat_note("workflow and job names"))
-        print(f"{'Workflow':<32} {'Run':<14} {'Outcome':<14} Legs")
-        print("-" * 96)
+        print(table_header())
+        print("-" * 110)
         for name in sorted(selected):
             print(_row(name, selected[name], fetched.get(name)))
+        print()
+        print(run_id_note())
 
         orphans = orphan_lines(selected, fetched)
         if orphans:

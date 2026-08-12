@@ -103,6 +103,21 @@ REASON_NOPIPE = "skipped by nopipe"
 # Tokens that are flags, not key=value filters.
 _FLAGS = {"nopipe", "iids", "external", "stale", "nomilestone"}
 
+# The client-side narrowing flags, split by where their field comes from.
+# `external` and `stale` read fields only the GraphQL enrichment sets;
+# `nomilestone` reads one `gh issue list` already returns.
+#
+# The split exists because of #1439: the `iids` id feed used to return before
+# the filter block ran, so all three were inert under it and so were their
+# declines — `gh-issues:nomilestone,iids` answered 95 ids on a board where the
+# same filter without `iids` excluded 42 of them. The cause was ordering, not
+# the projection: both shapes come from one `gh issue list --json` call with
+# the same `_LIST_FIELDS`, and `milestone` was on every row the filter never
+# looked at. `gl-mrs` had the shape right already — it applies `failed` before
+# its own `iids_only` return and overrides `nopipe` for it — and this is the
+# same rule: a filter that needs enrichment buys it, whatever the output shape.
+_ENRICHED_FLAGS = {"external", "stale"}
+
 # Filter keys this op forwards. Anything else is refused rather than dropped:
 # `_build_list_cmd` ignores a key it does not know, so `milestne=v0.26.0` used
 # to render the entire queue as the contents of one milestone (#864). A filter
@@ -1244,38 +1259,6 @@ def main_with_args(arg_str: str) -> int:
         # the --limit disclosure is a statement about this number.
         fetched = len(rows)
 
-    # Bare number list — on the listing path no enrichment is paid for at all.
-    #
-    # The disclosures ride along as `#` comments rather than being dropped: a
-    # truncated list stops being the same bytes as a complete one. This early
-    # return is why `iids` was the one shape that said nothing about the page
-    # boundary (#1067) — and under `iids=` a requested number that resolved to
-    # nothing is named here too, because the consumer of this shape is another
-    # tool and a shorter list is indistinguishable from a clean one.
-    #
-    # Not stderr — `_run_custom_op` returns a successful op's stdout and drops
-    # its stderr, so a note there is a note nobody receives (#654).
-    if numbers_only:
-        # The search disclosure rides the piped shape too. This stream becomes
-        # another tool's input, and a list of numbers produced by a search that
-        # covered title/body/comments is not the same population as one from a
-        # search over titles — a consumer that cannot see which it got will
-        # read the shorter one as the tracker being emptier (#1067's shape).
-        if search is not None:
-            print(f"# {_search_note(search)}")
-        for note in lookup_notes:
-            print(f"# {note}")
-        cap = _cap_note(per_page, fetched)
-        if cap:
-            print(f"# {cap}")
-        for row in unresolved:
-            print(f"# {row['number']} {row['_unresolved_note']}")
-        for row in rows:
-            number = row.get("number")
-            if number is not None:
-                print(number)
-        return 0
-
     # **The listing route's enrichment only** — `iids=` has already done its own,
     # in the same GraphQL call that fetched the rows, and `_lookup_iids` has
     # already set `reason` to None, REASON_NOPIPE or the fault it hit. Running
@@ -1288,7 +1271,13 @@ def main_with_args(arg_str: str) -> int:
     # `reason` is NOT re-declared here. It is initialised once above, because
     # the two routes now both set it and a fresh `= None` at this point would
     # silently discard whatever the lookup route established.
-    if iids_spec is None:
+    # A bare `iids` feed pays for no enrichment — that is what makes it the
+    # cheap shape — *unless* a filter that reads an enriched field was asked
+    # for. Then the call is what the caller bought, and skipping it would leave
+    # the filter with a field nobody read, which is a decline at best and the
+    # #1439 answer at worst.
+    if iids_spec is None and (
+            not numbers_only or (flags & _ENRICHED_FLAGS)):
         if "nopipe" in flags:
             reason = REASON_NOPIPE
         elif rows:
@@ -1344,6 +1333,53 @@ def main_with_args(arg_str: str) -> int:
             return 1
         rows = _narrow("nomilestone", rows,
                        [r for r in rows if not _milestone_of(r)])
+
+    # Bare number list, rendered AFTER the client-side filters rather than
+    # instead of them (#1439). Placed here and not thirty lines up because the
+    # id feed is the shape most likely to be consumed by a script rather than
+    # read by a person, so it is the shape least able to carry a filter that
+    # silently did not run — and every decline above it now reaches it too.
+    #
+    # The disclosures ride along as `#` comments rather than being dropped: a
+    # truncated list stops being the same bytes as a complete one. That is why
+    # `iids` was the one shape that said nothing about the page boundary
+    # (#1067) — and under `iids=` a requested number that resolved to nothing
+    # is named here too, because the consumer of this shape is another tool and
+    # a shorter list is indistinguishable from a clean one.
+    #
+    # `notes` rather than `lookup_notes`: it is the same list plus what each
+    # client-side filter removed, and the missing half of #1439 was that the
+    # board said `nomilestone excluded 42 of 95 fetched` and the id feed said
+    # nothing, so there was no line to disagree with.
+    #
+    # Not stderr — `_run_custom_op` returns a successful op's stdout and drops
+    # its stderr, so a note there is a note nobody receives (#654).
+    if numbers_only:
+        # The search disclosure rides the piped shape too. This stream becomes
+        # another tool's input, and a list of numbers produced by a search that
+        # covered title/body/comments is not the same population as one from a
+        # search over titles — a consumer that cannot see which it got will
+        # read the shorter one as the tracker being emptier (#1067's shape).
+        if search is not None:
+            print(f"# {_search_note(search)}")
+        for note in notes:
+            print(f"# {note}")
+        cap = _cap_note(per_page, fetched)
+        if cap:
+            print(f"# {cap}")
+        # `rows` now carries the unresolved rows too — they were appended
+        # before the filters so a decline could see them — so the two groups
+        # are told apart by the marker rather than by which list they are in.
+        for row in rows:
+            if row.get("_unresolved_note"):
+                print(f"# {row['number']} {row['_unresolved_note']}")
+        for row in rows:
+            if row.get("_unresolved_note"):
+                continue
+            number = row.get("number")
+            if number is not None:
+                print(number)
+        return 0
 
     # `flat_note` rather than `banner()` (#819). This render fences nothing —
     # titles and labels are one-line fields and are flattened — so the banner

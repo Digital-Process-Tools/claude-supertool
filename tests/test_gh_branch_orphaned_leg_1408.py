@@ -147,6 +147,12 @@ def _rows(out: str) -> list[str]:
     return rows
 
 
+#: The `Run` cell #1409 added between the workflow name and the phase word:
+#: `31501780284 attempt 2`, or `id ? attempt ?` when either field was unreadable.
+#: Dropped here rather than asserted — this file is about the phase/outcome pair.
+_RUN_CELL = re.compile(r"^(?:\d+|id \?) attempt (?:\d+|\?)\s+")
+
+
 def _cells(out: str, name: str) -> tuple[str, str]:
     """`(phase, outcome)` for one workflow row, located by position not width."""
     for row in _rows(out):
@@ -154,6 +160,8 @@ def _cells(out: str, name: str) -> tuple[str, str]:
             m = _TALLY.search(row)
             assert m, "no leg tally in row: " + row
             left = row[len(name):m.start()].strip()
+            left, n = _RUN_CELL.subn("", left)
+            assert n == 1, "no `<id> attempt <n>` cell in row (#1409): " + row
             phase, _, outcome = left.partition(" ")
             return phase.strip(), outcome.strip()
     raise AssertionError("no row for " + repr(name) + " in output:\n" + out)

@@ -1,8 +1,18 @@
 #!/usr/bin/env python3
 """gh-batch-star: gh-batch-star:FILE — star each repo (one OWNER/REPO per line).
 
-Lines starting with '#' are comments. Sleeps SUPERTOOL_STAR_DELAY (default 1s)
-between calls.
+A whole line starting with '#' is a comment. A '#' **after whitespace** ends the
+name and starts an inline annotation, which is what `gh-find-starable` writes
+(`octo/tool  # 12 stars, a description`) — until #1387 the annotation was sent
+as part of the repository path and every such line 404'd, so the two ops could
+not form the pipeline they exist for. The rules, and the reason a '#' with no
+whitespace before it is NOT a comment, are in `_candidates.py`.
+
+Nothing is silently reinterpreted: the receipt says how many annotations were
+dropped, and a line that cannot be a name after the split is skipped by name
+and counted rather than sent.
+
+Sleeps SUPERTOOL_STAR_DELAY (default 1s) between calls.
 """
 from __future__ import annotations
 
@@ -15,6 +25,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from _env import env_float  # noqa: E402  (the one numeric-knob reader)
 import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
+
+sys.path.insert(0, str(Path(__file__).parent))
+import _candidates  # noqa: E402  (the line format both ends honour — #1387)
 
 #: How much of `gh`'s error text one row may carry, measured on what prints.
 ERROR_MAX = 120
@@ -47,18 +60,35 @@ def main(arg: str) -> int:
         sys.stderr.write(f"ERROR: file not found: {path}\n")
         return 2
     repos = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip().lstrip("/")
-        if not line or line.startswith("#"):
+    annotated = 0
+    skipped: list[str] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        if not raw.strip() or _candidates.is_comment(raw):
             continue
-        if "/" not in line:
-            sys.stderr.write(f"WARN: skipping {line!r} (not OWNER/REPO)\n")
+        value, annotation = _candidates.split_annotation(raw)
+        if annotation:
+            annotated += 1
+        value = value.lstrip("/")
+        why = _candidates.unusable(value) or (
+            "" if "/" in value else "is not OWNER/REPO")
+        if why:
+            skipped.append(f"{_untrusted.flat(value or raw.strip())}: {why}")
             continue
-        repos.append(line)
+        repos.append(value)
+    for note in skipped:
+        sys.stderr.write(f"WARN: skipping {note}\n")
     if not repos:
         sys.stderr.write("ERROR: no OWNER/REPO entries in file\n")
         return 2
     print(f"(batch-star {len(repos)} repos)")
+    # Stated before the first write, not after the last: this is what the op
+    # decided the file meant, and a reader who disagrees wants to stop now.
+    if annotated:
+        print(f"# {annotated} of these lines carried an inline `# ...` "
+              f"annotation — the text after it was dropped and the name "
+              f"before it used.")
+    for note in skipped:
+        print(f"  SKIP {note}")
     ok = 0
     failed = 0
     delay = env_float("SUPERTOOL_STAR_DELAY", 1.0, minimum=0.0)
@@ -76,8 +106,15 @@ def main(arg: str) -> int:
             ok += 1
         else:
             failed += 1
-    print(f"DONE: {ok} starred, {failed} failed")
-    return 0 if failed == 0 else 1
+    tail = f", {len(skipped)} skipped" if skipped else ""
+    print(f"DONE: {ok} starred, {failed} failed{tail}")
+    if failed:
+        return 1
+    # A skipped line is not a success. Exit 2 is this op's "the file was not
+    # what it looked like" code — the same one a missing file gets — because a
+    # zero here would report a run that covered fewer repositories than the
+    # reviewed list named.
+    return 2 if skipped else 0
 
 
 if __name__ == "__main__":
