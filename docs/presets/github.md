@@ -419,9 +419,10 @@ A leading `repo:OWNER/NAME` op supplies it:
 |---|---|
 | Position | First op, or immediately after `cwd:` — `cwd:` keeps its own must-be-absolutely-first rule |
 | Count | One per call |
-| Shape | `OWNER/NAME`, validated before anything runs |
+| Shape | `OWNER/NAME`, validated before anything runs. Exactly two segments **here**: the GitLab half of the same op takes `GROUP[/SUBGROUP]/PROJECT`, and a three-segment path in a `gh-*` call is refused rather than passed to `gh` ([#676](https://github.com/Digital-Process-Tools/claude-supertool/issues/676)) |
 | Scope | The whole call. Two targets in one call is two calls |
 | Accepted by | `gh-pr`, `gh-prs`, `gh-issue`, `gh-issues`, `gh-run`, `gh-job` |
+| Not with `gl-*` | A call naming repo-targetable ops from both forges is refused: one target cannot be a repository on GitHub *and* a project on GitLab |
 
 **Why a leading op and not a trailing `…:repo=OWNER/NAME` token.** The suffix grammar in this family is not free. `gh-job:ID:grep:PATTERN` takes an arbitrary regex in that position, so `gh-job:5:grep:repo=x` is a legitimate log search that a trailing-token scan would silently steal — and `gh-prs` already spells its filters `key=value` *inside one comma-separated token* (`gh-prs:author=@me,state=open`), so a second, colon-separated `key=` grammar would be two rules for one idea. A leading op also lands in one place in the dispatcher instead of in five presets' argument parsers.
 

@@ -24,6 +24,7 @@ import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 import _checks  # noqa: E402  (named_disclosure/NAMED_CAP — shared with gh-pr, #619)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 import _refname  # noqa: E402  (the one ordinary-refname rule — #694/#924)
+import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
 
 DESCRIPTION_MAX = 2000
 COMMENT_MAX = 500
@@ -59,10 +60,26 @@ def _relative_age(iso: str) -> str:
         return "?"
 
 
-def _glab_api(endpoint: str, timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    """Run a glab api call."""
+def _glab(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
+    """Run a glab subcommand, against the targeted project when there is one.
+
+    `-R` is appended here rather than at the call site so a subcommand added
+    later cannot forget it and read the cwd's project under a target (#676).
+    """
     return subprocess.run(
-        ["glab", "api", endpoint],
+        ["glab"] + args + _repo_target.gl_args(),
+        capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
+    )
+
+
+def _glab_api(endpoint: str, timeout: int = 10) -> subprocess.CompletedProcess[str]:
+    """Run a glab api call, against the targeted project when there is one.
+
+    `glab api` has no repo flag — the project is a path segment — so the
+    target is substituted into `projects/:id` on the way through (#676).
+    """
+    return subprocess.run(
+        ["glab", "api", _repo_target.gl_api_path(endpoint)],
         capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
@@ -606,7 +623,9 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify glab errors into actionable messages for LLMs."""
     s = stderr.lower()
     if "404" in s or "not found" in s or "could not resolve" in s:
-        return f"ERROR: {resource} #{identifier} not found in this repo. Check the number or verify you're in the right repo."
+        return (f"ERROR: {resource} #{identifier} not found "
+                f"{_repo_target.not_found_scope()}. "
+                f"{_repo_target.gl_not_found_hint()}")
     if "401" in s or "unauthorized" in s or "glpat_" in s or "authenticate" in s or "bad token" in s or "token expired" in s:
         return "ERROR: glab not authenticated. Run: glab auth login"
     if "403" in s or "forbidden" in s:
@@ -849,10 +868,7 @@ def main() -> int:
             return 1
 
     try:
-        result = subprocess.run(
-            ["glab", "mr", "view", arg, "--output", "json"],
-            capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
-        )
+        result = _glab(["mr", "view", arg, "--output", "json"])
     except FileNotFoundError:
         print("ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli")
         return 1

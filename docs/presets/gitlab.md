@@ -147,6 +147,50 @@ Same input, four endpoints down, before and after:
 
 **A fallback that is used is a fallback that is disclosed.** When the live pipelines lookup declines but the MR payload still carries a `head_pipeline`, the status prints — it is real — followed by `! live pipeline lookup declined (…) — status above comes from the MR payload and can be stale`. The same discipline covers a paginated file list whose later page failed: the shortfall is described as a fetch failure rather than re-blamed on the display cap, because `use gl-mr:N:full` is advice that cannot work for files the tool never received.
 
+## Targeting another project
+
+The read ops derived their project from the cwd's git remote, so a GitLab project you have not cloned — or one whose work happens from a directory that is not its clone — was unreachable through the ops. `gl-issue-create` had taken a `project` key in its payload since it shipped, so the write side could already name a target while the read side could not ([#676](https://github.com/Digital-Process-Tools/claude-supertool/issues/676), split out of [#673](https://github.com/Digital-Process-Tools/claude-supertool/issues/673)).
+
+The same leading `repo:` op supplies it:
+
+```bash
+./supertool 'repo:group/subgroup/project' 'gl-mr:12'
+./supertool 'cwd:~/projects/a-github-repo' 'repo:group/project' 'gl-job:88123:fail'
+```
+
+| | Rule |
+|---|---|
+| Position | First op, or immediately after `cwd:` |
+| Count | One per call |
+| Shape | `GROUP[/SUBGROUP]/PROJECT` — GitLab allows subgroups, so the two-segment rule that is correct for GitHub is not correct here |
+| Scope | The whole call. Two targets in one call is two calls |
+| Accepted by | `gl-issue`, `gl-mr`, `gl-pipeline`, `gl-job` |
+| Refused by | `gl-mrs`, `gl-runners`, `gl-api` — and a refusal ends the whole call |
+
+### It is not the same fix as the GitHub one, in two places
+
+**`glab api` has no repo flag.** `glab issue view` and `glab mr view` take `-R`, and those two are a flag append. The other calls go through `glab api`, whose only project route is the path itself: `projects/:id/...`, where `:id` is a placeholder glab expands from the current directory. A target therefore **replaces** that segment rather than sitting beside it, as the url-encoded full path — `projects/group%2Fsubgroup%2Fproject/merge_requests/12`. Leaving `:id` in place beside a target would mean the call still resolved from the directory it was made in, which is the behaviour the target exists to override.
+
+**The accepted shape depends on the call's own ops.** A GitLab project path has two or more segments and a GitHub `OWNER/NAME` has exactly two, so one validator cannot serve both without weakening the GitHub check. Core reads which preset the call's repo-targetable ops are declared in and applies that forge's rule; a call naming both families is refused outright, because one target cannot be a repository on GitHub *and* a project on GitLab.
+
+```
+$ ./supertool 'repo:group/subgroup/project' 'gh-pr:1:status'
+repo: 'group/subgroup/project' is a GitLab project path, and this call's repo-targetable ops
+are GitHub's — gh takes exactly OWNER/NAME (e.g. repo:Digital-Process-Tools/claude-remember)
+
+$ ./supertool 'repo:group/project' 'gh-pr:1:status' 'gl-mr:12'
+repo: this call names both GitHub and GitLab repo-targetable ops, and one target cannot be a
+repository on both forges — give each family a call of its own.
+```
+
+A target is also refused unless every segment is made of letters, digits, `.`, `_` and `-`. That is not cosmetic: the value is substituted into an API path and handed to a CLI that attaches the live `Private-Token`, which is the same reason [a `gl-api` path may not name a host](#a-path-may-not-name-a-host).
+
+### `gl-mrs` and `gl-runners` are refused, deliberately
+
+Watch state is keyed `(source, id)` with no project dimension, and `radar` consumes both ops — it prunes state files, flags pipeline drift, and **respawns watchers** off that key. Under a target, `!12` of one project could not be told from `!12` of another, so a supervisor would be acting on ids it had attributed to the wrong project. Declining the whole call is the honest state until the key grows a project dimension; that is not a display concern and is not folded in here.
+
+`gl-api` stays out for a different reason: it names its own path, so a project is already sayable (`gl-api:projects/group%2Fproject/members/all`) and there is no placeholder for a target to substitute into.
+
 ## Common workflows
 
 **Read a path no op covers:**

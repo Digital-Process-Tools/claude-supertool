@@ -27,6 +27,7 @@ from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 import _untrusted  # noqa: E402  (an MR's branch, title and author are the opener's text — #965)
 import _job_argv  # noqa: E402  (the argv shape both job presets share — #1145)
+import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
 
 
 def _local_branch_check(source: str, actionable: bool = True) -> str:
@@ -61,7 +62,9 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify glab errors into actionable messages for LLMs."""
     s = stderr.lower()
     if "404" in s or "not found" in s or "could not resolve" in s:
-        return f"ERROR: {resource} #{identifier} not found. Check the ID. Use gl-pipeline to list jobs first, then gl-job with the job ID."
+        return (f"ERROR: {resource} #{identifier} not found "
+                f"{_repo_target.not_found_scope()}. Check the ID. Use "
+                "gl-pipeline to list jobs first, then gl-job with the job ID.")
     if "401" in s or "unauthorized" in s or "glpat_" in s or "authenticate" in s or "bad token" in s or "token expired" in s:
         return "ERROR: glab not authenticated. Run: glab auth login"
     if "403" in s or "forbidden" in s:
@@ -682,7 +685,8 @@ def main() -> int:
     # 1. Get job metadata
     try:
         meta_result = subprocess.run(
-            ["glab", "api", f"projects/:id/jobs/{job_id}"],
+            ["glab", "api",
+             _repo_target.gl_api_path(f"projects/:id/jobs/{job_id}")],
             capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
@@ -715,7 +719,8 @@ def main() -> int:
     # 2. Get job trace (log)
     try:
         result = subprocess.run(
-            ["glab", "api", f"projects/:id/jobs/{job_id}/trace"],
+            ["glab", "api",
+             _repo_target.gl_api_path(f"projects/:id/jobs/{job_id}/trace")],
             capture_output=True, text=True, timeout=20, encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired:
@@ -748,7 +753,8 @@ def main() -> int:
             mr_data = {}
             try:
                 mr_result = subprocess.run(
-                    ["glab", "api", f"projects/:id/merge_requests/{mr_iid}"],
+                    ["glab", "api", _repo_target.gl_api_path(
+                        f"projects/:id/merge_requests/{mr_iid}")],
                     capture_output=True, text=True, timeout=5, encoding="utf-8", errors="replace",
                 )
                 if mr_result.returncode == 0:

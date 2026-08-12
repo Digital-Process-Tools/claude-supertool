@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
 import _checks  # noqa: E402  (the shared CI vocabulary, incl. NO_PIPELINE — #815)
+import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 
 DESCRIPTION_MAX = 3000
@@ -29,9 +30,13 @@ IMAGE_DIR = "/tmp/supertool-images"
 
 
 def _glab(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    """Run a glab command and return the result."""
+    """Run a glab command and return the result.
+
+    `-R` is appended here rather than at each call site so a subcommand added
+    later cannot forget it and read the cwd's project under a target (#676).
+    """
     return subprocess.run(
-        ["glab"] + args,
+        ["glab"] + args + _repo_target.gl_args(),
         capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
@@ -40,7 +45,9 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify glab errors into actionable messages for LLMs."""
     s = stderr.lower()
     if "404" in s or "not found" in s or "could not resolve" in s:
-        return f"ERROR: {resource} #{identifier} not found in this repo. Check the number or verify you're in the right repo."
+        return (f"ERROR: {resource} #{identifier} not found "
+                f"{_repo_target.not_found_scope()}. "
+                f"{_repo_target.gl_not_found_hint()}")
     if "401" in s or "unauthorized" in s or "glpat_" in s or "authenticate" in s or "bad token" in s or "token expired" in s:
         return "ERROR: glab not authenticated. Run: glab auth login"
     if "403" in s or "forbidden" in s:
@@ -49,9 +56,13 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
 
 
 def _glab_api(endpoint: str, timeout: int = 10) -> subprocess.CompletedProcess[str]:
-    """Run a glab api call."""
+    """Run a glab api call, against the targeted project when there is one.
+
+    `glab api` has no repo flag — the project is a path segment — so the
+    target is substituted into `projects/:id` on the way through (#676).
+    """
     return subprocess.run(
-        ["glab", "api", endpoint],
+        ["glab", "api", _repo_target.gl_api_path(endpoint)],
         capture_output=True, text=True, timeout=timeout, encoding="utf-8", errors="replace",
     )
 
@@ -230,7 +241,7 @@ def _download_images(image_urls: list[str], issue_number: str) -> list[str]:
         # Use glab api to download (handles auth automatically)
         # The endpoint is projects/:id/uploads — but glab api with GET
         # on the raw upload path also works
-        api_path = f"projects/:id{upload_path}"
+        api_path = _repo_target.gl_api_path(f"projects/:id{upload_path}")
         try:
             result = subprocess.run(
                 ["glab", "api", "--method", "GET", api_path],
