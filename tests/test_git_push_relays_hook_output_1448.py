@@ -478,10 +478,19 @@ def assert_forgery_was_attempted(out: str) -> None:
 
 
 def _git_version() -> str:
-    """For a skip message. A spawn failure is not a reason to fail a test."""
+    """For a skip message. A spawn failure is not a reason to fail a test.
+
+    `encoding=`/`errors=` are pinned, not left to the locale: the default is
+    cp1252 on the Windows runners, where a decode of a child's output can
+    raise. `tests/test_encoding_seam.py::test_no_test_subprocess_decodes_by_
+    locale` reads the source for this rather than running it, because a
+    locale-dependent decode passes everywhere it is not a bug (#862, #856) —
+    and it caught this line, in a commit about locale-dependent encoding.
+    """
     try:
         r = subprocess.run(["git", "--version"], capture_output=True,
-                           text=True, timeout=60)
+                           text=True, encoding="utf-8", errors="replace",
+                           timeout=60)
     except OSError as exc:                      # WinError 2 and friends
         return "git (version unreadable: %s)" % exc
     return (r.stdout or "").strip() or "git (version unreadable)"
