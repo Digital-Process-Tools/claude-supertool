@@ -1368,12 +1368,15 @@ It is one op's render, not a new op — the count in the default header and the
 bodies here come off the same `reviewThreads` selection. It runs its own light
 `pr view` rather than the dashboard's, for the same reason `:diff` does.
 
-**And it declines rather than reporting none.** `_fetch_review_threads`, which
-feeds the default header, returns `[]` on *every* failure, so a rate-limited
-GraphQL call and a PR with no threads render identically — this repo's defect
-class, sitting under the line that started the complaint. `:threads` splits
-them: a failed call prints `Threads: UNKNOWN — they could not be read (...)`
-and exits 1, and says in as many words that this is not `none`.
+**And it declines rather than reporting none.** The default header used to run
+a second fetcher that returned `[]` on *every* failure, so a rate-limited
+GraphQL call and a PR with no threads rendered identically — this repo's defect
+class, sitting under the line that started the complaint. `:threads` split them
+first: a failed call prints `Threads: UNKNOWN — they could not be read (...)`
+and exits 1, and says in as many words that this is not `none`. The lossy
+fetcher is now gone and the header reads through this same three-state one, so
+the count and the bodies cannot disagree about whether there was an answer
+([#1445](https://github.com/Digital-Process-Tools/claude-supertool/issues/1445)).
 
 ## A green tally is a statement about a merge-base
 
