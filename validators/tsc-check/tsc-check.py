@@ -16,12 +16,22 @@ plain form does. The strip is still applied, because it is `--pretty false` that
 happens to remove the colour today and nothing tsc documents guarantees the two
 stay coupled; a `tsc` shim, or a future default, can colour the plain form too.
 
+**Two things about paths, both #1519.** The target is contained before it
+reaches argv — `tsc` reads a leading `@` as a response file and a leading `-` as
+an option, so `--noEmit` did not survive an `@`-named target and files were
+written. And `tsc --noEmit FILE` type-checks the whole import graph, so a
+diagnostic about an imported file is the common case; the reported path is
+compared against the target rather than discarded, and a foreign one keeps the
+finding while losing the location. `contained_target` and `parse_diagnostics`
+below carry the measurements.
+
 Usage:  tsc-check.py <file>
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -31,6 +41,7 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
+from pkg_paths import attribute
 from refusal import absent
 from linebreaks import split_lines
 
@@ -67,6 +78,102 @@ def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
 
 
+def contained_target(file: str) -> str:
+    """The target, spelled so `tsc` can only read it as a path (#1519).
+
+    `tsc` reads a leading `@` as a **response file** — its whole command line
+    comes from that file instead — and a leading `-` as an option. Neither is
+    escapable, because neither is a shell question: `subprocess.run` passes the
+    argument through untouched and `tsc` itself decides what it means. Measured
+    on real tsc 6.0.3 with `@r.ts` on disk beside an `r.ts` holding
+    `--noEmit false --outDir out`: the receipt read `{"ok": true, "count": 0}`
+    for a file whose one line is a type error, and `out/a.js` and `out/b.js`
+    were written — against `docs/validators.md`'s "`--noEmit` — no output files
+    written". A clean verdict about a file nothing checked, plus a write.
+
+    `--` is not the fix and was measured too: tsc answers
+    `error TS5023: Unknown compiler option '--'`. A relative prefix is, and it
+    goes through `os.path.join` rather than a literal `./` so Windows gets its
+    own separator; tsc normalises either back to the same path, and the
+    diagnostic it prints is unchanged (`@r.ts(1,7): error TS2322: ...`), which
+    is what keeps `parse_diagnostics` below able to attribute it.
+
+    An absolute path is already unambiguous and is left alone — prefixing one
+    would name nothing.
+    """
+    if not file or os.path.isabs(file) or file[0] not in "@-":
+        return file
+    return os.path.join(os.curdir, file)
+
+
+def _elsewhere(reported: str, ln: str, col: str, severity: str,
+               code: str, msg: str) -> dict:
+    """A diagnostic about another file in the same program.
+
+    Not filtered out: `tsc --noEmit FILE` type-checks the whole import graph, so
+    the program genuinely does not compile and a caller told nothing cannot act
+    on it. Only the attribution changes — `validators/SCHEMA.md` §"A located
+    diagnostic still has to be about *this* file (#754)".
+    """
+    return {"line": None, "col": None, "severity": severity, "code": "adapter",
+            "msg": f"in {reported}({ln},{col}) (another file in this program): "
+                   f"{code}: {msg}"}
+
+
+def _unplaceable(reported: str, ln: str, col: str, severity: str,
+                 code: str, msg: str) -> dict:
+    """A diagnostic whose path resolves to no file this adapter can name.
+
+    Distinct from `_elsewhere` on purpose: "not this file" and "no way to tell
+    which file" are different sentences, and only the first is entitled to say
+    another file is at fault.
+    """
+    return {"line": None, "col": None, "severity": severity, "code": "adapter",
+            "msg": f"tsc reported {reported}({ln},{col}) — this adapter could "
+                   f"not tell whether that is the file under validation: "
+                   f"{code}: {msg}"}
+
+
+# "file(line,col): error TSxxxx: message" — the shape `--pretty false` is what
+# guarantees. The path is CAPTURED rather than skipped past: it used to be
+# `(?:.*?)`, thrown away, so an imported file's diagnostic was published as this
+# file's with `context_fields(file, ln)` printing this file's source at that
+# file's line as its evidence (#1519).
+DIAG_RE = re.compile(
+    r"^(?P<path>.*?)\((?P<line>\d+),(?P<col>\d+)\):\s+"
+    r"(?P<severity>\w+)\s+(?P<code>TS\d+):\s+(?P<msg>.+)$")
+
+
+def parse_diagnostics(output: str, file: str, base: str) -> list:
+    """tsc's plain dump into SCHEMA error objects, attributed.
+
+    `base` is the directory the adapter ran `tsc` in — tsc prints relative to
+    its own working directory, and the adapter chose it, so the base is known
+    rather than inferred (`validators/SCHEMA.md`, the first of its two cases).
+    """
+    errors = []
+    for line in split_lines(output):
+        m = DIAG_RE.match(line)
+        if not m:
+            continue
+        reported = m.group("path").strip()
+        ln, col = m.group("line"), m.group("col")
+        code, msg = m.group("code"), m.group("msg").strip()[:300]
+        severity = (m.group("severity")
+                    if m.group("severity") in ("error", "warning") else "error")
+        where = attribute(reported, target=file, base=base)
+        if where == "this":
+            err = {"line": int(ln), "col": int(col), "severity": severity,
+                   "code": code, "msg": msg}
+            err.update(context_fields(file, int(ln)))
+        elif where == "other":
+            err = _elsewhere(reported, ln, col, severity, code, msg)
+        else:
+            err = _unplaceable(reported, ln, col, severity, code, msg)
+        errors.append(err)
+    return errors
+
+
 def emit(d: dict) -> None:
     print(json.dumps(d))
 
@@ -89,7 +196,8 @@ def main() -> None:
 
     try:
         result = subprocess.run(
-            ["tsc", "--noEmit", "--skipLibCheck", "--pretty", "false", file],
+            ["tsc", "--noEmit", "--skipLibCheck", "--pretty", "false",
+             contained_target(file)],
             capture_output=True,
             text=True,
             timeout=TIMEOUT_S, encoding="utf-8", errors="replace",
@@ -125,25 +233,10 @@ def main() -> None:
               "errors": [], "duration_ms": duration})
         return
 
-    # Parse tsc output: "file(line,col): error TSxxxx: message" — the shape
-    # `--pretty false` above is what guarantees.
-    errors = []
-    pattern = re.compile(r"^(?:.*?)\((\d+),(\d+)\):\s+(\w+)\s+(TS\d+):\s+(.+)$")
     output = strip_ansi(result.stdout + result.stderr).strip()
-    for line in split_lines(output):
-        m = pattern.match(line)
-        if m:
-            lineno, col, severity, code, msg = m.groups()
-            ln = int(lineno)
-            err = {
-                "line": ln,
-                "col": int(col),
-                "severity": severity if severity in ("error", "warning") else "error",
-                "code": code,
-                "msg": msg.strip()[:300],
-            }
-            err.update(context_fields(file, ln))
-            errors.append(err)
+    # The base is the directory this adapter spawned tsc in — it passed no
+    # `cwd=`, so tsc inherited ours and prints relative to it.
+    errors = parse_diagnostics(output, file, os.getcwd())
 
     # tsc objected and nothing in what it said could be placed in this file.
     # `code: "adapter"` rather than `"syntax"`, which asserted a syntax error had

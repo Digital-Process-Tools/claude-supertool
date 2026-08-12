@@ -142,7 +142,12 @@ def test_pretty_output_is_not_requested_from_tsc(tmp_path: Path) -> None:
         "a = sys.argv[1:]\n"
         "off = any(a[i] == '--pretty' and a[i + 1:i + 2] == ['false']\n"
         "          for i in range(len(a)))\n"
-        "sys.stdout.write(PLAIN if off else PRETTY)\n"
+        # The path in the dump is the path the stub was HANDED, which is what
+        # the real compiler prints — it resolves the argument and reports
+        # relative to its own working directory. Hardcoding `bad.ts` beside an
+        # absolute target made the stub name a second file, and #1519 gave that
+        # a meaning: a diagnostic about another file is no longer this file's.
+        "sys.stdout.write((PLAIN if off else PRETTY).replace('bad.ts', a[-1]))\n"
         "sys.exit(2)\n"
     ))
     out = _run_env(str(f), env)
