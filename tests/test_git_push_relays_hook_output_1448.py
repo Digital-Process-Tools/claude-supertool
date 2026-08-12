@@ -109,6 +109,18 @@ class _Sandbox:
         self.sentinel = os.path.join(self.tmp, "hook_ran")
         assert _run(["init", "--bare", "remote.git"], self.tmp).returncode == 0
         assert _run(["clone", self.remote, "mine"], self.tmp).returncode == 0
+        # git 2.55 sanitises control characters out of `remote:` sideband
+        # messages by default, caret-notating everything but an SGR colour
+        # sequence, so an ESC from a `pre-receive` hook never reaches the
+        # relay and the ESC tests below went red on `pytest (macos-latest,
+        # 3.10)` (homebrew git 2.55.0) while passing on every older git in
+        # the matrix. Opt out, so what is under test is supertool's own
+        # flattening rather than the runner's git version: the operator whose
+        # terminal this protects may be on any git, or may have set this very
+        # key. Older git does not know the key and ignores it, which is what
+        # makes this version-independent rather than a second bet.
+        assert _run(["config", "sideband.allowControlCharacters", "true"],
+                    self.mine).returncode == 0
         assert _run(["checkout", "-b", "feature"], self.mine).returncode == 0
         self.commit("a.txt", "base")
         assert _run(["push", "-u", "origin", "feature"],
@@ -465,6 +477,48 @@ def assert_forgery_was_attempted(out: str) -> None:
         "so this test proved nothing about flattening")
 
 
+def _git_version() -> str:
+    """For a skip message. A spawn failure is not a reason to fail a test."""
+    try:
+        r = subprocess.run(["git", "--version"], capture_output=True,
+                           text=True, timeout=60)
+    except OSError as exc:                      # WinError 2 and friends
+        return "git (version unreadable: %s)" % exc
+    return (r.stdout or "").strip() or "git (version unreadable)"
+
+
+def assert_esc_reached_the_render(out: str) -> None:
+    """The same positive assertion as U+2028, on a payload a transport may
+    refuse to carry — so it has three states rather than two.
+
+    U+2028 is not a control character, so no git touches it. ESC is, and git
+    2.55 added `strbuf_add_sanitized()` to `demultiplex_sideband()`: by
+    default (`ALLOW_DEFAULT_ANSI_SEQUENCES`) it caret-notates every control
+    character in a `remote:` line except an SGR colour sequence. The sandbox
+    sets `sideband.allowControlCharacters=true` so this does not depend on
+    the runner's git, but a future git may drop or rename that key, and the
+    honest answer for a leg whose transport will not deliver the bytes is a
+    skip that says so — never a pass. A runner limit rendered as a product
+    verdict is #1205 / #1218.
+
+    Three states, discriminated from the receipt alone:
+
+    * a raw ESC in the receipt — the relay failed to flatten. A finding.
+    * the `[U+001B]` disclosure — an ESC reached the render and was
+      flattened. The only outcome that proves anything.
+    * neither — the transport never delivered it. Skipped, naming the git.
+    """
+    assert ESC not in out, "an ESC relayed verbatim is a cursor command"
+    if "[U+001B]" in out or chr(0x241B) in out:
+        return
+    pytest.skip(
+        "%s did not deliver a raw ESC through the `remote:` sideband even "
+        "with sideband.allowControlCharacters=true, so nothing on this leg "
+        "exercised the relay's flattening of one; the local-hook ESC case "
+        "pins the same seam with no transport in front of it"
+        % _git_version())
+
+
 def test_the_remote_cannot_forge_a_result_line_through_the_stderr_relay(
         box) -> None:
     """The serious half. `remote:` lines are written by whatever server you
@@ -490,11 +544,29 @@ def test_an_escape_sequence_from_the_remote_does_not_reach_the_terminal(
         stderr_lines=["erase-next:" + ESC + "[2K" + ESC + "[1A"])
     rc, out = box.drive_push()
     assert rc == 0, out
-    assert ESC not in out, "an ESC relayed verbatim is a cursor command"
     assert "erase-next" in out, "the line itself must still be relayed"
+    assert_esc_reached_the_render(out)
+
+
+def test_a_local_hooks_escape_sequence_does_not_reach_the_terminal(box) -> None:
+    """The same seam with no transport in front of it.
+
+    A local pre-push hook's stdout is inherited by git and captured by the op
+    directly — it never crosses the sideband, so no git version sanitises it
+    and this pins the flattening on all 22 legs unconditionally. The remote
+    case above is the one that matters for *who chooses the bytes*; this one
+    is the one that cannot be taken away by a git release.
+    """
+    box.install_hook(stdout_lines=[BANNER,
+                                   "erase-prev:" + ESC + "[2K" + ESC + "[1A"])
+    rc, out = box.drive_push()
+    assert box.hook_ran
+    assert rc == 0, out
+    assert ESC not in out, "an ESC relayed verbatim is a cursor command"
+    assert "erase-prev" in out, "the line itself must still be relayed"
     assert "[U+001B]" in out or chr(0x241B) in out, (
-        "same one-sidedness as the U+2028 assertions: no disclosure means the "
-        "ESC never reached the render")
+        "no disclosure means the ESC never reached the render, and a local "
+        "hook has no transport that could have eaten it")
 
 
 def test_the_local_hook_cannot_forge_a_result_line_through_the_stdout_relay(
@@ -560,10 +632,8 @@ def test_the_first_error_line_cannot_carry_an_escape_sequence(box) -> None:
         exit_code=1)
     rc, out = box.drive_push()
     assert rc != 0, out
-    assert ESC not in out
     assert "error: refused" in out
-    assert "[U+001B]" in out or chr(0x241B) in out, (
-        "no disclosure means the ESC never reached the render")
+    assert_esc_reached_the_render(out)
 
 
 # ---------------------------------------------------------------------------
