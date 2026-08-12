@@ -23,8 +23,11 @@ The relay carries every word the child wrote and delimits by process ordering,
 never by what the lines say: git prints its `To` header only after the hook has
 exited, so everything above it on stdout was written by the hook and nothing
 below it was. Not byte-for-byte, since #1470: each relayed line goes through
-`_untrusted.flat`, so a control character is shown as itself rather than acted
-on. The words are untouched — see the forgery section at the foot of this file.
+`_untrusted.visible(keep=tab)` (`push.py:942`), so a control character is shown
+as itself rather than acted on. Deliberately not `flat()`, which drops tabs and
+would have rendered every tab-aligned hook transcript as `[U+0009]` soup —
+`test_a_tab_survives_the_relay` at the foot of this file is that trade, pinned.
+The words are untouched — see the forgery section at the foot of this file.
 The op therefore reports the hook rather than asserting what the hook did,
 which is the distinction #1447 refused to blur when it declined to budget the
 hook from its prose.
