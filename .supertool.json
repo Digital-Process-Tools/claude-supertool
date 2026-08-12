@@ -270,9 +270,16 @@
       "lane_prefix": "lane-"
     },
     "radar": {
+      "watch_name": "oss-supertool",
       "radar_tiers": {
         "gh-prs": {}
       }
+    },
+    "watches": {
+      "watch_name": "oss-supertool"
+    },
+    "channel": {
+      "watch_name": "oss-supertool"
     },
     "git-diff": {
       "red_flags_extra": [
