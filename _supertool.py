@@ -19169,7 +19169,33 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
         except OSError:
             pre_content = None
 
-    before = _validators_run_batch(applicable, path) if applicable else {}
+    # A file that did not exist has no pre-op state, so there is nothing here
+    # for any adapter to measure and the honest baseline is the absence #832
+    # already renders as `?` (#1466). Most of the 36 adapters reach that on
+    # their own: handed a missing path they emit `code: "adapter"`, which
+    # `_validator_not_checked` routes to the same place. Three do not, because
+    # "this file does not exist" is a finding in their own vocabulary rather
+    # than an adapter fault -- ruff calls it `E902`, `tsc-check` `TS6053`,
+    # `prettier-check` `formatting` -- and the core accepted those fabricated
+    # `count: 1`s as measurements. `paste` on a new .py file printed
+    # `ruff : 1 -> 0 (-1) OK`: an improvement claimed over a file that was not
+    # there, next to `py-syntax : ? -> 0` in the same block, the two rows
+    # disagreeing about whether the file had a past.
+    #
+    # Gated here rather than in those three adapters, because the fix in an
+    # adapter is one adapter's memory -- the shape #1202 had to undo across
+    # sixteen of them -- and the core already knows the answer for all of
+    # them: `_pre_existed` is sampled above the op for the rollback arms.
+    #
+    # The `1` is arithmetic as well as prose. `_validator_regressed` subtracts
+    # it, and an invented baseline of 1 against a real post-write finding of 1
+    # is equal counts and equal `ok`, so a finding this op introduced into a
+    # file it created whole was excused as `(pre-existing -- not from this
+    # edit)`. The sign only ever runs that way -- a fabricated baseline is
+    # HIGHER than the true zero, so it suppresses regressions and cannot
+    # manufacture one -- which is why this misreports rather than destroys.
+    before = (_validators_run_batch(applicable, path)
+              if applicable and _pre_existed else {})
 
     body = do_op()
 
