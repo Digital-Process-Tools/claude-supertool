@@ -15623,28 +15623,49 @@ def _guard_options(argv: Sequence[str]) -> List[str]:
 # on its leaf commands, glab on its root. No gh invocation both carries it
 # before the subcommand and runs, so an entry for it would block a call that
 # cannot execute, naming an op for something nobody can type successfully.
+#
+# THREE categories, not two, and `terminal` is the one #1437's review found
+# missing. A `boolean` is passed over and the subcommand behind it still
+# runs; a `terminal` option ends the command, so the subcommand behind it is
+# never dispatched and nothing there is replaced by an op. Listing the two
+# together made the walk score a command the program does not execute
+# (observed on this box, git 2.46.2 / gh 2.50.0 / glab 1.86.0):
+#
+#     $ git --version status          git version 2.46.2       rc=0
+#     $ gh --version pr view 1        unknown flag: --version  rc=1
+#     $ glab --version mr list        Unknown flag: --version. rc=1
+#
+# git answers and exits, gh and glab refuse outright; either way `status` and
+# `pr view` never run, and `BLOCKED  Use: supertool 'git-status'` was a wrong
+# block — the exact outcome the third state exists to prevent. A terminal
+# option makes the whole segment CLEAN rather than `undecided`: `undecided`
+# asserts the guard could not read what would run, and here it could.
+#
+# Terminal matching is on the EXACT token, never on the `=` stem, which is
+# what lets `--exec-path` be classified at all: bare it prints the path and
+# runs nothing (terminal), while `--exec-path=P` takes a value and does run
+# the subcommand. The `=` spelling is in no list and stays `undecided`.
 _GUARD_GLOBAL_OPTIONS: Dict[str, Dict[str, Tuple[str, ...]]] = {
     "git": {
         "value": ("-C", "-c", "--git-dir", "--work-tree", "--namespace",
                   "--super-prefix", "--config-env", "--attr-source"),
-        # `--exec-path` is deliberately in NEITHER list: bare, it prints the
-        # path and runs nothing; with `=`, it takes a value. One token, two
-        # arities, so it is exactly what the third state is for.
         "boolean": ("--paginate", "-p", "-P", "--no-pager", "--bare",
                     "--no-replace-objects", "--literal-pathspecs",
                     "--no-literal-pathspecs", "--glob-pathspecs",
                     "--noglob-pathspecs", "--icase-pathspecs",
                     "--no-icase-pathspecs", "--no-optional-locks",
-                    "--no-lazy-fetch", "--no-advice", "--version",
-                    "--html-path", "--man-path", "--info-path"),
+                    "--no-lazy-fetch", "--no-advice"),
+        "terminal": ("--version", "--html-path", "--man-path", "--info-path",
+                     "--exec-path"),
     },
-    "gh": {"value": (), "boolean": ("--version",)},
-    "glab": {"value": ("--repo", "-R"), "boolean": ("--version",)},
+    "gh": {"value": (), "boolean": (), "terminal": ("--version",)},
+    "glab": {"value": ("--repo", "-R"), "boolean": (),
+             "terminal": ("--version",)},
 }
 
 
 def _guard_normalise(argv: Sequence[str], heads: FrozenSet[str]
-                     ) -> Tuple[Sequence[str], Optional[str]]:
+                     ) -> Tuple[Optional[Sequence[str]], Optional[str]]:
     """The argv with a program's own global options removed, or why it is not.
 
     Applied only where it can change an answer: a command word some entry
@@ -15653,6 +15674,11 @@ def _guard_normalise(argv: Sequence[str], heads: FrozenSet[str]
     without a note, because a disclosure printed under most commands anyone
     writes is one nobody reads (the same reasoning `_guard_segments` applies
     to a `$` in an argument).
+
+    A `None` argv means this segment claims nothing: a terminal option ended
+    the command before its subcommand, so there is no invocation for an op to
+    supersede. That is the same un-claiming a help flag already does, and it
+    is a CLEAN answer rather than a note — see `_GUARD_GLOBAL_OPTIONS`.
     """
     if len(argv) < 2 or not _guard_is_flag(argv[1]):
         return argv, None
@@ -15667,12 +15693,16 @@ def _guard_normalise(argv: Sequence[str], heads: FrozenSet[str]
     table = _GUARD_GLOBAL_OPTIONS.get(head, {})
     values = table.get("value", ())
     booleans = table.get("boolean", ())
+    terminals = table.get("terminal", ())
     i = 1
     while i < len(argv):
         token = argv[i]
         # `--` and `-` are positionals, so the option run has ended.
         if not _guard_is_flag(token):
             break
+        # Exact token only: `--exec-path` is terminal, `--exec-path=P` is not.
+        if token in terminals:
+            return None, None
         if token.startswith("--"):
             stem = token.split("=", 1)[0]
             if stem in values:
@@ -15933,6 +15963,10 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
         scoring, note = _guard_normalise(argv, heads)
         if note is not None and note not in notes:
             notes.append(note)
+        if scoring is None:
+            # A terminal option ended this segment before its subcommand, so
+            # nothing here is an invocation an op replaces (#1437).
+            continue
         scored = []
         for replacement in replacements:
             score = _guard_score(replacement, scoring)

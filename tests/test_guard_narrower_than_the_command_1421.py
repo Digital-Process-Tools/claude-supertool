@@ -212,14 +212,52 @@ def test_a_prefixed_push_agrees_with_its_own_unprefixed_spelling(shipped):
 
 
 # --------------------------------------------------------------------------
+# TERMINAL options — the flag answers and the subcommand never runs, so
+# there is nothing for an op to replace. Every `observed` string below was
+# run by hand on this box (git 2.46.2, gh 2.50.0, glab 1.86.0) before the
+# row was written; four of them were BLOCKED here, which is a wrong block on
+# a command that does not execute the subcommand named in it.
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("command,observed", [
+    ("git --version status", "git version 2.46.2 / rc=0"),
+    ("git --html-path status", ".../share/doc/git-doc / rc=0"),
+    ("git --man-path status", ".../share/man / rc=0"),
+    ("git --info-path status", ".../share/info / rc=0"),
+    ("git --exec-path status", ".../libexec/git-core / rc=0"),
+    ("git --paginate --version status", "git version 2.46.2 / rc=0"),
+    ("gh --version pr view 1", "unknown flag: --version / rc=1"),
+    ("glab --version mr view 1", "Unknown flag: --version. / rc=1"),
+])
+def test_a_terminal_option_runs_no_subcommand_so_nothing_is_replaced(
+        shipped, command, observed):
+    """CLEAN, not `undecided`: `undecided` claims the guard could not read
+    what would run, and it could — these tokens have exactly one arity and
+    it ends the command. Naming an op for a subcommand the program never
+    dispatches is the wrong block the third state exists to avoid."""
+    verdict = supertool.guard_command(command)
+    assert verdict.state == "clean", (command, observed, verdict)
+    assert verdict.notes == (), (command, verdict.notes)
+
+
+def test_a_terminal_option_is_only_terminal_before_the_subcommand(shipped):
+    """The walk ends at the first positional, so a `--version` after the
+    subcommand belongs to the subcommand — `git tag --version` is
+    `error: unknown option 'version'` (rc=129), not a version print. The
+    entry still claims `git status`."""
+    assert supertool.guard_command("git status --version").state == "blocked"
+
+
+# --------------------------------------------------------------------------
 # The third state — reached AND rendered
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("command,why", [
     ("git --zonk status", "an option no table here knows"),
-    ("git --exec-path status", "bare `--exec-path` prints and exits; the "
-                               "`=` form takes a value. Guessing either way "
-                               "is a wrong block or a swallowed subcommand"),
+    ("git --exec-path=/tmp/x status", "the `=` form takes a value and the "
+                                      "subcommand does run; only the bare "
+                                      "spelling is terminal, and terminal "
+                                      "matching is on the exact token"),
     ("git -pC /tmp/x status", "a cluster the walk will not take apart"),
     ("git -C", "a value-taking option with no value left"),
     ("gh --hostname h pr view 1", "gh has options this table does not carry"),
