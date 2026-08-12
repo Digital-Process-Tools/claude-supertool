@@ -61,8 +61,19 @@ NL = chr(10)
 #:  * `test_watch_sock_path_581.py:102` -- `env = transport.poller_env()`, a call
 #:    into product code the scanner does not read. `presets/watch/transport.py:544`
 #:    is `dict(os.environ)` plus one key, so it inherits.
+#:
+#: Third entry read and cleared by hand on 2026-08-12 (#1496):
+#:
+#:  * `test_git_worktrees_unpushed_1496.py:107` -- `env=_HERMETIC_ENV`, a
+#:    module-level name the scanner does not follow. Its binding at that file's
+#:    line 45 is `{**os.environ, ...}` plus five `GIT_*` keys that pin git's
+#:    identity and config away from the developer's own, so PATH inherits. The
+#:    same dict is passed to every `git` spawn in the file; only the
+#:    `sys.executable` one reaches this guard.
 DECLARED_UNRESOLVED = [
     "test_encoding_seam.py:650 [unresolved] "
+    "env= expression could not be evaluated by this scanner",
+    "test_git_worktrees_unpushed_1496.py:107 [unresolved] "
     "env= expression could not be evaluated by this scanner",
     "test_watch_sock_path_581.py:102 [unresolved] "
     "env= expression could not be evaluated by this scanner",

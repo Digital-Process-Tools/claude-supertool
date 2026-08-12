@@ -520,6 +520,8 @@ The line above the relay has three states, and it is a claim about configuration
 
 One arm carries no relay and says so. A push that outlasts `_PUSH_TIMEOUT` is killed and its captured output dies with it, so the timeout receipt states that the hook's words were never captured rather than leaving a blank that reads as a hook with nothing to say.
 
+**The rebase-recovery route carries all of it too, and carried none of it until [#1490](https://github.com/Digital-Process-Tools/claude-supertool/issues/1490).** A non-fast-forward hands the push to `_recover_by_rebase`, which runs its **own** `git push` and prints its own receipts — and neither the disclosure above nor the head/tail bound followed it there. So `Status: pushed ✓ (rebased onto remote)` was the one landed-push receipt in this op that said nothing about the hook at all, which is #1448's premise turned back on it: a push that lands after a rebase is precisely a push whose hook has just run. Both of that route's `--- git output ---` dumps are bounded now as well, on the same 5/30 as the straight route, and the rejected-after-rebase arm is where the transcript is largest for exactly the same reason. The `rebase could not start` arm prints no hook line, deliberately: no push of that route's own has run yet, so there is nothing it could say about a hook that would be about the failure it is reporting.
+
 ## Occupancy has three states, and `idle` is the one that must be earned
 
 `git-worktrees` exists because of one afternoon ([#860](https://github.com/Digital-Process-Tools/claude-supertool/issues/860)). To decide whether a worktree was free, the maintainer ran:
@@ -557,6 +559,15 @@ So the verdict has three states and the third one is the point:
 
 **Do not read this exit code as an authorization.** It is a compression of a board with three states into one integer, and the compression is where the meaning goes. `gh-pr-merge` now reads the `[result]` line instead and treats only `0 occupied, 1 idle, 0 cannot tell` as `idle`. Any consumer standing to act irreversibly on the answer should do the same.
 
+**Every exit names itself in the body, on the line above `[result]`** ([#1496](https://github.com/Digital-Process-Tools/claude-supertool/issues/1496)). `git-worktrees:PATH` on an occupied tree exited `1` and rendered `FAIL` with no line anywhere saying what had failed — because nothing had; the `1` was the occupancy verdict. A caller gating on the status and a caller reading the render disagreed about the same call, and the render was the one with no way to settle it. Now:
+
+```
+[exit 1] the occupancy verdict for the one worktree asked about is `occupied` — the op itself did not fail. This integer is the occupancy answer compressed into one and nothing more (0 = idle, 1 = occupied, 2 = cannot tell, or the op could not answer at all)
+[result] 1 occupied, 0 idle, 0 cannot tell — …
+```
+
+The line sits **above** `[result]`, not below it: that line is what `gh-pr-merge` and every `| tail -1` reader take the tally off. The refusal arms (`PATH` given as an option, `git worktree list` failing, a `PATH` that is no worktree of this repository) each print one too, and the wording separates "nothing was inspected" from "the op failed".
+
 ## The tracker column has four states, and `unknown` is one of them
 
 The board told you who was *in* a worktree and never what that worktree's work was *worth* — so deciding where to act next meant running `git-worktrees`, then `gh-prs`, then `gh-pr:N:status` twice, and joining branch → path → PR number → check tally in your head ([#941](https://github.com/Digital-Process-Tools/claude-supertool/issues/941)). Every one of those joins is a fact the tool held on both sides.
@@ -576,7 +587,7 @@ occupied     fix/941         ~/Documents/st-wt/941   no remote ref
 | token | what it means |
 |---|---|
 | `PR #N` | an open PR tracks this branch; the tally is `_checks.summarize()`, the same summed arithmetic `gh-pr:N:status` prints, so a `CANCELLED` leg is a named term and not a silent zero |
-| `no open PR` | GitHub answered and holds no open PR for a branch that **is** pushed — published, unproposed |
+| `no open PR` | GitHub answered and holds no open PR for this branch. The publication half is a **second** three-state answer, below: in sync with its remote ref (published, unproposed), `N unpushed` (not published), or not measured |
 | `no remote ref` | no remote-tracking ref here: never pushed, **or** the remote branch was deleted after a merge |
 | `PR unknown` | the lookup did not run, and this is not a statement about the world |
 | `PR n/a` | the worktree has no branch (detached or bare) — nothing to look up |
@@ -584,6 +595,16 @@ occupied     fix/941         ~/Documents/st-wt/941   no remote ref
 **`PR unknown` versus `no open PR` is the whole design.** They are the tool's absence and the world's absence, and this repository has paid for that confusion more than for any other single mistake. Rendered as one state they read *this work is unpublished, take the tree* — in the op whose entire job is deciding which tree to take, at exactly the moment (offline, expired token, rate limit) when you are least able to check. So a lookup that did not answer is consulted first, before any local fact, and it says which failure it was.
 
 **A page that hit its cap is `unknown`, not `no open PR`.** One `gh pr list --limit 100` serves every worktree, so N trees cost one call rather than N. But if the page comes back *full*, it is authoritative for the branches it names and establishes nothing about the ones it does not — the partially-answered batch is state 4 wearing state 2's clothes.
+
+**A remote-tracking ref existing is not the same claim as the work being published** ([#1496](https://github.com/Digital-Process-Tools/claude-supertool/issues/1496)). The row used to read `the branch is pushed and no open PR tracks it — the work is published but unproposed` off the *existence* of `refs/remotes/origin/<branch>` alone. Hit live on the default branch: the clone was one commit ahead of `origin/master` and the row said `published`. Read in the direction that matters — somebody deciding whether a tree can be discarded — `published` reads as `safe to remove`. So the count is now taken, with three answers, and the row line itself carries `N unpushed, no open PR` so it survives a scan that never reaches the evidence:
+
+| Measurement | Row says |
+|---|---|
+| `git rev-list --count <remote-ref>..refs/heads/<branch>` is 0 | the branch is pushed, **in sync** with its remote ref … published but unproposed |
+| the count is N > 0 | `N commit(s) here are NOT on it` … the work is **NOT** published: those commits exist only in this clone |
+| the count could not be taken, or was not taken | whether every local commit is on that ref is **UNKNOWN**, with the reason — never `0` |
+
+It is measured against the ref the row is about, not `@{upstream}`: `git worktree add -b X … master` writes an upstream of `origin/master` for a branch that has never left the machine, so `@{upstream}` would confidently compare X against the wrong ref. Cost is one local `rev-list` per *pushed* branch and no extra network call. **Ahead only** — *behind* is a fact about the remote having moved and says nothing about whether this tree's work survives being discarded, which is the question the line is read for.
 
 **"Never pushed" is not claimed, because it cannot be observed.** The first live run of this column called four `[merged]` worktrees "never pushed"; all four had been pushed, merged, and deleted on the remote. A deleted remote branch and an unpublished one leave an identical local trace, and `branch.<name>.merge` does not separate them either — `git worktree add -b X … master` writes an upstream of `origin/master` for a branch that has never left the machine. The row reports the observation and names both histories.
 
