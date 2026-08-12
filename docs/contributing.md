@@ -191,6 +191,8 @@ Declare it:
 - **`root`** — `"cwd"` (the core's boundary, and the right answer for almost everything) or `"repo"` (the repository root). `claims` needs `"repo"` because it resolves a relative argument against the git toplevel: under a cwd boundary, `claims:docs/x.md` run from `docs/` would be refused, and that call works and should.
 - **`"args": []`** — a declaration that no argument here is a filesystem path. `gl-api:PATH` means an API route, not a file. Written down rather than defaulted, because the two look identical from outside. This form carries no `root`: there is nothing for a boundary to bound, and inventing one would read as a choice somebody made.
 
+`paths` is a reserved key, so it is **not** exported to your op's subprocess as `SUPERTOOL_PATHS` ([#1357](https://github.com/Digital-Process-Tools/claude-supertool/issues/1357)). It is enforced by the core before the subprocess is spawned, so handing it onward would put a containment declaration into the environment of the very process it constrains.
+
 **An op that names a path and that declares nothing is refused at dispatch.** Not `skipped`: the three-state rule this repo applies everywhere else has no third state here, because a path argument that reaches no check is not a check that could not run — it is an unchecked read, and it renders identically to a checked one.
 
 **Two detectors, OR'd — neither supersedes the other** ([#1350](https://github.com/Digital-Process-Tools/claude-supertool/issues/1350)):
@@ -200,13 +202,17 @@ Declare it:
 
 They are OR'd rather than ranked because of a measurement: of the 24 shipped ops the `syntax` detector finds, **zero** carry `{file}` or `{dir}` in their `cmd`, so letting `cmd` supersede `syntax` would have disarmed the gate for every one of them. Going the other way, **no shipped op is found by `cmd` alone today** — `oss_train` in this repo's own `.supertool.json` was the one, and [#1472](https://github.com/Digital-Process-Tools/claude-supertool/issues/1472) deleted it. That arm is the one that catches an op with no `syntax` key at all, so it is not dead code with the instance gone; its live exercise is a fixture `.supertool.json` driven through `dispatch()` in `tests/test_cmd_placeholder_path_detector_1350.py`, because an arm with zero instances and zero tests is indistinguishable from an arm that passes.
 
-**`{arg}` is deliberately not a signal**, even though it substitutes the same `parts[1]` that `{file}` does. Sixteen shipped ops pass a handle, a ref, a tag, an ID or a repo slug through `{arg}` and none takes a path; promoting it would refuse all sixteen and gate nothing. If your op means a path, write `{file}`.
+**`{arg}` is deliberately not a signal**, even though it substitutes the same `parts[1]` that `{file}` does. Twenty-four shipped ops carry `{arg}`; 8 of them name a path in `syntax` and are already held by the first detector, leaving 16 that pass a handle, a ref, a tag, an ID or a repo slug and take no path. Promoting `{arg}` would refuse those 16 and gate nothing. If your op means a path, write `{file}`.
+
+**A lint over `{arg}` beside a `PATH`-shaped `syntax` was proposed and is not built** ([#1357](https://github.com/Digital-Process-Tools/claude-supertool/issues/1357)). The measurement is the reason: all 8 ops of that shape are already refused at dispatch unless they declare, or named in `_UNDECLARED_PATH_OPS` — the lint's population is a strict subset of a gate's, and a refusal is strictly stronger than a warning. It is also aimed at the wrong half of the residue. The op #1357 worries about is one that *means* a path behind a `syntax` that does not say so, and that op is invisible to a lint keyed on the `syntax` saying so. Pinned in `tests/test_arg_placeholder_and_paths_env_1357.py` so the proposal is not re-derived from the issue text alone.
 
 Either detector only ever raises the *question* — a path hidden inside a `|`-separated blob cannot be located by reading the syntax, which is why the position is declared explicitly.
 
 Nineteen shipped ops predate the rule and are grandfathered by name in `_UNDECLARED_PATH_OPS`. **That set only shrinks**, and `tests/test_preset_path_chokepoint_1287.py` fails if a name is added to it or if a new op with a path skips the declaration — so a newly written op cannot inherit the old default by being written after it. It has shrunk once: `gl-api` was the op the detector's own docstring held up as the worked example of a declared op while sitting in the register, and [#1351](https://github.com/Digital-Process-Tools/claude-supertool/issues/1351) declared it for real rather than re-citing a different one.
 
 An op written as a bare command string — the `.supertool.json` shorthand, `"myop": "mytool {file}"` — is not gated, and since #1350 that is a decision rather than a side effect: its `cmd` now carries a signal the detector would read, but a string has no `paths` key and so no way to answer the demand, so the gate returns before either detector runs. That is deliberate and not a hole in the same sense: those ops are the caller's own config, at the same trust level as validators and presets, and they can declare a boundary by being written as an object instead.
+
+**This repository's own `.supertool.json` sets `allow_outside_cwd: true`, so none of the above enforces anything when you run it here** ([#1353](https://github.com/Digital-Process-Tools/claude-supertool/issues/1353)). The setting is right for a development checkout, where agents read across worktrees; what it does to *evidence* is not. A containment fix verified by running it in this clone passes on a fact about the config, not about the guard. In-process tests are unaffected — `tests/conftest.py` hands every test `_CONFIG = {}` — but a test that *spawns* `supertool.py` with a cwd inside this repo reads the real file and opts out with it. `tests/test_containment_config_independence_1353.py` spawns from a project whose config does not, so the guard is exercised regardless of what the live config says.
 
 The core's opt-outs (`SUPERTOOL_ALLOW_OUTSIDE_CWD=1`, or `"allow_outside_cwd": true` in `.supertool.json`) are honoured at every boundary, and the refusal names them. The gate is `_safe_path` with a different root, not a second copy of the rule — [#882](https://github.com/Digital-Process-Tools/claude-supertool/issues/882) and [#889](https://github.com/Digital-Process-Tools/claude-supertool/issues/889) are what a second copy costs.
 
@@ -241,7 +247,7 @@ the suggested repair, pasted, committed bytes the caller never wrote (#946).
 The three states are the point — a payload's fields were never split, and an
 error that says they were is a claim about a parse that did not run.
 
-Any key in an op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`, `restartMcp`) is passed to the subprocess as a `SUPERTOOL_`-prefixed environment variable:
+Any key in an op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`, `restartMcp`, `replaces`, `paths`) is passed to the subprocess as a `SUPERTOOL_`-prefixed environment variable:
 
 ```json
 {
