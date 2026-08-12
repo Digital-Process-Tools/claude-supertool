@@ -70,6 +70,26 @@ _HERMETIC_ENV = {
 BANNER = "-- pre-push: feature branch - suite NOT run here --"
 
 
+def _emit(stream: str, line: str) -> str:
+    """One line of generated hook source, writing encoded bytes not text.
+
+    `sys.stdout` / `sys.stderr` encode through the *child interpreter's*
+    console codec, which on Windows is cp1252 and cannot hold U+2028 — so the
+    fixture, not the test, decided whether a forgery was even attempted. It
+    decided differently on each stream, and only one of the two said so:
+    stdout is strict and raised (red on `pytest (windows-latest, 3.9)`),
+    stderr defaults to `errors="backslashreplace"` and silently substituted a
+    six-character escape, which is a vacuous pass. `.buffer` needs no
+    environment to be true and is also what a real remote does: bytes on the
+    wire. `_git` decodes the child with an explicit `encoding="utf-8"`, so
+    what leaves here is what the relay sees, on every platform.
+    Pinned by `test_a_generated_hook_emits_its_bytes_whatever_the_childs_
+    stdio_codec` and its cp1252 control.
+    """
+    return "sys.%s.buffer.write((%r + chr(10)).encode('utf-8'))" % (
+        stream, line)
+
+
 def _run(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["git"] + args, cwd=cwd, env=_HERMETIC_ENV,
                           capture_output=True, text=True, timeout=60,
@@ -105,9 +125,11 @@ class _Sandbox:
             "open(%r, 'a').write('ran')" % self.sentinel,
         ]
         for ln in stdout_lines:
-            body.append("sys.stdout.write(%r + chr(10))" % ln)
+            body.append(_emit("stdout", ln))
         for ln in stderr_lines:
-            body.append("sys.stderr.write(%r + chr(10))" % ln)
+            body.append(_emit("stderr", ln))
+        body.append("sys.stdout.buffer.flush()")
+        body.append("sys.stderr.buffer.flush()")
         body.append("sys.exit(%d)" % exit_code)
         Path(script).write_text(chr(10).join(body) + chr(10), encoding="utf-8")
         hook = Path(self.mine, ".git", "hooks", "pre-push")
@@ -130,7 +152,8 @@ class _Sandbox:
         script = os.path.join(self.tmp, "prerecv.py")
         body = ["import sys"]
         for ln in stderr_lines:
-            body.append("sys.stderr.write(%r + chr(10))" % ln)
+            body.append(_emit("stderr", ln))
+        body.append("sys.stderr.buffer.flush()")
         body.append("sys.exit(%d)" % exit_code)
         Path(script).write_text(chr(10).join(body) + chr(10), encoding="utf-8")
         hook = Path(self.remote, "hooks", "pre-receive")
@@ -420,6 +443,25 @@ def _result_lines(out: str) -> list[str]:
     return [ln for ln in out.splitlines() if ln.startswith("[result]")]
 
 
+def assert_forgery_was_attempted(out: str) -> None:
+    """The positive half, without which none of this tests anything.
+
+    `SEP not in out` is satisfied just as well by a separator that never
+    arrived as by one the relay flattened, and those two are the same
+    absence-read-as-presence this repo keeps filing. It was not academic: on
+    `pytest (windows-latest, 3.9)` a cp1252 stderr substituted an escape
+    spelling for U+2028 and every one of these tests passed without a forgery
+    ever being attempted. So assert the disclosure, which only a separator
+    that reached the render can produce. `visible()` spells U+2028
+    `[U+2028]` unconditionally — there is no Control Picture for a character
+    outside C0 (#863), so this spelling does not vary with the stream the way
+    the C0 pictures do.
+    """
+    assert "[U+2028]" in out, (
+        "no [U+2028] in the receipt: the separator never reached the relay, "
+        "so this test proved nothing about flattening")
+
+
 def test_the_remote_cannot_forge_a_result_line_through_the_stderr_relay(
         box) -> None:
     """The serious half. `remote:` lines are written by whatever server you
@@ -433,6 +475,7 @@ def test_the_remote_cannot_forge_a_result_line_through_the_stderr_relay(
     assert "cafed00d" not in verdicts[0], verdicts[0]
     assert SEP not in out, "a raw U+2028 in the receipt is the forgery itself"
     assert "cafed00d" in out, "disclosed, not stripped — the line stays legible"
+    assert_forgery_was_attempted(out)
 
 
 def test_an_escape_sequence_from_the_remote_does_not_reach_the_terminal(
@@ -446,6 +489,9 @@ def test_an_escape_sequence_from_the_remote_does_not_reach_the_terminal(
     assert rc == 0, out
     assert ESC not in out, "an ESC relayed verbatim is a cursor command"
     assert "erase-next" in out, "the line itself must still be relayed"
+    assert "[U+001B]" in out or chr(0x241B) in out, (
+        "same one-sidedness as the U+2028 assertions: no disclosure means the "
+        "ESC never reached the render")
 
 
 def test_the_local_hook_cannot_forge_a_result_line_through_the_stdout_relay(
@@ -461,6 +507,7 @@ def test_the_local_hook_cannot_forge_a_result_line_through_the_stdout_relay(
     assert len(verdicts) == 1, verdicts
     assert "cafed00d" not in verdicts[0], verdicts[0]
     assert SEP not in out
+    assert_forgery_was_attempted(out)
 
 
 def test_a_rejected_push_does_not_forge_a_result_line_in_the_git_dump(
@@ -478,6 +525,7 @@ def test_a_rejected_push_does_not_forge_a_result_line_in_the_git_dump(
     assert "PUSHED  feature" not in verdicts[0], verdicts[0]
     assert SEP not in out
     assert "cafed00d" in out, "the remote's refusal text must still be readable"
+    assert_forgery_was_attempted(out)
 
 
 def test_a_tab_survives_the_relay(box) -> None:
@@ -511,3 +559,99 @@ def test_the_first_error_line_cannot_carry_an_escape_sequence(box) -> None:
     assert rc != 0, out
     assert ESC not in out
     assert "error: refused" in out
+    assert "[U+001B]" in out or chr(0x241B) in out, (
+        "no disclosure means the ESC never reached the render")
+
+
+# ---------------------------------------------------------------------------
+# the harness's own ceiling — the house defect aimed at the thing meant to
+# detect it. Pinned on every platform rather than left to the Windows leg,
+# because the failure it guards against is half a red and half a vacuous
+# green, and only the red half ever announced itself.
+# ---------------------------------------------------------------------------
+
+#: what a cp1252 stderr writes in place of U+2028, spelled without putting a
+#: backslash in this source: six ASCII characters, not one separator.
+ESCAPED_SEP = (chr(92) + "u2028").encode("ascii")
+
+
+def _under_cp1252(argv: list[str]) -> "subprocess.CompletedProcess[bytes]":
+    """Run `argv` with a stdio codec that cannot hold U+2028.
+
+    `PYTHONIOENCODING=cp1252` reproduces the Windows console on any OS, which
+    is this repo's established way of pinning that half (#546,
+    tests/test_ci_encoding_546.py). The UTF-8-mode variables are stripped
+    rather than trusted: supertool pins `PYTHONIOENCODING=utf-8` for every
+    child it spawns, so a suite run through an op would otherwise inherit an
+    environment that silently un-reproduces this.
+    """
+    env = {k: v for k, v in _HERMETIC_ENV.items()
+           if k not in ("PYTHONUTF8", "PYTHONCOERCECLOCALE",
+                        "PYTHONLEGACYWINDOWSSTDIO")}
+    env["PYTHONIOENCODING"] = "cp1252"
+    return subprocess.run(argv, env=env, capture_output=True, timeout=60)
+
+
+def test_a_generated_hook_emits_its_bytes_whatever_the_childs_stdio_codec(
+        box) -> None:
+    """The fixture must not get to decide whether a forgery is attempted.
+
+    The generated hooks wrote through `sys.stdout` / `sys.stderr`, whose codec
+    is the *child interpreter's* console encoding. On cp1252 — every Windows
+    runner — that split the U+2028 cases in two, and only one half was
+    visible:
+
+    * `sys.stdout` is strict, so the write raised, the hook exited non-zero,
+      the push was rejected, and the local-hook forgery test above went red on
+      `pytest (windows-latest, 3.9)` — the v0.37.0 release blocker;
+    * `sys.stderr` defaults to `errors="backslashreplace"` (measured:
+      `enc='cp1252' errors='backslashreplace'`), so it wrote a six-character
+      escape spelling of the separator instead. No forgery was ever attempted,
+      and both `pre-receive` U+2028 tests passed on Windows **for the wrong
+      reason** — every assertion holding because the separator was not there.
+      A green that survives deleting the thing it tests is worth less than a
+      red, and this one was on the platform where relaying a third party's
+      bytes is hardest to reason about.
+
+    The product has no such ceiling and must not inherit the workaround. A
+    remote's bytes cross the wire byte-transparently through git's sideband,
+    and `_git` decodes them with an explicit `encoding="utf-8"`, so a real
+    U+2028 reaches the relay on Windows exactly as it does here. What had a
+    ceiling was a Python child writing *text* on the same machine, so the fix
+    is at the writer: the hooks encode and write to the raw stream, which is
+    both what a real remote does and what
+    `tests/test_undecodable_subprocess_output.py` already does for this
+    reason.
+
+    Not `PYTHONIOENCODING` on the child, and not `reconfigure()`. Both are
+    claims about an environment this test would then have to assert survived
+    `sh` -> `exec` -> git's own hook spawn on three platforms, and their
+    failure mode is precisely the vacuous green above: silent, and shaped like
+    a pass. The raw stream needs no environment to be true, and it takes the
+    text layer's newline translation out of the picture as well.
+    """
+    box.install_hook(stdout_lines=["done" + SEP + FORGED_RESULT])
+    box.install_remote_hook(stderr_lines=["nope" + SEP + FORGED_RESULT])
+    for name, stream in (("hook.py", "stdout"), ("prerecv.py", "stderr")):
+        proc = _under_cp1252([sys.executable, os.path.join(box.tmp, name)])
+        raw = getattr(proc, stream)
+        assert proc.returncode == 0, (name, proc.stderr)
+        assert SEP.encode("utf-8") in raw, (name, raw)
+        assert ESCAPED_SEP not in raw, (name, "escaped by the codec, not sent")
+        assert FORGED_RESULT.encode("utf-8") in raw, (name, raw)
+
+
+def test_cp1252_stdio_still_reproduces_the_windows_ceiling() -> None:
+    """The control. A reproduction that has quietly stopped reproducing is how
+    this class of pin dies (#546); the test above would then be asserting
+    nothing whatever about Windows. Both halves, as measured: stdout refuses,
+    stderr mangles."""
+    src = ("import sys" + chr(10) +
+           "sys.stderr.write('e' + chr(0x2028) + chr(10))" + chr(10) +
+           "sys.stdout.write('o' + chr(0x2028) + chr(10))" + chr(10))
+    proc = _under_cp1252([sys.executable, "-c", src])
+    assert proc.returncode != 0, "cp1252 stdout no longer refuses U+2028"
+    assert b"UnicodeEncodeError" in proc.stderr, proc.stderr
+    assert b"e" + ESCAPED_SEP in proc.stderr, (
+        "cp1252 stderr no longer backslashreplaces; the vacuous-green half of "
+        "this ceiling is gone and the pin above needs re-deriving")
