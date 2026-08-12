@@ -137,7 +137,8 @@ def _run_gh_pr(monkeypatch: Any, capsys: Any, mode: str) -> str:
         return _declined()
 
     monkeypatch.setattr(gh_pr, "_gh", fake_gh)
-    monkeypatch.setattr(gh_pr, "_fetch_review_threads", lambda *a, **k: [])
+    monkeypatch.setattr(gh_pr, "_fetch_review_threads_detailed",
+                        lambda *a, **k: ([], ""))
     monkeypatch.setattr(sys, "argv", ["pr.py", "4242", mode])
     assert gh_pr.main() == 0
     return capsys.readouterr().out

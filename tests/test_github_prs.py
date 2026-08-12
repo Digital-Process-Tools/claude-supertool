@@ -187,8 +187,9 @@ def test_annotate_handles_non_list_rollup() -> None:
 
 def test_enrich_counts_unresolved_threads(monkeypatch) -> None:
     monkeypatch.setattr(
-        prs, "_fetch_review_threads",
-        lambda url, n: [{"isResolved": False}, {"isResolved": True}, {"isResolved": False}],
+        prs, "_fetch_review_threads_detailed",
+        lambda url, n: ([{"isResolved": False}, {"isResolved": True},
+                         {"isResolved": False}], ""),
     )
     pr_list = [{"number": 1, "url": "u"}]
     prs._enrich(pr_list)
@@ -198,8 +199,8 @@ def test_enrich_counts_unresolved_threads(monkeypatch) -> None:
 def test_enrich_caps_calls(monkeypatch) -> None:
     calls = []
     monkeypatch.setattr(
-        prs, "_fetch_review_threads",
-        lambda url, n: calls.append(n) or [],
+        prs, "_fetch_review_threads_detailed",
+        lambda url, n: (calls.append(n) or [], ""),
     )
     prs._enrich([{"number": i, "url": "u"} for i in range(prs.ENRICH_CAP + 5)])
     assert len(calls) == prs.ENRICH_CAP

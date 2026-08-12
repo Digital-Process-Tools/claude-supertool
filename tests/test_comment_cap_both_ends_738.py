@@ -86,7 +86,8 @@ def _gh_pr_fakes(monkeypatch, comments: list) -> None:
         return subprocess.CompletedProcess(["gh"], 0, payload, "")
 
     monkeypatch.setattr(gh_pr, "_gh", fake_gh)
-    monkeypatch.setattr(gh_pr, "_fetch_review_threads", lambda url, iid: [])
+    monkeypatch.setattr(gh_pr, "_fetch_review_threads_detailed",
+                        lambda url, iid: ([], ""))
     monkeypatch.setattr(gh_pr, "_local_branch_check", lambda branch: "")
 
 

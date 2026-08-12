@@ -96,7 +96,8 @@ def _run_pr(monkeypatch, capsys, rollup: list[dict],
     """Render `gh-pr` with the run's declared leg count stubbed."""
     payload = _payload(rollup, **ov)
     monkeypatch.setattr(pr.subprocess, "run", lambda *a, **kw: _fake_run(payload))
-    monkeypatch.setattr(pr, "_fetch_review_threads", lambda *a, **kw: [])
+    monkeypatch.setattr(pr, "_fetch_review_threads_detailed",
+                        lambda *a, **kw: ([], ""))
     monkeypatch.setattr(pr, "_head_commit_age_secs", lambda *a, **kw: 60)
     # The seam moved in #804: the declared count is now read off the commit's
     # runs rather than off the rollup's own ids, so the stub sits one function

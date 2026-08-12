@@ -194,9 +194,11 @@ def test_a_graphql_failure_is_declined_not_rendered_as_zero_threads(
     """The third state.
 
     `[]` because the call failed and `[]` because there are none are opposite
-    answers, and `_fetch_review_threads` returns `[]` for both — which is this
-    repo's defect class and is why the default header can go silent on a PR
-    that does have threads.
+    answers. The header used to collapse them: it ran a second, lossy fetcher
+    that returned `[]` for both, so a declined call went silent on a PR that
+    did have threads. That fetcher is gone — the default view now reads through
+    this same three-state one (#1445), and there is one thread query left in
+    the op.
     """
     gh = _Gh([], graphql_rc=1)
     rc, out = _run_threads(monkeypatch, capsys, gh)
