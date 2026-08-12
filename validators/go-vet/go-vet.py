@@ -141,9 +141,10 @@ def _parse(output: str, target: str, base: str) -> list:
             continue
         reported, line, col, msg = (m.group("path"), m.group("line"),
                                     m.group("col"), m.group("msg"))
-        # `vet: ` prefixes the load/type-check failures — the package did not
-        # compile. That is go's own distinction, not one invented here, and it
-        # is the only severity signal the text output carries.
+        # `vet: ` — `vet.exe: ` on Windows, see DIAG — prefixes the load and
+        # type-check failures: the package did not compile. That is go's own
+        # distinction, not one invented here, and it is the only severity
+        # signal the text output carries.
         severity = "error" if m.group("load") else "warning"
         where = attribute(reported, target=target, base=base)
         if where == "this":
