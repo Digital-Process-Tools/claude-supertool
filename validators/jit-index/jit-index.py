@@ -66,6 +66,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
 from refusal import absent, skipped  # noqa: E402
+from linebreaks import split_lines  # noqa: E402
 
 TOOL = "jit-index"
 
@@ -137,7 +138,7 @@ def _rows(text):
     shape_errors = []
     parsed = 0
     tabbed = 0
-    for line, raw in enumerate(text.splitlines(), 1):
+    for line, raw in enumerate(split_lines(text), 1):
         if not raw.strip():
             continue
         fields = raw.split(TAB)

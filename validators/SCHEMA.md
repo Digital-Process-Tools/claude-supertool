@@ -142,6 +142,14 @@ The naive join this paragraph used to warn against is still wrong and for the re
 
 The last row is §"A located diagnostic still has to be about *this* file (#754)" above, and it is deliberately **not** this key: nothing was attempted, so nothing failed.
 
+## Split a tool's output on LF, CR and CRLF — never `str.splitlines()` (#1486)
+
+`str.splitlines()` also breaks on U+2028, U+2029, U+0085, VT and FF. No analyser adapted here frames its output that way, and most of them echo the source text they are complaining about verbatim into the diagnostic. So one of those five characters inside a string literal in the file under validation ends the adapter's idea of a line mid-diagnostic, the fragment re-matches the adapter's own regex, and it is published as a **second finding**. Measured on `go-vet`: `go vet` emitted one diagnostic, the receipt said `count: 2`.
+
+That is arithmetic, not cosmetics. `count` is the number `_validator_regressed` subtracts, so a file that mints itself an extra record partly chooses its own baseline — and on a `rollback_on_fail` validator that baseline reverts edits.
+
+Use `split_lines()` from `validators/common/linebreaks.py` for anything **parsed** as a line-oriented protocol. `str.splitlines()` stays correct where a message is being **flattened** for display: splitting on every separator is what neutralises them, and `terraform-check.plain()` and `pyright`'s message join both want that. `tests/test_validators_splitlines_1486.py` refuses any new call site that is neither.
+
 Adapters do not spell any of this. `validators/common/source_context.py` returns the fields and the adapter spreads them — `{..., **context_fields(target, line)}` or `err.update(context_fields(target, line))`. There is no `source_context()` function to call: it returned a list with nowhere to put the reason, and two adapters had already grown private copies of it.
 
 ## Contract

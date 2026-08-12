@@ -22,6 +22,7 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
+from linebreaks import split_lines
 from refusal import absent, tool_fault
 
 TOOL = "terraform-check"
@@ -75,7 +76,7 @@ def is_fmt_verdict(stdout: str, file: str) -> bool:
         return False
     if "--- old/" in body or "+++ new/" in body:
         return True
-    first = body.splitlines()[0].strip()
+    first = split_lines(body)[0].strip()
     return first == file or os.path.basename(first) == os.path.basename(file)
 
 

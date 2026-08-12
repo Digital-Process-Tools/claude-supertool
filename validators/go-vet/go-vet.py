@@ -48,6 +48,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from pkg_paths import attribute
 from refusal import absent, skipped, tool_fault
+from linebreaks import split_lines
 
 TOOL = "go-vet"
 BINARY = "go"
@@ -143,7 +144,7 @@ def _truncation_notice(hidden: int) -> dict:
 
 def _parse(output: str, target: str, base: str) -> list:
     errors = []
-    for raw in output.splitlines():
+    for raw in split_lines(output):
         text = raw.strip()
         if not text or text.startswith("#"):
             continue  # `# example.com/probe/pkg` names the package, not a fault
@@ -238,7 +239,7 @@ def main() -> None:
     # A refusal the pre-flight above did not predict — a `go.mod` that exists
     # but names a module go will not load, for instance. Quote go's own line.
     if "go.mod file not found" in output or "cannot find main module" in output:
-        first = (output.strip().splitlines() or [""])[0][:200]
+        first = (split_lines(output.strip()) or [""])[0][:200]
         emit(skipped(TOOL, file,
                      "go declined to load a module for this file, so it was NOT "
                      "vetted: " + first, ms()))

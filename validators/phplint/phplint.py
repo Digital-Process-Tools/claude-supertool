@@ -21,6 +21,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import tool_fault
+from linebreaks import split_lines
 
 # `php -l` exits non-zero for two unrelated reasons, and until #745 this adapter
 # published both as `code: "parse"` at whatever line number a bare
@@ -48,11 +49,15 @@ def diagnostic_line(out: str) -> int | None:
 
     Anchored to the diagnostic itself rather than searched across the whole
     output, so a startup warning printed first cannot donate its line 0 to a
-    genuine parse error further down.
+    genuine parse error further down. Anchored **within** the line too, after
+    the banner: the same donation happens inside one line — PHP prints a
+    startup warning and a parse error on one line often enough — and it was
+    only ever prevented across lines (#1486).
     """
-    for raw in out.splitlines():
-        if DIAGNOSTIC_BANNER.search(raw):
-            m = re.search(r"on line (\d+)", raw)
+    for raw in split_lines(out):
+        banner = DIAGNOSTIC_BANNER.search(raw)
+        if banner:
+            m = re.search(r"on line (\d+)", raw[banner.end():])
             if m:
                 return int(m.group(1))
     m = LOCATED.search(out)

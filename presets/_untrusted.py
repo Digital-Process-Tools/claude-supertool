@@ -322,7 +322,10 @@ _LINE_SEPARATORS = frozenset((chr(0x2028), chr(0x2029)))
 #
 # The pattern is `_supertool._LINE_BREAK_PATTERN` restated. A preset runs with
 # `presets/` on `sys.path`, not the repo root, so it cannot import the core and
-# the definition is stated twice by necessity -- pinned equal by
+# the definition is stated three times by necessity -- here, in the core, and in
+# `validators/common/linebreaks.py`, which a validator adapter reaches for the
+# same reason and got for the same defect (#1486). Each copy is pinned equal to
+# the core's by its own
 # `test_split_lines_matches_the_core_conservative_definition` (#1081).
 _LINE_BREAK_RE = re.compile("|".join((_CRLF, _CR, _LF)))
 

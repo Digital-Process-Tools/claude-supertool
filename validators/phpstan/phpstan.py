@@ -22,6 +22,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import is_refusal, skipped
+from linebreaks import split_lines
 
 # Extra refusal substrings (comma-separated), opt-in per repo.
 SKIP_PATTERNS_ENV = "PHPSTAN_SKIP_PATTERNS"
@@ -29,7 +30,7 @@ SKIP_PATTERNS_ENV = "PHPSTAN_SKIP_PATTERNS"
 
 def first_line(text: str) -> str:
     """The tool's own words, so the reader can fix the config that caused it."""
-    for line in (text or "").splitlines():
+    for line in split_lines(text or ""):
         stripped = line.strip()
         if stripped:
             return stripped
@@ -43,7 +44,7 @@ def refusal_line(text: str) -> str:
     preamble. Quoting the preamble as the skip reason would name the config
     file and say nothing about why the file went unanalysed.
     """
-    for line in (text or "").splitlines():
+    for line in split_lines(text or ""):
         stripped = line.strip()
         if stripped and is_refusal(stripped, SKIP_PATTERNS_ENV):
             return stripped

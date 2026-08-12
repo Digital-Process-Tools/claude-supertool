@@ -35,6 +35,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, skipped, tool_fault
+from linebreaks import split_lines
 
 TOOL = "cargo-check"
 INSTALL_HINT = ("cargo not found on PATH — this file was NOT compiled "
@@ -310,7 +311,7 @@ def _parse_errors(output: str, target_file: str, ws_root: str | None = None,
     target = Path(target_file).resolve()
     # Short format: "path/to/file.rs:LINE:COL: error[EXXXX]: message"
     pattern = re.compile(r"^(.+?):(\d+):(\d+):\s+(error|warning)\[?([^\]]*)\]?:\s+(.+)$")
-    for line in output.splitlines():
+    for line in split_lines(output):
         m = pattern.match(line)
         if m:
             severity = m.group(4)

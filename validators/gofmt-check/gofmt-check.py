@@ -22,6 +22,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, tool_fault
+from linebreaks import split_lines
 
 TOOL = "gofmt-check"
 INSTALL_HINT = ("gofmt not found on PATH — this file was NOT format-checked "
@@ -53,7 +54,7 @@ def parse_diagnostics(out: str, file: str) -> list[dict]:
     fake-binary fixture is POSIX-only (see tests/test_adapter_tool_vs_file_753.py).
     """
     errors = []
-    for raw in out.splitlines():
+    for raw in split_lines(out):
         m = DIAGNOSTIC.match(raw)
         if m:
             ln = int(m.group("line"))

@@ -17,6 +17,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import tool_fault
+from linebreaks import split_lines
 
 # libxml announces a finding about the document as `file:LINE: parser error : ...`.
 # Every other way it exits non-zero says nothing about the document's XML:
@@ -41,7 +42,7 @@ def parse_diagnostics(out: str, file: str) -> list[dict]:
     """Every located diagnostic in libxml's stderr. Empty means it did not
     speak about the document."""
     errors = []
-    for line in out.splitlines():
+    for line in split_lines(out):
         m = DIAGNOSTIC.match(line)
         if m:
             ln = int(m.group(1))

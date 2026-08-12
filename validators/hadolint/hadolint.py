@@ -22,6 +22,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent
+from linebreaks import split_lines
 
 TOOL = "hadolint"
 INSTALL_HINT = ("hadolint not found on PATH — this Dockerfile was NOT linted "
@@ -99,7 +100,7 @@ def main() -> None:
     errors = []
     pattern = re.compile(r"^(?:.*?):(\d+)\s+((?:DL|SC)\d+)\s+(\w+):\s+(.+)$")
     output = (result.stdout + result.stderr).strip()
-    for line in output.splitlines():
+    for line in split_lines(output):
         m = pattern.match(line)
         if m:
             lineno, code, severity, msg = m.groups()

@@ -1090,6 +1090,8 @@ Two optional output fields worth knowing: `source_context` (array of source line
 
 Do not build `source_context` by hand. `validators/common/source_context.py` returns it as **fields** — `{..., **context_fields(target, line)}` — because a file that could not be read has to be distinguishable from a file with no lines to show, and a bare `[]` is not (#1446). A read that failed comes back as an empty `source_context` plus a `context_unavailable` reason, and the finding itself is untouched: the tool located a defect, and that claim does not depend on reprinting the line. SCHEMA.md §"An empty `source_context` and an unreadable file are two different facts (#1446)" is the table.
 
+Do not split a tool's output with `str.splitlines()` either. It breaks on U+2028, U+2029, U+0085, VT and FF as well as on LF/CR/CRLF, and every analyser here frames by LF while most echo the offending source text into the message — so one of those characters inside a string literal splits a diagnostic in two and the fragment is published as a second finding (#1486). `count` is what `_validator_regressed` subtracts, so the file under validation partly picks its own baseline. `validators/common/linebreaks.py` has the two-line `split_lines()`; SCHEMA.md §"Split a tool's output on LF, CR and CRLF" is the rule, including the case where `str.splitlines()` is still right.
+
 ## resolve — map a source file to its real target
 
 By default a validator runs against the file the op touched. The optional `resolve` key lets it run against a *different* file derived from that one — the canonical case is "edited a source file, run its test." `resolve` is a shell cmd that takes the edited file (`{file}`) and prints the path to run instead:

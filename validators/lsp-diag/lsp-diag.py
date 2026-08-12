@@ -20,6 +20,10 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), os.pardir, "common"))
+from linebreaks import split_lines  # noqa: E402
+
 
 def emit(obj: dict) -> None:
     print(json.dumps(obj))
@@ -38,7 +42,7 @@ def parse_cclsp_diagnostics(text: str, file: str) -> list[dict]:
         return []
 
     errors: list[dict] = []
-    for line in text.splitlines():
+    for line in split_lines(text):
         line = line.strip()
         if not line:
             continue
@@ -124,7 +128,7 @@ def main() -> None:
     # by the same op_name guard and left `{"ok": true, "count": 0}` — an
     # infrastructure failure rendered as a pass (#482). The receipt is now a
     # pure skip: nothing for a consumer keying off `ok` to misread.
-    infra = next((ln.strip() for ln in text.splitlines()
+    infra = next((ln.strip() for ln in split_lines(text)
                   if ln.strip().startswith("diag:")), None)
     if infra:
         emit({"tool": "lsp-diag", "file": file, "duration_ms": ms,
