@@ -1957,6 +1957,44 @@ def _valid_op_names() -> List[str]:
 # inferred below instead, where the rule can be stated and argued with.
 _OP_SYNONYMS = {"write": "paste", "vi": "vim"}
 
+# The ops that bring a file into existence, in the order a refusal should offer
+# them (#1334, #1372). `paste` writes a whole file and its parent dirs; `append`
+# creates too, and extends when the file is already there.
+#
+# Hand-written, and there is no derived alternative to reach for. `replaces` —
+# the registry key the raw-command guard quotes so its advice cannot go stale
+# (#1376) — maps a raw *shell command* onto an op, and only preset and project
+# ops carry one. Every name here is a built-in, and a built-in has no registry
+# entry at all: `registry:paste` answers "'paste' is a built-in, not a preset or
+# project op, so it has no registry entry". `help:paste` reads `.supertool.json`
+# and returns nothing outside a project. So there is no shipped source for these
+# descriptions, and a hand-written tuple is the honest answer rather than the
+# lazy one.
+#
+# What stops it rotting is the same thing that pins `_OP_SYNONYMS`: a test
+# enumerating both tables against `_valid_op_names()`, which fails the day a
+# named target is renamed or dropped.
+_CREATING_OPS = ("paste", "append")
+
+
+def _create_instead_hint() -> str:
+    """The "there is nothing here to edit" clause, naming both causes.
+
+    Deliberately does NOT choose between them. `file not found` from a write op
+    has two causes and only one wants a creating op: a caller who meant to
+    create, and a caller who typo'd a path to a file that does exist. For the
+    second, taking the suggestion writes a new file at the wrong path and leaves
+    the real one unedited — strictly worse than the refusal, which is #1424's
+    `misdirects` class. So both readings are stated and the `tried:` line above
+    is what the caller decides on.
+    """
+    return (
+        f"to create it instead: {_CREATING_OPS[0]}:::PATH:::CONTENT writes a "
+        f"whole file and its parent dirs, {_CREATING_OPS[1]} creates or "
+        f"extends. If the path is a typo, either would write a second file and "
+        f"leave the real one unedited — check `tried:` above first."
+    )
+
 # Below four characters, one edit is not a typo signal. `lsx` is one edit from
 # `ls`, `dif` from `diff`, `hea` from `head` and `heap`; suggesting on that is
 # how a refusal sends its reader one round-trip FURTHER from the answer than
@@ -2915,7 +2953,8 @@ def _preset_path_containment(
 def _path_not_found(path: str, *, label: str = "path",
                      suggest: Optional[str] = None,
                      op: Optional[str] = None,
-                     call_prefix: Optional[str] = None) -> str:
+                     call_prefix: Optional[str] = None,
+                     creates: bool = False) -> str:
     """The "not found" error, naming the path it actually tried (#624).
 
     `ERROR: file not found: src/foo.py` is true and useless: it cannot tell a
@@ -2936,6 +2975,15 @@ def _path_not_found(path: str, *, label: str = "path",
     its PATH argument as an all-digit token that looks like the LINE its
     sibling `around_line` wants — should say that instead of pointing at the
     one thing that provably did not cause this failure.
+
+    `creates`, when set by a *write* op, appends the clause naming the ops that
+    would have made the file (#1334, #1372). It renders on one arm only: the
+    generic `wrong CWD?` fallback, where nothing more specific was identified.
+    Where the project-root branch or a `suggest` fired, the cause is already
+    known and is not "the file was never there" — offering `paste` beside a
+    positively diagnosed cwd drift would send the caller to write a second copy
+    under the wrong directory. Read ops never pass it: nothing was to be
+    written, so there is no next step to name.
 
     `op` asks this helper to derive that suggestion itself, from the two
     shapes known to produce a joined-up filename: a comma list (#921) and a
@@ -2969,6 +3017,25 @@ def _path_not_found(path: str, *, label: str = "path",
         # conclusion.
         suggest = ("`~` was not expanded: no such user. Pass an absolute "
                    "path, or `~/` for your own home.")
+    # Exists, wrong kind. Three states, not two: `edit:::a:::b:::docs` used to
+    # answer `file not found: docs` about a directory sitting right there — an
+    # absence this helper produced, read as an absence in the world — and every
+    # line after it (cwd drift, and since #1334 the create clause) was advice
+    # for a path that is not the problem. Found writing #1334's create clause,
+    # which would otherwise have offered to `paste` a whole file over a
+    # directory.
+    if os.path.isdir(path):
+        return (
+            # `{path} is a directory` rather than #630's `{field} is a
+            # directory, not a file: {path}`. That shape reads well there
+            # because the label is a payload FIELD name (`body_file`); here it
+            # is the generic noun "file", and "file is a directory, not a file"
+            # is not a sentence.
+            f"ERROR: {path} is a directory, not a file\n"
+            f"  tried: {tried} (cwd: {os.getcwd()})\n"
+            f"  '{op or label}' takes a single file. `ls:{path}` or "
+            f"`tree:{path}` lists what is in it.\n"
+        )
     lines = [
         f"ERROR: {label} not found: {path}",
         f"  tried: {tried} (cwd: {os.getcwd()})",
@@ -2991,6 +3058,8 @@ def _path_not_found(path: str, *, label: str = "path",
             "  wrong CWD? Prefix the call with cwd:PATH to run it from "
             "elsewhere."
         )
+        if creates:
+            lines.append(f"  {_create_instead_hint()}")
     return "\n".join(lines) + "\n"
 
 
@@ -4597,13 +4666,25 @@ _GREP_AROUND_ALL_IN_N_SLOT = (
 # guessed: honouring it as unlimited would hand a caller who typed one character
 # an unbounded dump into a shared output budget, and substituting the default
 # means the number that ran was never the number that was typed.
-_GREP_ZERO_LIMIT = (
-    'ERROR: grep LIMIT 0 is not "unlimited" here, and supertool will not guess '
-    "which of the two it meant. Uncapped output would land in the caller's "
-    "context before it could be declined, and silently substituting the default "
-    "would mean the LIMIT that ran was never the LIMIT that was typed. Pass a "
-    "positive LIMIT (grep:PATTERN:PATH:200) or omit it for the default." + chr(10)
-)
+# A function, not the constant it was until #1334. The refusal names two
+# readings and used to give a spelling for neither, so a caller who meant either
+# one paid a round-trip to find it — while the op has accepted BOTH since #1328.
+# The default is resolved here rather than frozen at import, because
+# `grep.max_results` is a per-project setting: naming MAX_GREP_RESULTS while a
+# project's own cap was the one about to run is this repo's own defect, a number
+# the tool produced being read as a number about the world.
+def _grep_zero_limit() -> str:
+    default = _get_op_int("grep", "max_results", MAX_GREP_RESULTS)
+    return (
+        'ERROR: grep LIMIT 0 is not "unlimited" here, and supertool will not '
+        "guess which of the two it meant. Uncapped output would land in the "
+        "caller's context before it could be declined, and silently "
+        "substituting the default would mean the LIMIT that ran was never the "
+        "LIMIT that was typed. Both readings have a spelling: "
+        f"grep:PATTERN:PATH:{_GREP_ALL_TOKEN} for every match, or omit LIMIT "
+        f"for the default of {default} (grep:PATTERN:PATH:200 for any other "
+        "cap)." + chr(10)
+    )
 
 
 def op_grep(pattern: str, path: str = ".", limit: int = 0,
@@ -7844,7 +7925,7 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
 
     # Validate path exists
     if path != "." and not os.path.isfile(path) and not os.path.isdir(path):
-        return _path_not_found(path, op="replace")
+        return _path_not_found(path, op="replace", creates=True)
 
     candidates = _grep_candidates(path, _get_exclude_paths("replace"))
     if not candidates:
@@ -9180,7 +9261,11 @@ def op_edit(old: str, new: str, path: str) -> str:
     if not path:
         return "ERROR: empty path\n"
     if not os.path.isfile(path):
-        return f"ERROR: file not found: {path}\n"
+        # Through the shared helper, not a bare f-string. Until #1334 this arm
+        # printed the path and nothing else, so `edit` had neither the `tried:`
+        # line #1300 added nor the cwd-drift branch — the two things that make
+        # naming a creating op safe rather than a guess.
+        return _path_not_found(path, label="file", op="edit", creates=True)
 
     try:
         # surrogateescape: lone bytes that aren't valid UTF-8 round-trip via
@@ -9434,7 +9519,8 @@ def op_replace_lines(path: str, start: int, end: int, content: str) -> str:
     if not path:
         return "ERROR: empty path\n"
     if not os.path.isfile(path):
-        return f"ERROR: file not found: {path}\n"
+        return _path_not_found(path, label="file", op="replace_lines",
+                               creates=True)
     if start < 1:
         return f"ERROR: start ({start}) must be >= 1\n"
     if end < 0:
@@ -10530,7 +10616,7 @@ def _op_vim_impl(path: str, script: str) -> str:
     if not path:
         return "ERROR: empty path\n"
     if not os.path.isfile(path):
-        return f"ERROR: file not found: {path}\n"
+        return _path_not_found(path, label="file", op="vim", creates=True)
     if not script.strip():
         return "ERROR: empty script\n"
 
@@ -21393,7 +21479,7 @@ def _read_op_from_payload(op: str, payload: Any, no_exclude: bool = False) -> st
                 p_limit = _payload_grep_limit(
                     p, _get_op_int("grep", "max_results", MAX_GREP_RESULTS))
                 if p_limit == 0:
-                    return _GREP_ZERO_LIMIT
+                    return _grep_zero_limit()
                 return op_grep(
                     pattern, path, p_limit,
                     _payload_int(p, "context", 0),
@@ -21651,6 +21737,43 @@ def _reorder_batch_for_snapshot(batch_ops: List[Any]) -> Tuple[List[Any], str]:
     return new_ops, ""
 
 
+# Ops whose payload route edits an existing file and cannot create one. The
+# roster is the same one `_CREATING_OPS` is the answer to, from the other side.
+_PAYLOAD_OPS_THAT_CANNOT_CREATE = ("edit", "replace", "replace_lines", "vim")
+
+
+def _missing_field_create_clause(op: str, name: str,
+                                 lower_payload: Dict[str, Any]) -> str:
+    """Say the file is not there, when that is why the field cannot help (#1334).
+
+    `edit:@-` with `path` + `new` and no `old` refuses by naming the field, and
+    the field is not the reader's problem: when nothing exists at `path`, no
+    spelling of `old` would have worked and `edit` does not create. Filling in a
+    `create = true` that `edit` has never had is the shape this was reported in,
+    and that key is silently dropped one line further on.
+
+    Conditioned on the path actually being absent, so a genuine missing-field
+    typo on a file that IS there keeps the message it had — naming `paste` there
+    would point at whole-file overwrite as the remedy for a forgotten argument,
+    which is the `misdirects` trade this must not make.
+    """
+    if op not in _PAYLOAD_OPS_THAT_CANNOT_CREATE:
+        return ""
+    path = lower_payload.get("path")
+    if not isinstance(path, str) or not path:
+        return ""
+    try:
+        if os.path.exists(os.path.expanduser(path)):
+            return ""
+    except (OSError, ValueError):
+        return ""
+    return (
+        f"\n  and there is no file at {path!r}, so no value of "
+        f"'{name}' would have worked — '{op}' edits, it never creates. "
+        f"{_create_instead_hint()}"
+    )
+
+
 def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
     """Convert a JSON payload dict to (parts, replace_all) for the given op.
 
@@ -21686,6 +21809,7 @@ def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
                 continue
             raise ValueError(
                 f"@file payload for op '{op}' missing required field '{name}'"
+                + _missing_field_create_clause(op, name, lower_payload)
             )
         value = lower_payload[name]
         if variadic:
@@ -22147,7 +22271,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             if _contained:
                 return _receipt(header, _contained)
             if limit == 0:
-                return _receipt(header, _GREP_ZERO_LIMIT)
+                return _receipt(header, _grep_zero_limit())
             if limit == GREP_LIMIT_ALL_MISPLACED:
                 return _receipt(header, _GREP_ALL_OUTSIDE_LIMIT_SLOT)
             # Before the generic hint, because that one keys off "the path
@@ -22177,7 +22301,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             else:
                 ga_limit = int(ga_limit_tok) if ga_limit_tok else 10
             if ga_limit == 0:
-                return _receipt(header, _GREP_ZERO_LIMIT)
+                return _receipt(header, _grep_zero_limit())
             body = op_grep(ga_pattern, ga_path, ga_limit, ga_context,
                            count_only=False, no_exclude=no_exclude)
         elif op == "wc":
