@@ -464,8 +464,20 @@ def test_main_first_push_sets_upstream(capsys) -> None:
             return _proc("origin/feat\n", 0) if any(c[0] == "push" for c in calls) else _proc("", 1)
         if args[0] == "rev-parse" and args[1] == "--short":
             return _proc("ccc3333\n", 0)
+        if args[:2] == ["rev-parse", "--git-path"]:
+            # Where git says the pre-push hook would live. The receipt asks
+            # before it relays one (#1448); a stub that answers nothing here is
+            # a git that did not answer, and the receipt says UNKNOWN — which
+            # is right, and is not what this test is about.
+            return _proc(".git/hooks/pre-push\n", 0)
         if args[0] == "push":
-            return _proc("*\tHEAD:refs/heads/feat\t[new branch]\n", 0)
+            # The whole porcelain block, header included. The `To <url>` line
+            # is not decoration: it is where git's own output starts, and it is
+            # what tells the hook relay which lines above it came from a
+            # pre-push hook (#1448). A stub that omits it is a push git never
+            # produced, and the receipt correctly declines to attribute it.
+            return _proc("To origin\n*\tHEAD:refs/heads/feat\t[new branch]\n"
+                         "Done\n", 0)
         if args[:2] == ["rev-list", "--left-right"]:
             return _proc("0\t0\n", 0)
         return _proc("", 0)
