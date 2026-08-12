@@ -15750,9 +15750,13 @@ def _guard_help_state(argv: Sequence[str]) -> str:
     option's value from a request needs per-subcommand arity this guard does
     not carry and will not grow (`_GUARD_GLOBAL_OPTIONS` says why case work per
     utility goes stale one utility at a time). So the ambiguous case is scored
-    and blocked, with a note: a wrong block on `git push --force -h` is legible
-    and one flag away from a working `git push -h`, while the other direction
-    is a silent `git push`. Only the guard's *positive* claim can be wrong here
+    and blocked, with a note: a wrong block on `git push origin -o -h main` is
+    legible and one flag away from a working `git push -h`, while the other
+    direction is a silent `git push`. (Not `git push --force -h`, which this
+    docstring cited until #1452: `--force` is an `unless_flag` of every
+    `git push` entry, so that argv is un-claimed before the classifier runs and
+    the illustration never blocked at all.) Only the guard's *positive* claim
+    can be wrong here
     — `clean` asserting nothing is replaced about a command that pushes is the
     absence-read-as-presence defect this repository keeps filing.
     """
@@ -15949,8 +15953,8 @@ def guard_command_words(config: Optional[Dict[str, Any]] = None
     return tuple(sorted({r.argv[0] for r in replacements if r.argv}))
 
 
-def _guard_excluded(replacement: _Replacement, argv: Sequence[str]) -> bool:
-    """Does this argv carry a flag that un-claims the entry? (#1394)
+def _guard_is_exclusion(replacement: _Replacement, token: str) -> bool:
+    """Does this one token name a flag that un-claims the entry? (#1394)
 
     Keyed on the flag, never on its value. `glab api -X GET` is a read and is
     excluded anyway, which costs a *missed block* — the caller runs a raw read
@@ -15958,46 +15962,97 @@ def _guard_excluded(replacement: _Replacement, argv: Sequence[str]) -> bool:
     in: `replaces` has no per-command escape hatch, so a wrong block is got
     past only by `raw_command_guard: false`, which disarms every other
     mapping in the repository with it.
+    """
+    if _GUARD_ANY_FLAG in replacement.unless_flag:
+        return True
+    # `--method=POST` is the same flag as `--method POST`.
+    stem = token.split("=", 1)[0]
+    if stem in replacement.unless_flag:
+        return True
+    # A single-dash token is a cluster of single-letter flags, so an entry
+    # excluding `-s` excludes `-sb` too — and `-sb` is the *common* spelling
+    # of the intent `-s` was excluded for (`git status -sb`). Comparing whole
+    # tokens made every short-flag exclusion, present and future, defeatable
+    # by clustering.
+    #
+    # This widens exclusions, so the guard blocks *less* — the direction this
+    # function is allowed to be wrong in, per the docstring above. The
+    # positive `flag` matcher is deliberately NOT given the same treatment:
+    # there it would block more, with no per-command way past.
+    #
+    # The cost, stated because it is real: a short flag carrying a clustered
+    # *value* whose text happens to spell an excluded letter is excluded too —
+    # `git push -ofoo` reads as carrying `-f`. Telling that from `-sb` needs
+    # per-flag arity this guard does not have, and it errs toward allowing.
+    # `--` tokens are never expanded, which is what keeps `--foo` from
+    # matching an excluded `-f`.
+    return bool(not stem.startswith("--") and any(
+        "-" + letter in replacement.unless_flag for letter in stem[1:]))
+
+
+def _guard_exclusion_slots(replacement: _Replacement, argv: Sequence[str]
+                           ) -> Tuple[List[str], List[str]]:
+    """The exclusion tokens in this argv, split by the slot they stand in.
+
+    Returns `(standing, valued)`: tokens where a program reads a flag, and
+    tokens sitting immediately after another flag, where the same text may be
+    that option's value instead.
+    """
+    standing: List[str] = []
+    valued: List[str] = []
+    if not replacement.unless_flag:
+        return standing, valued
+    options = _guard_options(argv)
+    for i, token in enumerate(options):
+        if not _guard_is_flag(token):
+            continue
+        if not _guard_is_exclusion(replacement, token):
+            continue
+        # A long option carrying its value attached (`--title=x`) leaves no
+        # slot open, so what follows stands on its own. A bare `-t` may or may
+        # not take one, and telling those apart is per-subcommand arity this
+        # guard does not carry (`_GUARD_GLOBAL_OPTIONS` says why).
+        prev = options[i - 1] if i else ""
+        if i and _guard_is_flag(prev) and "=" not in prev:
+            valued.append(token)
+        else:
+            standing.append(token)
+    return standing, valued
+
+
+def _guard_exclusion_state(replacement: _Replacement, argv: Sequence[str]
+                           ) -> str:
+    """Does this argv carry a flag that un-claims the entry? Three answers.
+
+    ``none``      no exclusion the entry declares is present.
+    ``excluded``  one stands where a program reads a flag. The entry does not
+                  claim this argv, and the guard can say why.
+    ``value``     every exclusion present sits immediately after another flag,
+                  so it may be that option's value. `gh pr create -t
+                  --dry-run -b y` creates a pull request **titled**
+                  `--dry-run`, and reading its `--dry-run` as an exclusion made
+                  the guard answer `clean` about a command that opens a PR
+                  (#1450).
+
+    `value` un-claims the entry exactly as `excluded` does, and is disclosed
+    rather than blocked. This is the opposite call to `_guard_help_state`'s on
+    the same ambiguity, and the asymmetry is the whole point: a help flag is
+    terminal, so blocking its slot costs a legible wrong block, while the
+    flags entries exclude are the ones people combine — seven shipped
+    invocations, five of them previews of a destructive push
+    (`git push --force-with-lease --dry-run`), flip clean -> blocked if this
+    slot is scored. Blocking a preview and naming `git-push` as the substitute
+    is the `misdirects` shape the v0.35.0 audit named: the refusal performs
+    what the blocked command declined to.
 
     A help flag un-claims every entry, whatever it declares, and is **not**
     handled here — it is a property of the whole segment rather than of one
-    entry, so `guard_command` applies it once via `_guard_help_state`. It lived
-    in this loop until the v0.36.0 round-1 audit, where scanning every token of
-    `_guard_options` for `-h` let a help flag in a value slot un-claim all 28
-    mappings.
+    entry, so `guard_command` applies it once via `_guard_help_state`.
     """
-    if not replacement.unless_flag:
-        return False
-    for token in _guard_options(argv):
-        if not _guard_is_flag(token):
-            continue
-        if _GUARD_ANY_FLAG in replacement.unless_flag:
-            return True
-        # `--method=POST` is the same flag as `--method POST`.
-        stem = token.split("=", 1)[0]
-        if stem in replacement.unless_flag:
-            return True
-        # A single-dash token is a cluster of single-letter flags, so an entry
-        # excluding `-s` excludes `-sb` too — and `-sb` is the *common*
-        # spelling of the intent `-s` was excluded for (`git status -sb`).
-        # Comparing whole tokens made every short-flag exclusion, present and
-        # future, defeatable by clustering.
-        #
-        # This widens exclusions, so the guard blocks *less* — the direction
-        # this function is allowed to be wrong in, per the docstring above.
-        # The positive `flag` matcher is deliberately NOT given the same
-        # treatment: there it would block more, with no per-command way past.
-        #
-        # The cost, stated because it is real: a short flag carrying a
-        # clustered *value* whose text happens to spell an excluded letter is
-        # excluded too — `git push -ofoo` reads as carrying `-f`. Telling
-        # that from `-sb` needs per-flag arity this guard does not have, and it
-        # errs toward allowing. `--` tokens are never expanded, which is what
-        # keeps `--foo` from matching an excluded `-f`.
-        if not stem.startswith("--") and any(
-                "-" + letter in replacement.unless_flag for letter in stem[1:]):
-            return True
-    return False
+    standing, valued = _guard_exclusion_slots(replacement, argv)
+    if standing:
+        return "excluded"
+    return "value" if valued else "none"
 
 
 def _guard_flag_values(argv: Sequence[str], flag: str) -> List[str]:
@@ -16081,6 +16136,22 @@ def _guard_replacements(config: Optional[Dict[str, Any]] = None
     return out, notes
 
 
+def _guard_argv_matches(replacement: _Replacement, argv: Sequence[str]
+                        ) -> bool:
+    """Is this the invocation the entry declares, before any exclusion?
+
+    The command word is compared by the name a shell would run, so
+    `/opt/homebrew/bin/gh` and `gh.exe` are the `gh` the registry declares
+    (#1389). Only index 0: an *argument* that happens to look like a path is a
+    path, and normalising it would match a different command.
+    """
+    if not argv:
+        return False
+    n = len(replacement.argv)
+    candidate = (_guard_command_word(argv[0]),) + tuple(argv[1:n])
+    return candidate == replacement.argv
+
+
 def _guard_score(replacement: _Replacement, argv: Sequence[str]
                  ) -> Optional[int]:
     """How specifically this entry matches, or None if it does not.
@@ -16090,17 +16161,9 @@ def _guard_score(replacement: _Replacement, argv: Sequence[str]
     are the same command word and different ops, so the bare `gh pr view` entry
     must lose to whichever flagged entry also matched.
     """
-    n = len(replacement.argv)
-    if not argv:
+    if not _guard_argv_matches(replacement, argv):
         return None
-    # The command word is compared by the name a shell would run, so
-    # `/opt/homebrew/bin/gh` and `gh.exe` are the `gh` the registry declares
-    # (#1389). Only index 0: an *argument* that happens to look like a path is
-    # a path, and normalising it would match a different command.
-    candidate = (_guard_command_word(argv[0]),) + tuple(argv[1:n])
-    if candidate != replacement.argv:
-        return None
-    if _guard_excluded(replacement, argv):
+    if _guard_exclusion_state(replacement, argv) != "none":
         # "This entry does not claim this argv", never "this argv is
         # allowed" (#1394). The two differ the moment a second, broader entry
         # matches the same command, and the difference is a safety property:
@@ -16167,6 +16230,38 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
             score = _guard_score(replacement, scoring)
             if score is not None:
                 scored.append((score, replacement))
+        # An exclusion consumed from a possible value slot un-claims its entry
+        # the same way a standing one does, and the guard cannot tell the two
+        # apart — so the segment stops being `clean` and says so (#1450). Kept
+        # out of `_guard_score`, which answers "does this entry claim this
+        # argv" and has nowhere to put a reason. Deduplicated per token rather
+        # than per entry: five `git push` mappings share one exclusion list,
+        # and five copies of one sentence is the amplification #1454 is about.
+        # A help flag un-claims the segment for a reason the guard is sure of,
+        # so there is no undecidable exclusion left to disclose.
+        ambiguous = ([] if _guard_help_state(scoring) == "help"
+                     else replacements)
+        for replacement in ambiguous:
+            if not _guard_argv_matches(replacement, scoring):
+                continue
+            standing, valued = _guard_exclusion_slots(replacement, scoring)
+            if standing:
+                # One exclusion where a program reads a flag decides the whole
+                # argv, so there is nothing undecidable left: `git commit
+                # --amend --dry-run` is un-claimed by `--amend`, whatever the
+                # slot `--dry-run` stands in.
+                continue
+            for token in valued:
+                ambiguity = (
+                    "`" + _flat_field(token) + "` in `"
+                    + _flat_field(" ".join(scoring)) + "` sits immediately "
+                    "after another flag, so an exclusion that un-claims an op "
+                    "could not be told from that option's value — `gh pr "
+                    "create -t --dry-run -b y` creates a pull request titled "
+                    "`--dry-run`. Nothing was blocked and nothing here was "
+                    "read as replaced")
+                if ambiguity not in notes:
+                    notes.append(ambiguity)
         if not scored:
             continue
         # Asked once per segment rather than per entry: a help flag un-claims
@@ -16288,22 +16383,11 @@ def guard_refusal(verdict: GuardVerdict) -> str:
     # value slot — and dropping it here made a positive match render as though
     # nothing had been left unanswered. Quoted through `_guard_quote` because a
     # registry-derived note carries an op name somebody else wrote (#1391).
-    shown_notes = 0
-    for note in verdict.notes:
-        if shown_notes >= _GUARD_MAX_NOTES or spent >= _GUARD_TEXT_BUDGET:
-            break
-        text = _guard_quote(note, min(_GUARD_DESC_CAP,
-                                      _GUARD_TEXT_BUDGET - spent))
-        if not text:
-            break
-        spent += len(text)
-        shown_notes += 1
+    shown_notes, hidden_notes, spent = _guard_notes(verdict.notes, spent)
+    for text in shown_notes:
         lines.append("Also: " + text)
-    hidden_notes = len(verdict.notes) - shown_notes
     if hidden_notes:
-        lines.append(f"and {hidden_notes} further note(s) about what this "
-                     f"matcher could not read are not shown — "
-                     f"supertool 'guard:COMMAND' prints one segment at a time.")
+        lines.append(_guard_notes_hidden(hidden_notes) + ".")
     if verdict.notes:
         lines.append("")
     if any(match.project for match in verdict.matches[:shown]):
@@ -16326,10 +16410,57 @@ def guard_refusal(verdict: GuardVerdict) -> str:
     return "\n".join(lines)
 
 
+def _guard_notes_hidden(hidden: int) -> str:
+    """What was left out, counted — a cut nobody is told about is not a cut."""
+    return (f"and {hidden} further note(s) about what this matcher could not "
+            f"read are not shown — supertool 'guard:COMMAND' prints one "
+            f"segment at a time")
+
+
+def _guard_notes(notes: Sequence[str], spent: int = 0
+                 ) -> Tuple[List[str], int, int]:
+    """The notes that fit the message's text budget, and how many did not.
+
+    One implementation for every renderer that joins `verdict.notes` (#1454).
+    #1449 put a budget on `guard_refusal()` after 200 chained ambiguous
+    segments produced a 61,942-character refusal, and left the two other
+    joins uncapped: `guard_undecided_note()` at 27,634 characters for the same
+    shape, and the shipped hook, which had its own copy of the join. A second
+    cap would have left the third channel, which is why this is a formatter
+    rather than a cap.
+
+    Each note is quoted through `_guard_quote`, so a note carrying registry
+    text cannot forge a line in a system-authored message either.
+    """
+    shown: List[str] = []
+    for note in notes:
+        if len(shown) >= _GUARD_MAX_NOTES or spent >= _GUARD_TEXT_BUDGET:
+            break
+        text = _guard_quote(note, min(_GUARD_DESC_CAP,
+                                      _GUARD_TEXT_BUDGET - spent))
+        if not text:
+            break
+        spent += len(text)
+        shown.append(text)
+    return shown, len(notes) - len(shown), spent
+
+
+def guard_notes_text(notes: Sequence[str]) -> str:
+    """The notes as one bounded line, for a renderer with no lines of its own.
+
+    The shipped `PreToolUse` hook calls this rather than joining `notes`
+    itself: its own join was the second uncapped channel #1454 measured.
+    """
+    shown, hidden, _ = _guard_notes(notes)
+    if hidden:
+        shown.append(_guard_notes_hidden(hidden))
+    return "; ".join(shown)
+
+
 def guard_undecided_note(verdict: GuardVerdict) -> str:
     """What the hook says when it could not answer. It never says nothing."""
     return ("supertool's raw-command guard did not run on this command: "
-            + "; ".join(verdict.notes)
+            + guard_notes_text(verdict.notes)
             + ". The command was allowed — this is a statement about the "
               "guard, not about the command.")
 

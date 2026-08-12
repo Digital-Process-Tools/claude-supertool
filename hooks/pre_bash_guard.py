@@ -129,7 +129,10 @@ def main() -> int:
         _emit({"permissionDecision": "deny",
                "permissionDecisionReason": _supertool.guard_refusal(verdict)})
     elif verdict.state == "undecided":
-        _undecided("; ".join(verdict.notes))
+        # Through supertool's bounded formatter, not a second join: this line
+        # rendered 27,632 characters from 200 chained segments, on a path
+        # where nothing is blocked and nothing runs that should not (#1454).
+        _undecided(_supertool.guard_notes_text(verdict.notes))
     else:
         _nothing_to_say()
     return 0
