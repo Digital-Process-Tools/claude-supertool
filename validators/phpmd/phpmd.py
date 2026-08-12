@@ -32,7 +32,7 @@ import pathlib
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from source_context import source_context
+from source_context import context_fields
 
 
 DEFAULT_RULESETS = "cleancode,codesize,controversial,design,naming,unusedcode"
@@ -145,7 +145,7 @@ def main() -> None:
                 "severity": "warning",
                 "code": rule,
                 "msg": msg,
-                "source_context": source_context(file, lineno),
+                **context_fields(file, lineno),
             })
             continue
         # Fallback: "path/to/file.php:42  message" (space-separated, no rule column)
@@ -159,7 +159,7 @@ def main() -> None:
                 "severity": "warning",
                 "code": None,
                 "msg": msg,
-                "source_context": source_context(file, lineno),
+                **context_fields(file, lineno),
             })
 
     count = len(errors)

@@ -33,7 +33,7 @@ from typing import Callable
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from source_context import source_context
+from source_context import context_fields
 from refusal import absent, skipped, tool_fault
 
 TOOL = "cargo-check"
@@ -335,7 +335,7 @@ def _parse_errors(output: str, target_file: str, ws_root: str | None = None,
                     "severity": "error",
                     "code": code,
                     "msg": msg,
-                    "source_context": source_context(str(target), ln),
+                    **context_fields(str(target), ln),
                 })
             else:
                 where = (_elsewhere_in_crate(src_file, ln, col, code, msg)

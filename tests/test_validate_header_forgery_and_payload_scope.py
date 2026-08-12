@@ -360,6 +360,12 @@ ROW_FIELD_BUILDERS = {
         {"line": 1, "code": "c", "msg": v}]},
     "source_context": lambda v: {"tool": "t", "ok": False, "count": 1, "errors": [
         {"line": 1, "code": "c", "msg": "m", "source_context": [v]}]},
+    # #1446. It reaches a rendered line for the same reason `source_context`
+    # does, and it carries a path — the one field an adapter never controls the
+    # content of.
+    "context_unavailable": lambda v: {"tool": "t", "ok": False, "count": 1, "errors": [
+        {"line": 1, "code": "c", "msg": "m", "source_context": [],
+         "context_unavailable": v}]},
 }
 
 

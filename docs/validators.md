@@ -1080,6 +1080,8 @@ Custom validators must conform to the adapter contract in `validators/SCHEMA.md`
 
 Two optional output fields worth knowing: `source_context` (array of source lines centered on the error, rendered indented under each error in verbose mode) and `diff` (unified diff string, rendered as a fenced block — useful for tools like Rector that produce a suggested patch). Full spec in [SCHEMA.md](../validators/SCHEMA.md).
 
+Do not build `source_context` by hand. `validators/common/source_context.py` returns it as **fields** — `{..., **context_fields(target, line)}` — because a file that could not be read has to be distinguishable from a file with no lines to show, and a bare `[]` is not (#1446). A read that failed comes back as an empty `source_context` plus a `context_unavailable` reason, and the finding itself is untouched: the tool located a defect, and that claim does not depend on reprinting the line. SCHEMA.md §"An empty `source_context` and an unreadable file are two different facts (#1446)" is the table.
+
 ## resolve — map a source file to its real target
 
 By default a validator runs against the file the op touched. The optional `resolve` key lets it run against a *different* file derived from that one — the canonical case is "edited a source file, run its test." `resolve` is a shell cmd that takes the edited file (`{file}`) and prints the path to run instead:
