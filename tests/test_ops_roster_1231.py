@@ -8,7 +8,7 @@ to look for.
 
 A roster of every name fits in ~1KB. But a name alone is only actionable for an
 op you may probe: `between:FILE:747:820` teaches its own signature from its
-error, while `oss_train` force-pushes a merge train and `gh-pr-merge` merges.
+error, while `gh-pr-merge` merges and `git-push` publishes.
 So each name carries a safety class, and the classes fail *loud*: an op with no
 declared class renders `!` (acts), never unmarked.
 """
@@ -81,10 +81,10 @@ def test_roster_is_flat_and_alphabetical(shipped_config) -> None:
 
 # --- the safety class ------------------------------------------------------
 
-@pytest.mark.parametrize("name", ["gh-pr-merge", "git-push", "oss_train", "radar",
+@pytest.mark.parametrize("name", ["gh-pr-merge", "git-push", "radar",
                                   "watch", "unwatch", "mcp_daemon", "mcp_stop"])
 def test_acting_ops_are_marked_acts(shipped_config, name: str) -> None:
-    """Rendering an acting op as probe-safe invites someone to probe oss_train."""
+    """Rendering an acting op as probe-safe invites someone to probe gh-pr-merge."""
     assert _roster_entries(supertool.op_ops_roster()).get(name) == "!"
 
 
@@ -147,8 +147,11 @@ def test_every_builtin_op_has_a_class_in_the_binary() -> None:
 
 def test_every_op_this_repo_loads_declares_a_safety_class(shipped_config) -> None:
     """Merged view: preset entries deep-merge under project overrides, so a
-    partial override (`radar`, `git-diff`) inherits the preset's class and only
-    a genuinely project-only op (`oss_train`) must declare its own."""
+    partial override (`radar`, `git-diff`) inherits the preset's class rather
+    than falling to the loud default. Since #1472 this repo declares no
+    project-only op at all, so the merged view and the preset view agree here
+    — the walk stays because a project op added later is exactly what it is
+    for."""
     undeclared = [n for n, i in (shipped_config.get("ops") or {}).items()
                   if isinstance(i, dict) and n not in supertool._OP_SAFETY_BUILTIN
                   and i.get("safety") not in supertool._SAFETY_CLASSES]
