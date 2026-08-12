@@ -122,6 +122,25 @@ The naive join this paragraph used to warn against is still wrong and for the re
 | `code`           | string \| null   | yes      | Rule id (`missingType`, `PSR12.Files...`). Nullable. |
 | `msg`            | string           | yes      | Human message. Single line preferred.              |
 | `source_context` | array of strings | no       | Source lines near the error. The line containing the error uses `→` as separator; surrounding lines use `:`. Example: `["40:     return foo;", "41: ", "42→     bar();", "43: }", "44: "]`. Rendered indented under the error in verbose mode. Ignored in default mode. |
+| `context_unavailable` | string        | no       | Why there are no source lines, when the reason is that the file could not be read. Present only alongside an empty `source_context`, never alongside lines. Rendered in verbose mode as `[no source context: <reason>]`. |
+
+### An empty `source_context` and an unreadable file are two different facts (#1446)
+
+`[]` used to mean both — a located finding whose window falls outside the file, and an `OSError` on the way to opening it — and the receipt printed them identically. The house defect: an absence produced by the tool, read as an absence in the world.
+
+**The finding survives.** The tool said something is wrong at that line, and that claim does not depend on our ability to reprint the line. Only the illustration is missing, so only the illustration is qualified — `ok` stays false, `errors` stays intact, `line` keeps its number, and a second key says why the lines are absent. Routing this to `skipped` would drop `errors` entirely and lose a true diagnostic to a failed `open()`; that is the loud bug traded for the quiet one.
+
+| What happened                        | `source_context` | `context_unavailable` |
+|--------------------------------------|------------------|------------------------|
+| lines read                           | the lines        | absent                 |
+| file read, no line in range          | `[]`             | absent                 |
+| file could not be read               | `[]`             | the reason             |
+| no `line` on the finding             | absent           | absent                 |
+| the diagnostic is about another file | absent           | absent                 |
+
+The last row is §"A located diagnostic still has to be about *this* file (#754)" above, and it is deliberately **not** this key: nothing was attempted, so nothing failed.
+
+Adapters do not spell any of this. `validators/common/source_context.py` returns the fields and the adapter spreads them — `{..., **context_fields(target, line)}` or `err.update(context_fields(target, line))`. There is no `source_context()` function to call: it returned a list with nowhere to put the reason, and two adapters had already grown private copies of it.
 
 ## Contract
 

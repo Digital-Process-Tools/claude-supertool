@@ -54,6 +54,15 @@ MAX_STREAM_CHARS = 600
 # validators/SCHEMA.md, "`adapter`: the reserved code for no verdict".
 ADAPTER_CODE = "adapter"
 
+#: How an adapter spells "I ran out of wall". Both spellings are already in the
+#: tree and neither is wrong: `timeout` (xmllint, node-check, stylelint,
+#: cargo-check, eslint, gitleaks, shellcheck, …) and `timed out` (go-vet,
+#: pyright, cargo-check's `cargo metadata` helper). Matching only the first made
+#: this predicate blind to the exact payload that produced #1461 — every other
+#: clause matched, so the guard read a wall as a verdict about the package and
+#: the assertion written for a lint result fired on one.
+WALL_PHRASES = ("timeout", "timed out")
+
 
 def _clip(text: object, limit: int = MAX_FIELD_CHARS) -> str:
     s = text if isinstance(text, str) else repr(text)
@@ -223,10 +232,14 @@ def stalled_at_its_own_wall(payload: Any, *, inner_s: int) -> str | None:
     - every error carries ``code: "adapter"`` — a `parse` finding beside a
       stall is still a broken file, and one unmeasurable error does not buy
       amnesty for a measured one.
-    - the message names a timeout — `validators/SCHEMA.md` is explicit that an
-      `adapter` error "stays a real error ... because the process ran and
-      something is broken that someone has to fix". A missing binary and an
-      unreadable argv are that. Only a wall is a statement about the machine.
+    - the message names a timeout, in any of ``WALL_PHRASES`` —
+      `validators/SCHEMA.md` is explicit that an `adapter` error "stays a real
+      error ... because the process ran and something is broken that someone
+      has to fix". A missing binary and an unreadable argv are that. Only a
+      wall is a statement about the machine. The phrase list is a list because
+      an adapter that says "timed out" is saying the same thing as one that
+      says "timeout", and a guard that can only hear one of them is a guard
+      with a hole in exactly the shape of the payload it never saw (#1461).
     - ``duration_ms`` reaches ``inner_s`` — an adapter that reports `timeout`
       in 12ms did not time out, and its error routing is broken. That is a
       defect in the thing the suite tests, and a message-only predicate would
@@ -248,7 +261,10 @@ def stalled_at_its_own_wall(payload: Any, *, inner_s: int) -> str | None:
             if not isinstance(entry, dict) or entry.get("code") != ADAPTER_CODE:
                 return None
             msg = entry.get("msg")
-            if not isinstance(msg, str) or "timeout" not in msg.lower():
+            if not isinstance(msg, str):
+                return None
+            lowered = msg.lower()
+            if not any(phrase in lowered for phrase in WALL_PHRASES):
                 return None
 
         duration = payload.get("duration_ms")

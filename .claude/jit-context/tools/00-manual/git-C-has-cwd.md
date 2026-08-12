@@ -1,7 +1,7 @@
 ---
 title: "`git -C <path>` is `cwd:` plus an op"
 tool: Bash
-match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(command[[:space:]]+)?git[[:space:]]+-c[[:space:]]+[^=[:space:]]*/
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(command[[:space:]]+)?git[[:space:]]+-c[[:space:]]+[^=[:space:]]*/[^[:space:]]*[[:space:]]+(diff|log|status[^;&|\n]*[[:space:]]-)
 mode: block
 ---
 
@@ -9,11 +9,12 @@ mode: block
 
 | Instead of | Use |
 | --- | --- |
-| `git -C W status` | `supertool 'cwd:W' 'git-status'` (`:full` uncaps, `:brief` puts the tree first) |
 | `git -C W diff` | `supertool 'cwd:W' 'git-diff'` (`:branch[:BASE]`, `:full` for hunks) |
 | `git -C W log master..HEAD` | `supertool 'cwd:W' 'git-diverge:BRANCH[:BASE]'` |
 | `git -C W status --porcelain` to see if a tree is busy | `supertool 'git-worktrees'` — three states, and `cannot tell` is not `idle` |
 | several trees in a row | one `git-worktrees` call answers all of them |
+
+**Only what no `replaces` entry claims.** Bare `git -C W status`, `commit`, `push` and `worktree list` are the shipped guard's — this rule fired on them too until #1438, so each was refused twice with two different messages. A flagged `status` is still here, because the guard's `unless_flag` declines all four spellings; a flagged `push`/`commit`/`worktree list` is refused by neither, deliberately, since there is no row above to offer. The coupling that creates is held by `tests/test_jit_rule_retirement_1376.py`: a command the registry claims *and* this `match` still fires on is a red test naming both.
 
 `cwd:` moves repo paths only: a relative `@payload` reference still resolves against the directory the call was made from, so pass payload paths absolutely.
 

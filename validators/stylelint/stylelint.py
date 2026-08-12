@@ -16,7 +16,7 @@ import time
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from source_context import source_context
+from source_context import context_fields
 
 
 def emit(d: dict) -> None:
@@ -89,7 +89,7 @@ def main() -> None:
                 "msg": (w.get("text") or "")[:300],
             }
             if ln is not None:
-                err["source_context"] = source_context(file, ln)
+                err.update(context_fields(file, ln))
             errors.append(err)
     emit({"tool": "stylelint", "file": file, "ok": len(errors) == 0,
           "count": len(errors), "errors": errors, "duration_ms": dur})

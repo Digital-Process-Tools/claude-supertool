@@ -50,7 +50,7 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from source_context import source_context
+from source_context import context_fields
 from refusal import required, required_but_absent, skipped, tool_fault
 
 TOOL = "shellcheck"
@@ -116,7 +116,7 @@ def _to_error(item: dict, file: str) -> dict:
         "msg": (item.get("message") or "").strip().replace("\n", " ")[:300],
     }
     if isinstance(line, int):
-        err["source_context"] = source_context(file, line)
+        err.update(context_fields(file, line))
     return err
 
 

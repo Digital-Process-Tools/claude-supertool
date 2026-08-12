@@ -14,7 +14,7 @@ import time
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from source_context import source_context
+from source_context import context_fields
 
 
 def emit(d: dict) -> None:
@@ -40,7 +40,7 @@ def main() -> None:
         err = {"line": e.lineno, "col": None, "severity": "error",
                "code": "syntax", "msg": str(e).strip()[:300]}
         if e.lineno is not None:
-            err["source_context"] = source_context(file, e.lineno)
+            err.update(context_fields(file, e.lineno))
         emit({"tool": "inilint", "file": file, "ok": False, "count": 1,
               "errors": [err],
               "duration_ms": int((time.time() - start) * 1000)})
@@ -51,7 +51,7 @@ def main() -> None:
             err = {"line": lineno, "col": None, "severity": "error",
                    "code": "syntax", "msg": msg.strip()[:300]}
             if lineno is not None:
-                err["source_context"] = source_context(file, lineno)
+                err.update(context_fields(file, lineno))
             errors.append(err)
         if not errors:
             errors = [{"line": None, "col": None, "severity": "error",

@@ -45,7 +45,7 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from source_context import source_context
+from source_context import context_fields
 from pkg_paths import attribute
 from refusal import absent, skipped, tool_fault
 
@@ -162,9 +162,7 @@ def _parse(output: str, target: str, base: str) -> list:
             err = {"line": int(line), "col": int(col), "severity": severity,
                    "code": "load" if severity == "error" else None,
                    "msg": msg}
-            ctx = source_context(target, int(line))
-            if ctx:
-                err["source_context"] = ctx
+            err.update(context_fields(target, int(line)))
         elif where == "other":
             err = _elsewhere(reported, line, col, msg)
             err["severity"] = severity

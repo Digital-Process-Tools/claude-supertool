@@ -27,17 +27,32 @@ import posixpath
 import shutil
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 import pytest
 
-from _adapter_budget import adapter_budget
-from _adapter_verdict import assert_declined, assert_ok, describe, verdict
+from _adapter_budget import adapter_budget, inner_budget, platform_factor
+from _adapter_verdict import (assert_declined, assert_ok, describe,
+                              skip_if_stalled, verdict)
 from _winenv import empty_path_env
 
 REPO = Path(__file__).resolve().parent.parent
 ADAPTER = REPO / "validators" / "go-vet" / "go-vet.py"
 COMMON = REPO / "validators" / "common"
+
+#: The adapter's own `go vet` budget, read off its source rather than copied
+#: (#702) — see `_adapter_budget.inner_budget`.
+INNER_S = inner_budget(ADAPTER)
+
+#: Budget for the one cache-warming `go vet` below. Not a wall on the tool and
+#: not a benchmark: `go vet` on an empty `GOCACHE` compiles the standard
+#: library before it analyses anything, measured at **3.54s cold against 0.24s
+#: warm** on macOS/go1.22.3, and the GH Windows runners are slower than that by
+#: enough to have blown the adapter's own 60s budget on a real leg (#1461). The
+#: number is generous because the only thing it buys is a bound on a hang; a
+#: warm-up that does not fit says so, and nothing depends on it.
+GO_WARMUP_S = 120 * platform_factor()
 
 needs_go = pytest.mark.skipif(not shutil.which("go"), reason="go not on PATH")
 
@@ -78,6 +93,16 @@ NO_TYPE_CHECK = """package pkg
 func X() { definitelyNotDefined() }
 """
 
+#: The warm-up package. It imports `fmt` because that is what pulls the
+#: standard library into the build cache — a package importing nothing compiles
+#: in milliseconds cold and warms nothing the tests below need.
+WARM = """package warm
+
+import "fmt"
+
+func W() { fmt.Println("warm") }
+"""
+
 
 def _spawn(*args: str, env: dict | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -88,7 +113,80 @@ def _spawn(*args: str, env: dict | None = None) -> subprocess.CompletedProcess:
 
 
 def _run(path: Path, env: dict | None = None) -> dict:
-    return verdict(_spawn(str(path), env=env), adapter=ADAPTER.name)
+    """The adapter's verdict about `path` — or a decline, when there is none.
+
+    Every assertion below is about what `go vet` said about some Go. When the
+    adapter spends its whole internal budget without an answer it reports that
+    correctly and on contract, as `ok: false` with one `adapter` error naming
+    the wall — which is not a verdict about the package, and asserting on it
+    publishes a machine limit as a product defect. That is what reddened
+    `pytest (windows-latest, 3.10)` on PR #1457, a PR touching
+    `presets/_checks.py` and nothing else (#1461).
+
+    So a stall declines here, once, rather than at every call site. Nothing
+    else moves: `skip_if_stalled` hands back any other payload untouched, so a
+    real printf finding, a clean package reported dirty, an absent toolchain, a
+    `skipped` third state and a timeout claimed in 12ms all still reach the
+    assertion written for them (#794's four clauses, pinned in
+    `tests/test_go_vet_stall_1461.py` and `tests/test_html_check_stall_1296.py`).
+    """
+    return skip_if_stalled(
+        verdict(_spawn(str(path), env=env), adapter=ADAPTER.name),
+        inner_s=INNER_S)
+
+
+def _warm_the_go_build_cache(root: Path) -> str | None:
+    """Vet a throwaway module so the stdlib compile is not on anybody's wall.
+
+    Returns `None` when go answered, or a reason to report when it did not.
+    **A non-zero exit is an answer** — `go vet` is entitled to opinions about
+    the probe module, and reading its verdict as a warm-up failure would make
+    this depend on a diagnostic it does not care about.
+
+    Why this rather than "raise the adapter's budget": the 60s wall governs a
+    *warm* `go vet`, which costs 0.24s, and the cold cost is paid once per
+    build cache rather than once per file. Raising a product timeout to cover
+    a first run on a CI image would slow the real failure mode — a `go vet`
+    that hangs on somebody's edit — for every user of the tool, in order to fix
+    a test. `GOCACHE` is content-keyed and not module-scoped, so warming it
+    here warms it for every module in this file: a second, never-seen module
+    vets in 0.22s after this (measured, macOS/go1.22.3).
+
+    A convenience, never a gate. Every real assertion still has
+    `skip_if_stalled` under it, which is why a failure here is reported rather
+    than raised.
+    """
+    (root / "go.mod").write_text(GO_MOD, encoding="utf-8")
+    pkg = root / "warm"
+    pkg.mkdir(parents=True, exist_ok=True)
+    (pkg / "warm.go").write_text(WARM, encoding="utf-8")
+    try:
+        subprocess.run(["go", "vet", "."], capture_output=True, text=True,
+                       timeout=GO_WARMUP_S, cwd=str(pkg),
+                       encoding="utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        return (f"a first, cache-warming `go vet` did not finish within "
+                f"{GO_WARMUP_S}s, so every adapter spawn in this run pays the "
+                f"cold standard-library compile against its own budget")
+    except OSError as exc:
+        reason = exc.strerror or str(exc) or "the OS reported no reason"
+        return (f"a first, cache-warming `go vet` could not be run: "
+                f"{exc.__class__.__name__} — {reason}")
+    return None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _go_build_cache_is_warm(tmp_path_factory) -> None:
+    """Pay the cold-cache cost once, before any adapter spawn, and off the wall."""
+    if not shutil.which("go"):
+        return
+    reason = _warm_the_go_build_cache(tmp_path_factory.mktemp("go_warmup"))
+    if reason is not None:
+        # Not a skip and not a failure. A skip here takes the whole module with
+        # it, including the attribution tests that need no toolchain at all,
+        # and a failure publishes a slow runner as a broken adapter. The
+        # warnings summary prints on every leg, green or red.
+        warnings.warn(reason, stacklevel=1)
 
 
 def _module(tmp_path: Path, files: dict) -> Path:

@@ -50,7 +50,14 @@ OPERATIONS
                                 Prefer :START-END when you know the lines.
     grep:PATTERN:PATH          Search pattern (10 results default).
                                 Auto-reads full file if PATH is a concrete
-                                file < 20KB with a match.
+                                file < 20KB with a match. PATTERN is never
+                                unquoted: a surrounding 'x' or "x" pair is
+                                searched as literal characters, which is what
+                                a caller hunting a quoted phrase means. A ZERO
+                                from a quote-wrapped pattern therefore names
+                                the quotes and reports whether the unwrapped
+                                spelling matches — same note on grep_around,
+                                around and read:PATH:::grep=.
     grep:PATTERN:PATH:no-auto-read
                                Suppress the single-file auto-read — only the
                                 matching line(s) are emitted (parity with glob).
@@ -3596,6 +3603,23 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             filter_notes.append(
                 f"(no lines matching {grep_filter!r} in any of "
                 f"{line_count} lines)\n")
+        # #1435, and only over the lines the loop actually read: the branch
+        # above where `last_scanned == offset` has already said nothing was
+        # searched, and "matches nothing here either" over an empty window
+        # would contradict it with a second, more confident absence.
+        if last_scanned > offset:
+            def _filter_probe(inner: str) -> bool:
+                rx = _compile_lenient(inner)
+                for raw in raw_lines[offset:last_scanned]:
+                    try:
+                        candidate = raw.decode("utf-8", errors="replace")
+                    except Exception:
+                        continue
+                    if rx.search(candidate):
+                        return True
+                return False
+
+            filter_notes.append(_quote_pair_note(grep_filter, _filter_probe))
     elif filter_regex and capped:
         # The byte cap breaks the scan loop, not just the emission: a filtered
         # read that matched and *then* hit the cap has stopped looking. This
@@ -4188,6 +4212,97 @@ def _literal_note(pattern: str, count: int) -> str:
             f"match(es) for {pattern!r})\n")
 
 
+# #1435 — quoting a phrase is what a shell user does with a pattern containing
+# a space, and every pattern-taking op here searched the quote characters as
+# literal text. `grep:'beta':q.txt` returned `0 results ... scanned 1 files` —
+# the disclosure that says the op *looked* — so the zero read as an absence in
+# the file rather than in the pattern.
+_PATTERN_QUOTE_CHARS = ("'", chr(34), "`")
+
+
+def _unwrapped_pattern(pattern: str) -> str:
+    """A pattern's body with a matched surrounding quote pair removed, or "".
+
+    Only a *pair* counts. `'zzz'|'yyy'` begins and ends with `'` and is not
+    one; stripping its ends yields `zzz'|'yyy`, a pattern nobody typed. So any
+    further occurrence of the quote character disqualifies it, as does an empty
+    body — `''` unwraps to nothing, which is not a search.
+    """
+    if len(pattern) < 3:
+        return ""
+    quote = pattern[0]
+    if quote not in _PATTERN_QUOTE_CHARS or pattern[-1] != quote:
+        return ""
+    inner = pattern[1:-1]
+    if quote in inner:
+        return ""
+    return inner
+
+
+def _quoted_pattern_note(pattern: str, inner: str,
+                         inner_matches: bool) -> str:
+    """Explain a zero that a quote pair may have produced (#1435).
+
+    Nothing is stripped and nothing is refused, which is the whole point of
+    this shape: a caller hunting a genuinely quoted phrase — a real pattern in
+    a codebase full of quoted JSON and quoted payload bodies — typed exactly
+    what they meant and keeps their result untouched. Only the silence after a
+    zero changes.
+
+    The probe is what stops the note being noise. Naming the quotes alone would
+    send every deliberate quoted search off to re-run a query that comes back
+    just as empty, so the unwrapped spelling is tried and the answer reported:
+    three states, not two — the quotes hid it, the quotes are innocent and the
+    absence is real, or the pattern was never a pair and there is no note.
+    """
+    quote = pattern[0]
+    lead = (f"(the pattern {pattern!r} begins and ends with `{quote}`, and "
+            f"both were searched as literal text rather than read as "
+            f"quoting. ")
+    if inner_matches:
+        return lead + (f"Without them, {inner!r} DOES match here — this zero "
+                       f"is about the quotes, not about what was scanned.)"
+                       + chr(10))
+    return lead + (f"Without them, {inner!r} matches nothing here either — "
+                   f"the quotes are not why this is zero.)" + chr(10))
+
+
+def _compile_lenient(pattern: str) -> "re.Pattern[str]":
+    """Compile, falling back to the escaped literal — the reading every search
+    helper in this file already applies (`_grep_recursive`, `_grep_count`,
+    `_op_around`). A #1435 probe that compiled strictly instead would print the
+    note on `grep` and swallow it on `around`, so an unwrapped pattern that is
+    not a regex would answer differently depending on which op asked."""
+    try:
+        return re.compile(pattern)
+    except re.error:
+        return re.compile(re.escape(pattern))
+
+
+def _quote_pair_note(pattern: str, probe: Callable[[str], object]) -> str:
+    """`_quoted_pattern_note` plus its probe, for a result that came back zero.
+
+    Each caller supplies its own `probe` rather than sharing one search: the
+    note has to be about the same population the zero was about, and `grep`'s
+    candidate list, `around`'s walk and `read`'s line window are three
+    different populations. A probe that raises answers nothing and prints
+    nothing — the unwrapped pattern is not guaranteed to compile.
+    """
+    inner = _unwrapped_pattern(pattern)
+    if not inner:
+        return ""
+    try:
+        matches = bool(probe(inner))
+    except (re.error, OSError, UnicodeError):
+        # Named rather than bare (PR review, #1435): the unwrapped pattern is
+        # not guaranteed to compile and the probe touches the filesystem, so
+        # those two are expected and print nothing. A bare `except Exception`
+        # here would turn a genuine bug on this rarely-walked path into a
+        # missing note, which is the silence this whole change is against.
+        return ""
+    return _quoted_pattern_note(pattern, inner, matches)
+
+
 # Patterns whose meaning differs between Python's `re` and POSIX ERE (#987).
 # The delegated path hands the pattern to the system grep, so anything matching
 # this never leaves the native walker:
@@ -4641,6 +4756,13 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
                f"({total} total matches across {file_count} files{_scanned_suffix(scanned)}{hidden})\n"]
         if total == 0:
             out.append(_shim_facade_note(path))
+            # `_grep_recursive`, not `_grep_count`: the probe asks whether the
+            # unwrapped pattern matches at all, and `_grep_count` has no early
+            # break — it counts every line of every candidate regardless of the
+            # limit it is handed, which would make a disclosure cost a second
+            # full count of the corpus (PR review, #1435).
+            out.append(_quote_pair_note(pattern, lambda inner: _grep_recursive(
+                inner, path, 1, excl, candidates=candidates)))
         # `PATH:N` is the shape every grep-like tool uses for PATH:LINE, so a
         # count of 30 read as "one match, at line 30" — the opposite of what
         # the op said, in the op you call *before* deciding whether to look
@@ -4672,6 +4794,9 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
                f"{_truncation_suffix(truncated, total, capped)})\n"]
         if count == 0:
             out.append(_shim_facade_note(path))
+            out.append(_quote_pair_note(
+                pattern, lambda inner: _grep_recursive_context(
+                    inner, path, 1, context, excl, candidates=candidates)))
         current_file: str = ""
         first_group = True
         for group in groups:
@@ -4724,6 +4849,8 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
            f"limit {limit_label}{_truncation_suffix(truncated, total, capped)})\n"]
     if count == 0:
         out.append(_shim_facade_note(path))
+        out.append(_quote_pair_note(pattern, lambda inner: _grep_recursive(
+            inner, path, 1, excl, candidates=candidates)))
     current_file = ""
     for fp, lineno, content in hits:
         if fp != current_file:
@@ -4935,6 +5062,13 @@ def _op_around(pattern: str, path: str, n: int = 10) -> str:
         lit_text, lit_matched = _render(re.compile(re.escape(pattern)))
         if lit_matched:
             return _literal_note(pattern, lit_text.count("=== ") or 1) + lit_text
+    if not matched:
+        # Above the window, like `_literal_note` — a note explaining a zero is
+        # read only if it precedes the thing it explains (#1435).
+        quote_note = _quote_pair_note(
+            pattern, lambda inner: _render(_compile_lenient(inner))[1])
+        if quote_note:
+            return quote_note + out_text
     return out_text
 
 
@@ -17652,6 +17786,15 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
             out.append(f"  {line_n} {code}  {msg}")
             for ctx_line in (e.get("source_context") or []):
                 out.append(f"    {_flat_cell(ctx_line)}")
+            # An empty `source_context` used to mean either "no lines to show"
+            # or "the file could not be opened" (#1446). The finding stands
+            # either way — the tool located a defect and that claim does not
+            # depend on reprinting the line — so the reason is rendered beside
+            # it rather than swallowed, and flattened like every other
+            # adapter-supplied string that gets a line of its own.
+            unavailable = e.get("context_unavailable")
+            if unavailable:
+                out.append(f"    [no source context: {_flat_cell(unavailable)}]")
         for key, label in (("raw_stdout", "stdout"), ("raw_stderr", "stderr")):
             raw = (data.get(key) or "").strip()
             if raw:

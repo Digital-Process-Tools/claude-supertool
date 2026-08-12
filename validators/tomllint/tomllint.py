@@ -22,7 +22,7 @@ import time
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from source_context import source_context
+from source_context import context_fields
 from refusal import required, required_but_absent, skipped
 
 TOOL = "tomllint"
@@ -101,7 +101,7 @@ def main() -> None:
             col = int(m2.group(1))
         err = {"line": line, "col": col, "severity": "error", "code": "syntax", "msg": msg}
         if line is not None:
-            err["source_context"] = source_context(file, line)
+            err.update(context_fields(file, line))
         emit({"tool": "tomllint", "file": file, "ok": False, "count": 1,
               "errors": [err],
               "duration_ms": int((time.time() - start) * 1000)})
