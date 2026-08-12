@@ -253,6 +253,16 @@ def _is_guard(func: ast.expr) -> bool:
     return isinstance(func, ast.Name) and func.id == GUARD_NAME
 
 
+def _spec_arg(node: ast.Call) -> ast.expr | None:
+    """The `spec` argument, positional or by keyword."""
+    if len(node.args) >= 2:
+        return node.args[1]
+    for kw in node.keywords:
+        if kw.arg == "spec":
+            return kw.value
+    return None
+
+
 def _spec_cannot_spawn(node: ast.Call) -> bool:
     """A `{"builtin": ...}` spec runs in this process — #477, `_builtin_syntax_run`.
 
@@ -260,10 +270,16 @@ def _spec_cannot_spawn(node: ast.Call) -> bool:
     is no `subprocess.run` and no `TimeoutExpired` to guard. Recognised from the
     literal in the call rather than from a hand-kept list of line numbers, which
     would go stale on the first insertion above it.
+
+    Anything that is not a literal `dict` in the call — a name, a helper's
+    return, a spec built above — reads as *can* spawn. Over-strict on purpose:
+    the cost of a false positive here is one visible marker, the cost of a false
+    negative is the guard quietly not covering a site.
     """
-    if len(node.args) < 2 or not isinstance(node.args[1], ast.Dict):
+    spec = _spec_arg(node)
+    if not isinstance(spec, ast.Dict):
         return False
-    keys = {k.value for k in node.args[1].keys
+    keys = {k.value for k in spec.keys
             if isinstance(k, ast.Constant) and isinstance(k.value, str)}
     return "builtin" in keys and "cmd" not in keys
 
@@ -283,14 +299,38 @@ def _unguarded_calls(path: Path) -> list[int]:
         last = node.end_lineno or node.lineno
         return any(ASSERTED_ON in line for line in lines[first:last])
 
+    # A guard call's argument, positional or by keyword: `skip_if_core_timed_out(
+    # payload=run_one(...))` is guarded too, and treating it as an offender would
+    # be a false positive teaching people to add a marker to a guarded site.
     wrapped = {
         id(arg)
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and _is_guard(node.func)
-        for arg in node.args
+        for arg in [*node.args, *(kw.value for kw in node.keywords)]
         if isinstance(arg, ast.Call)
     }
-    return sorted(
+
+    # The false negative that matters, and the reason this is not just a scan of
+    # call sites: `run = supertool._validator_run_one` followed by `run(...)` is
+    # a reference the call-position check cannot see, and it would make the guard
+    # silently inert for that file. Every mention of the name that is not the
+    # callee of a policed call is reported. Nothing in `tests/` needs one today —
+    # `monkeypatch.setattr(supertool, "_validator_run_one", …)` and
+    # `patch("supertool._validator_run_one")` both pass it as a *string*, which
+    # is not an `ast` reference at all.
+    callee_ids = {
+        id(node.func)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _is_run_one(node.func)
+    }
+    aliases = sorted(
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Attribute, ast.Name))
+        and _is_run_one(node)
+        and id(node) not in callee_ids
+    )
+    unguarded = [
         node.lineno
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
@@ -298,7 +338,8 @@ def _unguarded_calls(path: Path) -> list[int]:
         and id(node) not in wrapped
         and not _spec_cannot_spawn(node)
         and not marked(node)
-    )
+    ]
+    return sorted(aliases + unguarded)
 
 
 def test_every_spawning_run_one_call_in_the_suite_is_guarded() -> None:
@@ -336,7 +377,17 @@ def test_the_guard_can_actually_see_an_offender(tmp_path: Path) -> None:
         "    other_thing('t', spec, f)\n"
         f"    {ASSERTED_ON} deliberate\n"
         "    g = supertool._validator_run_one('t', spec, f)\n"
-        "    h = run_one_or_skip('t', spec, f)\n",
+        "    h = run_one_or_skip('t', spec, f)\n"
+        "    i = skip_if_core_timed_out(payload=_validator_run_one('t', s, f))\n"
+        "    j = supertool._validator_run_one('t', spec={'builtin': 'py'}, file=f)\n"
+        "    k = supertool._validator_run_one\n"
+        "    monkeypatch.setattr(supertool, '_validator_run_one', fake)\n",
         encoding="utf-8",
     )
-    assert _unguarded_calls(subject) == [2, 6, 7]
+    # 2 unwrapped; 6 a `builtin` spec that also carries `cmd`; 7 unwrapped with
+    # the return discarded — a payload nobody reads can still break the
+    # assertion after it, so it is not exempt; 14 a bare alias. Exempt: 3 and 4
+    # wrapped positionally, 12 wrapped by keyword, 5 and 13 `builtin`-only specs
+    # (positional and keyword), 10 marked, 11 already through the wrapper, and
+    # the `setattr` on 15, which names the function as a string.
+    assert _unguarded_calls(subject) == [2, 6, 7, 14]
