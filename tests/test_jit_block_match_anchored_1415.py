@@ -183,8 +183,10 @@ OTHER_RULES = [
     ("merged-is-not-ancestry.md",
      "cd /tmp &&\n\tgit branch --merged master",
      "git commit -m " + APOS + "docs: --merged is not ancestry for git branch" + APOS),
+    # `status` here until #1438, which narrowed this rule to the subcommands no
+    # `replaces` entry claims -- `git -C W status` is the shipped guard's now.
     ("git-C-has-cwd.md",
-     "cd /tmp &&\n\tgit -C /Users/x/repo status",
+     "cd /tmp &&\n\tgit -C /Users/x/repo diff",
      "echo " + APOS + "git -C /tmp is not a cwd" + APOS),
     ("op-defaults-that-narrow.md",
      "cd /tmp &&\n\tsupertool " + APOS + "gh-prs:state=open" + APOS,
