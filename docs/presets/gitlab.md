@@ -33,11 +33,23 @@ Disclosed, not stripped: the error still reads, with a U+2028 spelled `[U+2028]`
 
 ### `gl-issue` chooses the attachment directory, not the API
 
-`gl-issue` downloads an issue's `/uploads/` images under `/tmp/supertool-images/<iid>`, and `iid` comes out of the `glab issue view` reply — so the *directory being written into* was named by the remote host. Until [#1484](https://github.com/Digital-Process-Tools/claude-supertool/issues/1484) the containment check was anchored to that already-derived directory rather than to the root, which is a boundary derived from the value it is meant to constrain, and `os.makedirs` ran before anything validated the id at all. An `iid` of `../../../../tmp/x` resolved outside the root with the guard answering `True`; an absolute one made `os.path.join` discard the root outright.
+`gl-issue` downloads an issue's `/uploads/` images under `<platform temp dir>/supertool-images-<uid>/<iid>`, and `iid` comes out of the `glab issue view` reply — so the *directory being written into* was named by the remote host. Until [#1484](https://github.com/Digital-Process-Tools/claude-supertool/issues/1484) the containment check was anchored to that already-derived directory rather than to the root, which is a boundary derived from the value it is meant to constrain, and `os.makedirs` ran before anything validated the id at all. An `iid` of `../../../../tmp/x` resolved outside the root with the guard answering `True`; an absolute one made `os.path.join` discard the root outright.
 
-Two changes, and the order is the point. A non-numeric `iid` is refused **before** any directory is created — a directory created is already a write, and no later guard un-creates it — and every per-file check is anchored to the constant root. A refusal prints `note: skipped N attachment(s) — the issue id … is not numeric`, so a reader never sees a silent zero.
+Two changes, and the order is the point. A non-numeric `iid` is refused **before** any directory is created — a directory created is already a write, and no later guard un-creates it — and every per-file check is anchored to the root rather than to the derived directory. A refusal prints `note: skipped N attachment(s) — the issue id … is not numeric`, so a reader never sees a silent zero.
 
 This needs a hostile or compromised GitLab host, since `iid` is server-assigned; it is not reachable from an issue author alone.
+
+### And the attachment root is one this process created and can prove it owns
+
+Anchoring the check to the root only means something if the root is somebody's. Until [#1493](https://github.com/Digital-Process-Tools/claude-supertool/issues/1493) it was the literal `/tmp/supertool-images` — a fixed name in a world-writable directory, so any local user could take it first, as a directory of their own or as a symlink pointing anywhere. `_is_inside` realpaths **both** of its arguments, so a symlink planted at the root was resolved through on both sides and containment answered `True` about the attacker's directory. The check was not wrong. Nothing established what it was checking against.
+
+The root is now `tempfile.gettempdir()` plus a per-uid suffix, created non-recursively at `0700` and then held open as `O_RDONLY | O_DIRECTORY | O_NOFOLLOW`, so the `fchmod`, the ownership check and the mode check are three questions about one descriptor instead of three independent path resolutions that can each answer about something different. A root that is a symlink, a reparse point, not a directory, owned by another uid, or reachable by group or other after the chmod prints which of those it was and downloads nothing.
+
+`tempfile.mkdtemp()` per invocation would be airtight and was rejected: this op prints the attachment paths for the reader to open, and a root that moves every call makes the receipt a path that existed only during the call that printed it.
+
+**Not closed:** another local uid can still squat `<temp>/supertool-images-<your uid>` ahead of you, and the op then refuses rather than writing into it. Attachments stop working until it is removed, which is the correct side of that trade.
+
+**On Windows** the old value was anchored to the current drive rather than to the temp directory. `gettempdir()` there resolves inside the user profile, which is not a shared world-writable directory, so moving off the literal is most of the repair; there is no `O_NOFOLLOW`, so that branch uses `os.lstat` — which does not follow the final component — and refuses a symlink or a reparse point. A junction is a directory `stat.S_ISLNK` denies, so `st_reparse_tag` is the only way to see one. The ownership and mode arms are *skipped* there rather than faked, because `st_uid` is a constant on Windows and the permission bits are synthesized. Those Windows claims are reasoned from CPython's documented behaviour, not observed on a Windows host.
 
 ### GET-only, and why that is the whole design
 
