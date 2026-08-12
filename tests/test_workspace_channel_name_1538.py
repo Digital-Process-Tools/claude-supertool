@@ -12,9 +12,8 @@ op, and by then the board reads armed and delivers nothing.
 from __future__ import annotations
 
 import json
-import os
 import re
-import stat
+import subprocess
 from pathlib import Path
 
 import supertool
@@ -50,22 +49,33 @@ def test_this_repo_declares_exactly_one_watch_name() -> None:
     assert len(names) == 1, f"op blocks disagree about the channel name: {sorted(names)}"
 
 
-def test_the_consumer_is_told_the_same_name_as_the_producers() -> None:
-    """The defect: `.supertool.json` reaches no consumer, ever.
+def test_the_name_reaches_the_consumer_without_being_written_into_the_artifact() -> None:
+    """The two ends still have to agree; the route changed in #1541.
 
-    Nothing in `.supertool.json` is read by `channel.ts` — it is spawned by the
-    harness from `.mcp.json`. So the name has to be in both files or the two
-    ends bind different sockets and every emitted event is lost at the source.
+    #1538 put the name in `.mcp.json` as well, and that was wrong in a way this
+    test pinned in place: `.mcp.json` is the **plugin's** file — its `args` use
+    `${CLAUDE_PLUGIN_ROOT}` and `channel:health` reads it at the plugin root — so
+    this clone's private name was shipped to every install, binding their consumer
+    to our socket while their pollers bound the default.
+
+    The consumer is now told by the environment instead, which the harness passes
+    to the stdio servers it spawns (measured, `tests/test_workspace_launcher_1541
+    .py`). One source of truth, nothing shipped. The agreement property is pinned
+    there; what remains here is the half of it that belongs to this module — the
+    producers name exactly one channel, and the artifact names none.
     """
     declared = _declared_names()
     env = _load(".mcp.json")["mcpServers"]["claude-channel"].get("env", {})
-    assert NAME_ENV in env, (
-        f".mcp.json's claude-channel block declares no {NAME_ENV}, so the consumer "
-        f"binds the default socket while this repo's producers bind "
-        f"{sorted(declared)}'s. `channel:health` reports this as NOT DELIVERING."
+    assert NAME_ENV not in env, (
+        f".mcp.json ships {env.get(NAME_ENV)!r} to every install of this plugin. "
+        f"The producers' name ({sorted(declared)}) belongs in .supertool.json and "
+        f"reaches the consumer through bin/supertool-workspace's export (#1541)."
     )
-    assert env[NAME_ENV] in declared, (
-        f".mcp.json says {env[NAME_ENV]!r}, .supertool.json says {sorted(declared)}"
+    launcher = LAUNCHER.read_text(encoding="utf-8")
+    assert NAME_ENV in launcher and ".supertool.json" in launcher, (
+        f"nothing carries {NAME_ENV} to the consumer any more: the launcher must "
+        f"read it from .supertool.json and export it, or the two ends bind "
+        f"different sockets and every emitted event is lost at the source."
     )
 
 
@@ -73,10 +83,41 @@ def test_the_consumer_is_told_the_same_name_as_the_producers() -> None:
 # the launcher
 # ---------------------------------------------------------------------------
 
-def test_the_launcher_exists_and_is_executable() -> None:
+def test_the_launcher_exists_and_ships_executable() -> None:
+    """The bit that matters is the one git records, not the one the checkout has.
+
+    `os.stat().st_mode & S_IXUSR` was the first spelling and it reddened all four
+    `windows-latest` legs of #1539 at `mode 0o100666`: NTFS has no execute bit, so
+    that read was a fact about the runner's filesystem rendered as a verdict about
+    the artifact — this repo's own defect class, relocated into the test harness
+    (#1541).
+
+    `git ls-files -s` answers the question actually being asked — what mode is
+    committed, and therefore what a clone gets — in the same bytes on every
+    platform. So there is no skip here: Windows can answer this, and a test that
+    stepped aside there would be one nobody ever ran on the platform that broke.
+    An unanswerable git is a failure rather than a pass, because "could not
+    establish" must never render as `100755`.
+    """
     assert LAUNCHER.is_file(), f"missing {LAUNCHER}"
-    mode = LAUNCHER.stat().st_mode
-    assert mode & stat.S_IXUSR, f"{LAUNCHER} is not executable (mode {oct(mode)})"
+    try:
+        proc = subprocess.run(
+            ["git", "ls-files", "-s", "--", "bin/supertool-workspace"],
+            cwd=str(ROOT), capture_output=True, text=True, timeout=60)
+    except OSError as err:  # git absent: Windows raises FileNotFoundError here
+        raise AssertionError(
+            f"git could not be run ({type(err).__name__}), so the committed mode "
+            f"of {LAUNCHER} is unknown. That is not the same as executable."
+        ) from err
+    assert proc.returncode == 0 and proc.stdout.strip(), (
+        f"git ls-files gave nothing for bin/supertool-workspace (rc "
+        f"{proc.returncode}): either it is untracked or git could not answer. "
+        f"Either way its shipped mode is unestablished, not fine. {proc.stderr}")
+    mode = proc.stdout.split()[0]
+    assert mode == "100755", (
+        f"bin/supertool-workspace is committed as {mode}, so every clone gets a "
+        f"launcher it cannot run: `git update-index --chmod=+x "
+        f"bin/supertool-workspace`")
 
 
 def _code_lines() -> str:

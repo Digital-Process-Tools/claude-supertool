@@ -94,6 +94,12 @@ STATE_DIR = RESOLVED.state_dir
 MCP_FILENAME = ".mcp.json"
 CONSUMER_SERVER = "claude-channel"
 
+#: The variables an `.mcp.json` `env` block can use to put the consumer on a
+#: channel. Declaring none of them is not the same as declaring the default: it
+#: means the consumer takes whatever the session it was spawned from exported
+#: (#1541).
+CHANNEL_VARS = (naming.NAME_ENV, naming.SOCK_ENV, naming.STATE_DIR_ENV)
+
 #: Where a consumer publishes its own counters. Derived from the socket path
 #: rather than fixed, so two sessions running on separate `SUPERTOOL_WATCH_SOCK`
 #: paths (the documented multi-session arrangement) get separate health files
@@ -703,6 +709,7 @@ def consumer_lines(resolved: naming.Resolved,
     roots = _mcp_roots() if roots is None else roots
     agreed: list[str] = []
     differed: list[str] = []
+    inherits: list[str] = []
     unread: list[str] = []
     seen: set[str] = set()
     for root in roots:
@@ -714,6 +721,27 @@ def consumer_lines(resolved: naming.Resolved,
         env, why = _declared_env(mcp_path)
         if env is None:
             unread.append(why)
+            continue
+        if not any(var in env for var in CHANNEL_VARS):
+            # The shipped `.mcp.json` declares no channel at all, and since #1541
+            # that is the intended state: a name true of one checkout must not
+            # ride the artifact into every install. The consumer then takes these
+            # variables from the environment of the session that spawned it —
+            # which this process cannot read. Its own copy carries whatever
+            # supertool injected from `.supertool.json`, and that says nothing
+            # about how the harness was launched. So this is the third state, not
+            # a disagreement: the old wording claimed the consumer was on the
+            # default socket, which after #1541 is a statement about an
+            # environment nobody here has seen, printed two lines under a
+            # FORWARDING verdict that contradicts it.
+            inherits.append(
+                f"consumer config {key} names no channel variable, so the "
+                f"consumer inherits it from the session that spawned it")
+            inherits.append(
+                f"that environment is not readable from here: "
+                f"`bin/supertool-workspace` exports {naming.NAME_ENV}, and a "
+                f"session started any other way leaves the consumer on "
+                f"{naming.DEFAULT_SOCK} while this process reads {resolved.sock}")
             continue
         theirs = naming.resolve(env)
         if theirs.sock == resolved.sock:
@@ -728,7 +756,7 @@ def consumer_lines(resolved: naming.Resolved,
     if agreed:
         return agreed if resolved.name else []
     if resolved.name or resolved.sock != naming.DEFAULT_SOCK:
-        return [f"consumer config NOT checked — {why}" for why in unread]
+        return inherits + [f"consumer config NOT checked — {why}" for why in unread]
     return []
 
 

@@ -1427,7 +1427,8 @@ Two conditions have to hold at once for a live watch, and neither is the default
 
 ```bash
 ln -sf "$PWD/bin/supertool-workspace" ~/.local/bin/supertool-workspace
-supertool-workspace                 # from any directory; extra args pass through to claude
+supertool-workspace                 # from any directory
+supertool-workspace --model opus    # extra args pass through verbatim
 ```
 
 The script resolves the clone from **its own location**, walking the symlink
@@ -1440,17 +1441,38 @@ A shell alias was the earlier recipe and is worse in two ways that both bit: it
 lives in a dotfile no test can read and no clone carries, and the one in
 circulation had no `cd` in it at all.
 
-**Name the channel in both files or neither end hears the other.** Nothing in
-`.supertool.json` reaches the consumer — `channel.ts` is spawned by the harness
-from `.mcp.json` — so a named channel needs the name in both:
+**The launcher carries this clone's channel name to the consumer, and nothing
+about it ships.** Nothing in `.supertool.json` is read by `channel.ts` — the
+harness spawns it — so the name has to arrive some other way. It arrives in the
+environment: the launcher reads the one `watch_name` its clone declares and
+exports it before `exec`, and a stdio MCP server the harness spawns inherits that
+environment (measured against claude 2.1.219 with a probe server that dumps
+`env`). One source of truth, no second copy to drift.
 
-```json
-// .supertool.json           |  // .mcp.json
-"watch_name": "oss-supertool" |  "env": {"SUPERTOOL_WATCH_NAME": "oss-supertool"}
+**Do not put it in this repository's `.mcp.json`.** That file is the *plugin's*:
+its `args` resolve `${CLAUDE_PLUGIN_ROOT}` and it installs for everybody, so a
+name true of one checkout binds every downstream consumer to our socket while
+their own pollers bind the default — the state `presets/watch/README.md` calls
+worse than setting neither, shipped as a default. #1538 did exactly that and
+[#1541](https://github.com/Digital-Process-Tools/claude-supertool/issues/1541)
+took it back out. A name in a *project* `.mcp.json` you wrote for your own
+checkout is a different thing and still works; an explicit
+`SUPERTOOL_WATCH_NAME` already in your environment wins over the launcher's, and
+the launcher says so on stderr rather than moving the paths under a live fleet.
+
+**The trailing `/opensource-manager` prompt is appended only when there is
+nothing else to pass.** `claude [options] [command] [prompt]` takes one
+positional: a second is accepted and then ignored, and a variadic option
+(`--add-dir a b`) swallows whatever follows it. So arguments and the prompt
+cannot both be delivered — with arguments the argv is left exactly as given and
+the launcher says on stderr that the prompt was not appended. Run
+`/opensource-manager` inside the session, or start it with no arguments.
+
+Check the result rather than trusting the recipe:
+
+```bash
+supertool 'channel:health'
 ```
-
-This repository shipped the first without the second, and every event it emitted
-was lost at the source until `channel:health` said so.
 
 ## Is it delivering? — `channel:health` ([#554](https://github.com/Digital-Process-Tools/claude-supertool/issues/554))
 

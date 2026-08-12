@@ -521,13 +521,19 @@ Only needed when you want to be _woken_ by a red PR. Skip all of it for a one-sh
    the default: the flag, which is **undocumented** (absent from `claude --help`, verified
    2026-08-07, so no `settings.json` key can be assumed and none should be invented), and the
    **directory**, because `radar` reads its tiers from the CWD's project root — started anywhere
-   else it opens some other repo's board, or refuses. The launcher does both and passes any extra
-   arguments through:
+   else it opens some other repo's board, or refuses. The launcher does both, exports the channel
+   name out of the clone's own `.supertool.json` so the harness-spawned consumer inherits it, and
+   passes any extra arguments through verbatim:
 
    ```bash
    ln -sf ~/Documents/claude-supertool/bin/supertool-workspace ~/.local/bin/supertool-workspace
    supertool-workspace                      # from anywhere
    ```
+
+   **With no arguments it also appends `/opensource-manager`, and with arguments it does not** —
+   `claude` takes one positional prompt, so a second is silently ignored and a variadic option
+   (`--add-dir a b`) swallows it outright (measured, 2.1.219). It says so on stderr rather than
+   dropping it quietly (#1541); type the skill yourself in that case.
 
    **This used to prescribe a shell alias, which was the wrong mechanism** — an alias lives in a
    dotfile no test can see, no clone carries and nothing keeps current, and the one written here
