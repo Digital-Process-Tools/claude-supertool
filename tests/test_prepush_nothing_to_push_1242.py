@@ -30,7 +30,7 @@ Three states, and the middle one stops being answered by the wrong arm.
 """
 from __future__ import annotations
 
-import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -72,7 +72,15 @@ class _Box:
         self.log.write_text("", encoding="utf-8")
         git = shutil.which("git")
         assert git is not None, "git is required to run the hook at all"
-        os.symlink(git, self.bin / "git")
+        # A shim rather than a symlink. The hook only needs *a* `git` on this
+        # PATH, and a symlink would add a call site to the register in
+        # tests/test_symlink_gating_register_1232.py — a capability this file
+        # does not otherwise need, gated for a platform it already skips.
+        shim = self.bin / "git"
+        shim.write_text(
+            '#!/bin/bash\nexec ' + shlex.quote(git) + ' "$@"\n',
+            encoding="utf-8")
+        shim.chmod(0o755)
         python = self.bin / "python3.13"
         python.write_text(_STUB, encoding="utf-8")
         python.chmod(0o755)

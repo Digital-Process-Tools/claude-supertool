@@ -1410,6 +1410,15 @@ def _report_push_timeout(branch: str, head_before: str,
     not do. Only a remote that did not move gets a failing verdict, and even
     then it is reported as *unverified*, not rejected — the push may still be
     in flight server-side.
+
+    The failing arm additionally names where the budget probably went, via
+    `_prepush_hook_state` (#1242): a local pre-push hook and a hanging network
+    are indistinguishable from a clock, and this repo's own hook can spend
+    ~296s of a 300s budget. That disclosure never edits the verdict, and it
+    never retracts the in-flight caution below it — the timeout kills the whole
+    `git push`, so a hook that finished at 290s and a transfer that then began
+    are still on the table, and inferring otherwise from "a hook exists" would
+    be the same guess this op refuses everywhere else.
     """
     head_after, _head_why = _local_head()
     live, live_why = _live_remote_sha(remote, ref)
