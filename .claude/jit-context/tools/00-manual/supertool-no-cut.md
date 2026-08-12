@@ -5,57 +5,32 @@ match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(python3?[[:space:]]+(-m[[:spac
 mode: block
 ---
 
-**Do not cut a supertool op's output.** The ops are already compressed — that is the premise — and they put the meaning at the **top**: header, then meta (`state`, `mergeable`, the summed check tally, `scanned N files`), then the body.
+**Do not cut a supertool op's output.** The ops are already compressed and put
+the meaning at the **top** — header, then meta (`state`, `mergeable`, the summed
+check tally, `scanned N files`), then the body. `tail` selects against the header
+where the verdict lives; `head` drops the end of every `gh-issue:N` body,
+including a `Comments (1)` block that was the whole reason an issue was reopened.
 
-So the two cuts fail in opposite directions and both throw away the answer:
-
-- **`tail`** shows whichever section happened to be last — validators output, a stash list, an MR's prose. It selects *against* the header where the verdict lives.
-- **`head`** is not the safe half. `gh-issue:N` puts the body under the header, so `| head -90` silently drops the tail of every body — including a `Comments (1)` block that was the whole reason an issue was reopened.
-
-**Three times on 2026-08-09, self-inflicted:**
-
-| Cut | What it cost |
-| --- | --- |
-| `supertool 'grep:…' \| head -80` | dropped 3 of 5 verifications; two claims went into a brief unchecked |
-| `git-status \| tail -12` | returned stashes and the MR block, no working-tree section — reported as reproducing a defect that was my own pipe |
-| `git-status \| sed -n '1,25p'` | cut the working-tree section again, in the same session, an hour after filing the issue about it |
-
-## What to do instead
-
-**Narrow the op, never the output.**
+**Narrow the op, never the output** — quote these as the op string, do not filter:
 
 ```
-supertool 'gh-pr:1208:status'          not  gh-pr:1208:full | head
-supertool 'grep:PAT:PATH:10:2'         not  grep … | head -20
-supertool 'read:PATH:::grep=PATTERN'   not  read:PATH | grep
-supertool 'gh-job:N:fail'              not  gh-job:N:raw | tail
+gh-pr:1208:status                not  gh-pr:1208:full | head
+grep:PAT:PATH:10:2               not  grep … | head -20
+read:PATH:::grep=PATTERN         not  read:PATH | grep
+gh-job:N:fail                    not  gh-job:N:raw | tail
 ```
 
-`[result]` lines exist so a one-line verdict survives a pipe. That is a floor for the summary — not a licence to truncate everything above it.
+**Measured.** Three self-inflicted cuts in six hours on 2026-08-09: a `grep`
+head that dropped 3 of 5 verifications into a brief unchecked, and two
+`git-status` cuts that removed the working-tree section — the second an hour
+after filing the issue about the first. It blocks rather than reminds because
+the same rule, written and said out loud twice, was skimmed each time.
 
-**The general rule, which is why this blocks rather than reminds:** when a read is about to become a fact, do not throw away part of it on the way in. A reminder gets skimmed at 18:30 on a long session; this one had been written, said out loud twice, and set in bold — and was still violated three times in six hours.
-## What this pattern can and cannot see (#1415)
-
-The match is pinned to command position, because until #1415 it was not — and on
-2026-08-11 it refused **seven** commands that cut nothing: this repository's own
-directory name inside a `cd` path (x3), a shell variable, a bar inside an op's own
-argument (`grep:head|tail`), and a heredoc body quoting a piped example. The
-anchoring idiom is `(^|[;&|\n])[[:space:]]*`, which every regex row in
-`00-index.tsv` now carries.
-
-**The bar must sit against whitespace or a closing quote.** #1426 required
-whitespace alone, undisclosed, and lost `supertool 'grep:x'|head -20` — the
-commonest shape there is, blocked before it and silent after, with all ten test
-cases sharing a `PIPE = " | "` constant that could not see it. A quote is
-admitted because that is what a shell leaves against the bar; a bar inside the
-op's own argument (`grep:head|tail`) still has a bare letter to its left and is
-still ignored. A bar after an **unquoted** argument is not matched — quote your
-ops and it does not arise.
-
-**It is still a regex, not a parser.** A heredoc line that *begins* with a supertool
-call and a pipe still matches, because `^`-alternation cannot tell a body from a
-command. Two invocation shapes are outside the anchor and stay so: an env-var
-prefix (`FOO=1 supertool … | head`) and a command substitution
-(`$(which supertool) … | head`). Excluding quoted strings and heredocs by construction needs the tokeniser
-the `guard` op uses, and the JIT matcher is `claude-jit-context`'s — a separate
-repository. Read this rule as narrower, never as precise.
+**Narrower, never precise.** The bar must sit against whitespace or a closing
+quote, at command position. Still matched: a heredoc body line that *begins*
+with a piped call, because `^`-alternation cannot tell a body from a command.
+Still unmatched: an env-var prefix and a command substitution before the call.
+Deliberately not widened further — four wrong blocks in one evening across three
+callers against no observed missed cut (#1433). The reasoning is in #1415,
+#1426, #1430 and #1433, not here: this body is re-injected in full on every
+match, false ones included, so its length is the price of every wrong block.
