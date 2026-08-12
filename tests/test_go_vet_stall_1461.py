@@ -86,6 +86,16 @@ def _timeout_payload(monkeypatch, tmp_path: Path, capsys) -> dict:
     `stalled_at_its_own_wall`'s fourth clause requires the adapter to have
     spent its whole budget, and an adapter reporting a timeout in 12ms has a
     broken error route that must stay red.
+
+    **The binary lookup is stubbed, and that is what makes this runnable at
+    all.** `main()` resolves `go` on PATH before it spawns anything, so on a
+    runner without a Go toolchain the adapter returns the toolchain-absent
+    `skipped` and the arm under test is unreachable — four red macOS legs on
+    PR #1462, where the assertions below met a `skipped` payload that was
+    entirely correct. Nothing about the timeout arm depends on a real
+    toolchain: the spawn is replaced too, so no `go` is ever executed and the
+    only thing the lookup decides is whether the code under test runs at all.
+    `test_missing_go_is_the_third_state` owns the lookup's own behaviour.
     """
     mod = _adapter_module()
     root = go_vet_tests._module(tmp_path, {"pkg/a.go": go_vet_tests.CLEAN})
@@ -97,6 +107,20 @@ def _timeout_payload(monkeypatch, tmp_path: Path, capsys) -> dict:
         def run(*args, **kwargs):
             raise subprocess.TimeoutExpired(cmd="go vet .", timeout=mod.TIMEOUT)
 
+    class _ToolchainPresent:
+        """`shutil`, with only the one call the adapter makes answered.
+
+        Patched onto the adapter module rather than onto `shutil` itself: the
+        real module is shared with everything else running in this process,
+        and a `which` that lies for the length of a test is not a thing to hand
+        to the rest of the suite.
+        """
+
+        @staticmethod
+        def which(name):
+            return "/nonexistent/" + name
+
+    monkeypatch.setattr(mod, "shutil", _ToolchainPresent)
     monkeypatch.setattr(mod, "subprocess", _Wall)
     monkeypatch.setattr(mod, "time", _Clock(1000.0, 1000.0 + mod.TIMEOUT + 0.138))
     monkeypatch.setattr(sys, "argv", ["go-vet.py", str(root / "pkg" / "a.go")])
@@ -123,6 +147,37 @@ def test_the_adapter_publishes_a_timeout_as_no_verdict_not_as_a_finding(
     assert out["ok"] is False, out
     assert [e["code"] for e in out["errors"]] == ["adapter"], out
     assert out["duration_ms"] >= go_vet_tests.INNER_S * 1000, out
+
+
+def test_the_timeout_arm_is_reachable_without_a_toolchain(
+        tmp_path: Path, monkeypatch, capsys) -> None:
+    """The three assertions here must not depend on the runner having Go.
+
+    They did, and it cost four red macOS legs on PR #1462. `main()` looks the
+    binary up before it spawns anything, so on a runner with no Go the adapter
+    returns the toolchain-absent `skipped` — correctly — and never reaches the
+    arm under test. The payload asserted on could not exist there.
+
+    That is #1205's shape landing inside the fix for #1205's shape, and the
+    honest repair is not to gate these behind `needs_go`: the timeout arm's
+    payload is a fact about the adapter's error routing, not about whether a
+    toolchain happens to be installed on this image, and gating it would run
+    the regression pin for a Windows-observed defect on the Windows legs alone.
+    So the lookup is stubbed and the shape is pinned on every runner — the same
+    reasoning `test_the_load_failure_prefix_is_recognised_under_either_binary_name`
+    gives for feeding the parser captured output instead of branching on
+    `os.name`.
+
+    `PATH` is emptied here so this fails if `_timeout_payload` ever starts
+    leaning on the host toolchain again. On a machine that has Go it passes
+    only because of the stub, which is the whole claim.
+    """
+    monkeypatch.setenv("PATH", "")
+    out = _timeout_payload(monkeypatch, tmp_path, capsys)
+    assert "skipped" not in out, (
+        "the timeout arm was not reached with no toolchain on PATH, so the "
+        "assertions in this file only run where Go is installed: %r" % (out,))
+    assert out["errors"][0]["code"] == "adapter", out
 
 
 def test_that_payload_is_classified_as_a_wall_and_not_as_a_verdict(
@@ -283,12 +338,19 @@ def test_the_warmup_actually_runs_before_the_spawns_it_exists_for() -> None:
     assert marker.scope == "module", marker
 
 
+@go_vet_tests.needs_go
 def test_the_warmup_returns_nothing_to_report_when_go_answers(
         tmp_path: Path) -> None:
     """A non-zero exit is not a failure of the warm-up: `go vet` on the probe
-    module is allowed to have opinions about it. Only not answering is."""
-    if not go_vet_tests.shutil.which("go"):
-        pytest.skip("go not on PATH")
+    module is allowed to have opinions about it. Only not answering is.
+
+    This one genuinely runs `go`, so it is gated — on the suite's existing
+    `needs_go` rather than a second, hand-rolled spelling of it. Its reason is
+    "go not on PATH", which a reader cannot confuse with the decline
+    `skip_if_stalled` writes ("adapter spent its whole 60s internal budget
+    without reaching a verdict"): absent toolchain and slow toolchain are
+    different facts and the skip list has to keep them apart.
+    """
     reason = go_vet_tests._warm_the_go_build_cache(tmp_path)
     # This file has no warm-up fixture of its own, so on a cold runner this is
     # the call that pays the standard-library compile. A budget it did not fit
