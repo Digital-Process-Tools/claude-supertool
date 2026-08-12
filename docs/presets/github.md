@@ -829,7 +829,7 @@ Declared in .github/workflows at this commit with no run on it — NOT covered b
 
 ### `gh-run`'s header sums the table beneath it
 
-`gh-run:30972816902` printed this, on `master`, while the run was two thirds done ([#789](https://github.com/Digital-Process-Tools/claude-supertool/issues/789)):
+`gh-run:30972816902` printed this, on `master`, while the run was two thirds done ([#789](https://github.com/Digital-Process-Tools/claude-supertool/issues/789)) — quoted as it was printed then, so the job rows below predate the `Job id` column [added in #1482](#every-row-names-its-job-id-and-says-which-namespace-it-is-in):
 
 ```
 # Run #30972816902 — tests
