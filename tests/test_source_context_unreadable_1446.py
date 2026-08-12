@@ -213,9 +213,19 @@ def test_verbose_row_flattens_the_reason() -> None:
 
 
 def test_non_verbose_row_ignores_the_reason() -> None:
-    """Default mode ignores `source_context`; its reason is not louder than it."""
-    data = {"tool": "t", "ok": False, "count": 1, "duration_ms": 1,
-            "errors": [{"line": 1, "code": "E1", "msg": "m", "source_context": [],
-                        "context_unavailable": "FileNotFoundError reading /x"}]}
-    lines = supertool._validator_render_row(data)
-    assert not any("no source context" in l for l in lines), lines
+    """Default mode ignores `source_context`; its reason is not louder than it.
+
+    A regression guard, not a pin: it passes against the code this change
+    replaced, because the default row never walked per-error fields at all. It
+    is here so that a later renderer which starts printing one of them has to
+    decide about this field on purpose. So it compares two whole renders rather
+    than looking for a string — a leak anywhere on the row fails it, including
+    one that does not use the wording above.
+    """
+    err = {"line": 1, "code": "E1", "msg": "m", "source_context": []}
+    without = supertool._validator_render_row(
+        {"tool": "t", "ok": False, "count": 1, "duration_ms": 1, "errors": [dict(err)]})
+    with_reason = supertool._validator_render_row(
+        {"tool": "t", "ok": False, "count": 1, "duration_ms": 1,
+         "errors": [dict(err, context_unavailable="FileNotFoundError reading /x")]})
+    assert with_reason == without, (with_reason, without)
