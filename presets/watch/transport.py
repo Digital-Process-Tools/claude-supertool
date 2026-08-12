@@ -480,7 +480,23 @@ def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> str:
     why = naming.ensure_state_dir(RESOLVED, STATE_DIR)
     if why:
         return why
-    path = state_path(source, watcher_id)
+    return write_json_contained(state_path(source, watcher_id), state)
+
+
+def write_json_contained(path: str, payload: Any) -> str:
+    """Replace `path` with `payload` as JSON. "" when it landed, else why not.
+
+    The containment `write_state` documents at length, in one place because
+    `tiers/_snapshot.write` writes into the same directory under a name of the
+    same shape and had no guard at all — it opened `f"{target}.tmp"` with a
+    plain `open(..., "w")`, so #1540's whole mechanism applied to it unchanged
+    and on every platform rather than only where `O_NOFOLLOW` is missing. A
+    second copy of this is how the fixed defect comes back.
+
+    It does **not** establish a directory: that is a question about a *derived*
+    state directory (#693) and belongs to the caller that knows whether it has
+    one.
+    """
     shown = _untrusted.flat(path)
     directory, name = os.path.split(path)
     try:
@@ -502,7 +518,7 @@ def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> str:
         return f"{shown} could not be opened for writing ({type(err).__name__})"
     try:
         with handle as f:
-            json.dump(state, f, indent=2)
+            json.dump(payload, f, indent=2)
         os.replace(tmp, path)
     except OSError as err:
         _discard(tmp)

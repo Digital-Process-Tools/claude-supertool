@@ -286,6 +286,7 @@ REGISTER = {
     'tests/test_watch_state_write_containment_1540.py::test_a_symlink_on_the_state_tmp_is_not_written_through': B,
     'tests/test_watch_state_write_containment_1540.py::test_the_reader_path_writes_nothing_through_a_link_without_o_nofollow': B,
     'tests/test_watch_state_write_containment_1540.py::test_the_reader_path_writes_nothing_through_a_planted_symlink': B,
+    'tests/test_watch_state_write_containment_1540.py::test_the_snapshot_writer_is_contained_the_same_way': B,
     'tests/test_watch_transport_read_state_hostile_1197.py::test_a_dangling_symlink_is_not_reported_as_no_state_file': B,
     'tests/test_watch_transport_read_state_hostile_1197.py::test_a_symlinked_gl_mrs_state_file_is_not_parsed': B,
     'tests/test_watch_transport_read_state_hostile_1197.py::test_a_symlinked_state_file_is_not_parsed': B,

@@ -60,10 +60,12 @@ from _changelog_findable import assert_change_is_findable
 from _symlink import require_symlink
 
 REPO = Path(__file__).resolve().parents[1]
-for _dir in (str(REPO / "presets" / "watch"), str(REPO / "presets"), str(REPO / "tests")):
+for _dir in (str(REPO / "presets" / "watch" / "tiers"), str(REPO / "presets" / "watch"),
+             str(REPO / "presets"), str(REPO / "tests")):
     if _dir not in sys.path:
         sys.path.insert(0, _dir)
 
+import _snapshot as snapshot  # noqa: E402
 import naming  # noqa: E402
 import transport  # noqa: E402
 
@@ -311,6 +313,45 @@ def test_a_supplied_state_directory_is_still_never_created(tmp_path, monkeypatch
     assert not target.exists()
     assert why, "a write that reached no disk at all was reported as having landed"
     assert str(target) in why, why
+
+
+# ---------------------------------------------------------------------------
+# 4. The same directory's other writer
+# ---------------------------------------------------------------------------
+
+def test_the_snapshot_writer_is_contained_the_same_way(tmp_path, monkeypatch):
+    """`radar`'s delta snapshot lands in the same directory under a name of the
+    same shape, and it had no guard at all.
+
+    `tiers/_snapshot.write` opened `f"{target}.tmp"` -- `<STATE_DIR>/<prefix>.
+    <digest>.snapshot.json.tmp` -- with a plain `open(..., "w")`, so the whole
+    of #1540's mechanism applied to it unchanged, on every platform rather than
+    only where `O_NOFOLLOW` is missing. Found while fixing the Windows half;
+    the containment is now one helper both writers call.
+    """
+    require_symlink()
+    _channel(monkeypatch, tmp_path)
+    victim = _victim(tmp_path)
+    os.symlink(victim, snapshot.path("gh-prs", "deadbeef") + ".tmp")
+    _without_o_nofollow(monkeypatch)
+
+    snapshot.write("gh-prs", "deadbeef", {"7": {"state": "open"}}, "prs")
+
+    assert victim.read_text(encoding="utf-8") == INTACT, (
+        "the snapshot write followed a planted symlink and overwrote "
+        "{0}".format(victim))
+
+
+def test_a_snapshot_still_round_trips(tmp_path, monkeypatch):
+    """The containment must not have turned the write into a no-op -- every
+    assertion above is satisfied by a writer that writes nothing."""
+    root = _channel(monkeypatch, tmp_path)
+
+    snapshot.write("gh-prs", "deadbeef", {"7": {"state": "open"}}, "prs")
+
+    assert snapshot.read("gh-prs", "deadbeef", "prs") == {"prs": {"7": {"state": "open"}}}
+    survivors = sorted(p.name for p in root.glob("*.tmp"))
+    assert survivors == [], "a temporary file survived the replace: {0}".format(survivors)
 
 
 def test_the_change_is_documented():
