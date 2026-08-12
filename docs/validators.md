@@ -192,7 +192,7 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | Markdown            | `markdownlint`   | `markdownlint` CLI                 | `npm install -g markdownlint-cli`          |
 | Ruby                | `ruby-check`     | `ruby` on PATH                     | Uses `ruby -c`                             |
 | Dockerfile          | `hadolint`       | `hadolint` on PATH                 | Catches both syntax and best-practice lint |
-| TypeScript (`.ts`)  | `tsc-check`      | `tsc` (`npm install -g typescript`)| `--noEmit` — no output files written; `--pretty false`, without which nothing parses (#1499) |
+| TypeScript (`.ts`)  | `tsc-check`      | `tsc` (`npm install -g typescript`)| `--noEmit` — no output files written; `--pretty false`, without which nothing parses (#1499). Program-scoped, and the target is contained before it reaches argv (#1519) — see below |
 | TypeScript (`.tsx`) | `tsc-check-tsx`  | `tsc` (`npm install -g typescript`)| Separate entry needed for `.tsx`           |
 | Go                  | `gofmt-check`    | `gofmt` (ships with Go)            | Fails on formatting diff, not just syntax  |
 | Go — semantics | `go-vet`         | `go` (ships with Go)               | `go vet` over the file's **package**. Ships with the toolchain, so it costs no install a Go repo has not already paid. A file in no module is `skipped`, never `ok` — see below |
@@ -486,6 +486,37 @@ loses — `count: 61, ok: false`, and not one row about your line. Findings abou
 the file under validation are ordered first, and when anything is dropped the
 last published row says how many, rather than leaving a reader to notice that
 `count` and the number of rows disagree.
+
+### tsc-check — a program verdict, and a target `tsc` must not read as an option (#1519)
+
+`tsc --noEmit FILE` type-checks the whole import graph, so it is program-scoped
+in exactly the sense `go vet` is package-scoped, and the same two sentences
+apply.
+
+**A diagnostic in an imported file is published, and it is not published as
+yours.** It survives with `line`/`col` null, `code: "adapter"`, no
+`source_context` and the reported path named in the message —
+`validators/SCHEMA.md` §"A located diagnostic still has to be about *this* file
+(#754)". This is not an edge case: any `.ts` file with an import can produce
+one. It mattered more here than for `go vet` because the recommended `.ts`
+registration is `rollback_on_fail: true`, so before this an error in a
+dependency reverted a correct edit to a file that type-checks. Comparison is
+`validators/common/pkg_paths.attribute` against the directory the adapter ran
+`tsc` in — never a suffix match — and its third answer, `unknown`, says neither
+"this file" nor "another file".
+
+**A target named `@something` is not handed to `tsc` as written.** `tsc` reads a
+leading `@` as a **response file**: its command line comes from that file
+instead, so `--noEmit` does not survive, and a leading `-` is read as an option.
+Measured on tsc 6.0.3, `@r.ts` beside an `r.ts` holding
+`--noEmit false --outDir out` produced `{"ok": true, "count": 0}` for a file
+whose one line is a type error, and wrote `out/a.js` and `out/b.js` — which is
+what the "no output files written" above claimed could not happen. Escaping does
+not help, because this is `tsc`'s grammar and not the shell's, and `--` is not a
+separator `tsc` knows (`error TS5023: Unknown compiler option '--'`). A relative
+target is prefixed with `./` — the platform's own separator — which `tsc`
+normalises straight back, so the diagnostic it prints is unchanged. An absolute
+path is left alone.
 
 ### shellcheck — and the bug in the issue that asked for it
 

@@ -46,10 +46,32 @@ def emit(obj: dict) -> None:
 _INLINE_BREAKS = "".join(chr(c) for c in (0x2028, 0x2029, 0x0085, 0x0B, 0x0C))
 _INLINE_BREAK_RE = re.compile("[" + re.escape(_INLINE_BREAKS) + "]")
 
-#: Characters of an unparsed remainder carried into the message. Enough to see
+#: Characters of ONE unparsed fragment carried into the message. Enough to see
 #: what arrived; a record must not grow without bound because the file under
 #: validation happens to contain one of the five.
 _REMAINDER_MAX = 200
+
+#: And a ceiling on the SUM of them (#1520). `_REMAINDER_MAX` caps each
+#: fragment and its comment above states the invariant, but nothing capped how
+#: many fragments one record collects: a file whose echoed source carries an
+#: inline break on 500 physical lines grew a single `msg` past 100kB, so the
+#: comment asserted a bound the code did not hold. What is over the ceiling is
+#: reported as a number, never silently absent — a capped list read as a whole
+#: list is this repo's house defect in miniature.
+_ORPHAN_TOTAL_MAX = 1000
+
+#: The hard ceiling on any one record's `msg`, applied last so the invariant is
+#: a property of the receipt rather than of the path that happened to build it.
+#: A cut is disclosed with the same ellipsis `_REMAINDER_MAX` uses.
+MSG_MAX = 2000
+
+#: The list markers cclsp renders `get_diagnostics` with. See `_framing` for why
+#: presence alone does not decide anything.
+_MARKERS = "•*"
+
+#: cclsp's own list header. Framing — neither a diagnostic nor message text — so
+#: it is dropped rather than carried, and it must not be counted (#1520).
+_HEADER_RE = re.compile(r"^Found\s+\d+\s+diagnostic\(s\)\s+for\s+.*:$")
 
 
 def first_segment(line: str) -> tuple[str, str]:
@@ -64,6 +86,22 @@ def first_segment(line: str) -> tuple[str, str]:
     return (parts[0], parts[1] if len(parts) > 1 else "")
 
 
+def carried_note(text: str, why: str) -> str:
+    """Text the server sent that this parser refused to read as a diagnostic.
+
+    One label shape for all three refusals — a remainder after an inline break,
+    a continuation after a line break inside a message, and a line that parsed
+    as nothing — because they are the same statement: kept as evidence, not read
+    as a second finding, and not read as a location.
+    """
+    flat = " ".join(_INLINE_BREAK_RE.sub(" ", text).split()).strip()
+    if not flat:
+        return ""
+    if len(flat) > _REMAINDER_MAX:
+        flat = flat[:_REMAINDER_MAX] + "…"
+    return f"  [{why} — not a second diagnostic and not a location: {flat}]"
+
+
 def remainder_note(rest: str) -> str:
     """The rest of a line, labelled as the rest of a line.
 
@@ -71,13 +109,47 @@ def remainder_note(rest: str) -> str:
     the server sent is evidence. Not parsed either: its trailing `at line N,
     col M` is the file under validation choosing a location, which is #1500.
     """
-    flat = " ".join(_INLINE_BREAK_RE.sub(" ", rest).split()).strip()
-    if not flat:
-        return ""
-    if len(flat) > _REMAINDER_MAX:
-        flat = flat[:_REMAINDER_MAX] + "…"
-    return ("  [rest of the same line, after an inline line break — "
-            f"not a second diagnostic and not a location: {flat}]")
+    return carried_note(rest, "rest of the same line, after an inline line break")
+
+
+def _cap(text: str, limit: int) -> str:
+    """`text`, never longer than `limit`, and saying so when it was cut."""
+    if len(text) <= limit:
+        return text
+    return text[:limit - 1] + "…"
+
+
+def _fold_orphans(orphans: list[str]) -> str:
+    """The kept fragments, bounded, with the cut named rather than implied."""
+    kept: list[str] = []
+    total = 0
+    for i, note in enumerate(orphans):
+        if total + len(note) > _ORPHAN_TOTAL_MAX:
+            hidden = len(orphans) - i
+            kept.append(f"  [+{hidden} further fragment(s) from this file's "
+                        "lines are not shown]")
+            break
+        kept.append(note)
+        total += len(note)
+    return "".join(kept)
+
+
+def _framing(lines: list[str]) -> bool:
+    """Does this server frame each diagnostic with a list marker? (#1520)
+
+    Decided from the FIRST line that carries anything the server framed, never
+    from any line: a document already in the bulletless variant can contain an
+    echoed `*` in its source, and letting that flip the answer would turn every
+    real finding into a continuation — the loud bug traded for the quiet one.
+    A marker cannot appear before the first diagnostic, so the first framed line
+    is the one place the file under validation cannot have reached yet.
+    """
+    for physical in lines:
+        head = first_segment(physical)[0].strip()
+        if not head or _HEADER_RE.match(head):
+            continue
+        return head[:1] in _MARKERS
+    return False
 
 
 def parse_cclsp_diagnostics(text: str, file: str) -> list[dict]:
@@ -99,7 +171,16 @@ def parse_cclsp_diagnostics(text: str, file: str) -> list[dict]:
     #: becoming one, because `count` is what `_validator_regressed` subtracts
     #: and a fragment minting a record is #1486.
     orphans: list[str] = []
-    for physical in split_lines(text):
+    physicals = split_lines(text)
+    #: #1500 bounded the parse to the first segment of a line, where a segment
+    #: ends at one of the five INLINE breaks. LF is not one of them by
+    #: construction — it is the framing character — so a server message
+    #: carrying an LF still becomes several physical lines and every line after
+    #: the first was parsed as a fresh diagnostic at a location the message
+    #: chose (#1520). Where the server marks its list, an unmarked line is
+    #: inside the entry above it and cannot be an entry of its own.
+    marked = _framing(physicals)
+    for physical in physicals:
         # Only the first segment is parsed, and the remainder is disclosed
         # rather than dropped (#1500). Everything after an inline break is the
         # file under validation talking, and its own trailing `at line N` would
@@ -113,6 +194,22 @@ def parse_cclsp_diagnostics(text: str, file: str) -> list[dict]:
             # It is still text the tool sent, so it is carried, not dropped.
             if note:
                 orphans.append(note)
+            continue
+        if _HEADER_RE.match(line):
+            # The server's own list header. Not a diagnostic, and not message
+            # text either, so it is the one thing here that is dropped rather
+            # than carried — carrying it would paste framing into a `msg`.
+            if note:
+                orphans.append(note)
+            continue
+        if marked and line[:1] not in _MARKERS:
+            # A continuation of the entry above. Kept and labelled, never
+            # parsed: `count` is what `_validator_regressed` subtracts and its
+            # trailing `at line N, col M` is the file under validation choosing
+            # a location.
+            orphans.append(carried_note(
+                physical, "a continuation of the line above, after a line "
+                          "break inside the server's message"))
             continue
         # Pattern 1: "• [severity] message at line X, col Y" or "at X:Y"
         m = re.search(r"\[?\b(error|warning|info|hint)\b\]?\s*[:\s]*(.+?)(?:\s+at\s+line\s+(\d+)(?:[,\s]+(?:col(?:umn)?\s+)?(\d+))?|\s+(\d+):(\d+))\s*$",
@@ -131,13 +228,26 @@ def parse_cclsp_diagnostics(text: str, file: str) -> list[dict]:
             errors.append({"line": int(m.group(1)), "col": int(m.group(2)),
                            "severity": m.group(3).lower(),
                            "code": "lsp", "msg": m.group(4).strip() + note})
+            continue
+        # A non-empty head matching neither pattern used to fall off the end of
+        # the loop body, taking its already-computed remainder with it — and the
+        # whole-text fallback below only runs when NOTHING matched, so with any
+        # other line holding a record both halves left no trace in the receipt
+        # (#1520). `remainder_note`'s own docstring said "Not dropped".
+        orphans.append(carried_note(
+            physical, "a line the server sent that parses as no diagnostic"))
     if orphans and errors:
         # On the last record, not on the one each orphan happened to follow: the
         # label already says the text is neither a location nor a finding, and
         # threading provenance per record buys nothing a reader would act on.
         # With no record at all they fall through to the advisory below, which
         # carries the whole text verbatim.
-        errors[-1]["msg"] += "".join(orphans)
+        errors[-1]["msg"] += _fold_orphans(orphans)
+    for err in errors:
+        # Last, so the ceiling is a property of the receipt and not of whichever
+        # path built the message. A server message is the server's, and it can
+        # be any length.
+        err["msg"] = _cap(err["msg"], MSG_MAX)
     if not errors:
         # Unrecognized but non-empty → keep the text as a single advisory
         if not text.startswith("diag:"):  # ignore supertool's own error messages
