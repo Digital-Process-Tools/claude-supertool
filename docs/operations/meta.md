@@ -101,7 +101,7 @@ Writing a mapping: [contributing.md](../contributing.md). Turning the gate off: 
 `ops` answers *what can I do*. `registry` answers *where did this definition come from*, which is a different question and had no answer in the product at all.
 
 ```
-## Op registry — 50 ops (49 from presets, 1 project-only, 3 shadowed)
+## Op registry — 49 ops (49 from presets, 0 project-only, 3 shadowed)
 Built-ins are not config entries and are not listed — `ops:roster`.
 
 ### Shadowed by project config (3)
@@ -118,8 +118,8 @@ Three answers sit in that last column, not two: the keys the project supplied, `
 ### From presets (46)
 - gh-issue            preset github
 ...
-### Project config only (1)
-- oss_train  project
+### Project config only (0)
+(none — this repository declares no op of its own since #1472)
 
 Not enabled here: bluesky, claude-log, devto, gitlab, hashnode (5 shipped presets, 38 ops).
 ```

@@ -2241,8 +2241,8 @@ def _unknown_op_message(op: str) -> str:
 #
 # A bare name is only actionable for an op you may probe: `between:F:747:820`
 # answers "'820' was read as the path" and names the op that does take a range,
-# so roster → call → the error teaches the form. You cannot probe `oss_train`,
-# which force-pushes a merge train. Hence the class.
+# so roster → call → the error teaches the form. You cannot probe `gh-pr-merge`,
+# which merges. Hence the class.
 #
 # Declared, never inferred. `_PARALLEL_SAFE_OPS` looks like a ready-made
 # read-only set and is not one — it is a dispatch-safety set, and until #1244
@@ -2756,8 +2756,9 @@ _PATH_CMD_PLACEHOLDERS = ("{file}", "{dir}")
 #: only ever shrinks.** It is not a policy — it is a debt register: 24 shipped
 #: PRESET ops name a path, 5 declare a boundary, these 19 do not. It opened at
 #: 20 — see the #1351 note below for the one it has lost. Counting this repo's
-#: own `.supertool.json` as well makes it 25 and 6, the extra one being
-#: `oss_train`; all four numbers are pinned in
+#: own `.supertool.json` as well used to make it 25 and 6, the extra one being
+#: `oss_train`, deleted in #1472; the two scopes now agree at 24 and 5. All
+#: four numbers are pinned in
 #: `tests/test_cmd_placeholder_path_detector_1350.py` so this comment cannot
 #: drift again.
 #: Refusing them at the time would have broken every one of them in the same
@@ -2859,7 +2860,13 @@ def _entry_names_a_path(entry: Any) -> Optional[str]:
     Two signals, OR'd, neither superseding the other:
 
     * the `syntax` string names a `PATH`/`FILE` component — 24 shipped ops;
-    * the `cmd` template substitutes `{file}` or `{dir}` — one, `oss_train`.
+    * the `cmd` template substitutes `{file}` or `{dir}` — **no shipped op
+      today.** `oss_train` was the one and #1472 deleted it, so this arm's
+      live instance is a fixture: a real `.supertool.json` driven through
+      `dispatch()` in `tests/test_cmd_placeholder_path_detector_1350.py`.
+      Zero shipped instances is not zero coverage, and it must not be read as
+      permission to drop the arm — the arm is what asks an op with no
+      `syntax` at all to declare, which is where the hole was.
 
     Before this, only the first was read, so an op with no `syntax` key at all
     took the `return None` arm: no declaration demanded, no check run, and a

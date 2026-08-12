@@ -76,8 +76,11 @@ def _registry() -> Dict[str, Dict[str, Any]]:
     """Every op this repository ships, preset manifests AND its own config.
 
     `.supertool.json` is included on purpose: #1350's only live instance
-    (`oss_train`) lives there, and a register that cannot see the instance it
-    was written for is this repo's standing defect wearing a test's clothes.
+    (`oss_train`) lived there until #1472 deleted it, and a register that
+    cannot see the instance it was written for is this repo's standing defect
+    wearing a test's clothes. It is still merged in rather than dropped — the
+    scope is the claim, and a project op added tomorrow has to be walked on
+    the day it lands.
 
     **Merged key-by-key for a dict-over-dict collision, exactly as
     `_merge_presets` does it**, not overwritten. Three entries in
@@ -182,16 +185,23 @@ class TestTheShippedRegistryIsFullyDetected:
             + ", ".join(missing))
 
     def test_the_cmd_signal_population_is_recorded(self) -> None:
-        """One op in the whole registry is detected by `cmd` and not `syntax`:
-        `oss_train` in `.supertool.json`. A count of one is a bug; this
-        assertion is what turns a second one into a red suite rather than a
-        silent extension of the ungated set."""
+        """**Zero** ops in the whole registry are detected by `cmd` and not
+        `syntax`, since #1472 deleted `oss_train` — which was the one.
+
+        An empty population is still worth asserting: it is what turns the
+        *next* cmd-only op into a red suite rather than a silent extension of
+        the ungated set. What it is not is coverage. A register whose set is
+        empty cannot exercise the arm it counts, so the arm's live instance is
+        the fixture in `TestTheCmdArmHasALiveInstanceOfItsOwn` below, which
+        drives a real `.supertool.json` through `dispatch()`. Said here rather
+        than left implicit: a zero meaning "none ship" must not be read as
+        "the arm is covered by this file's registry walk"."""
         cmd_only = sorted(
             name for name, entry in _registry().items()
             if supertool._cmd_names_a_path(entry.get("cmd", "")) is not None
             and not supertool._syntax_names_a_path(entry.get("syntax", ""))
         )
-        assert cmd_only == ["oss_train"], cmd_only
+        assert cmd_only == [], cmd_only
 
     def test_the_register_header_comment_counts_are_the_registry_counts(
             self) -> None:
@@ -203,10 +213,12 @@ class TestTheShippedRegistryIsFullyDetected:
         block asserted two counts for the same set. A number in prose with no
         test under it is folklore.
 
-        Both scopes are asserted, because they differ by exactly the op this
-        issue is about: the register is a statement about `presets/*.json`,
-        and adding `.supertool.json` adds `oss_train` — 25 naming a path and 6
-        declaring.
+        Both scopes are asserted, and since #1472 they agree: the register is
+        a statement about `presets/*.json`, and this repo's own
+        `.supertool.json` no longer adds a path-naming op of its own. The
+        wider scope is still walked rather than dropped — the two numbers
+        diverging again is exactly the event worth catching, and a scope
+        nobody computes cannot report one.
         """
         presets = _preset_registry()
         named = [n for n, e in presets.items()
@@ -221,18 +233,121 @@ class TestTheShippedRegistryIsFullyDetected:
         named_all = [n for n, e in whole.items()
                      if supertool._entry_names_a_path(e) is not None]
         declared_all = [n for n in named_all if "paths" in whole[n]]
-        assert len(named_all) == 25, sorted(named_all)
+        assert len(named_all) == 24, sorted(named_all)
         assert sorted(declared_all) == [
-            "claims", "gl-api", "oss_train", "xml", "xml_attr",
+            "claims", "gl-api", "xml", "xml_attr",
             "xml_count"], sorted(declared_all)
 
-    def test_oss_train_declares_that_its_argument_is_not_a_filesystem_path(
-            self) -> None:
-        """It takes worktree NAMES under `wt_root`, and #1246 refuses a
-        separator or an absolute target inside the script. That boundary is
-        neither `cwd` nor `repo`, so the honest declaration is the empty one —
-        a claim someone made, not a default nobody noticed."""
-        assert _registry()["oss_train"]["paths"] == {"args": []}
+    def test_this_repo_ships_no_project_only_path_naming_op(self) -> None:
+        """`oss_train` was the one, and #1472 deleted it.
+
+        Asserted rather than left to the counts above: those compare lengths,
+        and a project op that both appeared and displaced a preset op would
+        keep them equal. This names the difference between the two scopes and
+        pins it at empty."""
+        project_only = sorted(set(_registry()) - set(_preset_registry()))
+        assert project_only == [], project_only
+
+
+#: A project op whose only path signal is the `{file}` in its `cmd`. It is
+#: written to a real `.supertool.json` and dispatched, so it reaches the
+#: detector by the same route a shipped project op does rather than by being
+#: handed to `_entry_names_a_path` as a literal.
+_FIXTURE_OP = "cmd_arm_probe"
+_RAN = "CMD-ARM-FIXTURE-RAN-1472"
+
+
+def _fixture_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                     **extra: Any) -> Path:
+    """A project root declaring `_FIXTURE_OP`, loaded through `_load_config`."""
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "ran.py").write_text(
+        "print('" + _RAN + "')" + chr(10), encoding="utf-8")
+    entry: Dict[str, Any] = {"cmd": "{python} ran.py {file}", "timeout": 60}
+    entry.update(extra)
+    (root / ".supertool.json").write_text(
+        json.dumps({"ops": {_FIXTURE_OP: entry}}), encoding="utf-8")
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(supertool, "_CONFIG", None)
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", False)
+    monkeypatch.setattr(supertool, "_CONFIG_PATH", None)
+    return root
+
+
+class TestTheCmdArmHasALiveInstanceOfItsOwn:
+    """#1472 deleted `oss_train`, and it was this arm's only live instance.
+
+    Everything above drives `_entry_names_a_path` and
+    `_preset_path_containment` with hand-built dicts. That covers the
+    function; it does not establish that a config on disk still *arrives* at
+    it with the `cmd` signal intact — the merge, the loader and the dispatch
+    all sit in between, and each of them has been the reason a gate did not
+    fire before. With the last shipped instance gone, a break anywhere along
+    that route would leave every assertion above green.
+
+    So the fixture is a real `.supertool.json`, read by `_load_config()`, run
+    through `supertool.dispatch()`. The reach is asserted rather than assumed:
+    the same fixture, declared, actually executes its command and prints
+    `_RAN`, which is the control that says the refusal below came from the
+    detector and not from something earlier declining the op.
+    """
+
+    def test_the_fixture_reaches_the_op_when_it_declares(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The control, and it runs first for a reason.
+
+        A fixture that is refused for some unrelated reason — an unparsed
+        config, a mixed-tree decline, a name that never resolves — would make
+        every refusal below pass while proving nothing about the detector.
+        The op running end to end is the only evidence that the route is
+        clear.
+        """
+        root = _fixture_project(tmp_path, monkeypatch,
+                                paths={"args": [1], "root": "cwd"})
+        (root / "inside.txt").write_text("x", encoding="utf-8")
+        out = supertool.dispatch(_FIXTURE_OP + ":inside.txt")
+        assert _RAN in out, out
+
+    def test_the_loader_hands_the_detector_a_cmd_only_signal(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`cmd` fires, `syntax` does not — the arm under test, post-merge."""
+        _fixture_project(tmp_path, monkeypatch)
+        entry = supertool._load_config()["ops"][_FIXTURE_OP]
+        assert supertool._cmd_names_a_path(entry.get("cmd", "")) == "{file}"
+        assert not supertool._syntax_names_a_path(entry.get("syntax", ""))
+        assert supertool._entry_names_a_path(entry) is not None
+
+    def test_an_undeclared_cmd_only_op_is_refused_through_dispatch(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The whole gate: refused, named, and the command never launched."""
+        _fixture_project(tmp_path, monkeypatch)
+        out = supertool.dispatch(_FIXTURE_OP + ":/etc/passwd")
+        assert "ERROR:" in out, out
+        assert "{file}" in out and "cmd" in out, out
+        assert '"paths"' in out, out
+        assert _RAN not in out, out
+
+    def test_the_declared_fixture_is_still_bounded(
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Declaring is not exempting — the boundary is then enforced.
+
+        `_resolve_custom_op` with an argv list rather than `dispatch()` with a
+        colon string, and only here: an absolute Windows path carries a drive
+        colon, which `dispatch` splits on. #1247 is that bug, and a test that
+        walks into it fails on four legs for a reason that has nothing to do
+        with containment. The two tests above pass a colon-free argument and
+        keep the full route.
+        """
+        root = _fixture_project(tmp_path, monkeypatch,
+                                paths={"args": [1], "root": "cwd"})
+        outside = root.parent / "outside.txt"
+        outside.write_text("secret", encoding="utf-8")
+        out = supertool._resolve_custom_op(
+            _FIXTURE_OP, [_FIXTURE_OP, str(outside)])
+        assert out is not None
+        assert "ERROR:" in out and "escapes" in out, out
+        assert _RAN not in out, out
 
 
 class TestGlApiDeclaresRatherThanBeingGrandfathered:

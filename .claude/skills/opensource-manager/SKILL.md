@@ -109,7 +109,7 @@ Florian, 2026-08-07, on how two Maxes would split this repo. My first answer was
 | `lane-watch`       | 9   | radar + poller subsystem                 |
 | `lane-containment` | 10  | payload gate, trust model                |
 | `lane-validators`  | 8   | `validators/<name>/` — NOT `presets/`    |
-| `lane-git-ops`     | 5   | `git-push`, `git-resolve`, `oss_train`   |
+| `lane-git-ops`     | 5   | `git-push`, `git-resolve`, `git-commit`  |
 | `lane-ci-cost`     | 5   | workflows, `tests/`, core startup        |
 | `lane-release`     | 5   | `assemble_changelog`, catalogue delivery |
 
@@ -613,20 +613,10 @@ Step 3 costs one call and I skipped it after every merge for a whole day. The co
 - **Never run anything inside an agent's active worktree — not a suite, not a cleanup, not a merge.** Three contaminations in one evening: I ran the full suite in a tree **mid-mutation-pass**, got a red from mutant M4, and briefed the agent on a diagnosis derived entirely from my own interference; later I removed a sibling worktree and merged a PR **while its suite was running**, moving the main HEAD underneath it. (What saved the second: the teardown guard reported the worktree set had changed and **could not attribute** the change, naming what disappeared, rather than reporting clean.)
 - **A job log can come back completely empty for a genuinely failed job** — observed on the raw `--log`/`--log-failed` reads `gh-job` now supersedes. `gh api repos/OWNER/REPO/actions/jobs/<id>/logs` returned 35 KB with the assertion in it. An empty log is not a clean job.
 - **Never print a result you did not read.** I ran `git push -q` and followed it with an unconditional `echo "pushed"`; it printed success while the remote head had not moved. `&& echo ok` at minimum.
-- **Rebasing is NOT the steady state any more** — **#906** gave each PR its own `changelog.d/<issue>.<section>.md` fragment, so two open PRs share no file: four merges in one afternoon (#926, #927, #929, #932), **zero rebases**. Check `supertool 'gh-pr:N:diff'` before assuming a conflict. `oss_train` is still right when a rebase IS genuinely needed:
+- **Rebasing is NOT the steady state any more** — **#906** gave each PR its own `changelog.d/<issue>.<section>.md` fragment, so two open PRs share no file: four merges in one afternoon (#926, #927, #929, #932), **zero rebases**. Check `supertool 'gh-pr:N:diff'` before assuming a conflict.
 
-  ```bash
-  supertool 'oss_train:all,dry'      # REBASES LOCALLY, pushes nothing — not a simulation
-  supertool 'oss_train:all'          # and push, each sha verified off the remote
-  supertool 'oss_train:862,860'      # explicit branches
-  ```
-
-  - **It is a DVSI project op, so run it from the DVSI root** — from `~/Documents/claude-supertool` it answers `unknown operation: oss_train`, which reads as "no such op" rather than "wrong directory".
-  - **`dry` is not dry** — it performs the rebase locally and only skips the push, verified by comparing local to origin after a run that claimed to change nothing: all three branches `DIVERGED`. Those branches are checked out in **worktrees**, so a "preview" moves `HEAD` underneath a live agent.
-  - **It labels each branch by its worktree directory, not its branch name** — one run reported `fix/899` where the tree is `st-wt/899` and the branch is `fix/codeql-5`, invisible whenever the convention holds. Both filed as **#910**, both caught the same way: **two renders of one fact disagreeing.**
-  - **Five states per branch:** `PUSHED`, `CURRENT` (already on top of master — a no-op said out loud, so it is idempotent), `BUSY` (uncommitted changes, someone is working there, untouched), `REFUSED` (`git-resolve` declined; the branch is **left conflicted** so git blocks `rebase --continue`), `FAILED`. Exit 1 when anything needs a human.
-  - **The flag is comma-separated — `all,dry`, never `all:dry`.** supertool passes only the first `:`-token into a project op's `{file}` and discards the rest silently, so `:dry` never arrives and the run pushes (supertool#873).
-  - **Writing my own op is a first-class move** — a project op is a script in `.claude/scripts/` plus a block in `.supertool.json`, no upstream PR, no CI matrix, no review but ours. Every mistake of the night it replaced the hand-written recipe was in the _glue_, never in the ops. Florian had to say it twice.
+  - **When one IS genuinely needed, `git-push` does it, one branch at a time, at the moment it is needed.** It fetches, replays your commits onto the moved remote and pushes, and it says so on the receipt (`Remote added 6 commit(s) you lack; replaying 1 of yours`). Nothing batch-rebases N branches any more: **#1472** deleted `oss_train` after measuring eight merges in one afternoon with zero rebases and no call to it, and it carried three containment-class repairs in four days (#1246, #1247, #1298) while having no caller. If the N-branch pile-up ever comes back, bring the tool back deliberately with the containment contract those three issues arrived at — do not improvise a `git push --force-with-lease` loop over worktrees, which is exactly what #1246 was.
+  - **Writing my own op is a first-class move** — a project op is a script plus a block in `.supertool.json`, no upstream PR, no CI matrix, no review but ours. Every mistake of the night it replaced the hand-written recipe was in the _glue_, never in the ops. Florian had to say it twice. What #1472 adds to that: an op nobody calls still costs, because its bugs are found by audits rather than by use, and a batch operation over other agents' worktrees is the worst thing to leave lying around unused.
 
 ## The thing I keep getting wrong
 

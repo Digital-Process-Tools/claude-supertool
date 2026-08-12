@@ -63,7 +63,7 @@ Lanes exist so two workers never edit the same file. Assign by **the files a fix
 | `lane-watch`       | radar + poller subsystem                 |
 | `lane-containment` | payload gate, trust model                |
 | `lane-validators`  | `presets/validators/`                    |
-| `lane-git-ops`     | `git-push`, `git-resolve`, `oss_train`   |
+| `lane-git-ops`     | `git-push`, `git-resolve`, `git-commit`  |
 | `lane-ci-cost`     | workflows, `tests/`, core startup        |
 | `lane-release`     | `assemble_changelog`, catalogue delivery |
 
