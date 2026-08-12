@@ -204,7 +204,7 @@ ENFORCED: "dict[str, float]" = {
 }
 
 #: Measured and printed, never a floor — each with the reason it has none, and
-#: the reasons are not the same one. Lumping four directories under a single
+#: the reasons are not the same one. Lumping three directories under a single
 #: sentence that is true of two of them is a smaller version of the defect this
 #: file fixes: a disclosure that reads as complete while being partly wrong.
 MEASURED_NOT_ENFORCED: "dict[str, str]" = {
@@ -217,14 +217,6 @@ MEASURED_NOT_ENFORCED: "dict[str, str]" = {
     "formatters/": (
         "same shape as validators/ — prettier, phpcbf, php-cs-fixer are not "
         "installed here, and their absence is not a test failure"
-    ),
-    "scripts/": (
-        "the maintainer ops (`oss_train`, #1216). Their reachable half is "
-        "covered — argument parsing, the refusals, the read-only `dry` path "
-        "and the BUSY guard — and the rest is `git rebase` / `git push "
-        "--force-with-lease` against real branches. A floor here would be a "
-        "standing invitation to raise the number by writing a fixture that "
-        "force-pushes, so the number is printed and left alone"
     ),
     "notifiers/": (
         "the Python half is two small files; the part of this directory that "

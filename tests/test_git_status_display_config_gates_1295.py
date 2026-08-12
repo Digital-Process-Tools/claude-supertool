@@ -8,9 +8,12 @@ config therefore receives an **empty list from a dirty tree**, and cannot tell
 an absence produced by the tool, read as an absence in the world.
 
 #1290 fixed one site. #1295 swept and found eight more. This file covers the
-three of those eight that are **gates** - code that decides whether to proceed
-- rather than renders. The split is the whole judgment, so it is written down
-in `REGISTER` below rather than left to the next reader to re-derive.
+ones that are **gates** - code that decides whether to proceed - rather than
+renders. The split is the whole judgment, so it is written down in `REGISTER`
+below rather than left to the next reader to re-derive. There were three; the
+`scripts/oss_train.py` gate left with the script in #1472, and `TREES` is
+still swept for `scripts/` so a gate reappearing there is red rather than
+unnoticed.
 
 **Why the pin goes on the command line.** `-c` outranks config files *and* the
 environment: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=... GIT_CONFIG_VALUE_0=no`
@@ -120,32 +123,14 @@ def test_the_pin_outranks_the_environment_too(poisoned_repo, monkeypatch):
 
 
 # ===========================================================================
-# Gate 2 - the pre-rebase guard (scripts/oss_train.py)
+# Gate 2 - `--all` resolution (presets/git/commit.py)
 # ===========================================================================
-
-def test_oss_train_refuses_a_worktree_the_config_hid(poisoned_repo):
-    """The guard between this op and a live agent's worktree.
-
-    Its own comment already reads "A status this op could not read is not a
-    clean tree" - written about a non-zero exit. A suppressed read exits zero,
-    so the sentence was true and the code implementing it did not cover the
-    case that actually arises.
-
-    Asserted through `train()` rather than the raw read: the claim is that the
-    op **refuses**, not that a helper returned a longer list. Under the defect
-    this fell through to fetch, rebase and force-push a live worktree.
-    """
-    train = _load("scripts/oss_train.py", "st_oss_train_1295")
-    state, detail = train.train("1295", dry=True, wt=str(poisoned_repo))
-    assert state == "BUSY", (
-        f"the pre-rebase guard read a dirty worktree as available "
-        f"({state}: {detail})")
-    assert "someone is working here" in detail
-
-
-# ===========================================================================
-# Gate 3 - `--all` resolution (presets/git/commit.py)
-# ===========================================================================
+#
+# There were three gates here. The second was `scripts/oss_train.py::train`,
+# whose #1298 repair this file pinned; #1472 deleted that script, so the gate
+# went with it and the third was renumbered rather than left with a hole. The
+# register below is the load-bearing half and it is derived from the tree, so
+# it reports the remaining population without depending on this comment.
 
 def test_commit_all_token_sees_a_tree_the_config_hid(poisoned_repo,
                                                       monkeypatch):
@@ -190,7 +175,6 @@ REGISTER: dict[str, str] = {
     # -- gates: something branches on the result, or a write is derived from it
     "presets/git/push.py::_uncommitted_leftovers": PIN,
     "presets/git/commit.py::_worktree_changes": PIN,
-    "scripts/oss_train.py::train": PIN,
     "presets/github/pr_merge.py::_worktree_dirt": PIN_IN_RUNNER,
 
     # -- renders: shown to a human, and nothing else reads the result.
@@ -219,6 +203,27 @@ UNSWEPT_CORE = ("_supertool.py:4095", "_supertool.py:4280",
 
 TREES = ("presets/git", "presets/github", "scripts")
 
+#: A tree in `TREES` that does not exist on disk contributes zero call sites,
+#: and a zero produced by a missing directory renders identically to a zero
+#: produced by a directory with nothing in it - which is this file's entire
+#: subject, arriving in the sweep rather than in the code being swept.
+#:
+#: `scripts/` held exactly one file, `oss_train.py`, and #1472 deleted it. The
+#: name is kept in `TREES` deliberately: a `scripts/` written again next month
+#: must be swept, and a name removed from the sweep is a sweep nobody
+#: remembers narrowing (#861 is the same shape one directory up). So the tree
+#: stays listed, its absence is declared here with the reason, and the test
+#: below reds in both directions - an undeclared absence, and a declared one
+#: that came back.
+ABSENT_TREES: dict[str, str] = {
+    "scripts": (
+        "emptied by #1472, which deleted `scripts/oss_train.py` - the only "
+        "file it ever held - along with the `scripts/oss_train.py::train` "
+        "gate this file used to pin. Kept in TREES so a new script here is "
+        "swept on the day it lands rather than on the day someone notices."
+    ),
+}
+
 
 def _status_call_sites() -> dict[str, list[list[str]]]:
     """`{path::func: [string-literals, ...]}` for every `git status` argv.
@@ -236,6 +241,11 @@ def _status_call_sites() -> dict[str, list[list[str]]]:
     found: dict[str, list[list[str]]] = {}
     for tree in TREES:
         root = REPO / tree
+        # Skipped explicitly rather than left to `rglob` returning empty for a
+        # missing directory: the silent version is the same zero this file
+        # exists to refuse, and `ABSENT_TREES` is what makes it a statement.
+        if not root.is_dir():
+            continue
         for path in sorted(root.rglob("*.py")):
             rel = path.relative_to(REPO).as_posix()
             parsed = ast.parse(path.read_text(encoding="utf-8"))
@@ -331,6 +341,27 @@ def test_no_gate_pins_untracked_files_all():
                 offenders.append(key)
     assert not offenders, (
         "a gate asked for --untracked-files=all: " + ", ".join(offenders))
+
+
+def test_a_swept_tree_that_is_gone_is_declared_rather_than_contributing_zero():
+    """The sweep's own version of the defect the sweep looks for.
+
+    Both directions. An undeclared missing tree means the register reports a
+    clean `scripts/` it never opened; a declared tree that came back means the
+    reason above is describing a directory that is now being swept for real,
+    and the note would read as an exemption it is not.
+    """
+    absent = sorted(t for t in TREES if not (REPO / t).is_dir())
+    assert absent == sorted(ABSENT_TREES), (
+        "TREES and ABSENT_TREES disagree about which swept trees exist. "
+        f"absent on disk: {absent}; declared absent: {sorted(ABSENT_TREES)}. "
+        "A tree that vanished contributes zero call sites and reads exactly "
+        "like a tree with none.")
+    for tree, why in ABSENT_TREES.items():
+        assert tree in TREES, (
+            tree + " is declared absent but is not swept at all, so the "
+            "declaration guards nothing")
+        assert len(why) > 40, (tree, why)
 
 
 def test_the_core_sites_are_named_rather_than_silently_absent():
