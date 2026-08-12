@@ -383,45 +383,26 @@ def _local_branch_check(source: str) -> str:
     return _branch_locale.check(source)
 
 
-def _fetch_review_threads(url: str, number: int | str) -> list[dict]:
-    """Fetch reviewThreads via GraphQL — gh pr view --json doesn't expose them.
+#: How many threads the dashboard index renders before it stops and says how
+#: many it withheld. The GraphQL selection caps at 100; a PR carrying more
+#: index rows than this is past what belongs in a header, and `:threads` is one
+#: call away. The cap is disclosed rather than silent — a list that stops
+#: without saying so is the same defect this whole change is about.
+THREAD_INDEX_MAX = 20
 
-    Parses owner/repo from PR URL. Returns [] on any failure (silent fallback).
-    """
-    if not url:
-        return []
-    m = re.match(r"https?://github\.com/([^/]+)/([^/]+)/pull/\d+", url)
-    if not m:
-        return []
-    owner, repo = m.group(1), m.group(2)
-    query = (
-        "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
-        "{pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved}}}}}"
-    )
-    try:
-        r = _gh([
-            "api", "graphql",
-            "-f", f"query={query}",
-            "-F", f"o={owner}", "-F", f"r={repo}", "-F", f"n={number}",
-        ])
-        if r.returncode != 0:
-            return []
-        data = json.loads(r.stdout)
-        repo_node = (data.get("data") or {}).get("repository") or {}
-        pr_node = repo_node.get("pullRequest") or {}
-        threads = pr_node.get("reviewThreads") or {}
-        return threads.get("nodes") or []
-    except (subprocess.TimeoutExpired, json.JSONDecodeError, AttributeError, TypeError):
-        return []
+#: Characters of a thread's first comment kept on its index row. The row is an
+#: *identifier*, not the finding: enough to tell two bot comments apart and to
+#: decide whether to spend a `:threads` call.
+THREAD_EXCERPT_MAX = 90
 
 
-#: `first: 100` on threads matches the count query above; `first: 50` on the
+#: `first: 100` on threads matches the count query below; `first: 50` on the
 #: comments inside one is well past anything observed and is stated so a future
 #: reader knows it is a cap and not "all of them".
 _THREADS_QUERY = (
     "query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r)"
     "{pullRequest(number:$n){reviewThreads(first:100){nodes{"
-    "isResolved isOutdated path line "
+    "isResolved isOutdated path line originalLine "
     "comments(first:50){nodes{body createdAt url author{login}}}"
     "}}}}}"
 )
@@ -431,11 +412,12 @@ def _fetch_review_threads_detailed(
         url: str, number: int | str) -> tuple[list | None, str]:
     """`(nodes, error)` — and `None` is not `[]`.
 
-    `_fetch_review_threads` above returns `[]` on every failure, so a PR with
-    threads and a PR whose GraphQL call was rate-limited render identically in
-    the header. That is this repo's defect class, and a mode whose whole
-    purpose is to show the threads cannot inherit it: the two states are split
-    here so `:threads` can decline instead of reporting none.
+    There used to be a second, lossy fetcher next to this one that returned
+    `[]` on every failure, and the default dashboard ran it — so a PR with
+    threads and a PR whose GraphQL call was rate-limited rendered identically
+    in the header, which is this repo's defect class. That fetcher is gone
+    (#1445): `gh-pr`, `gh-pr:N:threads` and `gh-prs` all read through this,
+    and every caller has to decide what to do with a `None` that is not `[]`.
     """
     if not url:
         return (None, "the PR has no URL, so its owner/repo could not be read")
@@ -460,13 +442,21 @@ def _fetch_review_threads_detailed(
         data = json.loads(r.stdout)
     except json.JSONDecodeError:
         return (None, "the GraphQL reply was not JSON")
-    node = ((data.get("data") or {}).get("repository") or {}).get(
-        "pullRequest") or {}
-    threads = node.get("reviewThreads")
-    if not isinstance(threads, dict) or not isinstance(
-            threads.get("nodes"), list):
+    # Every hop is isinstance-checked, not `or {}`-chained. A reply whose
+    # `data` is a list — GraphQL's own error envelope is one shape that does
+    # this — made `.get` raise, and the raise escaped to the caller: the whole
+    # `gh-pr` dashboard aborted over a decorative header field. Declining by
+    # name is the third state; crashing is not one of the three (#1445).
+    node: object = data
+    for key in ("data", "repository", "pullRequest", "reviewThreads"):
+        if not isinstance(node, dict):
+            return (None, f"the GraphQL reply was not shaped like a "
+                          f"pull request: {key!r} sits under a "
+                          f"{type(node).__name__}, not an object")
+        node = node.get(key)
+    if not isinstance(node, dict) or not isinstance(node.get("nodes"), list):
         return (None, "the GraphQL reply carried no reviewThreads list")
-    return (threads["nodes"], "")
+    return (node["nodes"], "")
 
 
 def _render_threads(number: str, comment_max: int | None) -> int:
@@ -551,6 +541,98 @@ def _render_threads(number: str, comment_max: int | None) -> int:
                 # U+2028 in it renders as a line break there (#965's shape).
                 print(_untrusted.flat(str(c["url"])))
     return 0
+
+
+def _thread_excerpt(thread: dict) -> str:
+    """The opening of a thread's first comment, flattened onto one line.
+
+    The whole body flattened and then cut, **not** its first line. Measured on
+    PR #1443, the pair of findings that filed #1445: an automated reviewer
+    writes a Markdown heading first, so both threads' first lines were
+    `## Empty except` and the index rendered two identical rows for two
+    different findings — a render that cannot tell its own entries apart is
+    not much better than the bare count it replaced.
+
+    `flat()` and not raw: these rows are supertool's own output at a fixed
+    indent, so an unflattened body could paint a row no thread produced — by
+    newline, and equally by the U+2028 that only a Markdown reader breaks on
+    (#965). The cap ends in an ellipsis, so a truncated row cannot be mistaken
+    for a short comment.
+    """
+    comments = ((thread.get("comments") or {}).get("nodes")) or []
+    if not comments:
+        return "(no comment body)"
+    body = _untrusted.flat(str(comments[0].get("body") or ""))
+    body = " ".join(body.split()).strip()
+    if not body:
+        return "(no comment body)"
+    if len(body) > THREAD_EXCERPT_MAX:
+        return body[:THREAD_EXCERPT_MAX] + "…"
+    return body
+
+
+def _thread_index(threads: list | None, err: str, number: int | str) -> list[str]:
+    """The `Unresolved threads:` line and one row per thread, in three states.
+
+    The old shape was `if review_threads:` around a bare count, fed by a
+    fetcher that returned `[]` for every failure. That collapsed three
+    different answers into two renderings and lost the important one: a
+    rate-limited GraphQL call printed **no line at all**, which reads as a PR
+    with nothing to discuss. `gl-mr` has printed `Unresolved threads: UNKNOWN`
+    since #812; this is GitHub catching up (#1445).
+
+    The rows are an index, not the content. A bot review runs to kilobytes per
+    thread and the dashboard is not where that belongs, so each row carries
+    `path:line`, the author and a first line, and points at `:threads` for the
+    bodies — a mode that already existed (#1346) and that nothing in this
+    render used to mention.
+
+    Resolved threads are rendered too, lowercased and sorted last. "Resolved"
+    is one person's decision about another person's finding; a reader who
+    cannot see it cannot disagree with it. The count line states the split, so
+    showing them conflates nothing.
+    """
+    if threads is None:
+        return [
+            f"Unresolved threads: UNKNOWN — they could not be read ({err}).",
+            "  This is not zero. Nothing here establishes whether this PR has "
+            "review threads; this line used to be omitted entirely in that "
+            "case, which reads as a PR with nothing on it.",
+        ]
+    if not threads:
+        return ["Unresolved threads: 0 / 0 — read, not assumed."]
+
+    unresolved = sum(1 for t in threads if not t.get("isResolved"))
+    out = [f"Unresolved threads: {unresolved} / {len(threads)}"]
+    ordered = sorted(threads, key=lambda t: bool(t.get("isResolved")))
+    for t in ordered[:THREAD_INDEX_MAX]:
+        state = "resolved  " if t.get("isResolved") else "UNRESOLVED"
+        where = _untrusted.flat(str(t.get("path") or "(no file)"))
+        # `line` is null on an outdated thread — the diff moved out from under
+        # it — and GitHub keeps the position it was written against in
+        # `originalLine`. Falling back to it is what makes an outdated row
+        # actionable: on PR #1443 both threads rendered as a bare path, and
+        # `pkg_paths.py:87` is the whole address of the finding. `[outdated]`
+        # below already says the number is against an earlier diff.
+        line_no = t.get("line")
+        if not isinstance(line_no, int):
+            line_no = t.get("originalLine")
+        if isinstance(line_no, int):
+            where += f":{line_no}"
+        comments = ((t.get("comments") or {}).get("nodes")) or []
+        author = "?"
+        if comments:
+            author = _untrusted.flat(
+                str((comments[0].get("author") or {}).get("login") or "?"))
+        outdated = " [outdated]" if t.get("isOutdated") else ""
+        out.append(f"  {state}  {where}{outdated}  {author}  "
+                   f"{_thread_excerpt(t)}")
+    withheld = len(ordered) - THREAD_INDEX_MAX
+    if withheld > 0:
+        out.append(f"  … {withheld} more not indexed here")
+    out.append(f"  bodies: gh-pr:{number}:threads — the rows above are one "
+               f"line each, not the finding")
+    return out
 
 
 def _head_commit_age_secs(url: str, number: int | str) -> int | None:
@@ -897,11 +979,15 @@ def main() -> int:
             age_str += f" | Updated: {_relative_age(updated_at)}"
         print(age_str)
 
-    # Unresolved review threads — fetched via GraphQL (not exposed by gh pr view --json)
-    review_threads = _fetch_review_threads(d.get("url", ""), iid)
-    if review_threads:
-        unresolved = sum(1 for t in review_threads if not t.get("isResolved"))
-        print(f"Unresolved threads: {unresolved} / {len(review_threads)}")
+    # Unresolved review threads — GraphQL, since `gh pr view --json` has no
+    # field for them. One line in all three states, and an index under it: the
+    # count alone was #1445, where `Unresolved threads: 2 / 2` sat above
+    # `## Comments (0)` and the only route to the two findings was raw
+    # `gh api .../pulls/N/comments`.
+    review_threads, threads_err = _fetch_review_threads_detailed(
+        d.get("url", ""), iid)
+    for line in _thread_index(review_threads, threads_err, iid):
+        print(line)
 
     # Reviews — always print so absence is signal, not silence
     reviews = d.get("reviews", [])

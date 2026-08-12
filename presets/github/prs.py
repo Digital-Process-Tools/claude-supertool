@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pr import _gh, _fetch_review_threads  # noqa: E402  (reuse the gh-pr helpers)
+from pr import _gh, _fetch_review_threads_detailed  # noqa: E402  (reuse the gh-pr helpers)
 import _board  # noqa: E402  (the board layout shared with gl-mrs / radar)
 import _filter_tokens  # noqa: E402  (the one tokenizer + refusal, shared with gh-issues / gl-mrs)
 import _untrusted  # noqa: E402  (the repo's remote-text convention)
@@ -351,13 +351,23 @@ def _enrich(prs: list[dict], cap: int = ENRICH_CAP, workers: int = ENRICH_WORKER
 
     The one thing `gh pr list --json` can't give us. Capped and skippable
     (`nopipe`) because it costs one call per PR.
+
+    `None` when the call declined, and never `0` (#1445). The old fetcher
+    returned `[]` for a rate limit, a 404 and a timeout alike, so a PR whose
+    threads could not be read was counted as having none and lost the `threads`
+    flag entirely. On a board — the read that decides which PR to open next —
+    that does not just omit a number, it removes the marker that would have
+    made somebody look.
     """
     targets = prs[:cap]
     if not targets:
         return
 
-    def _one(p: dict) -> int:
-        threads = _fetch_review_threads(p.get("url", ""), p.get("number"))
+    def _one(p: dict) -> int | None:
+        threads, _ = _fetch_review_threads_detailed(
+            p.get("url", ""), p.get("number"))
+        if threads is None:
+            return None
         return sum(1 for t in threads if not t.get("isResolved"))
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -468,8 +478,15 @@ def _flags(p: dict) -> str:
         flags.append("draft")
     if p.get("mergeable") == "CONFLICTING":
         flags.append("conflict")
-    if p.get("_unresolved", 0):
-        flags.append("threads")
+    # Three states, and the middle one is the point: `None` is "enriched, and
+    # the thread call declined", which is not the same claim as `0` and not the
+    # same claim as never having been enriched (past the cap, or `nopipe`) —
+    # that last one leaves the key absent and flags nothing (#1445).
+    if "_unresolved" in p:
+        if p["_unresolved"] is None:
+            flags.append("threads?")
+        elif p["_unresolved"]:
+            flags.append("threads")
     return f" [{','.join(flags)}]" if flags else ""
 
 

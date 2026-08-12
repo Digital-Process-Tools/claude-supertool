@@ -194,7 +194,8 @@ def _render(monkeypatch, capsys, legs: list[tuple[str, str, str]],
     # is not about; it appends its own marker to the same line.
     monkeypatch.setattr(pr, "_reconcile_checks", lambda d: ("", []))
     monkeypatch.setattr(pr, "_local_branch_check", lambda s: "")
-    monkeypatch.setattr(pr, "_fetch_review_threads", lambda *a, **k: [])
+    monkeypatch.setattr(pr, "_fetch_review_threads_detailed",
+                        lambda *a, **k: ([], ""))
     argv = ["pr.py", "798"] + (["status"] if slim else [])
     monkeypatch.setattr(sys, "argv", argv)
     assert pr.main() == 0

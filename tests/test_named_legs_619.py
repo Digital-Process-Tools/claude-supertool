@@ -260,7 +260,8 @@ def test_full_dashboard_also_names_failed_legs(monkeypatch, capsys) -> None:
     """Judgment call: naming lives in both the terse and full forms (#619)."""
     payload = _pr_payload(statusCheckRollup=_mixed_rollup(), body="x", comments=[])
     monkeypatch.setattr(pr.subprocess, "run", lambda *a, **kw: _fake_gh_run(payload))
-    monkeypatch.setattr(pr, "_fetch_review_threads", lambda *a, **kw: [])
+    monkeypatch.setattr(pr, "_fetch_review_threads_detailed",
+                        lambda *a, **kw: ([], ""))
     monkeypatch.setattr(sys, "argv", ["pr.py", "617"])
     rc = pr.main()
     out = capsys.readouterr().out
