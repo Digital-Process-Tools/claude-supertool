@@ -6,6 +6,7 @@
       "safety": "read-only",
       "cmd": "{python} {path}gitlab/issue.py {args}",
       "timeout": 30,
+      "repo_target": true,
       "description": "GitLab issue: desc, comments, images, related MRs. A truncated description says so twice — in the header and at the cut — with the exact char count withheld. :full = no truncation, all comments",
       "syntax": "gl-issue:NUMBER[:full]",
       "replaces": [
@@ -18,6 +19,7 @@
       "safety": "read-only",
       "cmd": "{python} {path}gitlab/mr.py {args}",
       "timeout": 20,
+      "repo_target": true,
       "description": "MR review: branch, pipeline, approval, linked issue, diff stat, per-file name-status (A/D/R/M) list, comments. A truncated description says so twice — in the header and at the cut — with the exact char count withheld. :status = slim merge-state only. :full uncaps the description, the file list + comments",
       "syntax": "gl-mr:NUMBER_OR_BRANCH[:status|:full]",
       "replaces": [
@@ -43,6 +45,7 @@
       "safety": "acts",
       "cmd": "{python} {path}gitlab/issue_create.py {arg}",
       "timeout": 30,
+      "repo_target": "payload:project",
       "description": "Create a GitLab issue from a JSON/TOML payload file. Supports milestone_id, labels, assignee_ids, estimate (quick action), and issue links.",
       "syntax": "gl-issue-create:@FILE",
       "example": "gl-issue-create:@.max/new-issue.json",
@@ -54,6 +57,7 @@
       "safety": "read-only",
       "cmd": "{python} {path}gitlab/pipeline.py {args}",
       "timeout": 15,
+      "repo_target": true,
       "description": "Pipeline jobs by stage with statuses + failed job IDs. Default collapses manual/created/skipped bulk to a count. :active = running/pending only; :failed = failed jobs + IDs/URLs",
       "syntax": "gl-pipeline:NUMBER[:active|:failed]",
       "replaces": [
@@ -87,6 +91,7 @@
       "safety": "read-only",
       "cmd": "{python} {path}gitlab/job.py {args}",
       "timeout": 30,
+      "repo_target": true,
       "description": "Why job failed: MR ctx + error patterns + log tail. Argv is checked before anything is fetched (#1145): a non-numeric job id and a MODE outside fail/errors/raw/grep are both REFUSED with nothing read, and a ':' inside :grep:PATTERN is REJOINED rather than truncated, with a note saying how the pattern was read; '|' needs no escape. Shared with gh-job via presets/_job_argv.py. :fail (alias :errors) = matched failure blocks only, no tail — the tight triage view, per-job patterns; :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive); :raw:-N is the last N lines, so the tail can be asked for without knowing the total; a START past the end returns the tail of the width requested and says so rather than declining; :grep:PATTERN ad-hoc regex over the trace (literal fallback, context, tail on no-match; emission budgeted by GL_JOB_GREP_MAX_BYTES, default 65536 — a capped view says so in its header AND footer with an exact 'N of M matching lines shown' and names bytes, not a match limit, as what cut). Cause markers (Caused by / Exception: / SQLSTATE / Exit Code / crash) are always matched on top of the patterns, and a failed job matching nothing is reported as unclassified with a log tail — never as 'no errors'",
       "syntax": "gl-job:NUMBER[:fail|:raw[:-N|:START[:END]]|:grep:PATTERN]",
       "replaces": [

@@ -8,6 +8,11 @@ exports it here as ``SUPERTOOL_REPO``; every preset in the family reads it
 through this module so the flag, the API-path substitution and the error
 wording stay one decision rather than five copies.
 
+#676 added the GitLab half below. It is not the same fix wearing the same name:
+`glab api` has no repo flag at all, so the target is substituted *into* the
+`projects/:id` path segment rather than appended beside it, and a GitLab target
+may carry subgroups (`group/subgroup/project`) where a GitHub one may not.
+
 Absence is a first-class answer: with no target set every function here returns
 the empty/None form and the caller behaves exactly as it did before.
 """
@@ -111,6 +116,76 @@ def not_found_hint() -> str:
     if value:
         return f"Check the number, or the repo target (gh repo view {value})."
     return "Check the number or verify you're in the right repo (gh repo view)."
+
+
+# ---------------------------------------------------------------------------
+# the GitLab half — a flag on the subcommands, a substitution in the API (#676)
+# ---------------------------------------------------------------------------
+
+#: What `glab api` expands from the cwd's remote. It is a whole path segment,
+#: so the match is anchored on the segment boundary rather than on the prefix:
+#: `projects/:idle/x` names a project called `:idle` and is not this.
+GL_PROJECT_PLACEHOLDER = "projects/:id"
+
+
+def gl_project() -> str | None:
+    """The target as a url-encoded GitLab project id, or None.
+
+    GitLab addresses a project by its **full path** — `group/subgroup/project`
+    — and that path is one path *segment* of the API url, so every `/` inside
+    it is percent-encoded. ``safe=""`` rather than the default ``safe="/"``,
+    which is the whole point: the default would leave the separators alone and
+    produce `projects/group/subgroup/project`, a route that does not exist.
+    """
+    value = target()
+    if not value:
+        return None
+    return urllib.parse.quote(value, safe="")
+
+
+def gl_args() -> list[str]:
+    """``["-R", GROUP/PROJECT]`` for a glab subcommand, or ``[]``.
+
+    ``glab issue view`` and ``glab mr view`` take ``-R``; ``glab api`` does
+    not, which is the asymmetry #676 exists for. Use :func:`gl_api_path` there.
+    """
+    value = target()
+    return ["-R", value] if value else []
+
+
+def gl_api_path(path: str) -> str:
+    """A `glab api` path with the target substituted into ``projects/:id``.
+
+    Substituted, not accompanied: `:id` is glab's own placeholder for the
+    cwd's project, so leaving it in place beside a target would mean the call
+    still resolved from the directory it was made in — which is the behaviour
+    the target exists to override.
+
+    A path that does not begin with the placeholder segment is returned
+    untouched. That is the honest answer rather than a convenience: this
+    module cannot know where the project id sits in an arbitrary route, and
+    guessing would rewrite a path the caller had already spelled correctly.
+    """
+    project = gl_project()
+    if not project or not path.startswith(GL_PROJECT_PLACEHOLDER):
+        return path
+    rest = path[len(GL_PROJECT_PLACEHOLDER):]
+    if rest and rest[0] not in "/?":
+        return path
+    return f"projects/{project}{rest}"
+
+
+def gl_not_found_hint() -> str:
+    """The verification step that matches whichever scope glab actually used.
+
+    Same argument as :func:`not_found_hint` on the GitHub side: under a target
+    the cwd had no part in the lookup, so "verify you're in the right repo"
+    sends the reader to fix something that is not broken.
+    """
+    value = target()
+    if value:
+        return f"Check the number, or the repo target (glab repo view {value})."
+    return "Check the number or verify you're in the right repo."
 
 
 # ---------------------------------------------------------------------------

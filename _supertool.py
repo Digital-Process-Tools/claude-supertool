@@ -595,6 +595,69 @@ def _repo_target_ops() -> set[str]:
     return {op for op, mode in _repo_target_modes().items() if mode == "op"}
 
 
+#: A repo target is a path made of project-path segments and nothing else.
+#: Both forges draw from the same character set, so one pattern serves both.
+#: This is checked here rather than in the preset because the value is
+#: substituted into an API path (`projects/<target>`) and handed to a CLI that
+#: attaches a live token — `gl-api` already refuses a path that names a host
+#: for that reason (#1035), and a target is one more way to write a path.
+_REPO_SEGMENT_RE = re.compile(r"\A[A-Za-z0-9._-]+\Z")
+
+
+def _repo_target_platform(ops: List[str]) -> str | None:
+    """Which forge the repo-targetable ops in *ops* belong to.
+
+    ``"github"``, ``"gitlab"``, ``"mixed"``, or None when the call names no
+    targetable op at all. Derived from the shipped preset each op is declared
+    in, not from its name prefix — the manifest is the registry, and a prefix
+    is a convention that can be broken without anything failing.
+
+    The pre-pass needs this because the two forges do not accept the same
+    target shape (#676): GitHub is exactly ``OWNER/NAME``, GitLab allows
+    ``GROUP/SUBGROUP/PROJECT``. Loosening for both would weaken the GitHub
+    check, which is the alternative #676 names and rejects.
+    """
+    presets = _shipped_preset_ops()
+    modes = _repo_target_modes()
+    # Every op that has a repo dimension at all, not only the ones that take
+    # it from this op. A `payload`-mode write op is refused a few lines below,
+    # but it is still evidence of which forge the call is about — reading only
+    # `op`-mode ops let a GitLab project path through a GitHub-only call with
+    # the shape never mentioned, and the reader sent to the wrong fix.
+    found = {presets.get(a.split(":", 1)[0], "")
+             for a in ops if a.split(":", 1)[0] in modes}
+    if not found:
+        return None
+    if len(found) > 1:
+        return "mixed"
+    return next(iter(found)) or None
+
+
+def _repo_shape_error(value: str, platform: str | None) -> str | None:
+    """Why *value* is not a usable repo target for *platform*, or None.
+
+    Three states rather than two: a shape this cannot vouch for is refused
+    with the reason, never accepted with a shrug and encoded on the way out.
+    """
+    segments = value.split("/")
+    if (len(segments) < 2
+            or any(s in (".", "..") or not _REPO_SEGMENT_RE.match(s)
+                   for s in segments)):
+        return (
+            f"repo: expected OWNER/NAME (GitHub) or GROUP[/SUBGROUP]/PROJECT "
+            f"(GitLab), got {value!r} — segments may hold only letters, "
+            "digits, '.', '_' and '-' "
+            "(e.g. repo:Digital-Process-Tools/claude-remember)\n"
+        )
+    if platform == "github" and len(segments) != 2:
+        return (
+            f"repo: {value!r} is a GitLab project path, and this call's "
+            "repo-targetable ops are GitHub's — gh takes exactly OWNER/NAME "
+            "(e.g. repo:Digital-Process-Tools/claude-remember)\n"
+        )
+    return None
+
+
 def _repo_refusal(op: str) -> str:
     """Why this call cannot carry a ``repo:`` op, and what to do instead.
 
@@ -602,10 +665,16 @@ def _repo_refusal(op: str) -> str:
     op with its own payload key wants the target moved, an op with no repo
     dimension at all wants the target dropped or the call split.
     """
-    if _repo_target_modes().get(op) == "payload":
+    mode = _repo_target_modes().get(op) or ""
+    if mode.split(":", 1)[0] == "payload":
+        # `payload` alone means the key is `repo`; `payload:KEY` names another.
+        # The key is quoted from the manifest rather than assumed, because
+        # `gl-issue-create` reads `project` and telling its caller to set
+        # `repo` names a field its payload validator does not look at.
+        key = mode.split(":", 1)[1] if ":" in mode else "repo"
         return (
             f"repo: {op!r} takes its repo target in the payload "
-            f'(repo = "OWNER/NAME"), not from a repo: op — so there is one '
+            f"({key} = ...), not from a repo: op — so there is one "
             f"place the target comes from. Set it there and drop the repo: op.\n"
         )
     return (
@@ -23996,12 +24065,21 @@ def _main(argv: List[str]) -> int:
             return 1
         spec = argv[first_allowed]
         repo_target = spec.split(":", 1)[1].strip() if ":" in spec else ""
-        if repo_target.count("/") != 1 or not all(repo_target.split("/")):
-            sys.stderr.write(
-                f"repo: expected OWNER/NAME, got {repo_target!r} "
-                "(e.g. repo:Digital-Process-Tools/claude-remember)\n")
-            return 1
         rest = argv[:first_allowed] + argv[first_allowed + 1:]
+        # The accepted shape depends on which forge the call's targetable ops
+        # belong to (#676): GitHub is exactly OWNER/NAME, GitLab allows
+        # subgroups. So the platform is decided before the shape, not after.
+        platform = _repo_target_platform(rest)
+        if platform == "mixed":
+            sys.stderr.write(
+                "repo: this call names both GitHub and GitLab repo-targetable "
+                "ops, and one target cannot be a repository on both forges — "
+                "give each family a call of its own.\n")
+            return 1
+        shape_error = _repo_shape_error(repo_target, platform)
+        if shape_error:
+            sys.stderr.write(shape_error)
+            return 1
         targetable = _repo_target_ops()
         # A leading cwd: survives in `rest` and is another pre-pass op, not a
         # dispatch one — it is where the call stands, never what it is about,

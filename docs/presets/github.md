@@ -326,7 +326,7 @@ The filter grammar and row layout are shared with `gh-prs` ([#628](https://githu
 
 ### Why there is no `gl-issues` yet
 
-GitLab's issue payload carries `updated_at` and nothing else about the body, so the staleness signal has no GitLab equivalent; and it has no `authorAssociation`, so membership needs a per-author API call. A `gl-issues` today would ship with both flagship signals permanently `?` — the wrapper #769 argues earns nothing — and [#676](https://github.com/Digital-Process-Tools/claude-supertool/issues/676) also leaves it unable to target another repo, since `glab api` has no `--repo`.
+GitLab's issue payload carries `updated_at` and nothing else about the body, so the staleness signal has no GitLab equivalent; and it has no `authorAssociation`, so membership needs a per-author API call. A `gl-issues` today would ship with both flagship signals permanently `?` — the wrapper #769 argues earns nothing. Targeting another project is no longer among the reasons: [#676](https://github.com/Digital-Process-Tools/claude-supertool/issues/676) shipped that for the GitLab read ops, and `glab api` having no `--repo` turned out not to block it — the project is a path segment, so the target substitutes into `projects/:id` (see [Targeting another project](gitlab.md#targeting-another-project)). The two payload signals are the whole argument now.
 
 ## The PR diff, in the shape a reviewer walks it
 
@@ -419,9 +419,10 @@ A leading `repo:OWNER/NAME` op supplies it:
 |---|---|
 | Position | First op, or immediately after `cwd:` — `cwd:` keeps its own must-be-absolutely-first rule |
 | Count | One per call |
-| Shape | `OWNER/NAME`, validated before anything runs |
+| Shape | `OWNER/NAME`, validated before anything runs. Exactly two segments **here**: the GitLab half of the same op takes `GROUP[/SUBGROUP]/PROJECT`, and a three-segment path in a `gh-*` call is refused rather than passed to `gh` ([#676](https://github.com/Digital-Process-Tools/claude-supertool/issues/676)) |
 | Scope | The whole call. Two targets in one call is two calls |
 | Accepted by | `gh-pr`, `gh-prs`, `gh-issue`, `gh-issues`, `gh-run`, `gh-job` |
+| Not with `gl-*` | A call naming repo-targetable ops from both forges is refused: one target cannot be a repository on GitHub *and* a project on GitLab |
 
 **Why a leading op and not a trailing `…:repo=OWNER/NAME` token.** The suffix grammar in this family is not free. `gh-job:ID:grep:PATTERN` takes an arbitrary regex in that position, so `gh-job:5:grep:repo=x` is a legitimate log search that a trailing-token scan would silently steal — and `gh-prs` already spells its filters `key=value` *inside one comma-separated token* (`gh-prs:author=@me,state=open`), so a second, colon-separated `key=` grammar would be two rules for one idea. A leading op also lands in one place in the dispatcher instead of in five presets' argument parsers.
 
@@ -438,7 +439,7 @@ repo: 'gh-issue-create' takes its repo target in the payload (repo = "OWNER/NAME
 repo: op — so there is one place the target comes from. Set it there and drop the repo: op.
 ```
 
-Both fail before any op runs. A target that quietly applied to part of a call is the shape of the bug this fixed, so it is not the fix's behaviour either. Ops opt in via `"repo_target": true` in the preset manifest (`"payload"` for those routing it through their own payload), which is also what makes the refusal able to name *which* of the two problems you have.
+Both fail before any op runs. A target that quietly applied to part of a call is the shape of the bug this fixed, so it is not the fix's behaviour either. Ops opt in via `"repo_target": true` in the preset manifest (`"payload"` for those routing it through their own payload, or `"payload:KEY"` when that key is not called `repo` — `gl-issue-create` reads `project`), which is also what makes the refusal able to name *which* of the two problems you have, and which field to set.
 
 ### The error names the door, not just the wall
 

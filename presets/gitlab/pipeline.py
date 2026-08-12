@@ -19,6 +19,7 @@ import sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
 import _untrusted  # noqa: E402  (a job name is CI-config text, and this is a column-aligned table — #965)
 
 # Statuses that answer "what's still going on right now".
@@ -61,7 +62,9 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify glab errors into actionable messages for LLMs."""
     s = stderr.lower()
     if "404" in s or "not found" in s or "could not resolve" in s:
-        return f"ERROR: {resource} #{identifier} not found. Check the ID or verify you're in the right repo."
+        return (f"ERROR: {resource} #{identifier} not found "
+                f"{_repo_target.not_found_scope()}. "
+                f"{_repo_target.gl_not_found_hint()}")
     if "401" in s or "unauthorized" in s or "glpat_" in s or "authenticate" in s or "bad token" in s or "token expired" in s:
         return "ERROR: glab not authenticated. Run: glab auth login"
     if "403" in s or "forbidden" in s:
@@ -116,7 +119,9 @@ def main() -> int:
     # so we use the API endpoint
     try:
         result = subprocess.run(
-            ["glab", "api", f"projects/:id/pipelines/{pipeline_id}/jobs",
+            ["glab", "api",
+             _repo_target.gl_api_path(
+                 f"projects/:id/pipelines/{pipeline_id}/jobs"),
              "--paginate"],
             capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
         )
