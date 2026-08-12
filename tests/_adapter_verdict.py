@@ -43,6 +43,8 @@ __all__ = [
     "verdict", "describe", "assert_ok", "assert_declined", "assert_adapter_ok",
     "stalled_at_its_own_wall", "skip_if_stalled",
     "assert_adapter_ok_or_skip_if_stalled",
+    "CORE_TIMEOUT_KEY", "core_timed_out", "skip_if_core_timed_out",
+    "run_one_or_skip",
 ]
 
 MAX_ERRORS_SHOWN = 3
@@ -301,6 +303,100 @@ def skip_if_stalled(payload: Any, *, inner_s: int) -> Any:
     if reason is not None:
         pytest.skip(reason)
     return payload
+
+
+#: The key `_validator_run_one`'s `TimeoutExpired` arm stamps on the payload it
+#: fabricates when the adapter's spawn outlives `spec["timeout"]`. It is written
+#: in exactly one place in `_supertool.py` and `_validator_strip_core_keys` drops
+#: it from anything an adapter or a cache entry says (#1036, #1044), so its
+#: presence identifies that arm and nothing else can claim it.
+CORE_TIMEOUT_KEY = "timeout"
+
+
+def core_timed_out(payload: Any) -> str | None:
+    """Did the *core* give up waiting for the adapter? (#1501)
+
+    The sibling of `stalled_at_its_own_wall`, one layer out. That one classifies
+    an **adapter** reporting its own internal budget as an ordinary `ok: false`
+    verdict; this one classifies the payload the **core** invents when the
+    adapter never answered at all. Different party, different payload, different
+    route — and the two must stay separate, because a test asserting on one is
+    not asserting on the other.
+
+    Returns the reason to decline, or ``None`` when the payload is a verdict
+    about the file and must be asserted on normally. Never raises.
+
+    **One clause, and the shortness is the design.** `stalled_at_its_own_wall`
+    needs four because an adapter's stall is indistinguishable from its verdicts
+    except by reading them. This one needs none of that: `timeout is True` is
+    unforgeable, so every extra clause could only produce a false negative — and
+    every clause a message or a `count` could contribute would produce a false
+    *positive*, which is worse. In particular:
+
+    - **not `count == 1`.** That is the number that showed up in the Windows log
+      (#1501: `assert 1 == 2`) and it is also what a real adapter reports for a
+      single syntax error. Declining on it would mute every genuine one-error
+      verdict in the suite — the same defect this exists to remove, pointed the
+      other way.
+    - **not the message.** `WALL_PHRASES` exists because an adapter's stall has
+      nothing else to go on. Here it would only add a way to swallow a real
+      finding whose text happens to mention a timeout.
+    - **`is True`, not truthiness.** A payload carrying `"timeout": 10` is
+      echoing a setting, not reporting that the wall fired.
+
+    The core's arm itself is correct and stays: it is an absence, it says so, and
+    #969 pins that it never rolls an edit back. Only the assertion site was
+    wrong.
+    """
+    try:
+        if not isinstance(payload, dict):
+            return None
+        if payload.get(CORE_TIMEOUT_KEY) is not True:
+            return None
+        return (
+            "the core's own spawn wall fired before the adapter answered, so "
+            "there is no verdict about this file to assert on — "
+            f"{describe(payload)}"
+        )
+    except Exception:  # pragma: no cover - classification must never be the failure
+        return None
+
+
+def skip_if_core_timed_out(payload: Any) -> Any:
+    """Decline if the core timed the adapter out; else hand `payload` back (#1501).
+
+    Wraps a `_validator_run_one` return in one expression so a call site keeps
+    its shape:
+
+        out = skip_if_core_timed_out(supertool._validator_run_one(n, spec, f))
+
+    Split from `core_timed_out` for the same reason `skip_if_stalled` is split
+    from `stalled_at_its_own_wall`: a test that wants to assert *on* the arm
+    still can, and one does.
+    """
+    reason = core_timed_out(payload)
+    if reason is not None:
+        pytest.skip(reason)
+    return payload
+
+
+def run_one_or_skip(name: str, spec: dict, target: str, **kwargs: Any) -> Any:
+    """`supertool._validator_run_one`, with the core's own wall as a skip (#1501).
+
+    The adopted form at every unit-test call site that hands the core a `cmd` it
+    will actually spawn. One wrapper rather than 42 hand-written ones: the risk
+    is uniform, so a site that opts out by writing the raw call is the thing
+    worth noticing, and the guard in
+    `tests/test_core_timeout_is_not_a_verdict_1501.py` notices it.
+
+    `supertool` is imported here rather than at module scope because several
+    test files insert the repo root on `sys.path` before importing it, and this
+    module is imported from some of them.
+    """
+    import supertool
+
+    return skip_if_core_timed_out(
+        supertool._validator_run_one(name, spec, target, **kwargs))
 
 
 def assert_adapter_ok_or_skip_if_stalled(

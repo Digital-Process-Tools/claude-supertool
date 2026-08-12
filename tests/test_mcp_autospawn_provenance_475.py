@@ -28,6 +28,7 @@ import uuid
 import pytest
 
 import supertool
+from _adapter_verdict import run_one_or_skip
 from supertool import MCPClient, MCPServerError
 
 _REQUIRES_AF_UNIX = pytest.mark.skipif(
@@ -196,7 +197,7 @@ class TestValidatorProvenance:
         monkeypatch.setattr(subprocess, "run", fake_run)
         target = tmp_path / "x.py"
         target.write_text("x = 1\n", encoding="utf-8")
-        supertool._validator_run_one("fake", spec, str(target))
+        run_one_or_skip("fake", spec, str(target))
         return captured
 
     def test_validator_children_may_not_create_daemons(

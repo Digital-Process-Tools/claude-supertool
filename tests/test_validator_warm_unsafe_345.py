@@ -36,6 +36,7 @@ import json
 from pathlib import Path
 
 import supertool
+from _adapter_verdict import assert_declined, run_one_or_skip
 
 
 def _cmd(payload: dict) -> str:
@@ -93,7 +94,7 @@ def test_warm_unsafe_target_is_skipped_not_failed(tmp_path: Path) -> None:
     f = tmp_path / "ServiceListDelegateTest.php"
     f.write_text(_DB_TEST, encoding="utf-8")
     spec = _spec(_cmd(_RED), warm_unsafe=[r"extends\s+SiControllerTestCase"])
-    out = supertool._validator_run_one("phpunit", spec, str(f))
+    out = run_one_or_skip("phpunit", spec, str(f))
     assert "skipped" in out, out
     assert "ok" not in out or out.get("ok") is not False
     assert out.get("count", 0) == 0
@@ -105,7 +106,7 @@ def test_skip_reason_names_the_pattern_that_matched(tmp_path: Path) -> None:
     f = tmp_path / "ServiceListDelegateTest.php"
     f.write_text(_DB_TEST, encoding="utf-8")
     spec = _spec(_cmd(_RED), warm_unsafe=[r"extends\s+SiControllerTestCase"])
-    out = supertool._validator_run_one("phpunit", spec, str(f))
+    out = run_one_or_skip("phpunit", spec, str(f))
     reason = str(out["skipped"])
     assert "warm-unsafe" in reason
     assert "SiControllerTestCase" in reason
@@ -116,7 +117,7 @@ def test_warm_unsafe_skip_never_regresses_and_never_rolls_back(tmp_path: Path) -
     f = tmp_path / "ServiceListDelegateTest.php"
     f.write_text(_DB_TEST, encoding="utf-8")
     spec = _spec(_cmd(_RED), warm_unsafe=[r"extends\s+SiControllerTestCase"])
-    out = supertool._validator_run_one("phpunit", spec, str(f))
+    out = run_one_or_skip("phpunit", spec, str(f))
     green_before = {"tool": "phpunit-mcp", "ok": True, "count": 0}
     assert supertool._validator_regressed(green_before, out) is False
     assert supertool._validator_regressed(None, out) is False
@@ -127,7 +128,7 @@ def test_warm_unsafe_skip_renders_as_skipped_row(tmp_path: Path) -> None:
     f = tmp_path / "ServiceListDelegateTest.php"
     f.write_text(_DB_TEST, encoding="utf-8")
     spec = _spec(_cmd(_RED), warm_unsafe=[r"extends\s+SiControllerTestCase"])
-    out = supertool._validator_run_one("phpunit", spec, str(f))
+    out = run_one_or_skip("phpunit", spec, str(f))
     row = "\n".join(supertool._validator_render_row(out))
     assert "skipped" in row
     assert "err" not in row
@@ -148,7 +149,7 @@ def test_warm_unsafe_declines_before_the_adapter_runs(tmp_path: Path) -> None:
     )
     spec = _spec(f"{{python}} {adapter.as_posix()} {{file}}",
                  warm_unsafe=[r"extends\s+SiControllerTestCase"])
-    out = supertool._validator_run_one("phpunit", spec, str(f))
+    out = run_one_or_skip("phpunit", spec, str(f))
     assert "skipped" in out
     assert not marker.exists(), "adapter was invoked despite the warm-unsafe gate"
 
@@ -162,9 +163,9 @@ def test_non_matching_target_still_reports_the_failure(tmp_path: Path) -> None:
     f = tmp_path / "CommandGetThingTest.php"
     f.write_text(_PLAIN_TEST, encoding="utf-8")
     spec = _spec(_cmd(_RED), warm_unsafe=[r"extends\s+SiControllerTestCase"])
-    out = supertool._validator_run_one("phpunit", spec, str(f))
+    out = run_one_or_skip("phpunit", spec, str(f))
     assert "skipped" not in out, out
-    assert out["ok"] is False
+    assert_declined(out, context="a target the warm-unsafe gate does not match")
     assert out["count"] == 2
     assert supertool._validator_regressed({"ok": True, "count": 0}, out) is True
 
@@ -173,7 +174,7 @@ def test_no_warm_unsafe_key_leaves_behaviour_unchanged(tmp_path: Path) -> None:
     """Opt-in: a spec without the key behaves exactly as before."""
     f = tmp_path / "ServiceListDelegateTest.php"
     f.write_text(_DB_TEST, encoding="utf-8")
-    out = supertool._validator_run_one("phpunit", _spec(_cmd(_RED)), str(f))
+    out = run_one_or_skip("phpunit", _spec(_cmd(_RED)), str(f))
     assert "skipped" not in out
     assert out["count"] == 2
 
@@ -181,7 +182,7 @@ def test_no_warm_unsafe_key_leaves_behaviour_unchanged(tmp_path: Path) -> None:
 def test_empty_warm_unsafe_list_leaves_behaviour_unchanged(tmp_path: Path) -> None:
     f = tmp_path / "ServiceListDelegateTest.php"
     f.write_text(_DB_TEST, encoding="utf-8")
-    out = supertool._validator_run_one("phpunit", _spec(_cmd(_RED), warm_unsafe=[]), str(f))
+    out = run_one_or_skip("phpunit", _spec(_cmd(_RED), warm_unsafe=[]), str(f))
     assert "skipped" not in out
     assert out["count"] == 2
 
@@ -193,7 +194,7 @@ def test_matching_target_that_passes_is_also_declined(tmp_path: Path) -> None:
     green = {"tool": "phpunit-mcp", "file": "x.php", "ok": True, "count": 0,
              "errors": [], "duration_ms": 5}
     spec = _spec(_cmd(green), warm_unsafe=[r"extends\s+SiControllerTestCase"])
-    out = supertool._validator_run_one("phpunit", spec, str(f))
+    out = run_one_or_skip("phpunit", spec, str(f))
     assert "skipped" in out
 
 
@@ -205,7 +206,7 @@ def test_bare_string_is_accepted_as_a_single_pattern(tmp_path: Path) -> None:
     f = tmp_path / "ServiceListDelegateTest.php"
     f.write_text(_DB_TEST, encoding="utf-8")
     spec = _spec(_cmd(_RED), warm_unsafe=r"extends\s+SiControllerTestCase")
-    out = supertool._validator_run_one("phpunit", spec, str(f))
+    out = run_one_or_skip("phpunit", spec, str(f))
     assert "skipped" in out
 
 
@@ -214,7 +215,7 @@ def test_invalid_regex_is_ignored_and_the_validator_still_runs(tmp_path: Path) -
     f = tmp_path / "ServiceListDelegateTest.php"
     f.write_text(_DB_TEST, encoding="utf-8")
     spec = _spec(_cmd(_RED), warm_unsafe=["extends ([unclosed"])
-    out = supertool._validator_run_one("phpunit", spec, str(f))
+    out = run_one_or_skip("phpunit", spec, str(f))
     assert "skipped" not in out
     assert out["count"] == 2
 
@@ -224,14 +225,14 @@ def test_one_bad_pattern_does_not_disarm_a_good_one(tmp_path: Path) -> None:
     f.write_text(_DB_TEST, encoding="utf-8")
     spec = _spec(_cmd(_RED),
                  warm_unsafe=["([unclosed", r"extends\s+SiControllerTestCase"])
-    out = supertool._validator_run_one("phpunit", spec, str(f))
+    out = run_one_or_skip("phpunit", spec, str(f))
     assert "skipped" in out
 
 
 def test_non_list_non_string_warm_unsafe_is_ignored(tmp_path: Path) -> None:
     f = tmp_path / "ServiceListDelegateTest.php"
     f.write_text(_DB_TEST, encoding="utf-8")
-    out = supertool._validator_run_one("phpunit", _spec(_cmd(_RED), warm_unsafe=7), str(f))
+    out = run_one_or_skip("phpunit", _spec(_cmd(_RED), warm_unsafe=7), str(f))
     assert "skipped" not in out
     assert out["count"] == 2
 
@@ -241,7 +242,7 @@ def test_unreadable_target_does_not_trigger_a_decline(tmp_path: Path) -> None:
     than mute a validator on every file the gate could not read."""
     missing = tmp_path / "gone" / "NoSuchTest.php"
     spec = _spec(_cmd(_RED), warm_unsafe=[r"extends\s+SiControllerTestCase"])
-    out = supertool._validator_run_one("phpunit", spec, str(missing))
+    out = run_one_or_skip("phpunit", spec, str(missing))
     assert "skipped" not in out
     assert out["count"] == 2
 
@@ -250,7 +251,7 @@ def test_binary_target_does_not_crash_the_gate(tmp_path: Path) -> None:
     f = tmp_path / "blob.php"
     f.write_bytes(b"<?php \xff\xfe extends SiControllerTestCase \x00")
     spec = _spec(_cmd(_RED), warm_unsafe=[r"extends\s+SiControllerTestCase"])
-    out = supertool._validator_run_one("phpunit", spec, str(f))
+    out = run_one_or_skip("phpunit", spec, str(f))
     assert "skipped" in out
 
 
@@ -270,7 +271,7 @@ def test_gate_matches_the_resolved_target_not_the_edited_file(tmp_path: Path) ->
     spec = _spec(_cmd(_RED),
                  resolve=f"{{python}} {resolver.as_posix()} {{file}}",
                  warm_unsafe=[r"extends\s+SiControllerTestCase"])
-    out = supertool._validator_run_one("phpunit", spec, str(src))
+    out = run_one_or_skip("phpunit", spec, str(src))
     assert "skipped" in out
     assert "SiControllerTestCase" in str(out["skipped"])
 

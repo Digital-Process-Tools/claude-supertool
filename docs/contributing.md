@@ -1212,6 +1212,37 @@ exposed. `tests/test_html_check.py` does exactly that, pinned by
 to clear, that the test still fails if the adapter reports the broken file
 clean.
 
+**And the core has a wall of its own, one layer further out** ([#1501]). The
+two rules above are about an *adapter* reporting its own internal budget as an
+ordinary verdict. `_validator_run_one` has a separate arm for the adapter that
+never answered at all: on `subprocess.TimeoutExpired` it fabricates
+`ok: false, count: 1` with an `orchestrator` error and `timeout: True`. A unit
+test written as `assert out["count"] == 2` cannot tell that from two real
+findings, and a loaded Windows runner turned it into a red on `master` — the
+leg took 8m41s against a 10s spec budget.
+
+So a unit test handing the core a `cmd` it will really spawn calls
+`_adapter_verdict.run_one_or_skip(name, spec, target)` rather than
+`supertool._validator_run_one` directly. It declines a `timeout: True` payload
+and hands everything else back untouched. **`timeout is True` is its only
+clause**, and the two obvious extra ones are both wrong: `count == 1` is also
+what a real single-error verdict looks like, and the message is prose an adapter
+is entitled to use about somebody's `timeout` setting. The flag needs neither —
+`_supertool.py` writes it in exactly one place and `_validator_strip_core_keys`
+strips it from anything an adapter or a cache entry says ([#1036], [#1044]), so
+nothing else can claim it.
+
+`tests/test_core_timeout_is_not_a_verdict_1501.py` enforces the closure with an
+AST walk: any raw `_validator_run_one` call in `tests/` whose spec can spawn
+fails the suite. Two exclusions, both read off the code rather than from a list
+of line numbers that goes stale on the first insertion — a `{"builtin": ...}`
+spec returns in-process before any subprocess ([#477]), and a
+`# core-timeout: asserted on` comment marks a test whose subject *is* the arm.
+That marker is not decoration: converting every site at once silently muted
+`test_adapter_timeout_stays_loud`, the one test that provokes the wall on
+purpose. **A blanket decline turns the test for the absence into an absence of
+the test**, and only running it says so.
+
 **The adapter side of the same rule.** An adapter that grants itself a budget
 must survive blowing it. Letting `TimeoutExpired` escape kills the process on
 a traceback with **empty stdout**, and every caller `json.loads()` that — so a
@@ -1275,6 +1306,14 @@ message-less `["ok"] is <bool>`. It does not police files that have not adopted
 it yet: a guard that fails on work nobody has done is a guard that gets deleted.
 What it does prevent is #725's actual complaint — a new bare assertion landing
 in a file that already knows better.
+
+**"Adopted it" means the import, not the intent, so importing any name from the
+module opts the whole file in.** [#1501] added `run_one_or_skip` to seven files
+for an unrelated reason and pulled 13 bare assertions into scope with it; they
+were converted in that PR rather than exempted, because the alternative was
+narrowing this guard's trigger to accommodate a new import — weakening a working
+guard to keep a diff small. Worth knowing before adding the import to an
+eighth file: budget for its bare `["ok"] is <bool>` sites too.
 
 ### Pin third-party actions to a sha, never to a major tag
 
@@ -1369,6 +1408,10 @@ ceiling bounds it; the finer guard waits for evidence.
 [#727]: https://github.com/Digital-Process-Tools/claude-supertool/issues/727
 [#794]: https://github.com/Digital-Process-Tools/claude-supertool/issues/794
 [#1296]: https://github.com/Digital-Process-Tools/claude-supertool/issues/1296
+[#477]: https://github.com/Digital-Process-Tools/claude-supertool/issues/477
+[#1036]: https://github.com/Digital-Process-Tools/claude-supertool/issues/1036
+[#1044]: https://github.com/Digital-Process-Tools/claude-supertool/issues/1044
+[#1501]: https://github.com/Digital-Process-Tools/claude-supertool/issues/1501
 
 ### Never assert a property of a workflow by grepping the workflow
 
