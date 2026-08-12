@@ -1106,18 +1106,75 @@ straggler on the old path after an operator changes the variable is
 something a reader can find rather than something inferred from partial
 delivery.
 
-### Two sessions on one machine: both variables, or neither
+### Two sessions on one machine: one name, or both variables, or neither
 
-([#1309](https://github.com/Digital-Process-Tools/claude-supertool/issues/1309).)
+([#1309](https://github.com/Digital-Process-Tools/claude-supertool/issues/1309),
+[#1477](https://github.com/Digital-Process-Tools/claude-supertool/issues/1477).)
 
 A second session gets a radar of its own, today, with no fan-out anywhere in
-the transport. It takes **two** environment variables, and the failure mode of
-setting only the first is the reason this section exists:
+the transport. It used to take **two** environment variables, and the failure
+mode of setting only the first is the reason this section exists:
 
 ```bash
 export SUPERTOOL_WATCH_SOCK=~/.claude/watch-b.sock
 export SUPERTOOL_WATCH_STATE_DIR=~/.claude/watch-b
 ```
+
+**`SUPERTOOL_WATCH_NAME` derives both**, which is the recommended form because
+the only arrangement the pair can express that a name cannot is exactly the
+broken one:
+
+```bash
+export SUPERTOOL_WATCH_NAME=b
+#   -> SUPERTOOL_WATCH_SOCK      = /tmp/supertool-watch-b.sock
+#   -> SUPERTOOL_WATCH_STATE_DIR = /tmp/supertool-watch-b   (created 0700)
+```
+
+The name is one path component matching `^[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z` — a
+leading dot would hide the state directory from every listing, a leading dash
+reaches argv-shaped contexts, and 32 keeps the derived socket inside macOS's
+~104-byte `AF_UNIX` limit. A name outside it is **ignored and said so**, and the
+channel stays on the defaults; falling back silently would leave the operator
+believing in a private channel they do not have.
+
+`<base>` stays `/tmp`. It is world-traversable, which is the subject of #1184 /
+#1187 / #1197 / #1200, and a per-name subdirectory is an opportunity to change
+that — but moving the base is a migration for every running poller and belongs
+in its own issue. What the name does buy for free is that the directory it
+derives is created `0700` rather than inheriting `/tmp`'s mode. Only a *derived*
+directory is created: a `SUPERTOOL_WATCH_STATE_DIR` the operator supplied stays
+unanswerable when it is missing, and `watch` reports that rather than
+manufacturing it ([#693](https://github.com/Digital-Process-Tools/claude-supertool/issues/693)).
+
+**Precedence, and it is printed rather than assumed.** An explicit
+`SUPERTOOL_WATCH_SOCK` or `SUPERTOOL_WATCH_STATE_DIR` **overrides** the name.
+Not because an export is more authoritative in principle, but because it is the
+value a *running* poller already captured and cannot migrate away from: making
+the name win would move the paths out from under a live fleet. `channel:health`
+prints the override, naming both the path in force and the path the name would
+have produced. A name losing silently to a stale export is exactly the silence
+this whole section is about.
+
+**The name has two homes, and the check is the deliverable.** A key in
+`.supertool.json` reaches every poller, `radar` and `channel:health` through the
+config-to-env route (`docs/contributing.md`) — and it cannot reach the consumer,
+which the harness spawns from `.mcp.json`:
+
+```json
+{ "mcpServers": { "claude-channel": {
+    "command": "bun",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/notifiers/claude-channel/channel.ts"],
+    "env": { "SUPERTOOL_WATCH_NAME": "b" } } } }
+```
+
+Configuring three of four surfaces is the half-configured state through a new
+door, so `channel:health` reads `.mcp.json` at the plugin root and at the
+current directory and compares the socket each declares against the one this
+process uses. Three states: they agree (one line, only when a name is in play —
+agreement is not news), they disagree (both resolved sockets named, always), or
+nothing was established (said, never rendered as agreement). `channel.ts`
+applies the same precedence and derives the same path, so a name means the same
+thing at both ends.
 
 `SUPERTOOL_WATCH_SOCK` alone is not enough. The poller slot is a pid file at
 `{SUPERTOOL_WATCH_STATE_DIR}/supertool-watch-{source}__{id}.pid`, claimed
@@ -1135,10 +1192,16 @@ sets of API calls and two sets of rate limit, and neither de-duplicates the
 other's events. That is the trade a per-developer tool makes instead of
 running a broker.
 
-`SUPERTOOL_WATCH_STATE_DIR` travels to the poller through
-`transport.poller_env()` — a fork inherits the environment and an exec does
-not, so it is set explicitly — and `SUPERTOOL_WATCH_SOCK` rides along in the
-same copied environment.
+`SUPERTOOL_WATCH_STATE_DIR` and `SUPERTOOL_WATCH_SOCK` both travel to the poller
+through `transport.poller_env()`, and both are now set explicitly rather than
+one being pinned and the other riding along in the copied environment
+([#1477](https://github.com/Digital-Process-Tools/claude-supertool/issues/1477)).
+A fork inherits the environment and an exec does not, so the state directory
+always had to be pinned; under a name the socket is *derived* rather than
+inherited, and re-deriving after an exec is only equivalent while every input
+survives it. A poller that resolved a different socket from its parent is the
+#1309 split with nobody positioned to notice, so what the parent decided is
+what the child is given.
 
 **`radar` says when a fleet is delivering somewhere else.** The delivery
 banner reads each watcher's own `sock_path` and compares it with the socket
@@ -1338,7 +1401,7 @@ ack to read, at either end. So the answer has three states:
 |---|---|---|
 | `NOT DELIVERING` | 1 | A definite negative. No socket, or a socket that refuses: every event a poller emits right now is lost at the source. The report also names each watcher whose own `last_emit` already found nobody home, with the timestamp of that emit — and, on its own line, each state file it could not read |
 | `FORWARDING` | 0 | A consumer is bound and its published counters are fresh: N lines read, N forwarded, N dropped, last forwarded at T |
-| `CANNOT DETERMINE` | 3 | Bound, but publishing no counters, or counters written by a pid that is gone, or counters that stopped refreshing, or counters with no readable `forwarded` number, or a health file that is a symlink and was not followed. This is the state the old tooling reported as green |
+| `CANNOT DETERMINE` | 3 | Bound, but publishing no counters, or counters written by a pid that is gone, or counters that stopped refreshing, or counters with no readable `forwarded` number, or a health file that is a symlink and was not followed. This is the state the old tooling reported as green. It now names the process holding the socket — see below |
 | `CONTRADICTED` | 4 | The process holding the socket is not the one the health file names ([#1192](https://github.com/Digital-Process-Tools/claude-supertool/issues/1192)). A finding, not a degraded read — a forged file, or a stale one left beside a legitimate consumer |
 
 **`CONTRADICTED` is a fourth code and not a flavour of 3**, because "I could
@@ -1360,6 +1423,35 @@ exists means the writer of those counters is gone, while a pid that does exist
 establishes nothing. What carries the positive verdict is the freshness of the
 stamp, because a file rewritten four seconds ago was written by something
 running four seconds ago.
+
+**`CANNOT DETERMINE` names who holds the socket, because *nothing is consuming
+this* and *another session is consuming this* call for opposite actions**
+([#1476](https://github.com/Digital-Process-Tools/claude-supertool/issues/1476)).
+`peer_pid` shipped with #1192 and had one caller: the point past `read_health`
+where a record already exists. The two arms that return before it — no readable
+health file, and a health file the op objects to — declined without ever asking
+a question the platform can answer, and the first of those is the arm that fires
+when the consumer is a Claude session launched with
+`--dangerously-load-development-channels`: it publishes no health file at all.
+Both printed the same two lines, and `watches` saying `no emit` in the same
+breath corroborated the wrong reading of them.
+
+Three states, and the third is the one that used to be everything:
+
+- `socket-holder: pid N — not this process (this process is pid M)` — delivery
+  is working and this session is not the listener. Poll on the tick and say so;
+- `socket-holder: pid N — this process` — the report is being run by the process
+  holding the socket, so no separate consumer was found;
+- `socket-holder NOT resolved — <the refusal peer_pid returned>` — which probe
+  was tried and what it said, never a bare `CANNOT DETERMINE`. This is where
+  Windows and FreeBSD land, by name.
+
+**The verdict does not move, and that is deliberate.** Naming the holder is not
+evidence of delivery — the ceiling below still holds — so both arms stay
+`CANNOT DETERMINE` / exit 3. What changes is that the reader can tell *no
+listener* from *not my listener*, which is the entire decision they are making.
+The `state == "unknown"` arm gains nothing and claims nothing: the connect
+itself failed there, and `peer_pid` connects too.
 
 **A counter that is absent or not a number renders as `?`, never as `0`.** `0
 forwarded` is a real reading — a quiet morning — and printing it for a file the

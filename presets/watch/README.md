@@ -110,6 +110,50 @@ multi-user machine gives each session's *channel* a private path instead of the
 world-traversable default. It does nothing about the pollers, which is the
 next paragraph.
 
+**`SUPERTOOL_WATCH_NAME` is the one-word way to do this, and the pair below is
+what it derives (#1477).**
+
+```bash
+export SUPERTOOL_WATCH_NAME=oss
+#   -> SUPERTOOL_WATCH_SOCK      = /tmp/supertool-watch-oss.sock
+#   -> SUPERTOOL_WATCH_STATE_DIR = /tmp/supertool-watch-oss   (created 0700)
+```
+
+It is an ordinary environment variable, so a non-reserved key in an op's
+`.supertool.json` block reaches it with no plumbing at all
+(`docs/contributing.md`, "Extra config keys as environment variables"):
+
+```json
+{ "ops": { "radar": { "watch_name": "oss" },
+           "watches": { "watch_name": "oss" },
+           "channel": { "watch_name": "oss" } } }
+```
+
+**That configures three of the four surfaces, and the fourth is the one that
+matters.** `claude-channel` is spawned by the harness from `.mcp.json`, never by
+supertool, so no config key reaches it. Give it the same name there:
+
+```json
+{ "mcpServers": { "claude-channel": {
+    "command": "bun",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/notifiers/claude-channel/channel.ts"],
+    "env": { "SUPERTOOL_WATCH_NAME": "oss" } } } }
+```
+
+A name in one file and not the other *is* the half-configured state, arriving
+through a new door — so `channel:health` reads `.mcp.json` (plugin root and cwd)
+and compares the socket it declares against the one this process uses. Three
+states: they agree, they disagree with both paths named, or the file could not
+be read, which is said rather than rendered as agreement.
+
+**Precedence: an explicit `SUPERTOOL_WATCH_SOCK` or `SUPERTOOL_WATCH_STATE_DIR`
+overrides the name, and the report says so.** Not because an export is more
+authoritative in principle, but because it is the value a *running* poller
+already captured and cannot migrate away from — making the name win would move
+the paths underneath a live fleet. A name that loses to a stale export never
+loses quietly. A name that is not usable as a path component is ignored, said
+so, and the channel stays on the defaults rather than on half a private one.
+
 **A second session needs `SUPERTOOL_WATCH_STATE_DIR` as well, and setting only
 the socket is worse than setting neither (#1309).** The poller slot is a pid
 file under the state directory, held `O_CREAT|O_EXCL` by exactly one process

@@ -70,6 +70,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _proc
 
 import _proc  # noqa: E402  (the one liveness probe, shared with gl-mrs / gh-prs)
 import _untrusted  # noqa: E402  (the health file is somebody else's text, #1187)
+import naming  # noqa: E402  (one name above the two path variables, #1477)
 
 #: Absent on Windows, where it is `0` and the open below carries no guard. Same
 #: spelling as `transport.py`, deliberately: this is the same directory and the
@@ -77,8 +78,21 @@ import _untrusted  # noqa: E402  (the health file is somebody else's text, #1187
 #: in step.
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
-SOCK_PATH = os.environ.get("SUPERTOOL_WATCH_SOCK") or "/tmp/supertool-watch.sock"
-STATE_DIR = os.environ.get("SUPERTOOL_WATCH_STATE_DIR") or "/tmp"
+#: Both halves out of one resolver (#1477), so this file and `transport.py`
+#: cannot drift: they used to read the same two variables in two places with two
+#: copies of the `or` idiom. `RESOLVED.notes` carries every precedence decision
+#: that was made getting here, and `_channel_lines` prints them — a name that
+#: lost to a stale export must never do so quietly.
+RESOLVED = naming.resolve()
+SOCK_PATH = RESOLVED.sock
+STATE_DIR = RESOLVED.state_dir
+
+#: The consumer is not a supertool subprocess. `claude-channel` is declared in
+#: `.mcp.json` and spawned by the harness, so the `.supertool.json`-to-env route
+#: that carries a name to every poller does not reach it at all. That asymmetry
+#: is the whole reason `consumer_lines` exists.
+MCP_FILENAME = ".mcp.json"
+CONSUMER_SERVER = "claude-channel"
 
 #: Where a consumer publishes its own counters. Derived from the socket path
 #: rather than fixed, so two sessions running on separate `SUPERTOOL_WATCH_SOCK`
@@ -603,10 +617,171 @@ def _render_stranded(path: str) -> list[str]:
     return lines
 
 
+def _mcp_roots() -> list[Path]:
+    """Where a `.mcp.json` declaring the consumer could be.
+
+    Two, and both are checked rather than one being guessed at: the plugin root
+    (this file is `<root>/presets/watch/channel.py`), which is what
+    `${CLAUDE_PLUGIN_ROOT}` resolves to for an installed plugin, and the current
+    directory, which is where a project-level `.mcp.json` lives. Reading one and
+    reporting on it would be an answer about a file the harness may not be using.
+    """
+    return [Path(__file__).resolve().parents[2], Path.cwd()]
+
+
+def _declared_env(mcp_path: Path) -> tuple[dict[str, str] | None, str]:
+    """The consumer's declared environment from one `.mcp.json`, or why not.
+
+    `{}` and `None` are different answers and the distinction is the point:
+    `{}` means the file declares `claude-channel` and gives it no watch
+    variables, which is a *positive* finding — the consumer will bind the
+    default path. `None` means nothing was established here.
+    """
+    if not mcp_path.exists():
+        return None, f"no {MCP_FILENAME} at {mcp_path}"
+    try:
+        doc = json.loads(mcp_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as err:
+        return None, f"{mcp_path} could not be read ({type(err).__name__})"
+    if not isinstance(doc, dict):
+        return None, f"{mcp_path} is not a JSON object"
+    servers = doc.get("mcpServers")
+    if not isinstance(servers, dict) or not isinstance(servers.get(CONSUMER_SERVER), dict):
+        return None, f"{mcp_path} declares no {CONSUMER_SERVER} server"
+    env = servers[CONSUMER_SERVER].get("env")
+    if env is None:
+        return {}, ""
+    if not isinstance(env, dict):
+        return None, f"{mcp_path} gives {CONSUMER_SERVER} an `env` that is not an object"
+    return {str(k): str(v) for k, v in env.items()}, ""
+
+
+def _declaration(env: dict[str, str]) -> str:
+    """What a `.mcp.json` said, flattened. Operator text on a rendered surface
+    (#1423), and read from a file rather than typed here."""
+    bits = [f"{key}={_untrusted.flat(env[key])}"
+            for key in (naming.NAME_ENV, naming.SOCK_ENV, naming.STATE_DIR_ENV)
+            if env.get(key)]
+    return ", ".join(bits) if bits else "no watch variables at all"
+
+
+def consumer_lines(resolved: naming.Resolved,
+                   roots: list[Path] | None = None) -> list[str]:
+    """Whether the consumer is configured for the same channel as the producers.
+
+    This is the deliverable of #1477 rather than its convenience. A name in
+    `.supertool.json` reaches the pollers, `radar` and this op — three of four
+    surfaces — and cannot reach `claude-channel`, which the harness spawns from
+    `.mcp.json`. Configuring three of four *is* the half-configured state
+    `presets/watch/README.md` says is worse than configuring nothing, arriving
+    through a new door. So the name has two homes, and two homes that can
+    disagree get a check.
+
+    Three states, and silence is only ever the first of them:
+
+      * they agree — no line, unless a name is in play, where one line saying
+        which file was read is what makes a two-session setup legible;
+      * they disagree — both resolved sockets, named, always;
+      * nothing was established — said so, never rendered as agreement, and
+        only when it could matter (a name, or a non-default socket). On a
+        default channel with no `.mcp.json` anywhere there is nothing to warn
+        about, and a warning printed every time is one nobody reads.
+    """
+    roots = _mcp_roots() if roots is None else roots
+    agreed: list[str] = []
+    differed: list[str] = []
+    unread: list[str] = []
+    seen: set[str] = set()
+    for root in roots:
+        mcp_path = Path(root) / MCP_FILENAME
+        key = str(mcp_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        env, why = _declared_env(mcp_path)
+        if env is None:
+            unread.append(why)
+            continue
+        theirs = naming.resolve(env)
+        if theirs.sock == resolved.sock:
+            agreed.append(f"consumer config {key} agrees: {_declaration(env)}")
+        else:
+            differed.append(
+                f"consumer config {key} declares {_declaration(env)}, which binds "
+                f"{theirs.sock} — this process reads {resolved.sock}. The consumer "
+                f"is on another channel, so nothing a poller emits here reaches it")
+    if differed:
+        return differed + agreed
+    if agreed:
+        return agreed if resolved.name else []
+    if resolved.name or resolved.sock != naming.DEFAULT_SOCK:
+        return [f"consumer config NOT checked — {why}" for why in unread]
+    return []
+
+
+def _channel_lines(path: str, resolved: naming.Resolved) -> list[str]:
+    """The name this channel is running under, and how that was decided.
+
+    Only for the path this process resolved: `health()` takes an argument, and
+    printing "name oss" beside a socket the caller passed in by hand would be a
+    claim about a channel that is not the one being reported on.
+    """
+    if path != resolved.sock:
+        return []
+    body: list[str] = []
+    if resolved.name:
+        body.append(
+            f"name {_untrusted.flat(resolved.name)} (from {naming.NAME_ENV}) — "
+            f"poller slots in {resolved.state_dir}")
+    if resolved.refusal:
+        body.append(resolved.refusal)
+    body.extend(resolved.notes)
+    body.extend(consumer_lines(resolved))
+    if not body:
+        return []
+    return [f"  channel  : {body[0]}"] + [f"             {line}" for line in body[1:]]
+
+
+def _holder_lines(path: str) -> list[str]:
+    """Who holds this socket, for the two arms that decline before the peer check.
+
+    `peer_pid` shipped with #1192 and had exactly one caller: the point past
+    `read_health` where a record already exists. The two arms that return before
+    it — no readable health file, and a health file this op objects to — printed
+    `CANNOT DETERMINE` without ever asking a question the platform can answer
+    (#1476). That collapses two states with opposite remedies: **nothing is
+    consuming this socket** means launch a consumer, and **another process is
+    consuming it** means delivery works and this session is not the listener.
+
+    The verdict does not move. Naming the holder is not evidence of delivery —
+    `CEILING` says why, and it is still printed — so these arms stay
+    `CANNOT DETERMINE`. What moves is that the reader is told which of the two
+    they are in, or, in the third state, which probe was tried and what it
+    returned. A bare `CANNOT DETERMINE` is the thing being fixed.
+    """
+    holder, why = peer_pid(path)
+    if holder is None:
+        return [f"             socket-holder NOT resolved — {why}"]
+    if holder == os.getpid():
+        return [
+            f"             socket-holder: pid {holder} — this process. The report is "
+            f"being run by",
+            "             the process holding the socket, so no separate consumer was found",
+        ]
+    return [
+        f"             socket-holder: pid {holder} — not this process (this process is "
+        f"pid {os.getpid()})",
+        "             something IS bound and reading is possible: this is `not my",
+        "             listener`, not `no listener`. Those call for opposite actions,",
+        "             and this arm used to render them identically",
+    ]
+
+
 def health(path: str) -> tuple[int, str]:
     """The whole report, and the exit code that encodes its state."""
     state, detail = probe_socket(path)
     head = [f"  socket   : {path}", f"             {detail}"]
+    head += _channel_lines(path, RESOLVED)
 
     if state == "no-listener":
         body = ["channel: NOT DELIVERING", *head,
@@ -626,6 +801,7 @@ def health(path: str) -> tuple[int, str]:
         return RC_UNKNOWN, "\n".join([
             "channel: CANNOT DETERMINE", *head,
             f"  consumer : bound, but {why}",
+            *_holder_lines(path),
             "             bytes are accepted; what happens to them is not visible here",
             "", CEILING,
         ])
@@ -636,6 +812,7 @@ def health(path: str) -> tuple[int, str]:
             "channel: CANNOT DETERMINE", *head,
             _health_note(),
             f"  consumer : bound, but {objection}",
+            *_holder_lines(path),
             f"             last published counters: {_num(_counter(record, 'forwarded'))} forwarded, "
             f"{_num(_counter(record, 'dropped'))} dropped, updated {_stamp(record, 'updated')}",
             "", CEILING,

@@ -36,6 +36,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _untrusted
 import _untrusted  # noqa: E402  (the state files are somebody else's text, #1197)
+import naming  # noqa: E402  (which knob put the state directory where it is, #1477)
 import transport  # noqa: E402
 
 SOURCES_DIR = Path(__file__).parent / "sources"
@@ -125,11 +126,16 @@ def cmd_watch(parts: list[str]) -> int:
         print(f"ERROR: could not spawn a poller for {source}:{watcher_id}")
         return 1
     if status == "unclaimable":
+        # The provenance rather than a fixed variable name (#1477): under
+        # `SUPERTOOL_WATCH_NAME` the state directory is derived and
+        # `SUPERTOOL_WATCH_STATE_DIR` is unset, so naming it here would send the
+        # operator to a knob that is not in force.
         print(f"ERROR: could not claim the slot for {source}:{watcher_id} — its "
               f"pid file at {transport.pid_path(source, watcher_id)} could not "
               f"be created. Nothing was started, and nothing here knows whether "
               f"a poller is already running for this id. Check that "
-              f"{transport.STATE_DIR_ENV} names a writable directory.")
+              f"{transport.STATE_DIR} is a writable directory "
+              f"({naming.state_dir_provenance(transport.RESOLVED)}).")
         return 1
     # An explicit re-arm is the operator saying they have seen the deaths and
     # are starting over — the one door out of the respawn cap in
