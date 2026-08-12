@@ -606,6 +606,20 @@
       "rollback_on_fail": false,
       "timeout": 30
     },
+    "go-vet": {
+      "cmd": "{python} {supertool_dir}/validators/go-vet/go-vet.py {file}",
+      "match": "*.go",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 90,
+      "tier": "slow"
+    },
     "terraform-check": {
       "cmd": "{python} {supertool_dir}/validators/terraform-check/terraform-check.py {file}",
       "match": "*.tf",
