@@ -31,8 +31,8 @@ The remit is one repo, `Digital-Process-Tools/claude-supertool`. It was two unti
 | -------------------- | --------------------------------------------------------------------------------------------- |
 | supertool preset ops | yes (it _is_ supertool)                                                                       |
 | pytest matrix        | 12 legs: {ubuntu, macos, windows} × py3.9–3.12                                                |
-| Total PR checks      | **18–19**, not 12 — pytest ×12 plus `coverage`, `notifiers`, `push`, CodeQL, Dependency Graph |
-| Coverage gate        | two floors in a dedicated `coverage` job: `supertool.py` **89%**, `presets/` **83%** (#861)   |
+| Total PR checks      | **22**, measured off `gh-pr:1483:status` on 2026-08-12 (this row said 18-19). `tests` contributes 15 — pytest x12, `coverage`, `notifiers` x2 (ubuntu+macos; no windows, AF_UNIX) — plus `changelog`, CodeQL and the rest. Read it off the op every time |
+| Coverage gate        | **four** floors in a dedicated `coverage` job, re-derived 2026-08-12: `_supertool.py` **89%**, `presets/` **83%** (#861), `.github/scripts/coverage_gate.py` **92%**, `.github/scripts/` **92%**. This row said two and named `supertool.py`, which the #1206 rename retired |
 | Local clone          | `~/Documents/claude-supertool`                                                                |
 
 **Re-derive this block rather than trusting it** — when it was a two-column table, four of six rows were wrong on 2026-08-06, each a claim I would have acted on. Dropping a column removed no staleness.
