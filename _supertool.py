@@ -3609,7 +3609,7 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         # would contradict it with a second, more confident absence.
         if last_scanned > offset:
             def _filter_probe(inner: str) -> bool:
-                rx = re.compile(inner)
+                rx = _compile_lenient(inner)
                 for raw in raw_lines[offset:last_scanned]:
                     try:
                         candidate = raw.decode("utf-8", errors="replace")
@@ -4267,6 +4267,18 @@ def _quoted_pattern_note(pattern: str, inner: str,
                    f"the quotes are not why this is zero.)" + chr(10))
 
 
+def _compile_lenient(pattern: str) -> "re.Pattern[str]":
+    """Compile, falling back to the escaped literal — the reading every search
+    helper in this file already applies (`_grep_recursive`, `_grep_count`,
+    `_op_around`). A #1435 probe that compiled strictly instead would print the
+    note on `grep` and swallow it on `around`, so an unwrapped pattern that is
+    not a regex would answer differently depending on which op asked."""
+    try:
+        return re.compile(pattern)
+    except re.error:
+        return re.compile(re.escape(pattern))
+
+
 def _quote_pair_note(pattern: str, probe: Callable[[str], object]) -> str:
     """`_quoted_pattern_note` plus its probe, for a result that came back zero.
 
@@ -4281,7 +4293,12 @@ def _quote_pair_note(pattern: str, probe: Callable[[str], object]) -> str:
         return ""
     try:
         matches = bool(probe(inner))
-    except Exception:
+    except (re.error, OSError, UnicodeError):
+        # Named rather than bare (PR review, #1435): the unwrapped pattern is
+        # not guaranteed to compile and the probe touches the filesystem, so
+        # those two are expected and print nothing. A bare `except Exception`
+        # here would turn a genuine bug on this rarely-walked path into a
+        # missing note, which is the silence this whole change is against.
         return ""
     return _quoted_pattern_note(pattern, inner, matches)
 
@@ -4739,7 +4756,12 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
                f"({total} total matches across {file_count} files{_scanned_suffix(scanned)}{hidden})\n"]
         if total == 0:
             out.append(_shim_facade_note(path))
-            out.append(_quote_pair_note(pattern, lambda inner: _grep_count(
+            # `_grep_recursive`, not `_grep_count`: the probe asks whether the
+            # unwrapped pattern matches at all, and `_grep_count` has no early
+            # break — it counts every line of every candidate regardless of the
+            # limit it is handed, which would make a disclosure cost a second
+            # full count of the corpus (PR review, #1435).
+            out.append(_quote_pair_note(pattern, lambda inner: _grep_recursive(
                 inner, path, 1, excl, candidates=candidates)))
         # `PATH:N` is the shape every grep-like tool uses for PATH:LINE, so a
         # count of 30 read as "one match, at line 30" — the opposite of what
@@ -5044,7 +5066,7 @@ def _op_around(pattern: str, path: str, n: int = 10) -> str:
         # Above the window, like `_literal_note` — a note explaining a zero is
         # read only if it precedes the thing it explains (#1435).
         quote_note = _quote_pair_note(
-            pattern, lambda inner: _render(re.compile(inner))[1])
+            pattern, lambda inner: _render(_compile_lenient(inner))[1])
         if quote_note:
             return quote_note + out_text
     return out_text

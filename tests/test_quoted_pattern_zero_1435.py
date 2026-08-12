@@ -130,6 +130,26 @@ def test_read_grep_filter_distinguishes_a_real_absence(tree: Path) -> None:
     assert "nothing here either" in out, repr(out)
 
 
+def test_an_unwrapped_pattern_that_is_not_a_regex_reads_the_same_everywhere(
+        tree: Path) -> None:
+    """`'(a'` unwraps to `(a`, which `re` will not compile.
+
+    Every search helper in the core already falls back to the escaped literal,
+    so `grep` answers. A probe that compiled strictly would have made `around`
+    and `read`'s filter answer differently from `grep` about the same pattern —
+    a swept fix that diverges across the surfaces it swept.
+    """
+    outs = [
+        supertool.op_grep("'(a'", "q.txt", limit=5),
+        supertool.dispatch("around:'(a':q.txt:1"),
+        supertool.dispatch("read:q.txt:::grep='(a'"),
+    ]
+    for out in outs:
+        assert MARKER in out, repr(out)
+        assert "nothing here either" in out, repr(out)
+        assert "Traceback" not in out, repr(out)
+
+
 def test_the_note_would_not_appear_if_the_op_did_nothing(tree: Path) -> None:
     """Guard against a test that passes on an unpatched tree: the unquoted
     spelling must be silent, so MARKER cannot be coming from boilerplate."""
