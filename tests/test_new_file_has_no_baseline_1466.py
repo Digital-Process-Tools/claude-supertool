@@ -240,7 +240,8 @@ def test_ruff_really_does_report_a_missing_file_as_a_measured_finding(
     adapter = Path(supertool.__file__).resolve().parent / "validators" / "ruff" / "ruff.py"
     missing = tmp_path / "not_here_1466.py"
     r = subprocess.run([sys.executable, str(adapter), str(missing)],
-                       capture_output=True, text=True, timeout=120)
+                       capture_output=True, text=True, timeout=120,
+                       encoding="utf-8", errors="replace")
     reply = json.loads((r.stdout or "").strip().splitlines()[-1])
     assert reply.get("count") == 1, reply
     assert reply["errors"][0].get("code") == "E902", reply

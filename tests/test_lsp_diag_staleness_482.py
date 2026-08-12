@@ -278,7 +278,15 @@ class TestFrameworkStampsStaleness:
 
     def test_new_file_after_pass_is_not_flagged_stale(
             self, tmp_path: Path, monkeypatch) -> None:
-        """Nothing was open pre-op — the after-pass is the first look."""
+        """Nothing was open pre-op — the after-pass is the first look.
+
+        One pass, not two, since #1466: a file that did not exist has no
+        pre-op state for any adapter to measure, so the baseline pass is not
+        run at all rather than run and then discarded. That strengthens the
+        claim this test makes — the daemon could not have had the document
+        open, because nothing here opened it — so the assertion keeps naming
+        the flag rather than only counting the calls.
+        """
         seen = self._capture(monkeypatch)
         self._configure()
         f = tmp_path / "brand_new.py"  # does not exist pre-op
@@ -287,7 +295,7 @@ class TestFrameworkStampsStaleness:
             "edit", ["edit", "", "", str(f)],
             lambda: (f.write_text(VALID_PY, encoding="utf-8"), "created\n")[1])
 
-        assert self._stale_flags(seen) == [False, False], (
+        assert self._stale_flags(seen) == [False], (
             "a file the daemon never had open is not stale; flagging it would "
             "turn every new-file check into a skip")
 
