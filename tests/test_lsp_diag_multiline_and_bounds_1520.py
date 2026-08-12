@@ -100,6 +100,29 @@ def test_the_found_header_is_framing_and_never_a_finding() -> None:
     assert "Found 1 diagnostic" not in errors[0]["msg"], errors[0]
 
 
+def test_a_half_marked_list_demotes_rather_than_drops() -> None:
+    """Raised in review: an unmarked line in a marked list could be a real
+    second diagnostic, and this rule reads it as a continuation.
+
+    It is the right reading — in a marked list an unmarked line is not an item,
+    and no cclsp renderer emits half a list — but the trade only holds if the
+    demotion is not a loss. `count` shrinks by one; the text does not go
+    anywhere, and `rollback_on_fail` is false for this adapter, so a shrunk
+    count on it cannot revert an edit. That is the same trade #1500 already
+    made for an inline-break fragment.
+    """
+    text = LF.join([
+        "Found 2 diagnostic(s) for /f:",
+        f"{BULLET} [error] first message at line 1, col 1",
+        "[warning] second message at line 2, col 2",
+    ])
+    errors = lsp.parse_cclsp_diagnostics(text, "/f")
+    assert len(errors) == 1, errors
+    assert "second message" in errors[0]["msg"], errors[0]
+    assert "not a second diagnostic" in errors[0]["msg"], errors[0]
+    assert all(e["line"] != 2 for e in errors), errors
+
+
 def test_an_unmarked_format_still_parses_every_line() -> None:
     """The bulletless variant the module's docstring records. Deciding the
     framing from the first framed line, and not from any line, is what keeps a
