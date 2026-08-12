@@ -332,11 +332,27 @@ def ensure_state_dir(resolved: Resolved, state_dir: str) -> str:
     What differs here is that the leaf is public and committed rather than
     per-uid, which makes the residual below more likely, not different in kind.
 
-    **Not closed:** another local uid can squat `/tmp/supertool-watch-<name>`
-    ahead of us with a directory of their own, and we then refuse rather than
-    write into it — no poller spawns on that channel until it is removed. That is
-    the correct side of the trade and it is named, not fixed, the same way
-    `docs/presets/gitlab.md` names it for the attachment root.
+    **This function has one caller, and that used to be the whole defence
+    (#1540).** `transport.claim_pidfile` calls it, and `claim_pidfile` is the one
+    path that spawns a poller — so the residual below was written as though a
+    poller were the only thing that ever wrote here. `transport.write_state` is
+    reached from `record_death` and `clear_deaths` in *reader* processes —
+    `watches`, `unwatch`, the `radar` heal — none of which claim a slot, and it
+    opened `<path>.tmp` by name. `write_state` now establishes the directory
+    itself, once per process, and opens the `.tmp` `O_NOFOLLOW`.
+
+    **Not closed, stated at the width it actually has.** Another local uid can
+    squat `/tmp/supertool-watch-<name>` ahead of us with a directory of their
+    own, and *every* write to that channel then refuses rather than landing in
+    it — no poller spawns, and no reader records a death or clears a ledger,
+    until it is removed. That is the correct side of the trade and it is named,
+    not fixed, the same way `docs/presets/gitlab.md` names it for the attachment
+    root. Two things this does not reach at all: an operator-supplied or default
+    `state_dir` is somebody else's path and is never established (#693), so on
+    the unnamed default the state files sit loose in world-writable `/tmp` and
+    each name's own `O_NOFOLLOW` is the whole boundary; and on Windows there is
+    no `O_NOFOLLOW`, so `_image_root`'s `lstat` on the directory is all there is
+    and the per-file arm declines rather than pretending.
     """
     if not resolved.state_dir_is_derived:
         return ""

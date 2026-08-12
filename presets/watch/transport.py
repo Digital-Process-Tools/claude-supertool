@@ -78,6 +78,14 @@ DEATH_RESPAWN_LIMIT = 3
 # such flag, and 0 leaves the open otherwise unchanged.
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
+# What the builtin `open()` passes and `os.open()` does not: on Windows a
+# descriptor without it is in the CRT's *text* mode, and the `TextIOWrapper` over
+# it translates the newline a second time — every state file written through
+# `os.open` would carry CR CR LF. Legal JSON whitespace, so nothing would go red;
+# the file would simply stop matching the one the builtin used to write. 0 on
+# POSIX, where there is no such mode (#1540).
+_BINARY = getattr(os, "O_BINARY", 0)
+
 # `claim_pidfile` could not answer: the open failed, no file was created, and
 # nothing here knows who — if anyone — holds the slot. Distinct from `0` ("it is
 # yours, go spawn") and from a PID ("that live process holds it"). It used to
@@ -388,19 +396,108 @@ def emit_socket(payload: dict[str, Any]) -> Emit:
     return Emit(EMIT_ACCEPTED, f"{SOCK_PATH} accepted the bytes")
 
 
-def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> None:
-    """Atomically replace the status file with the latest known state."""
+#: State directories this process has already put through `ensure`, keyed on the
+#: path. Only successes are remembered: a refusal re-asks, so removing a squatter
+#: heals the channel without a restart, and a directory deleted under a running
+#: poller is not the shape this memo can get wrong (the write refuses and says
+#: so). One entry in practice — `STATE_DIR` is a module constant.
+_ESTABLISHED: set[str] = set()
+
+
+def _establish_state_dir() -> str:
+    """Empty when this process may write into `STATE_DIR`, else why not (#1540).
+
+    `claim_pidfile` calls `naming.ensure_state_dir` directly and is deliberately
+    left doing so: it runs once per spawn, so it has nothing to memoize, and a
+    poller re-claiming a slot after its directory was removed must re-create it
+    rather than be told by a cache that it exists.
+    """
+    if STATE_DIR in _ESTABLISHED:
+        return ""
+    why = naming.ensure_state_dir(RESOLVED, STATE_DIR)
+    if why:
+        return why
+    _ESTABLISHED.add(STATE_DIR)
+    return ""
+
+
+def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> str:
+    """Atomically replace the status file. "" when it landed, else why not.
+
+    **Every writer proves the name, not just the one that spawns a poller
+    (#1540).** #1518 established the derived state directory and wired it into
+    `claim_pidfile`, which is the one path through here that was never the
+    problem. This function is reached from `record_death` — `watches`, `unwatch`
+    and the `radar` heal — and from `clear_deaths`, in reader processes that
+    never claimed a slot, and it opened `f"{path}.tmp"` with a plain
+    `open(..., "w")`. The channel name is public (`6047d98` commits
+    `"watch_name": "oss-supertool"` to this repo's own `.supertool.json`), so a
+    co-tenant holding `/tmp/supertool-watch-<name>` with a stale pid file and a
+    symlink at `<name>.state.json.tmp` got the link followed and any file we can
+    write truncated and refilled with JSON whose `last_event.payload` is remote
+    text.
+
+    Two guards, because they cover different populations and neither subsumes
+    the other:
+
+    * `O_NOFOLLOW` on the `.tmp`, the write mirror of the `O_RDONLY|O_NOFOLLOW`
+      `read_state_checked` and `read_pid_checked` have carried since #1197 and
+      #1200 — the asymmetry was the whole bug. It is the only guard the
+      **unnamed** default gets, where the state files sit loose in
+      world-writable `/tmp` and there is no derived directory to establish.
+    * `_establish_state_dir`, once per process, for the **named** channel: a
+      squatter who owns the directory rather than planting a link inside it.
+      `ensure` is a syscall trio and this runs per event, which is why it is
+      memoized rather than moved into the poll loop's hot path unconditionally.
+
+    `os.replace` needs no guard of its own: rename does not follow a symlink at
+    its final component, so a link planted at `<name>.state.json` is replaced
+    rather than written through.
+
+    **A refused open does not unlink what it refused.** Same reading as
+    `read_state_checked`: a symlink at this name is evidence, and quietly
+    deleting it would repair the channel while destroying the only trace that
+    somebody planted it. The `unlink` below is for a `.tmp` *this* call created
+    and could not finish writing.
+
+    Returning the refusal rather than swallowing it is the other half of #1540:
+    `record_death` reported a death as recorded and `clear_deaths` reported a
+    ledger as acknowledged, both off an `OSError` this function had discarded.
+    """
+    why = _establish_state_dir()
+    if why:
+        return why
     path = state_path(source, watcher_id)
     tmp = f"{path}.tmp"
+    shown = _untrusted.flat(tmp)
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW | _BINARY,
+                     0o600)
+    except OSError as err:
+        if err.errno in (errno.ELOOP, errno.EMLINK):
+            return (f"{shown} is a symlink and was not followed — a state file is "
+                    "written in place by its own poller, so this is somebody "
+                    "redirecting the write at another file")
+        return f"{shown} could not be opened for writing ({type(err).__name__})"
+    try:
+        handle = os.fdopen(fd, "w", encoding="utf-8")
+    except OSError as err:
+        # `O_NOFOLLOW` refuses a symlink and not a directory, so `os.open` can
+        # hand back a descriptor `fdopen` will not take — and it does not take
+        # the descriptor on the failing arm either (#1184's own reviewer).
+        os.close(fd)
+        return f"{shown} could not be opened for writing ({type(err).__name__})"
+    try:
+        with handle as f:
             json.dump(state, f, indent=2)
         os.replace(tmp, path)
-    except OSError:
+    except OSError as err:
         try:
             os.unlink(tmp)
         except OSError:
             pass
+        return f"{shown} could not be written ({type(err).__name__})"
+    return ""
 
 
 def read_state_checked(source: str, watcher_id: str) -> tuple[dict[str, Any] | None, str]:
@@ -556,8 +653,10 @@ def record_death(source: str, watcher_id: str, pid: int) -> bool:
         return False
     ledger.append({"pid": pid, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     current["deaths"] = ledger
-    write_state(source, watcher_id, current)
-    return True
+    # False when nothing reached disk. "Newly recorded" off a write whose
+    # `OSError` was swallowed is the absence-read-as-presence shape one layer
+    # in: the respawn cap counted a death the ledger does not hold (#1540).
+    return not write_state(source, watcher_id, current)
 
 
 def clear_deaths(source: str, watcher_id: str) -> bool:
@@ -572,8 +671,9 @@ def clear_deaths(source: str, watcher_id: str) -> bool:
     if "deaths" not in current:
         return False
     current.pop("deaths", None)
-    write_state(source, watcher_id, current)
-    return True
+    # `dispatcher` prints an acknowledgement off this bool, so a refused write
+    # made `unwatch` claim it had cleared a ledger still sitting on disk (#1540).
+    return not write_state(source, watcher_id, current)
 
 
 def reap_dead_pidfile(source: str, watcher_id: str) -> int:
