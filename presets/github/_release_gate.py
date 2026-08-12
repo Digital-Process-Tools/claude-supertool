@@ -84,7 +84,6 @@ rather than corrected.
 from __future__ import annotations
 
 import glob as _glob
-import json
 import os
 import re
 import subprocess
@@ -96,9 +95,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import _filter_tokens  # noqa: E402  (the one instant parser, shared with gh-prs)
-import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _untrusted  # noqa: E402  (PR titles and tag names are remote text — #851)
-import prs  # noqa: E402  (the one `gh pr list` argv — see `read_merged_prs`)
+
+# `json` (above), `_repo_target` and `prs` used to be imported and all three were
+# unused — ruff reports them F401 on demand, but no CI step runs `ruff check .`
+# (see the note in .github/workflows/tests.yml), and supertool's ruff validator
+# only reports errors an edit NEWLY introduces, so imports already dead when
+# this module was split out of since_tag.py were invisible to both. The `prs`
+# one also cited `read_merged_prs`, a function #1405 deleted. This module is a
+# library now — no `main()`, no registry entry — and the argv it once needed
+# from `prs` is built by `prs` itself.
 
 # The fields this op renders, which are not the board's. `prs._LIST_FIELDS`
 # carries `statusCheckRollup` — dozens of check runs per PR, over a page of up

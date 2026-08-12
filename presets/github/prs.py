@@ -115,14 +115,32 @@ _NARROWING_KEYS = _FILTER_KEYS - _NON_NARROWING_KEYS
 # `gh-since-tag` built its own `gh pr list` argv — a third caller of the listing
 # that drifted twice already (#1207, #1230, filed as #1411).
 #
-# **Instants only. A tag name is deliberately not accepted.** Resolving one has
-# three outcomes — RESOLVED, AMBIGUOUS, UNRESOLVED — and a listing filter has
-# two: apply the token or refuse it. There is no way here to say "two tags at
-# one instant on different commits", which is the state `gh-since-tag` exists to
-# report. Worse, this op is `repo_target: true` while a tag is a read of the
-# *local* clone, so a tag name would resolve against one repository and list
-# from another — measured, that combination printed one repo's tag beside
-# another repo's merge count (`since_tag.repo_target_refusal`).
+# **A tag name IS accepted, since #1405** — see `_VALUE_DOMAINS` below. This
+# comment used to say the opposite in bold, and both of its arguments were
+# real; recording why each stopped holding, because they are the arguments
+# anyone will re-derive when they next touch this.
+#
+# *"Resolving a tag has three outcomes — RESOLVED, AMBIGUOUS, UNRESOLVED — and
+# a listing filter has two: apply the token or refuse it."* Answered by not
+# collapsing them. AMBIGUOUS and UNRESOLVED both REFUSE and print no board, so
+# a filter value is still only applied or refused; what changed is that
+# RESOLVED carries its resolution into the render rather than being silent, and
+# the two refusals name every candidate. A filter value may be refused, it may
+# never be picked between.
+#
+# *"This op is `repo_target: true` while a tag is a read of the local clone, so
+# a tag would resolve against one repository and list from another"* — measured
+# then, and it printed one repo's tag beside another repo's merge count. That
+# is what `_tag_target_conflict` refuses outright, below. A date under a target
+# is untouched and honoured whole; only the tag spelling is refused, because
+# only it is local.
+#
+# The reason a tag had to be accepted at all is the tokeniser, not taste:
+# supertool splits an op argument on `:`, so `merged-since=2026-...T18:57:19Z`
+# loses its value before any filter is parsed, and the bare date that survives
+# is midnight UTC — 75 PRs where the tag's own instant returns 20. A tag name
+# contains no `:` and is the only colon-free spelling of a second-precision
+# boundary.
 
 # Check conclusions that mean "this PR is red".
 _FAIL_CONCLUSIONS = {
@@ -309,10 +327,13 @@ def _build_list_cmd(filters: dict[str, str], per_page: int, *,
                     fields: str = _LIST_FIELDS) -> list[str]:
     """Build the `gh pr list ... --json` argv from parsed filters.
 
-    **This is the one place the listing is spelled.** `gh-since-tag` builds no
-    argv of its own since #1411; it calls this with its own `fields` and a
-    `merged-since` boundary. The parameter is keyword-only on purpose — #1230 is
-    what a positional parameter on this function costs, and a field set is the
+    **This is the one place the listing is spelled.** Two callers, and since
+    #1405 both are in this file: the board, and the release-gate slice, which
+    passes its own `fields` and a `merged-since` boundary. `gh-since-tag` was
+    the second caller until #1411 stopped it building its own argv and #1405
+    deleted the op entirely — there is no third spelling and there has not been
+    one since. The `fields` parameter is keyword-only on purpose: #1230 is what
+    a positional parameter on this function costs, and a field set is the
     caller's render input, never a narrowing of the population.
 
     **No role filter is ever added here.** The argv narrows only by what the

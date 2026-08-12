@@ -1814,6 +1814,8 @@ and, when one did not:
 
 A cross-check that did not run counts as unreconciled, so the count renders `UNVERIFIED` rather than `EXACT`. `EXACT` means two sources agreed, and "I did not look" is not agreement.
 
+**Exit code is 0 only when the boundary is RESOLVED *and* the count is EXACT** — every other combination exits 1. This is the one fact a release script gates on, so it survived the fold deliberately rather than by inheritance: an ordinary `gh-prs` board always exits 0, and inheriting that would have printed the strongest available statement of "go" next to `merged since tag: 5 (UNVERIFIED)`, a number the op has just finished saying it cannot verify. `LOWER BOUND` is not permission either — a capped page reads as fewer merges than there are. Only the tag-boundary slice has a verdict and only it consults this; every other shape of `gh-prs` still exits 0. (`_release_gate.gate_exit`.)
+
 ### The boundary is a commit, not an instant
 
 The PR whose merge **is** the tagged commit is inside the release by definition — `TAG..BRANCH` excludes that commit by construction, so local history never sees it and the API side has to exclude the same row. That exclusion used to be "strictly after the boundary instant", which only works if GitHub's `merged_at` equals the merge commit's committer date. It does not: GitHub stamps `merged_at` after writing the commit. Measured across this repository's own releases:
