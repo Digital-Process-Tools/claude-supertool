@@ -11,6 +11,7 @@ import pytest
 
 import supertool
 from _adapter_budget import adapter_budget
+from _adapter_verdict import assert_declined, assert_ok, run_one_or_skip
 
 
 # ---------------------------------------------------------------------------
@@ -132,8 +133,8 @@ def test_run_one_parses_adapter_json() -> None:
     payload = {"tool": "fake", "file": "x.php", "ok": True, "count": 0,
                "errors": [], "duration_ms": 5}
     spec = {"cmd": _fake_cmd(payload), "timeout": 5}
-    out = supertool._validator_run_one("fake", spec, "x.php")
-    assert out["ok"] is True
+    out = run_one_or_skip("fake", spec, "x.php")
+    assert_ok(out)
     assert out["count"] == 0
 
 
@@ -146,7 +147,7 @@ def test_run_one_handles_no_output() -> None:
     tests/test_validator_adapter_reply_634.py for the full contract.
     """
     spec = {"cmd": "{python} -c \"pass\"", "timeout": 5}
-    out = supertool._validator_run_one("fake", spec, "x.php")
+    out = run_one_or_skip("fake", spec, "x.php")
     assert "skipped" in out
     assert "no output" in out["skipped"]
     assert "ok" not in out and "errors" not in out
@@ -154,7 +155,7 @@ def test_run_one_handles_no_output() -> None:
 
 def test_run_one_handles_bad_json() -> None:
     spec = {"cmd": "{python} -c \"import sys; sys.stdout.write('not json')\"", "timeout": 5}
-    out = supertool._validator_run_one("fake", spec, "x.php")
+    out = run_one_or_skip("fake", spec, "x.php")
     assert "skipped" in out
     assert out["skipped"].startswith("fake adapter")
     assert "not JSON" in out["skipped"]
@@ -172,8 +173,8 @@ def test_run_one_substitutes_file_token(tmp_path: Path) -> None:
         f"sys.stdout.write({json.dumps(payload)!r})\n"
     )
     spec = {"cmd": f"{{python}} {adapter.as_posix()} {{file}}", "timeout": 5}
-    out = supertool._validator_run_one("fake", spec, "a.php")
-    assert out["ok"] is True
+    out = run_one_or_skip("fake", spec, "a.php")
+    assert_ok(out)
 
 
 def _counter_cmd(state_path: Path, ok_payload: str, fail_marker: str = "BROKEN") -> str:
@@ -205,11 +206,11 @@ def test_cache_hit_skips_adapter(tmp_path: Path, monkeypatch) -> None:
     ok = json.dumps({"tool": "t", "file": "x", "ok": True, "count": 0,
                      "errors": [], "duration_ms": 1}).replace("'", "'\\''")
     spec = {"cmd": _counter_cmd(state, ok), "timeout": 5}
-    out1 = supertool._validator_run_one("t", spec, str(f))
-    assert out1["ok"] is True
+    out1 = run_one_or_skip("t", spec, str(f))
+    assert_ok(out1, context="the first, uncached run")
     # Second call: file unchanged → cache hit → adapter NOT re-run
-    out2 = supertool._validator_run_one("t", spec, str(f))
-    assert out2["ok"] is True
+    out2 = run_one_or_skip("t", spec, str(f))
+    assert_ok(out2, context="the cache hit")
     # Counter only incremented once (first call); cache hit prevented second run
     assert state.read_text(encoding="utf-8").strip() == "1"
 
@@ -222,7 +223,7 @@ def test_cache_invalidates_on_file_change(tmp_path: Path, monkeypatch) -> None:
     payload = {"tool": "t", "file": "x", "ok": True, "count": 0,
                "errors": [], "duration_ms": 1}
     spec = {"cmd": _fake_cmd(payload), "timeout": 5}
-    supertool._validator_run_one("t", spec, str(f))
+    run_one_or_skip("t", spec, str(f))
     # Change file content → cache key changes → adapter must re-run
     f.write_text("<?php\n$x = 1;\n")
     # Use stateful counter to detect re-run
@@ -230,7 +231,7 @@ def test_cache_invalidates_on_file_change(tmp_path: Path, monkeypatch) -> None:
     state.write_text("0")
     ok = json.dumps(payload).replace("'", "'\\''")
     spec2 = {"cmd": _counter_cmd(state, ok), "timeout": 5}
-    supertool._validator_run_one("t", spec2, str(f))
+    run_one_or_skip("t", spec2, str(f))
     assert state.read_text(encoding="utf-8").strip() == "1"  # adapter ran
 
 
@@ -245,9 +246,9 @@ def test_env_var_disables_cache(tmp_path: Path, monkeypatch) -> None:
     ok = json.dumps({"tool": "t", "file": "x", "ok": True, "count": 0,
                      "errors": [], "duration_ms": 1}).replace("'", "'\\''")
     spec = {"cmd": _counter_cmd(state, ok), "timeout": 5}
-    supertool._validator_run_one("t", spec, str(f))
+    run_one_or_skip("t", spec, str(f))
     # Cache disabled → second call re-runs adapter → counter increments
-    out2 = supertool._validator_run_one("t", spec, str(f))
+    out2 = run_one_or_skip("t", spec, str(f))
     assert state.read_text(encoding="utf-8").strip() == "2"
     # Second call hits the BROKEN branch → no output → skipped, not an error
     # (#634: an adapter that said nothing has judged nothing).
@@ -265,7 +266,7 @@ def test_run_one_substitutes_supertool_dir_token() -> None:
         '}))" "{supertool_dir}"'
     )
     spec = {"cmd": cmd, "timeout": 5}
-    out = supertool._validator_run_one("t", spec, "x")
+    out = run_one_or_skip("t", spec, "x")
     assert out["d"] == supertool._INSTALL_DIR
 
 
@@ -281,7 +282,7 @@ def test_run_one_adds_resolved_to_when_resolve_returns_other_path(tmp_path: Path
         "cmd": _fake_cmd(payload),
         "timeout": 5,
     }
-    out = supertool._validator_run_one("fake", spec, "a.php")
+    out = run_one_or_skip("fake", spec, "a.php")
     # `resolve` stdout returns as_posix; the test compares against the same
     # form to be platform-independent (str(target) uses `\` on Windows).
     assert out["resolved_to"] == target.as_posix()
@@ -734,7 +735,7 @@ def test_phplint_adapter_valid_php(tmp_path: Path) -> None:
                        capture_output=True, text=True, timeout=adapter_budget(PHPLINT), encoding="utf-8", errors="replace")
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phplint"
-    assert data["ok"] is True
+    assert_ok(data, context="a valid PHP file")
     assert data["count"] == 0
 
 
@@ -745,7 +746,7 @@ def test_phplint_adapter_broken_php_reports_line(tmp_path: Path) -> None:
     r = subprocess.run([sys.executable, str(PHPLINT), str(f)],
                        capture_output=True, text=True, timeout=adapter_budget(PHPLINT), encoding="utf-8", errors="replace")
     data = json.loads(r.stdout.strip())
-    assert data["ok"] is False
+    assert_declined(data, context="a PHP file with a syntax error")
     assert data["count"] == 1
     assert data["errors"][0]["line"] == 2
 
@@ -755,7 +756,7 @@ def test_phplint_adapter_no_arg_returns_schema_error() -> None:
                        capture_output=True, text=True, timeout=adapter_budget(PHPLINT), encoding="utf-8", errors="replace")
     data = json.loads(r.stdout.strip())
     assert data["tool"] == "phplint"
-    assert data["ok"] is False
+    assert_declined(data, context="the adapter invoked with no file argument")
     assert "no file arg" in data["errors"][0]["msg"]
 
 

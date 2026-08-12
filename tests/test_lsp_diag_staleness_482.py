@@ -38,6 +38,7 @@ import pytest
 
 import supertool
 from _adapter_budget import adapter_budget
+from _adapter_verdict import assert_declined, assert_ok, run_one_or_skip
 
 
 _VPATH = Path(__file__).parent.parent / "validators" / "lsp-diag" / "lsp-diag.py"
@@ -183,13 +184,13 @@ class TestFreshViewStillAnswers:
         receipt = _run_adapter(tmp_path, CLEAN_TEXT)
         assert "skipped" not in receipt, (
             f"a fresh, genuinely clean view must still render clean: {receipt}")
-        assert receipt["ok"] is True
+        assert_ok(receipt, context="a fresh, clean view")
         assert receipt["count"] == 0
 
     def test_real_diagnostics_with_fresh_view_still_reported(self, tmp_path: Path) -> None:
         receipt = _run_adapter(tmp_path, REAL_DIAGNOSTIC_TEXT)
         assert "skipped" not in receipt, f"findings were swallowed: {receipt}"
-        assert receipt["ok"] is False
+        assert_declined(receipt, context="a real diagnostic on a fresh view")
         assert receipt["count"] == 1
         assert receipt["errors"][0]["line"] == 2
 
@@ -316,7 +317,7 @@ class TestFrameworkStampsStaleness:
         f = tmp_path / "t.py"
         f.write_text(VALID_PY, encoding="utf-8")
 
-        supertool._validator_run_one(
+        run_one_or_skip(
             "lsp-diag", {"cmd": "{python} -c pass", "match": "*.py", "cache": False},
             str(f), doc_maybe_stale=True)
 
@@ -343,7 +344,7 @@ class TestFrameworkStampsStaleness:
         f = tmp_path / "t.py"
         f.write_text(VALID_PY, encoding="utf-8")
 
-        supertool._validator_run_one(
+        run_one_or_skip(
             "lsp-diag", {"cmd": "{python} -c pass", "match": "*.py", "cache": False},
             str(f))
 

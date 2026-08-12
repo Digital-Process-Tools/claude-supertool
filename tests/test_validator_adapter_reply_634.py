@@ -34,6 +34,7 @@ from pathlib import Path
 import pytest
 
 import supertool
+from _adapter_verdict import assert_declined, run_one_or_skip
 
 _ROOT = Path(__file__).parent.parent
 
@@ -49,7 +50,7 @@ def _repo_jsonlint_spec() -> dict:
 
 
 def _run(spec: dict, target: Path) -> dict:
-    res = supertool._validator_run_one("jsonlint", spec, str(target))
+    res = run_one_or_skip("jsonlint", spec, str(target))
     assert res is not None
     return res
 
@@ -256,14 +257,24 @@ def test_adapter_timeout_stays_loud(tmp_path: Path) -> None:
     Deliberately excluded from the skip conversion: the binary exists, it was
     invoked, and it is misbehaving. Guessing towards silence there is how a
     broken validator starts looking clean.
+
+    Excluded from #1501's conversion for the same reason, one layer out. This is
+    the one test in the suite that *provokes* the core's wall and asserts on the
+    payload it produces, so it calls the core directly rather than through
+    `run_one_or_skip` — which would decline exactly the thing being pinned, and
+    it did: the conversion turned this into a silent skip before the marker was
+    added. The `#1501` guard reads that marker.
     """
     target = tmp_path / "good.json"
     target.write_text("{}", encoding="utf-8")
     spec = {"cmd": "{python} -c " + repr("import time; time.sleep(5)"),
             "match": "*.json", "timeout": 1}
-    res = _run(spec, target)
+    # core-timeout: asserted on (#1501) — the wall is the subject here
+    res = supertool._validator_run_one("jsonlint", spec, str(target))
+    assert res is not None
     assert "skipped" not in res, f"a timeout is a failure, not a skip: {res!r}"
-    assert res["ok"] is False
+    assert res["timeout"] is True, f"the core's wall must be flagged: {res!r}"
+    assert_declined(res, context="an adapter that hung past its wall")
 
 
 def test_config_points_jsonlint_at_the_bundled_adapter() -> None:

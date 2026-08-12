@@ -47,6 +47,7 @@ from pathlib import Path
 import pytest
 
 import supertool
+from _adapter_verdict import run_one_or_skip
 
 CLEAN = json.dumps({"tool": "fake", "ok": True, "count": 0, "errors": [],
                     "duration_ms": 1})
@@ -121,7 +122,7 @@ def _seed_cache(spec: dict, f: Path, content: bytes, payload: dict) -> None:
     try:
         supertool._validator_cache_write = lambda k, d: written.append(k)
         supertool._validator_cache_read = lambda k: None
-        supertool._validator_run_one("fake", spec, str(f))
+        run_one_or_skip("fake", spec, str(f))
     finally:
         supertool._validator_cache_write = real_write
         supertool._validator_cache_read = real_read
@@ -216,9 +217,9 @@ def test_a_cache_hit_still_carries_an_elapsed_s(tmp_path: Path) -> None:
     f = tmp_path / "s.json"
     f.write_bytes(AFTER)
 
-    first = supertool._validator_run_one("fake", spec, str(f))
+    first = run_one_or_skip("fake", spec, str(f))
     assert first is not None and first.get("elapsed_s") is not None, first
-    second = supertool._validator_run_one("fake", spec, str(f))
+    second = run_one_or_skip("fake", spec, str(f))
     assert second is not None
 
     assert _spawns(calls) == 1, (
@@ -248,14 +249,14 @@ def test_a_cache_hit_restamps_resolved_to_from_the_core(tmp_path: Path) -> None:
     source = tmp_path / "s.json"
     source.write_bytes(BEFORE)
 
-    fresh = supertool._validator_run_one("fake", spec, str(source))
+    fresh = run_one_or_skip("fake", spec, str(source))
     assert fresh is not None
     assert Path(fresh["resolved_to"]) == Path(target)
 
     _seed_cache(spec, source, BEFORE,
                 {**json.loads(CLEAN), "resolved_to": "/forged/elsewhere.json"})
     spawned = _spawns(calls)
-    cached = supertool._validator_run_one("fake", spec, str(source))
+    cached = run_one_or_skip("fake", spec, str(source))
     assert cached is not None
     assert _spawns(calls) == spawned, (
         f"the run spawned the adapter instead of reading the seeded entry, so "

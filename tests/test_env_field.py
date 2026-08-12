@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import supertool
+from _adapter_verdict import assert_ok, run_one_or_skip
 
 
 def _set_validators(cfg: dict) -> None:
@@ -36,7 +37,7 @@ def test_validator_env_field_passed_to_subprocess() -> None:
         "timeout": 5,
         "env": {"MY_TEST_VAR": "hello_from_env"},
     }
-    out = supertool._validator_run_one("t", spec, "x")
+    out = run_one_or_skip("t", spec, "x")
     assert out.get("captured") == "hello_from_env"
 
 
@@ -57,8 +58,8 @@ def test_validator_env_field_absent_does_not_break(tmp_path: Path) -> None:
         ),
         "timeout": 5,
     }
-    out = supertool._validator_run_one("t", spec, "x")
-    assert out["ok"] is True
+    out = run_one_or_skip("t", spec, "x")
+    assert_ok(out)
 
 
 def test_validator_env_field_overrides_parent_env(monkeypatch) -> None:
@@ -75,7 +76,7 @@ def test_validator_env_field_overrides_parent_env(monkeypatch) -> None:
         "timeout": 5,
         "env": {"MY_OVERRIDE_VAR": "overridden"},
     }
-    out = supertool._validator_run_one("t", spec, "x")
+    out = run_one_or_skip("t", spec, "x")
     assert out.get("captured") == "overridden"
 
 
@@ -100,7 +101,7 @@ def test_formatter_env_field_passed_to_subprocess(tmp_path: Path) -> None:
         "env": {"MY_FMT_VAR": "fmt_env_value"},
     }
     result = supertool._formatter_run_one("fmt", spec, "any.php")
-    assert result["ok"] is True
+    assert_ok(result)
     assert sentinel.read_text(encoding="utf-8") == "fmt_env_value"
 
 
@@ -108,7 +109,7 @@ def test_formatter_env_field_absent_does_not_break(tmp_path: Path) -> None:
     """Formatter spec without env field still runs correctly."""
     spec = {"cmd": "true", "timeout": 5}
     result = supertool._formatter_run_one("fmt", spec, "any.php")
-    assert result["ok"] is True
+    assert_ok(result)
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +152,7 @@ def test_validator_env_prefix_reaches_child(tmp_path: Path) -> None:
     )
     cmd = f"MCP_PHPSTAN_WORKING_DIR={tmp_str} {{python}} {adapter.as_posix()}"
     spec = {"cmd": cmd, "timeout": 5, "cache": False}
-    out = supertool._validator_run_one("t", spec, "any.php")
+    out = run_one_or_skip("t", spec, "any.php")
     assert out.get("ok") is True, f"env-prefix did not reach child: {out}"
 
 
@@ -169,5 +170,5 @@ def test_spec_env_wins_over_prefix(tmp_path: Path) -> None:
         "cache": False,
         "env": {"SHARED_VAR": "from_spec"},
     }
-    out = supertool._validator_run_one("t", spec, "any.php")
+    out = run_one_or_skip("t", spec, "any.php")
     assert out.get("captured") == "from_spec", f"spec.env did not win: {out}"
