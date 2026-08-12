@@ -58,7 +58,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pr import _gh, _fetch_review_threads_detailed  # noqa: E402  (reuse the gh-pr helpers)
+from pr import _fetch_review_threads_detailed  # noqa: E402  (reuse the gh-pr helper)
 import _board  # noqa: E402  (the board layout shared with gl-mrs / radar)
 import _filter_tokens  # noqa: E402  (the one tokenizer + refusal, shared with gh-issues / gl-mrs)
 import _untrusted  # noqa: E402  (the repo's remote-text convention)
