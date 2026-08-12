@@ -70,9 +70,18 @@ def main() -> None:
         _skip(file, start, "pyright on PATH but could not be executed")
         return
     except subprocess.TimeoutExpired:
+        # Loud, not a skip: the binary exists and was invoked, so a hang is a
+        # validator failure. But `adapter`, not a code of its own — that word is
+        # the only one the core routes to the third state (SCHEMA.md, "the
+        # reserved code for 'no verdict was obtained'"). Spelled `timeout`, this
+        # payload was one error *about the file*: cached until the file's hash
+        # changed, subtracted from a baseline, and counted as a new finding by
+        # the rollback path, which reverts the edit (#1464).
         emit({"tool": "pyright", "file": file, "ok": False, "count": 1,
               "errors": [{"line": None, "col": None, "severity": "error",
-                          "code": "timeout", "msg": "pyright timed out after 60s"}],
+                          "code": "adapter",
+                          "msg": "timeout — pyright did not return within 60s; "
+                                 "the file was NOT type-checked"}],
               "duration_ms": int((time.time() - start) * 1000)})
         return
 
