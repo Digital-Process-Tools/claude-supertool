@@ -44,6 +44,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, tool_fault, skipped
+from linebreaks import lf_line_of_v8_line
 
 TIMEOUT_S = 30
 
@@ -401,10 +402,24 @@ def check_block(start_line: int, content: str, html_file: str) -> dict | None:
         if spoke_about_file(out, line):
             msg_m = re.search(r"((?:Syntax)?Error: .+)", out)
             msg = msg_m.group(1) if msg_m else " ".join(out.split())[:200]
-            err = {"line": line, "col": None, "severity": "error",
+            # The LF padding above makes node's numbers the page's numbers, and
+            # that holds until the block body carries a U+2028 or U+2029: V8
+            # counts those as line terminators and the padding arithmetic does
+            # not, so node counts a line the page has not got and the page's
+            # line 4 was published as line 5 (#1507). Mapped against `padded`,
+            # which is the exact text node read — no second read, and no
+            # dependence on the temp file still being there.
+            placed = lf_line_of_v8_line(padded, line) if line is not None else None
+            if line is not None and placed is None:
+                # Base cut short so the note survives the 300-char cap below.
+                msg = (msg[:140] + f" [node reported line {line} of the "
+                       f"<script> block opened at line {start_line}; no line "
+                       "of this page maps to it, so the location is not "
+                       "published]")
+            err = {"line": placed, "col": None, "severity": "error",
                    "code": "syntax", "msg": msg[:300]}
-            if line is not None:
-                err.update(context_fields(html_file, line))
+            if placed is not None:
+                err.update(context_fields(html_file, placed))
             return err
         return {"line": None, "col": None, "severity": "error", "code": "adapter",
                 "msg": tool_fault("node --check", r.returncode, out)}

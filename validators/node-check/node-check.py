@@ -18,6 +18,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import tool_fault
+from linebreaks import lf_line_of_v8_line
 
 # `node --check` opens a syntax report with the resolved path of the file it
 # read, alone on a line, then the offending source, a caret, and the banner:
@@ -56,6 +57,34 @@ def diagnostic_line(out: str, file: str) -> int | None:
         if os.path.normcase(os.path.realpath(m.group(1))) == target:
             return int(m.group(2))
     return None
+
+
+def file_line(file: str, node_line: int | None) -> int | None:
+    """node's line number, re-counted the way this file's lines are counted.
+
+    V8 treats U+2028 and U+2029 as ECMAScript LineTerminators and numbers its
+    report by that set; `split_lines`, `context_fields` and the reader's editor
+    do not (#1486, #1507). One U+2028 inside a string literal — legal since
+    ES2019 and ordinary in a minified bundle — therefore shifts every line
+    number after it, and the shift is in the gift of the file under validation.
+    Measured on node v22.22.1: a two-line file whose first line holds one
+    reports its line-2 syntax error as **line 3**, and `context_fields` then
+    rendered lines 1-2 with the arrow on neither — a location the file does not
+    have, published as this file's own.
+
+    **A file that cannot be read keeps node's number.** It is the right number
+    for every file holding neither character, which is nearly all of them, and
+    the same failure reaches `context_fields`, which discloses it as
+    `context_unavailable` (#1446). Dropping a true location over an unrelated
+    `open()` would be the trade this repo keeps refusing.
+    """
+    if node_line is None:
+        return None
+    try:
+        text = pathlib.Path(file).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return node_line
+    return lf_line_of_v8_line(text, node_line)
 
 
 def spoke_about_file(out: str, line: int | None) -> bool:
@@ -114,10 +143,21 @@ def main() -> None:
     if spoke_about_file(out, line):
         msg_m = re.search(r"((?:Syntax)?Error: .+)", out)
         msg = msg_m.group(1) if msg_m else " ".join(out.split())[:200]
-        err = {"line": line, "col": None, "severity": "error",
+        # Translated after `spoke_about_file`, never before: that predicate is
+        # what keeps an unplaceable finding a finding (#745), and handing it a
+        # `None` produced here would reclassify a real SyntaxError as a tool
+        # fault on the strength of a line number nobody could map.
+        placed = file_line(file, line)
+        if line is not None and placed is None:
+            # Base cut short so the note survives the 300-char cap below —
+            # a disclosure the truncation eats is not a disclosure.
+            msg = (msg[:150] + f" [node reported line {line}; this file has no "
+                   "such line as its lines are counted here, so the location "
+                   "is not published]")
+        err = {"line": placed, "col": None, "severity": "error",
                "code": "syntax", "msg": msg[:300]}
-        if line is not None:
-            err.update(context_fields(file, line))
+        if placed is not None:
+            err.update(context_fields(file, placed))
     else:
         err = {"line": None, "col": None, "severity": "error", "code": "adapter",
                "msg": tool_fault("node --check", r.returncode, out)}

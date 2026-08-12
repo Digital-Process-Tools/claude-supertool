@@ -19,6 +19,10 @@ carries a `cargo metadata` round trip and the history of a suffix match that
 could not be made correct (#1037). A caller that *chooses* the working
 directory it invokes the tool in already knows the base, so nothing here has to
 be inferred. `go-vet` runs the tool in the package directory for that reason.
+`tsc-check` is the second caller (#1509, fixed in #1519) and reaches the same
+place by not choosing: `tsc` prints relative to the directory it inherits, so the
+base is `os.getcwd()`, measured rather than assumed — an absolute argv does not
+make tsc's output absolute.
 cargo-check has not adopted this module; it cannot, without deciding what to do
 with the workspace lookup, which is its own change.
 """
