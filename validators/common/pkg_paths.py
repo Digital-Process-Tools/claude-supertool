@@ -63,7 +63,8 @@ def is_abs(path: str) -> bool:
     return ntpath.isabs(path) or posixpath.isabs(path)
 
 
-def _spellings(text: str, normcase: Callable[[str], str] | None) -> tuple:
+def _spellings(text: str, normcase: Callable[[str], str] | None,
+               host_isabs: Callable[[str], bool] | None = None) -> tuple:
     """`(forms, refused)` for one absolute path.
 
     `forms` always holds the unresolved spelling, so the caller's comparison
@@ -78,12 +79,26 @@ def _spellings(text: str, normcase: Callable[[str], str] | None) -> tuple:
     demote the edited file's own finding to "some other file", and never charge
     a foreign file's finding to the edited one. The safe direction, but still a
     wrong sentence, and `attribute` uses the flag to decline instead of saying
-    it. **A resolution nobody attempted is not a refusal**: a Windows-shaped
-    path on a POSIX runner is absolute under `ntpath` and not under `os.path`,
-    so the guard below is the host's `isabs`, not this module's.
+    it.
+
+    **A resolution nobody attempted is not a refusal**, so the guard is the
+    *host's* `isabs` and not this module's cross-platform one. A drive-letter
+    path on a POSIX runner names nothing the OS could canonicalise: no attempt
+    is possible, none is made, nothing is lost, and the answer stays `"other"`.
+    The same string on Windows is a path the OS could have canonicalised, so an
+    attempt happens and a refusal counts. Both are right, and the divergence is
+    invisible in production because a validator only ever sees paths from the
+    host it runs on — it is reachable only from a test feeding one platform's
+    spellings to the other, which is how it arrived: an assertion that pinned
+    the POSIX answer alone went red on four windows-latest legs of PR #1443.
+
+    `host_isabs` is injectable for that reason, exactly as `normcase` is: a
+    platform behaviour pinned only on that platform is pinned only where it was
+    already going to be noticed.
     """
+    isabs = host_isabs or os.path.isabs
     forms = {posixpath.normpath(canon(text, normcase))}
-    if not os.path.isabs(text):
+    if not isabs(text):
         return forms, False
     try:
         forms.add(posixpath.normpath(canon(Path(text).resolve(), normcase)))
@@ -98,8 +113,15 @@ def _spellings(text: str, normcase: Callable[[str], str] | None) -> tuple:
 
 
 def _target_spellings(target: object, target_raw: object = "",
-                      normcase: Callable[[str], str] | None = None) -> tuple:
-    """`(forms, refused)` over both spellings a caller may have produced."""
+                      normcase: Callable[[str], str] | None = None,
+                      host_isabs: Callable[[str], bool] | None = None) -> tuple:
+    """`(forms, refused)` over both spellings a caller may have produced.
+
+    The `is_abs` below stays **cross-platform** while `_spellings`' guard is the
+    host's, and the two are not interchangeable: this one decides whether to
+    join a path onto the host's working directory, and joining a drive-letter
+    path onto a POSIX cwd invents a file that never existed.
+    """
     forms, refused = set(), False
     for raw in (target, target_raw):
         text = str(raw or "").strip()
@@ -107,14 +129,15 @@ def _target_spellings(target: object, target_raw: object = "",
             continue
         if not is_abs(text):
             text = os.path.abspath(text)
-        more, bad = _spellings(text, normcase)
+        more, bad = _spellings(text, normcase, host_isabs)
         forms |= more
         refused = refused or bad
     return forms, refused
 
 
 def target_forms(target: object, target_raw: object = "",
-                 normcase: Callable[[str], str] | None = None) -> set:
+                 normcase: Callable[[str], str] | None = None,
+                 host_isabs: Callable[[str], bool] | None = None) -> set:
     """Every spelling of the file under validation — all of them absolute.
 
     Both forms are kept for the reason #754 gave: `os.path.abspath` joins onto
@@ -127,12 +150,13 @@ def target_forms(target: object, target_raw: object = "",
     is a fact `attribute` needs and this signature cannot carry, so `attribute`
     calls `_target_spellings` instead.
     """
-    return _target_spellings(target, target_raw, normcase)[0]
+    return _target_spellings(target, target_raw, normcase, host_isabs)[0]
 
 
 def attribute(reported: str, target: object, base: object = "",
               target_raw: object = "",
-              normcase: Callable[[str], str] | None = None) -> str:
+              normcase: Callable[[str], str] | None = None,
+              host_isabs: Callable[[str], bool] | None = None) -> str:
     """`"this"` / `"other"` / `"unknown"` for the path a tool printed.
 
     The comparison is equality between two absolute paths, never a suffix
@@ -155,6 +179,11 @@ def attribute(reported: str, target: object, base: object = "",
     is that only `"other"` is entitled to make it. A *match* under an incomplete
     comparison is still `"this"`: matching is positive evidence, not-matching
     under a comparison that was cut short is not negative evidence.
+
+    Whether a resolution was attempted at all is the *host's* question, so
+    `host_isabs` is injectable beside `normcase` — see `_spellings`. Neither is
+    needed by a real adapter, which only ever sees paths from the host it runs
+    on; both exist so the other platform's answer can be asserted from this one.
     """
     src = (reported or "").strip()
     if not src:
@@ -162,7 +191,7 @@ def attribute(reported: str, target: object, base: object = "",
 
     folded = posixpath.normpath(canon(src, normcase))
     if is_abs(src):
-        forms, refused = _spellings(src, normcase)
+        forms, refused = _spellings(src, normcase, host_isabs)
     else:
         if not str(base or "").strip():
             return "unknown"
@@ -170,7 +199,8 @@ def attribute(reported: str, target: object, base: object = "",
         forms = {posixpath.normpath(posixpath.join(anchor, folded))}
         refused = False
 
-    known, target_refused = _target_spellings(target, target_raw, normcase)
+    known, target_refused = _target_spellings(target, target_raw, normcase,
+                                              host_isabs)
     if forms & known:
         return "this"
     if refused or target_refused:

@@ -21,7 +21,9 @@ Two things this file pins that a "does it lint" test would not:
 from __future__ import annotations
 
 import json
+import ntpath
 import os
+import posixpath
 import shutil
 import subprocess
 import sys
@@ -336,20 +338,27 @@ def test_windows_separators_still_attribute_to_the_file() -> None:
     a boundary that is no longer there and every diagnostic, including the
     file's own, is demoted to a non-verdict. That is #1005, and it went red on
     four Windows legs.
+
+    `host_isabs` is pinned to POSIX so this stays a test of the string logic on
+    every runner. Left to the host, a Windows leg resolves the drive-letter
+    target against a drive that does not exist — it happens not to raise on the
+    current image, and if it ever did, this assertion would flip to `"unknown"`
+    for a reason that has nothing to do with what it pins.
     """
-    import ntpath
     pp = _pkg_paths()
     assert pp.attribute(r"pkg\a.go", target=r"D:\ws\pkg\a.go", base=r"D:\ws",
-                        normcase=ntpath.normcase) == "this"
+                        normcase=ntpath.normcase,
+                        host_isabs=posixpath.isabs) == "this"
     assert pp.attribute(r"pkg\b.go", target=r"D:\ws\pkg\a.go", base=r"D:\ws",
-                        normcase=ntpath.normcase) == "other"
+                        normcase=ntpath.normcase,
+                        host_isabs=posixpath.isabs) == "other"
 
 
 def test_a_case_differing_spelling_is_the_same_file_on_windows() -> None:
-    import ntpath
     pp = _pkg_paths()
     assert pp.attribute(r"PKG\A.GO", target=r"D:\ws\pkg\a.go", base=r"D:\ws",
-                        normcase=ntpath.normcase) == "this"
+                        normcase=ntpath.normcase,
+                        host_isabs=posixpath.isabs) == "this"
 
 
 def test_a_relative_path_with_no_base_names_no_file() -> None:
@@ -413,20 +422,39 @@ def test_a_resolution_the_os_refused_is_unknown_not_another_file(monkeypatch) ->
     assert pp.attribute("/ws/pkg/a.go", target="/ws/pkg/a.go", base="") == "this"
 
 
-def test_a_refused_resolution_on_a_path_nobody_tried_to_resolve_changes_nothing(
-        monkeypatch) -> None:
-    """Not attempted is not the same as attempted and failed.
+@pytest.mark.parametrize("host_isabs, expected", [
+    (posixpath.isabs, "other"),
+    (ntpath.isabs, "unknown"),
+], ids=["posix-host", "windows-host"])
+def test_whether_a_resolution_was_attempted_is_the_hosts_question(
+        host_isabs, expected, monkeypatch) -> None:
+    """Not attempted is not the same as attempted and failed — and which one it
+    is depends on the host, so the host is injected rather than assumed.
 
-    A Windows-shaped path on a POSIX runner is absolute under `ntpath` and not
-    under `os.path`, so no resolution is attempted and none can fail. Folding
-    that into the same third state would demote every cross-platform
-    attribution this section asserts.
+    The drive-letter target below is absolute to `ntpath` and not to
+    `posixpath`. On a POSIX runner nothing about it can be canonicalised,
+    nothing is attempted, nothing is lost, and `"other"` is the honest answer.
+    On Windows the same string is a path the OS could have canonicalised; the
+    attempt was made and refused, so the comparison really was incomplete and
+    `"unknown"` is the honest answer. Both are correct. What is not correct is a
+    test that pins one of them by accident of the runner — this assertion
+    shipped asserting `"other"` alone and went red on all four windows-latest
+    legs of PR #1443, with 10,456 other tests passing beside it.
+
+    The reported path here is *relative*, so the refusal is recorded on the
+    **target** side, not the reported one.
+
+    This still fails an implementation that reaches for this module's
+    cross-platform `is_abs` instead of the host predicate: that one attempts a
+    resolution under either parameter, is refused under both, and answers
+    `"unknown"` where the posix-host case demands `"other"`. The guard survives
+    being made portable.
     """
-    import ntpath
     pp = _pkg_paths()
     monkeypatch.setattr(pp, "Path", _ResolutionRefused)
     assert pp.attribute(r"pkg\b.go", target=r"D:\ws\pkg\a.go", base=r"D:\ws",
-                        normcase=ntpath.normcase) == "other"
+                        normcase=ntpath.normcase,
+                        host_isabs=host_isabs) == expected
 
 
 # ---------------------------------------------------------------------------
