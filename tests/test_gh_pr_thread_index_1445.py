@@ -96,7 +96,8 @@ def _pr_payload():
     }
 
 
-def _run(monkeypatch, capsys, *, threads, graphql_rc=0, flags=()):
+def _run(monkeypatch, capsys, *, threads, graphql_rc=0, flags=(),
+         graphql_stderr="HTTP 403: rate limit"):
     """Drive the dashboard with `threads` coming back from the GraphQL call."""
     def gh(args, timeout=10):
         if args[:2] == ["pr", "view"]:
@@ -105,7 +106,7 @@ def _run(monkeypatch, capsys, *, threads, graphql_rc=0, flags=()):
         if args[:2] == ["api", "graphql"]:
             if graphql_rc != 0:
                 return SimpleNamespace(returncode=graphql_rc, stdout="",
-                                       stderr="HTTP 403: rate limit")
+                                       stderr=graphql_stderr)
             return SimpleNamespace(returncode=0, stdout=json.dumps(
                 {"data": {"repository": {"pullRequest": {
                     "reviewThreads": {"nodes": threads}}}}}), stderr="")
@@ -144,6 +145,33 @@ def test_a_failed_thread_fetch_declines_instead_of_printing_nothing(
     # the PR body, which is what the caller actually asked for.
     assert rc == 0
     assert "## Description" in out
+
+
+def test_the_declining_line_cannot_carry_ghs_control_characters(
+        monkeypatch, capsys):
+    """#1470's class, one file over. The reason in `UNKNOWN — … (<reason>)` is
+    gh's own stderr tail, and it lands at column 0 in a dashboard. `.splitlines
+    ()[-1]` makes it newline-free by construction, so it cannot paint a line —
+    but nothing made it ESC-free, and `ESC [2K ESC [1A` deletes the line above
+    it. On a dashboard, the line above is the check tally."""
+    rc, out = _run(monkeypatch, capsys, threads=[], graphql_rc=1,
+                   graphql_stderr="HTTP 403" + chr(27) + "[2K" + chr(27) + "[1A")
+    assert rc == 0
+    assert chr(27) not in out, "an ESC in the reason is a cursor command"
+    assert "HTTP 403" in out, "disclosed, not stripped"
+
+
+def test_the_threads_mode_declining_line_is_flattened_too(monkeypatch, capsys):
+    """`gh-pr:N:threads` prints the same string from the same fetcher, at
+    column 0, with the branch pair on the line above it. One sink flattened
+    and the other not is the half-fixed seam #1470 is about."""
+    rc, out = _run(monkeypatch, capsys, threads=[], graphql_rc=1,
+                   flags=("threads",),
+                   graphql_stderr="HTTP 403" + chr(27) + "[2K" + chr(27) + "[1A")
+    assert rc == 1
+    assert "Threads: UNKNOWN" in out
+    assert chr(27) not in out
+    assert "HTTP 403" in out
 
 
 def test_a_real_zero_says_so_rather_than_omitting_the_line(monkeypatch, capsys):

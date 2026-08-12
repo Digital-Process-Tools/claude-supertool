@@ -498,7 +498,11 @@ def _render_threads(number: str, comment_max: int | None) -> int:
 
     threads, err = _fetch_review_threads_detailed(d.get("url", ""), iid)
     if threads is None:
-        print(f"Threads: UNKNOWN — they could not be read ({err}).")
+        # The same string as the dashboard's line, from the same fetcher, at
+        # column 0 in a render whose line above is the branch pair. Flattening
+        # one sink and not the other is the half-fixed seam #1470 is about.
+        print(f"Threads: UNKNOWN — they could not be read "
+              f"({_untrusted.flat(err)}).")
         print("This is not 'none'. Nothing here establishes whether this PR "
               "has review threads; the default view's own count comes off the "
               "same call and would be equally silent.")
@@ -594,7 +598,8 @@ def _thread_index(threads: list | None, err: str, number: int | str) -> list[str
     """
     if threads is None:
         return [
-            f"Unresolved threads: UNKNOWN — they could not be read ({err}).",
+            f"Unresolved threads: UNKNOWN — they could not be read "
+            f"({_untrusted.flat(err)}).",
             "  This is not zero. Nothing here establishes whether this PR has "
             "review threads; this line used to be omitted entirely in that "
             "case, which reads as a PR with nothing on it.",
