@@ -15,7 +15,12 @@ import importlib.util
 from datetime import datetime, timezone
 from pathlib import Path
 
-PRESET_PATH = Path(__file__).parent.parent / "presets" / "github" / "since_tag.py"
+# `since_tag.py` is a tombstone since #1405; the judgement moved to
+# `_release_gate.py`, which is this file's own history under a new name. Every
+# test below is unchanged apart from that path — the fold moved the code, not
+# the contract.
+PRESET_PATH = (Path(__file__).parent.parent / "presets" / "github"
+               / "_release_gate.py")
 _spec = importlib.util.spec_from_file_location("github_since_tag", PRESET_PATH)
 assert _spec is not None and _spec.loader is not None
 st = importlib.util.module_from_spec(_spec)

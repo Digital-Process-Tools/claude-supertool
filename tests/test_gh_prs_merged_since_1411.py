@@ -33,8 +33,13 @@ sys.path.insert(0, str(PRESETS / "github"))
 import _filter_tokens  # noqa: E402
 import prs  # noqa: E402
 
+# #1405 folded `gh-since-tag` into this filter and retired the op. `since_tag.py`
+# is a tombstone; the module these tests are about is `_release_gate.py`, which
+# is the same file under a new name. TWO ASSERTIONS BELOW ARE DELIBERATELY
+# REVERSED by that fold and say so where they sit — they were right for the
+# shape #1411 left behind and they are wrong for this one.
 _spec = importlib.util.spec_from_file_location(
-    "github_since_tag_1411", PRESETS / "github" / "since_tag.py")
+    "github_since_tag_1411", PRESETS / "github" / "_release_gate.py")
 assert _spec is not None and _spec.loader is not None
 st = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(st)
@@ -66,11 +71,37 @@ def test_a_bare_date_is_accepted_and_normalised_to_an_instant() -> None:
     assert cmd[cmd.index("--search") + 1] == "merged:>2026-08-09T00:00:00+00:00"
 
 
-def test_a_value_that_is_not_an_instant_is_refused_not_dropped() -> None:
+def test_a_value_that_is_neither_a_date_nor_a_ref_is_refused_not_dropped() -> None:
     """#939's class: an unmapped value builds the argv without the flag, and the
-    unbounded board renders as the answer to a bounded question."""
-    bad = prs._bad_values({"merged-since": "friday"})
+    unbounded board renders as the answer to a bounded question.
+
+    Since #1405 the domain is "a date OR a tag name", so the value that proves
+    this has to be neither. A space is the cheapest way to be neither: no date
+    parses it and no git ref may contain one.
+    """
+    bad = prs._bad_values({"merged-since": "last friday"})
     assert [k for k, _v, _e in bad] == ["merged-since"]
+
+
+def test_a_tag_shaped_value_that_does_not_resolve_still_builds_no_argv() -> None:
+    """The same guarantee one layer along, for the values #1405 started accepting.
+
+    `friday` is now shape-legal — it could be a tag name — so it passes
+    `_bad_values` and is caught at resolution instead. What may never happen is
+    the #939 shape: a board built without the boundary. `resolve_boundary`
+    returning anything but RESOLVED carries an empty `stamp`, and `main_with_args`
+    returns before the argv is built.
+    """
+    assert prs._bad_values({"merged-since": "friday"}) == []
+    original = st._run
+    st._run = lambda argv, timeout: (True, "", "")   # no tags exist
+    try:
+        boundary = st.resolve_boundary("friday")
+    finally:
+        st._run = original
+    assert boundary.state != st.BOUNDARY_RESOLVED
+    assert boundary.stamp == ""
+    assert boundary.refusal
 
 
 # ---------------------------------------------------------------------------
@@ -117,85 +148,92 @@ def test_two_search_qualifiers_compose_into_one_flag() -> None:
 # The duplication itself — both callers, one argv
 # ---------------------------------------------------------------------------
 
-def test_since_tag_no_longer_names_gh_pr_list_anywhere() -> None:
-    """The direct pin on the defect. `since_tag` may not know the argv's shape."""
-    source = (PRESETS / "github" / "since_tag.py").read_text(encoding="utf-8")
+def test_the_gate_no_longer_names_gh_pr_list_anywhere() -> None:
+    """The direct pin on the defect. The gate may not know the argv's shape.
+
+    Stronger after #1405 than before it: the gate does not fetch at all now.
+    `gh-prs` makes the one call and hands the rows in.
+    """
+    source = (PRESETS / "github" / "_release_gate.py").read_text(encoding="utf-8")
     assert '"pr", "list"' not in source
     assert '"gh", "pr"' not in source
 
 
-def test_both_callers_produce_the_same_argv_for_the_same_boundary() -> None:
-    """The refactor's guarantee, stated as an equality rather than as "it still
-    works". Only one of these two expressions may know how to build the argv."""
-    seen = {}
+def test_there_is_only_one_caller_left_to_disagree_with() -> None:
+    """#1411's equality became an identity: the second caller is gone.
 
-    def _capture(argv, timeout):
-        seen["argv"] = argv
-        return True, "[]", ""
-
-    original = st._run
-    st._run = _capture
-    try:
-        st.read_merged_prs(BOUNDARY, 100)
-    finally:
-        st._run = original
-
-    assert seen["argv"] == prs._build_list_cmd(
-        {"state": "merged", "merged-since": STAMP}, 100,
-        fields=st.PR_LIST_FIELDS)
+    The two tests here that captured `since_tag.read_merged_prs`'s argv and
+    compared it to `_build_list_cmd`'s cannot be written any more, because the
+    function they drove no longer exists — `gh-prs` makes the call. That is the
+    duplication removed rather than pinned, so what is left to assert is that
+    nothing grew back.
+    """
+    assert not hasattr(st, "read_merged_prs")
+    source = (PRESETS / "github" / "_release_gate.py").read_text(encoding="utf-8")
+    assert "_build_list_cmd" not in source
 
 
-def test_since_tag_delegates_rather_than_reproducing_the_argv() -> None:
-    """The equality above would also hold if `since_tag` rebuilt an identical
-    list by hand, which is the state this issue is about. This one goes red on
-    that, because a sentinel returned by the shared builder must reach `_run`."""
-    sentinel = ["gh", "pr", "list", "--sentinel"]
-    seen = {}
-
-    def _capture(argv, timeout):
-        seen["argv"] = argv
-        return True, "[]", ""
-
-    original_run, original_build = st._run, prs._build_list_cmd
-    st._run = _capture
-    prs._build_list_cmd = lambda *a, **k: list(sentinel)
-    try:
-        st.read_merged_prs(BOUNDARY, 100)
-    finally:
-        st._run, prs._build_list_cmd = original_run, original_build
-
-    assert seen["argv"] == sentinel
-
-
-def test_since_tag_does_not_pay_for_the_boards_field_set() -> None:
+def test_the_boundary_slice_does_not_pay_for_the_boards_field_set() -> None:
     """`_LIST_FIELDS` carries `statusCheckRollup` — dozens of check runs per PR,
-    over a page of 100 merged PRs. The shared thing is the query, not the
-    payload, so the field set is the caller's."""
+    over a page of up to 500 merged ones. #1411 kept the gate off that field
+    set and #1405 kept it off: the boundary slice fetches its own narrow set,
+    which is why `failed` beside `merged-since=` is refused rather than
+    answered from a field nobody requested."""
     assert "statusCheckRollup" not in st.PR_LIST_FIELDS
     assert "mergedAt" in st.PR_LIST_FIELDS
+    assert "statusCheckRollup" in prs._LIST_FIELDS
+    assert prs._boundary_flag_conflict(
+        prs._gate_plan({"merged-since": "v0.34.0"}), {"failed"})
 
 
 # ---------------------------------------------------------------------------
 # What must NOT have moved
 # ---------------------------------------------------------------------------
 
-def test_gh_prs_did_not_acquire_the_changelog_read_or_the_repo_refusal() -> None:
-    """Two renders over one source of truth are normal; the judgement is not
-    duplicated and it is not relocated either. `changelog.d` is a local
-    filesystem read and the `repo:` refusal exists because only the PR list can
-    follow a target — both stay in `since_tag`, whose own tests cover them."""
+def test_gh_prs_DID_acquire_the_changelog_read_and_the_repo_refusal() -> None:
+    """REVERSED by #1405, deliberately. This test asserted the opposite.
+
+    #1411's reasoning was that `changelog.d` is a local filesystem read and the
+    `repo:` refusal exists because only the PR list can follow a target, so
+    neither belonged on `gh-prs`. Both are still true as statements about the
+    code. What changed is the decision: the fold was chosen, and the honest
+    accounting is that these two did not become unnecessary — they **relocated
+    onto the op with the most callers**, which is a cost the fold pays and not
+    a problem it solved.
+
+    So the guard moved rather than disappearing, and it is narrower than the
+    old one: `repo_target_refusal` now fires only for `merged-since=<tag>`,
+    because a date boundary reads nothing local and follows a target whole.
+    """
+    assert hasattr(prs, "_tag_target_conflict")
+    assert prs._tag_target_conflict("v0.34.0", "owner/name")
+    assert prs._tag_target_conflict("2026-08-09", "owner/name") is None
+    assert prs._tag_target_conflict("v0.34.0", "") is None
+    # Relocated, but reached through the gate rather than reimplemented: the
+    # fragment count and the boundary states have one home, and this file is
+    # not it. (A bare `changelog.d` substring will not do — prs.py names it in
+    # prose, describing what the ordinary board does NOT read.)
     source = (PRESETS / "github" / "prs.py").read_text(encoding="utf-8")
-    assert "changelog" not in source.lower()
-    assert not hasattr(prs, "repo_target_refusal")
-    assert hasattr(st, "repo_target_refusal")
+    assert "count_fragments" not in source
+    assert "_release_gate" in source
 
 
-def test_the_boundary_states_stay_where_the_three_of_them_are() -> None:
-    """A listing filter has two outcomes — apply the token or refuse it. Tag
-    resolution has three, and `gh-prs` is `repo_target: true` while a tag is a
-    read of the local clone, so a tag name accepted here would resolve against
-    one repository and list from another. Instants only."""
-    assert prs._bad_values({"merged-since": "v0.31.0"})
+def test_the_boundary_states_reach_the_filter_as_refusals() -> None:
+    """REVERSED by #1405, deliberately. This test asserted `v0.31.0` was refused.
+
+    #1411's reasoning: a listing filter has two outcomes and tag resolution has
+    three, so a tag name may not be a filter value. The third state is real and
+    it did not go away — what the fold established is that a filter can carry
+    three outcomes as long as the extra one is a **refusal**. RESOLVED applies;
+    AMBIGUOUS and UNRESOLVED print no board at all. What a filter may never do
+    is pick between two defensible boundaries, and nothing here does.
+
+    The other half of #1411's reasoning — `gh-prs` follows `repo:` while a tag
+    is a local read — was correct and survives as `_tag_target_conflict` above.
+    """
+    assert prs._bad_values({"merged-since": "v0.31.0"}) == []
+    plan = prs._gate_plan({"merged-since": "v0.31.0"})
+    assert plan is not None and plan.is_tag is True
 
 
 # ---------------------------------------------------------------------------
