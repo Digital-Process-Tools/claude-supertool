@@ -143,6 +143,79 @@ def test_an_overwrite_still_measures_its_baseline(
     assert "baseline not measured" not in out, out
 
 
+def test_a_rollback_validator_now_reaches_a_created_file_it_flagged(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The behaviour change this fix carries, said out loud.
+
+    The invented baseline did not only misprint a row -- for the three adapters
+    that produced one it also *suppressed* the rollback, because `1` against a
+    real post-write `1` is equal counts and equal `ok`. Removing it restores
+    the arm, so a `rollback_on_fail` validator that flags a file this op
+    created now unlinks it, exactly as the 33 adapters that already declined
+    the baseline always did.
+
+    This is reachable through no shipped registration -- see the audit below --
+    but it is the arm the change moves, so it is pinned rather than argued.
+    """
+    _install_fake(monkeypatch, after_count=1)
+    monkeypatch.setattr(
+        supertool, "_applicable_validators",
+        lambda op, path: {FAKE: {"rollback_on_fail": True}})
+    target = tmp_path / "flagged_create.py"
+    out = _paste(tmp_path, target, "import os" + NL)
+    assert not target.exists(), "the flagged create was left behind:" + NL + out
+    assert "rolled back" in out, out
+
+
+def test_the_disclosure_1320_built_for_ruff_was_suppressed_by_the_baseline(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`[left on disk]` names ruff by name in its own docstring as the case it
+    exists for -- advisory, never rolls back, so the file stands and the caller
+    has to be told. The invented baseline cancelled ruff's finding against
+    itself, so for ruff the disclosure could not fire. It fires now."""
+    _install_fake(monkeypatch, after_count=1)
+    target = tmp_path / "advisory_create.py"
+    out = _paste(tmp_path, target, "import os" + NL)
+    assert target.exists(), out
+    assert "[left on disk]" in out, out
+
+
+def test_no_shipped_rollback_validator_ever_had_a_measured_baseline() -> None:
+    """Why the arm above moves nothing anyone ships, checked rather than said.
+
+    A registration only changes behaviour here if it is BOTH `rollback_on_fail`
+    AND answers a missing file in its own vocabulary rather than with
+    `code: "adapter"`. Every `rollback_on_fail` validator in both config files
+    is in the second group -- they decline or skip -- so their baseline was
+    already `None` before this change and the rollback gate did not move for
+    any of them. The three that answered (ruff, tsc-check, prettier-check) set
+    `rollback_on_fail` nowhere, by the deliberate choice `ruff.py`'s module
+    docstring argues at length.
+
+    A class guard, not a pin of the fix: it passes on both sides of the change.
+    It fails the day someone turns rollback on for one of the three, which is
+    the moment the paragraph above stops being theoretical.
+    """
+    import json
+    import re
+
+    root = Path(supertool.__file__).resolve().parent
+    comment = re.compile("^" + chr(92) + "s*//.*$", re.M)
+    answers_in_its_own_vocabulary = {"ruff", "tsc-check", "tsc-check-tsx",
+                                     "prettier-check"}
+    for name in (".supertool.json", ".supertool.example.json"):
+        raw = comment.sub("", (root / name).read_text(encoding="utf-8"))
+        validators = json.loads(raw).get("validators") or {}
+        rolls_back = {k for k, v in validators.items() if v.get("rollback_on_fail")}
+        overlap = rolls_back & answers_in_its_own_vocabulary
+        assert not overlap, (
+            name + " gives rollback_on_fail to a validator that reports a "
+            "missing file as a finding rather than as an adapter fault: "
+            + repr(sorted(overlap)))
+
+
 @pytest.mark.skipif(not shutil.which("ruff"), reason="ruff not on PATH")
 def test_ruff_really_does_report_a_missing_file_as_a_measured_finding(
     tmp_path: Path,

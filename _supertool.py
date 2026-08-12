@@ -19193,7 +19193,17 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     # file it created whole was excused as `(pre-existing -- not from this
     # edit)`. The sign only ever runs that way -- a fabricated baseline is
     # HIGHER than the true zero, so it suppresses regressions and cannot
-    # manufacture one -- which is why this misreports rather than destroys.
+    # manufacture one -- which is why the DEFECT misreports rather than
+    # destroys. Removing it restores the arm, though, which is a behaviour
+    # change and not only a display one: for those three a finding on a created
+    # file now regresses, so `[left on disk]` fires where it could not before
+    # (ruff is the case `_left_on_disk_line` names by name, and was inert for
+    # ruff until this) and a `rollback_on_fail` registration would unlink the
+    # create. No shipped registration reaches the second -- every
+    # `rollback_on_fail` validator in both config files answers a missing file
+    # with `code: "adapter"` or `skipped`, so its baseline was already absent
+    # -- and `tests/test_new_file_has_no_baseline_1466.py` audits that
+    # intersection rather than trusting it.
     before = (_validators_run_batch(applicable, path)
               if applicable and _pre_existed else {})
 
@@ -19267,8 +19277,9 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     # and cclsp's diagnostics cache is never invalidated for the daemon's life
     # — so a validator querying it now is being answered about the pre-edit
     # bytes (#482). Two conditions clear the flag: a file that did not exist
-    # pre-op was never opened by the baseline, and a daemon just SIGTERM'd for
-    # a new file (#239) comes back cold with the current bytes indexed.
+    # pre-op has no baseline pass at all since #1466 -- and had none that could
+    # open it before that -- and a daemon just SIGTERM'd for a new file (#239)
+    # comes back cold with the current bytes indexed.
     _doc_maybe_stale = _pre_existed and not _new_file_servers
     after_results = (_validators_run_batch(applicable, path, _doc_maybe_stale)
                      if applicable else {})
