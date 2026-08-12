@@ -192,7 +192,7 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | Markdown            | `markdownlint`   | `markdownlint` CLI                 | `npm install -g markdownlint-cli`          |
 | Ruby                | `ruby-check`     | `ruby` on PATH                     | Uses `ruby -c`                             |
 | Dockerfile          | `hadolint`       | `hadolint` on PATH                 | Catches both syntax and best-practice lint |
-| TypeScript (`.ts`)  | `tsc-check`      | `tsc` (`npm install -g typescript`)| `--noEmit` — no output files written       |
+| TypeScript (`.ts`)  | `tsc-check`      | `tsc` (`npm install -g typescript`)| `--noEmit` — no output files written; `--pretty false`, without which nothing parses (#1499) |
 | TypeScript (`.tsx`) | `tsc-check-tsx`  | `tsc` (`npm install -g typescript`)| Separate entry needed for `.tsx`           |
 | Go                  | `gofmt-check`    | `gofmt` (ships with Go)            | Fails on formatting diff, not just syntax  |
 | Go — semantics | `go-vet`         | `go` (ships with Go)               | `go vet` over the file's **package**. Ships with the toolchain, so it costs no install a Go repo has not already paid. A file in no module is `skipped`, never `ok` — see below |

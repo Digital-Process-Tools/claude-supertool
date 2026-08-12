@@ -23508,6 +23508,26 @@ _MCP_STOP_CODES = {
 
 _MCP_STOP_DETAIL_CAP = 500
 
+# CSI sequences, OSC strings (BEL- or ST-terminated) and the two-character
+# escapes, stripped out of a child's stderr before it becomes `detail` (#1333).
+#
+# CPython colourises its own tracebacks from 3.13 on, and `_colorize` consults
+# `FORCE_COLOR` before it asks whether the stream is a tty — so a parent that has
+# it set (this repo's own agent harness exports `FORCE_COLOR=3`) gets escape
+# sequences out of a child whose stderr is a pipe. Two conditions, not a version
+# range, which is why the local red here was green on every 3.9-3.12 CI leg.
+#
+# It is stripped rather than suppressed at the source. Unsetting the variable for
+# the child would have to enumerate every layer that might colour, and would
+# leave a caller that deliberately sets it wondering why. It is also not only
+# cosmetic twice over: `detail` is printed for a human to read, so an OSC out of
+# a child steers the reader's terminal, and the cap below keeps the **last** 500
+# characters — every escape byte is budget spent on something that renders as
+# nothing, so a long enough coloured traceback evicts the exception line.
+_ANSI_ESCAPE_RE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])"
+)
+
 
 def _mcp_stop_report(name: str, outcome: _StopOutcome) -> _StopOutcome:
     """Log a failed invalidation once, on stderr, only under SUPERTOOL_DEBUG.
@@ -23562,7 +23582,9 @@ def _mcp_stop_server(name: str) -> _StopOutcome:
         return _mcp_stop_report(
             name, _StopOutcome(False, "unavailable", f"{type(exc).__name__}: {exc}"))
     code, ok = _MCP_STOP_CODES.get(proc.returncode, ("crashed", False))
-    detail = (proc.stderr or b"").decode("utf-8", "replace").strip()
+    raw = (proc.stderr or b"").decode("utf-8", "replace")
+    # Stripped before the cap, never after: see _ANSI_ESCAPE_RE.
+    detail = _ANSI_ESCAPE_RE.sub("", raw).strip()
     return _mcp_stop_report(name, _StopOutcome(ok, code, detail[-_MCP_STOP_DETAIL_CAP:]))
 
 
