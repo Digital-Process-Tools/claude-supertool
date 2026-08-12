@@ -23,8 +23,11 @@ A prose example that quietly stops matching the code is how #1221's hand-written
 rule taught a wrong fact for an unknown number of sessions.
 
 **Second finding, same paragraph.** `_guard_help_state` returns `help` for any
-`-h` not preceded by a flag. That is measured-correct for the 28 shipped
-mappings, all `git` and `gh`. `replaces` is a key any project may set, and for
+`-h` not preceded by a flag. That is measured-correct for the shipped mappings,
+every one of them a `git` or a `gh` invocation -- pinned below, because the
+"28 entries" the docs carried was a v0.35.0 count and the registry is 29 today,
+so a count states as fact what only a property can keep true. `replaces` is a
+key any project may set, and for
 `ls -h`, `du -h`, `sort -h` and `grep -h` the token is a real option and the
 command runs -- a `clean` verdict on a command that executes, reintroduced by
 configuration rather than by code. Not reachable in this tree, so the fix is a
@@ -117,6 +120,27 @@ class TestAProjectEntryWhoseDashHIsARealOption:
         # that, so it un-claims -- which is why the schema docs have to say so.
         assert supertool.guard_command("du -h /tmp").state == "clean"
         assert supertool.guard_command("du /tmp").state == "blocked"
+
+    def test_every_shipped_entry_is_a_cli_whose_dash_h_is_help(
+            self, tmp_path, monkeypatch):
+        # What makes the terminal-`-h` rule safe here, stated as a property
+        # rather than as the entry count the docs carried: 28 was measured on
+        # the v0.35.0 tree and the registry is 29 today, so the number was
+        # already wrong when this test was written. `git`, `gh` and `glab` all
+        # print usage for `-h`; a `sort`, `ls`, `du` or `grep` entry reddens
+        # this and sends its author to the rule in `docs/contributing.md`.
+        (tmp_path / ".supertool.json").write_text(
+            json.dumps({"presets": ["git", "github", "gitlab"]}),
+            encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(supertool, "_CONFIG", None)
+        monkeypatch.setattr(supertool, "_CONFIG_CHECKED", False)
+        monkeypatch.setattr(supertool, "_CONFIG_PATH", None)
+        replacements, notes = supertool._guard_replacements(
+            supertool._load_config())
+        assert replacements and not notes, notes
+        words = {entry.argv[0] for entry in replacements}
+        assert words == {"git", "gh", "glab"}, sorted(words)
 
     def test_the_schema_docs_warn_about_it(self):
         text = (_ROOT / "docs" / "contributing.md").read_text(encoding="utf-8")

@@ -15452,7 +15452,7 @@ class _Replacement(NamedTuple):
     description: str
     project: bool = False
     #: Flag spellings whose presence means this entry does **not** claim the
-    #: argv — see `_guard_excluded`. The single item `*` is any flag at all.
+    #: argv — see `_guard_exclusion_state`. `*` is any flag at all.
     unless_flag: Tuple[str, ...] = ()
 
 
@@ -16256,10 +16256,10 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
                     "`" + _flat_field(token) + "` in `"
                     + _flat_field(" ".join(scoring)) + "` sits immediately "
                     "after another flag, so an exclusion that un-claims an op "
-                    "could not be told from that option's value — `gh pr "
-                    "create -t --dry-run -b y` creates a pull request titled "
-                    "`--dry-run`. Nothing was blocked and nothing here was "
-                    "read as replaced")
+                    "could not be told from that option's value — the shape "
+                    "that made `gh pr create -t --dry-run -b y` open a pull "
+                    "request titled `--dry-run` (#1450). Nothing here was "
+                    "blocked and nothing was read as replaced")
                 if ambiguity not in notes:
                     notes.append(ambiguity)
         if not scored:
