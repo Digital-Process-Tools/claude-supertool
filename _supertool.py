@@ -15270,6 +15270,12 @@ _GUARD_DESC_CAP = 320
 _GUARD_USE_CAP = 200
 _GUARD_TEXT_BUDGET = 1200
 _GUARD_MAX_MATCHES = 5
+#: And the same question about the notes, which are rendered on a block too.
+#: A note may quote its own segment, so a chained command yields one distinct
+#: note per segment: `git commit -m -h -m tagN` repeated 200 times produced 200
+#: of them and a 61,942-character refusal — the per-match multiplication above,
+#: re-entered through a second door. They spend from the same budget.
+_GUARD_MAX_NOTES = 3
 
 
 class GuardMatch(NamedTuple):
@@ -15624,7 +15630,16 @@ def _guard_help_state(argv: Sequence[str]) -> str:
         # A positional before it (or nothing) means no option is waiting on a
         # value, so this token is read as a flag. One unambiguous help flag
         # decides the whole argv: `git commit --help -m -h` opens the man page.
-        if i == 0 or not _guard_is_flag(options[i - 1]):
+        #
+        # A help flag before it counts as unambiguous too, and this is the one
+        # arity fact the guard can state without a per-subcommand table: no
+        # spelling of `-h` or `--help` takes a value, so nothing behind one is
+        # in a value slot. Without it `git commit -m -h --help` was `value` —
+        # measured, it prints usage and commits nothing (exit 129) — and the
+        # comment above claimed an order-independence the code did not have.
+        prev = options[i - 1] if i else ""
+        if (i == 0 or not _guard_is_flag(prev)
+                or prev.split("=", 1)[0] in _GUARD_HELP_FLAGS):
             return "help"
         ambiguous = True
     return "value" if ambiguous else "none"
@@ -16139,8 +16154,22 @@ def guard_refusal(verdict: GuardVerdict) -> str:
     # value slot — and dropping it here made a positive match render as though
     # nothing had been left unanswered. Quoted through `_guard_quote` because a
     # registry-derived note carries an op name somebody else wrote (#1391).
+    shown_notes = 0
     for note in verdict.notes:
-        lines.append("Also: " + _guard_quote(note, _GUARD_DESC_CAP))
+        if shown_notes >= _GUARD_MAX_NOTES or spent >= _GUARD_TEXT_BUDGET:
+            break
+        text = _guard_quote(note, min(_GUARD_DESC_CAP,
+                                      _GUARD_TEXT_BUDGET - spent))
+        if not text:
+            break
+        spent += len(text)
+        shown_notes += 1
+        lines.append("Also: " + text)
+    hidden_notes = len(verdict.notes) - shown_notes
+    if hidden_notes:
+        lines.append(f"and {hidden_notes} further note(s) about what this "
+                     f"matcher could not read are not shown — "
+                     f"supertool 'guard:COMMAND' prints one segment at a time.")
     if verdict.notes:
         lines.append("")
     if any(match.project for match in verdict.matches[:shown]):

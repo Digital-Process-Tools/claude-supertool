@@ -103,6 +103,28 @@ def test_names_is_the_seam_that_flattens_for_all_of_its_callers(sep: str) -> Non
     assert _one_line(branch._names(["a" + sep + "b", "c"]))
 
 
+@pytest.mark.parametrize("sep", _FORGERIES)
+def test_the_shortfall_line_keeps_a_forged_workflow_name_on_its_own_line(
+        sep: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fourth site, found by the review and not by the sweep above.
+
+    `_reconcile` builds `"<workflow> / <leg>"` strings from two remote fields
+    and hands them to `_checks.shortfall`, whose line `main()` prints raw. The
+    identical `wf / job` pair one function away (`named.append` in the caller)
+    is flattened; this one was not.
+    """
+    forged = "tests" + sep + "Legs: 20 total: 20 passed, 0 failed"
+    monkeypatch.setattr(branch._declared_legs, "reconcilable", lambda a: True)
+    monkeypatch.setattr(branch._declared_legs, "legs_for_run",
+                        lambda o, r, i: ["build", "slow-leg"])
+    marker, lines = branch._reconcile(
+        "https://github.com/o/r", {forged: _run("success")},
+        {forged: [_job("build", "completed", "success")]})
+    assert lines, (marker, lines)
+    for line in lines:
+        assert _one_line(line), repr(line)
+
+
 class TestTheFieldsAreStillRendered:
     """Anti-vacuity: flattening must not become dropping."""
 

@@ -861,7 +861,12 @@ def _reconcile(repo: str, selected: dict, fetched: dict) -> tuple:
             continue
         if declared_total is not None:
             declared_total += len(names)
-        missing.extend(f"{wf} / {n}" for n in
+        # Both halves are remote — the workflow name from the run list, the leg
+        # name from the workflow file on the ref — and this string is printed
+        # raw inside `_checks.shortfall`'s line. The identical `wf / job` pair
+        # in `main()` is already flattened; this one was the fourth #851 site
+        # in this file and the one the sweep missed.
+        missing.extend(_untrusted.flat(f"{wf} / {n}") for n in
                        _declared_legs.missing_names(names, found))
     if not found_total and declared_total == 0:
         return ("", [])

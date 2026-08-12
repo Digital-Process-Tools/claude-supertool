@@ -110,10 +110,40 @@ class TestARealHelpInvocationIsStillUnClaimed:
         "gh pr create --help",
         # A help flag after other *positionals* is still the first flag.
         "gh pr view 1 --help",
+        # An ambiguous help token followed by an unambiguous one.
+        "git commit -m -h --help",
     ])
     def test_it_is_not_blocked(self, shipped_presets, cmd):
         verdict = supertool.guard_command(cmd)
         assert verdict.state != "blocked", verdict
+
+
+class TestTheRefusalStaysBounded:
+    """#1391's budget covers the notes too, or it is not a budget.
+
+    Each ambiguity note quotes its own segment, so a chained command yields one
+    distinct note per segment. Rendering them uncapped is the per-match
+    multiplication `_GUARD_TEXT_BUDGET` was introduced to remove, re-entered
+    through a second door.
+    """
+
+    def test_two_hundred_ambiguous_segments_do_not_multiply_the_refusal(
+            self, shipped_presets):
+        command = " && ".join(
+            f"git commit -m -h -m tag{i:05d}" for i in range(200))
+        verdict = supertool.guard_command(command)
+        assert verdict.state == "blocked", verdict.state
+        refusal = supertool.guard_refusal(verdict)
+        # Generous: the matches alone are allowed 1200 characters of registry
+        # text plus their own framing. The point is that it is bounded at all.
+        assert len(refusal) < 6000, len(refusal)
+
+    def test_the_notes_it_dropped_are_counted_rather_than_silently_cut(
+            self, shipped_presets):
+        command = " && ".join(
+            f"git commit -m -h -m tag{i:05d}" for i in range(200))
+        refusal = supertool.guard_refusal(supertool.guard_command(command))
+        assert "further note" in refusal, refusal[-800:]
 
 
 class TestAntiVacuity:
@@ -148,6 +178,13 @@ class TestTheClassifierItself:
         # One unambiguous help token beats an ambiguous one: git prints the
         # commit man page for this.
         (["git", "commit", "--help", "-m", "-h"], "help"),
+        # And in the other order, which is where the first cut of this
+        # classifier was order-dependent while its docstring said it was not.
+        # A help flag takes no value, so a help token behind one is not in a
+        # value slot — measured, `git commit -m -h --help` prints usage and
+        # commits nothing (exit 129).
+        (["git", "commit", "-m", "-h", "--help"], "help"),
+        (["git", "commit", "-m", "-h", "-h"], "help"),
         ([], "none"),
         (["-h"], "help"),
     ])
