@@ -21,7 +21,7 @@ import pathlib
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from source_context import source_context
+from source_context import context_fields
 
 
 def emit(obj: dict) -> None:
@@ -115,7 +115,7 @@ def main() -> None:
                 "severity": severity,
                 "code": msg.get("source"),
                 "msg": msg.get("message", ""),
-                "source_context": source_context(file, line),
+                **context_fields(file, line),
             })
 
     count = len(errors)

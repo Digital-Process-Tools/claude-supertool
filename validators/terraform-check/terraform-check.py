@@ -21,7 +21,7 @@ import time
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from source_context import source_context
+from source_context import context_fields
 from refusal import absent, tool_fault
 
 TOOL = "terraform-check"
@@ -141,7 +141,7 @@ def main() -> None:
             if ln is not None:
                 err = {"line": ln, "col": None, "severity": "error",
                        "code": "syntax", "msg": body[:300],
-                       "source_context": source_context(file, ln)}
+                       **context_fields(file, ln)}
             else:
                 err = {"line": None, "col": None, "severity": "error",
                        "code": "adapter",

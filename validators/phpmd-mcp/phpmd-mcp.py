@@ -21,7 +21,7 @@ import time
 
 # Reuse the shared 5-line source-context helper (same one the cold phpmd adapter uses).
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "common"))
-from source_context import source_context  # noqa: E402
+from source_context import context_fields  # noqa: E402
 
 DAEMON_NAME = os.environ.get("MCP_PHPMD_DAEMON_NAME", "phpmd-warm")
 DAEMON_PROC = os.environ.get("MCP_PHPMD_BIN", "mcp-phpmd-warm")
@@ -187,7 +187,7 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
                 "severity": "warning",
                 "code": v.get("rule"),
                 "msg": (v.get("description") or "").strip(),
-                "source_context": source_context(file_path, line) if line else None,
+                **context_fields(file_path, line),
             })
 
     # PHPMD-level processing errors (parse failures etc.).

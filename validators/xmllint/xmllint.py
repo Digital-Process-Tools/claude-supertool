@@ -15,7 +15,7 @@ import time
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from source_context import source_context
+from source_context import context_fields
 from refusal import tool_fault
 
 # libxml announces a finding about the document as `file:LINE: parser error : ...`.
@@ -47,7 +47,7 @@ def parse_diagnostics(out: str, file: str) -> list[dict]:
             ln = int(m.group(1))
             errors.append({"line": ln, "col": None, "severity": "error",
                            "code": "xml", "msg": m.group(2).strip()[:200],
-                           "source_context": source_context(file, ln)})
+                           **context_fields(file, ln)})
     return errors
 
 

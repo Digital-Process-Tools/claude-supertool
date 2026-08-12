@@ -17786,6 +17786,15 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
             out.append(f"  {line_n} {code}  {msg}")
             for ctx_line in (e.get("source_context") or []):
                 out.append(f"    {_flat_cell(ctx_line)}")
+            # An empty `source_context` used to mean either "no lines to show"
+            # or "the file could not be opened" (#1446). The finding stands
+            # either way — the tool located a defect and that claim does not
+            # depend on reprinting the line — so the reason is rendered beside
+            # it rather than swallowed, and flattened like every other
+            # adapter-supplied string that gets a line of its own.
+            unavailable = e.get("context_unavailable")
+            if unavailable:
+                out.append(f"    [no source context: {_flat_cell(unavailable)}]")
         for key, label in (("raw_stdout", "stdout"), ("raw_stderr", "stderr")):
             raw = (data.get(key) or "").strip()
             if raw:

@@ -20,7 +20,7 @@ import time
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from source_context import source_context
+from source_context import context_fields
 from refusal import absent, tool_fault
 
 TOOL = "gofmt-check"
@@ -60,7 +60,7 @@ def parse_diagnostics(out: str, file: str) -> list[dict]:
             errors.append({
                 "line": ln, "col": int(m.group("col")), "severity": "error",
                 "code": "syntax", "msg": m.group("msg").strip()[:300],
-                "source_context": source_context(file, ln),
+                **context_fields(file, ln),
             })
     return errors
 
