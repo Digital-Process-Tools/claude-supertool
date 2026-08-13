@@ -44,7 +44,10 @@
 # unparseable to Claude Code — no decision, no note, the silent fail-open this
 # header opens by refusing. Every path through `pre_bash_guard.py` returns 0,
 # so an envelope plus exit 0 is the whole condition, and a rung that fails
-# either way is recorded and the walk continues.
+# either way is recorded and the walk continues. **That record is sticky**: a
+# rung that began an answer and died names a broken interpreter, and the six
+# rungs tried after it would otherwise overwrite that with "exited N without
+# writing a verdict" about a rung that was never going to answer.
 # `supertool_python_identifies` stays in the ladder for session-start.sh,
 # whose callback runs supertool with real arguments and cannot prefix-test the
 # free-form output, and which pays its one probe once per session rather than
@@ -105,10 +108,14 @@ attempt() {
                 printf '%s' "$out"
                 exit 0
             fi
-            LAST_PARTIAL=1
-            ;;
-        *)
-            LAST_PARTIAL=
+            # Sticky, and deliberately not folded into LAST_TRIED below. A
+            # rung that began an answer and died is a specific, actionable
+            # diagnosis — a broken interpreter, named. The walk continues past
+            # it, so without this the message is overwritten by whichever rung
+            # happened to be tried last, and the reader is sent looking for a
+            # silent interpreter instead of the one that crashed mid-write.
+            PARTIAL_TRIED="$*"
+            PARTIAL_RC="$rc"
             ;;
     esac
     LAST_TRIED="$*"
@@ -118,10 +125,10 @@ attempt() {
 
 supertool_python_each attempt
 
+if [ -n "${PARTIAL_TRIED:-}" ]; then
+    decline "$PARTIAL_TRIED began writing a verdict and then exited $PARTIAL_RC, so what it had written was discarded rather than forwarded as an answer"
+fi
 if [ -n "${LAST_TRIED:-}" ]; then
-    if [ -n "${LAST_PARTIAL:-}" ]; then
-        decline "$LAST_TRIED began writing a verdict and then exited $LAST_RC, so what it had written was discarded rather than forwarded as an answer"
-    fi
     decline "$LAST_TRIED exited $LAST_RC without writing a verdict"
 fi
 decline "no $SUPERTOOL_LADDER_RUNGS on PATH that executes (the bare name python3 is never tried, see hooks/python-ladder.sh)"

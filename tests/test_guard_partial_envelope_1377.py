@@ -26,15 +26,34 @@ followed by a non-zero exit for some unrelated reason is treated the same way
 and its answer is dropped, because bash cannot tell that fragment from this
 one - and dropping it costs a disclosed decline, where forwarding it costs
 silence.
+
+**Every rung is shadowed, and that is the invariant rather than a detail.**
+The first version of this file installed the dying shim at the ladder's first
+rung and left the rest of the ladder alone, which passes on macOS and fails on
+ubuntu: `/usr/bin` there carries a real `python3.10`/`python3.11`, `/usr/bin`
+here carries only the bare `python3` that is never a rung (#572). So the walk
+stepped past the dying shim, found a genuine interpreter, and returned a
+genuine `deny` - the test asserted against the real guard under the shim's
+name and went red for the right reason on four ubuntu legs of PR #1608 while
+staying green on the platform it was written on. That is this repository's own
+defect class aimed at a test: an absence here (no later rung) was a property
+of the author's laptop read as a property of the world.
+
+The rung list is derived from `hooks/python-ladder.sh` rather than copied, so
+a rung added there cannot silently un-blind this file, and the parse refuses
+to return nothing - a fixture that shadowed zero names would leave every test
+below measuring the runner while still reporting green.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import List
 
 import pytest
 
@@ -42,13 +61,8 @@ from test_guard_interpreter_ladder_1390 import _BASH, needs_wrapper
 
 _ROOT = Path(__file__).resolve().parent.parent
 _WRAPPER = _ROOT / "hooks" / "pre-bash-guard.sh"
+_LADDER = _ROOT / "hooks" / "python-ladder.sh"
 _NL = chr(10)
-
-#: The first rung `hooks/python-ladder.sh` walks, so a shim here answers before
-#: anything the host really has.
-_FIRST_RUNG = "python3.14"
-#: The next one, for the row that proves the walk still continues.
-_SECOND_RUNG = "python3.13"
 
 _ENVELOPE_PREFIX = '{"hookSpecificOutput"'
 
@@ -71,6 +85,38 @@ _POSIX_ONLY = pytest.mark.skipif(
            "every row would assert against the decline path instead")
 
 
+def _ladder_rung_names() -> List[str]:
+    """Every name `supertool_python_each` looks up, read from the ladder.
+
+    Derived rather than copied: a seventh versioned rung added there would
+    otherwise be a name this file does not shadow, which is the host's own
+    interpreter answering under a test's name - the failure that took four
+    ubuntu legs of PR #1608. The `$VIRTUAL_ENV` rung is not a PATH lookup and
+    is handled by unsetting the variable in `_run`.
+    """
+    source = _LADDER.read_text(encoding="utf-8")
+    match = re.search(r"_candidates=\(([^)]*)\)", source)
+    assert match, (
+        "hooks/python-ladder.sh no longer declares `_candidates=(...)`, so "
+        "this file cannot know which names to shadow and every test below "
+        "would silently measure the host's interpreters")
+    names = match.group(1).split()
+    assert len(names) >= 2, names
+    if re.search(r"command -v py\b", source):
+        names.append("py")
+    assert "py" in names, (
+        "the ladder no longer probes `py`, or the probe was spelled another "
+        "way: an unshadowed `py` is a live Windows launcher answering here")
+    return names
+
+
+#: Resolved once. The first entry is the rung consulted first, which is where
+#: a shim has to sit to be the one under test.
+_RUNGS = _ladder_rung_names()
+_FIRST_RUNG = _RUNGS[0]
+_SECOND_RUNG = _RUNGS[1]
+
+
 @pytest.fixture
 def project(tmp_path: Path) -> Path:
     directory = tmp_path / "project"
@@ -81,6 +127,11 @@ def project(tmp_path: Path) -> Path:
 
 
 def _shim(bindir: Path, name: str, body: str) -> Path:
+    """A fake interpreter, written with an explicit empty `newline`.
+
+    Text mode would translate the line feeds to `os.linesep`, and a bash that
+    reads `exit 7` with a carriage register glued on runs neither.
+    """
     path = bindir / name
     with open(path, "w", encoding="utf-8", newline="") as handle:
         handle.write("#!/bin/bash" + _NL + body + _NL)
@@ -88,12 +139,38 @@ def _shim(bindir: Path, name: str, body: str) -> Path:
     return path
 
 
+@pytest.fixture
+def bindir(tmp_path: Path) -> Path:
+    """A PATH head where every rung exists, runs, and cannot answer.
+
+    Shadowing rather than emptying PATH: the wrapper itself needs `cat` and
+    `dirname`, so the directory is prepended and the real ones stay reachable
+    behind it. A test then overwrites only the rungs it is about, and no host
+    interpreter can reach the walk.
+    """
+    directory = tmp_path / "bin"
+    directory.mkdir()
+    for name in _RUNGS:
+        _shim(directory, name, "exit 9")
+    return directory
+
+
+def _dying_rung(bindir: Path, name: str = _FIRST_RUNG) -> None:
+    """An interpreter killed part-way through writing its envelope."""
+    _shim(bindir, name,
+          "printf '%s' '" + _ENVELOPE_PREFIX + "'" + _NL + "exit 7")
+
+
+def _real_rung(bindir: Path, name: str) -> None:
+    _shim(bindir, name, 'exec ' + sys.executable + ' "$@"')
+
+
 def _run(bindir: Path, project: Path) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env["PATH"] = str(bindir) + os.pathsep + "/usr/bin" + os.pathsep + "/bin"
     env["CLAUDE_PLUGIN_ROOT"] = str(_ROOT)
-    # An activated virtualenv is prepended to the ladder and would answer
-    # before any rung under test.
+    # An activated virtualenv is prepended to the ladder ahead of every
+    # versioned name and is not a PATH lookup, so shadowing cannot reach it.
     env.pop("VIRTUAL_ENV", None)
     payload = json.dumps({"tool_name": "Bash",
                           "tool_input": {"command": "gh pr view 1"}})
@@ -106,18 +183,35 @@ def _run(bindir: Path, project: Path) -> subprocess.CompletedProcess:
 
 @_POSIX_ONLY
 @needs_wrapper
+def test_the_shadowed_ladder_lets_no_host_interpreter_answer(bindir, project):
+    """The fixture, tested. Guard-the-guard, and the row PR #1608 needed.
+
+    Every assertion below reads as a statement about the wrapper only while
+    no real interpreter can reach the walk. If the shadowing ever stops
+    working - a rung renamed in the ladder, a shim not marked executable -
+    the rows below quietly begin asserting against the genuine guard and pass
+    or fail on what the runner image happens to ship. So the blinding is
+    asserted directly rather than assumed: with every rung exiting 9 and
+    nothing else installed, the wrapper must decline, never decide.
+    """
+    hook = json.loads(_run(bindir, project).stdout)["hookSpecificOutput"]
+    assert "permissionDecision" not in hook, (
+        "a real interpreter answered through the shadowed ladder, so every "
+        "other test in this file is measuring the runner: " + json.dumps(hook))
+    assert "did not run" in hook.get("additionalContext", ""), hook
+
+
+@_POSIX_ONLY
+@needs_wrapper
 def test_a_fragment_of_an_envelope_is_never_forwarded_as_a_verdict(
-        tmp_path, project):
+        bindir, project):
     """The defect. A dying interpreter, reproduced by a shim that does both.
 
     Whatever reaches Claude Code has to be a whole envelope or the hook said
     nothing at all - and saying nothing is the state that reads as a clean
     command.
     """
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    _shim(bindir, _FIRST_RUNG,
-          "printf '%s' '" + _ENVELOPE_PREFIX + "'" + _NL + "exit 7")
+    _dying_rung(bindir)
 
     proc = _run(bindir, project)
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -129,38 +223,40 @@ def test_a_fragment_of_an_envelope_is_never_forwarded_as_a_verdict(
 @_POSIX_ONLY
 @needs_wrapper
 def test_the_decline_says_the_rung_began_a_verdict_rather_than_wrote_none(
-        tmp_path, project):
+        bindir, project):
     """Two failures that need different words, or the reader debugs the wrong
     one. "wrote no verdict" sends someone looking for a silent interpreter;
     what happened is an interpreter that started answering and died.
+
+    **And the specific diagnosis has to survive the rest of the walk.** The
+    dying rung is the first one, and six more are tried after it - so a
+    message built from whichever rung was tried *last* names a rung that was
+    never going to answer and buries the one that crashed mid-write. Found by
+    shadowing the whole ladder, which the first version of this file did not
+    do; with only the first rung installed there was no later rung to
+    overwrite it and the defect was invisible.
     """
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    _shim(bindir, _FIRST_RUNG,
-          "printf '%s' '" + _ENVELOPE_PREFIX + "'" + _NL + "exit 7")
+    _dying_rung(bindir)
 
     context = json.loads(_run(bindir, project).stdout)[
         "hookSpecificOutput"]["additionalContext"]
+    assert _FIRST_RUNG in context, context
     assert "7" in context, context
+    assert "began writing a verdict" in context, context
     assert "without writing a verdict" not in context, context
 
 
 @_POSIX_ONLY
 @needs_wrapper
-def test_a_rung_that_dies_still_falls_through_to_the_next_one(
-        tmp_path, project):
+def test_a_rung_that_dies_still_falls_through_to_the_next_one(bindir, project):
     """#1377's own property, which the repair must not spend.
 
     Declining on the first non-zero exit is what #1377 deleted: a host with a
     broken first rung and a working later one got no guard at all. A partial
     envelope must not be forwarded *and* must not stop the walk.
     """
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    _shim(bindir, _FIRST_RUNG,
-          "printf '%s' '" + _ENVELOPE_PREFIX + "'" + _NL + "exit 7")
-    _shim(bindir, _SECOND_RUNG,
-          'exec ' + sys.executable + ' "$@"')
+    _dying_rung(bindir)
+    _real_rung(bindir, _SECOND_RUNG)
 
     proc = _run(bindir, project)
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -171,13 +267,11 @@ def test_a_rung_that_dies_still_falls_through_to_the_next_one(
 @_POSIX_ONLY
 @needs_wrapper
 def test_a_rung_that_writes_nothing_and_dies_still_falls_through(
-        tmp_path, project):
+        bindir, project):
     """The other half of the same walk, so the repair cannot pass by
     declining on every non-zero exit."""
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
     _shim(bindir, _FIRST_RUNG, "exit 9")
-    _shim(bindir, _SECOND_RUNG, 'exec ' + sys.executable + ' "$@"')
+    _real_rung(bindir, _SECOND_RUNG)
 
     proc = _run(bindir, project)
     assert proc.returncode == 0, proc.stdout + proc.stderr
