@@ -67,7 +67,9 @@ The same duty runs forward. **When you learn something durable — a trap, a mec
 
 The auto-injected notes live in `.claude/jit-context/`, in two families: `paths/00-manual/` fires on a file path appearing in a call, `tools/00-manual/` on a tool invocation matching a regex. Each entry is a markdown file with frontmatter: `title` and `match` always, plus `tool:` and `mode: remind|block` for the tools family. **A `paths/` entry has no mode** — its index row is `pattern⇥file`, and the hook dedups every paths rule per session before the pattern is tried, so all of them are `once` and none can be `block`. Eleven declared one anyway until #1442, and the two spellings sitting side by side were read as a difference in behaviour that does not exist.
 
-**The `.md` alone is inert. `00-index.tsv` in the same directory is what the hook reads** — `tool⇥match⇥file⇥mode⇥keyword` for tools, `pattern⇥file` for paths. A file with no index row is a rule that exists on disk and never runs, which reads exactly like a rule that runs and never matches.
+**The `.md` alone is inert. `00-index.tsv` in the same directory is what the hook reads** — `tool⇥match⇥file⇥mode⇥require⇥forbid` for tools, `pattern⇥file` for paths. A file with no index row is a rule that exists on disk and never runs, which reads exactly like a rule that runs and never matches.
+
+**Every column of that index is derived from the frontmatter, so edit the `.md` and regenerate — never the TSV.** `rebuild-tsv.sh` lives in `claude-jit-context`, not here, and this repository cannot gate it; what it can do is keep its own tree in the shape the script derives, so that running it is a no-op. A hand-typed column is deleted by the next run and the result is well-formed, so no validator sees it — until #1579 two `require:` columns and the `pyproject.toml` row had been typed straight in, and regenerating dropped all three. One entry file yields exactly one row; a second path is an alternation in that file's own `match:`.
 
 Four rules for what goes in one:
 

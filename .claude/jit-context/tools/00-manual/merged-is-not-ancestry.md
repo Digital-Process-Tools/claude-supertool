@@ -3,6 +3,7 @@ title: "Do not ask git whether a branch is merged — this repo squash-merges"
 tool: Bash
 match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?git[[:space:]]+(branch|for-each-ref)[^|]*--merged
 mode: block
+require: --merged
 ---
 
 **Use `git-worktrees`.** It owns this question, for every worktree at once, with the branch, the path, the tracker state and an occupancy verdict alongside it:

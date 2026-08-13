@@ -3,6 +3,7 @@ title: "`git -C <path>` is `cwd:` plus an op"
 tool: Bash
 match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(command[[:space:]]+)?git[[:space:]]+-c[[:space:]]+[^=[:space:]]*/[^[:space:]]*[[:space:]]+(diff|log|status[^;&|\n]*[[:space:]]-)
 mode: block
+require: git -c
 ---
 
 **Do not drive another worktree with `git -C`.** `cwd:PATH` is the first op of the call and applies to the whole call, so the path is typed once instead of once per command.

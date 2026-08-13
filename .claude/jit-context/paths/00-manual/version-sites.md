@@ -1,6 +1,6 @@
 ---
 title: "The version lives in five places"
-match: .claude-plugin/
+match: .claude-plugin/|pyproject.toml
 ---
 
 `.claude-plugin/plugin.json`, `_supertool.py` (`VERSION`), `pyproject.toml`, `CHANGELOG.md`, and the `README.md` badge.

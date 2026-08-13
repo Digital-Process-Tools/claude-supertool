@@ -2,7 +2,7 @@
 title: "These ops narrow the population — check the footer"
 tool: Bash
 match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(python3?[[:space:]]+(-m[[:space:]]+)?)?([^[:space:]]*/)?supertool(\.py)?[[:space:]][^|]*'(gh-prs|gl-mrs|gh-issues|gl-issues|radar|watches)
-mode: once, remind
+mode: once,remind
 ---
 
 | Op | Silent default | Widen with |

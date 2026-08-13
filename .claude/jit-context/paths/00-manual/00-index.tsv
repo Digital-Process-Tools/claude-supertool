@@ -1,12 +1,11 @@
 changelog.d/	changelog-d.md
 docs/	docs-index.md
 .github/workflows/	github-workflows.md
+.claude/jit-context/	jit-context.md
 presets/git/	presets-git.md
 presets/github/	presets-github.md
 presets/gitlab/	presets-gitlab.md
 presets/watch/	presets-watch.md
 tests/	tests-suite.md
 validators/	validators.md
-.claude/jit-context/	jit-context.md
-.claude-plugin/	version-sites.md
-pyproject.toml	version-sites.md
+.claude-plugin/|pyproject.toml	version-sites.md
