@@ -111,6 +111,8 @@ def test_the_skip_reason_carries_the_token() -> None:
 # ---------------------------------------------------------------------------
 
 _CHILD = """
+import pytest
+
 import supertool
 from _adapter_verdict import run_one_or_skip
 
@@ -147,6 +149,16 @@ def test_three(monkeypatch):
 
 def test_ungated():
     assert True
+
+
+@pytest.fixture
+def gated(monkeypatch):
+    _wall(monkeypatch)
+    run_one_or_skip("t", SPEC, "f")
+
+
+def test_gated_from_a_fixture(gated):
+    assert True
 """
 
 
@@ -176,9 +188,9 @@ def test_a_session_where_every_gated_call_declined_exits_non_zero(
     res = _session(tmp_path, "_wall")
     out = res.stdout + res.stderr
 
-    assert "3 skipped" in out, out
+    assert "4 skipped" in out, out
     assert census.FINDING in out, out
-    assert "3 of 3 gated calls declined" in out, out
+    assert "4 of 4 gated calls declined" in out, out
     assert res.returncode != 0, (
         "a session that asserted zero adapter verdicts exited 0: " + out)
 
@@ -186,11 +198,18 @@ def test_a_session_where_every_gated_call_declined_exits_non_zero(
 def test_a_single_surviving_verdict_keeps_the_session_green(
         tmp_path: Path) -> None:
     """The floor is `not all of them`, so one real verdict clears it -- and the
-    ratio is still printed, so a 2-of-3 mute is visible in the log."""
+    ratio is still printed, so a 3-of-4 mute is visible in the log.
+
+    The denominator is 4, not 3, and that is load-bearing: the child's fourth
+    gated call is made from a **fixture**, so it happens in the setup phase.
+    Draining the counters only on the call phase leaves those counts pending for
+    whichever test reports next, and here nothing does — the denominator reads 3
+    and one gated call vanishes from the census without changing a visible line.
+    """
     res = _session(tmp_path, "_real")
     out = res.stdout + res.stderr
 
-    assert "2 of 3 gated calls declined" in out, out
+    assert "3 of 4 gated calls declined" in out, out
     assert census.FINDING not in out, out
     assert res.returncode == 0, out
 

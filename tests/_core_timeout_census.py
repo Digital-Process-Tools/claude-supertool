@@ -164,10 +164,16 @@ def pytest_configure(config: Any) -> None:
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item: Any, call: Any):
-    """Drain the per-test counts onto the report, before xdist serialises it."""
+    """Drain the per-test counts onto the report, before xdist serialises it.
+
+    Drained on **every** phase, not only `call`. A gated call made from a
+    fixture happens during setup, and a drain restricted to the call phase would
+    leave those counts in `_PENDING` to be attributed to whichever test reported
+    next -- a miscount that survives into the denominator and is invisible in
+    the summary line. None of the 42 sites is in a fixture today; that is a fact
+    about this moment, not a property of the design.
+    """
     outcome = yield
-    if call.when != "call":
-        return
     calls, declines = drain()
     if not calls:
         return
