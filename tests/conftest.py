@@ -893,6 +893,10 @@ RESET_EXEMPT_GLOBALS = (
     # dispatcher. Same lifetime as _BUILTIN_OPS now that it is at module scope:
     # written once at import, only ever read.
     "_PATH_ARG_POSITIONS",
+    # The last colon slot each built-in reads (#1582). Same shape, same
+    # lifetime and same reason as _PATH_ARG_POSITIONS: a fact about this
+    # binary's argument grammar, written once at import and only ever read.
+    "_MAX_COLON_SLOTS",
     # The two op names whose intended target is documented rather than guessed,
     # read by the unknown-op message (#1303). Constant table, same lifetime.
     "_OP_SYNONYMS",

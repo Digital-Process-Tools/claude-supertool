@@ -4192,11 +4192,32 @@ def _read_window_note(path: str, limit: int, offset: int,
         reasons.append("the end of the file")
     if not limit_synthetic and limit > 0 and last_scanned >= req_end:
         reasons.append("the limit was reached")
+    _EOF = "the end of the file"
     if not reasons:
         stops = f", stopping at line {last_scanned} for no reason this op can name"
     elif len(reasons) == 1:
         stops = f", stopping at line {last_scanned}: {reasons[0]}"
+    elif _EOF in reasons:
+        # #1342 — EOF and the limit landing on the same line was declined as
+        # indistinguishable, one line under a header that prints the file's
+        # total. `last_scanned >= line_count` decides it, and the two callers
+        # this separates want different next actions: one wanted everything
+        # from line N and has it, the other hit a cap and needs a wider window.
+        # A decline emitted where the answer is on hand is the three-state
+        # contract used as a shrug, and it erodes the declines that are real.
+        #
+        # The other reasons are still named — decisive is not the same as
+        # silent, and a caller who set the limit is entitled to know it was
+        # reached. What changes is that they are no longer offered as rival
+        # explanations for a question the op can answer.
+        others = [r for r in reasons if r != _EOF]
+        stops = (f", stopping at line {last_scanned}: {_EOF}, and "
+                 + " and ".join(others)
+                 + f" at the same line — the file ending settles it, "
+                 f"nothing follows line {last_scanned}")
     else:
+        # Still a genuine decline: more file remains, and nothing on hand says
+        # which bound would move first if the other were raised.
         stops = (f", stopping at line {last_scanned}: "
                  + " and ".join(reasons)
                  + " coincide here — which one ended the window cannot be told apart")
@@ -7654,20 +7675,152 @@ def _split_arg(arg: str) -> List[str]:
     return tokens
 
 
-def _parse_grep_args(parts: List[str]) -> tuple:
-    """Parse grep tokens, handling '::' in patterns (e.g. Class::CONST).
+# The last colon slot each op actually reads. A non-empty token past it is
+# refused rather than dropped (#1582, #1345).
+#
+# Measured on 2c8eaf9, twelve read ops probed with one junk token appended:
+# twelve dropped it and answered. `read:CLAUDE.md:::lines=66-76` returned all
+# 102 lines — 13549 bytes where ~1500 were asked for — because the unknown key
+# landed past every slot the branch indexes. That is the worst shape the class
+# has: **an ignored narrowing returns MORE than was asked for, and more always
+# reads as a superset of correct**, so nothing in the render distinguishes it
+# from a call that did what was typed.
+#
+# `read` is deliberately absent and handled by `_extra_colon_tokens` directly:
+# its tail is variadic by design (`read:PATH:::grep=PATTERN` is the documented
+# spelling, and the `:::` yields two empty parts before it), so a slot number
+# cannot express what it accepts.
+#
+# `grep`, `around` and `between` are absent for the reason they are absent from
+# `_PATH_ARG_POSITIONS`: none of them keeps its arguments in fixed slots — a
+# ':' anywhere in the PATTERN moves everything right. grep's own trailing slack
+# is closed at its parser instead (`_grep_peeled_extras`); `around` and
+# `between` already fail loudly, absorbing the extra token into the PATH slot
+# and reporting `path not found`.
+#
+# Only NON-EMPTY tokens count. `ls:C:` tokenizes to ['ls', 'C', ''] on the
+# Windows drive-letter path that _split_arg declines to rejoin (no slash
+# follows), and refusing it would be a platform-only behaviour change bought
+# for nothing.
+_MAX_COLON_SLOTS: Dict[str, int] = {
+    "head": 2, "tail": 2, "tree": 2, "diff": 2, "glob": 2,
+    "wc": 1, "ls": 1, "stat": 1, "map": 1,
+    "around_line": 3,
+    "grep_around": 4,
+}
 
-    Format: grep:PATTERN:PATH:LIMIT:CONTEXT:count
-    The challenge: PATTERN may contain ':' (PHP ::, URL schemes, etc.).
-    Strategy: parse known trailing fields (count, context, limit) from the
-    right, then the path, and rejoin everything left as the pattern.
+
+def _op_syntax(op: str) -> str:
+    """The op's own syntax line from the registry, or "" when it has none.
+
+    Quoted rather than restated, so a refusal cannot drift from the op the way
+    a hand-copied grammar does. Returns "" rather than raising: a refusal that
+    cannot find the registry is still a refusal, and one line shorter.
     """
-    # parts[0] is 'grep', work with parts[1:]
-    args = parts[1:]
-    if not args:
-        return ("", ".", _get_op_int("grep", "max_results", MAX_GREP_RESULTS), 0, False, False)
+    try:
+        config = _load_config()
+    except Exception:
+        return ""
+    for section in ("builtin-ops", "ops", "aliases"):
+        entry = config.get(section, {})
+        if isinstance(entry, dict) and isinstance(entry.get(op), dict):
+            return str(entry[op].get("syntax", "") or "")
+    return ""
 
-    # Peel known trailing string flags from the right (order-independent)
+
+def _extra_colon_tokens(op: str, parts: List[str]) -> List[str]:
+    """Non-empty colon tokens this op will peel and never read (#1582).
+
+    `read` is scanned rather than indexed: the filter can land in any trailing
+    slot (parts[4] for `read:PATH:::grep=`, parts[3] when a range consumed only
+    one), so the rule is "one grep=, empties, nothing else" rather than a slot
+    count. A SECOND `grep=` is an extra too — the scan takes the first and
+    breaks, so the second was silently the one that did not apply.
+    """
+    if op == "read":
+        extra: List[str] = []
+        seen_grep = False
+        for tok in parts[4:]:
+            if not tok:
+                continue
+            if tok.startswith("grep=") and not seen_grep:
+                seen_grep = True
+                continue
+            extra.append(tok)
+        return extra
+    last = _MAX_COLON_SLOTS.get(op)
+    if last is None:
+        return []
+    return [tok for tok in parts[last + 1:] if tok]
+
+
+def _extra_colon_tokens_refusal(op: str, extra: List[str],
+                                remedy: str = "") -> str:
+    """Refuse the tokens rather than run the call they were removed from.
+
+    A refusal, not a note beside the answer: the answer is to a question the
+    caller did not ask, and printing it under a warning is how #1582 was read
+    as "conditional, not unimplemented" by the agent that hit it twice.
+    """
+    nl = chr(10)
+    them = "them" if len(extra) > 1 else "it"
+    lines = [
+        f"ERROR: {op}: {len(extra)} argument"
+        f"{'s' if len(extra) > 1 else ''} past the last slot {op} reads — "
+        f"{', '.join(repr(t) for t in extra)}.",
+        f"  Dropped rather than refused before #1582, so the call ran without "
+        f"{them}: a narrowing that was ignored returns MORE than was asked "
+        f"for, and nothing in the result says so.",
+    ]
+    syntax = _op_syntax(op)
+    if syntax:
+        lines.append(f"  Syntax: {syntax}")
+    if remedy:
+        lines.append(f"  {remedy}")
+    fields = _READ_OP_AT_FIELDS.get(op)
+    if fields:
+        lines.append(
+            f"  A value that contains ':' cannot be spelled on the colon CLI "
+            f"— use {op}:@- (fields: {', '.join(fields)}).")
+    return nl.join(lines) + nl
+
+
+def _extra_token_remedy(op: str, parts: List[str], extra: List[str]) -> str:
+    """The one-line repair, when the tokens say what was meant (#1582).
+
+    `lines=` is the spelling a reader reaches for after seeing `START-END` in
+    the syntax string, so it gets the call spelled out rather than a bare
+    rejection. Everything else gets nothing: guessing at a token nobody
+    recognises is how the drop happened in the first place.
+    """
+    if op != "read" or len(parts) < 2:
+        return ""
+    for tok in extra:
+        if tok.startswith("lines=") and _READ_RANGE_RE.fullmatch(tok[6:]):
+            # `_flat_field`, not the raw token: this is the one place the
+            # refusal echoes a caller-supplied string UNQUOTED, so that the
+            # repair can be copied and run. A path is whatever the caller
+            # typed, `str.splitlines()` breaks on ten separators (#886), and a
+            # forged `[result]` line at column 0 inside a refusal is the same
+            # defect the header already guards against.
+            return (f"For a line range use the syntax form: "
+                    f"read:{_flat_field(parts[1])}:{tok[6:]}")
+    return ""
+
+
+def _grep_peel_trailing(parts: List[str]) -> Tuple[List[str], List[str],
+                                                   bool, bool]:
+    """The two right-to-left peels grep's colon form does, in one place.
+
+    Shared so that "how many trailing tokens were there" and "which two did the
+    op read" are answered by the same code. They were not, and #1345 is the gap:
+    the parser knew it had peeled three and read two, and nothing compared the
+    numbers.
+
+    Returns (args, trailing, count_only, no_auto_read) — `args` being what is
+    left for the PATTERN and PATH slots.
+    """
+    args = parts[1:]
     count_only = False
     no_auto_read = False
     while args and args[-1] in ("count", "no-auto-read"):
@@ -7676,6 +7829,48 @@ def _parse_grep_args(parts: List[str]) -> tuple:
         else:
             no_auto_read = True
         args = args[:-1]
+    trailing: List[str] = []
+    while len(args) >= 3 and (args[-1].isdigit()
+                              or args[-1] == _GREP_ALL_TOKEN):
+        trailing.insert(0, args[-1])
+        args = args[:-1]
+    return args, trailing, count_only, no_auto_read
+
+
+def _grep_peeled_extras(parts: List[str]) -> List[str]:
+    """Trailing tokens grep peeled off and never read (#1345).
+
+    `grep:PAT:PATH:5:3:2` peels three and reads two, so the `2` vanished with
+    no refusal and no note: a well-formed answer to a slightly different
+    question, which is the house defect in its quietest form.
+
+    Returns [] when `all` sits outside the LIMIT slot, because #1328's
+    `_GREP_ALL_OUTSIDE_LIMIT_SLOT` says strictly more about that same call —
+    which token it is, and where it belongs.
+    """
+    if not parts[1:]:
+        return []
+    _args, trailing, _count, _no_auto = _grep_peel_trailing(parts)
+    if _GREP_ALL_TOKEN in trailing[1:]:
+        return []
+    return trailing[2:]
+
+
+def _parse_grep_args(parts: List[str]) -> tuple:
+    """Parse grep tokens, handling '::' in patterns (e.g. Class::CONST).
+
+    Format: grep:PATTERN:PATH:LIMIT:CONTEXT:count
+    The challenge: PATTERN may contain ':' (PHP ::, URL schemes, etc.).
+    Strategy: parse known trailing fields (count, context, limit) from the
+    right, then the path, and rejoin everything left as the pattern.
+
+    A third trailing token is not this function's business to refuse — it
+    returns a 6-tuple and has no error channel — so dispatch asks
+    `_grep_peeled_extras` the same question off the same peel (#1345).
+    """
+    # parts[0] is 'grep', work with parts[1:]
+    if not parts[1:]:
+        return ("", ".", _get_op_int("grep", "max_results", MAX_GREP_RESULTS), 0, False, False)
 
     # Peel the trailing LIMIT[:CONTEXT] slots: format is ...PATH:LIMIT:CONTEXT.
     # Two trailing tokens = limit + context; one = limit only. `all` (#1328) is
@@ -7684,11 +7879,7 @@ def _parse_grep_args(parts: List[str]) -> tuple:
     # a directory called `all`.
     context = 0
     limit = _get_op_int("grep", "max_results", MAX_GREP_RESULTS)
-    trailing = []
-    while len(args) >= 3 and (args[-1].isdigit()
-                              or args[-1] == _GREP_ALL_TOKEN):
-        trailing.insert(0, args[-1])
-        args = args[:-1]
+    args, trailing, count_only, no_auto_read = _grep_peel_trailing(parts)
     if len(trailing) == 1:
         limit = (GREP_LIMIT_ALL if trailing[0] == _GREP_ALL_TOKEN
                  else int(trailing[0]))
@@ -22819,6 +23010,21 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     _rollbacks_before = _ROLLBACK_COUNT[0]
     _left_on_disk_before = _LEFT_ON_DISK_COUNT[0]
 
+    # Every non-empty token past the last slot the op reads is refused, not
+    # dropped (#1582, #1345). Ahead of the containment gate and of every op
+    # branch, because a call carrying an argument nobody read is not a call
+    # that should reach the filesystem at all — and because the drop is at its
+    # worst on the ops that succeed anyway.
+    #
+    # `pre_parsed` is exempt: a payload's fields were never tokenized, and the
+    # batch loader already refuses an unknown field by name. Asking a slot
+    # question about a parse that did not run is #946's defect.
+    if pre_parsed is None:
+        _extra_toks = _extra_colon_tokens(op, parts)
+        if _extra_toks:
+            return _receipt(header, _extra_colon_tokens_refusal(
+                op, _extra_toks, _extra_token_remedy(op, parts, _extra_toks)))
+
     # The table is `_PATH_ARG_POSITIONS`, at module scope. It was a local
     # literal here until #1285 — which is exactly why nothing noticed it naming
     # `blame`, an op the dispatcher had stopped accepting three months earlier.
@@ -22886,6 +23092,18 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             if not range_form:
                 body += _read_range_note(path, offset, limit, body)
         elif op == "grep":
+            # Before the parse, and off the same peel the parse uses: a third
+            # trailing integer is peeled and never read, so `grep:PAT:PATH:5:3:2`
+            # ran limit 5 / context 3 and dropped the `2` — exit 0, no note, a
+            # well-formed answer to a question nobody typed (#1345). The
+            # identical argument closed the `all` case beside it in #1328;
+            # `_grep_peeled_extras` stands aside for that one, which says more.
+            _grep_extra = _grep_peeled_extras(parts)
+            if _grep_extra:
+                return _receipt(header, _extra_colon_tokens_refusal(
+                    "grep", _grep_extra,
+                    "Slot order is grep:PATTERN:PATH:LIMIT:CONTEXT — nothing "
+                    "follows CONTEXT."))
             pattern, path, limit, context, count_only, no_auto_read = \
                 _parse_grep_args(parts)
             # Ahead of the hint, not after it: `_colon_split_hint` stats the
@@ -22934,6 +23152,18 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         elif op == "glob":
             pattern = parts[1] if len(parts) > 1 else ""
             no_auto_read = len(parts) > 2 and parts[2] == "no-auto-read"
+            # The slot-count check upstream cannot see this one: parts[2] is a
+            # slot glob READS, it just compares it to one literal and discards
+            # anything else. Same class, one level in — a token that changed
+            # nothing, on a call that answered anyway (#1582).
+            if len(parts) > 2 and parts[2] and not no_auto_read:
+                return _receipt(header, (
+                    f"ERROR: glob: {parts[2]!r} is not a value that slot "
+                    f"takes — glob:PATTERN[:no-auto-read], and "
+                    f"`no-auto-read` is the only one." + chr(10)
+                    + "  Compared against that one literal and discarded when "
+                      "it did not match, until #1582: a token that changed "
+                      "nothing, on a call that answered anyway." + chr(10)))
             body = op_glob(pattern, no_exclude=no_exclude, no_auto_read=no_auto_read)
         elif op == "ls":
             path = parts[1] if len(parts) > 1 and parts[1] else "."

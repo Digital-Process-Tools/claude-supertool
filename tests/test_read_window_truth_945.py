@@ -180,13 +180,23 @@ def test_file_end_reached_is_still_named_as_the_file_end(
     assert _emitted(supertool.dispatch(f"read:{f}:90:50"))[-1] == 100
 
 
-def test_limit_and_eof_coinciding_declines_to_pick_one(tmp_path: Path) -> None:
-    """offset 90 + limit 10 on a 100-line file ends on both at once. Naming
-    either alone is a guess presented as a fact."""
+def test_limit_and_eof_coinciding_is_settled_by_the_file_end(
+    tmp_path: Path,
+) -> None:
+    """offset 90 + limit 10 on a 100-line file ends on both at once.
+
+    #945 read that as a tie and declined. #1342 overturned it: the note prints
+    `of 100` in its own text, so `last_scanned >= line_count` decides which
+    state the caller is in — "you have everything from line 91" rather than
+    "you may have been cut off". The limit is still named; it is no longer
+    offered as a rival explanation for a question the op can answer.
+    """
     f = tmp_path / "many.txt"
     f.write_bytes(b"".join(b"L%d\n" % i for i in range(1, 101)))
     note = _window(supertool.dispatch(f"read:{f}:90:10"))
-    assert "coincide" in note, note
+    assert "cannot be told apart" not in note, note
+    assert "the end of the file" in note, note
+    assert "the limit was reached" in note, note
 
 
 def test_uncapped_full_read_from_an_offset_reports_the_file_end(
