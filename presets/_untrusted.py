@@ -183,11 +183,14 @@ Content is not in scope. A Chinese issue title on a cp437 console is a display
 problem that predates all of this and belongs to the console; the claim here is
 only about what this module contributes.
 
-The one exception is the newline itself in `flat()`, which stays a space. That
-predates this and is pinned by #694: a title, a login, a label and a milestone
-cannot contain one on either tracker, the space keeps the common render
-unchanged for the fifteen call sites that already flatten, and the `banner()` or
-`flat_note()` line above the render already says those fields are content.
+The one exception is the newline itself in `flat()`, which stays a space by
+default. That predates this and is pinned by #694: a title, a login, a label and
+a milestone cannot contain one on either tracker, the space keeps the common
+render unchanged for the fifteen call sites that already flatten, and the
+`banner()` or `flat_note()` line above the render already says those fields are
+content. A caller whose field is a **path** passes `disclose_newline=True` and
+gets the separator named like every other one (#1557) — the space is only
+harmless where the character never occurs, and in a filename it occurs.
 """
 from __future__ import annotations
 
@@ -441,7 +444,7 @@ def fence(text: str) -> str:
     return f"{open_marker()}\n{scrub(text)}\n{close_marker()}"
 
 
-def flat(text: str) -> str:
+def flat(text: str, *, disclose_newline: bool = False) -> str:
     """A one-line field from the tracker, kept to one line.
 
     Titles, logins, labels and milestones are not fenced — two marker lines
@@ -456,8 +459,23 @@ def flat(text: str) -> str:
     flattens every cell of a column-aligned table, where a tab can imitate the
     column structure without ever making a line. A ``\\r`` no ``\\n`` followed
     is a cursor command and shows as ``␍``, the same answer `scrub()` gives it.
+
+    **`disclose_newline` is for a field the reader has to be able to identify
+    again** (#1557). The default turns a newline into a space, which is right
+    for a title — a title cannot contain one on either tracker, so the space
+    renders something that never happens. A **path** can contain one, and there
+    the space is a lie in this repo's own defect class: it converts *this
+    directory's name has a newline in it* into *these are two directories*, or
+    into one plausible name that is not on disk. So the separator is disclosed
+    like every other control character — ``␊``, or ``[U+000A]`` on a stream
+    that cannot carry the pictures — and whoever reads the line can still tell
+    which directory is meant. The newline is the one thing `flat()` elides;
+    every other separator it is handed is already disclosed either way.
     """
-    return visible(" ".join(text.replace(_CRLF, _LF).split(_LF)))
+    normalised = text.replace(_CRLF, _LF)
+    if disclose_newline:
+        return visible(normalised)
+    return visible(" ".join(normalised.split(_LF)))
 
 
 def flat_note(fields: str, source: str = "the tracker") -> str:
