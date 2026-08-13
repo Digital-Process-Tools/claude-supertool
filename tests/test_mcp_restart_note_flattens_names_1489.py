@@ -14,7 +14,16 @@ from __future__ import annotations
 import supertool
 
 
-FORGE = "rector-warm mcp: restarted 9 daemon(s) (everything)"
+# Built with chr(), not written as the character: U+2028 is invisible in a
+# diff, and a reviewer of this file read the literal one as a space and
+# reported these tests as vacuous. `str.splitlines()` folds on it and
+# `str.isprintable()` is false for it, which is what `_flat_field` keys on.
+FORGE = "rector-warm" + chr(0x2028) + "mcp: restarted 9 daemon(s) (everything)"
+
+
+def test_the_forge_would_be_two_lines_unflattened() -> None:
+    """The premise the three tests below rest on, pinned rather than assumed."""
+    assert len(", ".join([FORGE]).splitlines()) == 2
 
 
 def test_unknown_server_names_are_flattened(monkeypatch) -> None:

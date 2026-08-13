@@ -67,6 +67,27 @@ def test_two_identical_blocks_withhold_the_line_number(tmp_path: Path) -> None:
     assert "44" in out
 
 
+def test_more_ties_than_windows_scored_says_at_least(tmp_path: Path) -> None:
+    """Only `_EDIT_NEAR_WINDOWS` windows are char-scored, so with more ties than
+    that the count is a floor and has to read as one. It also has to be a count:
+    the first spelling carried it as a negative line number in the candidate
+    list, which sorted ahead of every real line and got printed as one."""
+    f = tmp_path / "app.py"
+    block = "def handler(request):\n    log('same')\n    return alpha(request)\n"
+    # The anchor's MIDDLE line is the one that differs, so exactly one window
+    # per block carries both surviving lines. With an end line changed instead,
+    # the window one line over carries the same two and the tie is real rather
+    # than truncated — which is what the first version of this test measured.
+    f.write_text(("# filler\n# filler\n" + block) * 25)
+    out = supertool.op_edit(
+        "def handler(request):\n    log('changed')\n    return alpha(request)",
+        "x", str(f))
+    assert "cannot suggest" in out
+    assert "at least 25 places" in out
+    assert "line -" not in out
+    assert "-19" not in out
+
+
 def test_repeated_single_line_withholds_too(tmp_path: Path) -> None:
     """The same argument one line wide: a boilerplate line that occurs six times
     scores identically six times."""

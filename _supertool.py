@@ -4215,8 +4215,10 @@ def _read_window_note(path: str, limit: int, offset: int,
     actually came back, and `read:PATH:{offset}-{offset+limit-1}` is the one a
     caller who read `:A:B` as START:END was after. Until #1417 only the second
     was offered, and only when LIMIT <= OFFSET, deferring the wider band to
-    `_read_range_note` (#382). That deferral was to a function which is itself
-    gated — on overshoot, or LIMIT < 2*OFFSET — so `read:f:1:40` on a long file
+    `_read_range_note` (#382 — deleted in #1489, which folded its clause into
+    this line; only its gate survives, as `_range_note_fires`). That deferral
+    was to a speaker itself gated — on overshoot, or LIMIT < 2*OFFSET — so
+    `read:f:1:40` on a long file
     tripped neither and got no hint at all. That shape is #1138's own archetype
     and, measured over 5,598 real `read:PATH:N:M` calls in this machine's
     transcripts, 1,877 of them (34%) sat in the same hole.
@@ -4280,8 +4282,9 @@ def _read_window_note(path: str, limit: int, offset: int,
         # Two spellings, and the receipt names both because they answer two
         # different questions: what came back, and what was probably meant.
         # Until #1417 only the second was offered and only when LIMIT <=
-        # OFFSET, on the reasoning that `_read_range_note` (#382) owned the
-        # other band. It does not: #382 is itself gated on overshoot or
+        # OFFSET, on the reasoning that `_read_range_note` (#382, since
+        # deleted) owned the other band. It did not: #382 is itself gated on
+        # overshoot or
         # LIMIT < 2*OFFSET, so `read:f:1:40` on a long file — #1138's own
         # archetype, and the commonest shape there is — satisfied neither gate
         # and was told nothing. A deferral to a speaker who is silent is the
@@ -9277,7 +9280,7 @@ def _nearest_line_candidates(
 
 def _nearest_block_candidates(
         anchor: List[str],
-        lines: List[str]) -> Tuple[List[Tuple[float, int]], float, bool]:
+        lines: List[str]) -> Tuple[List[Tuple[float, int]], float, bool, int]:
     """The same, for a multi-line anchor, scored on the WHOLE block (#1489).
 
     Scoring the first non-blank line only — what this did until #1489 — reads
@@ -9296,7 +9299,7 @@ def _nearest_block_candidates(
     """
     n = len(anchor)
     if n > len(lines):
-        return [], 0.0, False
+        return [], 0.0, False, 0
     want: Dict[str, int] = {}
     for ln in anchor:
         key = _normalise_ws(ln)
@@ -9330,7 +9333,7 @@ def _nearest_block_candidates(
         # point at, and the first line's own score has already been measured
         # to carry no information about the block — so say nothing rather
         # than name a line at a number that looks like evidence.
-        return [], 0.0, False
+        return [], 0.0, False, 0
     anchor_text = _nearest_clip("\n".join(anchor))
     matcher = difflib.SequenceMatcher(a=anchor_text, autojunk=False)
     scored: List[Tuple[float, int]] = []
@@ -9340,19 +9343,20 @@ def _nearest_block_candidates(
         window = _nearest_clip("\n".join(lines[start - 1:start - 1 + n]))
         spent += len(anchor_text) * len(window)
         if spent > _EDIT_NEAR_BUDGET:
-            return [], best, True
+            return [], best, True, 0
         matcher.set_seq2(window)
         ratio = matcher.ratio()
         if ratio > best:
             best = ratio
         scored.append((ratio, start))
     near = [(r, i) for r, i in scored if r >= best - _EDIT_NEAR_TIE]
-    if top_count > len(tops) and len(near) == len(tops):
-        # More windows tied on the line pass than were char-scored, and every
-        # one that was scored is still tied. Carried as a negative count so
-        # the hint can say "at least N" rather than under-report the tie.
-        near.append((best, -top_count))
-    return near, best, False
+    # More windows tied on the line pass than were char-scored, and every one
+    # that WAS scored is still tied: the tie count is a floor, and the hint
+    # says "at least N". Returned as its own number rather than smuggled into
+    # the candidate list as a negative line — that spelling sorted ahead of
+    # every real candidate and was printed as the nearest line (PR review).
+    floor = top_count if top_count > len(tops) and len(near) == len(tops) else 0
+    return near, best, False, floor
 
 
 def _edit_nearest_hint(old: str, lines: List[str], path: str = "") -> str:
@@ -9373,8 +9377,10 @@ def _edit_nearest_hint(old: str, lines: List[str], path: str = "") -> str:
         return ""
     if len(anchor) == 1:
         cands, best, exhausted = _nearest_line_candidates(anchor[0], lines)
+        tie_floor = 0
     else:
-        cands, best, exhausted = _nearest_block_candidates(anchor, lines)
+        cands, best, exhausted, tie_floor = _nearest_block_candidates(
+            anchor, lines)
     if exhausted:
         return ("cannot suggest a nearest match: comparing these lines cost "
                 "more than the scan's budget, so what it had found is a "
@@ -9386,15 +9392,13 @@ def _edit_nearest_hint(old: str, lines: List[str], path: str = "") -> str:
     cands.sort(key=lambda c: (-c[0], c[1]))
     best_i = cands[0][1]
     # Overlapping windows describe one neighbourhood, not two candidates.
-    rivals = [i for _r, i in cands[1:] if i < 0 or abs(i - best_i) >= n]
+    rivals = [i for _r, i in cands[1:] if abs(i - best_i) >= n]
     if rivals:
-        unscored = -sum(i for i in rivals if i < 0)
-        named = [i for i in rivals if i > 0]
-        total = unscored if unscored else 1 + len(named)
-        shown = ", ".join(str(i) for i in ([best_i] + named)[:3])
-        extra = 1 + len(named) - 3
+        total = tie_floor if tie_floor > 1 + len(rivals) else 1 + len(rivals)
+        at_least = "at least " if total > 1 + len(rivals) else ""
+        shown = ", ".join(str(i) for i in ([best_i] + rivals)[:3])
+        extra = total - 3
         more = f" and {extra} more" if extra > 0 else ""
-        at_least = "at least " if unscored else ""
         return (f"cannot suggest a nearest match: {at_least}{total} places "
                 f"score the same ({best:.0%}) — lines {shown}{more}. The "
                 f"anchor does not tell them apart; re-anchor on a longer or "
