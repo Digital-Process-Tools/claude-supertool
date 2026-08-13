@@ -17,6 +17,7 @@ things that invalidate it.
 
 from __future__ import annotations
 
+import ast
 import os
 import subprocess
 import time
@@ -24,6 +25,8 @@ from pathlib import Path
 
 import pytest
 import supertool
+import _git_decline
+from _git_decline import suffix as _suffix
 from _symlink import require_symlink
 
 
@@ -117,11 +120,10 @@ def test_coalesced_markers_match_the_per_path_answer(repo: Path) -> None:
     per_path = {}
     for name in _PATHS:
         _reset_bulk()                              # force the single-path route
-        per_path[name] = supertool._path_meta_suffix(str(repo / name), b"x\n")
+        per_path[name] = _suffix(repo / name)
 
     _reset_bulk()
-    coalesced = {n: supertool._path_meta_suffix(str(repo / n), b"x\n")
-                 for n in _PATHS}
+    coalesced = {n: _suffix(repo / n) for n in _PATHS}
 
     assert coalesced == per_path
     # and the answers are the real ones, not uniformly empty
@@ -151,9 +153,9 @@ def test_a_relative_path_with_a_directory_answers_like_an_absolute_one(
 
     for name in _SUB_PATHS:
         _reset_bulk()                              # force the single-path route
-        relative = supertool._path_meta_suffix(name, b"x\n")
+        relative = _suffix(name)
         _reset_bulk()
-        absolute = supertool._path_meta_suffix(str(repo / name), b"x\n")
+        absolute = _suffix(repo / name)
         assert relative == absolute, (
             f"{name}: written relative -> {relative!r}, written absolute -> "
             f"{absolute!r}; the pathspec is being resolved against the wrong "
@@ -163,10 +165,10 @@ def test_a_relative_path_with_a_directory_answers_like_an_absolute_one(
     per_path = {}
     for name in _SUB_PATHS:
         _reset_bulk()
-        per_path[name] = supertool._path_meta_suffix(name, b"x\n")
+        per_path[name] = _suffix(name)
 
     _reset_bulk()
-    coalesced = {n: supertool._path_meta_suffix(n, b"x\n") for n in _SUB_PATHS}
+    coalesced = {n: _suffix(n) for n in _SUB_PATHS}
 
     assert coalesced == per_path
     # and the answers are the real ones, not uniformly empty
@@ -200,19 +202,18 @@ def test_a_filename_that_looks_like_a_glob_is_not_matched_against_a_sibling(
 
     literal = os.path.join("sub", "t[a].txt")
     _reset_bulk()
-    alone = supertool._path_meta_suffix(literal, b"x\n")
+    alone = _suffix(literal)
     _reset_bulk()
     for name in _SUB_PATHS[:2]:
         supertool._path_meta_suffix(name, b"x\n")   # build the snapshot
-    with_snapshot = supertool._path_meta_suffix(literal, b"x\n")
+    with_snapshot = _suffix(literal)
 
     assert " m" not in alone, (
         "t[a].txt is committed and unmodified; the ' m' belongs to ta.txt"
     )
     assert alone == with_snapshot
     # the fixture is doing what it claims - the sibling really is modified
-    assert " m" in supertool._path_meta_suffix(os.path.join("sub", "ta.txt"),
-                                               b"x\n")
+    assert " m" in _suffix(os.path.join("sub", "ta.txt"))
 
 
 def test_a_relative_symlink_is_still_answered_about_its_own_repo(
@@ -235,8 +236,8 @@ def test_a_relative_symlink_is_still_answered_about_its_own_repo(
     link = here / "sub" / "points_away.txt"
     link.symlink_to(elsewhere / "clean.txt")
 
-    assert " ?" in supertool._path_meta_suffix(
-        os.path.join("sub", "points_away.txt"), b"x\n"
+    assert " ?" in _suffix(
+        os.path.join("sub", "points_away.txt")
     ), "an untracked link is untracked in the repo it sits in, not its target's"
 
 
@@ -259,7 +260,7 @@ def test_a_write_through_supertool_drops_the_snapshot(repo: Path) -> None:
     assert not supertool._PATH_META_BULK, (
         "_atomic_write left a stale git snapshot in place"
     )
-    assert " m" in supertool._path_meta_suffix(str(repo / "clean.txt"), b"x\n")
+    assert " m" in _suffix(repo / "clean.txt")
 
 
 def test_a_file_touched_after_the_snapshot_is_not_served_from_it(repo: Path) -> None:
@@ -279,7 +280,7 @@ def test_a_file_touched_after_the_snapshot_is_not_served_from_it(repo: Path) -> 
     an_hour_ahead = (time.time() + 3600)
     os.utime(target, (an_hour_ahead, an_hour_ahead))
 
-    assert " m" in supertool._path_meta_suffix(str(target), b"x\n")
+    assert " m" in _suffix(target)
 
 
 def test_a_path_outside_any_repo_still_declines_rather_than_guessing(
@@ -289,7 +290,7 @@ def test_a_path_outside_any_repo_still_declines_rather_than_guessing(
     _reset_bulk()
     loose = tmp_path / "loose.txt"
     loose.write_bytes(b"x\n")
-    out = supertool._path_meta_suffix(str(loose), b"x\n")
+    out = _suffix(loose)
     assert " ?" not in out and " m" not in out and " !" not in out
 
 
@@ -305,8 +306,8 @@ def test_two_repos_in_one_call_do_not_answer_for_each_other(tmp_path: Path) -> N
     for name in _PATHS:
         supertool._path_meta_suffix(str(a / name), b"x\n")
     (b / "also_clean.txt").write_bytes(b"only dirty in b\n")
-    assert " m" in supertool._path_meta_suffix(str(b / "also_clean.txt"), b"x\n")
-    assert " m" not in supertool._path_meta_suffix(str(a / "also_clean.txt"), b"x\n")
+    assert " m" in _suffix(b / "also_clean.txt")
+    assert " m" not in _suffix(a / "also_clean.txt")
 
 
 def test_a_symlink_gets_the_same_marker_from_either_route(repo: Path) -> None:
@@ -325,12 +326,12 @@ def test_a_symlink_gets_the_same_marker_from_either_route(repo: Path) -> None:
     link.symlink_to(Path("real") / "target.txt")
 
     _reset_bulk()
-    alone = supertool._path_meta_suffix(str(link), b"x\n")
+    alone = _suffix(link)
     # Now with a snapshot already built for this repo by earlier paths.
     _reset_bulk()
     for name in _PATHS[:3]:
         supertool._path_meta_suffix(str(repo / name), b"x\n")
-    with_snapshot = supertool._path_meta_suffix(str(link), b"x\n")
+    with_snapshot = _suffix(link)
 
     assert " ?" in alone, "an untracked symlink is untracked"
     assert with_snapshot == alone
@@ -352,7 +353,7 @@ def test_a_symlink_is_never_answered_from_another_repo(tmp_path: Path) -> None:
     for name in _PATHS[:3]:
         supertool._path_meta_suffix(str(here / name), b"x\n")
 
-    assert " ?" in supertool._path_meta_suffix(str(link), b"x\n")
+    assert " ?" in _suffix(link)
 
 
 def test_a_file_deep_under_an_untracked_directory_keeps_its_marker(
@@ -367,11 +368,11 @@ def test_a_file_deep_under_an_untracked_directory_keeps_its_marker(
     target.write_bytes(b"new\n")
 
     _reset_bulk()
-    alone = supertool._path_meta_suffix(str(target), b"x\n")
+    alone = _suffix(target)
     _reset_bulk()
     for name in _PATHS[:3]:
         supertool._path_meta_suffix(str(repo / name), b"x\n")
-    with_snapshot = supertool._path_meta_suffix(str(target), b"x\n")
+    with_snapshot = _suffix(target)
 
     assert " ?" in alone
     assert with_snapshot == alone
@@ -392,7 +393,7 @@ def test_a_repo_whose_query_declines_falls_back_and_stays_fallen_back(
     assert supertool._PATH_META_BULK[root] == "declined"
     # Every path fell back, so every path was really asked about.
     assert counter.status == len(_PATHS)
-    assert " m" in supertool._path_meta_suffix(str(repo / "dirty.txt"), b"x\n")
+    assert " m" in _suffix(repo / "dirty.txt")
 
     supertool._path_meta_bulk_drop()
     assert supertool._PATH_META_BULK.get(root) == "declined", (
@@ -423,3 +424,114 @@ def test_the_snapshot_globals_are_registered_for_reset() -> None:
 
     assert "_PATH_META_BULK" in conftest.RESET_GLOBALS
     assert "_PATH_META_ROOT_CACHE" in conftest.RESET_GLOBALS
+
+
+# ===========================================================================
+# A lookup that DECLINED is not a route that disagreed (tests/_git_decline.py)
+# ===========================================================================
+
+
+def _decline_every_per_path_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Blow the per-path query's 2s budget; leave the repo-wide one answering.
+
+    `-z` is what tells the two apart, and it is the bulk query's own flag
+    rather than a name this helper invents - a shim that killed both would
+    prove nothing about which route declined.
+    """
+    real = subprocess.run
+
+    def run(cmd, *a, **kw):
+        if isinstance(cmd, (list, tuple)) and "status" in cmd and "-z" not in cmd:
+            raise subprocess.TimeoutExpired(list(cmd), 2)
+        return real(cmd, *a, **kw)
+
+    monkeypatch.setattr(supertool.subprocess, "run", run)
+
+
+def test_a_declined_lookup_skips_rather_than_reading_as_a_disagreement(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The windows-latest red at ac1b3e4, made deterministic.
+
+    One per-path `git status` blew its budget on a loaded runner, the product
+    correctly said `git?` - state unknown, not clean (#705) - and the parity
+    assertion above read ` git?` against `` as the two routes disagreeing about
+    `sub/clean.txt`. It is an environment condition rendered as a product
+    verdict, which is this repo's own defect class relocated into the harness
+    (#1205, #1218, #1360, #1364).
+
+    The first assertion pins the exact string CI printed, so this test fails if
+    the product ever stops declining here; the second pins that the gate turns
+    it into a countable skip instead of a red.
+    """
+    monkeypatch.chdir(repo)
+    _reset_bulk()
+    _decline_every_per_path_status(monkeypatch)
+
+    raw = supertool._path_meta_suffix("sub/clean.txt", b"x\n")
+    assert raw == " " + supertool.PATH_META_UNKNOWN, raw
+
+    _reset_bulk()
+    with pytest.raises(pytest.skip.Exception) as excinfo:
+        _suffix("sub/clean.txt")
+    assert _git_decline.TOKEN in str(excinfo.value)
+
+
+def test_the_gate_stays_out_of_the_way_when_git_answers(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity. A gate that skipped unconditionally would satisfy the test
+    above and silently delete every assertion in this file."""
+    monkeypatch.chdir(repo)
+    _reset_bulk()
+    assert " m" in _suffix("sub/dirty.txt")
+    _reset_bulk()
+    assert _suffix("sub/clean.txt") == ""
+
+
+#: The one call in this module that reads a bare suffix on purpose - it is the
+#: test that pins what the product returns when it declines, so gating it would
+#: be gating the thing under test.
+_UNGATED_BY_DESIGN = {
+    "test_a_declined_lookup_skips_rather_than_reading_as_a_disagreement",
+}
+
+
+def test_the_census_line_carries_its_denominator_and_its_population() -> None:
+    """#1274: a bare `N skipped` is a number nobody can act on, and a count
+    with no stated population gets read as a total."""
+    line = _git_decline.verdict_line(2, 97)
+    assert _git_decline.TOKEN in line, line
+    assert "2 of 97" in line, line
+    assert "tests/test_path_meta_bulk_1126.py" in _git_decline.POPULATION
+
+
+def test_every_marker_assertion_in_this_module_is_decline_gated() -> None:
+    """`_git_decline.POPULATION` names this module. Derive it, do not trust it.
+
+    A bare `supertool._path_meta_suffix(...)` whose result is *used* is a
+    marker assertion that can read a decline as a verdict. One whose result is
+    discarded is a priming call - it builds the snapshot and asserts nothing -
+    so it stays bare on purpose, and that is also why this cannot be a grep for
+    the name.
+    """
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    offenders = []
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if func.name in _UNGATED_BY_DESIGN:
+            continue
+        discarded = {id(n.value) for n in ast.walk(func) if isinstance(n, ast.Expr)}
+        for node in ast.walk(func):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "_path_meta_suffix"
+                    and id(node) not in discarded):
+                offenders.append("{0} (line {1})".format(func.name, node.lineno))
+    assert not offenders, (
+        "these read a suffix without the decline gate, so a `git?` on a loaded "
+        "runner reds them instead of skipping - route them through "
+        "_git_decline.suffix or add them to _UNGATED_BY_DESIGN with a reason: "
+        + ", ".join(offenders)
+    )

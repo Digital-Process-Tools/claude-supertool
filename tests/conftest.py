@@ -45,6 +45,13 @@ try:
 except ImportError:  # pragma: no cover - only in the synthetic-repo suites
     _live_gh = None
 
+# Same tolerance, same reason: the `git status` decline gate behind read's
+# working-tree marker, and its countable skip.
+try:
+    import _git_decline  # noqa: E402
+except ImportError:  # pragma: no cover - only in the synthetic-repo suites
+    _git_decline = None
+
 # Same tolerance, same reason (#1523). This one is registered as a plugin rather
 # than called from the hooks below: it needs `pytest_runtest_makereport`,
 # `pytest_runtest_logreport` and `pytest_sessionfinish` as well as a summary
@@ -366,6 +373,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     _symlink_summary(terminalreporter, skipped)
     _lint_budget_summary(terminalreporter, skipped)
     _live_gh_summary(terminalreporter, skipped)
+    _git_decline_summary(terminalreporter, skipped)
 
 
 def _token_skips(skipped, token: str) -> int:
@@ -436,6 +444,27 @@ def _live_gh_summary(terminalreporter, skipped):
     terminalreporter.write_line(
         _live_gh.verdict_line(n, unconfigured, len(skipped)))
     terminalreporter.write_line(_live_gh.POPULATION)
+
+
+def _git_decline_summary(terminalreporter, skipped):
+    """Count the skips where git would not answer about a path's state.
+
+    Same shape as the three above, same reason. `_path_meta_suffix` declines
+    under a 2s budget and says so (#705); a test that compares two markers
+    cannot tell that decline from a disagreement, and one such comparison
+    reddened master's windows-latest leg alone at ac1b3e4. The gate turns it
+    into a skip, and a skip nobody counts is the same absence one layer up --
+    so this prints at zero too, with its denominator and its population
+    (#1274).
+    """
+    if _git_decline is None:
+        terminalreporter.write_line(
+            "git-status decline: NOT CHECKED -- tests/_git_decline.py is not "
+            "in this tree")
+        return
+    n = _token_skips(skipped, _git_decline.TOKEN)
+    terminalreporter.write_line(_git_decline.verdict_line(n, len(skipped)))
+    terminalreporter.write_line(_git_decline.POPULATION)
 
 
 def _lint_budget_summary(terminalreporter, skipped):
