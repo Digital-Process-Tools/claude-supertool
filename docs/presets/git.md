@@ -601,7 +601,9 @@ occupied     fix/941         ~/Documents/st-wt/941   no remote ref
 | token | what it means |
 |---|---|
 | `PR #N` | an open PR tracks this branch; the tally is `_checks.summarize()`, the same summed arithmetic `gh-pr:N:status` prints, so a `CANCELLED` leg is a named term and not a silent zero |
-| `no open PR` | GitHub answered and holds no open PR for this branch. The publication half is a **second** three-state answer, below: in sync with its remote ref (published, unproposed), `N unpushed` (not published), or not measured |
+| `no open PR` | GitHub answered and holds no open PR for this branch, **and** the publication count was taken and came back 0 — every local commit is on the named ref |
+| `N unpushed, no open PR` | the count was taken and N commits here are on no remote |
+| `sync not measured, no open PR` | no open PR, and the publication count was **not taken** — the row names why. Not the same fact as the two above, and it used to share their token ([#1525](https://github.com/Digital-Process-Tools/claude-supertool/issues/1525)) |
 | `no remote ref` | no remote-tracking ref here: never pushed, **or** the remote branch was deleted after a merge |
 | `PR unknown` | the lookup did not run, and this is not a statement about the world |
 | `PR n/a` | the worktree has no branch (detached or bare) — nothing to look up |
@@ -614,11 +616,22 @@ occupied     fix/941         ~/Documents/st-wt/941   no remote ref
 
 | Measurement | Row says |
 |---|---|
-| `git rev-list --count <remote-ref>..refs/heads/<branch>` is 0 | the branch is pushed, **in sync** with its remote ref … published but unproposed |
-| the count is N > 0 | `N commit(s) here are NOT on it` … the work is **NOT** published: those commits exist only in this clone |
-| the count could not be taken, or was not taken | whether every local commit is on that ref is **UNKNOWN**, with the reason — never `0` |
+| `git rev-list --count <remote-ref>..refs/heads/<branch>` is 0 | `every commit here is also on <ref>` … published but unproposed |
+| the count is N > 0 | `N commit(s) here are NOT on <ref>` … the work is **NOT** published: those commits exist only in this clone |
+| the count could not be taken, or was not taken | whether every local commit is on the remote it tracks is **UNKNOWN**, with the reason — never `0` |
 
-It is measured against the ref the row is about, not `@{upstream}`: `git worktree add -b X … master` writes an upstream of `origin/master` for a branch that has never left the machine, so `@{upstream}` would confidently compare X against the wrong ref. Cost is one local `rev-list` per *pushed* branch and no extra network call. **Ahead only** — *behind* is a fact about the remote having moved and says nothing about whether this tree's work survives being discarded, which is the question the line is read for.
+**The count is taken against the remote the branch actually tracks, and the row names that ref** ([#1525](https://github.com/Digital-Process-Tools/claude-supertool/issues/1525)). It used to prefer `origin` unconditionally whenever two remotes carried the same branch name, so on a fork layout — upstream `fork/X`, an `origin/X` at a different commit — the row counted against a remote it was never about and said so in a sentence naming no remote at all, which the reader could not check. Measured on a two-remote sandbox before the fix: a branch one commit ahead of its `fork` upstream read *in sync with its remote ref … the work is published but unproposed*.
+
+Four inputs, and the row is different in each:
+
+| The branch | Measured against | Row |
+|---|---|---|
+| tracks `origin/X`, which is here | `refs/remotes/origin/X` | the count, naming the ref and `the remote this branch tracks` |
+| tracks `fork/X`, which is here | `refs/remotes/fork/X` | the same, naming `fork` — an `origin/X` at another commit is ignored |
+| tracks **nothing** | the same-named ref, `origin` preferred | the count, naming the ref and `picked by name: this branch has no upstream configured` — the commits really are on it, but nothing establishes it as the branch's |
+| tracks `fork/X`, which is **not** here (deleted on the remote, or never fetched) | nothing | `sync not measured` and why, naming `fork/X`. An `origin/X` that is here is **not** substituted: `0 commits missing` about a remote the row is not about is the defect, not a fallback |
+
+An upstream naming a *different branch* — `git worktree add -b X … master` can leave X tracking `origin/master` — is not measured against either: that ref resolves and is on a real remote, and it is still not a remote copy of X. Cost is one `git for-each-ref` for the whole board plus one local `rev-list` per *measured* branch, and no extra network call. **Ahead only** — *behind* is a fact about the remote having moved and says nothing about whether this tree's work survives being discarded, which is the question the line is read for.
 
 **"Never pushed" is not claimed, because it cannot be observed.** The first live run of this column called four `[merged]` worktrees "never pushed"; all four had been pushed, merged, and deleted on the remote. A deleted remote branch and an unpublished one leave an identical local trace, and `branch.<name>.merge` does not separate them either — `git worktree add -b X … master` writes an upstream of `origin/master` for a branch that has never left the machine. The row reports the observation and names both histories.
 

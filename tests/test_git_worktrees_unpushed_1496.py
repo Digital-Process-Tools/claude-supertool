@@ -217,12 +217,21 @@ def test_sync_for_is_the_wiring_between_the_two(box) -> None:
     the one line nothing covers.
     """
     names, _why = box.in_repo(wt.remote_branch_names)
-    assert box.in_repo(lambda: wt._sync_for("feature", names)).ahead == 0
+    # `upstreams` and its `why` joined the signature with #1525 - the count has
+    # to be taken against the remote the branch tracks, and `feature` here
+    # tracks `origin/feature`, so the numbers below are unchanged.
+    ups, up_why = box.in_repo(wt.upstream_refs)
+
+    def sync(branch, mapping=None):
+        return wt._sync_for(branch, names if mapping is None else mapping,
+                            ups, up_why)
+
+    assert box.in_repo(lambda: sync("feature")).ahead == 0
     box.commit("b.txt", "local work")
-    assert box.in_repo(lambda: wt._sync_for("feature", names)).ahead == 1
-    assert wt._sync_for("feature", {"feature"}) is None, "a bare set is not a map"
-    assert wt._sync_for("", names) is None
-    assert wt._sync_for("never-pushed", names) is None
+    assert box.in_repo(lambda: sync("feature")).ahead == 1
+    assert sync("feature", {"feature"}) is None, "a bare set is not a map"
+    assert sync("", names) is None
+    assert sync("never-pushed") is None
 
 
 # -- 2. the exit code names itself -----------------------------------------
