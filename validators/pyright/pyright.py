@@ -27,7 +27,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
-from refusal import absent
+from refusal import absent, skipped
 
 TOOL = "pyright"
 INSTALL_HINT = ("pyright not found on PATH — this file was NOT type-checked "
@@ -100,8 +100,20 @@ def main() -> None:
                               "code": "adapter", "msg": stderr[:300]}],
                   "duration_ms": duration})
             return
-        emit({"tool": "pyright", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": duration})
+        # Nothing on either stream. pyright always prints a report under
+        # `--outputjson`, so this is a run that produced no information at
+        # all — a killed process, a wrapper that swallowed both streams — and
+        # `ok: true` over it is a clean verdict about a file nothing read
+        # (#1601, the same class as the three adapters that issue names).
+        # `skipped()` directly, not `_skip()`: that routes through
+        # `refusal.absent()`, which is reserved for a tool that is not there
+        # and whose `$SUPERTOOL_REQUIRE_VALIDATORS` message reads "named ...
+        # but could not run". pyright was found and did run; it just said
+        # nothing.
+        emit(skipped(TOOL, file,
+                     "pyright produced no output on either stream, so this "
+                     "run says nothing about the file",
+                     duration))
         return
 
     try:

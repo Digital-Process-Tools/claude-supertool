@@ -21,7 +21,7 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
-from refusal import absent
+from refusal import absent, skipped
 from linebreaks import split_lines
 
 TOOL = "markdownlint"
@@ -34,6 +34,26 @@ INSTALL_HINT = ("markdownlint not found on PATH — this file was NOT linted "
 # tell a hung linter from a busy machine, and the number is the first thing
 # they need to decide which (#658).
 TIMEOUT_S = 30
+
+# What "it linted nothing" looks like, and why it needs no second spawn.
+#
+# markdownlint-cli resolves its arguments to a file list and honours
+# `.markdownlintignore` (and `--ignore-path`) while doing it. When the path it
+# was handed survives none of that — an ignore match, or a file that is not
+# there — it has nothing to lint, prints its usage banner on **stdout** and
+# exits 0 (measured, markdownlint-cli 0.49.1: 1501 bytes of help). A file it
+# genuinely linted clean prints nothing at all, on either stream.
+#
+# So the discriminator is the output, not a probe: there is no `--file-info`
+# equivalent here, and any output on a zero exit means the run was not about
+# this file. That direction is the safe one — a future release that chatters on
+# a clean run turns verdicts into declines, which is loud and honest, where the
+# reverse fabricates a pass (#1601).
+NOTHING_LINTED_REASON = (
+    "markdownlint exited 0 and printed something, which is what it does when "
+    "the path resolved to no files to lint — an ignore-file match "
+    "(`.markdownlintignore`, `--ignore-path`) or a path that is not there — "
+    "so this run is not a verdict about the file: ")
 
 
 def emit(d: dict) -> None:
@@ -87,14 +107,26 @@ def main() -> None:
     duration = int((time.time() - start) * 1000)
 
     if result.returncode == 0:
+        chatter = ((result.stdout or "") + (result.stderr or "")).strip()
+        if chatter:
+            lines = split_lines(chatter)
+            emit(skipped(TOOL, file,
+                         NOTHING_LINTED_REASON + lines[0].strip()[:200],
+                         duration))
+            return
         emit({"tool": "markdownlint", "file": file, "ok": True, "count": 0,
               "errors": [], "duration_ms": duration})
         return
 
     # Parse markdownlint output: "file:line:col rule/description"
-    # or "file:line rule/description" (no col)
+    # or "file:line rule/description" (no col) — and, since markdownlint-cli
+    # started printing a severity word between the two ("b.md:1:1 error MD018
+    # ...", measured on 0.49.1), optionally that. Without it every row fell
+    # through to the catch-all below: four located findings arrived as one
+    # unlocated `lint` error with no source context and a count of 1.
     errors = []
-    pattern = re.compile(r"^(?:.*?):(\d+)(?::(\d+))?\s+(MD\d+[^\s]*)\s+(.+)$")
+    pattern = re.compile(
+        r"^(?:.*?):(\d+)(?::(\d+))?\s+(?:(?:error|warning)\s+)?(MD\d+[^\s]*)\s+(.+)$")
     output = (result.stdout + result.stderr).strip()
     for line in split_lines(output):
         m = pattern.match(line)

@@ -2,7 +2,7 @@
 
 Runs [`prettier --check`](https://prettier.io/docs/en/cli.html#--check) on a single file and emits SCHEMA.md-compliant JSON.
 
-Exits `ok=true` if the file is already formatted. Exits `ok=false` with a single formatting error if prettier would rewrite it.
+Three states, not two. `ok=true` if the file is already formatted; `ok=false` with a single formatting error if prettier would rewrite it; and `skipped` — no verdict at all — when prettier exited 0 without opening the file, which is what a `.prettierignore` (or `--ignore-path`) match looks like. That last one is decided by a second call, `prettier --file-info FILE`, carrying the same `--config`/`--ignore-path` flags as the check; a probe that cannot answer is also `skipped`, never `ok` ([#1601](https://github.com/Digital-Process-Tools/claude-supertool/issues/1601)).
 
 ## Env vars
 
