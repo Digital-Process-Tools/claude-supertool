@@ -152,29 +152,58 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
 
     structured = (mcp_resp.get("result", {}) or {}).get("structuredContent") or {}
 
-    # The tool returns a SecurityError / runtime error as an extra key.
-    if structured.get("error"):
-        # A scope refusal is not a runtime error — it is an absence of analysis,
-        # and counting it as one error inflates the delta by +1 (#406).
-        if _refusal.is_refusal(str(structured["error"]), SKIP_PATTERNS_ENV):
-            return _refusal.skipped("phpmd-mcp", file_path,
-                                    str(structured["error"]), duration_ms)
-        base["ok"] = False
-        base["count"] = 1
-        base["errors"] = [{"line": None, "col": None, "severity": "error",
-                           "code": structured.get("error_class", "phpmd.error"),
-                           "msg": str(structured["error"])}]
-        return base
-
     output = structured.get("output", "") or ""
+    unreadable = False
     try:
         report = json.loads(output) if output else {}
     except json.JSONDecodeError:
+        # Deliberately not an early return: the error key below is the better
+        # message when both arrived, and it used to win because it was read
+        # first. Reordering the parse ahead of it must not silently demote a
+        # named runtime error to "could not parse".
+        report = {}
+        unreadable = True
+    if unreadable and not structured.get("error"):
         base["ok"] = False
         base["count"] = 1
         base["errors"] = [{"line": None, "col": None, "severity": "error",
                            "code": "phpmd.parse", "msg": "could not parse PHPMD JSON output"}]
         return base
+
+    # The tool returns a SecurityError / runtime error as an extra key. It used
+    # to `return` here, discarding `structured["output"]` unread — so if the
+    # daemon ever set both, a report it produced was replaced by a message about
+    # it (#1547). Whether it can set both is not answerable from this repo: the
+    # server is `mcp-phpmd-warm` and lives elsewhere. So the adapter is made not
+    # to depend on the answer — the report is parsed first and is never dropped.
+    if structured.get("error"):
+        # A PHPMD report has TWO bodies and both are rendered below: the
+        # violations under `files[]`, and `report["errors"]` — the processing
+        # failures (an unparseable PHP file, a broken ruleset). Reading only the
+        # first half would throw the second half away for the refusal, which is
+        # this same discard one key over.
+        has_report = bool(report.get("errors")) or any(
+            (f or {}).get("violations") for f in (report.get("files", []) or []))
+        # A scope refusal is not a runtime error — it is an absence of analysis,
+        # and counting it as one error inflates the delta by +1 (#406). But a
+        # refusal beside a report is two mutually exclusive claims, and only one
+        # of them carries evidence: the same rule #1527 applied to the cold
+        # phpstan adapter. The report wins, and the refusal is dropped rather
+        # than counted, because a declination that did not happen is not a
+        # finding about the file either.
+        if _refusal.is_refusal(str(structured["error"]), SKIP_PATTERNS_ENV):
+            if not has_report:
+                return _refusal.skipped("phpmd-mcp", file_path,
+                                        str(structured["error"]), duration_ms)
+        else:
+            # A genuine runtime error stays one error whether or not a report
+            # arrived with it — the same accounting as the error-alone arm, so
+            # the count `_validator_regressed` reads is never a guess.
+            base["ok"] = False
+            base["count"] = 1
+            base["errors"] = [{"line": None, "col": None, "severity": "error",
+                               "code": structured.get("error_class", "phpmd.error"),
+                               "msg": str(structured["error"])}]
 
     for file_entry in report.get("files", []) or []:
         for v in file_entry.get("violations", []) or []:
