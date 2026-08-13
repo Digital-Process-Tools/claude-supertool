@@ -23,6 +23,14 @@ such a host has. Three states, the same three the guard itself uses:
     nothing to test the registry replaces nothing, so there is no gate to
                     exercise and "enforcing" would be an empty claim
 
+**`could not run` for want of a bash is a statement about both shipped hooks,
+and is reported as one** (#1401). The same missing shell kills
+`hooks/session-start.sh`, and that half is the one a user actually notices:
+`PreToolUse` is tool-gated, so where there is no Bash tool the guard is never
+asked, while `SessionStart` is not gated and fires regardless - leaving a
+session with no `./supertool` wrapper and no op roster. The report names the
+way back, which needs no shell: run `supertool.py` by path.
+
 **It cannot tell you whether Claude Code invoked the hook.** Plugin
 installation, `hooks.json` registration and the PreToolUse dispatch are not
 observable from here, and saying `enforcing` without that caveat would be the
@@ -179,6 +187,20 @@ def report(root, environ=None):
                      "unguarded in this shell, and nothing in the transcript "
                      "will say so. Install Git Bash or use WSL, or accept "
                      "that the gate is off here.")
+        # One fact, two dead hooks (#1401). `pre-bash-guard.sh` is tool-gated
+        # and `session-start.sh` is not, so on the host with no Bash tool the
+        # guard is never even asked while the session hook fires and cannot
+        # run. Reporting only the guard leaves the more visible loss - no
+        # wrapper, no roster - as an absence with no account of itself.
+        lines.append("  also        : hooks.json runs hooks/session-start.sh "
+                     "through the same bash, so it does not execute here "
+                     "either. SessionStart is not tool-gated: it fires on "
+                     "this host regardless. The session gets no ./supertool "
+                     "wrapper and no op roster.")
+        lines.append("  instead     : call the tool by path, which needs no "
+                     "shell - py -3 supertool.py 'ops:roster' on Windows, "
+                     "python3 supertool.py 'ops:roster' elsewhere - and read "
+                     "./supertool in the docs as that path (#1401).")
         return lines, 1
 
     lines.append("  bash        : " + bash)
