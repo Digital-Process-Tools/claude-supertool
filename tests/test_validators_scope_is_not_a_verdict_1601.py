@@ -87,9 +87,11 @@ class _Prettier:
     def __init__(self, info: object) -> None:
         self.info = info
         self.calls: list = []
+        self.kwargs: list = []
 
     def __call__(self, cmd, **kwargs):
         self.calls.append(cmd)
+        self.kwargs.append(kwargs)
         if "--file-info" in cmd:
             if isinstance(self.info, BaseException):
                 raise self.info
@@ -359,3 +361,57 @@ def test_markdownlint_locates_a_finding_in_both_output_shapes(
     assert err["line"] == 1, err
     assert err["code"].startswith("MD"), err
     assert err["source_context"], err
+
+
+class _Clock:
+    """`time.time()`: the first reading, then a fixed later one."""
+
+    def __init__(self, ticks) -> None:
+        self.ticks = list(ticks)
+
+    def __call__(self) -> float:
+        return self.ticks.pop(0) if len(self.ticks) > 1 else self.ticks[0]
+
+
+@pytest.mark.parametrize(
+    "elapsed,expected", [(2.0, 13.0), (14.5, 1.0)],
+    ids=["room-left", "budget-nearly-spent"],
+)
+def test_prettier_probe_is_bounded_by_what_is_left_of_the_budget(
+    prettier, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    tmp_path: Path, elapsed: float, expected: float,
+) -> None:
+    """Two full walls would put the adapter at 2x the timeout it is registered with.
+
+    The core kills an adapter at its own wall, and the caller then gets
+    `NOT CHECKED (timed out)` naming no question. A probe out of clock declines
+    and says which one went unanswered, so the budget is shared, not doubled.
+    """
+    f = tmp_path / "x.js"
+    f.write_text("const a = 1;\n", encoding="utf-8")
+    monkeypatch.setattr(prettier.time, "time", _Clock([0.0, elapsed]))
+    stub = _Prettier('{"ignored": false, "inferredParser": "babel"}')
+    _drive(prettier, monkeypatch, capsys, f, stub)
+    probe = [k for c, k in zip(stub.calls, stub.kwargs) if "--file-info" in c][0]
+    assert probe["timeout"] == expected, probe
+    assert probe["timeout"] <= prettier.TIMEOUT_S, probe
+
+
+def test_pyright_no_output_does_not_escalate_as_an_absent_tool(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path,
+) -> None:
+    """`refusal.absent()` is for a tool that is not there, and says so in words.
+
+    Routed through it, an operator who named pyright in the variable was told
+    it "could not run" about a pyright that ran and simply printed nothing.
+    """
+    monkeypatch.setenv("SUPERTOOL_REQUIRE_VALIDATORS", "pyright")
+    mod = _adapter("pyright", "pyright.py")
+    f = tmp_path / "x.py"
+    f.write_text("x = 1\n", encoding="utf-8")
+
+    def runner(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+    out = _drive(mod, monkeypatch, capsys, f, runner)
+    _assert_skip(out, "no output")

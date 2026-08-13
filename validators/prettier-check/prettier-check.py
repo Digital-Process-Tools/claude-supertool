@@ -46,6 +46,14 @@ TIMEOUT_S = 15
 # The probe is handed the same `--config`/`--ignore-path` flags as the check,
 # because a probe resolving a different ignore set answers about a different
 # run.
+#
+# It is bounded by what is LEFT of TIMEOUT_S rather than given a fresh one, so
+# this adapter still finishes inside the one budget its registration is set
+# against. Two full walls would put the worst case at 2x the `"timeout": 15`
+# in `.supertool.example.json`, and the core kills the adapter at its own
+# wall: the caller would get `NOT CHECKED (timed out)` naming nothing, where a
+# probe that runs out of clock declines and says which question went
+# unanswered (`docs/validators.md`, on html-check's deliberate headroom).
 IGNORED_REASON = ("prettier declined to check this file — it matched an ignore "
                   "pattern (`.prettierignore`, or the `--ignore-path` file); "
                   "`prettier --file-info` on this path answers "
@@ -60,7 +68,8 @@ def emit(obj: dict) -> None:
     print(json.dumps(obj))
 
 
-def _is_ignored(file: str, prettier_bin: str, flags: list) -> "bool | None":
+def _is_ignored(file: str, prettier_bin: str, flags: list,
+                budget: float) -> "bool | None":
     """Was this file in scope? `None` when the question itself failed.
 
     `None` is not `False`. A probe that could not run leaves the zero exit
@@ -69,7 +78,8 @@ def _is_ignored(file: str, prettier_bin: str, flags: list) -> "bool | None":
     """
     try:
         r = subprocess.run([prettier_bin, "--file-info", file] + flags,
-                           capture_output=True, text=True, timeout=TIMEOUT_S,
+                           capture_output=True, text=True,
+                           timeout=max(1.0, budget),
                            encoding="utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
         return None
@@ -150,7 +160,8 @@ def main() -> None:
     # afterwards: one that stops before the probe under-reports what the caller
     # waited for.
     if r.returncode == 0:
-        ignored = _is_ignored(file, prettier_bin, flags)
+        ignored = _is_ignored(file, prettier_bin, flags,
+                              TIMEOUT_S - (time.time() - start))
         if ignored is not False:
             emit(skipped(TOOL, file,
                          IGNORED_REASON if ignored else UNATTRIBUTABLE_REASON,
