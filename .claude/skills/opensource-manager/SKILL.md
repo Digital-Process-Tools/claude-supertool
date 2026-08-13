@@ -530,6 +530,21 @@ Only needed when you want to be _woken_ by a red PR. Skip all of it for a one-sh
    supertool-workspace                      # from anywhere
    ```
 
+   **It registers the consumer itself, and that is the part that was missing until #1544.** The
+   flag names a channel by server name; `--dangerously-load-development-channels server:NAME`
+   resolves NAME against *configured* servers only. `claude-channel` — the name this file told
+   you to tag until 2026-08-13 — is declared in `.mcp.json`, which is the **plugin's** config:
+   its command is `bun ${CLAUDE_PLUGIN_ROOT}/...`, and that variable exists only when the harness
+   reads the file *as a plugin*. Read as a project config, which is what a clone of this repo is,
+   it is empty and the server dies at spawn. Six pollers emitted into an unbound socket for hours
+   while `radar` rendered a normal board.
+
+   **`--mcp-config` is not the shortcut it looks like, and it fails worse**: the server starts and
+   binds the socket, and the tag is then refused with `no MCP server configured with that name` —
+   so the board looks armed and nothing is injected. The launcher therefore runs
+   `claude mcp add -s local` with an absolute path, under a name deliberately unlike
+   `claude-channel`, and tags what it registered.
+
    **With no arguments it also appends `/opensource-manager`, and with arguments it does not** —
    `claude` takes one positional prompt, so a second is silently ignored and a variadic option
    (`--add-dir a b`) swallows it outright (measured, 2.1.219). It says so on stderr rather than
@@ -854,6 +869,20 @@ Grepped for the verdict by any consumer, the forged `[result]` sorts **first**. 
 **It blocks a release**, on the remote half only — a local `pre-push` hook is code already running on your machine, so relaying it is no escalation. What blocks is text from a host you pushed to, newly rendered on the **success** path.
 
 **A classification scheme is itself a claim, and this is the FIFTH audit running to refuse it and be right** (`discloses`, then `containment`, then its write-side twin, then `misdirects`, now `forges`). Keep the "say so if a finding fits none of these" clause in every audit brief; the class that does not exist yet is where the worst finding lands. Five for five is not a caveat — **assume the table is incomplete and brief for the refusal explicitly**, because on this evidence the marginal value of that clause is higher than any row in the table.
+
+**And a NINTH, proposed 2026-08-13 by the v0.38.0 round-2 audit on #1541 and ruled on here: `ships-local-state` — a value correct for exactly one checkout is baked into the artifact every user installs, and silently reconfigures their runtime.** #1539 put this clone's private channel name into `.mcp.json`'s `env` to fix this repo's own producer/consumer disagreement. That file ships. For every user who is not this repository, their consumer would bind `/tmp/supertool-watch-oss-supertool.sock` while their pollers resolved `name=""` and bound the default — the exact half-configured state `presets/watch/README.md` calls worse than setting neither, shipped as their default. A test pinned it in place, so the artifact was *required* to carry it.
+
+The auditor reached `misreports` by elimination and refused the row:
+
+> No row in the table describes "a value correct for exactly one checkout is baked into the artifact every user installs". The existing rows are all about how *this* repo's tooling fails its own operator.
+
+That is right, and it earns a row on the same test the other eight passed — **each row invites a different fix.** `misreports` invites a logic fix; `discloses` sends you following data outward to a sink; `containment` sends you to `_safe_path` and the `paths` declarations. This one asks a question none of them do: **which files does the user install, and does this value belong to my checkout?** Nothing in the code is wrong; the boundary between workspace state and artifact is.
+
+| Class | Undo | Found by |
+| --- | --- | --- |
+| **Ships-local-state** | none for anyone already installed, short of another release | asking which files the artifact carries, and whether any value in them is true of this clone only |
+
+**It blocks a release**, because the release is the mechanism by which it takes effect — pre-tag is the only moment it costs nothing. The fix direction is the one #1539 took once corrected: the value is workspace state, so it belongs in the launcher's environment, read from this clone's own config, and nothing ships.
 
 **Five for five is also worth reading as a fact about the table rather than about the auditors.** Every class in it was added the same way: a capability shipped, and the vocabulary for its failure mode arrived one audit later. So the rows are a record of what has already gone wrong, never a partition of what can. Do not tune the brief toward the table.
 
