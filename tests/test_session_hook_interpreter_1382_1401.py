@@ -190,6 +190,44 @@ def test_the_roster_prints_through_a_versioned_interpreter(project, fake_bin,
 
 
 @windows_has_no_usable_bash
+def test_a_missing_ladder_is_disclosed_rather_than_fatal(project, tmp_path):
+    """A half-installed plugin is the one case nothing else can cover.
+
+    `session-start.sh` resolves the ladder beside itself, so a copy of the
+    script alone is exactly the shape of an install that lost one file. The
+    property is the same as everywhere else here - exit 0, the symlink, and a
+    sentence - and it is the only one asserted about a `.sh` whose helper is
+    not there.
+
+    **Written green rather than red-first**, because the branch it covers was
+    added by the same change - so its non-vacuity was measured instead of
+    assumed. Against a copy of the hook with the `if`/`else` around the source
+    collapsed to a bare `.`, the exit code is still 0 (the trailing `exit 0`
+    sees to that, which is the point of this file) and what actually breaks is
+    the sentence: bash writes `supertool_python_each: command not found` to
+    stderr, where a SessionStart hook's stderr goes nowhere the user reads,
+    and stdout carries the other disclosure with an unset variable in it -
+    `Tried .` - a hook naming an empty list of things it tried. So the
+    assertion that discriminates is the message, not the return code.
+    """
+    lone = tmp_path / "hooks-without-a-ladder"
+    lone.mkdir()
+    copy = lone / _HOOK.name
+    copy.write_bytes(_HOOK.read_bytes())
+    plugin_root = _fake_plugin_root(tmp_path)
+    env = dict(os.environ)
+    env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
+    result = subprocess.run(
+        ["bash", str(copy)], cwd=str(project), env=env, capture_output=True,
+        text=True, timeout=120, encoding="utf-8", errors="replace")
+
+    assert result.returncode == 0, result.stderr
+    assert (project / "supertool").is_symlink()
+    assert "python-ladder.sh could not be sourced" in result.stdout, (
+        repr(result.stdout) + repr(result.stderr))
+
+
+@windows_has_no_usable_bash
 def test_no_interpreter_leaves_the_symlink_and_says_why(project, fake_bin,
                                                         tmp_path):
     """Three states, and the third one is the whole point of #1382.
