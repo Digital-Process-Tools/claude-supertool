@@ -229,9 +229,17 @@ def run(base: str, head: str = "HEAD", cwd: str = ".",
     # shipped and stayed invisible until somebody added one for an unrelated
     # reason. Without the flag an explicitly-named path is always checked, so
     # the file count this run reports is a count it earned.
+    # `--` for the same reason, one layer down. These paths were picked up out
+    # of `git diff --name-status`, never passed as arguments by anybody, and a
+    # path that begins with `-` reaches ruff's option parser instead of its file
+    # list. `_python` filtering to `.py` is not a guard: `--stdin-filename=x.py`
+    # ends in `.py`, is consumed as an option, leaves ruff with no positional
+    # path at all, and ruff then exits 0 with an empty stdout -- which arrives
+    # at the `all clean` arm below listing a file nothing opened. Measured with
+    # ruff 0.16.1; the separator is what makes the count a count it earned.
     argv = [binary, "check", "--no-cache", "--quiet",
             "--output-format", "concise",
-            "--extend-select", ",".join(EXTRA_RULES)] + files
+            "--extend-select", ",".join(EXTRA_RULES), "--"] + files
     rc, out, err = _run(argv, cwd)
     listing = ["    " + f for f in files]
     rules = ("  {0} are re-enabled here and ignored tree-wide: the ignore is "

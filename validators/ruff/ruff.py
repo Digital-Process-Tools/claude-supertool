@@ -174,7 +174,7 @@ def _would_be_checked(file: str) -> bool | None:
     """
     try:
         r = subprocess.run([TOOL, "check", "--no-cache", "--force-exclude",
-                            "--show-files", file],
+                            "--show-files", "--", file],
                            capture_output=True, text=True, timeout=TIMEOUT_S,
                            encoding="utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
@@ -201,8 +201,14 @@ def main() -> None:
                     int((time.time() - start) * 1000)))
         return
 
+    # `--`: `file` is argv[1] and containment gates where a path points, not
+    # what it looks like, so a name beginning with `-` reaches here intact and
+    # would be parsed as an option rather than opened. The failure is quiet in
+    # both invocations -- ruff with no positional path reports nothing, the
+    # scope probe then sees no surviving path, and the adapter emits `skipped`
+    # blaming an exclude that is not there.
     cmd = [TOOL, "check", "--output-format", "json", "--no-cache",
-           "--force-exclude", "--quiet", file]
+           "--force-exclude", "--quiet", "--", file]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
                            timeout=TIMEOUT_S, encoding="utf-8", errors="replace")

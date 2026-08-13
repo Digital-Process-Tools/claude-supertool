@@ -41,6 +41,7 @@ from pathlib import Path
 
 import pytest
 
+from _adapter_budget import adapter_budget
 from _adapter_verdict import assert_declined, assert_ok, verdict
 from _winenv import empty_path_env
 
@@ -371,6 +372,29 @@ def test_output_carries_every_required_field(project: Path) -> None:
         assert key in err
     assert err["severity"] in ("error", "warning", "info")
     assert err["source_context"], "a located finding carries its source lines"
+
+
+@needs_ruff
+def test_a_dash_named_path_is_a_path_and_not_an_option(project: Path) -> None:
+    """`file` is argv[1], so ruff needs a `--` before it.
+
+    Containment gates where the path points, never what it looks like, and
+    `--stdin-filename=x.py` points inside the boundary. Without the separator
+    ruff consumes it as an option, has no positional path left, reports
+    nothing, and the scope probe cannot see a surviving path either -- so the
+    adapter emits `skipped` with a reason ("excluded by configuration") that is
+    false about a file nothing ever opened. The direction is safe; the sentence
+    is not.
+    """
+    name = "--stdin-filename=x.py"
+    _write(project, name, "def f():\n    return undefined_thing\n")
+    r = subprocess.run(
+        [sys.executable, str(ADAPTER), name], cwd=str(project),
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        stdin=subprocess.DEVNULL, timeout=adapter_budget(ADAPTER),
+    )
+    out = verdict(r, adapter=ADAPTER.name)
+    assert _codes(out) == ["F821"], out
 
 
 @needs_ruff

@@ -443,6 +443,31 @@ def test_every_run_prints_exactly_one_state(repo: Path) -> None:
         assert len(states) == 1, (code, states, out)
 
 
+# --- a path out of the diff is data, never an option ------------------------
+
+
+def test_a_dash_named_path_is_linted_rather_than_parsed_as_an_option(
+        repo: Path) -> None:
+    """The file list is picked up, never passed in, so ruff needs a `--`.
+
+    `--stdin-filename=x.py` ends in `.py`, so `_python` keeps it; without the
+    separator ruff's own parser eats it as an option, no path is left on the
+    command line, ruff exits 0 with an empty stdout, and the report lists the
+    file under "all clean" having never opened it. That is #1481's own failure
+    mode reproduced inside the gate written to close it -- the same argument
+    the `--force-exclude` comment makes two lines above the argv.
+
+    The name is a real ruff option and not a shape chosen to be awkward: a
+    filename suffix is the only thing between the diff and the option parser,
+    and a suffix is not a security property.
+    """
+    (repo / "--stdin-filename=x.py").write_text(DEAD_IMPORT, encoding="utf-8")
+    _commit(repo)
+    code, out = _gate(repo)
+    assert code == gate.EXIT_FINDING, out
+    assert "F401" in out, out
+
+
 def test_the_module_runs_as_a_script(repo: Path) -> None:
     """The workflow calls it by path; nothing else pins that it is runnable."""
     r = subprocess.run([sys.executable, str(GATE_PATH), "--base", "main"],
