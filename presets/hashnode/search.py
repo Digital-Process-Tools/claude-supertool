@@ -64,4 +64,7 @@ def main(arg: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "")
+    # Rejoined on ':' — see the note in hashnode/list.py (#873). `{args}`
+    # hands each ':'-token over separately; `parse_args` rsplits on ':' for
+    # the documented `[:N]`, which under `{arg}` never reached it.
+    main(":".join(sys.argv[1:]))

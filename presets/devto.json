@@ -14,7 +14,7 @@
     },
     "devto_list": {
       "safety": "read-only",
-      "cmd": "{python} {path}devto/list.py {arg}",
+      "cmd": "{python} {path}devto/list.py {args}",
       "timeout": 15,
       "description": "List own published articles, or another user's articles.",
       "syntax": "devto_list[:N] | devto_list:USER[:N]",

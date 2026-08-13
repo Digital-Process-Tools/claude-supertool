@@ -202,7 +202,7 @@ Declare it:
 
 They are OR'd rather than ranked because of a measurement: of the 24 shipped ops the `syntax` detector finds, **zero** carry `{file}` or `{dir}` in their `cmd`, so letting `cmd` supersede `syntax` would have disarmed the gate for every one of them. Going the other way, **no shipped op is found by `cmd` alone today** — `oss_train` in this repo's own `.supertool.json` was the one, and [#1472](https://github.com/Digital-Process-Tools/claude-supertool/issues/1472) deleted it. That arm is the one that catches an op with no `syntax` key at all, so it is not dead code with the instance gone; its live exercise is a fixture `.supertool.json` driven through `dispatch()` in `tests/test_cmd_placeholder_path_detector_1350.py`, because an arm with zero instances and zero tests is indistinguishable from an arm that passes.
 
-**`{arg}` is deliberately not a signal**, even though it substitutes the same `parts[1]` that `{file}` does. Twenty-four shipped ops carry `{arg}`; 8 of them name a path in `syntax` and are already held by the first detector, leaving 16 that pass a handle, a ref, a tag, an ID or a repo slug and take no path. Promoting `{arg}` would refuse those 16 and gate nothing. If your op means a path, write `{file}`.
+**`{arg}` is deliberately not a signal**, even though it substitutes the same `parts[1]` that `{file}` does. Twenty-one shipped ops carry `{arg}` (24 until [#873](https://github.com/Digital-Process-Tools/claude-supertool/issues/873) moved three multi-token ops to `{args}`); 8 of them name a path in `syntax` and are already held by the first detector, leaving 13 that pass a handle, a ref, a tag, an ID or a repo slug and take no path. Promoting `{arg}` would refuse those 13 and gate nothing. If your op means a path, write `{file}`.
 
 **A lint over `{arg}` beside a `PATH`-shaped `syntax` was proposed and is not built** ([#1357](https://github.com/Digital-Process-Tools/claude-supertool/issues/1357)). The measurement is the reason: all 8 ops of that shape are already refused at dispatch unless they declare, or named in `_UNDECLARED_PATH_OPS` — the lint's population is a strict subset of a gate's, and a refusal is strictly stronger than a warning. It is also aimed at the wrong half of the residue. The op #1357 worries about is one that *means* a path behind a `syntax` that does not say so, and that op is invisible to a lint keyed on the `syntax` saying so. Pinned in `tests/test_arg_placeholder_and_paths_env_1357.py` so the proposal is not re-derived from the issue text alone.
 
@@ -226,10 +226,18 @@ A core check is defence in depth, never a replacement: `presets/claims/check.py`
 | `{dir}` | Directory of `{file}` | `ls {dir}` |
 | `{arg}` | First argument, shell-quoted, no path validation | `glab issue view {arg}` |
 | `{args}` | All arguments, each shell-quoted | `python3 tool.py {args}` |
+| `{argjoin}` | All arguments rejoined with `:::`, as one shell-quoted argument | `python3 tool.py {argjoin}` |
 | `{path}` | Preset directory with trailing `/` (presets only) | `python3 {path}gitlab/issue.py {arg}` |
 | `{python}` | The interpreter supertool is running under | `{python} tools/report.py {file}` |
 
 Use `{file}`/`{dir}` for file operations, `{arg}`/`{args}` for non-file arguments (issue numbers, job IDs, etc.).
+
+**A token your template cannot reach is refused, and the op does not run** ([#873](https://github.com/Digital-Process-Tools/claude-supertool/issues/873)). `{file}`, `{dir}` and `{arg}` are **one token** — `parts[1]`, the first argument and nothing after it. `{args}` and `{argjoin}` are the pass-throughs and take all of them. So an op registered as `"cmd": "tool.py {arg}"` and called as `op:all:dry` used to run as `argv == ["all"]`: the `:dry` was discarded with no warning, no error and no mention in the receipt. In the filed case that token was a safety flag, the op ran live and force-pushed two branches, and the receipt was indistinguishable from a dry run. The core now names the text it will not pass and declines before spawning anything.
+
+Two consequences when you write an op:
+
+- **A multi-token grammar means `{args}`.** If your `syntax` documents `op:ID[:MODE]`, the template has to be `{args}` (or `{argjoin}`) — a `{arg}` template cannot ever receive the second field, and your own parse will split a string whose later fields were dropped upstream. Three shipped ops had exactly that shape; `tests/test_custom_op_dropped_tokens_873.py` now walks every manifest and is red at write time for the next one.
+- **The remainder is not passed into `{file}`.** `{file}` is a path slot with a `"paths"` declaration gating index 1; interpolating `parts[2:]` into it would put a second path-shaped token downstream of the containment check ([#1135](https://github.com/Digital-Process-Tools/claude-supertool/issues/1135) is that failure). The refusal sits after `_preset_path_containment`, so a call that both escapes the boundary and drops a token still reports the escape.
 
 ### Dispatch order
 

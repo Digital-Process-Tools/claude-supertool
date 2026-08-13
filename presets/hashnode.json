@@ -14,7 +14,7 @@
     },
     "hashnode_list": {
       "safety": "read-only",
-      "cmd": "{python} {path}hashnode/list.py {arg}",
+      "cmd": "{python} {path}hashnode/list.py {args}",
       "timeout": 15,
       "description": "List recent posts on configured publication, or another user's posts.",
       "syntax": "hashnode_list[:N] | hashnode_list:USER[:N]",
@@ -73,7 +73,7 @@
     },
     "hashnode_search": {
       "safety": "read-only",
-      "cmd": "{python} {path}hashnode/search.py {arg}",
+      "cmd": "{python} {path}hashnode/search.py {args}",
       "timeout": 15,
       "description": "Text search on configured publication.",
       "syntax": "hashnode_search:QUERY[:N]",

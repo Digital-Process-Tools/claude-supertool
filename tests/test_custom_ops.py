@@ -763,12 +763,19 @@ class TestMainIntegration:
 # _split_arg's URL-greedy absorb (PR #7), but other colon-bearing inputs
 # (ratios, ISO timestamps, namespaced identifiers) still split. {args} is the
 # safe template; {arg} only handles single-token inputs.
+#
+# Since #873 the split is no longer silent: `{arg}` still substitutes parts[1]
+# only, and the tokens it cannot reach are REFUSED before the op runs rather
+# than discarded. The test below used to assert the discard as the contract —
+# `PASS` with argv == ['16'] — which is the behaviour that let a dropped `:dry`
+# run an op in live mode under a receipt that read as a dry run.
 # ---------------------------------------------------------------------------
 
 class TestArgPlaceholderColonHandling:
 
-    def test_arg_placeholder_only_passes_first_chunk(self, tmp_path: Path) -> None:
-        """`{arg}` substitutes parts[1] only — colons in the input split it."""
+    def test_arg_placeholder_refuses_the_chunk_it_cannot_pass(
+            self, tmp_path: Path) -> None:
+        """`{arg}` reaches parts[1]; the rest is named and refused (#873)."""
         captured = tmp_path / "out.txt"
         # Script writes ALL its argv (excluding final output-file path) to disk.
         script = tmp_path / "echo_argv.py"
@@ -779,11 +786,12 @@ class TestArgPlaceholderColonHandling:
             "ops": {"echo": {"cmd": f"{{python}} {script.as_posix()} {{arg}} {captured.as_posix()}"}}
         }
         # Input: 'echo:16:9' tokenizes to parts = ['echo', '16', '9'].
-        # With {arg}, only '16' goes through (ratio is NOT a URL — no greedy absorb).
+        # With {arg}, only '16' could go through (a ratio is NOT a URL, so no
+        # greedy absorb) — so the call is declined and the script never runs.
         result = supertool.dispatch("echo:16:9")
-        assert "PASS" in result
-        argv = eval(captured.read_text(encoding="utf-8"))
-        assert argv == ["16"], f"expected ['16'], got {argv!r}"
+        assert "ERROR:" in result, result
+        assert "'9'" in result, result
+        assert not captured.exists(), "the op ran with '9' silently discarded"
 
     def test_args_placeholder_passes_all_chunks(self, tmp_path: Path) -> None:
         """`{args}` substitutes parts[1:] joined by space — all chunks survive."""

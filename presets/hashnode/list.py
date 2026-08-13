@@ -80,4 +80,10 @@ def main(arg: str) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "")
+    # Rejoined on ':' rather than read as argv[1] (#873): core splits the op
+    # string on every ':' and `{args}` hands each token over separately, so
+    # `hashnode_list:USER:5` arrives as two words. `parse_args` splits on ':'
+    # itself, and under the old `{arg}` template that split ran on a string
+    # whose second field had already been discarded upstream — the documented
+    # `[:N]` could never arrive and the default limit was used in silence.
+    main(":".join(sys.argv[1:]))
