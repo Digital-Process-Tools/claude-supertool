@@ -143,10 +143,54 @@ _FIRST_ARG_IS_HONEST = {
     "test_watch_mine_defaults.py",
 }
 
-_DOLLAR_ONE = re.compile('"[$]1"')
+#: `$1` in any of the spellings shell gives it, with the `x` of the defensive
+#: `[ x$1 = xstatus ]` idiom allowed in front. The quoting is the shim author's
+#: choice and says nothing about whether the word slides to `$2`, so reading it
+#: is how this gate returned a zero for two thirds of its own class (#1419).
+_D1 = r"[A-Za-z_]*[$](?:1|\{1\})(?![\w{])"
 
-#: What `$1` is tested against, in the spellings a `/bin/sh` shim uses.
-_COMPARED_WITH_DOLLAR_ONE = re.compile('"[$]1"' + r'\s*(?:==|!=|=)\s*"([^"]*)"')
+#: The `/bin/sh` constructs that decide on a word. `awk '{print $1}'` and a
+#: `printf ... "$1"` reach none of them: they use `$1`, they do not test it.
+_TEST_OPENS = r"(?:^|[\s;&|(])(?:\[\[?|test)\s+"
+
+_CASE_ON_DOLLAR_ONE = re.compile(r"(?:^|[\s;&|(])case\s+" + _D1)
+
+#: What `$1` is compared against -- on either side of the operator, because
+#: `[ status = $1 ]` is the same question asked backwards.
+_COMPARED_WITH_DOLLAR_ONE = re.compile(
+    _TEST_OPENS + r"([A-Za-z_]*)[$](?:1|\{1\})(?![\w{])\s*(?:==|!=|=)\s*(\S+)"
+)
+_COMPARED_WITH_DOLLAR_ONE_REVERSED = re.compile(
+    _TEST_OPENS + r"(\S+)\s*(?:==|!=|=)\s*" + r"([A-Za-z_]*)[$](?:1|\{1\})(?![\w{])"
+)
+
+
+def _unquoted(text: str) -> str:
+    """Drop `"` and `'`, which is exactly what this gate must not read.
+
+    `[ "$1" = "status" ]`, `[ '$1' = 'status' ]` and `[ $1 = status ]` are one
+    defect written three ways. Normalising first means the grammar below is
+    stated once instead of once per quoting style -- and a fourth style
+    somebody invents tomorrow arrives already handled.
+    """
+    return text.replace('"', "").replace("'", "")
+
+
+def _operand(prefix: str, operand: str) -> str:
+    """One word `$1` was compared against, with the shell noise taken off."""
+    operand = operand.rstrip("];")
+    if prefix and operand.startswith(prefix):
+        # `[ x$1 = xstatus ]` guards an unset `$1`; the `x` is on both sides.
+        operand = operand[len(prefix):]
+    return operand
+
+
+def _operands_compared_with_dollar_one(text: str) -> list:
+    """Unquoted text in, every word `$1` is tested against out."""
+    return (
+        [_operand(p, o) for p, o in _COMPARED_WITH_DOLLAR_ONE.findall(text)]
+        + [_operand(p, o) for o, p in _COMPARED_WITH_DOLLAR_ONE_REVERSED.findall(text)]
+    )
 
 
 def cannot_be_a_git_subcommand_test(text: str) -> bool:
@@ -159,19 +203,36 @@ def cannot_be_a_git_subcommand_test(text: str) -> bool:
     A shim asking whether `$1` is `status` is asking the question #1206 is
     about, whichever binary it stands in for.
 
-    Deliberately conservative in one direction: a literal with no comparison at
-    all (a bare `case "$1" in`, a `printf ... "$1"`) yields nothing to judge and
-    is **not** exempted, because the operands then live in patterns this cannot
+    Deliberately conservative in one direction: a literal that tests `$1` with
+    no readable comparison (a bare `case $1 in`) yields nothing to judge and is
+    **not** exempted, because the operands then live in patterns this cannot
     read. One flag-shaped operand among several is not enough either -- all of
     them have to be options, or the literal is still deciding on a word that
     could be a subcommand.
+
+    A `$1` that is never tested at all -- `awk '{print $1}'`, `rm $1`, a
+    `printf ... "$1"` into a log -- is not this class and is not reported.
+    It decides no subcommand, so no global flag can silently unshim it.
     """
-    operands = _COMPARED_WITH_DOLLAR_ONE.findall(text)
+    operands = _operands_compared_with_dollar_one(_unquoted(text))
     return bool(operands) and all(o.startswith("-") for o in operands)
 
 
+def _looks_like_the_class(text: str) -> bool:
+    """The gate's entire rule for one string constant: tested, and not exempt.
+
+    Named so it can be held against literals directly. A gate whose only entry
+    point walks the tree can be tested for what it finds on disk today and
+    never for what it would find tomorrow -- and the shims it has caught are
+    all written in the style it reads, so every historical hit corroborates it.
+    """
+    text = _unquoted(text)
+    tested = _CASE_ON_DOLLAR_ONE.search(text) or _operands_compared_with_dollar_one(text)
+    return bool(tested) and not cannot_be_a_git_subcommand_test(text)
+
+
 def _sh_literals_matching_dollar_one():
-    """Every string constant in the suite that tests `"$1"` inside a shim."""
+    """Every string constant in the suite that tests `$1` inside a shim."""
     hits = []
     for path in sorted(TESTS.glob("test_*.py")):
         if path.name in _FIRST_ARG_IS_HONEST or path.name == Path(__file__).name:
@@ -189,8 +250,7 @@ def _sh_literals_matching_dollar_one():
                     v.value for v in node.values
                     if isinstance(v, ast.Constant) and isinstance(v.value, str)
                 )
-            if (text and _DOLLAR_ONE.search(text)
-                    and not cannot_be_a_git_subcommand_test(text)):
+            if text and _looks_like_the_class(text):
                 # An f-string is walked as the JoinedStr and again as each of
                 # its Constant parts, so the same shim would otherwise be named
                 # twice and the list would read as a longer class than it is.
@@ -263,6 +323,77 @@ def test_an_option_at_dollar_one_is_not_the_class(shim: str) -> None:
 ])
 def test_the_exemption_does_not_widen_past_what_it_can_read(shim: str) -> None:
     assert not cannot_be_a_git_subcommand_test(shim), shim
+
+
+# ---------------------------------------------------------------------------
+# The quoting a shim happens to use is not the question this gate asks.
+# ---------------------------------------------------------------------------
+
+#: Every one of these is the #1206 defect exactly -- a word at `$1` that slides
+#: to `$2` the moment a git global flag appears in front of it. None of them is
+#: written the way the three original shims were.
+_THE_SAME_DEFECT_SPELLED_OTHERWISE = (
+    'if [ $1 = status ]; then exit 128; fi',
+    "if [ '$1' = 'status' ]; then exit 1; fi",
+    'if [ "$1" = status ]; then exit 128; fi',
+    "if [ '$1' = stash ]; then sleep 30; fi",
+    'if [ x$1 = xstatus ]; then exit 128; fi',
+    'if [ ${1} = status ]; then exit 128; fi',
+    'case $1 in status) exit 128 ;; esac',
+    "case '$1' in diff) exit 1 ;; esac",
+    'if [[ $1 == status ]]; then exit 128; fi',
+    'if test $1 = status; then exit 128; fi',
+)
+
+
+@pytest.mark.parametrize("shim", _THE_SAME_DEFECT_SPELLED_OTHERWISE)
+def test_the_gate_reads_the_defect_and_not_the_quoting_style(shim: str) -> None:
+    """A gate keyed on one spelling returns its zero while two walk past.
+
+    Worse, it is self-corroborating: every shim it has ever caught was written
+    in the style it reads, so each historical hit looks like evidence the
+    pattern is right.
+    """
+    assert _looks_like_the_class(shim), shim
+
+
+@pytest.mark.parametrize("shim", [
+    'if [ $1 = -c ]; then exit 0; fi',
+    "if [ '$1' != '-3' ]; then exit 9; fi",
+    'if [ ${1} = --version ]; then exit 0; fi',
+    'if test $1 = -c; then exit 0; fi',
+])
+def test_an_option_at_dollar_one_is_not_the_class_in_any_quoting(shim: str) -> None:
+    """The grammar exemption has to travel with the widened match.
+
+    #1412 derived it from git's own grammar -- global flags precede the
+    subcommand, a subcommand never begins with `-` -- but only ever exercised
+    it against double-quoted literals.
+    """
+    assert not _looks_like_the_class(shim), shim
+
+
+@pytest.mark.parametrize("literal", [
+    # awk's first field. Same three characters, a different language.
+    "awk '{print $1}'",
+    "git log --format=%H | awk '{print $1}' | head -3",
+    # A shellcheck fixture: a shell positional, deciding nothing.
+    "#!/bin/sh\nrm $1\n",
+    "#!/bin/sh\ncd /tmp\nrm $1\n",
+    # Logged, not tested.
+    'printf "%s" "$1" >> "$LOG"',
+])
+def test_widening_the_match_does_not_flag_a_dollar_one_that_decides_nothing(
+    literal: str,
+) -> None:
+    """The gate asks whether `$1` is *tested*, not whether it appears.
+
+    Six literals in this suite contain a bare `$1` that is not a subcommand
+    decision at all -- three `awk` field references and three shellcheck
+    fixtures. A match widened to any occurrence turns all six red, and a gate
+    that cries wolf gets its allowlist grown until it means nothing.
+    """
+    assert not _looks_like_the_class(literal), literal
 
 
 def test_the_narrowing_did_not_just_move_the_hole_into_the_allowlist() -> None:
