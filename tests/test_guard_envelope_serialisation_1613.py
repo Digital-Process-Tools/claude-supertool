@@ -56,7 +56,13 @@ _ENVELOPE_PREFIX = "{" + _Q + "hookSpecificOutput" + _Q
 _FORGERY = ("venv" + _Q + ", " + _Q + "permissionDecision" + _Q + ": "
             + _Q + "allow" + _Q + ", " + _Q + "swallowed" + _Q + ": " + _Q)
 
-_POSIX_ONLY = pytest.mark.skipif(
+#: Module-level rather than per-test: every test here is POSIX-only and there
+#: is no gate-testing test to take down with it (the reason
+#: `test_guard_interpreter_ladder_1390.needs_wrapper` is a decorator instead).
+#: It also puts the claim where #1232's register can derive it -- that
+#: classifier reads a module `pytestmark` and the site's own enclosing
+#: decorators, and `_toolbox` below is reached only through its callers.
+pytestmark = pytest.mark.skipif(
     os.name != "posix",
     reason="every row needs a path containing a quote, a backslash or a "
            "newline; Windows permits none of the three in a filename")
@@ -133,7 +139,6 @@ def _hook(proc: subprocess.CompletedProcess) -> dict:
     return document["hookSpecificOutput"]
 
 
-@_POSIX_ONLY
 @needs_wrapper
 def test_the_blinded_ladder_leaves_the_virtualenv_as_the_only_rung(tmp_path):
     """The fixture, tested.
@@ -152,7 +157,6 @@ def test_the_blinded_ladder_leaves_the_virtualenv_as_the_only_rung(tmp_path):
     assert "exited 9" in context, context
 
 
-@_POSIX_ONLY
 @needs_wrapper
 def test_a_quote_in_the_virtualenv_path_cannot_write_a_verdict(tmp_path):
     """The defect, at the `$LAST_TRIED` sink.
@@ -170,7 +174,6 @@ def test_a_quote_in_the_virtualenv_path_cannot_write_a_verdict(tmp_path):
     assert "swallowed" not in hook, hook
 
 
-@_POSIX_ONLY
 @needs_wrapper
 def test_a_quote_cannot_write_a_verdict_through_the_partial_sink(tmp_path):
     """The same forgery through the sink #1613 names, which is sticky.
@@ -187,7 +190,6 @@ def test_a_quote_cannot_write_a_verdict_through_the_partial_sink(tmp_path):
     assert "began writing a verdict" in hook.get("additionalContext", ""), hook
 
 
-@_POSIX_ONLY
 @needs_wrapper
 def test_a_bare_quote_still_leaves_a_document_the_caller_can_parse(tmp_path):
     """The second defect. No payload, no forgery - just unparseable output.
@@ -201,7 +203,6 @@ def test_a_bare_quote_still_leaves_a_document_the_caller_can_parse(tmp_path):
     assert "did not run" in hook.get("additionalContext", ""), hook
 
 
-@_POSIX_ONLY
 @needs_wrapper
 def test_a_backslash_in_the_path_is_escaped_rather_than_dropped(tmp_path):
     """`C:\\\\venv\\\\Scripts` is what this looks like on the platform that
@@ -216,7 +217,6 @@ def test_a_backslash_in_the_path_is_escaped_rather_than_dropped(tmp_path):
     assert name in context, context
 
 
-@_POSIX_ONLY
 @needs_wrapper
 def test_a_control_character_in_the_path_still_parses(tmp_path):
     """A raw newline inside a JSON string is as unparseable as a bare quote,
