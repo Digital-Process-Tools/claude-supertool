@@ -22,7 +22,6 @@ silently not applied reads, in the receipt, exactly like one that was.
 """
 from __future__ import annotations
 
-import json
 import os
 import shlex
 from pathlib import Path
