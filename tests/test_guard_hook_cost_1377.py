@@ -66,7 +66,7 @@ def project(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _hook_in_a_fresh_interpreter(command: str, cwd: Path):
+def _hook_in_a_fresh_interpreter(command: str, cwd: Path, home: Path = None):
     """Run `main()` and report whether `_supertool` reached `sys.modules`.
 
     A subprocess rather than a call, because the question is about an import
@@ -81,6 +81,10 @@ def _hook_in_a_fresh_interpreter(command: str, cwd: Path):
           " else 'ABSENT')" + chr(10))
     env = dict(os.environ)
     env["CLAUDE_PLUGIN_ROOT"] = str(_ROOT)
+    if home is not None:
+        # Both spellings: `os.path.expanduser` reads USERPROFILE first on
+        # Windows and HOME on POSIX, and `_find_preset_file` calls it.
+        env["HOME"] = env["USERPROFILE"] = str(home)
     payload = json.dumps({"tool_name": "Bash",
                           "tool_input": {"command": command}})
     return subprocess.run([sys.executable, "-c", code], input=payload,
@@ -126,6 +130,44 @@ def test_a_project_that_declares_replaces_turns_the_fast_path_off(tmp_path):
     assert proc.stderr.endswith("IMPORTED"), proc.stderr[-400:]
     hook = json.loads(proc.stdout)["hookSpecificOutput"]
     assert hook.get("permissionDecision") == "deny", proc.stdout
+
+
+def test_a_user_level_preset_is_not_invisible_to_the_screen(tmp_path):
+    """`_find_preset_file` searches three directories, and one was missed.
+
+    Project, then `~/.config/supertool/presets/`, then the plugin's own. A
+    project that enables a user-level preset declaring `replaces` has no
+    literal `"replaces"` anywhere in its own tree, so the project screen sees
+    nothing to bail on — and the word list, read from the shipped directory
+    alone, does not carry the word either. The command then took the fast path
+    and ran unguarded, which is the one direction this screen may not be wrong
+    in. Found by review, not by the design.
+    """
+    home = tmp_path / "home"
+    presets = home / ".config" / "supertool" / "presets"
+    presets.mkdir(parents=True)
+    (presets / "mine.json").write_text(json.dumps({"ops": {"hd": {
+        "cmd": "true", "safety": "read-only", "syntax": "hd",
+        "description": "d",
+        "replaces": [{"argv": "hexdump", "use": "hd"}]}}}), encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".supertool.json").write_text(
+        json.dumps({"presets": ["mine"]}), encoding="utf-8")
+
+    proc = _hook_in_a_fresh_interpreter("hexdump -C /etc/hosts", project, home)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stderr.endswith("IMPORTED"), proc.stderr[-400:]
+    hook = json.loads(proc.stdout)["hookSpecificOutput"]
+    assert hook.get("permissionDecision") == "deny", proc.stdout
+
+
+def test_a_preset_file_that_is_not_an_object_disables_the_fast_path(tmp_path):
+    """Unexpected shape means "did not look", at every level of the file."""
+    presets = tmp_path / "presets"
+    presets.mkdir()
+    (presets / "odd.json").write_text("[]", encoding="utf-8")
+    assert pre_bash_guard._replaced_words(str(tmp_path)) is None
 
 
 def test_the_plugins_own_checkout_still_takes_the_fast_path():

@@ -76,8 +76,27 @@ def _names_word(command: str, word: str) -> bool:
 _EXPANSION = re.compile("[$`]")
 
 
+def _preset_directories(root: str):
+    """(directory, required) for every preset tier that is not per-project.
+
+    `_find_preset_file` resolves three: `{project}/presets`, then
+    `~/.config/supertool/presets`, then the install's own. The project tier is
+    the caller's, because it moves with cwd and is handled by
+    `_project_declares_replaces`; the other two are scanned here.
+
+    Missing the user tier was a live hole (#1377, found in review): a project
+    whose `.supertool.json` enables a user-level preset has no literal
+    `"replaces"` anywhere in its own tree, so nothing bailed, and the word the
+    preset declared was not in the list either. The command took the fast path
+    and ran unguarded.
+    """
+    return [(os.path.join(root, "presets"), True),
+            (os.path.join(os.path.expanduser("~"), ".config", "supertool",
+                          "presets"), False)]
+
+
 def _replaced_words(root: str):
-    """Every command word the shipped presets declare, or None if unknown.
+    """Every command word those presets declare, or None if unknown.
 
     A flat scan of `presets/*.json`, which is emphatically **not** how the
     guard itself reads the registry — `_guard_replacements` goes through
@@ -92,21 +111,38 @@ def _replaced_words(root: str):
     `guard_command_words` preset by preset, which is what keeps two readers of
     one registry from drifting apart silently.
     """
-    directory = os.path.join(root, "presets")
+    words = set()
+    for directory, required in _preset_directories(root):
+        names = _preset_names(directory)
+        if names is None:
+            if required:
+                return None
+            continue
+        if _collect_words(directory, names, words) is None:
+            return None
+    return frozenset(words)
+
+
+def _preset_names(directory: str):
+    """The `.json` files in *directory*, or None if it could not be listed."""
     try:
-        names = sorted(os.listdir(directory))
+        return sorted(name for name in os.listdir(directory)
+                      if name.endswith(".json"))
     except OSError:
         return None
-    words = set()
+
+
+def _collect_words(directory: str, names, words):
+    """Add every declared command word, or None on anything unexpected."""
     for name in names:
-        if not name.endswith(".json"):
-            continue
         try:
             with open(os.path.join(directory, name), encoding="utf-8") as fh:
                 data = json.load(fh)
         except (OSError, ValueError, UnicodeDecodeError):
             return None
-        ops = data.get("ops") if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            return None
+        ops = data.get("ops")
         if ops is None:
             continue
         if not isinstance(ops, dict):
@@ -126,7 +162,7 @@ def _replaced_words(root: str):
                 if not argv:
                     return None
                 words.add(argv[0])
-    return frozenset(words)
+    return words
 
 
 def _project_declares_replaces(start: str, root: str) -> bool:
