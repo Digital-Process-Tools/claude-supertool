@@ -51,6 +51,59 @@ def refusal_line(text: str) -> str:
     return first_line(text)
 
 
+def report_lines(stdout: str) -> list:
+    """Lines phpstan wrote to stdout that are NOT it declining to run (#1527).
+
+    `is_refusal` is a lowercased substring test, so asking it about a whole
+    output blob answers "does a refusal phrase appear anywhere in here", not
+    "did phpstan decline". A `PHPSTAN_SKIP_PATTERNS` entry the repo added, or a
+    stock phrase inside PHP bootstrap noise, then converted a run that had
+    reported into a whole-file `skipped`.
+
+    What that costs is the exit code, not an edit. Measured against the core
+    predicates: neither verdict rolls back — `_validator_regressed` is False for
+    a `skipped` and for an `adapter`-coded non-verdict alike — but only the
+    second reaches `_note_not_checked`, which exits 1 whatever
+    `$SUPERTOOL_REQUIRE_VALIDATORS` says. So the laundered verdict handed a
+    green to `supertool 'edit:...' && git commit` over a report nobody read.
+
+    The discriminator is *where*, not *what*. Under `--error-format=json`
+    phpstan puts its report on stdout as one JSON object and its declination on
+    stderr with stdout empty (measured, phpstan 2.1.55). So anything on stdout
+    beyond the refusal statement itself is phpstan reporting, however badly the
+    bytes arrived, and the adapter must say it could not read a report rather
+    than claim there was nothing to read.
+
+    Two limits, stated rather than implied. A line carrying both the noise and
+    the report with no break between them still reads as a refusal line, because
+    a substring test cannot see inside a line. And stderr is deliberately not
+    filtered this way: no report ever lands there, a real refusal shares it with
+    a `Note:` preamble, and demanding stderr hold nothing else would turn the
+    measured refusal shape into an error.
+    """
+    rest = []
+    for line in split_lines(stdout or ""):
+        stripped = line.strip()
+        if stripped and not is_refusal(stripped, SKIP_PATTERNS_ENV):
+            rest.append(stripped)
+    return rest
+
+
+def unreadable_report(lines: list, limit: int = 200) -> str:
+    """`phpstan output not json` with the bytes that would not parse.
+
+    The message used to name the fault and none of its evidence, so a reader
+    could not tell a corrupt report from a wrapper writing over the pipe. The
+    first unreadable line is the one thing that distinguishes them.
+    """
+    body = " ".join(" ".join(lines).split())
+    if not body:
+        return "phpstan output not json"
+    if len(body) > limit:
+        body = body[:limit] + f"... (+{len(body) - limit} chars)"
+    return f"phpstan output not json: {body}"
+
+
 def emit(obj: dict) -> None:
     print(json.dumps(obj))
 
@@ -126,7 +179,13 @@ def main() -> None:
         # exit we cannot explain stays an error, and only a genuinely quiet
         # success keeps the clean verdict.
         combined = os.linesep.join([r.stdout or "", r.stderr or ""])
-        if is_refusal(combined, SKIP_PATTERNS_ENV):
+        # A declination and a report are mutually exclusive claims, and only one
+        # of them can reach stdout. So the refusal arm is gated on stdout holding
+        # nothing but the refusal itself (#1527) — otherwise a phrase in
+        # bootstrap noise converts an unreadable report into "there was nothing
+        # to read", which never rolls back and never renders red.
+        unread = report_lines(r.stdout or "")
+        if not unread and is_refusal(combined, SKIP_PATTERNS_ENV):
             reason = refusal_line(combined) or "phpstan declined to analyse"
             emit(skipped("phpstan", file, reason, dur))
             return
@@ -134,7 +193,8 @@ def main() -> None:
             emit({
                 "tool": "phpstan", "file": file, "ok": False, "count": 1,
                 "errors": [{"line": None, "col": None, "severity": "error",
-                            "code": "adapter", "msg": "phpstan output not json"}],
+                            "code": "adapter",
+                            "msg": unreadable_report(unread)}],
                 "duration_ms": dur,
             })
             return
