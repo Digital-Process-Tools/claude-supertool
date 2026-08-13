@@ -625,6 +625,25 @@ def assess(entry: dict, *, now: float | None = None, window: int | None = None,
 
 # ── the tracker column ───────────────────────────────────────────────────
 
+class RemoteRefs(dict):
+    """The name-keyed mapping every caller reads, plus every ref it was built
+    from (`all_refs`).
+
+    A mapping keyed by branch name cannot answer *is `refs/remotes/fork/X`
+    here* — one name, one value — and that is the question #1525 turns on:
+    without it, "the branch tracks a remote whose ref is not in this clone"
+    is indistinguishable from "the branch is in sync", because both end at the
+    same origin-preferred ref. Membership by branch name is unchanged, so a
+    caller handed one of these cannot tell the difference.
+    """
+
+    __slots__ = ("all_refs",)
+
+    def __init__(self, mapping=None, all_refs=()) -> None:
+        super().__init__(mapping or {})
+        self.all_refs = frozenset(all_refs)
+
+
 def remote_branch_names():
     """Branch names that exist on some remote, as `(names, why)`.
 
@@ -650,6 +669,7 @@ def remote_branch_names():
         why = (res.stderr or "").strip().splitlines()
         return None, (why[0] if why else f"git for-each-ref exited {res.returncode}")
     names = {}
+    all_refs = []
     for line in res.stdout.splitlines():
         ref = line.strip()
         # `refs/remotes/<remote>/<name>` — the same three components
@@ -657,13 +677,56 @@ def remote_branch_names():
         parts = ref.split("/", 3)
         if len(parts) != 4 or not parts[3]:
             continue
-        # Two remotes can carry the same branch name. `origin` wins rather than
-        # whichever sorts first, so the measurement is taken against the remote
-        # the row is about; before this the key was all there was and the
-        # question did not arise.
+        # Two remotes can carry the same branch name, and this key cannot hold
+        # both. `origin` wins the *name* lookup rather than whichever sorts
+        # first — but that preference is no longer what the count is taken
+        # against (#1525): it decides only the fallback for a branch that
+        # tracks nothing, and `all_refs` carries every ref so `_sync_for` can
+        # ask about the one the branch actually tracks.
         if parts[3] not in names or parts[2] == "origin":
             names[parts[3]] = ref
-    return names, ""
+        all_refs.append(ref)
+    return RemoteRefs(names, all_refs), ""
+
+
+def upstream_refs():
+    """What each local branch tracks, as `(mapping, why)` (#1525).
+
+    `branch name → (upstream ref, remote name)`, both `""` for a branch that
+    tracks nothing — a third state, not a zero. `(None, why)` when git did not
+    answer, and that `None` is not allowed to decay into "tracks origin",
+    which is the whole of the mistake this exists to end.
+
+    `%(upstream)` is *configuration* — `branch.<b>.remote` plus `.merge` — not
+    ref existence: a branch whose upstream was deleted on the remote and pruned
+    here still reports the ref it tracks. That is deliberate. The row is about
+    that remote whether or not a ref for it is on disk, and the alternative is
+    silently measuring against whichever other remote happens to carry a branch
+    of the same name.
+    """
+    res = _git(["for-each-ref",
+                "--format=%(refname:strip=2)%09%(upstream)%09%(upstream:remotename)",
+                "refs/heads/"])
+    if res.returncode != 0:
+        # `flat`, not the bare line: this is git's own stderr about refs a
+        # remote named, and it is rendered as one line of the board. The
+        # ratchet in `tests/test_forged_child_stream_line_1475.py` is what
+        # caught this site — the targeted runs never touched it.
+        why = _untrusted.split_lines((res.stderr or "").strip())
+        return None, _untrusted.flat(why[0] if why else
+                                     f"git for-each-ref exited {res.returncode}")
+    ups = {}
+    for line in _untrusted.split_lines(res.stdout):
+        # A git ref name cannot contain a tab, so three fields is the whole
+        # record shape. Anything else is a name carrying its own line
+        # separator (`check-ref-format` accepts U+2028, #1119) and is dropped
+        # rather than half-read — that branch then falls to the name-keyed
+        # fallback, which says out loud that it was picked by name.
+        parts = line.split("\t")
+        if len(parts) != 3 or not parts[0]:
+            continue
+        ups[parts[0]] = (parts[1], parts[2])
+    return ups, ""
 
 
 class Sync:
@@ -674,17 +737,30 @@ class Sync:
     licenses the word *published* (#1496).
     """
 
-    __slots__ = ("ahead", "why")
+    __slots__ = ("ahead", "why", "ref", "how")
 
-    def __init__(self, ahead, why: str = "") -> None:
+    def __init__(self, ahead, why: str = "", ref: str = "",
+                 how: str = "") -> None:
         self.ahead = ahead
         self.why = why
+        #: The ref the count was taken against, and why that ref. A count
+        #: against an unnamed remote cannot be checked by the reader (#1525),
+        #: so both travel with the number rather than being reconstructed by
+        #: whoever renders it.
+        self.ref = ref
+        self.how = how
 
     def __repr__(self) -> str:
-        return f"Sync({self.ahead!r}, {self.why!r})"
+        return f"Sync({self.ahead!r}, {self.why!r}, {self.ref!r}, {self.how!r})"
 
 
-def unpushed_for(branch: str, remote_ref: str) -> Sync:
+#: Why `Sync.ref` is the ref it is. Two answers, and the difference is the
+#: point: one is the branch's own upstream, the other only shares its name.
+HOW_UPSTREAM = "the remote this branch tracks"
+HOW_BY_NAME = "picked by name: this branch has no upstream configured"
+
+
+def unpushed_for(branch: str, remote_ref: str, how: str = "") -> Sync:
     """Commits on `branch` that are not on `remote_ref`, as a `Sync`.
 
     Ahead only. *Behind* is a fact about the remote having moved and says
@@ -697,7 +773,8 @@ def unpushed_for(branch: str, remote_ref: str) -> Sync:
     taken, because `0` is what the caller turns into "published".
     """
     if not branch or not remote_ref:
-        return Sync(None, "no remote ref to measure this branch against")
+        return Sync(None, "no remote ref to measure this branch against",
+                    how=how)
     res = _git(["rev-list", "--count", f"{remote_ref}..refs/heads/{branch}"])
     if res.returncode != 0:
         # `_untrusted.split_lines`, not `str.splitlines()`: this is git's own
@@ -706,12 +783,13 @@ def unpushed_for(branch: str, remote_ref: str) -> Sync:
         # shown — the same reason the rest of this family narrowed (#1081).
         why = _untrusted.split_lines((res.stderr or "").strip())
         return Sync(None, (why[0] if why else
-                           f"git rev-list exited {res.returncode}"))
+                           f"git rev-list exited {res.returncode}"),
+                    remote_ref, how)
     text = res.stdout.strip()
     if not text.isdigit():
         return Sync(None, "git rev-list --count answered with "
-                          f"{text[:40]!r}, which is not a count")
-    return Sync(int(text), "")
+                          f"{text[:40]!r}, which is not a count", remote_ref, how)
+    return Sync(int(text), "", remote_ref, how)
 
 
 def _pr_detail(pr: dict) -> str:
@@ -781,32 +859,41 @@ def tracker_for(branch: str, index, remote_branches, remote_why: str = "",
     # was one commit ahead of `origin/master` and the row read `the work is
     # published but unproposed`. Read by somebody deciding whether a tree can
     # be discarded, `published` reads as `safe to remove`.
+    # `not measured` is its own token and not `no open PR`, because the row
+    # line is all some readers see and the two facts led to opposite actions
+    # (#1525).
     if sync is None:
-        return Tracker(TRACKER_NONE, "no open PR",
-                       "a remote-tracking ref exists for this branch and no open PR "
-                       "tracks it. Whether the branch is in SYNC with that ref was "
-                       "not measured here, so no publication claim is made about "
-                       "this branch")
+        return Tracker(TRACKER_NONE, "sync not measured, no open PR",
+                       "a remote-tracking ref exists for this branch's name and no "
+                       "open PR tracks it. Whether the branch is in SYNC with any "
+                       "remote was not measured here, so no publication claim is "
+                       "made about this branch")
     if sync.ahead is None:
-        return Tracker(TRACKER_NONE, "no open PR",
-                       "a remote-tracking ref exists for this branch and no open PR "
-                       "tracks it. Whether every local commit is on that ref is "
-                       f"UNKNOWN ({sync.why}) — so this declines rather than "
-                       "calling the work published")
+        return Tracker(TRACKER_NONE, "sync not measured, no open PR",
+                       "no open PR tracks this branch, and whether every local "
+                       "commit is on the remote it tracks is UNKNOWN — NOT "
+                       f"measured ({sync.why}) — so this declines rather than "
+                       "claiming the work is safely on a remote")
+    # A `Sync` built without a ref still renders a sentence: `its remote ref`
+    # is what this line said before #1525 and is the honest fallback, where
+    # `NOT on , and` is not a sentence at all.
+    where = sync.ref or "its remote ref"
+    if sync.how:
+        where = f"{where} ({sync.how})"
     if sync.ahead > 0:
         return Tracker(TRACKER_NONE, f"{sync.ahead} unpushed, no open PR",
-                       f"a remote-tracking ref exists, but {sync.ahead} commit(s) "
-                       "here are NOT on it and no open PR tracks the branch — the "
-                       "work is NOT published: those commits exist only in this "
-                       "clone")
+                       f"{sync.ahead} commit(s) here are NOT on {where}, and no "
+                       "open PR tracks the branch — the work is NOT published: "
+                       "those commits exist only in this clone")
     return Tracker(TRACKER_NONE, "no open PR",
-                   "the branch is pushed, in sync with its remote ref, and no open "
-                   "PR tracks it — the work is published but unproposed")
+                   f"every commit here is also on {where}, and no open PR tracks "
+                   "the branch — the work is published but unproposed")
 
 
 # ── rendering ────────────────────────────────────────────────────────────
 
-def _sync_for(branch: str, remote_names) -> "Sync | None":
+def _sync_for(branch: str, remote_names, upstreams,
+              upstream_why: str) -> "Sync | None":
     """The publication measurement for one row, or `None` if there is none to make.
 
     `None` for a branch with no remote ref (the row says that already) and for a
@@ -814,14 +901,58 @@ def _sync_for(branch: str, remote_names) -> "Sync | None":
     — in both cases the count was not taken, and `tracker_for` says so instead
     of inferring it.
 
-    One `git rev-list --count` per *pushed* branch, local and cheap. It is not
+    **Which ref the count is taken against**, in order (#1525):
+
+    1. **The ref the branch tracks**, when that is `refs/remotes/<remote>/
+       <branch>` and it is in this clone. The rule before this preferred
+       `origin` unconditionally, so on a fork layout — upstream `fork/X`, an
+       `origin/X` at a different commit — the row counted against a remote it
+       was never about, in a sentence that named no remote at all. Measured
+       live before the fix: a branch one commit ahead of its `fork` upstream
+       read *in sync with its remote ref … published but unproposed*.
+    2. **Nothing, deliberately**, when the branch tracks a ref that is not here
+       (deleted on the remote, or never fetched) or one that is a *different*
+       branch — `git worktree add -b X … master` leaves X tracking
+       `origin/master`, and measuring X against that is #1496's mistake with a
+       fresh face. A same-named ref on another remote is not a substitute: it
+       answers "0 commits missing" about a remote this row is not about, which
+       is exactly the reading being removed. `Sync(None, why)` renders as *not
+       measured*, which the row shows differently from *in sync*.
+    3. **The same-named ref**, `origin` preferred, when the branch tracks
+       nothing at all. The commits really are on it, and that is what somebody
+       deciding whether to discard a tree is asking — but the row says the ref
+       was picked by name, because nothing establishes it is the branch's.
+
+    `upstreams` and `upstream_why` are required, not defaulted — the same
+    discipline as `push.py`'s `fallback_remote` (#656), for the same reason: a
+    new call site cannot reintroduce the origin guess by omitting an argument.
+
+    One `git rev-list --count` per *measured* branch, local and cheap. It is not
     batched into the single `for-each-ref` above because a count per ref is what
     is being asked for, and it costs no network.
     """
     if not branch or not isinstance(remote_names, dict):
         return None
-    ref = remote_names.get(branch)
-    return unpushed_for(branch, ref) if ref else None
+    by_name = remote_names.get(branch)
+    if upstreams is None:
+        return Sync(None, "which remote this branch tracks could not be read "
+                          f"({upstream_why or 'the upstreams were not read'}) "
+                          "— so no count was taken: a count against a remote "
+                          "the row may not be about is worse than no count")
+    up_ref, up_remote = upstreams.get(branch, ("", ""))
+    if up_ref:
+        if not up_remote or up_ref != f"refs/remotes/{up_remote}/{branch}":
+            return Sync(None, f"this branch tracks {up_ref}, which is a "
+                              "different branch and not a remote copy of this "
+                              "one, so no count was taken against it")
+        if up_ref not in getattr(remote_names, "all_refs", frozenset([up_ref])):
+            other = (f"; {by_name} is here but belongs to another remote and "
+                     "was NOT measured") if by_name and by_name != up_ref else ""
+            return Sync(None, f"this branch tracks {up_ref} and there is no "
+                              "such remote-tracking ref in this clone — deleted "
+                              f"on {up_remote}, or never fetched here{other}")
+        return unpushed_for(branch, up_ref, HOW_UPSTREAM)
+    return unpushed_for(branch, by_name, HOW_BY_NAME) if by_name else None
 
 
 def _exit_note(code: int, why: str) -> str:
@@ -1043,12 +1174,17 @@ def main() -> int:
     merged_prs = (query_merged_prs_for_branches(
         [e.get("branch") or "" for e in entries]) if want_pr else None)
     remote_names, remote_why = remote_branch_names() if want_pr else (None, "")
+    # Which remote each branch tracks, so the count below is about *that* one
+    # rather than whichever remote happens to carry the same branch name
+    # (#1525). One call for the whole board, like the ref listing above.
+    upstreams, upstream_why = upstream_refs() if want_pr else (None, "")
     memo: dict = {}
     rows = [(entry,
              assess(entry, scan=_cwd_scan(entry["path"], memo)),
              tracker_for(entry.get("branch") or "", index, remote_names,
                          remote_why,
-                         sync=_sync_for(entry.get("branch") or "", remote_names))
+                         sync=_sync_for(entry.get("branch") or "", remote_names,
+                                        upstreams, upstream_why))
              if want_pr else None,
              merged_for(entry.get("branch") or "", ancestors, merged_prs,
                         ancestors_why=ancestors_why, base=base))
