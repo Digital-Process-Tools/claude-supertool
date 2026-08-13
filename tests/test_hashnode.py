@@ -25,6 +25,11 @@ def _no_outbound(monkeypatch: pytest.MonkeyPatch) -> None:
     `gql.hashnode.com` on every CI leg and nothing in the suite output said so.
     A missing stub now fails at the socket, naming the host, instead of being
     answered by the internet.
+
+    Redundant since #1341: `tests/conftest.py` arms `block_outbound` for every
+    test in the suite, so this file is no longer what guards it and deleting
+    this fixture would reopen nothing. It is kept for the history above, which
+    is about *this* module and belongs beside it.
     """
     block_outbound(monkeypatch)
 

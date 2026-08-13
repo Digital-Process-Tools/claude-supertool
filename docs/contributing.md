@@ -502,17 +502,11 @@ monkeypatch.setattr(sys.modules["_http"], "_OPEN", lambda req, timeout=0: _Resp(
 
 The same trap one layer up: an op with both a `gql` and a `gql_safe` needs both stubbed, or whichever one the code path under test actually calls stays live.
 
-**Arm `block_outbound` so a missed stub fails at the socket.**
-
-```python
-from _netblock import block_outbound
-
-@pytest.fixture(autouse=True)
-def _no_outbound(monkeypatch: pytest.MonkeyPatch) -> None:
-    block_outbound(monkeypatch)
-```
+**`block_outbound` is already armed for every test — you do not opt in ([#1341](https://github.com/Digital-Process-Tools/claude-supertool/issues/1341)).** `tests/conftest.py` applies it in an autouse fixture across the whole suite, so a missed or misaimed stub fails at the socket instead of contacting a third party and passing on the reply. Until #1341 it was a per-file fixture you had to remember, which is the same shape as a linter nobody runs: the three leaks #1312 found were all in files that had not added it.
 
 `tests/_netblock.py` refuses any non-loopback `connect` or `getaddrinfo` and names the host and what to stub. Loopback and `AF_UNIX` stay open, so `test_http_bounds.py` and the `claude-channel` suites are unaffected — those bind their own servers and the process under test is the one that answered.
+
+**What it does not cover, so you do not read its green as more than it is:** it binds `socket` in the pytest process only. A test that shells out to `supertool.py` or a preset gets an unpatched child, and nothing there is blocked. That is the same blind spot the static grep has for a *missing* stub — #1312 measured a grep for transport tokens at 2 of 3 live leaks against the socket recorder's 3 of 3, because the third leak contained no transport token at all.
 
 Why this is a rule and not a nicety: a live call makes the leg a statement about somebody else's DNS and redirect policy. #1312 was filed off a red on PR #1302, whose diff was one test file and one markdown table; Hashnode had started answering 301, `_http.urlopen` correctly refused the off-origin hop, and the test rendered that correct refusal as a product defect.
 
@@ -905,10 +899,24 @@ platform bug for a day; `-n0` reproduces it on any platform in under a second.
 
 **Registering the state is the fix, not relaxing the assertion.** Every
 process-lifetime ledger or cache belongs in `conftest.RESET_GLOBALS` (for
-`supertool`) or `conftest.PRESET_ENV_RESET_GLOBALS` (for the `_env` module the
+`supertool`) or `conftest.PRESET_RESET_GLOBALS` (for the `_env` module the
 presets share), so it is restored between tests and the assertion keeps meaning
 what it says. Loosening the assertion, or asserting only when the output is
 non-empty, converts "this broke" into "this silently gave you something else".
+
+**"Same lifetime as X" is a claim about *when a value is built*, and a lazy
+cache is built at first use** ([#1322](https://github.com/Digital-Process-Tools/claude-supertool/issues/1322)).
+That is what put `_REPO_TARGET_MODES` and `_SHIPPED_PRESET_OPS` in
+`RESET_EXEMPT_GLOBALS` for months. Their *inputs* really are a property of the
+install — the shipped `presets/*.json` — but the values are read from
+`_INSTALL_DIR` on first call, and tests patch `_INSTALL_DIR`. A cache built
+under that patch is **empty**, being exempt it is preserved, and
+`_repo_target_ops()` then answers "no op accepts a repo target" for the rest of
+that worker: every `repo:` call refuses every op it is handed, in three tests
+that have nothing to do with presets. An exempt name must be written at
+*import*, not merely derived from something that never changes;
+`tests/test_lazy_cache_lifetimes_1322.py` fails the build on any new `None`
+sentinel added to the exempt tuple.
 
 ### Never reach a preset module by bare import
 

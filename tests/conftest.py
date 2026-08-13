@@ -103,6 +103,62 @@ if (_PRESETS / "_env.py").is_file():
     import _env  # noqa: E402
 
 
+# The transport seam is enforced by the socket, not by a convention (#1341).
+#
+# `presets/_http.py` binds `_OPEN = _OPENER.open` at import and every preset
+# calls through that name, so a test stubbing `MODULE.urllib.request.urlopen`
+# replaces a name nothing consults: the request leaves the machine and the test
+# passes on whatever the internet answers. Two tests in
+# `test_security_error_echo_691.py` were in that state for months, one of them a
+# credential-redaction regression test whose injected payload had never once
+# been delivered (#1312).
+#
+# A rename check does not reach that. The stubbed name *existed* and was live —
+# it simply was not the one the product calls — and only observing the transport
+# can tell those two apart. #1312 measured both over 559 test modules: a static
+# grep for transport tokens found 2 of the 3 live leaks, the socket recorder
+# found 3 of 3. The one it alone caught contained no transport token at all,
+# because it was a missing stub rather than a wrong one.
+#
+# Blind spot, stated here rather than discovered later: this binds `socket` in
+# the pytest process only. A test that shells out to `supertool.py` or a preset
+# gets an unpatched child. Loopback and AF_UNIX stay open on purpose —
+# `test_http_bounds.py` and the `claude-channel` suites bind real servers on
+# 127.0.0.1 and those are hermetic.
+#
+# Tolerated rather than assumed, exactly as `_paths` and `_env` above.
+_netblock = None
+if (Path(__file__).parent / "_netblock.py").is_file():
+    sys.path.insert(0, str(Path(__file__).parent))
+    import _netblock  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _block_outbound_network():
+    """Refuse non-loopback sockets for every test in the suite (#1341).
+
+    It builds its **own** `MonkeyPatch` rather than requesting the shared
+    `monkeypatch` fixture, and that is not a style choice. An autouse fixture
+    defined this early in the file is set up first and therefore torn down
+    *last*; asking it for `monkeypatch` instantiates that fixture here, which
+    moves its `undo()` to after `_guard_repo_git_state`'s teardown. Measured:
+    `test_git_resolve.py` and `test_git_resolve_validate_scope_876.py`
+    monkeypatch `os.path.isfile` to `lambda p: True`, CPython 3.13+ `pathlib`
+    routes `Path.is_file()` through `os.path.isfile`, and the guard's
+    after-snapshot then read every *directory* under `refs/heads/` as a ref
+    file it could not open. Each such test's teardown errored with six
+    fabricated ref mutations, for 18 errors across those two files — plus one
+    more in a concurrent worker, which is the shared-repo fan-out #433
+    documents. A private context cannot reorder anything.
+    """
+    if _netblock is None:
+        yield
+        return
+    with pytest.MonkeyPatch.context() as mp:
+        _netblock.block_outbound(mp)
+        yield
+
+
 def pytest_configure(config):
     """Opt out of #146 cwd containment for the test suite.
 
@@ -735,6 +791,18 @@ RESET_GLOBALS = (
     # later test recreates at the same tmp_path with different contents.
     "_PATH_META_ROOT_CACHE",
     "_MUTATION_ATTEMPTS",
+    # Both read from `_INSTALL_DIR` at FIRST USE, not at import (#1322). They
+    # sat in RESET_EXEMPT_GLOBALS below on the reasoning that they describe the
+    # install rather than the run — true of the *inputs*, false of the values,
+    # because a test that patches `_INSTALL_DIR` (tests/test_presets.py:38,57)
+    # and then reaches a dispatch builds them EMPTY, and an exempt empty cache
+    # is preserved for the rest of that xdist worker. `_repo_target_ops()` then
+    # returns nothing and every `repo:` call refuses every op it is handed.
+    # "Same lifetime as X" is a claim about when a value is built; both of these
+    # are built at first use. Resetting rebinds them to `None`, so the next
+    # caller rebuilds from whatever `_INSTALL_DIR` really is.
+    "_REPO_TARGET_MODES",
+    "_SHIPPED_PRESET_OPS",
     # Both per-invocation scratch, written by dispatch before the op runs and
     # read within the same frame (#946). Stale across tests they would be
     # worse than absent: `_ARG_SEP` would tell a preset the previous call's
@@ -835,13 +903,12 @@ RESET_EXEMPT_GLOBALS = (
     # under a test is exactly what the roster must not have.
     "_OP_SAFETY_BUILTIN",
     "_SAFETY_MARKERS",
-    # Index of the presets shipped beside supertool.py. A property of the
-    # install, not of the run — clearing it per test would only re-read the
-    # same ten files and imply a lifetime it does not have.
-    "_SHIPPED_PRESET_OPS",
-    # Which shipped ops accept a repo target, read from the same manifests
-    # (#673). Same lifetime and same reasoning as _SHIPPED_PRESET_OPS above.
-    "_REPO_TARGET_MODES",
+    # `_SHIPPED_PRESET_OPS` and `_REPO_TARGET_MODES` used to sit here, claiming
+    # the same lifetime as the constant tables around them. They do not have it:
+    # both are `None` at import and built at first use from `_INSTALL_DIR`.
+    # They moved to RESET_GLOBALS in #1322, and
+    # `tests/test_lazy_cache_lifetimes_1322.py` now fails the build on any new
+    # `None`-sentinel name added to this tuple.
     "_EXT_FAMILIES",
     "_FORMATTER_CONFIG_MARKERS",
     "_NONDETERMINISTIC_ERROR_CODES",
@@ -910,7 +977,17 @@ def _reset_module_state():
     for name in RESET_GLOBALS:
         current = getattr(supertool, name)
         pristine = copy.deepcopy(_PRISTINE_GLOBALS[name])
-        if isinstance(current, dict):
+        if pristine is None:
+            # A lazily-built cache whose unbuilt state IS `None` (#1322).
+            # In-place restoration cannot express that: `current` is a dict by
+            # the time anything has called the builder, and `current.clear()`
+            # would leave a *built and empty* map — indistinguishable from
+            # "this install declares no repo-targetable ops", which is the
+            # defect. Rebinding restores the sentinel, so the next caller
+            # rebuilds. supertool reads these through the module global on
+            # every call, never through a captured reference.
+            setattr(supertool, name, None)
+        elif isinstance(current, dict):
             current.clear()
             current.update(pristine)
         elif isinstance(current, set):
