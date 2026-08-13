@@ -109,10 +109,72 @@ elif [ -n "$name" ]; then
     export SUPERTOOL_WATCH_NAME="$name"
 fi
 
+# The consumer is declared here, with an ABSOLUTE path, rather than left to
+# `.mcp.json`. That file is the PLUGIN's config (#1541): its command is
+# `bun ${CLAUDE_PLUGIN_ROOT}/notifiers/claude-channel/channel.ts`, and
+# CLAUDE_PLUGIN_ROOT is defined only when the harness reads it AS a plugin. Read
+# as a project config -- which is what a clone of this repo is -- the variable is
+# empty, the command becomes `bun /notifiers/claude-channel/channel.ts`, and the
+# server dies at spawn. Measured 2026-08-13 against claude 2.1.219:
+#
+#     claude-channel: bun ${CLAUDE_PLUGIN_ROOT}/... - Failed to connect
+#       [Warning] mcpServers.claude-channel: Missing environment variables:
+#       CLAUDE_PLUGIN_ROOT
+#
+# Nothing bound the socket, so six live pollers emitted into nothing for hours
+# while the board rendered normally -- `channel:health` said NOT DELIVERING and
+# was the only thing that did.
+#
+# The name is deliberately NOT `claude-channel`: the plugin's own entry keeps
+# that name and keeps failing, and two servers sharing one name is a collision
+# whose winner this script cannot decide.
+server=supertool-channel
+
+if ! command -v bun >/dev/null 2>&1; then
+    echo "supertool-workspace: bun is not on PATH, so the channel consumer" \
+         "cannot start and the pollers will emit into nothing. Check with" \
+         "supertool 'channel:health' once inside." >&2
+fi
+
+# Registered at LOCAL scope rather than passed as `--mcp-config`, and the
+# difference is not cosmetic. Measured 2026-08-13 against claude 2.1.219: a
+# server loaded from `--mcp-config` does start and does bind the socket, but
+# `--dangerously-load-development-channels server:NAME` refuses it --
+#
+#     server:supertool-channel - no MCP server configured with that name
+#
+# -- so the consumer runs, the board looks armed, and nothing is injected. The
+# channel resolver reads configured servers only. Local scope is per-project and
+# private, so it does not ship, and the path is absolute so it cannot depend on
+# CLAUDE_PLUGIN_ROOT.
+#
+# Idempotent: `claude mcp get` is the test, and a re-add on every launch would
+# churn the user's config for nothing.
+if ! claude mcp get "$server" >/dev/null 2>&1; then
+    if claude mcp add -s local "$server" bun \
+            "$root/notifiers/claude-channel/channel.ts" >/dev/null 2>&1; then
+        echo "supertool-workspace: registered MCP server $server at local scope" \
+             "(private to this project) pointing at $root. Remove it with" \
+             "claude mcp remove $server -s local" >&2
+    else
+        echo "supertool-workspace: could not register the MCP server $server," \
+             "so this session has no channel consumer and the pollers will emit" \
+             "into nothing. supertool 'channel:health' says so from inside." >&2
+    fi
+fi
+
 if [ "$#" -eq 0 ]; then
+    # The prompt goes FIRST and both variadic options last, because
+    # `--dangerously-load-development-channels` and `--mcp-config` each take
+    # `<values...>`: a positional after either is read as one of its values, not
+    # as the prompt. Measured against claude 2.1.219, which refused the launch
+    # outright rather than dropping it:
+    #     --dangerously-load-development-channels entries must be tagged:
+    #     /opensource-manager
+    # They terminate each other safely, being `-`-prefixed.
     exec claude \
-        --dangerously-load-development-channels server:claude-channel \
-        "/opensource-manager"
+        "/opensource-manager" \
+        --dangerously-load-development-channels "server:$server"
 fi
 
 # Three states, and this is the third. `claude` takes ONE positional prompt, so
@@ -125,6 +187,11 @@ echo "supertool-workspace: arguments were passed through, so the trailing" \
      "/opensource-manager prompt was NOT appended — claude reads only its first" \
      "positional as the prompt. Run /opensource-manager inside the session, or" \
      "start it with no arguments." >&2
+#
+# The flag goes LAST here for the same reason it does above: it is variadic, so
+# a caller's own prompt placed after it is read as a channel entry and the
+# launch is refused. Trailing it instead terminates any variadic option the
+# caller passed, because it is `-`-prefixed.
 exec claude \
-    --dangerously-load-development-channels server:claude-channel \
-    "$@"
+    "$@" \
+    --dangerously-load-development-channels "server:$server"
