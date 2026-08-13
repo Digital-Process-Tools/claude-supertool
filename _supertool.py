@@ -489,6 +489,19 @@ _INSTALL_DIR = os.path.dirname(os.path.realpath(__file__)).replace(os.sep, "/")
 # Shipped presets, indexed op name -> preset name. Populated lazily.
 _SHIPPED_PRESET_OPS: Dict[str, str] | None = None
 
+# The same pass's `syntax` strings, op name -> syntax line, for names that
+# declare one. Filled by `_shipped_preset_ops()` because it already has the
+# parsed JSON open and throwing it away cost a second read of every preset
+# (#1524). Absent key means the entry has no `syntax`, which is a real answer.
+#
+# Not a second cache with its own lifetime: it is cleared and refilled inside
+# the `_SHIPPED_PRESET_OPS` rebuild, so it is exactly as fresh as its sibling
+# and cannot outlive it. That matters because #1322 is precisely the defect of
+# a lazily-built index whose claimed lifetime was not the one it had — and a
+# separate dict at module scope, absent from `conftest.RESET_GLOBALS`, would
+# survive the per-test reset that returns `_SHIPPED_PRESET_OPS` to None.
+_SHIPPED_PRESET_SYNTAX: Dict[str, str] = {}
+
 
 def _shipped_preset_ops() -> Dict[str, str]:
     """Map every op declared by a shipped preset to the preset that declares it.
@@ -510,6 +523,7 @@ def _shipped_preset_ops() -> Dict[str, str]:
     if _SHIPPED_PRESET_OPS is not None:
         return _SHIPPED_PRESET_OPS
     index: Dict[str, str] = {}
+    _SHIPPED_PRESET_SYNTAX.clear()
     preset_dir = os.path.join(_INSTALL_DIR, "presets")
     try:
         entries = sorted(os.listdir(preset_dir))
@@ -531,11 +545,40 @@ def _shipped_preset_ops() -> Dict[str, str]:
         preset_ops = data.get("ops")
         if not isinstance(preset_ops, dict):
             continue
-        for op_name in preset_ops:
-            if isinstance(op_name, str) and op_name not in _BUILTIN_OPS:
-                index.setdefault(op_name, fname[:-5])
+        for op_name, entry in preset_ops.items():
+            if not isinstance(op_name, str) or op_name in _BUILTIN_OPS:
+                continue
+            if op_name in index:
+                continue
+            index[op_name] = fname[:-5]
+            syntax = entry.get("syntax") if isinstance(entry, dict) else None
+            if isinstance(syntax, str) and syntax.strip():
+                _SHIPPED_PRESET_SYNTAX[op_name] = syntax.strip()
     _SHIPPED_PRESET_OPS = index
     return index
+
+
+def _registry_syntax(name: str) -> str | None:
+    """The op's own documented invocation form, or None when there is not one.
+
+    Three states rather than two, per ``docs/validators.md`` "Declining instead
+    of guessing": a syntax line, no registry entry at all (every built-in —
+    `registry:paste` says so in as many words), and an entry that declares no
+    `syntax` key. The last two both return None, because an empty string would
+    render as a syntax line that teaches nothing, which is the shape of a clean
+    answer standing in for an absent one.
+
+    The loaded config first, then the shipped presets, because an override in
+    `.supertool.json` is the form the caller will actually type here. Only
+    consulted on the unknown-op path.
+    """
+    entry = (_load_config().get("ops") or {}).get(name)
+    if isinstance(entry, dict):
+        syntax = entry.get("syntax")
+        if isinstance(syntax, str) and syntax.strip():
+            return syntax.strip()
+    _shipped_preset_ops()  # populates _SHIPPED_PRESET_SYNTAX
+    return _SHIPPED_PRESET_SYNTAX.get(name)
 
 
 # Ops that accept a repo target, op name -> how it is named. Populated lazily.
@@ -2036,10 +2079,17 @@ def _valid_op_names() -> List[str]:
 # **A synonym carries a NAME, not an invocation.** `write -> paste` is a whole
 # answer because `paste` alone is what the caller wanted. `gh-since-tag ->
 # gh-prs` is not: the board is the right op and `merged-since=TAG,state=merged`
-# is the rest of the sentence, and this table has nowhere to put it. What
-# closes that gap is `_shipped_preset_ops()`'s own description, which the
-# unknown-op message already prints for a preset op, so the registry entry for
-# `gh-prs` names the filter in its first two lines rather than burying it.
+# is the rest of the sentence, and this table has nowhere to put it.
+#
+# What closes that gap is `_synonym_invocation_note`, which prints the target's
+# registry `syntax` under the suggestion. Until #1524 this comment claimed the
+# gap was closed by the target's *description*, "which the unknown-op message
+# already prints for a preset op" — it did not, and never had: `_near_miss_ops`
+# pairs a candidate with a provenance label and nothing else, so the message
+# read `Did you mean: gh-prs (preset 'github')`, and bare `gh-prs` is every open
+# PR on the repo — a different board from the release gate. A false claim in a
+# change's own prose, used as the argument for relaxing the rule stated one
+# paragraph above it; the rule was fine, the receipt was invented.
 _OP_SYNONYMS = {"write": "paste", "vi": "vim", "gh-since-tag": "gh-prs"}
 
 # The ops that bring a file into existence, in the order a refusal should offer
@@ -2171,9 +2221,16 @@ def _near_miss_ops(op: str) -> List[Tuple[str, str]]:
         _add(by_lower[typed], loaded[by_lower[typed]])
         return hits[:_NEAR_MISS_MAX]
 
+    # A synonym is a documented mapping, not a guess, so it fires whether or not
+    # the target is loaded here. It used to require `target in loaded`, which
+    # made the table silently conditional on the caller's cwd: outside any
+    # project `gh-since-tag` produced NO suggestion at all — the deletion #1405
+    # went to some lengths not to leave as a hole, reopened by an `in` (#1524).
     target = _OP_SYNONYMS.get(typed)
     if target in loaded:
         _add(target, loaded[target])
+    elif target in _shipped_preset_ops():
+        _add(target, f"preset '{_shipped_preset_ops()[target]}', not loaded here")
     for name in sorted(loaded):
         if name.lower().endswith("-" + typed):
             _add(name, loaded[name])
@@ -2216,6 +2273,37 @@ def _cwd_retargets_note(op: str) -> str:
         f"       directory. For a repository no project covers, this op has no "
         f"route to it (#1554).\n"
     )
+
+
+def _synonym_invocation_note(op: str, named: List[str]) -> str:
+    """The rest of the sentence, for the one candidate that is not a guess.
+
+    `_OP_SYNONYMS` maps a NAME onto a NAME. `gh-since-tag -> gh-prs` needs more
+    than that — bare `gh-prs` is every open PR on the repo, while the name the
+    caller typed was the release gate, `gh-prs:merged-since=TAG,state=merged`.
+    Answering with the bare name hands over a different board, which is #1424's
+    `misdirects` class: a remedy that succeeds at the wrong question costs more
+    than the refusal did (#1524).
+
+    **Only the synonym route, never a distance guess.** The table above is ops
+    "whose intended target is a documented fact rather than a guess", and that
+    is exactly what pays for the extra line. `gh-prr` yields two candidates from
+    edit distance; a syntax line each would put ~500 characters of filter
+    grammar above a roster #1222 already fought to keep readable, to elaborate
+    on names the tool is only guessing at.
+
+    Empty when the target has no registry `syntax` — every built-in, so
+    `write -> paste` and `vi -> vim` are unchanged and stay the whole answers
+    the table argues they are.
+    """
+    target = _OP_SYNONYMS.get(op.strip().lower())
+    if not target or target not in named:
+        return ""
+    syntax = _registry_syntax(target)
+    if not syntax:
+        return ""
+    return (f"       '{op}' was a whole invocation and '{target}' is only a "
+            f"name — {syntax}\n")
 
 
 def _unknown_op_message(op: str) -> str:
@@ -2266,6 +2354,7 @@ def _unknown_op_message(op: str) -> str:
     if near:
         msg += ("Did you mean: "
                 + ", ".join(f"{name} ({why})" for name, why in near) + "\n")
+        msg += _synonym_invocation_note(op, [name for name, _ in near])
     msg += f"Valid operations: {', '.join(_valid_op_names())}\n"
     loaded = _load_config().get("ops") or {}
     if loaded:
