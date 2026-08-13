@@ -141,6 +141,24 @@ def test_long_replace_lines_header_keeps_the_range(tmp_path: Path) -> None:
     assert "new block" not in head
 
 
+def assert_header_replays(out: str, arg: str) -> None:
+    """The header replays `arg` in full — on one line (#384, #1019).
+
+    #384 asks for the header to be verbatim on a failure, because no diff
+    renders and it is the only surviving copy of what the caller sent. #1019
+    asks for it to be exactly one line, because a path carrying a separator
+    wrote a forged `[result]` marker at column 0 and the transcript is read by
+    somebody who did not compose the call.
+
+    Those are not in conflict: `_flat_field` **discloses**, it does not elide.
+    Every character the caller sent is still in the header — a newline reads as
+    `[U+000A]` — so the reproduction material #384 is about survives, and the
+    line count of supertool's own header stops being the argument's to choose.
+    """
+    assert out.startswith("--- " + supertool._flat_field(arg)
+                          + " ---" + chr(10)), out.splitlines()[0]
+
+
 def test_failed_edit_keeps_its_verbatim_header(tmp_path: Path) -> None:
     """On failure no diff renders, so the header is the only surviving copy of
     what the caller sent — eliding it takes the reproduction material away at
@@ -151,7 +169,7 @@ def test_failed_edit_keeps_its_verbatim_header(tmp_path: Path) -> None:
     arg = f"edit:::{old}:::changed:::{f}"
     out = supertool.dispatch(arg)
     assert "ERROR: old string not found" in out
-    assert out.startswith(f"--- {arg} ---\n")
+    assert_header_replays(out, arg)
     assert "line 19 of the old block here" in out
 
 
@@ -161,7 +179,7 @@ def test_failed_write_keeps_its_verbatim_header(tmp_path: Path) -> None:
     arg = f"paste:::{tmp_path}:::{content}"  # a directory — cannot be written
     out = supertool.dispatch(arg)
     assert "ERROR" in out
-    assert out.startswith(f"--- {arg} ---\n")
+    assert_header_replays(out, arg)
 
 
 def test_compact_header_helper_returns_empty_for_unknown_op() -> None:
@@ -246,7 +264,7 @@ def test_zero_match_replace_keeps_its_verbatim_header(tmp_path: Path) -> None:
     arg = f"replace:::{old}:::changed:::{f}"
     out = supertool.dispatch(arg)
     assert "0 occurrences" in out
-    assert out.startswith(f"--- {arg} ---\n")
+    assert_header_replays(out, arg)
     assert "line 19 of the old block here" in out
 
 
@@ -257,7 +275,7 @@ def test_replace_dry_keeps_its_verbatim_header(tmp_path: Path) -> None:
     f.write_text(old + "\n")
     arg = f"replace_dry:::{old}:::changed:::{f}"
     out = supertool.dispatch(arg)
-    assert out.startswith(f"--- {arg} ---\n")
+    assert_header_replays(out, arg)
 
 
 def test_successful_replace_gets_the_compact_header(tmp_path: Path) -> None:

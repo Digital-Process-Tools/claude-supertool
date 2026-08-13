@@ -33,6 +33,7 @@ if os.path.dirname(_HERE) not in sys.path:
     sys.path.insert(0, os.path.dirname(_HERE))
 
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
+import _untrusted  # noqa: E402  (a child stream is somebody else's text — #1475)
 
 
 def use_utf8_stdout() -> None:
@@ -392,8 +393,22 @@ def _first_error_line(text: str) -> str:
 
     Skips success lines (green ✅, '0 errors', 'pushed successfully') so a
     hook's success banner is never misreported as the failure cause.
+
+    **Flattened here, not at the callers (#1475).** `text` is a child's stream
+    — a commit hook's, a remote's, `gh`'s — and every caller prints what comes
+    back at column 0 or interpolates it into the `[result]` line itself. Fixing
+    that per call site is how #1470 closed one op and left seven more, so the
+    flatten lives at the seam every one of them already goes through.
+    `_untrusted.flat` is idempotent, so `git-push`, which flattens the return
+    again at its own render, pays a no-op rather than a second substitution.
+
+    `_untrusted.split_lines`, not `str.splitlines()`, for the same issue's
+    other half: this is a line-oriented *parse*, and `str.splitlines()` folds
+    on ten separators no git stream defines (#1081). A writer who put a U+2028
+    in a line therefore chose which line this scan returned — and the tail it
+    hid was dropped from the receipt entirely rather than disclosed.
     """
-    lines = text.splitlines()
+    lines = _untrusted.split_lines(text)
     for line in lines:
         s = line.strip()
         if not s or _looks_like_success(s):
@@ -402,11 +417,11 @@ def _first_error_line(text: str) -> str:
         if ("error" in low or "fatal" in low or "rejected" in low
                 or "aborted" in low or "failed" in low
                 or "! [" in s or "❌" in s):
-            return s
+            return _untrusted.flat(s)
     for line in reversed(lines):
         s = line.strip()
         if s and not _looks_like_success(s):
-            return s
+            return _untrusted.flat(s)
     return ""
 
 
