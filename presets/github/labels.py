@@ -156,7 +156,9 @@ def _format_error(stderr: str, what: str) -> str:
     if "404" in s or "not found" in s:
         return (f"ERROR: {what} not found {_repo_target.not_found_scope()}. "
                 f"{_repo_target.not_found_hint()}")
-    return f"ERROR: gh failed reading {what}: {(stderr or '').strip()}"
+    # The remote host wrote this text — flattened, never relayed raw (#1606).
+    return (f"ERROR: gh failed reading {what}: "
+            f"{_untrusted.flat((stderr or '').strip())}")
 
 
 def fetch_labels() -> tuple[list[dict] | None, str]:

@@ -502,7 +502,8 @@ def _lookup_repo() -> tuple[tuple[str, str] | None, str | None]:
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         return None, f"ERROR: gh repo view failed: {exc}"
     if result.returncode != 0:
-        err = (result.stderr or "").strip() or "unknown error"
+        # Flattened before either use: the writer is the GitHub API (#1606).
+        err = _untrusted.flat((result.stderr or "").strip()) or "unknown error"
         low = err.lower()
         if "not logged in" in low or "401" in err:
             return None, "ERROR: gh not authenticated. Run: gh auth login"
@@ -1242,7 +1243,8 @@ def main_with_args(arg_str: str) -> int:
             print(f"ERROR: gh issue list failed: {exc}", file=sys.stderr)
             return 1
         if result.returncode != 0:
-            err = (result.stderr or "").strip() or "unknown error"
+            # Flattened before either use: the writer is the GitHub API (#1606).
+            err = _untrusted.flat((result.stderr or "").strip()) or "unknown error"
             low = err.lower()
             if "not logged in" in low or "401" in err:
                 print("ERROR: gh not authenticated. Run: gh auth login", file=sys.stderr)

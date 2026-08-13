@@ -30,7 +30,10 @@ def fetch(endpoint: str) -> list[dict]:
         capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
-        sys.stderr.write(f"WARN: gh api {endpoint} failed: {result.stderr.strip()[:200]}\n")
+        # Flatten first, slice second — a cut made first leaves whatever the
+        # separator started (#970). The writer is the GitHub API (#1606).
+        detail = _untrusted.flat(result.stderr.strip())[:200]
+        sys.stderr.write(f"WARN: gh api {endpoint} failed: {detail}\n")
         return []
     out: list[dict] = []
     for chunk in result.stdout.split("\n"):

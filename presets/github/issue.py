@@ -124,7 +124,12 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
         return "ERROR: GitHub API rate limit exceeded. Wait a few minutes and retry."
     if "403" in s or "forbidden" in s:
         return f"ERROR: permission denied for {resource} #{identifier}. Check repo access (gh auth status)."
-    return f"ERROR: gh failed for {resource} #{identifier}: {stderr.strip()}"
+    # `gh` echoes the GitHub API's own error body here, so the writer of this
+    # text is the remote host. It lands at column 0, above the trailer a caller
+    # reads as the verdict — flattened, never relayed raw (#1606, the GitHub
+    # half of #1485). `presets/github/pr.py` is the shape.
+    return (f"ERROR: gh failed for {resource} #{identifier}: "
+            f"{_untrusted.flat(stderr.strip())}")
 
 
 def _extract_image_urls(text: str) -> list[str]:

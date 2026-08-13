@@ -349,7 +349,10 @@ def main() -> int:  # noqa: C901
 
     if result.returncode != 0:
         print(f"ERROR: gh pr create failed (exit {result.returncode})")
-        print((result.stderr or result.stdout).strip())
+        # One line above this op's own `[result]`, so an unflattened body does
+        # not merely reach column 0 — it sorts above a real verdict this op
+        # wrote itself. The writer of the text is the GitHub API (#1606).
+        print(_untrusted.flat((result.stderr or result.stdout).strip()))
         print(f"[result] no PR created ({head} -> {base} in {repo})")
         return 1
 

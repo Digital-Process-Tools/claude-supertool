@@ -23,7 +23,11 @@ def main(arg: str) -> int:
         if "401" in err or "unauthorized" in err:
             sys.stderr.write("ERROR: gh not authenticated. Run: gh auth login\n")
         else:
-            sys.stderr.write(f"ERROR: gh following failed: {result.stderr.strip()}\n")
+            # The relay #981 walked past on its way to the logins below: the
+            # writer of this text is the GitHub API, and it lands at column 0
+            # in a stderr the core appends to the receipt (#1606).
+            sys.stderr.write("ERROR: gh following failed: "
+                             f"{_untrusted.flat(result.stderr.strip())}\n")
         return 1
     try:
         users = json.loads(result.stdout)

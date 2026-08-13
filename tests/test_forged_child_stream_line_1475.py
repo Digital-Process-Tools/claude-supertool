@@ -235,18 +235,18 @@ CENSUS = {
     "presets/github/_release_gate.py": 2,
     "presets/github/batch_follow.py": 1,
     "presets/github/batch_star.py": 1,
-    "presets/github/branch.py": 4,
+    "presets/github/branch.py": 3,  # -1, #1606: the _format_error relay
     "presets/github/check.py": 1,
-    "presets/github/issue.py": 3,
-    "presets/github/issue_create.py": 3,
-    "presets/github/issues.py": 2,
-    "presets/github/job.py": 5,
-    "presets/github/labels.py": 2,
+    "presets/github/issue.py": 2,  # -1, #1606: the _format_error relay
+    "presets/github/issue_create.py": 1,  # -2, #1606: both arms of one relay
+    "presets/github/issues.py": 0,  # -2, #1606: the lookup and list relays
+    "presets/github/job.py": 4,  # -1, #1606: the _format_error relay
+    "presets/github/labels.py": 1,  # -1, #1606: the _format_error relay
     "presets/github/pr.py": 6,
-    "presets/github/pr_create.py": 5,
+    "presets/github/pr_create.py": 3,  # -2, #1606: both arms of one relay
     "presets/github/pr_merge.py": 5,
-    "presets/github/prs.py": 2,
-    "presets/github/run.py": 3,
+    "presets/github/prs.py": 1,  # -1, #1606: the list-failure relay
+    "presets/github/run.py": 2,  # -1, #1606: the _format_error relay
     "presets/gitlab/api.py": 1,
     "presets/gitlab/issue.py": 2,
     "presets/gitlab/issue_create.py": 2,
