@@ -99,6 +99,14 @@ def is_refusal(msg: str, env_var: str = "") -> bool:
 
     `env_var` names an optional comma-separated list of extra substrings, so a
     repo can teach an adapter about a house-specific refusal without a release.
+
+    **Give it the tool's own statement, never a whole output blob.** This is a
+    substring test, so over a multi-line capture it answers "does a refusal
+    phrase appear anywhere in here" — and a phrase inside unrelated noise then
+    displaces whatever the tool actually said, which is a non-verdict published
+    over a real one (#1527). `phpstan-mcp` and `phpmd-mcp` pass one structured
+    error message and are the shape to copy; `phpstan` passed `stdout + stderr`
+    and gates the arm on stream position for it.
     """
     patterns = list(REFUSAL_PATTERNS)
     if env_var:
