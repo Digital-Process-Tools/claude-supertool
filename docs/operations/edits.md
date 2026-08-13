@@ -58,7 +58,7 @@ Interdependent edits are the normal case for a batch, and a half-applied set is 
 
 The per-op receipt has **not** moved: it is still printed above `[validators]`, so anything parsing output positionally is unaffected.
 
-`[branch: X]` stays the final line — right file, wrong branch is otherwise silent until commit time. A failed `edit` also reports why the anchor probably missed: **the replacement text already being in the file**, doubled backslashes (TOML literal strings don't process escapes), a whitespace-only difference with its line number, or the nearest line by similarity.
+`[branch: X]` stays the final line — right file, wrong branch is otherwise silent until commit time. A failed `edit` also reports why the anchor probably missed: **the replacement text already being in the file**, doubled backslashes (TOML literal strings don't process escapes), a whitespace-only difference with its line number, or the nearest match by similarity.
 
 The first of those is the other half of the re-run problem (#984). `re-applied` covers a payload whose `new` contains its `old`; when it does not, re-running an applied payload reports `ERROR: old string not found`, which is character-for-character what a genuinely wrong anchor prints — and the two have opposite remedies. So when the replacement text is present, the receipt says where:
 
@@ -68,6 +68,26 @@ ERROR: old string not found in a.py
 ```
 
 A located fact, not a verdict. The `ERROR` stands, the op is still counted in `K skipped`, and the call still exits non-zero — downgrading a failure because it is probably benign is how a loud bug becomes a quiet one.
+
+### The nearest match, and when it declines to name one
+
+A multi-line anchor is scored on the **whole block**, and it names the window rather than a line ([#1489](https://github.com/Digital-Process-Tools/claude-supertool/issues/1489)):
+
+```
+ERROR: old string not found in app.py
+  ↳ nearest match at lines 804-806 (91%): read:app.py:804-806
+```
+
+Until #1489 the score was `SequenceMatcher.ratio()` of the **first non-blank line of `old`** alone. For a multi-line anchor that line is usually boilerplate — a `def`, a `}`, an import — so the run that filed the issue was pointed at a line ~800 away from the right one, at an identical 68%, twice. The number was not too low: it was a fact about one line of an anchor the caller had written four lines of, and raising the floor would only have withheld the good hints alongside the bad. Two passes replace it — a sliding line-multiset over every window of the anchor's height to locate candidates, then the character ratio on the top ones, so the percentage printed still means what it used to.
+
+Where several places score the same, the hint says so instead of resolving the tie by file order:
+
+```
+ERROR: old string not found in app.py
+  ↳ cannot suggest a nearest match: 2 places score the same (91%) — lines 1, 44. The anchor does not tell them apart; re-anchor on a longer or more distinctive block
+```
+
+That third state exists because a confidently wrong line number costs more than none: the caller reads the wrong 30 lines and re-anchors against them. It also fires when the scan's cost budget runs out before the file does — a best-so-far over a prefix is not a best, and reporting it as one is the defect this whole hint is about. The budget is what keeps the diagnostic off the critical path on a file the line-count guard cannot see: 60 lines of a 40 KB minified bundle took over 30 minutes before it existed. A percentage computed over a clipped line says so in the same breath: `(100%, scored on the first 1000 characters)`.
 
 ## Ops
 

@@ -27,6 +27,14 @@ A large `:N` context on a file of long (e.g. minified) lines can over-fetch — 
 
 A single pathological line — a minified bundle, a 7KB one-line `@extends Foo<array{…}>` PHPDoc — used to turn one match into a screenful. Every `grep` output line (match **and** context) is truncated at `grep.max_line_chars` (default 500, or `SUPERTOOL_GREP_MAX_LINE_CHARS`) with a `… (+N chars)` marker naming what was dropped, so widening is a deliberate choice. Normal-width lines are untouched. This is orthogonal to the byte cap below: the byte cap bounds the whole window, the per-line cap bounds one line.
 
+**A cut line names the way back to it** ([#1489](https://github.com/Digital-Process-Tools/claude-supertool/issues/1489)). When any line was cut, a `note:` above the results gives the recovery call — `read:PATH:LINE-LINE` returns the whole line byte-exactly — with the first cut line's own coordinates as the example:
+
+```
+note: 2 lines cut at 500 chars — read:PATH:LINE-LINE returns a cut line byte-exactly, e.g. read:CHANGELOG.md:4942-4942
+```
+
+The marker said a cut had happened and nothing about undoing it, which is what a caller wants precisely when the cut line is the `edit` anchor they came for: the run that filed #1489 dropped to `python3` to read the raw bytes. The render is not lossy — measured byte-identical to raw on files from 500 to 20000 chars with tabs, trailing spaces and unicode — so the remedy already existed and was simply not written where the truncation happens.
+
 `grep:` with an explicit `CONTEXT` argument (`grep:PATTERN:PATH:LIMIT:CONTEXT`) shares the `grep_around:` code path, so it is capped under the same `grep_around.max_bytes` budget. Plain `grep:` (no context) is unaffected — it has its own `LIMIT`/`max_results` bound.
 
 ## Truncation is stated, not implied
