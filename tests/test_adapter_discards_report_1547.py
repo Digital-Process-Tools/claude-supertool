@@ -149,13 +149,21 @@ def test_refusal_beside_a_report_publishes_the_report_not_a_skip() -> None:
     assert all("allowlist" not in str(e["msg"]) for e in out["errors"]), out
 
 
-def test_a_clean_report_beside_an_error_still_reports_the_error() -> None:
-    """No violations in the report is not the same as no report."""
-    out = _phpmd(error="SecurityError: boom",
-                 output=json.dumps({"files": []}))
-    assert "skipped" not in out, out
+def test_refusal_beside_a_report_of_only_phpmd_errors_is_not_a_skip() -> None:
+    """A PHPMD report has two bodies, and `errors` is the one nobody looks at.
+
+    `files[].violations` is the obvious half; `report["errors"]` carries the
+    processing failures (an unparseable PHP file, a broken ruleset) and is
+    rendered by the same function three lines further down. A predicate that
+    reads only the first half throws the second half away for the refusal —
+    exactly the discard this issue is about, one key over.
+    """
+    out = _phpmd(error=ALLOWLIST_MSG,
+                 output=json.dumps({"files": [], "errors": [
+                     {"message": "Unable to parse file /x/A.php"}]}))
+    assert "skipped" not in out, f"a report was thrown away for a refusal: {out!r}"
     assert out["count"] == 1 and out["ok"] is False, out
-    assert "SecurityError" in str(out["errors"][0]["msg"]), out
+    assert "Unable to parse" in str(out["errors"][0]["msg"]), out
 
 
 # --- guards: the single-key arms are unchanged -----------------------------
@@ -190,3 +198,15 @@ def test_unparseable_output_beside_a_refusal_is_still_skipped() -> None:
 def test_unparseable_output_alone_is_still_a_parse_error() -> None:
     out = _phpmd(output="<!-- not json -->")
     assert out["count"] == 1 and out["errors"][0]["code"] == "phpmd.parse", out
+
+def test_a_clean_report_beside_an_error_still_reports_the_error() -> None:
+    """No content in the report is not the same as no report.
+
+    Green before this change too — it is here as the boundary of the arm above,
+    not as a test of it.
+    """
+    out = _phpmd(error="SecurityError: boom",
+                 output=json.dumps({"files": []}))
+    assert "skipped" not in out, out
+    assert out["count"] == 1 and out["ok"] is False, out
+    assert "SecurityError" in str(out["errors"][0]["msg"]), out

@@ -177,8 +177,13 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
     # server is `mcp-phpmd-warm` and lives elsewhere. So the adapter is made not
     # to depend on the answer — the report is parsed first and is never dropped.
     if structured.get("error"):
-        violations = any((f or {}).get("violations")
-                         for f in (report.get("files", []) or []))
+        # A PHPMD report has TWO bodies and both are rendered below: the
+        # violations under `files[]`, and `report["errors"]` — the processing
+        # failures (an unparseable PHP file, a broken ruleset). Reading only the
+        # first half would throw the second half away for the refusal, which is
+        # this same discard one key over.
+        has_report = bool(report.get("errors")) or any(
+            (f or {}).get("violations") for f in (report.get("files", []) or []))
         # A scope refusal is not a runtime error — it is an absence of analysis,
         # and counting it as one error inflates the delta by +1 (#406). But a
         # refusal beside a report is two mutually exclusive claims, and only one
@@ -187,7 +192,7 @@ def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
         # than counted, because a declination that did not happen is not a
         # finding about the file either.
         if _refusal.is_refusal(str(structured["error"]), SKIP_PATTERNS_ENV):
-            if not violations:
+            if not has_report:
                 return _refusal.skipped("phpmd-mcp", file_path,
                                         str(structured["error"]), duration_ms)
         else:
