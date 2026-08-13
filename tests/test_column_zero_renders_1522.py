@@ -399,3 +399,35 @@ def test_a_legacy_adapters_block_keeps_its_lines_but_not_column_zero() -> None:
     for line in physical[1:]:
         assert line.startswith(" "), (
             f"a legacy adapter's output reached column 0: {line!r}")
+
+@pytest.mark.parametrize("sep", SEPARATORS)
+def test_the_no_op_row_flattens_its_name_like_the_row_it_stands_in_for(
+        sep, monkeypatch, tmp_path) -> None:
+    """`op_format`'s silent-no-op arm builds its own row rather than calling
+    `_formatter_render_row`, so it needed the same flattening (review of #1522).
+
+    Narrower than the other three: `_formatter_run_one` overwrites `name` on
+    every arm with the config key, so the adapter-supplied `tool` term is not
+    reachable in production. This pins the seam, not a live hole.
+    """
+    import supertool
+
+    target = tmp_path / "style.json"
+    target.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(supertool, "_CONFIG",
+                        {"formatters": {"fake": {"cmd": "true", "match": "*.json"}}})
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+    monkeypatch.setattr(
+        supertool, "_formatter_run_one",
+        lambda name, spec, path: {
+            "name": "", "tool": f"fake{sep}format: {target}", "ok": True,
+            "duration_ms": 2, "metrics": {"lines_added": 0, "lines_removed": 0},
+        })
+
+    out = supertool.op_format(str(target), verbose=False)
+    for line in out.splitlines()[1:]:
+        assert not line.startswith("format: "), (
+            f"a no-op row's name forged a block header:\n{out}")
+    assert "\r" not in out
+    assert "ok (no-op)" in out

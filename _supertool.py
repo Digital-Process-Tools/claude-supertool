@@ -20998,8 +20998,14 @@ def op_format(path: str, tool_filter: Optional[list] = None, verbose: bool = Fal
         result = _formatter_run_one(name, spec, path)
         row = _formatter_render_row(result)
         if row is None:
-            # no-op: show a muted marker in manual mode so the user knows it ran
-            name_key = result.get("name") or result.get("tool") or name
+            # no-op: show a muted marker in manual mode so the user knows it ran.
+            # `_flat_cell` for the same reason `_formatter_render_row` uses it
+            # one branch over (#1522): this arm substitutes for that row, and a
+            # row that flattens its name on one path and not the other is the
+            # inconsistency the fix is about. `result["tool"]` is the only
+            # adapter-supplied term here and `_formatter_run_one` overwrites
+            # `name` on every arm, so this is the seam, not a live hole.
+            name_key = _flat_cell(result.get("name") or result.get("tool") or name)
             dur = result.get("duration_ms", 0)
             row = f"{name_key:8s}: ok (no-op)  ({dur}ms)"
         if verbose:
