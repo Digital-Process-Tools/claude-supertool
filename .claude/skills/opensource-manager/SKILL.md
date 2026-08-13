@@ -868,7 +868,7 @@ Grepped for the verdict by any consumer, the forged `[result]` sorts **first**. 
 
 **It blocks a release**, on the remote half only — a local `pre-push` hook is code already running on your machine, so relaying it is no escalation. What blocks is text from a host you pushed to, newly rendered on the **success** path.
 
-**A classification scheme is itself a claim, and this is the FIFTH audit running to refuse it and be right** (`discloses`, then `containment`, then its write-side twin, then `misdirects`, now `forges`). Keep the "say so if a finding fits none of these" clause in every audit brief; the class that does not exist yet is where the worst finding lands. Five for five is not a caveat — **assume the table is incomplete and brief for the refusal explicitly**, because on this evidence the marginal value of that clause is higher than any row in the table.
+**A classification scheme is itself a claim, and this is the SIXTH audit running to refuse it and be right** (`discloses`, then `containment`, then its write-side twin, then `misdirects`, then `forges`, then `ships-local-state`, now `splices`). Keep the "say so if a finding fits none of these" clause in every audit brief; the class that does not exist yet is where the worst finding lands. Six for six is not a caveat — **assume the table is incomplete and brief for the refusal explicitly**, because on this evidence the marginal value of that clause is higher than any row in the table.
 
 **And a NINTH, proposed 2026-08-13 by the v0.38.0 round-2 audit on #1541 and ruled on here: `ships-local-state` — a value correct for exactly one checkout is baked into the artifact every user installs, and silently reconfigures their runtime.** #1539 put this clone's private channel name into `.mcp.json`'s `env` to fix this repo's own producer/consumer disagreement. That file ships. For every user who is not this repository, their consumer would bind `/tmp/supertool-watch-oss-supertool.sock` while their pollers resolved `name=""` and bound the default — the exact half-configured state `presets/watch/README.md` calls worse than setting neither, shipped as their default. A test pinned it in place, so the artifact was *required* to carry it.
 
@@ -884,7 +884,23 @@ That is right, and it earns a row on the same test the other eight passed — **
 
 **It blocks a release**, because the release is the mechanism by which it takes effect — pre-tag is the only moment it costs nothing. The fix direction is the one #1539 took once corrected: the value is workspace state, so it belongs in the launcher's environment, read from this clone's own config, and nothing ships.
 
-**Five for five is also worth reading as a fact about the table rather than about the auditors.** Every class in it was added the same way: a capability shipped, and the vocabulary for its failure mode arrived one audit later. So the rows are a record of what has already gone wrong, never a partition of what can. Do not tune the brief toward the table.
+**And a TENTH, added 2026-08-13 by the v0.39.0 round-1 audit and ruled on here: `splices` — a value from ambient process state enters an argv this tool builds, and the callee's option parser decides what it means.** The finding was **#1559**: `channel:health` reads a channel tag out of *another process's* argv via `ps` and passes it to `subprocess.run([CLAUDE_BIN, "mcp", "get", name])`. The `startswith("-")` break filters *tokens*, not the post-prefix remainder, so `server:--help` yields `(['--help'], '')`, `claude mcp get --help` exits 0, and the op returns a definite `FORWARDING` off a **flag rather than a server**. The same function pair applies `_untrusted.flat(name)` to the **display** copy at `channel.py:1080` while the **raw** copy reaches the subprocess at `:1076`.
+
+The auditor reached it by elimination and refused every row:
+
+> text written by another process on the machine is spliced into an argv this tool builds, where the callee's option parser — not this tool — decides what it means
+
+It earns a row on the same test the other nine passed — **each row invites a different fix.** `containment` sends you to `_safe_path` and the `paths` declarations, which are **not involved at any point**: the value never crosses that chokepoint, because it enters *inside* the op rather than as a caller-supplied argument. `misreports` invites a logic fix, but the answer here is correct for the question actually asked — `claude mcp get --help` really does exit 0 — and the defect is that the wrong question was constructed. `forges` sends you to a rendering seam; nothing is being rendered.
+
+| Class | Undo | Found by |
+| --- | --- | --- |
+| **Splices** | whatever the callee did with an argument it was never meant to receive | asking which values reach a subprocess without having been an op argument — process state, a health file, an environment read |
+
+**It does not block a release on today's blast radius**, and that bound is worth stating precisely: `claude mcp get` currently accepts only `-h`/`--help`, so the consequence is the false green, not execution. It ranks with `misdirects` rather than below it — the reader most likely to act on it is an agent, immediately — and the thing keeping it cheap is **somebody else's flag surface**, which this repo neither controls nor gets told about.
+
+**So the standing rule for briefs gains a second half.** The first is about a new argument slot becoming a filename. The second: any PR that builds an argv out of something it did **not** receive as an op argument must say which values can reach a subprocess and what shape check stands in front of them. `_safe_path` and the `paths` declarations gate what the caller supplies; nothing at all gates what the tool picks up.
+
+**Six for six is also worth reading as a fact about the table rather than about the auditors.** Every class in it was added the same way: a capability shipped, and the vocabulary for its failure mode arrived one audit later. So the rows are a record of what has already gone wrong, never a partition of what can. Do not tune the brief toward the table.
 
 - **Keeping them apart is operationally load-bearing** — those are **two different searches**, and an audit briefed only on `discloses` runs the sink-following one and misses this. `containment` blocks a release exactly like `destroys` and `discloses`.
 - **The standing rule for briefs:** any PR that makes an op treat a **new argument slot as a filename** — or makes an op **delete** rather than rewrite — must state which existing guard it is now downstream of. Both blockers that night shared that shape: a new capability added at a layer _below_ where its guard lives.
