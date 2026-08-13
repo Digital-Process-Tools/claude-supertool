@@ -33,7 +33,12 @@ import sys
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# And `presets/` itself, for `_untrusted`. Explicitly rather than by leaning on
+# `_git_common` having done it first: that made the import order load-bearing,
+# and the failure is a `ModuleNotFoundError` at *runtime* on the commit itself.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import _untrusted  # noqa: E402  (a hook's stream is somebody else's text — #1475)
 from _git_common import (  # noqa: E402
     _first_error_line,
     _git,
@@ -357,8 +362,10 @@ def _add_failure_lines(add, to_add):
     the reader saw and nothing above it had shown them.
     """
     lines = [
+        # `_untrusted.flat`, not the raw stream (#1475): this is line 1 of a
+        # refusal at column 0, and git relays a filter/hook's words verbatim.
         "ERROR: git add failed: %s"
-        % (add.stderr.strip() or add.stdout.strip(),),
+        % (_untrusted.flat(add.stderr.strip() or add.stdout.strip()),),
         "  " + _SEPARATOR_NOTE,
     ]
     split, guessed = [], False
@@ -488,7 +495,9 @@ def _expand_all():
         ]
     idx = _git(["diff", "--cached", "--name-only", "-z"])
     if idx.returncode != 0:
-        said = " ".join((idx.stderr or "").split())[:120]
+        # `str.split()` folds ASCII whitespace and nothing else, so a U+2028
+        # walked through this "one line" normaliser untouched (#1475).
+        said = _untrusted.flat(" ".join((idx.stderr or "").split())[:120])
         return [], [
             "ERROR: %s could not be resolved — the index could not be read "
             "(%s). Nothing staged, nothing committed."
@@ -535,7 +544,7 @@ def _worktree_changes(git_fn=None):
     r = run(["-c", "status.showUntrackedFiles=normal",
              "status", "--porcelain=v1", "-z"])
     if r.returncode != 0:
-        said = " ".join((r.stderr or "").split())[:120]
+        said = _untrusted.flat(" ".join((r.stderr or "").split())[:120])
         return [], [], said or f"exit {r.returncode}"
     modified, untracked = [], []
     skip_next = False
@@ -771,7 +780,7 @@ def _still_staged_lines(git_fn=None):
     run = _git if git_fn is None else git_fn
     left = run(["diff", "--cached", "--name-only", "-z"])
     if left.returncode != 0:
-        said = " ".join((left.stderr or "").split())[:120]
+        said = _untrusted.flat(" ".join((left.stderr or "").split())[:120])
         return [
             "⚠ Still-staged check SKIPPED — `git diff --cached` did not answer "
             f"({said or 'exit ' + str(left.returncode)}).",
@@ -1099,21 +1108,46 @@ def main() -> int:
         return 0
 
     # Failure path — could be hook block, validation, or silent rollback
-    print(f"HEAD after:  {head_after or '?'} ✗")
-    combined = (result.stdout or "") + "\n" + (result.stderr or "")
-    err = _first_error_line(combined)
-
-    if head_after and head_before and head_after == head_before:
-        print("Status: COMMIT NOT APPLIED (HEAD unchanged)")
-    else:
-        print(f"Status: commit returned exit {result.returncode}")
-
-    if err:
-        print(f"First error: {err}")
-    print("\n--- git output ---")
-    print(combined.strip() or "(no output)")
-    print("\nBypass hooks (only if intentional): git commit --no-verify -m '...'")
+    for line in _failure_receipt(result, head_before, head_after):
+        print(line)
     return result.returncode or 1
+
+
+def _failure_receipt(result, head_before: str, head_after: str) -> list:
+    """The whole refused-commit render, as lines — hook block or rollback.
+
+    A function rather than five `print`s inside `main` so the render can be
+    driven with a hostile child stream and no git repository (#1475). What it
+    renders is a **pre-commit hook's** stdout and stderr: code the operator
+    installed, so no escalation on its own, but the same seam a remote reaches
+    on `git-push` and the same three lines a consumer anchors at column 0.
+
+    `_untrusted.split_lines` then `visible(keep=tab)` per line, exactly as
+    `push._relayed_lines` does it (#1470): the split cuts on LF / CR / CRLF
+    alone, so a U+2028 stays *inside* the line it was written on and is
+    disclosed there rather than putting the rest of the hook's text back at
+    column 0. Tabs survive — a transcript is not parsed by column, and
+    flattening them renders every tab-aligned hook line as `[U+0009]` soup for
+    no forgery prevented.
+    """
+    combined = (result.stdout or "") + chr(10) + (result.stderr or "")
+    err = _first_error_line(combined)  # flattened at the seam (#1475)
+    lines = [f"HEAD after:  {head_after or '?'} ✗"]
+    if head_after and head_before and head_after == head_before:
+        lines.append("Status: COMMIT NOT APPLIED (HEAD unchanged)")
+    else:
+        lines.append(f"Status: commit returned exit {result.returncode}")
+    if err:
+        lines.append(f"First error: {err}")
+    lines.append("")
+    lines.append("--- git output ---")
+    dump = [_untrusted.visible(ln, keep=chr(9))
+            for ln in _untrusted.split_lines(combined.strip())]
+    lines.extend(dump or ["(no output)"])
+    lines.append("")
+    lines.append("Bypass hooks (only if intentional): "
+                 "git commit --no-verify -m '...'")
+    return lines
 
 
 if __name__ == "__main__":

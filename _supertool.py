@@ -3191,6 +3191,15 @@ def _path_not_found(path: str, *, label: str = "path",
     # where they cannot (an unknown `~user`), the literal is what is shown
     # because the literal is what was opened.
     tried = os.path.abspath(path)
+    # Every path this helper *renders* is flattened; every path it *uses* is
+    # not (#1019). The four lines below are the tool's own, at column 0, and a
+    # filename is whatever the filesystem accepted — `str.splitlines()` breaks
+    # on ten separators (#886), so `a<U+2028>[result] …` wrote a forged marker
+    # line into the middle of a refusal. The stat, the abspath and the join
+    # above still run on the real name, so the receipt keeps naming the path
+    # that was actually opened (#1300).
+    shown, shown_tried = _flat_field(path), _flat_field(tried)
+    shown_cwd = _flat_field(os.getcwd())
     if not suggest and path.startswith("~") and os.path.expanduser(path) == path:
         # `cwd:` provably cannot fix this one: no working directory makes a
         # `~user` resolve. Same reasoning as #734 and #921 — a hint pointing
@@ -3212,14 +3221,14 @@ def _path_not_found(path: str, *, label: str = "path",
             # because the label is a payload FIELD name (`body_file`); here it
             # is the generic noun "file", and "file is a directory, not a file"
             # is not a sentence.
-            f"ERROR: {path} is a directory, not a file\n"
-            f"  tried: {tried} (cwd: {os.getcwd()})\n"
-            f"  '{op or label}' takes a single file. `ls:{path}` or "
-            f"`tree:{path}` lists what is in it.\n"
+            f"ERROR: {shown} is a directory, not a file\n"
+            f"  tried: {shown_tried} (cwd: {shown_cwd})\n"
+            f"  '{op or label}' takes a single file. `ls:{shown}` or "
+            f"`tree:{shown}` lists what is in it.\n"
         )
     lines = [
-        f"ERROR: {label} not found: {path}",
-        f"  tried: {tried} (cwd: {os.getcwd()})",
+        f"ERROR: {label} not found: {shown}",
+        f"  tried: {shown_tried} (cwd: {shown_cwd})",
     ]
     root = None
     if not os.path.isabs(path):
@@ -3229,8 +3238,9 @@ def _path_not_found(path: str, *, label: str = "path",
             root = None
     if root and os.path.exists(os.path.join(root, path)):
         lines.append(
-            f"  exists at {os.path.join(root, path)} — prefix the call with "
-            f"'cwd:{root}' to run it from the project root"
+            f"  exists at {_flat_field(os.path.join(root, path))} — prefix "
+            f"the call with 'cwd:{_flat_field(root)}' to run it from the "
+            f"project root"
         )
     elif suggest:
         lines.append(f"  {suggest}")
@@ -9551,7 +9561,13 @@ def op_edit(old: str, new: str, path: str) -> str:
     ctx_start = max(1, start_line - 2)
     ctx_end = min(len(new_lines), end_line + 2)
 
-    out = [f"edited {path} (line {start_line}"]
+    # The path is flattened for the same reason the op header above it is
+    # (#1019): this line is the receipt's own success claim, and a name
+    # carrying a line separator put `[rolled back] …` at column 0 underneath
+    # it — a retraction the reader's anchored grep believes, for a file that
+    # was in fact written. Disclosed, never stripped: `_flat_field` leaves the
+    # name readable in full so the operator can still go and look at it.
+    out = [f"edited {_flat_field(path)} (line {start_line}"]
     if end_line != start_line:
         out.append(f"-{end_line}")
     out.append(")\n")
@@ -22419,7 +22435,16 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     if no_exclude:
         arg = arg[: -len(_NO_EXCLUDE_SUFFIX)]
 
-    header = f"--- {arg}{_NO_EXCLUDE_SUFFIX if no_exclude else ''} ---\n"
+    # `_flat_field`, not the raw arg (#1019). An op string carries paths, and a
+    # path is whatever the filesystem accepted — `validate:` walks a tree, a
+    # batch payload supplies one, and a repo that takes contributed fixtures is
+    # named by strangers. `str.splitlines()` breaks on ten separators (#886), so
+    # `a<U+2028>[result] 1 op run, 0 writes` wrote a second, forged marker line
+    # at column 0 above every genuine one. Not `_flat_cell`: that is the *row*
+    # variant, which strips and bounds; a header names what was asked for and
+    # must not silently drop a trailing space or truncate a long path.
+    header = (f"--- {_flat_field(arg)}"
+              f"{_NO_EXCLUDE_SUFFIX if no_exclude else ''} ---\n")
 
     # `op:::FIELD:::FIELD:::...` — triple-colon mode for write ops with
     # arbitrary `:` in content. Only triggers when the op name is followed
@@ -23244,7 +23269,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # status code, never from the prose of the receipt being summarised.
     if _compact_header and (_WRITE_COUNT[0] > _writes_before
                             or _custom_op_ok is True):
-        header = (f"--- {_compact_header}"
+        header = (f"--- {_flat_field(_compact_header)}"
                   f"{_NO_EXCLUDE_SUFFIX if no_exclude else ''} ---\n")
     # Right file, wrong branch is silent until commit time, and supertool is
     # the thing that knows (#381). Success and failure both get it — a failed

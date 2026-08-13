@@ -773,7 +773,12 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
         return "ERROR: GitHub API rate limit exceeded. Wait a few minutes and retry."
     if "403" in s or "forbidden" in s:
         return f"ERROR: permission denied for {resource} #{identifier}. Check repo access (gh auth status)."
-    return f"ERROR: gh failed for {resource} #{identifier}: {stderr.strip()}"
+    # The one sink both `gh-pr` error prints share, so the flatten belongs here
+    # rather than at either of them (#1475). `gh` echoes the GitHub API's own
+    # error body on stderr, and this line is at column 0: a reply carrying a
+    # separator wrote a second, forged line under supertool's own authority.
+    return (f"ERROR: gh failed for {resource} #{identifier}: "
+            f"{_untrusted.flat(stderr.strip())}")
 
 
 def _diff_header(number: str) -> list[str]:
@@ -792,8 +797,11 @@ def _diff_header(number: str) -> list[str]:
         head.append(f"# PR #{number} (title unavailable: {exc})")
         return head
     if meta.returncode != 0:
-        head.append(f"# PR #{number} (title unavailable: "
-                    f"{(meta.stderr or '').strip()[:80] or 'gh pr view failed'})")
+        head.append(
+            # Flattened for the same reason `_format_error` is (#1475): this
+            # sits at column 0 directly above the diff a review is read from.
+            f"# PR #{number} (title unavailable: "
+            f"{_untrusted.flat((meta.stderr or '').strip()[:80]) or 'gh pr view failed'})")
         return head
     try:
         d = json.loads(meta.stdout)
@@ -842,7 +850,7 @@ def _run_diff(number: str, path: str | None) -> int:
         if result.returncode != 0:
             files = None
             reason = (f"gh pr diff exited {result.returncode}: "
-                      f"{(result.stderr or '').strip()[:200] or 'no stderr'}")
+                      f"{_untrusted.flat((result.stderr or '').strip()[:200]) or 'no stderr'}")
         else:
             files = _pr_diff.parse(result.stdout)
     text, code = _pr_diff.render(files, header=header, path=path,

@@ -59,10 +59,13 @@ REGISTER: dict[str, str] = {
         "core.quotePath at its default, so a byte above 0x7F is octal-quoted "
         "before the split sees it. A forged row could only ADD a conflict, "
         "whose effect is to refuse to proceed.",
-    "presets/git/_git_common.py::_first_error_line":
-        "a hook's or git's stderr, one line picked as the failure cause. The "
-        "extraction kind: narrowing would leave a forged break INSIDE the "
-        "reported string instead of consuming it (#1105).",
+    # `_first_error_line` was here, and its entry argued that narrowing the
+    # split "would leave a forged break INSIDE the reported string instead of
+    # consuming it". That was a choice between two bad options because neither
+    # end was flattened. #1475 flattened the return, so the break inside is now
+    # disclosed as `[U+2028]` rather than left live — and narrowing became
+    # strictly better, since consuming it dropped the hidden tail out of the
+    # receipt entirely. The site now uses `_untrusted.split_lines`.
     "presets/git/_git_common.py::_remotes_could_host_a_request":
         "`git remote -v`. A URL carrying a separator could forge a row and flip "
         "'every remote is a local path' to 'one names a host', silencing the "
