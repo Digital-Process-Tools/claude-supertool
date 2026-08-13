@@ -8,8 +8,8 @@ so a U+2028 survives *inside* a relayed line and everything the reader anchors
 at column 0 becomes the writer's to choose.
 
 **The fix is at the seam, not at the sites.** Seven sites were named and the
-sweep below finds 174 in 36 files, which is what a per-site fix earns: the
-same defect re-filed once per call. So
+sweep below finds 171 sites in 38 files, which is what a per-site fix earns:
+the same defect re-filed once per call. So
 
 * `_git_common._first_error_line` flattens what it returns. Every caller —
   `git-commit`, `git-push`, and whatever is written next — is covered at once,
@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -183,22 +184,25 @@ def test_a_tab_survives_the_commit_relay() -> None:
 # grows quietly — which is the failure mode of the thing it would be guarding".
 #
 # **So this is not a zero-assertion, and pretending otherwise is what would
-# make it useless.** Measured on this branch: 174 candidate sites in 36 files
+# make it useless.** Measured on this branch: 171 candidate sites in 38 files
 # across `presets/git`, `presets/github` and `presets/gitlab`. Not all are
 # defects — `push._local_head` returns `r.stdout.strip()`, and that is a SHA —
 # and closing them is four lanes of work this PR is not.
 #
 # What is enforceable today, with no exemption mechanism at all, is a **count
 # per file that may only go down**. It is not an allowlist: there is nothing to
-# add a site to. A new relay in any of these 36 files bumps its number and
+# add a site to. A new relay in any of these 38 files bumps its number and
 # fails; a fixed one lowers it and fails, with the message telling you to write
 # the smaller number down. Both directions are one visible line in a diff,
 # which is exactly what "grows quietly" was not.
 #
 # What it does NOT catch, said plainly: a relay added to a file with no row
 # here is caught (its count goes 0 → 1), but a relay added to `push.py` in the
-# same commit that fixes another one nets to 35 and passes. That is the price
-# of shipping a ratchet instead of a gate, and the gate costs 174 fixes first.
+# same commit that fixes another one nets to 33 and passes. That is the price
+# of shipping a ratchet instead of a gate, and the gate costs 171 fixes first.
+#
+# What it also does not catch is every *shape* — see `SINK_SHAPES` below, and
+# `UNRESOLVED` for the size of what it cannot see at all (#1626, #1570).
 
 #: The two attributes a `CompletedProcess` exposes, and a parameter carrying
 #: either name. Small on purpose, for the reason `REFNAME_KEYS` is: the scan is
@@ -208,6 +212,50 @@ STREAM_ATTRS = frozenset({"stdout", "stderr"})
 #: Anything that marks a child's text before it is rendered.
 MARKS = frozenset({"flat", "fence", "scrub", "visible", "render_row",
                    "shell_ref"})
+
+#: Method calls that render. `print` and `return` were the whole sink set until
+#: #1626, and the gap was measured rather than argued: of the fifteen relays
+#: #1606 fixed, four went through `sys.stderr.write` and scored 0 both before
+#: and after, so the ratchet was green across them the entire time.
+#:
+#: `append`/`extend` are counted wherever they appear, not only into a list
+#: that is later returned — #1570's `commit._failure_receipt` moved four sites
+#: out of the count by moving them into `lines.append(...)`, and the count fell
+#: while the exposure did not. Following the list to its render is the precise
+#: answer; counting every append is the one that cannot fail low, and low is
+#: the direction that reads as progress.
+WRITE_SINKS = frozenset({"write", "append", "extend"})
+
+#: One probe per shape the scan recognises, so the disclosure below cannot go
+#: stale: `test_every_declared_sink_shape_is_actually_detected` requires each
+#: to be found. A shape listed but unmatched reads exactly like a shape with
+#: no instances, which is this repo's defect class pointed at its own guard.
+SHAPE_PROBES = {
+    "print(...)": "    print(f'x: {r.stderr}')",
+    "return <expr>": "    return f'x: {r.stderr}'",
+    "<obj>.write(...)": "    sys.stderr.write(f'x: {r.stderr}')",
+    "<obj>.append(...)": "    lines.append(f'x: {r.stderr}')",
+    "<obj>.extend(...)": "    lines.extend([f'x: {r.stderr}'])",
+}
+
+#: What the census is a census *of*. A zero from it means "none of these", and
+#: never "none" — the scan pattern-matches sink shapes, it does not derive
+#: every path from remote bytes to a rendered line (#1626).
+SINK_SHAPES = tuple(SHAPE_PROBES)
+
+#: Child-stream values that flow into a call this scan does not model at all —
+#: a helper, a formatter, a `join`. **Not a defect count.** It is the size of
+#: the population the number above says nothing about, and it is published so
+#: that a green from this file is a bounded claim rather than an unbounded one
+#: (#1570). Asserted exact in both directions: narrowing the scan lowers it and
+#: fails, so the ratchet cannot be quietly made cheaper to pass.
+#:
+#: Disjoint from `CENSUS` by construction — see `_accounted_for`. A first cut
+#: counted 246 by also counting calls *inside* a sink's arguments and on the
+#: right of an assignment, both of which the model already speaks for; padding
+#: the bound with sites the census reports by name makes it unreadable in the
+#: one direction it exists to be read.
+UNRESOLVED = 104
 
 #: Calls whose result cannot be a string, so the taint stops there. A type
 #: argument, not an allowlist: `json.loads(r.stdout)` yields a dict, and every
@@ -220,23 +268,28 @@ _SCANNED = ("presets/github", "presets/gitlab", "presets/git")
 CENSUS = {
     "presets/git/_git_common.py": 5,
     "presets/git/blame.py": 2,
-    "presets/git/checkout.py": 10,
-    "presets/git/commit.py": 9,
+    "presets/git/checkout.py": 13,  # +3, #1626: three `.write` / `.append` sinks
+    "presets/git/commit.py": 11,  # +2, #1626: `_failure_receipt`'s appends (#1570)
     "presets/git/conflicts.py": 2,
     "presets/git/diff.py": 2,  # -2, #1569: both `Repo:` renders -> repo_label()
     "presets/git/diverge.py": 3,
     "presets/git/investigate.py": 4,
     "presets/git/merge.py": 10,
-    "presets/git/push.py": 32,  # -3, #1569: three dumps -> relayed_block()
-    "presets/git/resolve.py": 2,
-    "presets/git/status.py": 15,  # -1, #1569: the branch -vv sink -> _reason()
+    "presets/git/push.py": 33,  # +1, #1626: a `.write` sink
+    "presets/git/resolve.py": 6,  # +4, #1626: two `failed.append` relays, two keys
+    "presets/git/status.py": 18,  # +3, #1626: three `.append` sinks
     "presets/git/trail.py": 4,
     "presets/git/worktrees.py": 6,
     "presets/github/_release_gate.py": 2,
     "presets/github/batch_follow.py": 1,
     "presets/github/batch_star.py": 1,
     "presets/github/branch.py": 3,  # -1, #1606: the _format_error relay
+    # #1606 fixed check.py's seam and this row did not move: a false positive
+    # one line up (`kind = _gh_error_kind(r.stderr)`, reaching a bool
+    # comparison) took the fixed site's place in the count (#1626).
     "presets/github/check.py": 1,
+    "presets/github/find_starable.py": 1,  # +1, #1626: the `bad JSON` dump
+    "presets/github/following.py": 1,  # +1, #1626: the `bad JSON` dump
     "presets/github/issue.py": 2,  # -1, #1606: the _format_error relay
     "presets/github/issue_create.py": 1,  # -2, #1606: both arms of one relay
     "presets/github/issues.py": 0,  # -2, #1606: the lookup and list relays
@@ -247,8 +300,9 @@ CENSUS = {
     "presets/github/pr_merge.py": 5,
     "presets/github/prs.py": 1,  # -1, #1606: the list-failure relay
     "presets/github/run.py": 2,  # -1, #1606: the _format_error relay
+    "presets/github/starred.py": 1,  # +1, #1626: the `bad JSON` dump
     "presets/gitlab/api.py": 1,
-    "presets/gitlab/issue.py": 2,
+    "presets/gitlab/issue.py": 3,  # +1, #1626: `f.write(result.stdout)`
     "presets/gitlab/issue_create.py": 2,
     "presets/gitlab/job.py": 1,
     "presets/gitlab/mr.py": 3,
@@ -302,13 +356,19 @@ def _unmarked(node: ast.AST, tainted: dict) -> set:
 
 
 def _is_sink(node: ast.AST) -> bool:
-    """`print`, and a bare `return` — a returned f-string is rendered text.
+    """`print`, a bare `return`, and the method calls in `WRITE_SINKS`.
 
     Keying on `print` alone certified `push._open_mr_line`, whose caller does
-    the printing one frame up; #1038 learnt that on the sibling scanner.
+    the printing one frame up; #1038 learnt that on the sibling scanner. Adding
+    `return` was not enough either: `sys.stderr.write` and `lines.append` are
+    both renders, and both scored zero until #1626.
     """
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-        return node.func.id == "print"
+    if isinstance(node, ast.Call):
+        fn = node.func
+        if isinstance(fn, ast.Name):
+            return fn.id == "print"
+        if isinstance(fn, ast.Attribute):
+            return fn.attr in WRITE_SINKS
     return isinstance(node, ast.Return) and node.value is not None
 
 
@@ -340,14 +400,59 @@ def _params(scope: ast.AST) -> dict:
     return {x.arg: x.arg for x in names if x.arg in STREAM_ATTRS}
 
 
-def _scan_scope(path: Path, scope: ast.AST, skip: set) -> list:
+def _escapes_from(path: Path, node: ast.Call, tainted: dict) -> list:
+    """A stream argument to a call this scan does not model — the third state.
+
+    Not a finding: the callee may flatten, may parse, may never render. Not
+    silence either, which is what returning nothing here would have been.
+
+    Keyed by position rather than counted, because `_scopes` hands a nested
+    function to both its own scope and its parent's; the sink list is deduped
+    for the same reason.
+    """
+    fn = node.func
+    name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", None)
+    if name in MARKS or name in NOT_TEXT:
+        return []
+    return [f"{path.name}:{node.lineno}:{node.col_offset}:{i}"
+            for i, arg in enumerate(node.args) if _streams_in(arg, tainted)]
+
+
+def _accounted_for(nodes: list) -> set:
+    """Every node the census or the taint model already speaks for.
+
+    A call inside a sink's arguments is reported by name in `CENSUS`; a call on
+    the right of an assignment hands its taint to the target and stays tracked.
+    Neither has left the model, so neither belongs in `UNRESOLVED` — a bound
+    padded with sites the census already names is not a bound.
+
+    The assignment only counts when a target is a plain `Name`, because that is
+    the only target `_scan_scope` taints. `text, code = _render(r.stderr)`
+    keeps nothing, so the taint really did leave and the escape stands.
+    """
+    covered = set()
+    for node in nodes:
+        if _is_sink(node):
+            for arg in _sink_args(node):
+                covered.update(id(n) for n in ast.walk(arg))
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target])
+            if any(isinstance(t, ast.Name) for t in targets):
+                covered.update(id(n) for n in ast.walk(node.value))
+    return covered
+
+
+def _scan_scope(path: Path, scope: ast.AST, skip: set) -> tuple:
     # Source order, not `ast.walk` order: a name is tainted or cleaned by the
     # last assignment *above* the sink.
     nodes = sorted((n for n in ast.walk(scope) if id(n) not in skip),
                    key=lambda n: (getattr(n, "lineno", 0),
                                   getattr(n, "col_offset", 0)))
+    accounted = _accounted_for(nodes)
     tainted = _params(scope)
     found = []
+    escaped = []
     for node in nodes:
         if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
             targets = (node.targets if isinstance(node, ast.Assign)
@@ -361,19 +466,33 @@ def _scan_scope(path: Path, scope: ast.AST, skip: set) -> list:
                 else:
                     tainted.pop(target.id, None)
         if not _is_sink(node):
+            if isinstance(node, ast.Call) and id(node) not in accounted:
+                escaped.extend(_escapes_from(path, node, tainted))
             continue
         for arg in _sink_args(node):
             for key in sorted(_unmarked(arg, tainted)):
                 found.append(f"{path.name}:{node.lineno} {key}")
-    return found
+    return found, escaped
+
+
+def _scan(path: Path) -> tuple:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: list = []
+    escaped: list = []
+    for scope, skip in _scopes(tree):
+        hits, out = _scan_scope(path, scope, skip)
+        found.extend(hits)
+        escaped.extend(out)
+    return sorted(set(found)), sorted(set(escaped))
 
 
 def raw_child_stream_sinks(path: Path) -> list:
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    found = []
-    for scope, skip in _scopes(tree):
-        found.extend(_scan_scope(path, scope, skip))
-    return sorted(set(found))
+    return _scan(path)[0]
+
+
+def unresolved_escapes(path: Path) -> int:
+    """How many child-stream values left this scan's model in `path`."""
+    return len(_scan(path)[1])
 
 
 def _measure() -> dict:
@@ -433,3 +552,116 @@ def test_the_scanner_sees_the_defect_it_was_written_for(tmp_path: Path) -> None:
     found = raw_child_stream_sinks(sample)
     lines = {int(f.split(":")[1].split()[0]) for f in found}
     assert lines == {2, 4, 10}, found
+
+
+# ---------------------------------------------------------------------------
+# what the census is a census *of* (#1626, #1570)
+# ---------------------------------------------------------------------------
+
+
+def _probe(tmp_path: Path, body: str) -> list:
+    sample = tmp_path / "probe.py"
+    sample.write_text("import sys" + chr(10)
+                      + "def render(r, lines):" + chr(10) + body + chr(10),
+                      encoding="utf-8")
+    return raw_child_stream_sinks(sample)
+
+
+def test_every_declared_sink_shape_is_actually_detected(tmp_path: Path) -> None:
+    """A shape listed but unmatched reads exactly like a shape with no sites.
+
+    #1606 paid for this: four of the fifteen relays it fixed went through
+    `sys.stderr.write`, which the scan did not model, so they scored 0 both
+    before and after the fix and the ratchet stayed green across them.
+    """
+    for shape, probe in SHAPE_PROBES.items():
+        found = _probe(tmp_path, probe)
+        assert len(found) == 1, (shape, probe, found)
+    assert tuple(SHAPE_PROBES) == SINK_SHAPES, (
+        "a shape is declared with no probe, or probed without being declared")
+
+
+def test_an_unmodelled_escape_is_disclosed_rather_than_read_as_clean(
+        tmp_path: Path) -> None:
+    """The third state. The scan cannot follow a stream into a helper call, so
+    it must say so rather than return the shape of a clean result."""
+    sample = tmp_path / "escape.py"
+    sample.write_text("def render(r):" + chr(10)
+                      + "    _emit(r.stderr)" + chr(10), encoding="utf-8")
+    assert raw_child_stream_sinks(sample) == [], "not a finding"
+    assert unresolved_escapes(sample) == 1, "and not silence either"
+
+
+def test_a_site_the_census_already_counts_is_not_also_disclosed(
+        tmp_path: Path) -> None:
+    """UNRESOLVED is what the census does *not* see, so it may not overlap it.
+
+    `print(_helper(r.stderr))` is already a finding, and an assignment keeps
+    the taint tracked. Counting either as unresolved too would inflate the
+    disclosure with sites the census reports by name — a bound that is loose
+    for a reason nobody can name is not a bound.
+    """
+    sample = tmp_path / "overlap.py"
+    sample.write_text("def render(r):" + chr(10)
+                      + "    blob = _helper(r.stderr)" + chr(10)
+                      + "    print(_fmt(blob))" + chr(10), encoding="utf-8")
+    assert len(raw_child_stream_sinks(sample)) == 1, "the print is a finding"
+    assert unresolved_escapes(sample) == 0, (
+        "both calls are accounted for: one carries the taint into a tracked "
+        "name, the other sits inside a sink the census already counts")
+
+
+def test_a_tuple_target_does_not_launder_the_escape(tmp_path: Path) -> None:
+    """`text, code = _render(r.stderr)` keeps no name tainted, so the taint
+    really did leave — four live sites have this shape (`pr.py:857`,
+    `push.py:2349` and `:2352`, `status.py:765`)."""
+    sample = tmp_path / "tuple.py"
+    sample.write_text("def render(r):" + chr(10)
+                      + "    text, code = _render(r.stderr)" + chr(10)
+                      + "    return code" + chr(10), encoding="utf-8")
+    assert raw_child_stream_sinks(sample) == [], "nothing reaches a sink"
+    assert unresolved_escapes(sample) == 1, (
+        "an assignment only accounts for a stream when some target actually "
+        "carries the taint onward")
+
+
+def test_the_disclosed_escape_count_is_the_measured_one() -> None:
+    """Exact in both directions: narrowing the scan lowers it and fails."""
+    got = sum(unresolved_escapes(p)
+              for d in _SCANNED
+              for p in sorted((_ROOT / d).rglob("*.py")))
+    assert got == UNRESOLVED, (
+        "the number of child-stream values that flow into a call this scan "
+        "does not model has changed. It is not a defect count - it is the "
+        "size of what a zero from this scan says nothing about. Write the new "
+        "number down in UNRESOLVED: " + f"{UNRESOLVED} -> {got}")
+
+
+#: `N sites in M files`, wherever the prose below publishes the total.
+_TOTAL_PHRASE = re.compile(r"(\d+) (?:candidate )?sites in (\d+) files")
+
+#: Every live document that publishes this sweep's total. `CHANGELOG.md` is
+#: deliberately absent: it records what a release shipped, including the number
+#: that release shipped wrong, and rewriting it would falsify the record.
+_PUBLISHES_THE_TOTAL = ("tests/test_forged_child_stream_line_1475.py",
+                        "docs/presets/git.md")
+
+
+def test_the_published_total_is_the_measured_one() -> None:
+    """#1570: the docstring said 174 across 36 while `_measure()` said 172.
+
+    Both numbers were typed, twice each, in prose nothing read. `docs/presets/
+    git.md` had a third copy that was wrong by twenty by the time this ran.
+    """
+    counts = _measure()
+    want = (sum(counts.values()), len(counts))
+    for rel in _PUBLISHES_THE_TOTAL:
+        src = (_ROOT / rel).read_text(encoding="utf-8")
+        got = [(int(a), int(b)) for a, b in _TOTAL_PHRASE.findall(src)]
+        assert got, (
+            f"{rel} stopped publishing a total, so this check went blind "
+            "there — remove it from _PUBLISHES_THE_TOTAL deliberately or put "
+            "the number back")
+        assert set(got) == {want}, (
+            f"{rel} publishes a total the sweep does not measure. "
+            f"measured {want}, prose says {sorted(set(got))}")
