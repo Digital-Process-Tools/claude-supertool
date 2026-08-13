@@ -25,12 +25,16 @@ Flags (colon-appended: `git-push:force-with-lease:no-verify`):
     Suppresses auto-rebase (the explicit force is your decision).
   - no-verify — skip the local pre-push hook. Documented escape when a
     local formatter legitimately diverges from CI.
-  - budget=SECONDS — how long the `git push` itself may take, in place of
-    the 300s default (#1530). The flag to reach for when a pre-push hook
-    runs a test suite, which is exactly where `no-verify` is least
-    appropriate: a push to a protected branch. Refused rather than clamped
-    if it is unreadable, non-positive, contradicted by a second `budget=`,
-    or above `_PUSH_TIMEOUT_MAX`.
+  - budget=SECONDS — how long this op may spend *pushing*, in place of the
+    300s default (#1530). The flag to reach for when a pre-push hook runs a
+    test suite, which is exactly where `no-verify` is least appropriate: a
+    push to a protected branch. Refused rather than clamped if it is
+    unreadable, non-positive, contradicted by a second `budget=`, or above
+    `_PUSH_TIMEOUT_MAX`.
+    It is a **deadline, not a per-call timeout** (#1615): the clock opens at
+    the first `git push` and the non-fast-forward recovery's fetch, rebase
+    and re-push all draw from what is left of it. See `_open_push_deadline`
+    for why, and for what that costs on the recovery path.
 
 Hook output is never evidence about the remote. The auto-rebase above is the
 one path here that rewrites local history, so it fires only on git's own
@@ -64,6 +68,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import traceback
 from typing import Optional
 
@@ -107,10 +112,13 @@ from _git_common import (  # noqa: E402
 _KNOWN_FLAGS = ("force-with-lease", "no-verify", "watch",
                 "set-upstream", "to-upstream")
 
-# Default budget for a single `git push` invocation, and the ceiling a caller
+# Default budget for this op's whole pushing phase, and the ceiling a caller
 # may raise it to with `:budget=SECONDS`. Both must stay strictly below the
 # git-push op timeout in presets/git.json so this script — not supertool's
 # outer cap — owns the timeout and can verify the remote before reporting.
+# Since #1615 that relation actually holds on the recovery path too: it is one
+# deadline for both pushes and the fetch and rebase between them, where it used
+# to be a fresh clock per `git push` summing to `2N + 240`.
 #
 # 300 could not be raised at all until #1530, and on this repository it is not
 # reachable: `.githooks/pre-push` runs the full suite when the destination is
@@ -144,19 +152,117 @@ _PUSH_TIMEOUT_MAX = 1800
 # module and only credits an assignment it can see there, because "mutated
 # somewhere in main" would accept a write 150 lines in that is the value being
 # used. The declaration lives in conftest.PRESET_SELF_CLEARING_GLOBALS.
-_BUDGET: dict[str, object] = {"seconds": None}
+# `deadline` and `allowed` are #1615. `seconds` is what was asked for and never
+# moves; `deadline` is the monotonic instant the pushing phase must be over by,
+# opened at the first `git push`; `allowed` is the clock the most recent push
+# was actually launched with, which the timeout receipt has to name rather than
+# the budget it was cut from.
+_BUDGET: dict[str, object] = {"seconds": None, "deadline": None,
+                              "allowed": None}
 
 
 def _push_budget() -> int:
-    """Seconds `git push` gets on this run — the caller's, or the default."""
+    """Seconds this run's *pushing* gets in total — the caller's, or the default."""
     asked = _BUDGET["seconds"]
     return _PUSH_TIMEOUT if asked is None else int(asked)
+
+
+def _open_push_deadline() -> int:
+    """Start the budget's clock at the first `git push`, and return its share.
+
+    **`:budget=N` is a deadline on this op's pushing, not a per-call timeout**
+    (#1615). It used to be the second, and the two are only the same number
+    when there is one push: the rebase-recovery re-push was handed `N` again,
+    with `_RECOVER_TIMEOUT` for the fetch and again for the rebase in between
+    and nothing accounting for the time already spent. Worst case `2N + 240`
+    against `ops.git-push.timeout = 1920`, so any `N > 840` could reach
+    supertool's outer cap — which kills the process, on the recovery path,
+    where `_report_recovery_timeout` is the only thing that would have said the
+    worktree is paused mid-rebase. That is the outcome `_parse_budget`'s own
+    ceiling text says the ceiling exists to prevent (#399), so the two now
+    agree.
+
+    **The clock opens here and not in `_push_op`'s prologue**, so the first
+    push always gets the whole budget and the single-push case is unchanged to
+    the second. What is charged against it is only work this op chose to do
+    after committing to a push: the recovery fetch, the rebase, the re-push.
+    The preamble that picks a remote and the receipt that reads the result are
+    outside it — the receipt especially, because #675 is that an expiring clock
+    past the point of no return must never cost the caller the verdict.
+
+    **What that costs**, stated where it is chosen: a first push that spends
+    most of `N` and is *then* rejected non-fast-forward leaves little or
+    nothing for the recovery, and the recovery is declined rather than run
+    short (`_report_budget_spent`). That is the contract the caller asked for —
+    a verdict within `N` seconds — and it replaces a recovery that ran for
+    another `N + 240` and could be killed with no receipt at all.
+    """
+    seconds = _push_budget()
+    _BUDGET["deadline"] = time.monotonic() + seconds
+    _BUDGET["allowed"] = seconds
+    return seconds
+
+
+def _budget_left() -> int:
+    """Whole seconds before the push deadline. 0 once it is spent.
+
+    Floored rather than rounded: a remaining 0.4s is not a call worth
+    launching, and handing `subprocess` a sub-second budget produces a child
+    killed before it can say anything — the shape of absence this file is
+    mostly about. `None` (no push has started yet) is the full budget, so a
+    caller reaching this before `_open_push_deadline` is told the truth rather
+    than zero.
+    """
+    deadline = _BUDGET["deadline"]
+    if deadline is None:
+        return _push_budget()
+    return max(0, int(float(deadline) - time.monotonic()))  # type: ignore[arg-type]
+
+
+def _push_allowed() -> int:
+    """The clock the `git push` that just returned was actually launched with.
+
+    Distinct from `_push_budget()` since #1615, and the timeout receipt reads
+    this one: a re-push cut short by the deadline that reported the full budget
+    would send the caller to raise a number that was never reached — #1530's
+    defect, one indirection further in.
+    """
+    allowed = _BUDGET["allowed"]
+    return _push_budget() if allowed is None else int(allowed)
 
 # Budget for each git call on the non-fast-forward recovery path (fetch,
 # rebase). Named rather than inline because these are the calls whose expiry
 # can land on a worktree git has already paused (#640) — see
 # _report_recovery_timeout.
 _RECOVER_TIMEOUT = 120
+
+
+def _recover_allowance():
+    """`_RECOVER_TIMEOUT`, or what is left of the push deadline — the smaller.
+
+    Not a plain `_RECOVER_TIMEOUT` since #1615: the fetch and the rebase sit
+    between the two pushes and used to spend 240s nobody accounted for, which
+    is more than the entire headroom between `_PUSH_TIMEOUT_MAX` and
+    `ops.git-push.timeout`.
+
+    Returns whatever `_RECOVER_TIMEOUT` is rather than an `int`, because
+    tests/test_git_push_hazards_640_642_647.py binds it to an object whose
+    `__radd__` starts the clock inside `subprocess.run` — that is the only way
+    to say "expire after git reaches its helper" (#828, #844), and it orders
+    itself against an int for this comparison.
+    """
+    return min(_RECOVER_TIMEOUT, _budget_left())
+
+
+def _repush_allowance() -> int:
+    """The recovery re-push's clock — whatever the deadline still holds.
+
+    Recorded in `_BUDGET["allowed"]` on the way past, so `_report_push_timeout`
+    names the clock that cut rather than the budget it was cut from.
+    """
+    left = _budget_left()
+    _BUDGET["allowed"] = left
+    return left
 
 # Budget for the checks that make up the receipt — everything this op runs
 # *after* the push has landed. Named for the same reason _PUSH_TIMEOUT is:
@@ -287,7 +393,8 @@ def _parse_budget(argv: list[str]) -> tuple[Optional[int], str]:
     guessing"):
 
     * `(None, "")`  — not asked for. `_push_budget` falls back to the default.
-    * `(N, "")`     — N seconds, applied to git's own clock end to end.
+    * `(N, "")`     — N seconds, as a deadline on this op's pushing (#1615),
+      not as a per-call timeout. `_open_push_deadline` owns that distinction.
     * `(None, why)` — unusable. The caller is told which token and why.
 
     **Never clamped.** A value above the ceiling silently becoming the ceiling,
@@ -1711,14 +1818,23 @@ def _report_push_timeout(branch: str, head_before: str,
     """
     head_after, _head_why = _local_head()
     live, live_why = _live_remote_sha(remote, ref)
-    print(f"Push exceeded its {_push_budget()}s budget — asking the remote what landed…")
+    allowed = _push_allowed()
+    print(f"Push exceeded its {allowed}s budget — asking the remote what landed…")
+    if allowed != _push_budget():
+        # #1615. This push was the recovery re-push, so it got what the
+        # deadline still held rather than the whole budget. Saying only
+        # `{allowed}s` would send the caller to raise a number they never hit;
+        # saying only the budget would name a clock that did not cut.
+        print(f"That {allowed}s is what remained of the {_push_budget()}s you "
+              "asked for, after the first attempt and the rebase — :budget is a "
+              "deadline for this op's pushing, not a fresh clock per attempt.")
     if live and head_after and live == head_after:
         _note_landed(branch, remote, ref)
         print("Status: pushed ✓ (push timed out locally; remote ref matches HEAD)")
         if head_after != head_before:
             print(f"Local HEAD rewritten {head_before[:7]} → {head_after[:7]}")
         print(f"Remote {remote}/{ref} now at {live[:7]}")
-        print(f"Push outlasted its {_push_budget()}s budget (slow pre-push hook "
+        print(f"Push outlasted its {allowed}s budget (slow pre-push hook "
               "or transfer), so the receipt above is only what fit in the "
               "time. The push landed — re-run `git-push` for the full receipt "
               "(it will report already up to date).")
@@ -1738,13 +1854,13 @@ def _report_push_timeout(branch: str, head_before: str,
     hook_state, hook_detail = _prepush_hook_state(flags)
     if hook_state == "runs":
         print(f"A local pre-push hook runs before anything is sent "
-              f"({hook_detail}), so some or all of that {_push_budget()}s may "
+              f"({hook_detail}), so some or all of that {allowed}s may "
               "have been local — a remote that has not moved is exactly what a "
               "push still inside its own hook looks like. This repo's hook "
               "runs the full suite when the destination is master/main (#1242).")
     elif hook_state == "none":
         print(f"No local pre-push hook ran ({hook_detail}), so the "
-              f"{_push_budget()}s was the push itself.")
+              f"{allowed}s was the push itself.")
     else:
         print(f"Whether a local pre-push hook ran is UNKNOWN — {hook_detail}. "
               "This receipt is not saying none did.")
@@ -1791,7 +1907,47 @@ def _rebase_state() -> str:
     return "in-progress" if any(os.path.exists(p) for p in paths) else "not-started"
 
 
-def _report_recovery_timeout(stage: str, branch: str, target: str) -> int:
+def _report_budget_spent(stage: str, branch: str, target: str,
+                         rebased: bool) -> int:
+    """The push budget ran out before `stage` could start — say so, run nothing.
+
+    Three states, not two (#1615, docs/validators.md §"Declining instead of
+    guessing"). A git call handed a clock that has already expired is killed
+    before it can produce evidence, and on this path the evidence *is* the
+    product: a `git push` launched on zero seconds costs the caller a verdict
+    and buys nothing. Declining is louder, cheaper, and true.
+
+    `rebased` decides the verdict, because it decides what the caller walks
+    back into. On the fetch and rebase arms nothing has moved. On the re-push
+    arm their branch has already been replayed onto the remote's tip — the same
+    fact `_report_recovery_timeout` exists to state, arrived at by a clock
+    rather than by a stall.
+    """
+    print(f"Status: NOT PUSHED ✗ — the {_push_budget()}s push budget was spent "
+          f"before {stage} could start")
+    if rebased:
+        print(f"Your branch is REBASED onto {target} — the rebase ran and was "
+              "clean, and nothing was pushed. Your commits are replayed, not "
+              "lost, and your tree is not where you left it.")
+        print("Retry `git-push` — it is a fast-forward now, and it gets a "
+              "fresh budget.")
+    else:
+        print("Your working tree is unchanged and your branch is where it "
+              "was. Nothing was pushed.")
+    print(_budget_advice())
+    if rebased:
+        _result(f"NOT PUSHED - BUDGET SPENT  {branch} -> {target} - rebased "
+                f"onto {target} cleanly, then the {_push_budget()}s budget was "
+                "gone before the re-push; retry `git-push`")
+    else:
+        _result(f"NOT PUSHED - BUDGET SPENT  {branch} -> {target} - the "
+                f"{_push_budget()}s budget was gone before the recovery "
+                f"{stage}; working tree unchanged")
+    return 1
+
+
+def _report_recovery_timeout(stage: str, branch: str, target: str,
+                             allowed=None) -> int:
     """Verdict for a fetch/rebase that outlasted its budget (#640).
 
     The exception this replaces was raised out of main() as a bare traceback,
@@ -1804,8 +1960,13 @@ def _report_recovery_timeout(stage: str, branch: str, target: str) -> int:
     changes is that the failure names the worktree state and the way out of it.
     """
     stage_up = stage.upper()
+    # #1615: the recovery calls draw on the push deadline too, so the clock
+    # that cut is not always `_RECOVER_TIMEOUT`. Reporting the constant when
+    # the deadline was the tighter of the two names a budget that did not
+    # expire, and sends the reader to raise the wrong number.
+    allowed = _RECOVER_TIMEOUT if allowed is None else allowed
     state = _rebase_state()
-    print(f"Status: {stage_up} TIMED OUT ✗ — exceeded its {_RECOVER_TIMEOUT}s "
+    print(f"Status: {stage_up} TIMED OUT ✗ — exceeded its {allowed}s "
           f"budget while recovering the non-fast-forward push")
     if state == "in-progress":
         print("Your worktree has a REBASE IN PROGRESS — git paused it and the "
@@ -1815,24 +1976,25 @@ def _report_recovery_timeout(stage: str, branch: str, target: str) -> int:
         print("  • finish it — resolve if needed, then `git rebase --continue`")
         print("  • undo it — `git rebase --abort` (back to before the push, "
               "nothing changed)")
-        _result(f"NOT PUSHED - {stage_up} TIMED OUT ({_RECOVER_TIMEOUT}s)  "
+        _result(f"NOT PUSHED - {stage_up} TIMED OUT ({allowed}s)  "
                 f"{branch} -> {target} - REBASE IN PROGRESS: finish with "
                 "`git rebase --continue` or undo with `git rebase --abort`")
     elif state == "not-started":
         print("No rebase is in progress — the working tree is unchanged and "
               "your branch is where it was.")
         print(f"Retry. If this repo genuinely needs more than "
-              f"{_RECOVER_TIMEOUT}s to {stage}, the budget is _RECOVER_TIMEOUT "
-              "in presets/git/push.py — raising ops.git-push.timeout alone "
-              "will not move it.")
-        _result(f"NOT PUSHED - {stage_up} TIMED OUT ({_RECOVER_TIMEOUT}s)  "
+              f"{allowed}s to {stage}, the budget is _RECOVER_TIMEOUT "
+              "in presets/git/push.py — or, when the push deadline was the "
+              "tighter of the two, `git-push:budget=SECONDS`. Raising "
+              "ops.git-push.timeout alone will not move either.")
+        _result(f"NOT PUSHED - {stage_up} TIMED OUT ({allowed}s)  "
                 f"{branch} -> {target} - no rebase started, working tree "
                 "unchanged")
     else:
         print("Could NOT determine whether a rebase is in progress — git did "
               "not answer. Your worktree may or may not be paused mid-rebase.")
         print("Check before anything else: `git status`")
-        _result(f"NOT PUSHED - {stage_up} TIMED OUT ({_RECOVER_TIMEOUT}s)  "
+        _result(f"NOT PUSHED - {stage_up} TIMED OUT ({allowed}s)  "
                 f"{branch} -> {target} - rebase state UNKNOWN, run "
                 "`git status` before retrying")
     return 1
@@ -1880,11 +2042,17 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         print(f"Status: PUSH REJECTED ✗ — {refuse}")
         _result(f"NOT PUSHED - REJECTED  {branch} -> {target} - {refuse}")
         return 1
+    # #1615: drawn from the push deadline, not spent beside it. The fetch and
+    # the rebase sit between two pushes, and 240s unaccounted for is more than
+    # the whole headroom between `_PUSH_TIMEOUT_MAX` and ops.git-push.timeout.
+    fetch_budget = _recover_allowance()
+    if not fetch_budget:
+        return _report_budget_spent("the recovery fetch", branch, target,
+                                    rebased=False)
     print(f"Remote moved ahead — fetching to rebase onto {target}…")
-    fetched = _git(["fetch", remote_name, remote_ref],
-                   timeout=_RECOVER_TIMEOUT)
+    fetched = _git(["fetch", remote_name, remote_ref], timeout=fetch_budget)
     if fetched.returncode == TIMEOUT_RC:
-        return _report_recovery_timeout("fetch", branch, target)
+        return _report_recovery_timeout("fetch", branch, target, fetch_budget)
     if fetched.returncode != 0:
         combined = (fetched.stdout or "") + "\n" + (fetched.stderr or "")
         print(f"Status: PUSH REJECTED ✗ — fetch of {target} failed, cannot rebase")
@@ -1911,9 +2079,13 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         if behind > _INCOMING_CAP:
             print(f"  … +{behind - _INCOMING_CAP} more")
 
-    rebase = _git(["rebase", rebase_target], timeout=_RECOVER_TIMEOUT)
+    rebase_budget = _recover_allowance()
+    if not rebase_budget:
+        return _report_budget_spent("the rebase", branch, target,
+                                    rebased=False)
+    rebase = _git(["rebase", rebase_target], timeout=rebase_budget)
     if rebase.returncode == TIMEOUT_RC:
-        return _report_recovery_timeout("rebase", branch, target)
+        return _report_recovery_timeout("rebase", branch, target, rebase_budget)
     if rebase.returncode != 0:
         # Distinguish a real merge conflict (unmerged paths → leave paused for
         # git-conflicts) from a rebase that never started (bad ref, etc.).
@@ -1971,7 +2143,11 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         # into a bare push git will refuse for a reason unrelated to the
         # rebase that just succeeded.
         push_args += [remote_name, f"HEAD:{remote_ref}"]
-    result = _git(push_args, timeout=_push_budget())
+    repush_budget = _repush_allowance()
+    if not repush_budget:
+        return _report_budget_spent("the re-push", branch, target,
+                                    rebased=True)
+    result = _git(push_args, timeout=repush_budget)
     if result.returncode == TIMEOUT_RC:
         return _report_push_timeout(branch, _local_head()[0],
                                     remote_name, remote_ref, flags)
@@ -2082,7 +2258,7 @@ def main() -> int:
     use_utf8_stdout()
     _RUN.update({"phase": "not-attempted", "branch": "", "remote": "",
                  "ref": "", "target": "", "verdict": False})
-    _BUDGET["seconds"] = None
+    _BUDGET.update({"seconds": None, "deadline": None, "allowed": None})
     try:
         return _push_op()
     except Exception as exc:  # noqa: BLE001 — deliberate; see _crash_receipt
@@ -2166,6 +2342,36 @@ def _push_op() -> int:
         if not push_remote:
             return _refuse_unresolved_remote(branch, cannot_tell)
     remote_name, remote_ref = _split_upstream(upstream, branch, push_remote)
+    # #1617, `splices`. Neither of these is an op argument. `remote_ref` and
+    # `remote_name` come out of `@{upstream}` — a remote-tracking ref name
+    # whoever controls the remote can choose — or, with no upstream, out of
+    # `_resolve_push_remote`, whose first rung takes `branch.<b>.pushRemote`
+    # and `remote.pushDefault` **verbatim** by design, because git accepts a
+    # URL there. Both land as bare argv elements below, where git's own option
+    # parser decides what they are.
+    #
+    # `git push --porcelain -u --receive-pack=<cmd> HEAD` runs <cmd>: git eats
+    # the option, `HEAD` slides into the repository slot, and git spawns the
+    # receive-pack program for that local path *before* failing to find a
+    # repository there. Observed on git 2.46.2 / macOS 15, with one remote and
+    # no steering config — see tests/test_git_push_budget_deadline_1615_1617.py.
+    #
+    # `reject_fetch_option` is the chokepoint written for this (#818) and ran
+    # at the recovery fetch and in merge.py but never here. It is called before
+    # the argv is built rather than inside each arm, so a future arm cannot
+    # reintroduce the hole by forgetting — and because `remote_name` also
+    # reaches `ls-remote` and `_post_push_advisories` on the arm that does not
+    # put it in the push argv at all.
+    refuse = reject_fetch_option(remote_name, remote_ref)
+    if refuse:
+        print(f"Status: PUSH REJECTED ✗ — {refuse}")
+        print("Nothing was pushed. A real remote or branch never starts with "
+              "`-`; git refuses to create one. Look for it in `git remote -v` "
+              "and in the branch.*.pushRemote / remote.pushDefault / "
+              "branch.*.remote config keys this op reads.")
+        _result(f"NOT PUSHED - REJECTED  {branch} -> {remote_name}/"
+                f"{remote_ref} - {refuse}")
+        return 1
     if has_upstream and remote_ref != branch and "to-upstream" not in flags:
         # @{upstream} resolved, but not to this branch's own name — a bare
         # push here is git's own ambiguity, not ours to guess through (#787).
@@ -2230,7 +2436,7 @@ def _push_op() -> int:
     _RUN.update({"phase": "attempted", "branch": branch,
                  "remote": remote_name, "ref": remote_ref,
                  "target": f"{remote_name}/{remote_ref}"})
-    result = _git(push_args, timeout=_push_budget())
+    result = _git(push_args, timeout=_open_push_deadline())
     if result.returncode == TIMEOUT_RC:
         return _report_push_timeout(branch, head_before,
                                     remote_name, remote_ref, flags)
