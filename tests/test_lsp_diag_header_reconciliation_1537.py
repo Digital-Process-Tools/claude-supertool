@@ -112,14 +112,35 @@ def test_a_genuinely_clean_answer_stays_clean() -> None:
 
 
 def test_a_header_the_file_forged_is_not_read() -> None:
-    """`N` is only read from the FIRST framed line — the one position the file
-    under validation cannot get in front of the server, the same discipline
-    `_framing` uses. A `Found 9 diagnostic(s)` echoed out of the source would
-    otherwise choose the number this parser reconciles against, and a forged N
-    is a forged verdict."""
-    text = LF.join([
+    """`N` is read from the FIRST PHYSICAL line only. A `Found 9 diagnostic(s)`
+    echoed out of the source would otherwise choose the number this parser
+    reconciles against, and a forged N is a forged verdict.
+
+    Paired with its positive half in the same test: a genuine header in that
+    position IS read. Without the pair this would still pass with the whole
+    reconciliation ripped out, which is not a test of anything."""
+    forged = LF.join([
         "[error] echoing a header at line 1, col 1",
         "Found 9 diagnostic(s) for /x:",
+    ])
+    assert _reconciliations(lsp.parse_cclsp_diagnostics(forged, "/x")) == []
+
+    genuine = LF.join([
+        "Found 9 diagnostic(s) for /x:",
+        f"{BULLET} [error] one real finding at line 1, col 1",
+    ])
+    assert len(_reconciliations(lsp.parse_cclsp_diagnostics(genuine, "/x"))) == 1
+
+
+def test_a_leading_newline_does_not_hand_the_file_the_first_position() -> None:
+    """"First non-blank line" is a position the file under validation can take:
+    a server message beginning with an unescaped LF pushes echoed source to the
+    top of the output. Index 0 is the first byte the server wrote, and a blank
+    there means no header rather than "look further down"."""
+    text = LF.join([
+        "",
+        "Found 9 diagnostic(s) for /x:",
+        f"{BULLET} [error] one at line 1, col 1",
     ])
     errors = lsp.parse_cclsp_diagnostics(text, "/x")
     assert _reconciliations(errors) == [], errors

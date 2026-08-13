@@ -158,24 +158,37 @@ def _framing(lines: list[str]) -> bool:
 def header_count(lines: list[str]) -> int | None:
     """`N` from the server's own list header, or None if it sent no header.
 
-    Read from the FIRST line carrying anything framed, never from any line —
-    the same discipline `_framing` uses and for the same reason. The real
-    header precedes every diagnostic, so it is the one position the file under
-    validation cannot get in front of the server. A `Found 9 diagnostic(s) for
-    x:` echoed out of a source file would otherwise choose the number this
-    parser reconciles against, and a forged N is a forged verdict.
+    Read from the **first physical line only** — not the first line that
+    carries something, which is where `_framing` draws its line. The two rules
+    differ because the hazards do. `_framing` skips blanks and headers to find
+    the first framed line, and that is safe for it: it asks a yes/no question
+    whose wrong answer is bounded. This reads a *number*, and every line the
+    server sends can carry text echoed out of the file under validation — one
+    of the five inline breaks or an unescaped LF puts that text at the start of
+    a physical line (#1486, #1500), so "first non-blank" is a position the file
+    can reach by emitting a leading newline. Index 0 is not: `main()` strips
+    supertool's own `--- diag:FILE ---` line and its trailing whitespace, so
+    position 0 is the first byte the server wrote.
+
+    **What this does not close, and cannot.** In the bulletless variant the
+    server sends no header at all, and a first line that matches `_HEADER_RE`
+    end to end is then indistinguishable from one — some other tool's output,
+    or a file's own text if it ever reaches position 0, would be read as a
+    count. Nothing in the text can tell those apart, so the containment is on
+    the consequence instead: `_reconcile` returns a `severity: "warning"`
+    record, which cannot make `ok` false, cannot reach `NOT CHECKED`, and
+    cannot revert an edit. A forged N buys one misleading advisory line and no
+    verdict. Claiming more than that here would be the overclaim this adapter
+    keeps being fixed for.
 
     None is "no number", which is a different fact from "the numbers agree" —
     `_reconcile` keeps them apart rather than letting an absent header read as
     a match.
     """
-    for physical in lines:
-        head = first_segment(physical)[0].strip()
-        if not head:
-            continue
-        m = _HEADER_RE.match(head)
-        return int(m.group(1)) if m else None
-    return None
+    if not lines:
+        return None
+    m = _HEADER_RE.match(first_segment(lines[0])[0].strip())
+    return int(m.group(1)) if m else None
 
 
 def _reconcile(claimed: int | None, produced: int) -> dict | None:
