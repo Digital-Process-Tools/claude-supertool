@@ -418,9 +418,18 @@ def test_the_substitute_is_an_op_name_so_the_invocation_lives_where_it_lands() -
 
     `write -> paste` is a complete answer. `gh-since-tag -> gh-prs` is not: the
     caller still needs `merged-since=TAG,state=merged`. Rather than widening
-    the synonym table into a second mechanism, the rest of the sentence sits
-    where the pointer sends them — so `gh-prs`'s syntax line and the opening of
-    its description both carry it, and this test is what stops that rotting.
+    the synonym table into a second mechanism, the rest of the sentence sits in
+    `gh-prs`'s registry entry — its syntax line and the opening of its
+    description both carry it, and this test is what stops that rotting.
+
+    **What this test never established is that the caller sees any of it.**
+    #1405's premise was that the pointer sends them somewhere the invocation
+    lives; the unknown-op message printed the name and a provenance label and
+    nothing more, so it sent them nowhere. #1524 made the claim true by
+    printing the target's `syntax` under the suggestion, and
+    `tests/test_synonym_names_the_invocation_1524.py` is what pins the render.
+    This one still pins the registry entry the render reads from — a green here
+    beside a red there is exactly the split that hid the defect for a release.
     """
     import json
     registry = json.loads((PRESETS / "github.json").read_text(encoding="utf-8"))

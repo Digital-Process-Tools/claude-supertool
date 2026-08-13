@@ -853,6 +853,12 @@ RESET_GLOBALS = (
     # caller rebuilds from whatever `_INSTALL_DIR` really is.
     "_REPO_TARGET_MODES",
     "_SHIPPED_PRESET_OPS",
+    # Filled in the same pass as `_SHIPPED_PRESET_OPS` and cleared at the top of
+    # that rebuild, so it is already as fresh as its sibling (#1524). Listed
+    # anyway rather than exempted: the exemption is the claim #1322 disproved,
+    # and a dict whose freshness depends on another global being reset first is
+    # a two-step argument where a one-line entry does the job.
+    "_SHIPPED_PRESET_SYNTAX",
     # Both per-invocation scratch, written by dispatch before the op runs and
     # read within the same frame (#946). Stale across tests they would be
     # worse than absent: `_ARG_SEP` would tell a preset the previous call's
