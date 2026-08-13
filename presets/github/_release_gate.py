@@ -155,10 +155,13 @@ FRAGMENT_NAME = re.compile(
 def parse_instant(value: object) -> Optional[datetime]:
     """One clock for two vocabularies, or ``None``.
 
-    `gh` emits a `Z` suffix; `git` emits a numeric offset. `datetime.fromisoformat`
-    on the supported floor (3.9) does not accept `Z`, so it is rewritten before
-    parsing rather than compared as text. A value that cannot be parsed returns
-    ``None`` and every caller treats that as "could not place", never as "old".
+    `gh` emits a `Z` suffix; `git` emits a numeric offset. Both are read rather
+    than compared as text. The grammar is `_filter_tokens._ISO_INSTANT` and it
+    is written out there rather than delegated to `datetime.fromisoformat`,
+    which accepts different values on 3.9 and on 3.11+ (#1526) — this function
+    is a thin alias for that one, so the note below about one parser is literal.
+    A value that cannot be parsed returns ``None`` and every caller treats that
+    as "could not place", never as "old".
 
     The body lives in `_filter_tokens` since #1411, because `gh-prs` grew a
     `merged-since=` boundary and needs the identical reading. Two parsers over
