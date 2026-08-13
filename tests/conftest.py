@@ -359,13 +359,17 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     `688 skipped` is a number. `N of 688 skipped, because this runner has no
     create-symlink privilege` is a fact somebody can act on -- it is the
     difference between an absence in the world and an absence the tooling
-    produced. Two reasons are broken out that way, each in its own helper below:
-    the create-symlink privilege (#1143) and the post-edit lint budget (#1360).
+    produced. Four reasons are broken out that way, each in its own helper
+    below: the create-symlink privilege (#1143), the post-edit lint budget
+    (#1360), the live GitHub API (#1568) and a `git status` that would not
+    answer about a path's working-tree state (#705). This sentence said "two"
+    for as long as there were three -- the count is the thing that goes stale,
+    so it is derived nowhere and stated here once.
 
-    Both print whether the count is zero or not -- silence would be
+    All of them print whether the count is zero or not -- silence would be
     indistinguishable from not having looked -- and each prints its denominator
     and its population next to the number, so a non-zero count is not read as a
-    total either (#1274). Neither is reached through the other: this hook used to
+    total either (#1274). None is reached through another: this hook used to
     return early when `_symlink` was absent from the tree, which would now omit
     the lint line silently -- the same absence, one layer up (#1360).
     """
