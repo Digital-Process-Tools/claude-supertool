@@ -1127,7 +1127,7 @@ A number leaving `state=open` could have closed, been transferred, been relabell
 
 | Behaviour | |
 |---|---|
-| interval | 120s. Labels move on human timescales, but a label-triggered handoff waiting out a five-minute tick is the friction being fixed rather than half of it. One request per tick against a 5000/hour budget. |
+| interval | 120s. Labels move on human timescales, but a label-triggered handoff waiting out a five-minute tick is the friction being fixed rather than half of it. One request on a common tick, against a 5000/hour budget — **not a ceiling**: a population over 100 pays one request per page, and each departure pays one lookup. |
 | first poll | Records the baseline **silently**. Announcing every issue that was already open is not discovery, it is a notification storm. |
 | `is_terminal` | Never. A population has no final state. |
 | fetch failure | No population, no departures, one `issues_unreachable` — **once per outage, not once per poll**. An alert that repeats every two minutes is one people mute, and a muted alert is the original silence by a longer route. |

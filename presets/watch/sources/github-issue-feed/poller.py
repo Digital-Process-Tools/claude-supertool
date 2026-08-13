@@ -55,8 +55,14 @@ from typing import Any
 
 # Labels move on human timescales, but a label-triggered handoff is the case
 # #525 names, and a handoff that waits out `gitlab-mr-feed`'s 300s is the
-# friction being fixed rather than half of it. One `gh api` call per tick is 30
-# requests an hour against a 5000/hour budget.
+# friction being fixed rather than half of it.
+#
+# The common tick is **one** `gh api` call — 30 an hour against a 5000/hour
+# budget. It is not a ceiling and this comment used to imply it was: a
+# population over `PER_PAGE` pays one call per page, and each departure pays
+# one lookup (see `lookup_issue_state`). Both are bounded — `MAX_PAGES` pages,
+# and departures are rare because they are transitions rather than states — but
+# a tick on which five issues close costs six calls, not one.
 INTERVAL = 120
 
 PER_PAGE = 100
@@ -196,6 +202,11 @@ def _issue_row(item: dict[str, Any]) -> dict[str, Any]:
         "comments": raw_comments if isinstance(raw_comments, int) else None,
         "created_at": str(item.get("created_at") or ""),
         "state_reason": str(item.get("state_reason") or ""),
+        # Carried because a scope may include closed issues (`state=all`), and
+        # then "is it closed?" stops being answered by membership. Under the
+        # default `state=open` every row is open and this field decides
+        # nothing; under any other scope it decides two events.
+        "state": str(item.get("state") or ""),
     }
 
 
@@ -218,7 +229,12 @@ def fetch_population(scope: str) -> tuple[dict[str, dict[str, Any]] | None, str]
     query["per_page"] = str(PER_PAGE)
 
     out: dict[str, dict[str, Any]] = {}
-    for page in range(1, MAX_PAGES + 1):
+    # MAX_PAGES + 1, and the last one is a probe rather than a page. A run that
+    # stops after MAX_PAGES full pages cannot tell a population of exactly
+    # PER_PAGE * MAX_PAGES from a larger one, and refusing both says "more than
+    # 500 rows" about a repository that has 500 — turning a working feed into a
+    # permanently unreachable one over an off-by-one.
+    for page in range(1, MAX_PAGES + 2):
         query["page"] = str(page)
         path = _repo_target.api_path("issues") + "?" + urllib.parse.urlencode(query)
         try:
@@ -237,6 +253,10 @@ def fetch_population(scope: str) -> tuple[dict[str, dict[str, Any]] | None, str]
             return None, f"ERROR: invalid JSON from gh for scope {scope!r}"
         if not isinstance(data, list):
             return None, f"ERROR: unexpected payload shape from gh for scope {scope!r}"
+        if page > MAX_PAGES:
+            if not data:
+                return out, ""
+            break
         for item in data:
             if not isinstance(item, dict) or item.get("number") is None:
                 continue
@@ -346,7 +366,13 @@ def _arrival(number: str, row: dict[str, Any], prev_observed: str,
     """
     payload = _base_payload(number, row)
     created = str(row.get("created_at") or "")
-    if number in closed_recent:
+    # The reopen window records numbers, not states, so membership in it is
+    # necessary and not sufficient. Under a scope that admits closed issues an
+    # issue can leave by losing a label and come back by regaining one without
+    # ever reopening, and the row in hand contradicts the claim. An empty
+    # `state` is a row written before the field was recorded: unknown, and
+    # unknown does not buy the stronger event.
+    if number in closed_recent and _is_open(row):
         return {
             "event": "issue_reopened",
             "payload": {**payload, "closed_seen_at": str(closed_recent[number])},
@@ -403,11 +429,31 @@ def _changes(number: str, before: dict[str, Any], after: dict[str, Any]) -> list
     return events
 
 
+def _is_open(row: dict[str, Any]) -> bool:
+    """Whether the row we hold says the issue is open.
+
+    `""` — the field missing, or a state file written before it was recorded —
+    is *not* open. Every caller uses this to decide whether to make the
+    stronger of two claims, so an unreadable state has to fall to the weaker
+    one rather than to the commoner one.
+    """
+    return str(row.get("state") or "") == "open"
+
+
 def _departure(number: str, row: dict[str, Any]) -> tuple[dict, bool]:
-    """(event, closed) for a number that left the population."""
+    """(event, closed) for a number that left the population.
+
+    Closure is only the *departure's* cause when the issue was in the
+    population as an open one. Under `state=all` a closed issue stays in the
+    population, so it leaves by losing a label or an assignee — and reporting
+    `issue_closed` there attributes the departure to a closure that happened
+    earlier and was either already reported or was never this feed's to
+    report.
+    """
     payload = _base_payload(number, row)
+    was_open = _is_open(row)
     state = lookup_issue_state(number)
-    if state == "closed":
+    if state == "closed" and was_open:
         return {
             "event": "issue_closed",
             "payload": payload,

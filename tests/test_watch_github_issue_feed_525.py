@@ -25,6 +25,7 @@ The tests therefore pin what the discovery gap turns on:
 """
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import subprocess
@@ -43,9 +44,13 @@ _spec.loader.exec_module(feed)
 
 CTX = {"source": "github-issue-feed", "id": "@open", "only": []}
 
+#: The poller helper that emits label and assignee events, whose event keys are
+#: arguments rather than dict literals. See `_emitted_event_keys`.
+MEMBERSHIP_HELPER = "_membership_events"
+
 
 def _row(num, *, labels=(), assignees=(), comments=0,
-         created_at="2026-01-01T00:00:00Z", state_reason=""):
+         created_at="2026-01-01T00:00:00Z", state_reason="", state="open"):
     return {
         "title": f"title {num}",
         "url": f"https://github.com/o/r/issues/{num}",
@@ -54,6 +59,7 @@ def _row(num, *, labels=(), assignees=(), comments=0,
         "comments": comments,
         "created_at": created_at,
         "state_reason": state_reason,
+        "state": state,
     }
 
 
@@ -244,6 +250,30 @@ def test_vanished_number_still_open_left_the_filter_not_the_world(rig):
     assert _by_key(events, "issue_left_feed")["payload"]["issue_state"] == "open"
 
 
+def test_a_closed_row_leaving_a_state_all_scope_did_not_leave_by_closing(rig):
+    """Under `state=all` a closed issue stays in the population, so a departure
+    is a label or assignee moving it out — reporting `issue_closed` there
+    attributes the departure to a closure that happened earlier and was already
+    reported, or was never in this feed's scope to report."""
+    rig["calls"]["states"] = {"7": "closed"}
+    first = {"7": _row(7, state="closed"), "8": _row(8)}
+    (_, _), (events, _) = _run(rig, first, {"8": _row(8)})
+    assert _keys(events) == ["issue_left_feed"]
+
+
+def test_a_closed_issue_returning_to_a_state_all_scope_is_not_a_reopen(rig):
+    """The reopen window records numbers, not states. A closed issue that
+    re-enters the scope by regaining a label is still closed, and calling that
+    a reopen is a claim about the issue contradicted by the row in hand."""
+    rig["calls"]["states"] = {"7": "closed"}
+    a = {"7": _row(7), "8": _row(8)}
+    b = {"8": _row(8)}
+    c = {"7": _row(7, state="closed"), "8": _row(8)}
+    (_, _), (closed, _), (events, _) = _run(rig, a, b, c)
+    assert _keys(closed) == ["issue_closed"]
+    assert _keys(events) == ["issue_entered_feed"]
+
+
 def test_vanished_number_that_cannot_be_looked_up_says_unknown(rig):
     rig["calls"]["states"] = {}
     (_, _), (events, _) = _run(rig, _pop(7), _pop())
@@ -331,6 +361,20 @@ def test_a_truncated_page_run_is_an_unestablished_population_not_a_short_one(mon
     assert "more than" in error
 
 
+def test_a_full_final_page_with_nothing_behind_it_is_a_complete_population(monkeypatch):
+    """Exactly PER_PAGE * MAX_PAGES issues is a population the cap can hold.
+    Refusing it says "more than 500 rows" about a repository that has 500, and
+    turns a working feed into a permanently unreachable one."""
+    full = [{"number": n, "title": "t", "html_url": "u", "labels": [],
+             "assignees": [], "comments": 0, "state": "open",
+             "created_at": "2026-01-01T00:00:00Z"}
+            for n in range(feed.PER_PAGE)]
+    _fake_gh(monkeypatch, [full] * feed.MAX_PAGES + [[]])
+    pop, error = feed.fetch_population("@open")
+    assert error == ""
+    assert len(pop) == feed.PER_PAGE
+
+
 def test_gh_failure_carries_the_reason_rather_than_collapsing_to_none(monkeypatch):
     _fake_gh(monkeypatch, [[]], returncode=1, stderr="HTTP 401: Bad credentials")
     pop, error = feed.fetch_population("@open")
@@ -345,11 +389,48 @@ def test_an_unknown_scope_token_is_reported_as_a_reason_not_a_silence(monkeypatc
     assert "mystery" in error
 
 
-def test_events_json_lists_exactly_what_the_poller_can_emit():
+def _emitted_event_keys():
+    """Every `"event": "..."` literal in the poller, read off its AST.
+
+    Deliberately not `feed.EVENT_KEYS`: comparing that tuple to `events.json`
+    compares two hand-kept lists, which agree with each other for exactly as
+    long as somebody edits both and says nothing about whether a branch emits
+    the key or still exists. The source is the only witness that cannot be
+    kept in step by hand.
+    """
+    tree = ast.parse((SOURCE_DIR / "poller.py").read_text(encoding="utf-8"))
+    keys = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            for key, value in zip(node.keys, node.values):
+                if (isinstance(key, ast.Constant) and key.value == "event"
+                        and isinstance(value, ast.Constant)
+                        and isinstance(value.value, str)):
+                    keys.add(value.value)
+        # Four keys reach the wire through a shared helper rather than a dict
+        # literal, so a scan of literals alone would report them missing —
+        # which reads as "the poller cannot emit these" and is the wrong
+        # answer. Naming the helper couples this to it deliberately: renaming
+        # it reddens here rather than silently narrowing what is checked.
+        if (isinstance(node, ast.Call)
+                and getattr(node.func, "id", "") == MEMBERSHIP_HELPER):
+            keys |= {a.value for a in node.args
+                     if isinstance(a, ast.Constant) and isinstance(a.value, str)
+                     and a.value.startswith("issue_")}
+    return keys
+
+
+def test_events_json_lists_exactly_what_the_poller_emits():
     """A source's declared vocabulary is what `watches` and the docs read. An
     event key that no branch emits is a claim that is simply untrue, and one
     the poller emits but does not declare cannot be filtered with `only=`."""
     declared = {e["key"] for e in json.loads(
         (SOURCE_DIR / "events.json").read_text(encoding="utf-8"))["events"]}
-    emitted = set(feed.EVENT_KEYS)
-    assert declared == emitted
+    assert declared == _emitted_event_keys()
+
+
+def test_the_modules_own_declaration_matches_what_it_emits():
+    """`EVENT_KEYS` is what a reader of the module believes. Left unchecked it
+    is folklore, which is what a hand-kept constant becomes the first time a
+    branch moves without it."""
+    assert set(feed.EVENT_KEYS) == _emitted_event_keys()
