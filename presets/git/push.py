@@ -139,11 +139,12 @@ _PUSH_TIMEOUT_MAX = 1800
 # read of the constant — tests set `_PUSH_TIMEOUT = 0` to make the real
 # `subprocess` clock cut, and a value snapshotted at import would silently
 # ignore them.
+# It is reset in `main()`'s prologue by a literal item assignment rather than
+# through a helper, and that is not a style choice: the #686 guard re-reads this
+# module and only credits an assignment it can see there, because "mutated
+# somewhere in main" would accept a write 150 lines in that is the value being
+# used. The declaration lives in conftest.PRESET_SELF_CLEARING_GLOBALS.
 _BUDGET: dict[str, object] = {"seconds": None}
-
-
-def _reset_budget() -> None:
-    _BUDGET["seconds"] = None
 
 
 def _push_budget() -> int:
@@ -272,7 +273,11 @@ def _parse_flags(argv: list[str]) -> set[str]:
 # `budget=` and not a bare `budget`: the token carries a number, so the name
 # alone is a request with no answer in it and stays an unknown flag (#1530).
 _BUDGET_PREFIX = "budget="
-_BUDGET_DIGITS = re.compile(r"^-?[0-9]+$")
+# `\Z`, not `$`: Python's `$` also matches before a final newline, so
+# `budget=900` with one appended would pass a whole-value test written with it
+# (#1188). The token is stripped before it reaches here, which makes this belt
+# and braces — and that is exactly the argument that keeps producing the bug.
+_BUDGET_DIGITS = re.compile(r"^-?[0-9]+\Z")
 
 
 def _parse_budget(argv: list[str]) -> tuple[Optional[int], str]:
@@ -2077,7 +2082,7 @@ def main() -> int:
     use_utf8_stdout()
     _RUN.update({"phase": "not-attempted", "branch": "", "remote": "",
                  "ref": "", "target": "", "verdict": False})
-    _reset_budget()
+    _BUDGET["seconds"] = None
     try:
         return _push_op()
     except Exception as exc:  # noqa: BLE001 — deliberate; see _crash_receipt
@@ -2106,7 +2111,7 @@ def _push_op() -> int:
         # for — a dropped `:no-verifyy` runs the very hook it meant to skip.
         listed = ", ".join(unknown)
         print(f"ERROR: unknown flag(s): {listed}")
-        print(f"Accepted: {', '.join(_KNOWN_FLAGS)}")
+        print(f"Accepted: {', '.join(_KNOWN_FLAGS)}, budget=SECONDS")
         print("Nothing was pushed. A flag this op cannot honour is refused "
               "rather than silently dropped — re-run without it, or fix the "
               "spelling.")

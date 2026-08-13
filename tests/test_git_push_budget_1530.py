@@ -137,11 +137,13 @@ def box():
 
 @pytest.fixture(autouse=True)
 def _reset_budget():
-    """The budget is module state, like `_RUN`. Reset it around every test so
-    one case cannot decide another's clock."""
-    push._reset_budget()
+    """The budget is module state, like `_RUN`, reset in `main()`'s prologue.
+    This harness reaches past `main()` in several tests, so it resets it around
+    every one — otherwise a case that sets a budget decides the next one's
+    clock."""
+    push._BUDGET["seconds"] = None
     yield
-    push._reset_budget()
+    push._BUDGET["seconds"] = None
 
 
 def _verdict(out: str) -> str:
@@ -311,9 +313,14 @@ def test_an_unusable_budget_pushes_nothing_and_says_so(box) -> None:
 
 def test_the_budget_in_force_is_disclosed_on_the_receipt(box) -> None:
     """A budget that is not the documented one and is never printed leaves the
-    caller unable to tell an honoured flag from a dropped one."""
-    _rc, out = box.drive_push("budget=900")
-    assert "900" in out, out
+    caller unable to tell an honoured flag from a dropped one.
+
+    Asserted on the disclosure line and on a landed push, not on `"900" in
+    out`: the refusal arms echo the token back verbatim, so the looser
+    assertion passes on an op that rejected the flag outright."""
+    rc, out = box.drive_push("budget=900")
+    assert rc == 0, out
+    assert "Push budget: 900s" in out, out
 
 
 # ---------------------------------------------------------------------------
