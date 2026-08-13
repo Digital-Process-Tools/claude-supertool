@@ -66,8 +66,41 @@ def _entries(dirpath):
     case-folded key on Windows, so `git-C-has-cwd.md` would sort against a
     different string there than the shell used to write the committed file.
     """
-    entries = [p for p in dirpath.glob("*.md") if p.name != "00-README.md"]
+    entries = [p for p in dirpath.glob("*.md")
+               if p.is_file() and p.name != "00-README.md"]
     return sorted(entries, key=lambda p: p.name)
+
+
+def _layers(family):
+    """Every `<family>/*/` layer directory holding an index, not just 00-manual.
+
+    `rebuild-tsv.sh` loops over `"$TOOLS_BASE"/*/` and writes one index per
+    subdirectory. Naming `00-manual` here would leave a second layer entirely
+    unchecked while this file still read as "the indexes round-trip" -- an
+    absence produced by the test, which is the defect class the rule bodies in
+    this same directory are about.
+    """
+    dirs = sorted((p for p in (BASE / family).iterdir() if p.is_dir()),
+                  key=lambda p: p.name)
+    assert dirs, "no layer directory under " + family
+    return dirs
+
+
+def _no_unexpanded_macro(rows, layer):
+    """`match: ~@invocation git push` is expanded by the generator, not by us.
+
+    `jit_expand_match` (common.sh:868) turns a macro into a full ERE before the
+    row is written, and nothing here reproduces that. So a macro rule would come
+    out of this derivation as the literal `~@...` and the diff would read as
+    drift in the committed file, which is the wrong accusation. Decline by name
+    instead: three states, not two.
+    """
+    for row in rows:
+        assert "\t~@" not in "\t" + row, (
+            layer + " uses a `~@` invocation macro in `match:`, and this test "
+            "does not expand macros -- implement jit_expand_match here before "
+            "trusting the comparison below"
+        )
 
 
 def _derive_tools(dirpath):
@@ -102,21 +135,25 @@ def _committed(tsv):
 
 
 def test_tools_index_is_what_the_frontmatter_derives():
-    tsv = BASE / "tools" / "00-manual" / "00-index.tsv"
-    assert _committed(tsv) == _derive_tools(tsv.parent), (
-        "the committed tools index is not what rebuild-tsv.sh would write from "
-        "these bodies, so regenerating it rewrites the gate -- see the module "
-        "docstring for the four shapes this has taken"
-    )
+    for layer in _layers("tools"):
+        derived = _derive_tools(layer)
+        _no_unexpanded_macro(derived, "tools/" + layer.name)
+        assert _committed(layer / "00-index.tsv") == derived, (
+            "the committed tools index is not what rebuild-tsv.sh would write "
+            "from these bodies, so regenerating it rewrites the gate -- see the "
+            "module docstring for the four shapes this has taken"
+        )
 
 
 def test_paths_index_is_what_the_frontmatter_derives():
-    tsv = BASE / "paths" / "00-manual" / "00-index.tsv"
-    assert _committed(tsv) == _derive_paths(tsv.parent), (
-        "the committed paths index is not what rebuild-tsv.sh would write from "
-        "these bodies; a row with no `match:` behind it is deleted by the next "
-        "regeneration and that rule silently stops firing"
-    )
+    for layer in _layers("paths"):
+        derived = _derive_paths(layer)
+        _no_unexpanded_macro(derived, "paths/" + layer.name)
+        assert _committed(layer / "00-index.tsv") == derived, (
+            "the committed paths index is not what rebuild-tsv.sh would write "
+            "from these bodies; a row with no `match:` behind it is deleted by "
+            "the next regeneration and that rule silently stops firing"
+        )
 
 
 def test_require_columns_survive_the_round_trip():
