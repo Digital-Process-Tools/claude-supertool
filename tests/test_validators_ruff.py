@@ -41,6 +41,7 @@ from pathlib import Path
 
 import pytest
 
+from _adapter_budget import adapter_budget
 from _adapter_verdict import assert_declined, assert_ok, verdict
 from _winenv import empty_path_env
 
@@ -390,7 +391,7 @@ def test_a_dash_named_path_is_a_path_and_not_an_option(project: Path) -> None:
     r = subprocess.run(
         [sys.executable, str(ADAPTER), name], cwd=str(project),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        stdin=subprocess.DEVNULL, timeout=120,
+        stdin=subprocess.DEVNULL, timeout=adapter_budget(ADAPTER),
     )
     out = verdict(r, adapter=ADAPTER.name)
     assert _codes(out) == ["F821"], out
