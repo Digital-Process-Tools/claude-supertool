@@ -343,7 +343,8 @@ def _literal_amend_allowed():
 
 
 def _add_failure_lines(add, to_add):
-    """git add refused a pathspec — say what a well-formed one looks like (#986).
+    """git add refused a pathspec — say what a well-formed one looks like (#986),
+    for the route the caller is on, or say nothing at all (#1489).
 
     The op advertises that it refuses a mangled pathspec, and it does. What it
     never said is what the separator *is*, so a caller who guessed ',' learned
@@ -360,14 +361,46 @@ def _add_failure_lines(add, to_add):
     pasteable line under a docstring promising that cannot happen. Past the
     cap the guesses are listed as well, because the count line claims what
     the reader saw and nothing above it had shown them.
+
+    #1489 — _SEPARATOR_NOTE used to be printed under *every* add failure, on
+    both routes. Two things were wrong with that, and two agents paid for each
+    in one afternoon:
+
+    - On the payload route the note names the **other** route's convention.
+      `paths = "a.txt:::b.txt"` and `paths = ":::--all"` were both answered
+      with "Paths are separated by ':::'" — which is exactly what each caller
+      had typed, sending them to re-read the thing they got right. That route
+      wants a TOML array, and its refusal now says so and offers the split.
+    - When no separator is in play at all — one path, spelled wrong — the note
+      is a remedy for a fault that did not happen. git already named the fault;
+      the third state here is silence, not a reworded guess, because a fresh
+      wrong remedy reads as a freshly checked one.
     """
     lines = [
         # `_untrusted.flat`, not the raw stream (#1475): this is line 1 of a
         # refusal at column 0, and git relays a filter/hook's words verbatim.
         "ERROR: git add failed: %s"
         % (_untrusted.flat(add.stderr.strip() or add.stdout.strip()),),
-        "  " + _SEPARATOR_NOTE,
     ]
+    if _arg_separator() == "":
+        return lines + _payload_route_add_lines(to_add)
+    return lines + _colon_route_add_lines(to_add)
+
+
+def _colon_route_add_lines(to_add):
+    """The ':::'-form remedy, emitted only where a separator is plausibly at
+    fault — which on this route means a comma (#986, narrowed by #1489).
+
+    A token holding a space never arrives here: it fails `_looks_like_pathspec`
+    and `_colon_split_refusal` answers it several frames earlier. So the note's
+    "not by spaces" clause is unreachable from this call site, and the only
+    guess this branch can honestly make is the comma one.
+
+    The note itself comes from `_colon_remedy`, which every other caller in
+    this file relies on for it. Repeating it above the question printed it
+    twice in the same refusal — pre-existing, and visible only once the
+    unconditional copy stopped hiding one of them.
+    """
     split, guessed = [], False
     for p in to_add:
         parts = [x for x in p.split(",") if x]
@@ -376,11 +409,58 @@ def _add_failure_lines(add, to_add):
             split.extend(parts)
         else:
             split.append(p)
-    if guessed:
-        lines.append("  A ',' above is not a separator here. Did you mean:")
-        if len(split) > _LIST_CAP:
-            lines += _sample(split)
-        lines += _colon_remedy(split[:_LIST_CAP], len(split))
+    if not guessed:
+        return []
+    lines = ["  A ',' above is not a separator here. Did you mean:"]
+    if len(split) > _LIST_CAP:
+        lines += _sample(split)
+    lines += _colon_remedy(split[:_LIST_CAP], len(split))
+    return lines
+
+
+# Separators a payload caller plausibly reached for inside one `paths` entry,
+# in the order they are tried. ':::' first because it is the measured shape:
+# both #1489 sightings had carried the colon form's separator into a TOML
+# string. A ',' is the same mistake in the other direction.
+_PAYLOAD_JOINS = (":::", ",")
+
+
+def _payload_route_add_lines(to_add):
+    """The `paths = [...]` remedy — this route's own shape, not the other's.
+
+    Nothing was tokenized here, so the entry is exactly what the caller wrote:
+    a separator inside one means they spelled an array as a joined string. The
+    split is offered as a question and only for an entry git does not already
+    know, on the same reasoning as the comma branch — a filename may hold
+    either token.
+
+    Empty segments are dropped, which is what makes `":::--all"` come back as
+    the one-element array it was meant to be rather than as `["", "--all"]`.
+    """
+    split, found = [], ""
+    for p in to_add:
+        tok = ""
+        if not _known_to_git(p, set()):
+            for cand in _PAYLOAD_JOINS:
+                if cand in p and [x for x in p.split(cand) if x]:
+                    tok = cand
+                    break
+        if tok:
+            found = found or tok
+            split.extend([x for x in p.split(tok) if x])
+        else:
+            split.append(p)
+    if not found:
+        return []
+    lines = [
+        "  On this route `paths` is a TOML array — one entry per path.",
+        "  %r is not a separator inside an entry; it reached git as part of"
+        % (found,),
+        "  the pathspec. Did you mean:",
+    ]
+    if len(split) > _LIST_CAP:
+        lines += _sample(split)
+    lines += _payload_remedy(split[:_LIST_CAP], len(split), lead=None)
     return lines
 
 
@@ -661,7 +741,10 @@ def _colon_remedy(shown, total=None, message="MESSAGE"):
     ]
 
 
-def _payload_remedy(shown, total=None):
+_PAYLOAD_LEAD = "  or, for a multi-line message — this route stages too, via `paths`:"
+
+
+def _payload_remedy(shown, total=None, lead=_PAYLOAD_LEAD):
     """The `@-` form, spelled with its `paths` key (#986).
 
     Pointing only at the colon form answers a caller who may be on the
@@ -672,14 +755,17 @@ def _payload_remedy(shown, total=None):
     Same *shown*/*total* contract as _colon_remedy, and for the same reason:
     a `paths = [...]` array holding a subset of what was listed is the #963
     defect in TOML.
+
+    *lead* is `None` for a caller already standing on this route (#1489):
+    offering it as the alternative to somewhere they are not is the misdirect
+    one line smaller.
     """
     total = len(shown) if total is None else total
     if shown and total <= len(shown):
         arr = ", ".join(_toml_basic(p) for p in shown)
     else:
         arr = _toml_basic("path/to/file")
-    return [
-        "  or, for a multi-line message — this route stages too, via `paths`:",
+    return ([] if lead is None else [lead]) + [
         "    ./supertool " + chr(39) + "git-commit:@-" + chr(39) + " <<" + chr(39) + "EOF" + chr(39),
         "    message = " + _TRIPLE + "MESSAGE" + _TRIPLE,
         "    paths = [" + arr + "]",
