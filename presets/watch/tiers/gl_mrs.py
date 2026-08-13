@@ -1271,7 +1271,12 @@ def radar_state(options: dict | None = None) -> list[str]:
     # and this view is the one someone opens to find out which (#1602).
     blind = feed_blind(scope)
     if blind:
-        out.append(f"  feed sight: could NOT establish the population — {blind}")
+        # "last poll", not the present tense: this view reads files and never
+        # asks whether a poller is alive, so the pid row above is what says
+        # whether anyone is still trying. `radar_report` gates the same fact
+        # on liveness because a board is a claim about now.
+        out.append(f"  feed sight: last poll could NOT establish the "
+                   f"population — {blind}")
     for other in other_feed_scopes(scope):
         out.append(f"  feed ALSO : scope {other!r} is live and is NOT on this board")
 

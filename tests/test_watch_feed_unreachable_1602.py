@@ -320,7 +320,7 @@ def test_a_seeing_feed_prints_no_warning(state_dir):
     assert not [ln for ln in lines if ln.startswith("radar: WARNING")], lines
 
 
-def _stub_tier(monkeypatch, blind: str):
+def _stub_tier(monkeypatch, blind: str, feed_status: str = "alive"):
     monkeypatch.setattr(gl_mrs, "live_open_mrs", lambda multi: [])
     monkeypatch.setattr(gl_mrs, "read_state_files", lambda: {})
     monkeypatch.setattr(gl_mrs, "prune_terminal", lambda states, watched: [])
@@ -335,7 +335,7 @@ def _stub_tier(monkeypatch, blind: str):
     monkeypatch.setattr(gl_mrs, "write_snapshot", lambda entries, multi: None)
     monkeypatch.setattr(gl_mrs.mrs, "_watched_iids", lambda *a, **k: set())
     monkeypatch.setattr(gl_mrs.mrs, "_get_config", lambda: {"per_page": 100})
-    return {"_watch": lambda *a, **k: "alive"}
+    return {"_watch": lambda *a, **k: feed_status}
 
 
 def test_a_blind_board_is_not_healthy(monkeypatch):
@@ -374,3 +374,40 @@ def test_the_board_and_the_poller_agree_on_the_flag_string():
     from tiers import gl_mrs as tier  # noqa: PLC0415
 
     assert tier.FEED_LOOKUP_UNAVAILABLE == feed.LOOKUP_UNAVAILABLE
+
+def test_a_dead_feeds_last_state_is_not_reported_as_a_live_blindness(monkeypatch):
+    """`lookup=unavailable` outlives the poller that wrote it. Once radar says
+    the feed is down, that file is a scar and not a current fact — reporting
+    both would put two repairs on the board for one problem, and the blind
+    line names the wrong one. Without the liveness gate this test fails."""
+    options = _stub_tier(monkeypatch, OUTAGE, feed_status="failed")
+    lines, healthy = gl_mrs.radar_report(options)
+    assert not any(OUTAGE in ln for ln in lines), lines
+    assert any("feed poller is down" in ln for ln in lines), lines
+    # Still not healthy — for the other reason, which is the point of the pair.
+    assert healthy is False
+
+
+def test_a_subprocess_error_that_is_not_a_timeout_is_reported_not_raised(monkeypatch):
+    """`SubprocessError` is not an `OSError`. Anything escaping here leaves
+    `poll()` on a traceback, and a dead poller is the same silence."""
+    def _boom(*_a, **_k):
+        raise subprocess.SubprocessError("glab went sideways")
+
+    monkeypatch.setattr(feed.mrs, "_run", _boom)
+    pop, error = feed.fetch_population("@me")
+    assert pop is None
+    assert "sideways" in error
+
+
+def test_radar_state_dates_the_blindness_rather_than_claiming_it_now(state_dir, monkeypatch):
+    """`radar:--state` reads files and never asks whether a poller is alive,
+    so the row is about the last poll. The pid row above it is what says
+    whether anyone is still trying."""
+    monkeypatch.setattr(gl_mrs, "feed_scope", lambda multi: "@me")
+    monkeypatch.setattr(gl_mrs, "feed_blind", lambda scope: OUTAGE)
+    monkeypatch.setattr(gl_mrs, "read_snapshot", lambda multi: {"mrs": {}})
+    monkeypatch.setattr(gl_mrs.mrs, "_watched_iids", lambda *a, **k: set())
+    monkeypatch.setattr(gl_mrs, "read_exclusions", lambda: ({}, []))
+    row = next(ln for ln in gl_mrs.radar_state({}) if "feed sight" in ln)
+    assert "last poll" in row, row

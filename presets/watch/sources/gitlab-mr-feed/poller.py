@@ -171,7 +171,11 @@ def fetch_population(scope: str) -> tuple[dict[str, dict[str, str]] | None, str]
             # hold it and a slow GitLab killed the tick out of `poll()`
             # instead of being reported as an outage.
             return None, f"ERROR: glab timed out listing MRs for scope {scope!r}"
-        except (OSError, ValueError) as err:
+        except (OSError, ValueError, subprocess.SubprocessError) as err:
+            # `SubprocessError` and not only its `TimeoutExpired` subclass:
+            # anything raised out of here leaves `poll()` on a traceback, and
+            # a poller that dies is the same silence this event exists to
+            # remove. The `github-issue-feed` precedent catches the base too.
             return None, f"ERROR: glab could not run for scope {scope!r}: {err}"
         if result.returncode != 0:
             return None, mr_op._format_error(result.stderr or "", "MR list", scope)
