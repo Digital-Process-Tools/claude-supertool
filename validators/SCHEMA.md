@@ -107,7 +107,7 @@ Some analysers do not work per file. `cargo check` compiles the whole crate, and
 
 What is right depends on which base the tool prints relative to, and there are two cases:
 
-- **The adapter chose the working directory**, so it knows the base with nothing to infer. `go-vet` runs `go vet .` in the package directory for exactly this reason, and `validators/common/pkg_paths.py` is the whole comparison: fold, normalise, join, compare.
+- **The adapter chose the working directory**, so it knows the base with nothing to infer. `go-vet` runs `go vet .` in the package directory for exactly this reason, and `validators/common/pkg_paths.py` is the whole comparison: fold, normalise, join, compare. `tsc-check` is the same case arrived at from the other end (#1509, fixed in #1519): it sets no working directory, and `tsc` prints relative to the one it inherits — measured, including that an absolute argv does not make the output absolute — so the base is `os.getcwd()` and there is still nothing to ask.
 - **The tool has a base of its own** — cargo prints relative to the *workspace* root, which is not the nearest `Cargo.toml` above the file. Ask the tool (`cargo metadata --no-deps`) rather than guessing, and when it cannot answer, the attribution is `"unknown"`, which is a third answer and not a coin flip between the other two.
 
 The naive join this paragraph used to warn against is still wrong and for the reason it gave: joining cargo's `member/src/sib.rs` onto the *crate* root double-counts the member directory and demotes every real finding. The fix is the right base, not the absence of one.
