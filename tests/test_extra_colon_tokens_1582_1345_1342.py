@@ -81,6 +81,23 @@ def test_the_documented_grep_key_still_narrows(tmp_path: Path) -> None:
     assert "beta" in out and "alpha" not in out, repr(out)
 
 
+@pytest.mark.parametrize("call", [
+    "read:{p}:::grep=line2:grep=line5",
+    "read:{p}:1:2:grep=line2:grep=line5",
+    "read:{p}:1:grep=line2:grep=line5",
+    "read:{p}:2-6:grep=line2:grep=line5",
+])
+def test_a_second_grep_is_an_extra_whichever_slot_the_first_took(
+        tmp_path: Path, call: str) -> None:
+    """The scan takes the first `grep=` and stops, so the second silently did
+    not apply. The first can land in parts[3] or parts[4] depending on whether
+    a range or a bare offset consumed a slot, and the check has to see both."""
+    f = _lines(tmp_path, "doc.md", 8)
+    out = supertool.dispatch(call.format(p=f))
+    assert "ERROR:" in out, repr(out)
+    assert "grep=line5" in out, repr(out)
+
+
 def test_empty_tokens_alone_are_not_extra(tmp_path: Path) -> None:
     """`:::` yields empty parts. They are separator artifacts, not arguments."""
     f = tmp_path / "doc.md"

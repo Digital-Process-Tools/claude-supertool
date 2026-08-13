@@ -7749,7 +7749,13 @@ def _extra_colon_tokens(op: str, parts: List[str]) -> List[str]:
     """
     if op == "read":
         extra: List[str] = []
-        seen_grep = False
+        # parts[3] is a slot the read branch reads for itself — `full`/`raw`, a
+        # LIMIT, or the FIRST `grep=` when a range or a bare offset consumed
+        # only one slot — so the scan starts at parts[4]. It still has to know
+        # whether parts[3] took the grep=: without that, a second `grep=` one
+        # slot along was read as the first and allowed through, which is the
+        # exact drop this function exists to close.
+        seen_grep = len(parts) > 3 and parts[3].startswith("grep=")
         for tok in parts[4:]:
             if not tok:
                 continue
