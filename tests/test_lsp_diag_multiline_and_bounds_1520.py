@@ -110,6 +110,12 @@ def test_a_half_marked_list_demotes_rather_than_drops() -> None:
     anywhere, and `rollback_on_fail` is false for this adapter, so a shrunk
     count on it cannot revert an edit. That is the same trade #1500 already
     made for an inline-break fragment.
+
+    Since #1537 the shrink is also *stated*: the server's header said 2 and one
+    record came out, so a `code: "adapter"` count-reconciliation record rides
+    along beside the diagnostic. The assertion below therefore counts the `lsp`
+    records — the demotion is still one record, and the receipt no longer
+    reports that number as though it agreed with the server's.
     """
     text = LF.join([
         "Found 2 diagnostic(s) for /f:",
@@ -117,7 +123,8 @@ def test_a_half_marked_list_demotes_rather_than_drops() -> None:
         "[warning] second message at line 2, col 2",
     ])
     errors = lsp.parse_cclsp_diagnostics(text, "/f")
-    assert len(errors) == 1, errors
+    assert len([e for e in errors if e["code"] == "lsp"]) == 1, errors
+    assert [e["code"] for e in errors] == ["lsp", "adapter"], errors
     assert "second message" in errors[0]["msg"], errors[0]
     assert "not a second diagnostic" in errors[0]["msg"], errors[0]
     assert all(e["line"] != 2 for e in errors), errors
