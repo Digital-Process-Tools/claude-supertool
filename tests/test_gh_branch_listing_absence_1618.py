@@ -146,12 +146,21 @@ def test_the_previous_head_is_the_newest_other_run_not_the_first_listed() -> Non
     assert names == {"tests", "CodeQL"}
 
 
-def test_an_unreadable_created_at_does_not_lose_the_previous_head() -> None:
-    """No timestamp anywhere is a third state, not a reason to answer nothing."""
+def test_an_unreadable_created_at_falls_back_to_position_not_to_nothing() -> None:
+    """No timestamp anywhere is a third state, not a reason to answer nothing.
+
+    Two undated candidates, so the assertion discriminates: an implementation
+    that filters undated runs out of the selection answers `("", set())` and
+    deletes the only evidence there is for "ran last time, not this time".
+    """
     runs = [_run("tests", _PREV, "completed", "success", 31720069489,
+                 created=""),
+            _run("tests", _ANCIENT, "completed", "success", 30287882010,
                  created="")]
     prev, names = branch.previous_head(runs, _HEAD)
-    assert prev == _PREV
+    assert prev == _PREV, (
+        "with no timestamp anywhere the previous head is list position, which "
+        f"is the first other entry; got {prev[:7] or '<nothing>'}")
     assert names == {"tests"}
 
 
@@ -199,6 +208,11 @@ def test_a_head_whose_runs_did_come_back_gets_no_lag_disclosure(
     assert "tests" in out
     assert "did not see the head commit" not in out, (
         "the listing returned this head's runs; nothing was lagging:\n" + out)
+    # The render assertion above is satisfied by a build with no disclosure at
+    # all, so the gate itself is asserted directly: same runs, same young head,
+    # and only the presence of a selection separates silence from the sentence.
+    assert branch.stale_listing_lines(runs, {"CodeQL": runs[0]}, _HEAD, 660) == []
+    assert branch.stale_listing_lines(runs, {}, _HEAD, 660) != []
 
 
 def test_past_the_creation_window_the_lag_disclosure_stops(
@@ -213,3 +227,7 @@ def test_past_the_creation_window_the_lag_disclosure_stops(
     assert "did not see the head commit" not in out, (
         "a two-day-old head is past the window; the listing has caught "
         "up:\n" + out)
+    # Same reason as above: only the age separates these two calls, so the
+    # window guard is what is being asserted rather than the feature's absence.
+    assert branch.stale_listing_lines(runs, {}, _HEAD, 48 * 3600) == []
+    assert branch.stale_listing_lines(runs, {}, _HEAD, 660) != []
