@@ -1585,6 +1585,8 @@ same question `bin/supertool-workspace` asks before it registers the consumer).
 | The socket-holder has been reparented to pid 1, so its session has exited | `BOUND, NOT SUBSCRIBED` |
 | The tag names a configured server | `FORWARDING` |
 | No `ps`, no `claude` on PATH, an argv that does not tokenise, a spawner not recognisable as a session, a tag list whose values could be one name with a space | `CANNOT DETERMINE`, **with the reason** |
+| A tag that cannot be a server name — empty, a leading `-`, a control character | `CANNOT DETERMINE`, **with the reason** ([#1559](https://github.com/Digital-Process-Tools/claude-supertool/issues/1559)) |
+| A tag the lookup budget ran out before reaching | `CANNOT DETERMINE`, named as unasked ([#1558](https://github.com/Digital-Process-Tools/claude-supertool/issues/1558)) |
 
 The last row is the point rather than the fallback: a probe that could not run
 must never render as the answer it was looking for. What the positive arm does
@@ -1593,10 +1595,58 @@ names is the one holding **this** socket. Two channel-capable servers under one
 session satisfy the two halves separately, and closing that would take a third
 probe that still could not see inside the session.
 
-**It costs a `claude` invocation, ~3s measured 2026-08-13**, so `channel:health`
+**The tag is somebody else's text and reaches an argv this tool builds, so it is
+shape-checked and passed after `--`**
+([#1559](https://github.com/Digital-Process-Tools/claude-supertool/issues/1559)).
+`_channel_tags` breaks on a *token* starting with `-`, which says nothing about
+the remainder after `server:` — so `server:--help` arrived as the server name
+`--help`, `claude mcp get --help` exits 0, and the probe returned a definite
+`FORWARDING` off a flag. Neither half of the repair is sufficient alone: without
+`--`, the callee's option parser decides what this tool meant; without the shape
+check, `--` only converts the false positive into a confident *negative* off the
+same non-server token. The check sits at the construction site because nothing
+else on this path can see the value — the containment declarations gate arguments
+a **caller** supplies into a filename slot, and this one enters inside the op,
+from `ps` output. What it excludes is only what no configured server name can be:
+`claude mcp list` printed `claude.ai Gmail` and
+`plugin:supertool:claude-channel` on 2026-08-13, so spaces, dots and colons are
+all legitimate and a charset narrow enough to feel safe would refuse a working
+setup.
+
+**The connect status the lookup prints is deliberately not read.** `claude mcp
+get NAME` exits 0 for a configured server whether or not it answers, and
+[#1558](https://github.com/Digital-Process-Tools/claude-supertool/issues/1558)
+asked for `Status: ✘ Failed to connect` to be treated as a dead server. It
+cannot be: the lookup health-checks by spawning a **second** instance, and this
+repo's consumer refuses to start one beside a live incumbent rather than
+unlinking it ([#550](https://github.com/Digital-Process-Tools/claude-supertool/issues/550)).
+Measured 2026-08-13 — `claude mcp get supertool-channel` printed exactly that
+line while `supertool-channel` was holding the socket and forwarding 8 of 8
+events. For the only consumer this op reports on, `Failed to connect` is what
+*healthy* looks like, and reading it would turn a correct `FORWARDING` into a
+false negative. The exit code answers the question actually being asked — will
+the harness accept this tag, or refuse it at startup — and the report claims
+nothing more.
+
+**It costs a `claude` invocation, ~1–3s measured 2026-08-13**, so `channel:health`
 is no longer instant, and `radar` pays it once per run — only when the board has
 counted an `accepted` emit, which is the arm that would otherwise read as
-delivery.
+delivery. **Every lookup in one run shares a 12s budget, and the op is declared
+at 30s so the probe always fits inside it**
+([#1558](https://github.com/Digital-Process-Tools/claude-supertool/issues/1558)).
+The flag is variadic, so a per-tag timeout is unbounded in a number somebody
+else's argv chooses: at 15s the op timeout always won, and because the report is
+one string printed at the end there was nothing to emit — the reader got
+supertool's bare `TIMEOUT` with an empty body in the one case where
+`CANNOT DETERMINE` is the correct answer. The test pins the arithmetic rather
+than either number.
+
+**`channel` is classed `acts`, not `read-only`**
+([#1558](https://github.com/Digital-Process-Tools/claude-supertool/issues/1558)).
+`claude mcp get` health-checks by spawning the named server, and the name comes
+out of another process's argv — so probing this op blind starts whatever the
+harness has configured under that name. Classify by consequence, not by
+mechanism.
 
 **`CONTRADICTED` is a fourth code and not a flavour of 3**, because "I could
 not tell" and "I can tell, and it is wrong" call for different actions. Folding

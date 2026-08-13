@@ -178,17 +178,45 @@ TAG_PREFIX = "server:"
 #: consumer, so this op and the launcher cannot disagree about it. It is read
 #: for its EXIT CODE; the only prose consulted is the refusal that distinguishes
 #: "no such server" from "the lookup failed", and anything else is the third
-#: state. It health-checks the named server as a side effect, which for this
-#: repo's consumer is a second instance that refuses to start rather than
-#: unlinking a live incumbent (#550).
+#: state.
+#:
+#: **The health-check it performs as a side effect is deliberately discarded,
+#: and #1558 asked for the opposite.** The lookup spawns a second instance of
+#: the named server to check it, and this repo's consumer refuses to start a
+#: second one rather than unlinking a live incumbent (#550). Measured
+#: 2026-08-13: `claude mcp get supertool-channel` printed `Status: ✘ Failed to
+#: connect` under exit 0 while that same server was holding the socket and
+#: forwarding 8 of 8 events. So for the only consumer this op reports on,
+#: `Failed to connect` is what *healthy* looks like, and reading that line would
+#: turn a correct FORWARDING into a false negative. The exit code answers the
+#: question actually being asked — will the harness accept this tag, or refuse
+#: it at startup (#1543) — and nothing here claims more than that.
 CLAUDE_BIN = "claude"
 CLAUDE_UNKNOWN_SERVER = "No MCP server named"
-CLAUDE_TIMEOUT = 15
+
+#: Per lookup, and further capped by what is left of `MCP_LOOKUP_BUDGET`. A
+#: healthy lookup measured ~1s on 2026-08-13; 15s was the old value and could
+#: not fit inside the op's own timeout even once (#1558).
+CLAUDE_TIMEOUT = 8
 
 #: `ps` reads a process's parent and argv. Cheap, and absent on Windows — where
 #: the spawn raises `FileNotFoundError` and lands in the third state by name
 #: rather than escaping as a traceback.
 PS_TIMEOUT = 5
+
+#: Every `claude mcp get` in ONE `subscription()` call shares this, because the
+#: channel flag is variadic and a per-tag timeout is unbounded in the number of
+#: tags — which is somebody else's argv. #1558: the op was declared at 15s while
+#: the probe could spend `PS_TIMEOUT * 2 + CLAUDE_TIMEOUT * N`, so the op timeout
+#: always won and the reader got supertool's bare `TIMEOUT` with an empty body
+#: instead of the `CANNOT DETERMINE` this probe exists to produce. A probe that
+#: cannot answer inside its own budget is the defect; the number was the symptom.
+#:
+#: `SUBSCRIPTION_WORST_CASE` is what `presets/watch.json` must leave room for,
+#: and `tests/test_watch_channel_probe_shape_and_budget_1558_1559.py` pins the
+#: arithmetic rather than the number, so moving either one moves both.
+MCP_LOOKUP_BUDGET = 12.0
+SUBSCRIPTION_WORST_CASE = PS_TIMEOUT * 2 + MCP_LOOKUP_BUDGET
 
 #: Linux. `SO_PEERCRED` on a connected AF_UNIX socket yields `struct ucred` —
 #: three native ints, pid first — for the process on the other end. Read from
@@ -938,18 +966,67 @@ def _ps_fields(pid: int) -> tuple[int | None, str, str]:
     return ppid, argv.strip(), ""
 
 
-def _configured(name: str) -> tuple[bool | None, str]:
+def _now() -> float:
+    """The probe's clock, named so a test can hold it still."""
+    return time.monotonic()
+
+
+#: What a tag is not allowed to be, stated as exclusions rather than a charset.
+#: `claude mcp list` printed `claude.ai Gmail` and
+#: `plugin:supertool:claude-channel` on 2026-08-13, so spaces, dots and colons
+#: are all legitimate in a real configured name and an allowlist narrow enough
+#: to feel safe would refuse a working setup — the loud-for-quiet trade this
+#: repo forbids. Only shapes no server name can have are excluded.
+_CONTROL = frozenset(chr(code) for code in list(range(0x20)) + [0x7f])
+
+
+def _tag_shape_objection(name: str) -> str:
+    """Why this tag will not be asked about, or `""` — the check #1559 wanted.
+
+    The tag comes out of another process's argv and `_channel_tags` filters
+    *tokens*, not the remainder after `server:`, so `server:--help` arrived here
+    as the name `--help`. `claude mcp get --help` exits 0, which turned a flag
+    into a definite `subscribed`.
+    """
+    if not name:
+        return "the tag after `server:` is empty, so it names nothing"
+    if name.startswith("-"):
+        return ("the tag after `server:` begins with `-`, so it is an option "
+                "rather than a server name")
+    bad = next((ch for ch in name if ch in _CONTROL), "")
+    if bad:
+        return (f"the tag after `server:` carries the control character "
+                f"{ord(bad):#04x}, which no configured server name has")
+    return ""
+
+
+def _configured(name: str, timeout: float | None = None) -> tuple[bool | None, str]:
     """Does the harness have an MCP server called `name`? Three answers.
 
     `True` and `False` are both findings; `None` is the admission, and it is
     returned for every outcome that is not one of the two the CLI states
     plainly. A non-zero exit whose text this reader does not recognise is not a
     missing server: it is a lookup that failed.
+
+    **This is the construction site for an argv built out of ambient process
+    state, so the shape check lives here rather than in the parser** (#1559).
+    `_safe_path` and the `paths` declarations gate arguments the *caller*
+    supplies into a filename slot; this value never crosses that chokepoint, and
+    `_untrusted` is a rendering boundary rather than an argv one. Two halves,
+    neither sufficient alone: `--`, so the callee's option parser cannot claim
+    as a flag a value this tool did not mean as one, and the shape check, so a
+    token that cannot be a server name is *declined* rather than asked about —
+    with `--` alone, `server:--help` would merely become a confident negative
+    off the same non-server token.
     """
+    objection = _tag_shape_objection(name)
+    if objection:
+        return None, objection
     try:
         done = subprocess.run(
-            [CLAUDE_BIN, "mcp", "get", name],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=CLAUDE_TIMEOUT)
+            [CLAUDE_BIN, "mcp", "get", "--", name],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=CLAUDE_TIMEOUT if timeout is None else timeout)
     except (OSError, subprocess.SubprocessError) as err:
         return None, f"`{CLAUDE_BIN} mcp get` could not be run ({type(err).__name__})"
     if done.returncode == 0:
@@ -1071,9 +1148,21 @@ def subscription(pid: Any, pid_note: str = "") -> Subscription:
     # is variadic, a session subscribed through the second tag is subscribed,
     # and returning `CANNOT DETERMINE` off the first would be an absence
     # produced by the order of somebody else's argv.
+    # Every lookup in this loop shares one wall-clock budget (#1558). The flag
+    # is variadic, so a per-tag timeout is unbounded in a number somebody else's
+    # argv chooses; a tag the budget ran out before reaching is reported as
+    # unasked, which is neither a missing server nor a silent drop.
     undecided: list[str] = []
+    deadline = _now() + MCP_LOOKUP_BUDGET
     for name in tags:
-        answer, ask_why = _configured(name)
+        remaining = deadline - _now()
+        if remaining <= 0:
+            undecided.append(
+                f"{TAG_PREFIX}{_untrusted.flat(name)}: the probe's "
+                f"{MCP_LOOKUP_BUDGET:g}s lookup budget was spent before this tag "
+                f"was reached, so it was never asked about")
+            continue
+        answer, ask_why = _configured(name, min(CLAUDE_TIMEOUT, remaining))
         if answer:
             return _sub(SUB_SUBSCRIBED,
                         f"subscribed — session pid {ppid} carries "

@@ -131,7 +131,10 @@ def _process_table(monkeypatch, session_argv: str, *, session_pid: int = SESSION
 
 
 def _configured(monkeypatch, answer, why: str = ""):
-    monkeypatch.setattr(channel, "_configured", lambda _name: (answer, why))
+    # `_configured` takes the remaining lookup budget since #1558; the stub
+    # ignores it, and accepting it is what keeps these tests about #1543.
+    monkeypatch.setattr(channel, "_configured",
+                        lambda _name, _budget=None: (answer, why))
 
 
 # --- the filed incident ------------------------------------------------------
@@ -238,7 +241,8 @@ def test_a_tag_that_could_not_be_looked_up_does_not_bury_a_later_one(
         monkeypatch,
         "claude --dangerously-load-development-channels server:flaky server:good")
     answers = {"flaky": (None, "the lookup failed"), "good": (True, "")}
-    monkeypatch.setattr(channel, "_configured", lambda name: answers[name])
+    monkeypatch.setattr(channel, "_configured",
+                        lambda name, _budget=None: answers[name])
     rc, report = channel.health(forwarding)
     assert report.splitlines()[0] == "channel: FORWARDING", report
     assert rc == channel.RC_FORWARDING
@@ -251,7 +255,7 @@ def test_every_tag_unresolved_is_still_cannot_determine(forwarding, monkeypatch)
         monkeypatch,
         "claude --dangerously-load-development-channels server:a server:b")
     monkeypatch.setattr(channel, "_configured",
-                        lambda name: (None, f"{name} lookup failed"))
+                        lambda name, _budget=None: (None, f"{name} lookup failed"))
     rc, report = channel.health(forwarding)
     assert report.splitlines()[0] == "channel: CANNOT DETERMINE", report
     assert rc == channel.RC_UNKNOWN
