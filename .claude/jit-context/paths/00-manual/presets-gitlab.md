@@ -1,7 +1,6 @@
 ---
 title: "presets/gitlab/ — host check is depth-1 by design"
 match: "presets/gitlab/"
-mode: once, remind
 ---
 
 # Host guard is depth-1, on purpose

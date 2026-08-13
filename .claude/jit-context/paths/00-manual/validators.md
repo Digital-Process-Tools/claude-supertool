@@ -1,7 +1,6 @@
 ---
 title: "validators/ — one contract, 35 adapters"
 match: "validators/"
-mode: once, remind
 ---
 
 # The contract (all adapters, one shape)
