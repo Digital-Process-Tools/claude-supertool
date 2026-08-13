@@ -4116,7 +4116,14 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
                 return False
 
             filter_notes.append(_quote_pair_note(grep_filter, _filter_probe))
-    elif filter_regex and capped:
+    elif filter_regex and cap_cut:
+        # `cap_cut`, not `capped`: the cap is only what stopped the scan when
+        # the loop broke before the window's own end. A limit that ended the
+        # scan on a line that happened to carry the total over the cap left
+        # lines unsearched too, and blaming the cap for them attributes the
+        # limit's work to the wrong bound — the same misattribution #1616
+        # removed one render over, found reviewing that fix.
+        #
         # The byte cap breaks the scan loop, not just the emission: a filtered
         # read that matched and *then* hit the cap has stopped looking. This
         # used to fall through to the generic `elif capped:` wording below,

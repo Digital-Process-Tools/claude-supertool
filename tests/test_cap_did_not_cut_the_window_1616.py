@@ -78,6 +78,23 @@ def test_greps_byte_exact_remedy_is_not_contradicted(tmp_path: Path) -> None:
     assert "cut short" not in _window(read_out), _window(read_out)
 
 
+def test_a_filtered_read_does_not_blame_the_cap_for_the_limits_work(
+        tmp_path: Path) -> None:
+    """The filtered branch made the same misattribution one render over.
+
+    `grep=` scanning stops when the cap breaks the loop, so the unsearched
+    lines are genuinely the cap's doing -- but only then. Here the LIMIT ended
+    the scan and the fourth line happened to carry the total over the cap, so
+    the cap dropped nothing and the line left unsearched is the limit's. Found
+    in review of the fix above, not by the issue.
+    """
+    f = tmp_path / "wide.txt"
+    f.write_bytes(b"".join(b"needle " + b"x" * 6000 + b"\n" for _ in range(5)))
+    out = supertool.dispatch(f"read:{f}:0:4:grep=needle")
+    assert "reached the 20000-byte cap, so the other" not in out, out[:1200]
+    assert "outside that range" in out, out[:1200]
+
+
 def test_a_cap_that_did_drop_lines_still_says_cut_short(tmp_path: Path) -> None:
     """The control. 200 fat lines, 150 asked for, ~49 fit: the cap really did
     end this window before the limit or the file did, and must keep saying
