@@ -244,6 +244,7 @@ Four questions, every diff:
 - **The plugin's own gate is inert.** On #1090 it scored four findings **25 / 75 / 70 / 50** against its own ≥80 threshold — by its rules it posts nothing, and two were real. It worked only because a human read the scores it had decided not to publish. A gate that never fires is a report. It stays available as the fallback, for a PR already open or when the developer is gone.
 - **Brief the Sonnet reviewer for** correctness bugs, a test that would still pass if the code did nothing, anything made worse that nobody filed, and **stale prose adjacent to the diff** — the plain diff-scan lens found _nothing_ on #1090 and both real findings came from reading around the change.
 - **My fallback stays.** If the agent is gone, or the review did not or could not run, I run it myself. A review that did not execute must never render as a review that found nothing.
+- **The reviewer CAN write to the worktree, and my brief said it could not.** Measured 2026-08-13 on #1587: the reviewer ran `git checkout <sha>~1 -- validators/ruff/ruff.py` to verify a vacuous-test claim, **mid-run**, and reddened the author's concurrently-running full suite on its own new test. It restored the file and `git status` came back clean, so nothing was lost — the author re-ran the suite against a clean tree and reported both. `Explore` has no `Edit`/`Write`, which is where my claim came from, but **it has `Bash`**, and that is the whole write channel. Do not tell an agent its reviewer is read-only; tell the reviewer not to mutate the tree, and read the author's suite figures as possibly contaminated by it.
 - **A capability claim is a claim.** I asserted what an agent could do without reading a tool list I already had. The plugin's PR-dependency was read off disk; the built-in's behaviour is inferred from descriptions, not from a file. **A name is not a definition.**
 
 **My own review is "super light" — Florian's words, and the list is closed.** I raised the one objection worth raising, that merging on a verdict I have not read is merging on a summary; he answered it. Light, not zero:
@@ -296,7 +297,7 @@ The fix is the same shape every time, and the framework had it since #406: **thr
 
 ## Merge gates
 
-**Merge only when all hold: CI fully green, review passed, and the change is a bugfix/docs/test/chore.** Then verify the merge landed — `gh pr merge` can print nothing on success, so check `state`/`mergedAt` plus the master head.
+**Merge only when all hold: CI fully green, review passed, and the change is a bugfix/docs/test/chore.** The merge itself is `gh-pr-merge:N:squash|force` — it re-derives every one of those gates before it writes, refuses on any leg that is not a pass, and then reads `state`/`mergedAt`/`mergeCommit` back off the remote, because a zero exit is not a merge. Without `|force` it previews the gate and merges nothing.
 
 **Never auto-merge:** feature scope, public op API renames, external-contributor PRs, anything irreversible, anything touching the DVSI repo (that's a GitLab MR with a pipeline and team review — outside this remit). Release flow came off that list on 2026-08-05 and is now conditional — see "Auto-release"; it stays off only while every gate there holds, and a gate that cannot be evaluated puts it back on. **And do not invent gates**: I parked two real bugs for a day as "Florian's call, CI config", which is not on the list. The list is the list; adding to it privately is just a way of not fixing things.
 
@@ -350,10 +351,17 @@ Florian, day five: _"could you try to use supertool instead of raw gh"_ and then
 - **Maintaining supertool without using supertool is proof the tokens were wrongly spent.** An op I do not call is one whose defects I never find: #454 exists only because I finally ran `gh-pr`, and #1073 and #1075 were found by _using_ the tool. If I catch myself writing `| jq` against a `gh` read, that is the reflex, not a decision.
 - **Do not pipe a supertool op through `tail` — or `head`, or anything else that cuts.** Florian, 2026-08-07: _"stop doing tail on supertool op"_; 2026-08-08: _"this is mandatory to use without tail"_. **`head` is not the safe half**: `gh-issue:N` puts the body under the header, so `| head -90` across four issues dropped the tail of every body, including a `Comments (1)` block on a REOPENED issue where the comment _was_ the reason. The ops put meaning at the **top** — header, then meta (`state`, `mergeable`, the summed tally, `scanned N files`), then body — so `tail` selects against the answer: `git-status | tail -12` returned stashes and the MR block with no working-tree section, so I reported the op as reproducing **#1002**, a real defect but not what I had seen, out loud to Florian. If output is too large the fix is a narrower op (`gh-pr:N:status` rather than `gh-pr:N:full`, `grep` with a limit, `read` with a window). `[result]` lines exist so a verdict survives a pipe — a floor, not a licence.
 
-**What still legitimately needs raw `gh`:** there is no op for merging, tagging, releasing, deleting a ref, or re-running a workflow. **Every read through supertool, every write through `gh`:**
+**Merging is an op now, and this file said in bold that it was not** — corrected 2026-08-13, when the guard refused my `gh pr merge` and named `gh-pr-merge`, an op that ships, gates on #454's arithmetic, verifies each linked issue closed, and discloses how far the base has moved since the checks ran (#1257's shape). The stale sentence is the dangerous shape CLAUDE.md warns about: a claim that a capability is missing suppresses the call that would disprove it.
 
 ```bash
-gh pr merge N --squash                                    # merge
+supertool 'gh-pr-merge:N:squash'                  # previews the gate, merges nothing
+supertool 'gh-pr-merge:N:squash|force'            # merges, then proves it landed
+supertool 'gh-pr-merge:N:squash|force|cleanup'    # + branch/worktree deletion, three states each
+```
+
+**What still legitimately needs raw `gh`:** tagging, releasing, deleting a ref, or re-running a workflow. **Every read through supertool, every write through `gh`:**
+
+```bash
 gh api -X DELETE repos/OWNER/REPO/git/refs/heads/BRANCH   # ref delete, hook-free
 gh release create vX.Y.Z                                  # release
 gh run rerun <id> --failed                                # re-run
@@ -604,7 +612,7 @@ Florian, at 22:40: _"any idea why pipeline is red?"_ — and both default branch
 
 **A green PR is a statement about the PR's merge-base, not about the default branch after the squash lands.** So the sequence is three steps:
 
-1. `gh pr merge` → read `state` / `mergedAt` / `mergeCommit`
+1. `gh-pr-merge:N:squash|force` → it reads `state` / `mergedAt` / `mergeCommit` back for you
 2. clean up, in a separate call, gated on that result
 3. **check the default branch's run** — `supertool 'gh-branch'`. Not `gh run list --branch <default> --limit 1`, which this line prescribed until 2026-08-11 while §"Cutting a release" three hundred lines down said in bold *not* to: it returns whichever **workflow** started last, routinely CodeQL, and reports that conclusion as the commit's. `gh-branch` is conjunctive over every workflow on the head SHA and states GREEN / NOT GREEN / NO RUN / UNKNOWN apart. The raw call is refused by the guard now and names the op.
 
