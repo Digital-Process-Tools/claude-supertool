@@ -15,7 +15,9 @@ call is running.** Python spells that `global NAME` inside a function -- there
 is no other way to rebind a module-level name from a call -- so it is decidable
 from the source, needs no type judgement, and cannot be reached by a constant, a
 compiled regex, a type alias or an imported symbol. 27 names in the core answer
-yes; the container check saw 8 of them.
+yes, and 19 of them held no declared lifetime in any table when this was
+written: 10 were the probe flags the autouse fixture restores by hand with no
+declaration anywhere, and 9 were classified by nobody at all.
 
 That is deliberately *not* "every module-level name must be classified", which
 #1107 rules out for the reason #686 gives: a guard that is mostly noise gets
@@ -53,10 +55,36 @@ CONFTEST = Path(conftest.__file__)
 _FIXTURE = "_disable_rtk_and_config"
 
 
+#: Compound statements that can hold a module-level binding in their body. A
+#: name assigned only under `if TYPE_CHECKING:` or in a `try: import ... except
+#: ImportError:` fallback is bound at module scope exactly as a top-level
+#: assignment is, and scanning `tree.body` alone would not see it — which would
+#: drop that name from the guard silently, with the same green as a name that
+#: has a declared lifetime. The core has no such binding today; the scan is
+#: written for the one that gets added, since nothing would report its absence.
+_MODULE_SCOPE_BLOCKS = (ast.If, ast.Try, ast.With, ast.For, ast.While)
+
+
+def _module_scope_statements(body):
+    """Every statement executing at module scope, including inside `if`/`try`.
+
+    Deliberately does not descend into a `def` or a `class`: those bodies run in
+    their own scope, and an assignment there binds nothing at module level.
+    """
+    for node in body:
+        yield node
+        if isinstance(node, _MODULE_SCOPE_BLOCKS):
+            inner = list(node.body) + list(getattr(node, "orelse", []))
+            inner += list(getattr(node, "finalbody", []))
+            for handler in getattr(node, "handlers", []):
+                inner += list(handler.body)
+            yield from _module_scope_statements(inner)
+
+
 def _module_level_bindings(tree: ast.Module) -> dict[str, int]:
     """Names assigned at module scope -> line number. Any value, any type."""
     bound: dict[str, int] = {}
-    for node in tree.body:
+    for node in _module_scope_statements(tree.body):
         if isinstance(node, ast.Assign):
             targets = node.targets
         elif isinstance(node, ast.AnnAssign):
@@ -138,6 +166,52 @@ def test_the_rebind_scan_finds_the_names_it_is_built_on() -> None:
             f"{name} is rebound under a `global` in {CORE.name} but the scan "
             "missed it -- the guard below is measuring nothing"
         )
+
+
+def test_a_conditionally_bound_global_is_still_seen() -> None:
+    """A binding under `if`/`try` is a module-level binding.
+
+    Raised in review of #1107; the core has no such binding today. The failure
+    mode is the one this repo tracks: the name drops out of the guard's
+    population and the guard stays green, so the absence of the check reads
+    exactly like the absence of a problem.
+    """
+    source = """
+import os
+if os.name == "nt":
+    _WIN_MEMO = None
+else:
+    _WIN_MEMO = None
+try:
+    _PROBE = None
+except ImportError:
+    pass
+
+def f():
+    global _WIN_MEMO, _PROBE
+    _WIN_MEMO = 1
+    _PROBE = 2
+"""
+    assert sorted(runtime_rebound_globals(source)) == ["_PROBE", "_WIN_MEMO"]
+
+
+def test_a_name_bound_only_inside_a_function_is_not_module_state() -> None:
+    """The other edge of the same scan. A `def` body binds nothing at module
+    scope, so neither a local nor a `global` name with no module-level binding
+    may enter the population -- there is no import-time value to restore."""
+    source = """
+def f():
+    _NOT_A_GLOBAL = 1
+    return _NOT_A_GLOBAL
+
+def g():
+    global _NEVER_BOUND
+    _NEVER_BOUND = 2
+
+class C:
+    _CLASS_ATTR = None
+"""
+    assert runtime_rebound_globals(source) == {}
 
 
 def test_the_fixture_scan_finds_the_names_it_is_built_on() -> None:
