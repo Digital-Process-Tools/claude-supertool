@@ -535,15 +535,19 @@ def test_the_wrapper_never_runs_the_bare_interpreter_name(tmp_path):
     #572; here it would be every command in the session, each waiting out the
     hook timeout.
     """
-    wrapper = (_ROOT / "hooks" / "pre-bash-guard.sh").read_text(
-        encoding="utf-8")
-    for line in wrapper.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            continue
-        assert not stripped.startswith("exec python3 "), line
-        assert "command -v python3 " not in stripped, line
-    assert "python3.9" in wrapper, "the versioned ladder is gone"
+    # Both files, because #1382 moved the candidate list into the shared
+    # ladder: a scan of the wrapper alone would now pass by having nothing
+    # left to look at.
+    ladder = _ROOT / "hooks" / "python-ladder.sh"
+    for path in (_ROOT / "hooks" / "pre-bash-guard.sh", ladder):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            assert not stripped.startswith("exec python3 "), line
+            assert "command -v python3 " not in stripped, line
+    assert "python3.9" in ladder.read_text(encoding="utf-8"), (
+        "the versioned ladder is gone")
 
 
 def _run_hook(command: str, cwd: Path) -> Dict[str, Any]:

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -57,6 +58,10 @@ from _toolchain_gate import posix_ci_promised, require_or_skip
 
 _ROOT = Path(__file__).resolve().parent.parent
 _WRAPPER = _ROOT / "hooks" / "pre-bash-guard.sh"
+#: The ladder moved out of the wrapper in #1382 so `session-start.sh` could
+#: share it. The static claims below follow it: asserted against the wrapper
+#: they would now be satisfied by a comment that merely *mentions* a rung.
+_LADDER = _ROOT / "hooks" / "python-ladder.sh"
 _BS = chr(92)
 _NL = chr(10)
 
@@ -395,14 +400,15 @@ def test_the_bare_name_python3_is_still_never_tried():
     `python3` on Windows can be an App Execution Alias stub that *blocks*
     rather than erroring, and this hook runs before every Bash call.
     """
-    wrapper = _WRAPPER.read_text(encoding="utf-8")
-    for line in wrapper.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            continue
-        assert "command -v python3 " not in stripped, line
-        assert not stripped.startswith("exec python3 "), line
-    assert "py -3" in wrapper, "the launcher rung is gone"
+    ladder = _LADDER.read_text(encoding="utf-8")
+    for source in (ladder, _WRAPPER.read_text(encoding="utf-8")):
+        for line in source.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            assert "command -v python3 " not in stripped, line
+            assert not stripped.startswith("exec python3 "), line
+    assert "py -3" in ladder, "the launcher rung is gone"
 
 
 def test_the_launcher_is_only_ever_invoked_with_a_version_selector():
@@ -412,15 +418,20 @@ def test_the_launcher_is_only_ever_invoked_with_a_version_selector():
     The probe would catch a Python 2 anyway; this pins the intent so the
     catch never has to fire.
     """
-    wrapper = _WRAPPER.read_text(encoding="utf-8")
     found = False
-    for line in wrapper.splitlines():
+    for line in _LADDER.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
-        if "attempt py" in stripped:
-            found = True
-            assert "attempt py -3" in stripped, line
+        if not re.search(r"(^|\s)py(\s|$)", stripped):
+            continue
+        # `command -v py` is a lookup rather than a spawn, and a bare name is
+        # what a lookup takes. Everything else that names the launcher either
+        # runs it or is the sentence a decline prints about it.
+        if stripped.startswith("if command -v py "):
+            continue
+        found = True
+        assert "py -3" in stripped, line
     # Without this the loop matches nothing once the rung is removed, and a
     # test that executes no assertion reports as a pass.
-    assert found, "no `attempt py` line at all, so nothing above was checked"
+    assert found, "no line names the launcher at all, so nothing was checked"

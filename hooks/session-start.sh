@@ -57,6 +57,23 @@ fi
 
 # Output self-documentation from .supertool.json (fallback if no config).
 #
+# Through the shared ladder (#1382), never the bare name `python3`. That name
+# used to be right here, and #572 bans it from every spawn position in this
+# repo: on Windows it can resolve to the App Execution Alias stub and on a
+# stock macOS to the Xcode Command Line Tools stub, and both *block* rather
+# than error. At session start that is not an error message, it is Claude Code
+# taking a hook timeout to come up and then saying nothing about supertool —
+# an absence produced by the tool, read as an absence in the world.
+#
+# **Three states, and the floor is this hook's own decision** (#1382 asks which
+# it should be). Not a bare `python3` last rung: it would keep the hang for
+# exactly the hosts that have no alternative. Not a loud failure either — a
+# non-zero SessionStart hook is a broken session on every platform to report a
+# missing interpreter on one. So: say it once, degrade, keep going. The
+# `./supertool` symlink above never needed an interpreter and is already made;
+# what is lost is the roster, and the line below names what was tried so the
+# reader looks for the right absence.
+#
 # 'ops:roster' rather than 'ops-compact' (#1231). Measured in this checkout:
 # ops 47,254 bytes, ops-compact 9,067, cap ~7,168 — so the compact listing was
 # truncated on *every* session and everything alphabetically after `grep` was
@@ -70,4 +87,25 @@ fi
 # config path, so it moves with the checkout.) Descriptions are
 # one call away and richer there: `help:OP` carries the full contract, the
 # semantics and a worked example, where the listing row carried one line.
-python3 "$BIN" 'introduction' 'output-format' 'ops:roster'
+LADDER="$(cd "$(dirname "$0")" && pwd)/python-ladder.sh"
+
+# shellcheck disable=SC2329  # invoked indirectly, as supertool_python_each's callback
+onboard() {
+    supertool_python_identifies "$@" || return 1
+    if ! "$@" "$BIN" 'introduction' 'output-format' 'ops:roster'; then
+        echo "> supertool's op roster is incomplete: the interpreter ran and supertool exited non-zero. The ./supertool wrapper still works; 'ops:roster' prints the listing."
+    fi
+    exit 0
+}
+
+# shellcheck source=hooks/python-ladder.sh
+if . "$LADDER" 2>/dev/null; then
+    supertool_python_each onboard
+    echo "> supertool's op roster is not shown: nothing on PATH identified itself as a Python 3. Tried $SUPERTOOL_LADDER_RUNGS. The bare name python3 is never run, because on Windows and on a stock macOS it can resolve to a stub that blocks instead of erroring (#572, #1382)."
+else
+    echo "> supertool's op roster is not shown: hooks/python-ladder.sh could not be sourced, so no interpreter was resolved."
+fi
+
+# A SessionStart hook that exits non-zero is a broken session, and every path
+# above this line has already said what it could not do.
+exit 0

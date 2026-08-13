@@ -193,9 +193,13 @@ def test_session_start_hook_asks_for_the_roster() -> None:
     a ~7,168 cap) on every session.
     """
     hook = (REPO_ROOT / "hooks" / "session-start.sh").read_text(encoding="utf-8")
+    # Selected by the op arguments rather than by the interpreter: #1382
+    # replaced the leading `python3 ` with a resolved candidate from the
+    # shared ladder, and a predicate keyed on that word would now match
+    # nothing - the `assert invocations` below is what caught it.
     invocations = [ln for ln in hook.splitlines()
-                   if ln.strip().startswith("python3 ") and "$BIN" in ln]
-    assert invocations, "hook no longer invokes supertool"
+                   if '"$BIN"' in ln and "'introduction'" in ln]
+    assert invocations, "hook no longer invokes supertool for onboarding"
     assert all("ops:roster" in ln for ln in invocations), invocations
     assert not any("ops-compact" in ln for ln in invocations), invocations
 
