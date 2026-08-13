@@ -87,6 +87,15 @@ ERROR: old string not found in app.py
   ↳ cannot suggest a nearest match: 2 places score the same (91%) — lines 1, 44. The anchor does not tell them apart; re-anchor on a longer or more distinctive block
 ```
 
+The count is a **floor** when more places tied than the scan char-scored — at most 20 windows, in file order:
+
+```
+ERROR: old string not found in app.py
+  ↳ cannot suggest a nearest match: at least 34 places score the same (98%) — lines 1 and 33 more. The anchor does not tell them apart; re-anchor on a longer or more distinctive block
+```
+
+Until [#1614](https://github.com/Digital-Process-Tools/claude-supertool/issues/1614) that floor was unreachable for any anchor over 20 lines. Rival candidates within the anchor's own height of the leader are one neighbourhood rather than two answers, and for a tall anchor all 20 sampled windows sit inside one such neighbourhood by arithmetic — so the tie was consulted only on a list that was empty by construction, and a 30-line anchor over 34 tied windows got `nearest match at lines 1-30 (98%)`: one sample of 20, named as a fact, ~470 lines from the block the caller wrote. More tied than scored is now its own reason to decline.
+
 That third state exists because a confidently wrong line number costs more than none: the caller reads the wrong 30 lines and re-anchors against them. It also fires when the scan's cost budget runs out before the file does — a best-so-far over a prefix is not a best, and reporting it as one is the defect this whole hint is about. The budget is what keeps the diagnostic off the critical path on a file the line-count guard cannot see: 60 lines of a 40 KB minified bundle took over 30 minutes before it existed. A percentage computed over a clipped line says so in the same breath: `(100%, scored on the first 1000 characters)`.
 
 ## Ops

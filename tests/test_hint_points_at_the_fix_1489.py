@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import difflib
 from pathlib import Path
 
 import supertool
@@ -88,6 +89,38 @@ def test_more_ties_than_windows_scored_says_at_least(tmp_path: Path) -> None:
     assert "-19" not in out
 
 
+def test_a_long_anchor_still_reaches_the_at_least_disclosure(
+        tmp_path: Path) -> None:
+    """The tie floor has to fire when the anchor is TALLER than the sample.
+
+    `_nearest_block_candidates` char-scores at most `_EDIT_NEAR_WINDOWS` (20)
+    of the windows that tied on the line pass, in file order. `tie_floor` says
+    "more tied than were scored" — and until #1614 it was only consulted
+    inside `if rivals:`, where `rivals` discards every candidate within `n`
+    lines of the leader as one neighbourhood. For any anchor over 20 lines all
+    20 sampled starts are necessarily within `n` of each other, so `rivals` is
+    always empty and the floor could never be reached: the tool named the
+    first sampled window at 98% and said nothing about the 14 it had not
+    scored. That is exactly the confident single answer #1489 removed, coming
+    back through the case #1489 was filed about — a line number roughly 800
+    lines from the real one.
+    """
+    f = tmp_path / "app.py"
+    f.write_text("\n".join(
+        ["    pass"] * 60
+        + [f"filler {i}" for i in range(61, 500)]
+        + ["    pass"] * 29 + ["    return z"]
+        + ["tail"] * 10) + "\n")
+    old = "\n".join(["    pass"] * 29 + ["    return y"])
+    out = supertool.op_edit(old, "x", str(f))
+    assert "ERROR: old string not found" in out
+    assert "cannot suggest" in out
+    assert "at least 34 places" in out
+    # The window it would have named, and the count it would have hidden.
+    assert "nearest match at lines" not in out
+    assert "and 33 more" in out
+
+
 def test_repeated_single_line_withholds_too(tmp_path: Path) -> None:
     """The same argument one line wide: a boilerplate line that occurs six times
     scores identically six times."""
@@ -108,22 +141,53 @@ def test_an_unambiguous_block_is_still_named(tmp_path: Path) -> None:
     assert "nearest match at lines 1-2" in out
 
 
-def test_a_minified_file_does_not_hang_the_diagnostic(tmp_path: Path) -> None:
+def test_a_minified_file_bounds_the_scan_by_work_not_by_the_clock(
+        tmp_path: Path, monkeypatch) -> None:
     """`_EDIT_DIAG_MAX_LINES` bounds the scan by LINE COUNT, which is the one
     dimension a minified file is small in: 60 lines of 40 KB scored a
     character-level ratio of 40000x39000 cells and took 220s on this machine.
     Bounded per comparison and in total, and running out is a decline rather
-    than a best-so-far reported as a best."""
-    import time
+    than a best-so-far reported as a best.
+
+    Measured in CELLS HANDED TO `difflib`, not in seconds (#1623). The first
+    spelling asserted `elapsed < 15`, which measures the runner: it went red
+    three times in one hour on a laptop running five suites, once blocking the
+    v0.41.0 release push, while the same commit was green on all 18 CI legs. A
+    wall clock in a test renders an environment limit as a product verdict --
+    this repo's own defect class (#1143), relocated into the thing meant to
+    detect it.
+
+    It still fails if either bound goes. Without `_EDIT_NEAR_BUDGET` the scan
+    runs all 60 comparisons and reports `60 places score the same (100%)`, so
+    both the call count and the wording move; without `_EDIT_NEAR_MAX_CHARS`
+    the first comparison asks for 39000x40000 cells and the counter refuses it
+    on the spot rather than waiting out the 220s it would take.
+    """
+    cells: list[int] = []
+    real_ratio = difflib.SequenceMatcher.ratio
+
+    def counted(self):  # type: ignore[no-untyped-def]
+        n = len(self.a) * len(self.b)
+        if n > supertool._EDIT_NEAR_MAX_CHARS ** 2:
+            raise AssertionError(
+                f"one comparison asked difflib for {n} cells, over the "
+                f"{supertool._EDIT_NEAR_MAX_CHARS ** 2}-cell clip")
+        cells.append(n)
+        return real_ratio(self)
+
+    monkeypatch.setattr(difflib.SequenceMatcher, "ratio", counted)
 
     f = tmp_path / "bundle.js"
     f.write_text("".join(f"var a{i}=" + "x" * 40000 + ";\n" for i in range(60)))
-    started = time.monotonic()
     out = supertool.op_edit("var a7=" + "x" * 39000 + "!;", "q", str(f))
-    elapsed = time.monotonic() - started
     assert "ERROR: old string not found" in out
-    assert elapsed < 15, f"diagnostic took {elapsed:.1f}s"
-    assert "cannot suggest" in out
+    # The decline has to be the BUDGET one. `cannot suggest` alone is not a
+    # pin: with the budget lifted this same input declines for a tie instead,
+    # so the loose wording passed against an unbounded scan.
+    assert "cost more than the scan's budget" in out
+    per_call = supertool._EDIT_NEAR_MAX_CHARS ** 2
+    assert sum(cells) <= supertool._EDIT_NEAR_BUDGET, sum(cells)
+    assert len(cells) <= supertool._EDIT_NEAR_BUDGET // per_call + 1, len(cells)
 
 
 def test_a_clipped_score_says_what_it_scored(tmp_path: Path) -> None:
