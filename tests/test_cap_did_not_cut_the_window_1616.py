@@ -67,7 +67,7 @@ def test_the_cap_is_still_disclosed_when_it_cut_nothing(tmp_path: Path) -> None:
 def test_greps_byte_exact_remedy_is_not_contradicted(tmp_path: Path) -> None:
     """End to end, the round trip #1616 is about: grep cuts the line, names
     the read, the read returns every byte and says so."""
-    f = _fat(tmp_path)
+    _fat(tmp_path)  # the over-cap file grep must cut; the binding went unused
     (tmp_path / "other.md").write_text("NEEDLE\n")
     grep_out = supertool.dispatch(f"grep:NEEDLE:{tmp_path}")
     assert "byte-exact" in grep_out
