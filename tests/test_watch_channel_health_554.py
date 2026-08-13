@@ -380,7 +380,14 @@ def test_health_never_presents_the_published_pid_as_a_verified_identity(tmp_path
             assert "CONTRADICTED" in result.stdout
             assert str(stranger.pid) in result.stdout
         else:
-            assert result.returncode == RC_FORWARDING, result.stdout + result.stderr
+            # The two sentences are the claim; the code is not asserted, for the
+            # reason given in
+            # `test_health_reports_the_consumers_own_forwarded_count` above —
+            # since #1543 the verdict also depends on whether a session is
+            # subscribed, which this subprocess route cannot stub and which is a
+            # fact about the machine rather than about this fixture.
+            assert result.returncode in (RC_FORWARDING, RC_UNKNOWN,
+                                         channel.RC_NOT_SUBSCRIBED), result.stdout
             assert "self-reported" in result.stdout
             assert "pids are reusable" in result.stdout
     finally:

@@ -9,7 +9,7 @@ does not pretend otherwise.** `channel.ts` reaches the session through
 `mcp.notification()` — a JSON-RPC notification, so no id, no response and
 nothing to await — and it never writes back to the producer connection either.
 No ack exists to read. That is a finding, not a gap in this implementation, and
-it is why the answer here has three states rather than two:
+it is why the answer here has five states rather than two:
 
     NOT DELIVERING   a definite negative. Nothing is listening on the socket, so
                      every event a poller emits right now is lost at the source.
@@ -1067,6 +1067,11 @@ def subscription(pid: Any, pid_note: str = "") -> Subscription:
                     (f"{CHANNEL_FLAG} tag, so nothing it",
                      "is handed is surfaced. Every event read here is discarded",
                      f"session argv: {shown}"))
+    # Every tag is asked, and an unresolved one does not end the loop: the flag
+    # is variadic, a session subscribed through the second tag is subscribed,
+    # and returning `CANNOT DETERMINE` off the first would be an absence
+    # produced by the order of somebody else's argv.
+    undecided: list[str] = []
     for name in tags:
         answer, ask_why = _configured(name)
         if answer:
@@ -1079,11 +1084,12 @@ def subscription(pid: Any, pid_note: str = "") -> Subscription:
                          "socket. Two channel-capable servers would satisfy both "
                          "halves apart"))
         if answer is None:
-            return _sub(SUB_UNKNOWN,
-                        f"NOT established — session pid {ppid} carries "
-                        f"{TAG_PREFIX}{_untrusted.flat(name)} and whether",
-                        ("the harness has that server configured was not settled",
-                         ask_why))
+            undecided.append(f"{TAG_PREFIX}{_untrusted.flat(name)}: {ask_why}")
+    if undecided:
+        return _sub(SUB_UNKNOWN,
+                    f"NOT established — whether the harness has the server(s) "
+                    f"session pid {ppid}",
+                    ("asked for configured was not settled", *undecided))
     named = ", ".join(TAG_PREFIX + _untrusted.flat(name) for name in tags)
     return _sub(SUB_NOT_SUBSCRIBED,
                 f"none — session pid {ppid} asked for {named}, and the harness has",

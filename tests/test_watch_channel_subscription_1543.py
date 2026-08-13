@@ -228,6 +228,36 @@ def test_a_spawner_that_is_not_recognisably_a_session_is_cannot_determine(
     assert "zsh" in report, report
 
 
+def test_a_tag_that_could_not_be_looked_up_does_not_bury_a_later_one(
+        forwarding, monkeypatch):
+    """The flag is variadic and takes several tags. One lookup that settled
+    nothing is not a reason to stop asking: a session subscribed through the
+    second tag is subscribed, and reporting `CANNOT DETERMINE` off the first
+    would be an absence produced by the order of the list."""
+    _process_table(
+        monkeypatch,
+        "claude --dangerously-load-development-channels server:flaky server:good")
+    answers = {"flaky": (None, "the lookup failed"), "good": (True, "")}
+    monkeypatch.setattr(channel, "_configured", lambda name: answers[name])
+    rc, report = channel.health(forwarding)
+    assert report.splitlines()[0] == "channel: FORWARDING", report
+    assert rc == channel.RC_FORWARDING
+
+
+def test_every_tag_unresolved_is_still_cannot_determine(forwarding, monkeypatch):
+    """And the reason survives: an unasked question must not read as an
+    answered one just because the list had more than one entry."""
+    _process_table(
+        monkeypatch,
+        "claude --dangerously-load-development-channels server:a server:b")
+    monkeypatch.setattr(channel, "_configured",
+                        lambda name: (None, f"{name} lookup failed"))
+    rc, report = channel.health(forwarding)
+    assert report.splitlines()[0] == "channel: CANNOT DETERMINE", report
+    assert rc == channel.RC_UNKNOWN
+    assert "lookup failed" in report, report
+
+
 # --- the parser --------------------------------------------------------------
 
 def test_an_ambiguous_tag_list_declines_rather_than_truncating_a_name():
