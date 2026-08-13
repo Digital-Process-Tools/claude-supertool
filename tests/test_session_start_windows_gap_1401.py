@@ -8,11 +8,13 @@ Windows, PowerShell where Git Bash is absent - and adding `args` would switch
 to exec form and *introduce* the PATH search the issue described.
 
 What survives is a different defect, and it is the one this file is about.
-`PreToolUse` is tool-gated, so on a native Windows host with no Git for
-Windows the guard hook never fires - there is no `Bash` tool for it to match.
-**`SessionStart` is not tool-gated.** It fires on that host, `bash` is not
-there to run it, and the session loses the `./supertool` wrapper and the op
-roster with nothing else failing to mask it.
+The guard hook's failure on a shell-less host is *silent* - it is asked, it
+cannot run, and a session where the gate never ran is byte-identical to one
+where it ran and found nothing (#1378), which is what `hooks/guard-selftest.py`
+exists to say out loud. **`SessionStart` is gated by nothing at all**: it
+fires there under any tool configuration, `bash` is not there to run it, and
+the session loses the `./supertool` wrapper and the op roster with nothing
+else failing to mask it.
 
 **That gap is accepted and disclosed rather than fixed**, and the disclosure
 is what is pinned here. Every candidate repair is a change to an untestable
@@ -100,10 +102,13 @@ def test_the_no_bash_state_names_what_the_session_loses_and_the_way_back():
 def test_session_start_is_not_tool_gated():
     """The one structural fact the rest of #1401 turns on.
 
-    `PreToolUse` matches `Bash|PowerShell`, so on a host with no `Bash` tool
-    the guard hook is never asked. `SessionStart` has no matcher and cannot
-    have one - it is not a tool event - so it fires there regardless. A future
-    reader must not conclude the two entries fail alike.
+    `PreToolUse` matches `Bash|PowerShell` - a matcher widened by #1413
+    exactly because Claude routes shell commands through PowerShell wherever
+    that tool is enabled, so the guard is asked on hosts a `Bash`-only matcher
+    would have missed. `SessionStart` has no matcher and cannot have one - it
+    is not a tool event - so it fires under every tool configuration there is.
+    A future reader must not conclude the two entries fail alike, and must not
+    reach for a matcher here to make them.
     """
     hooks = json.loads((_ROOT / "hooks" / "hooks.json").read_text(
         encoding="utf-8"))["hooks"]

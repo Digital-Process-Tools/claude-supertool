@@ -25,11 +25,13 @@ such a host has. Three states, the same three the guard itself uses:
 
 **`could not run` for want of a bash is a statement about both shipped hooks,
 and is reported as one** (#1401). The same missing shell kills
-`hooks/session-start.sh`, and that half is the one a user actually notices:
-`PreToolUse` is tool-gated, so where there is no Bash tool the guard is never
-asked, while `SessionStart` is not gated and fires regardless - leaving a
-session with no `./supertool` wrapper and no op roster. The report names the
-way back, which needs no shell: run `supertool.py` by path.
+`hooks/session-start.sh`, and that half is the one a user actually notices.
+The guard's failure is silent by construction - a gate that never ran reads
+exactly like one that ran and found nothing, which is what this file exists to
+say out loud. `SessionStart` is gated by nothing at all, fires under any tool
+configuration, and its failure leaves a session with no `./supertool` wrapper
+and no op roster. The report names the way back, which needs no shell: run
+`supertool.py` by path.
 
 **It cannot tell you whether Claude Code invoked the hook.** Plugin
 installation, `hooks.json` registration and the PreToolUse dispatch are not
@@ -187,11 +189,11 @@ def report(root, environ=None):
                      "unguarded in this shell, and nothing in the transcript "
                      "will say so. Install Git Bash or use WSL, or accept "
                      "that the gate is off here.")
-        # One fact, two dead hooks (#1401). `pre-bash-guard.sh` is tool-gated
-        # and `session-start.sh` is not, so on the host with no Bash tool the
-        # guard is never even asked while the session hook fires and cannot
-        # run. Reporting only the guard leaves the more visible loss - no
-        # wrapper, no roster - as an absence with no account of itself.
+        # One fact, two dead hooks (#1401). The guard's failure is the
+        # silent one this file was written for; `session-start.sh` fires on
+        # any host regardless of which tool matcher is in play and loses
+        # something visible. Reporting only the guard leaves the more visible
+        # loss - no wrapper, no roster - as an absence with no account.
         lines.append("  also        : hooks.json runs hooks/session-start.sh "
                      "through the same bash, so it does not execute here "
                      "either. SessionStart is not tool-gated: it fires on "

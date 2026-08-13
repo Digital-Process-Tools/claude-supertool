@@ -710,7 +710,7 @@ python3 hooks/guard-selftest.py      # anywhere else
 
 It reports `enforcing`, `could not run` (naming what it tried) or `nothing to test`, and it says plainly that it cannot tell whether Claude Code invokes the hook — only whether this host can run it. Everything stated here about native `cmd.exe`/PowerShell is **reasoned, not observed**: nobody on this project has that host.
 
-**Windows and the session-start hook, when there is no bash at all** ([#1401](https://github.com/Digital-Process-Tools/claude-supertool/issues/1401)): this is the half you notice. The guard is *tool-gated* — `PreToolUse` matches `Bash|PowerShell`, so where Claude Code has no `Bash` tool the guard hook is never asked. `SessionStart` is not gated by anything and fires on that host regardless, where `bash` is not there to run it. What you lose is the `./supertool` wrapper and the op roster the session normally opens with, so the model is not told which ops exist.
+**Windows and the session-start hook, when there is no bash at all** ([#1401](https://github.com/Digital-Process-Tools/claude-supertool/issues/1401)): this is the half you notice. The guard's failure above is *silent* — it is asked, it cannot run, and a session where the gate never ran looks like one where it ran and found nothing. `SessionStart` is gated by nothing at all: it fires under any tool configuration, once per session, and its failure costs you something you can see. What you lose is the `./supertool` wrapper and the op roster the session normally opens with, so the model is not told which ops exist.
 
 Nothing needs installing to get both back — call the tool by path, which needs no shell:
 

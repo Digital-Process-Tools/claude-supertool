@@ -20,11 +20,19 @@ harness runs a hook. Claude Code's hook contract:
   PowerShell tool instead.
   <https://code.claude.com/docs/en/setup#windows>
 
-Those compose into the reason #1401 cannot fire for `pre-bash-guard.sh`: the
-only host where the hook string reaches PowerShell - and so where `bash` could
-resolve to the WSL launcher - is a host with no Git Bash, which is exactly the
-host with **no Bash tool**, so a `PreToolUse` hook matched on `Bash` never
-fires there at all.
+That last point was originally composed into a stronger claim than it can
+carry - that the guard hook never fires on such a host at all, so the branch
+is empty. **That composition is wrong by this repo's own #1413**: the matcher
+has been `Bash|PowerShell` since, because Claude treats PowerShell as the
+primary shell wherever that tool is enabled and routes shell commands through
+it. So the hook *is* matched there, the string *does* reach PowerShell, and
+`bash` there can find the WSL launcher.
+
+What that costs is bounded and is not what #1401's body claimed: only exit 2
+blocks a `PreToolUse` call, and the launcher exits 1, so the command proceeds.
+The guard is **inert** rather than fatal - #1378's silent state, which
+`hooks/guard-selftest.py` exists to break - and `args` would still make it
+worse rather than better, which is what this file pins.
 
 What this file therefore pins is the shape the refutation depends on: both
 entries stay shell form. A future reader "fixing" #1401 by adding `args` would
