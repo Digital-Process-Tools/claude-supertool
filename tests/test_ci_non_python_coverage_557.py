@@ -130,6 +130,10 @@ def test_the_shell_population_is_not_empty() -> None:
     ".githooks/pre-commit",
     ".githooks/pre-push",
     "hooks/session-start.sh",
+    # No shebang - it is sourced, never executed - so it is discovered by the
+    # `.sh` name alone. Named here because that is the whole of its claim to
+    # being syntax-checked at all (#1382).
+    "hooks/python-ladder.sh",
     "notifiers/claude-channel/install.sh",
     "notifiers/cursor-witness/install.sh",
     "presets/watch/watch-mine.sh",

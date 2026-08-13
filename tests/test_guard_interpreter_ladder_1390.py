@@ -298,12 +298,15 @@ def test_the_wrapper_does_not_read_supertool_python():
     prints the right line and then does nothing — so the property worth
     pinning is that the hook's ladder is not steerable by this variable.
     """
-    wrapper = _WRAPPER.read_text(encoding="utf-8")
-    for line in wrapper.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            continue
-        assert "SUPERTOOL_PYTHON" not in stripped, line
+    # The shared ladder is in scope too since #1382: the candidate list moved
+    # out of the wrapper, so scanning only the wrapper would keep reporting
+    # `ok` about a file that no longer contains the ladder this is about.
+    for path in (_WRAPPER, _WRAPPER.parent / "python-ladder.sh"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            assert "SUPERTOOL_PYTHON" not in stripped, path.name + ": " + line
 
 
 @needs_wrapper
@@ -329,10 +332,13 @@ def test_a_candidate_that_ran_and_said_nothing_is_disclosed(project,
 
 def test_the_versioned_ladder_survived():
     """#572: the bare name `python3` is never run."""
-    wrapper = _WRAPPER.read_text(encoding="utf-8")
-    assert "python3.9" in wrapper
-    for line in wrapper.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            continue
-        assert "command -v python3 " not in stripped, line
+    ladder = _WRAPPER.parent / "python-ladder.sh"
+    assert "python3.9" in ladder.read_text(encoding="utf-8"), (
+        "the versioned ladder is gone from hooks/python-ladder.sh, where "
+        "#1382 moved it")
+    for path in (_WRAPPER, ladder):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            assert "command -v python3 " not in stripped, path.name + ": " + line
