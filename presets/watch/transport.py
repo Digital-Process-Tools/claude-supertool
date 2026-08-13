@@ -396,7 +396,7 @@ def emit_socket(payload: dict[str, Any]) -> Emit:
     itself is unchanged; what changed is that the answer leaves the function.
     """
     if not os.path.exists(SOCK_PATH):
-        return Emit(EMIT_NO_LISTENER, f"no socket at {SOCK_PATH}")
+        return Emit(EMIT_NO_LISTENER, f"no socket at {naming.flat_path(SOCK_PATH)}")
     if not hasattr(socket, "AF_UNIX"):
         # Mirrors the guard `channel.probe_socket` already carries, which this
         # twin never adopted. Without it the next line is a bare AttributeError
@@ -414,24 +414,27 @@ def emit_socket(payload: dict[str, Any]) -> Emit:
         # without unlinking, or one whose socket was replaced. This is the state
         # that reads green from `pgrep` and from `lsof`, and it is the concrete
         # shape of #554's silent window.
-        return Emit(EMIT_NO_LISTENER, f"{SOCK_PATH} refused the connection (ConnectionRefusedError)")
+        return Emit(EMIT_NO_LISTENER, f"{naming.flat_path(SOCK_PATH)} refused "
+                    f"the connection (ConnectionRefusedError)")
     except FileNotFoundError:
         # Also a definite negative, and `detail` is the field that tells the two
         # apart (see `Emit`): the path passed the existence check above and was
         # unlinked before this connect. Reporting it as "refused" describes a
         # consumer that answered, and there was none.
-        return Emit(EMIT_NO_LISTENER, f"{SOCK_PATH} vanished between the check and the connect")
+        return Emit(EMIT_NO_LISTENER, f"{naming.flat_path(SOCK_PATH)} vanished "
+                    f"between the check and the connect")
     except OSError as err:
         # Timeout, EPIPE, EACCES, ENOTSOCK. Something went wrong mid-write and
         # nothing here can tell whether a partial line reached the consumer.
-        return Emit(EMIT_UNKNOWN, f"{type(err).__name__} writing to {SOCK_PATH}")
+        return Emit(EMIT_UNKNOWN,
+                    f"{type(err).__name__} writing to {naming.flat_path(SOCK_PATH)}")
     finally:
         if s is not None:
             try:
                 s.close()
             except OSError:
                 pass
-    return Emit(EMIT_ACCEPTED, f"{SOCK_PATH} accepted the bytes")
+    return Emit(EMIT_ACCEPTED, f"{naming.flat_path(SOCK_PATH)} accepted the bytes")
 
 
 def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> str:

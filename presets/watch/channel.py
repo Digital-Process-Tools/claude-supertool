@@ -851,7 +851,8 @@ def consumer_lines(resolved: naming.Resolved,
                 f"that environment is not readable from here: "
                 f"`bin/supertool-workspace` exports {naming.NAME_ENV}, and a "
                 f"session started any other way leaves the consumer on "
-                f"{naming.DEFAULT_SOCK} while this process reads {resolved.sock}")
+                f"{naming.DEFAULT_SOCK} while this process reads "
+                f"{naming.flat_path(resolved.sock)}")
             continue
         theirs = naming.resolve(env)
         if theirs.sock == resolved.sock:
@@ -859,8 +860,9 @@ def consumer_lines(resolved: naming.Resolved,
         else:
             differed.append(
                 f"consumer config {key} declares {_declaration(env)}, which binds "
-                f"{theirs.sock} — this process reads {resolved.sock}. The consumer "
-                f"is on another channel, so nothing a poller emits here reaches it")
+                f"{naming.flat_path(theirs.sock)} — this process reads "
+                f"{naming.flat_path(resolved.sock)}. The consumer is on another "
+                f"channel, so nothing a poller emits here reaches it")
     if differed:
         return differed + agreed
     if agreed:
@@ -883,7 +885,7 @@ def _channel_lines(path: str, resolved: naming.Resolved) -> list[str]:
     if resolved.name:
         body.append(
             f"name {_untrusted.flat(resolved.name)} (from {naming.NAME_ENV}) — "
-            f"poller slots in {resolved.state_dir}")
+            f"poller slots in {naming.flat_path(resolved.state_dir)}")
     if resolved.refusal:
         body.append(resolved.refusal)
     body.extend(resolved.notes)

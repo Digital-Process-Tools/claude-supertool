@@ -135,10 +135,11 @@ def cmd_watch(parts: list[str]) -> int:
         # derivation in it — and `state_dir_provenance` says which of the two
         # this process is (#1534).
         print(f"ERROR: could not claim the slot for {source}:{watcher_id} — its "
-              f"pid file at {transport.pid_path(source, watcher_id)} could not "
-              f"be created. Nothing was started, and nothing here knows whether "
-              f"a poller is already running for this id. Check that "
-              f"{transport.STATE_DIR} is a writable directory "
+              f"pid file at "
+              f"{naming.flat_path(transport.pid_path(source, watcher_id))} could "
+              f"not be created. Nothing was started, and nothing here knows "
+              f"whether a poller is already running for this id. Check that "
+              f"{naming.flat_path(transport.STATE_DIR)} is a writable directory "
               f"({naming.state_dir_provenance(transport.RESOLVED)}).")
         return 1
     # An explicit re-arm is the operator saying they have seen the deaths and
@@ -375,7 +376,8 @@ def cmd_list() -> int:
             # took down every other op in the same call (#1502). Nothing is
             # created here: only a spawn creates a derived state directory, and
             # an operator-supplied one is never manufactured at all (#693).
-            print(f"No watchers — the state directory {transport.STATE_DIR} does "
+            print(f"No watchers — the state directory "
+                  f"{naming.flat_path(transport.STATE_DIR)} does "
                   f"not exist yet, so nothing has ever spawned on this channel "
                   f"({naming.state_dir_provenance(transport.RESOLVED)}). The "
                   f"first `watch:SOURCE:ID` or `radar` spawn creates it; no read "

@@ -128,6 +128,28 @@ def state_dir_for(name: str) -> str:
     return f"{BASE_DIR}/supertool-watch-{name}"
 
 
+def flat_path(path: str) -> str:
+    """A socket or state directory, rendered into a line the *tool* owns (#1522).
+
+    Only a path derived from a `NAME_RE`-matched name is this module's own text.
+    `SUPERTOOL_WATCH_SOCK` and `SUPERTOOL_WATCH_STATE_DIR` come from the
+    environment, from an op's `.supertool.json` block, or — through
+    `channel.consumer_lines` — out of an `.mcp.json` this process did not write.
+    Interpolated raw, a separator in one of those puts foreign text at column 0,
+    where `watches:`, `radar` and `channel:health` write their own structural
+    lines. The reproduction in #1522 forges a second `watches:` row.
+
+    `disclose_newline=True`, not the default space (#1557): a path can hold a
+    newline, and rendering it as a space converts *this directory's name has a
+    newline in it* into a plausible path that is not on disk.
+
+    **Render only.** The value handed to `connect()`, to `os.listdir()` or to
+    `pid_path()` is never this one — flattening a path before *using* it would
+    make the tool operate on a name nobody has.
+    """
+    return _untrusted.flat(path, disclose_newline=True)
+
+
 def resolve(env: dict[str, str] | None = None) -> Resolved:
     """The socket and the state directory this process should use.
 
@@ -169,13 +191,13 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
         if name and explicit_sock != sock:
             notes.append(
                 f"{SOCK_ENV} is set and overrides the name: the socket is "
-                f"{explicit_sock}, not {sock}")
+                f"{flat_path(explicit_sock)}, not {sock}")
         sock = explicit_sock
     if explicit_state:
         if name and explicit_state != state_dir:
             notes.append(
                 f"{STATE_DIR_ENV} is set and overrides the name: poller slots are "
-                f"in {explicit_state}, not {state_dir}")
+                f"in {flat_path(explicit_state)}, not {state_dir}")
         state_dir = explicit_state
 
     if not name and bool(explicit_sock) != bool(explicit_state):
@@ -262,7 +284,7 @@ def state_dir_listing(state_dir: str) -> tuple[list[str], str, str]:
         # is caught above and is not reachable here, which is what keeps "nothing
         # spawned yet" from absorbing "could not look".
         return [], STATE_DIR_UNREADABLE, (
-            f"{state_dir} could not be listed ({type(err).__name__})")
+            f"{flat_path(state_dir)} could not be listed ({type(err).__name__})")
 
 
 def state_dir_absence_note(state_dir: str, state: str, why: str) -> str:
@@ -272,8 +294,8 @@ def state_dir_absence_note(state_dir: str, state: str, why: str) -> str:
     third one cannot omit it.
     """
     if state == STATE_DIR_ABSENT:
-        return (f"the state directory {state_dir} does not exist yet, so nothing "
-                f"has ever spawned on this channel")
+        return (f"the state directory {flat_path(state_dir)} does not exist yet, "
+                f"so nothing has ever spawned on this channel")
     if state == STATE_DIR_UNREADABLE:
         return f"{why}, so nothing here is evidence of absence"
     return ""
@@ -295,17 +317,21 @@ def disclosure_lines(resolved: Resolved) -> list[str]:
     `channel:health` cannot disagree about the same resolution. `delivery_of`
     lives in `transport` for the same reason.
 
-    The paths are this module's own text; the *name* is not. It arrives from an
-    op's `.supertool.json` block or from the environment, and it lands on
-    `watches`' fixed-width board, where a newline used to be able to print a
-    whole extra row at column 0 (#1423). So it is flattened here, once, rather
-    than at each of the three call sites.
+    None of the three values on this line is this module's own text, and the
+    docstring used to claim two of them were. The *name* arrives from an op's
+    `.supertool.json` block or from the environment, and it lands on `watches`'
+    fixed-width board, where a newline used to print a whole extra row at column
+    0 (#1423). The two **paths** are the same environment one variable over:
+    they are this module's text only when they were derived from the name, and
+    `SUPERTOOL_WATCH_SOCK` overrides exactly that (#1522). So all three are
+    flattened here, once, rather than at each of the three call sites.
     """
     out: list[str] = []
     if resolved.name:
         out.append(
             f"name {_untrusted.flat(resolved.name)} (from {NAME_ENV}) — socket "
-            f"{resolved.sock}, poller slots {resolved.state_dir}")
+            f"{flat_path(resolved.sock)}, poller slots "
+            f"{flat_path(resolved.state_dir)}")
     if resolved.refusal:
         out.append(resolved.refusal)
     out.extend(resolved.notes)

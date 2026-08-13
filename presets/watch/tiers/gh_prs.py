@@ -125,6 +125,7 @@ _WATCH = _HERE.parent
 
 sys.path.insert(0, str(_WATCH))
 import dispatcher  # noqa: E402,F401  (radar_state reads its source registry)
+import naming  # noqa: E402  (`flat_path` for the state directory it renders)
 import transport  # noqa: E402
 
 sys.path.insert(0, str(_WATCH.parent))
@@ -1067,7 +1068,7 @@ def radar_state(options: dict | None = None) -> list[str]:
     else:
         # Honest about the one thing this view cannot do without a call: the
         # key includes the repo, and resolving the cwd's repo costs a request.
-        out.append(f"  snapshot  : under {transport.STATE_DIR}/"
+        out.append(f"  snapshot  : under {naming.flat_path(transport.STATE_DIR)}/"
                    f"{SNAPSHOT_PREFIX}.*.snapshot.json — the exact key needs "
                    f"the repo name, which is a call, so it is not resolved here")
 
