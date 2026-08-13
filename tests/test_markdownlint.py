@@ -103,10 +103,18 @@ def test_duration_ms_is_int(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not shutil.which("markdownlint"), reason="markdownlint not on PATH")
-def test_missing_file_behavior(tmp_path: Path) -> None:
-    """Gated, because ungated it asserted the fabricated pass and nothing else."""
+def test_a_missing_file_is_the_third_state(tmp_path: Path) -> None:
+    """A path that resolves to no files is not a file that linted clean (#1601).
+
+    markdownlint-cli exits 0 and prints its usage banner when its arguments
+    resolve to nothing, so this used to be `ok: true` about a file that does
+    not exist. The unignored arm is stubbed in
+    `tests/test_validators_scope_is_not_a_verdict_1601.py`, which runs where
+    markdownlint is not installed — here and on CI both.
+    """
     out = _run(str(tmp_path / "nonexistent.md"))
-    assert "ok" in out
+    assert "skipped" in out, out
+    assert "ok" not in out, out
 
 
 @pytest.mark.skipif(not shutil.which("markdownlint"), reason="markdownlint not on PATH")

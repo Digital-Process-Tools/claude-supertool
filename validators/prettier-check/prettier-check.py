@@ -12,14 +12,76 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
 import time
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
+from refusal import skipped
+
+TOOL = "prettier-check"
+
+# Budget for each spawn below. Named so a decline can quote it: a reader who
+# sees "timeout" cannot tell a hung prettier from a busy machine (#658).
+TIMEOUT_S = 15
+
+# What an ignored file looks like, and why the clean arm needs a second question.
+#
+# prettier honours `.prettierignore` (and `--ignore-path`) for a path handed to
+# it explicitly: it opens nothing, prints "All matched files use Prettier code
+# style!" and exits 0 — byte for byte what a correctly formatted file produces
+# (measured, prettier 3.6.2). So a zero exit is two different facts wearing the
+# same output, and the only way to tell them apart is to ask prettier which of
+# them this was.
+#
+# `prettier --file-info FILE` is that question: it resolves the same ignore
+# files and answers `{"ignored": true|false, "inferredParser": ...}`. Asking
+# prettier beats reimplementing the answer here — ignore resolution is
+# gitignore-syntax over a file whose location is itself configurable.
+#
+# It costs one extra spawn and only on the arm where the answer is ambiguous:
+# a run that reported a formatting difference has demonstrably read the file.
+# The probe is handed the same `--config`/`--ignore-path` flags as the check,
+# because a probe resolving a different ignore set answers about a different
+# run.
+IGNORED_REASON = ("prettier declined to check this file — it matched an ignore "
+                  "pattern (`.prettierignore`, or the `--ignore-path` file); "
+                  "`prettier --file-info` on this path answers "
+                  '`"ignored": true`')
+
+UNATTRIBUTABLE_REASON = ("prettier exited 0 and `prettier --file-info` could "
+                         "not say whether the file is ignored, so this run is "
+                         "not a verdict about it")
+
 
 def emit(obj: dict) -> None:
     print(json.dumps(obj))
+
+
+def _is_ignored(file: str, prettier_bin: str, flags: list) -> "bool | None":
+    """Was this file in scope? `None` when the question itself failed.
+
+    `None` is not `False`. A probe that could not run leaves the zero exit
+    unattributable, and publishing `ok` over it is the fabrication this arm
+    exists to prevent — the caller gets the third state with the reason.
+    """
+    try:
+        r = subprocess.run([prettier_bin, "--file-info", file] + flags,
+                           capture_output=True, text=True, timeout=TIMEOUT_S,
+                           encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    try:
+        info = json.loads((r.stdout or "").strip())
+    except ValueError:
+        return None
+    if not isinstance(info, dict) or not isinstance(info.get("ignored"), bool):
+        return None
+    return info["ignored"]
 
 
 def main() -> None:
@@ -40,7 +102,7 @@ def main() -> None:
     prettier_ignore_path = os.environ.get("PRETTIER_IGNORE_PATH", "")
 
     if not shutil.which(prettier_bin) and not (
-        __import__("pathlib").Path(prettier_bin).exists()
+        pathlib.Path(prettier_bin).exists()
         and os.access(prettier_bin, os.X_OK)
     ):
         emit({
@@ -51,14 +113,15 @@ def main() -> None:
         })
         return
 
-    cmd = [prettier_bin, "--check", file]
+    flags = []
     if prettier_config:
-        cmd += ["--config", prettier_config]
+        flags += ["--config", prettier_config]
     if prettier_ignore_path:
-        cmd += ["--ignore-path", prettier_ignore_path]
+        flags += ["--ignore-path", prettier_ignore_path]
+    cmd = [prettier_bin, "--check", file] + flags
 
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace")
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_S, encoding="utf-8", errors="replace")
     except FileNotFoundError:
         dur = int((time.time() - start) * 1000)
         emit({
@@ -72,17 +135,29 @@ def main() -> None:
         emit({
             "tool": "prettier-check", "file": file, "ok": False, "count": 1,
             "errors": [{"line": None, "col": None, "severity": "error",
-                        "code": "adapter", "msg": "timeout"}],
-            "duration_ms": 15000,
+                        "code": "adapter",
+                        "msg": f"timeout — prettier did not return within "
+                               f"{TIMEOUT_S}s; the file was NOT checked"}],
+            "duration_ms": TIMEOUT_S * 1000,
         })
         return
 
     dur = int((time.time() - start) * 1000)
 
     # prettier --check exits 0 if file is formatted, 1 if it needs formatting
+    # — and also when it never opened the file at all, which is the case the
+    # probe above exists to separate (#1601). The duration is recomputed
+    # afterwards: one that stops before the probe under-reports what the caller
+    # waited for.
     if r.returncode == 0:
+        ignored = _is_ignored(file, prettier_bin, flags)
+        if ignored is not False:
+            emit(skipped(TOOL, file,
+                         IGNORED_REASON if ignored else UNATTRIBUTABLE_REASON,
+                         int((time.time() - start) * 1000)))
+            return
         emit({"tool": "prettier-check", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": dur})
+              "errors": [], "duration_ms": int((time.time() - start) * 1000)})
         return
 
     emit({

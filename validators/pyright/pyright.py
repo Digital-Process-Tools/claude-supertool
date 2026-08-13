@@ -100,8 +100,13 @@ def main() -> None:
                               "code": "adapter", "msg": stderr[:300]}],
                   "duration_ms": duration})
             return
-        emit({"tool": "pyright", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": duration})
+        # Nothing on either stream. pyright always prints a report under
+        # `--outputjson`, so this is a run that produced no information at
+        # all — a killed process, a wrapper that swallowed both streams — and
+        # `ok: true` over it is a clean verdict about a file nothing read
+        # (#1601, the same class as the three adapters that issue names).
+        _skip(file, start, "pyright produced no output on either stream, so "
+                           "this run says nothing about the file")
         return
 
     try:
