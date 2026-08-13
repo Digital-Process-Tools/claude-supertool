@@ -170,8 +170,12 @@ _PUSH_TIMEOUT_MAX = 1800
 # opened at the first `git push`; `allowed` is the clock the most recent push
 # was actually launched with, which the timeout receipt has to name rather than
 # the budget it was cut from.
+# `source` is #1631: with three places a budget can come from, a receipt that
+# names the wrong one sends the caller to raise a number that did not cut. It
+# is module state for the same reason `seconds` is — `_budget_advice` is called
+# from three receipts, none of which has the parse site in scope.
 _BUDGET: dict[str, object] = {"seconds": None, "deadline": None,
-                              "allowed": None}
+                              "allowed": None, "source": ""}
 
 
 def _push_budget() -> int:
@@ -1936,19 +1940,33 @@ def _budget_advice() -> str:
     which left `:no-verify` — skipping the gate — as the one flag that helped a
     push that could not fit. `.githooks/pre-push` runs the full suite when the
     destination is master/main, and that suite has measured 530.71s.
+
+    #1631 is why it names the source that was actually in force. There are now
+    three, and a receipt that pointed at `_PUSH_TIMEOUT` while a configured
+    `ops.git-push.budget` was the clock would send the caller to edit a number
+    that did not cut — which is #1530's own defect one indirection further in.
     """
+    source = _BUDGET["source"]
+    if source == f"ops.{_OP_NAME}.{_CONFIG_BUDGET_KEY}":
+        where = (f"That budget is `ops.{_OP_NAME}.{_CONFIG_BUDGET_KEY}` in "
+                 f"this repository's .supertool.json — raise it there, or "
+                 f"override this one call with `git-push:budget=SECONDS`")
+    elif source == ":budget":
+        where = ("That budget is the `git-push:budget=SECONDS` this call "
+                 "passed — pass a bigger one")
+    else:
+        where = (f"That budget is _PUSH_TIMEOUT in presets/git/push.py — ask "
+                 f"for more of it with `git-push:budget=SECONDS`, or state "
+                 f"this repository's own default once as "
+                 f"`ops.{_OP_NAME}.{_CONFIG_BUDGET_KEY}` in .supertool.json "
+                 f"(#1631), which the flag still overrides")
     return (
-        f"That budget is _PUSH_TIMEOUT in presets/git/push.py — ask for more "
-        f"of it with `git-push:budget=SECONDS` (up to {_PUSH_TIMEOUT_MAX}s), "
+        f"{where} (up to {_PUSH_TIMEOUT_MAX}s), "
         f"which is the right lever when a pre-push hook runs a suite. It is "
         f"NOT ops.git-push.timeout: that op-level cap bounds the whole "
         f"process, raising it alone will not move this one, and this budget "
         f"has to stay strictly under it or a push killed by the outer cap can "
-        f"verify nothing (#399). A repository whose own pre-push hook runs a "
-        f"suite can state the number once instead of retyping it every "
-        f"session: `\"git-push\": {{\"budget\": SECONDS}}` under `ops` in "
-        f".supertool.json (ops.git-push.budget), which the flag still "
-        f"overrides.")
+        f"verify nothing (#399).")
 
 
 def _report_push_timeout(branch: str, head_before: str,
@@ -2421,7 +2439,8 @@ def main() -> int:
     use_utf8_stdout()
     _RUN.update({"phase": "not-attempted", "branch": "", "remote": "",
                  "ref": "", "target": "", "verdict": False})
-    _BUDGET.update({"seconds": None, "deadline": None, "allowed": None})
+    _BUDGET.update({"seconds": None, "deadline": None, "allowed": None,
+                    "source": ""})
     try:
         return _push_op()
     except Exception as exc:  # noqa: BLE001 — deliberate; see _crash_receipt
@@ -2469,7 +2488,7 @@ def _push_op() -> int:
         _result(f"NOT PUSHED - no push attempted (unusable :budget — "
                 f"{budget_why})")
         return 2
-    budget_source = ":budget"
+    _BUDGET["source"] = ":budget"
     if budget is None:
         # Precedence is flag > config > `_PUSH_TIMEOUT` (#1631). The config is
         # not consulted at all when the flag decided — that is what precedence
@@ -2484,8 +2503,8 @@ def _push_op() -> int:
             _result(f"NOT PUSHED - no push attempted (unusable "
                     f"ops.{_OP_NAME}.{_CONFIG_BUDGET_KEY} — {config_why})")
             return 2
-        if budget is not None:
-            budget_source = f"ops.{_OP_NAME}.{_CONFIG_BUDGET_KEY}"
+        _BUDGET["source"] = ("" if budget is None
+                             else f"ops.{_OP_NAME}.{_CONFIG_BUDGET_KEY}")
     _BUDGET["seconds"] = budget
 
     upstream, upstream_why = _upstream_ref()
@@ -2595,8 +2614,8 @@ def _push_op() -> int:
         # was dropped read identically from the receipt (#647). The default is
         # not printed: it is documented, and every receipt carrying a line
         # about a number nobody chose is a line nobody reads.
-        print(f"Push budget: {_push_budget()}s ({budget_source} — default is "
-              f"{_PUSH_TIMEOUT}s)")
+        print(f"Push budget: {_push_budget()}s ({_BUDGET['source']} — default "
+              f"is {_PUSH_TIMEOUT}s)")
 
     # --porcelain is what makes the non-fast-forward decision trustworthy: it
     # moves git's per-ref status onto stdout in a machine-readable grammar,

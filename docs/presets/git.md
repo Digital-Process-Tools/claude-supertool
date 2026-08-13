@@ -530,7 +530,7 @@ The line above the relay has three states, and it is a claim about configuration
 
 `ran` with nothing after it gets its own sentence — *it printed nothing, so this receipt cannot say which arm it took* — because a silent hook and an absent one otherwise render identically.
 
-One arm carries no relay and says so. A push that outlasts `_PUSH_TIMEOUT` is killed and its captured output dies with it, so the timeout receipt states that the hook's words were never captured rather than leaving a blank that reads as a hook with nothing to say.
+One arm carries no relay and says so. A push that outlasts its push budget — `_PUSH_TIMEOUT`, `ops.git-push.budget` or `:budget=SECONDS`, whichever was in force — is killed and its captured output dies with it, so the timeout receipt states that the hook's words were never captured rather than leaving a blank that reads as a hook with nothing to say.
 
 **The rebase-recovery route carries all of it too, and carried none of it until [#1490](https://github.com/Digital-Process-Tools/claude-supertool/issues/1490).** A non-fast-forward hands the push to `_recover_by_rebase`, which runs its **own** `git push` and prints its own receipts — and neither the disclosure above nor the head/tail bound followed it there. So `Status: pushed ✓ (rebased onto remote)` was the one landed-push receipt in this op that said nothing about the hook at all, which is #1448's premise turned back on it: a push that lands after a rebase is precisely a push whose hook has just run. Both of that route's `--- git output ---` dumps are bounded now as well, on the same 5/30 as the straight route, and the rejected-after-rebase arm is where the transcript is largest for exactly the same reason. The `rebase could not start` arm prints no hook line, deliberately: no push of that route's own has run yet, so there is nothing it could say about a hook that would be about the failure it is reporting.
 
@@ -704,7 +704,7 @@ Three calls name their own budget instead, because they are the ones that legiti
 
 #### `ops.git-push.budget` — the default your repository chooses
 
-`:budget=SECONDS` is per-call, and there are repositories where it is the right answer on **every** call: a pre-push hook that runs the suite on a push to `master` cannot finish inside 300s, so the flag has to be retyped every session or the push times out having sent nothing. Set the default once instead ([#1631](https://github.com/Digital-Process-Tools/claude-supertool/issues/1631)):
+`:budget=SECONDS` is per *invocation* — see the deadline section below for what it means within one — and there are repositories where it is the right answer on **every** invocation: a pre-push hook that runs the suite on a push to `master` cannot finish inside 300s, so the flag has to be retyped every session or the push times out having sent nothing. Set the default once instead ([#1631](https://github.com/Digital-Process-Tools/claude-supertool/issues/1631)):
 
 ```json
 {

@@ -154,8 +154,10 @@ def _reset_budget():
     """Module state, reset in `main()` prologue. Several tests here reach past
     `main()`, so it is reset around every one."""
     push._BUDGET["seconds"] = None
+    push._BUDGET["source"] = ""
     yield
     push._BUDGET["seconds"] = None
+    push._BUDGET["source"] = ""
 
 
 @pytest.fixture
@@ -375,7 +377,42 @@ def test_the_config_key_is_documented_where_a_user_would_look() -> None:
         "a config key nobody can find out about is not shipped")
 
 
-def test_the_timeout_receipt_points_at_the_config_key_too() -> None:
+# ---------------------------------------------------------------------------
+# the timeout receipt names the source that was actually in force
+# ---------------------------------------------------------------------------
+
+def test_the_advice_offers_the_config_key_when_nothing_was_configured() -> None:
     """The receipt a timed-out push prints is where this is read. Naming only
     the flag sends the caller back to retyping the number every session."""
-    assert "ops.git-push.budget" in push._budget_advice()
+    advice = push._budget_advice()
+    assert "_PUSH_TIMEOUT in presets/git/push.py" in advice, advice
+    assert "ops.git-push.budget" in advice, advice
+
+
+def test_the_advice_names_the_config_key_when_the_config_is_the_clock() -> None:
+    """A receipt pointing at `_PUSH_TIMEOUT` while a configured budget was the
+    clock sends the caller to raise a number that did not cut — #1530's own
+    defect one indirection further in."""
+    push._BUDGET["source"] = "ops.git-push.budget"
+    advice = push._budget_advice()
+    assert "ops.git-push.budget" in advice, advice
+    assert ".supertool.json" in advice, advice
+    assert "_PUSH_TIMEOUT in presets/git/push.py" not in advice, advice
+
+
+def test_the_advice_does_not_send_a_flag_caller_to_edit_a_constant() -> None:
+    push._BUDGET["source"] = ":budget"
+    advice = push._budget_advice()
+    assert "_PUSH_TIMEOUT in presets/git/push.py" not in advice, advice
+    assert ":budget=SECONDS" in advice, advice
+
+
+def test_the_budget_source_is_reset_in_the_main_prologue() -> None:
+    """Module state on the same terms as `seconds` — a source surviving a run
+    would name the previous call's lever on this one's receipt. Asserted on the
+    source of `main()` rather than by running it: `conftest`'s
+    PRESET_SELF_CLEARING_GLOBALS guard credits only a literal item assignment
+    in the prologue, and driving `main()` from this checkout would push it."""
+    src = PRESET.read_text(encoding="utf-8")
+    prologue = src.split("def main()", 1)[1].split("def ", 1)[0]
+    assert '"source": ""' in prologue, prologue

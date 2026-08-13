@@ -142,8 +142,13 @@ def _reset_budget():
     every one — otherwise a case that sets a budget decides the next one's
     clock."""
     push._BUDGET["seconds"] = None
+    # `source` too, since #1631: a run that reaches past `main()` leaves the
+    # lever it took behind, and `_budget_advice` reads it. Resetting only
+    # `seconds` let a driven push decide which remedy a later receipt offered.
+    push._BUDGET["source"] = ""
     yield
     push._BUDGET["seconds"] = None
+    push._BUDGET["source"] = ""
 
 
 def _verdict(out: str) -> str:
