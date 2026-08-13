@@ -212,14 +212,18 @@ class TestMalformedJson:
 # ---------------------------------------------------------------------------
 
 class TestExtraFieldsInPayload:
-    """Extra fields in JSON payload: documented to be silently ignored.
+    """Extra fields in a payload: refused by name since #1551, not dropped.
 
-    Severity: LOW — extra fields can't cause code execution; they're discarded
-    by the lower_payload lookup. But an 'evil_field' with shell metacharacters
-    must not be interpreted anywhere.
+    This class used to assert the opposite, and its docstring called the drop
+    "documented" — nothing in `docs/` ever said so, and `docs/presets/watch.md`
+    states the house rule the other way for config keys: "a dropped option is
+    how someone comes to believe they configured a threshold they did not".
+    The metacharacter half is the part that was load-bearing and it stands
+    unchanged: nothing in an extra field is interpreted anywhere, before or
+    after the refusal.
     """
 
-    def test_extra_fields_are_ignored(self, tmp_path: Path) -> None:
+    def test_extra_fields_are_refused_by_name(self, tmp_path: Path) -> None:
         target = tmp_path / "x.py"
         target.write_text("a = 1\n")
         spec = _write_json_file(tmp_path, "e.json", {
@@ -230,9 +234,11 @@ class TestExtraFieldsInPayload:
             "injected": "$(rm -rf /)",
         })
         out = _dispatch_reset(f"edit:@{spec}")
-        # Extra fields silently ignored; edit succeeds.
-        assert "ERROR" not in out
-        assert "a = 99" in target.read_text(encoding="utf-8")
+        assert "ERROR" in out
+        assert "evil_field" in out and "injected" in out, out
+        # And the edit did NOT run: a refusal that still wrote would be worse
+        # than the drop it replaced.
+        assert "a = 1" in target.read_text(encoding="utf-8")
 
     def test_extra_fields_with_shell_metacharacters_not_executed(self, tmp_path: Path) -> None:
         """Shell metacharacters in extra fields must not be executed.
