@@ -1051,7 +1051,7 @@ PRESET_RESET_GLOBALS: dict[str, tuple[str, ...]] = {
 #: `_RUNTIME_HINT` inside `main()` too, but 150 lines in and as the value being
 #: used — "mutated somewhere in main" would have accepted that.
 PRESET_SELF_CLEARING_GLOBALS: dict[str, tuple[str, ...]] = {
-    "presets/git/push.py": ("_RUN",),
+    "presets/git/push.py": ("_RUN", "_BUDGET"),
     "presets/git/status.py": ("_UNANSWERED",),
     "presets/mcp/stop.py": ("_RUNTIME_HINT",),
 }

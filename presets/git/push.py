@@ -25,6 +25,12 @@ Flags (colon-appended: `git-push:force-with-lease:no-verify`):
     Suppresses auto-rebase (the explicit force is your decision).
   - no-verify — skip the local pre-push hook. Documented escape when a
     local formatter legitimately diverges from CI.
+  - budget=SECONDS — how long the `git push` itself may take, in place of
+    the 300s default (#1530). The flag to reach for when a pre-push hook
+    runs a test suite, which is exactly where `no-verify` is least
+    appropriate: a push to a protected branch. Refused rather than clamped
+    if it is unreadable, non-positive, contradicted by a second `budget=`,
+    or above `_PUSH_TIMEOUT_MAX`.
 
 Hook output is never evidence about the remote. The auto-rebase above is the
 one path here that rewrites local history, so it fires only on git's own
@@ -55,6 +61,7 @@ left acting on a bare `FAIL (timeout …)` for a push that landed (#399).
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import traceback
@@ -100,10 +107,50 @@ from _git_common import (  # noqa: E402
 _KNOWN_FLAGS = ("force-with-lease", "no-verify", "watch",
                 "set-upstream", "to-upstream")
 
-# Budget for a single `git push` invocation. Must stay strictly below the
+# Default budget for a single `git push` invocation, and the ceiling a caller
+# may raise it to with `:budget=SECONDS`. Both must stay strictly below the
 # git-push op timeout in presets/git.json so this script — not supertool's
 # outer cap — owns the timeout and can verify the remote before reporting.
+#
+# 300 could not be raised at all until #1530, and on this repository it is not
+# reachable: `.githooks/pre-push` runs the full suite when the destination is
+# `master`/`main` (#1242, #894), measured at 530.71s and 288.17s in two
+# worktrees on one loaded machine. A push to the default branch there could not
+# finish inside the budget, ever, and the only flag that helped was
+# `:no-verify` — which skips the gate the hook exists to be.
+#
+# The number stays a caller's, not the op's. `_prepush_hook_state` can see that
+# a hook would run and this op knows the destination ref, so it could size
+# itself from "protected branch + a hook exists" — but it cannot see what any
+# hook *does*, and that inference is this repository's convention, not a
+# property of git. A self-sized guess that is low is the same defect with extra
+# machinery; one that is high makes a genuinely hung push wait out somebody
+# else's suite length. What decides the right number is the load on the
+# caller's machine at the moment they push, which is not visible from here.
 _PUSH_TIMEOUT = 300
+_PUSH_TIMEOUT_MAX = 1800
+
+# The budget this run is actually operating under. Module state for the same
+# reason `_RUN` is: it is decided once in `_push_op` and read by the push call
+# sites and by the timeout receipt, several frames down a path that already
+# threads `flags`, `remote`, `ref` and `branch` through every recovery arm.
+#
+# `None` rather than a copy of `_PUSH_TIMEOUT`, so the default stays a *live*
+# read of the constant — tests set `_PUSH_TIMEOUT = 0` to make the real
+# `subprocess` clock cut, and a value snapshotted at import would silently
+# ignore them.
+# It is reset in `main()`'s prologue by a literal item assignment rather than
+# through a helper, and that is not a style choice: the #686 guard re-reads this
+# module and only credits an assignment it can see there, because "mutated
+# somewhere in main" would accept a write 150 lines in that is the value being
+# used. The declaration lives in conftest.PRESET_SELF_CLEARING_GLOBALS.
+_BUDGET: dict[str, object] = {"seconds": None}
+
+
+def _push_budget() -> int:
+    """Seconds `git push` gets on this run — the caller's, or the default."""
+    asked = _BUDGET["seconds"]
+    return _PUSH_TIMEOUT if asked is None else int(asked)
 
 # Budget for each git call on the non-fast-forward recovery path (fetch,
 # rebase). Named rather than inline because these are the calls whose expiry
@@ -206,6 +253,13 @@ def _split_flags(argv: list[str]) -> tuple[set[str], list[str]]:
             continue
         if t in _KNOWN_FLAGS:
             known.add(t)
+        elif t.startswith(_BUDGET_PREFIX):
+            # `_parse_budget` owns everything after the `=`, including refusing
+            # it. Anything with the prefix is claimed here so that a bad value
+            # is refused by the checker that can say *what* is wrong with it,
+            # rather than by the unknown-flag arm, which would print a list of
+            # accepted spellings that `budget=soon` is already spelled like.
+            continue
         else:
             unknown.append(tok.strip())
     return known, unknown
@@ -214,6 +268,80 @@ def _split_flags(argv: list[str]) -> tuple[set[str], list[str]]:
 def _parse_flags(argv: list[str]) -> set[str]:
     """Recognised flags only — see _split_flags for what happens to the rest."""
     return _split_flags(argv)[0]
+
+
+# `budget=` and not a bare `budget`: the token carries a number, so the name
+# alone is a request with no answer in it and stays an unknown flag (#1530).
+_BUDGET_PREFIX = "budget="
+# `\Z`, not `$`: Python's `$` also matches before a final newline, so
+# `budget=900` with one appended would pass a whole-value test written with it
+# (#1188). The token is stripped before it reaches here, which makes this belt
+# and braces — and that is exactly the argument that keeps producing the bug.
+_BUDGET_DIGITS = re.compile(r"^-?[0-9]+\Z")
+
+
+def _parse_budget(argv: list[str]) -> tuple[Optional[int], str]:
+    """`:budget=SECONDS` from colon-split argv. `(seconds, refusal)`.
+
+    Three states, not two (#1530, docs/validators.md §"Declining instead of
+    guessing"):
+
+    * `(None, "")`  — not asked for. `_push_budget` falls back to the default.
+    * `(N, "")`     — N seconds, applied to git's own clock end to end.
+    * `(None, why)` — unusable. The caller is told which token and why.
+
+    **Never clamped.** A value above the ceiling silently becoming the ceiling,
+    or an unreadable one silently becoming 300, is #647's `:no-verifyy` in a
+    different costume: the op does something other than what was asked while
+    the caller believes otherwise, and here the belief is "I have twenty
+    minutes" against a clock that cuts in five.
+
+    The ceiling exists because `_PUSH_TIMEOUT_MAX` has to stay strictly under
+    `ops.git-push.timeout` in presets/git.json. Past that cap supertool kills
+    this process, and a killed process cannot ask the remote what landed — the
+    verdict the whole timeout receipt is built to produce (#399).
+    """
+    seen: list[tuple[str, int]] = []
+    for tok in argv:
+        t = tok.strip().lower()
+        if not t.startswith(_BUDGET_PREFIX):
+            continue
+        raw = t[len(_BUDGET_PREFIX):].strip()
+        # ASCII digits only, rather than `int(raw)`. `int` also accepts
+        # `1_800`, `+900`, and every Unicode decimal digit there is — so
+        # `budget=٩٠٠` would be honoured and then rendered back as `900s
+        # budget` in a receipt the caller cannot match to what they typed. A
+        # leading `-` is admitted here on purpose so a negative reaches the
+        # positive-number arm below and is refused for the reason it is
+        # actually wrong, instead of as an unreadable token.
+        if not _BUDGET_DIGITS.match(raw):
+            return None, (f"`{tok.strip()}` — the budget must be a whole "
+                          f"number of seconds"
+                          + (f", not `{raw}`" if raw else " and this one is empty"))
+        seconds = int(raw)
+        if seconds <= 0:
+            return None, (f"`{tok.strip()}` — the budget must be a positive "
+                          "number of seconds")
+        if seconds > _PUSH_TIMEOUT_MAX:
+            return None, (
+                f"`{tok.strip()}` — the most this op can wait is "
+                f"{_PUSH_TIMEOUT_MAX}s. It is not clamped to that: the ceiling "
+                f"has to stay strictly under ops.git-push.timeout in "
+                f"presets/git.json, because past that cap supertool kills this "
+                f"process and a killed push can verify nothing (#399). If a "
+                f"push really needs longer than {_PUSH_TIMEOUT_MAX}s, raise "
+                f"both.")
+        seen.append((tok.strip(), seconds))
+    if not seen:
+        return None, ""
+    values = {s for _tok, s in seen}
+    if len(values) > 1:
+        listed = ", ".join(f"`{tok}`" for tok, _s in seen)
+        return None, (f"two different budgets were asked for ({listed}) — "
+                      "pick one. Neither is preferred over the other and "
+                      "choosing for you would be the guess this op refuses "
+                      "everywhere else.")
+    return seen[0][1], ""
 
 
 def _st_hint(arg: str) -> str:
@@ -1538,6 +1666,29 @@ def _report_hook_pushed(head_before: str, head_after: str,
             "(verified - pre-push hook pushed it, remote matches HEAD)")
 
 
+def _budget_advice() -> str:
+    """Where the budget lives, and how to ask for more of it (#663, #1530).
+
+    #663 is why this names `_PUSH_TIMEOUT` rather than `ops.git-push.timeout`:
+    the op-level cap bounds the whole process and raising it alone moves
+    nothing here, so advice pointing at it was advice that could not work.
+
+    #1530 is why it now names a lever the caller can actually pull. Until then
+    the only honest thing this receipt could say was where the number lived,
+    which left `:no-verify` — skipping the gate — as the one flag that helped a
+    push that could not fit. `.githooks/pre-push` runs the full suite when the
+    destination is master/main, and that suite has measured 530.71s.
+    """
+    return (
+        f"That budget is _PUSH_TIMEOUT in presets/git/push.py — ask for more "
+        f"of it with `git-push:budget=SECONDS` (up to {_PUSH_TIMEOUT_MAX}s), "
+        f"which is the right lever when a pre-push hook runs a suite. It is "
+        f"NOT ops.git-push.timeout: that op-level cap bounds the whole "
+        f"process, raising it alone will not move this one, and this budget "
+        f"has to stay strictly under it or a push killed by the outer cap can "
+        f"verify nothing (#399).")
+
+
 def _report_push_timeout(branch: str, head_before: str,
                          remote: str, ref: str, flags: set[str]) -> int:
     """Verdict for a push that outlasted its budget — decided by the remote ref.
@@ -1560,23 +1711,18 @@ def _report_push_timeout(branch: str, head_before: str,
     """
     head_after, _head_why = _local_head()
     live, live_why = _live_remote_sha(remote, ref)
-    print(f"Push exceeded its {_PUSH_TIMEOUT}s budget — asking the remote what landed…")
+    print(f"Push exceeded its {_push_budget()}s budget — asking the remote what landed…")
     if live and head_after and live == head_after:
         _note_landed(branch, remote, ref)
         print("Status: pushed ✓ (push timed out locally; remote ref matches HEAD)")
         if head_after != head_before:
             print(f"Local HEAD rewritten {head_before[:7]} → {head_after[:7]}")
         print(f"Remote {remote}/{ref} now at {live[:7]}")
-        print(f"Push outlasted its {_PUSH_TIMEOUT}s budget (slow pre-push hook "
+        print(f"Push outlasted its {_push_budget()}s budget (slow pre-push hook "
               "or transfer), so the receipt above is only what fit in the "
               "time. The push landed — re-run `git-push` for the full receipt "
               "(it will report already up to date).")
-        print(f"That budget is _PUSH_TIMEOUT in presets/git/push.py, NOT "
-              "ops.git-push.timeout: the op-level cap in .supertool.json "
-              "bounds the whole process and raising it alone will not move "
-              "this one. The two are not interchangeable — this budget has to "
-              "stay strictly under that cap, or a push killed by the outer "
-              "one can verify nothing (#399).")
+        print(_budget_advice())
         lookup = _mr_lookup(branch)
         mr_line = _open_mr_line(lookup.mr)
         if mr_line:
@@ -1592,13 +1738,13 @@ def _report_push_timeout(branch: str, head_before: str,
     hook_state, hook_detail = _prepush_hook_state(flags)
     if hook_state == "runs":
         print(f"A local pre-push hook runs before anything is sent "
-              f"({hook_detail}), so some or all of that {_PUSH_TIMEOUT}s may "
+              f"({hook_detail}), so some or all of that {_push_budget()}s may "
               "have been local — a remote that has not moved is exactly what a "
               "push still inside its own hook looks like. This repo's hook "
               "runs the full suite when the destination is master/main (#1242).")
     elif hook_state == "none":
         print(f"No local pre-push hook ran ({hook_detail}), so the "
-              f"{_PUSH_TIMEOUT}s was the push itself.")
+              f"{_push_budget()}s was the push itself.")
     else:
         print(f"Whether a local pre-push hook ran is UNKNOWN — {hook_detail}. "
               "This receipt is not saying none did.")
@@ -1615,6 +1761,7 @@ def _report_push_timeout(branch: str, head_before: str,
               "No relay here is not a hook that stayed silent.")
     print("The push may still be in flight — `git fetch` and re-check before "
           "retrying; do NOT force-push on a timeout alone.")
+    print(_budget_advice())
     _result(f"NOT PUSHED - UNVERIFIED  {branch} -> {remote}/{ref} - push timed "
             f"out and the remote does not match local HEAD "
             f"(remote {live[:7] or 'unknown'}, HEAD {head_after[:7] or 'unknown'})")
@@ -1824,7 +1971,7 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         # into a bare push git will refuse for a reason unrelated to the
         # rebase that just succeeded.
         push_args += [remote_name, f"HEAD:{remote_ref}"]
-    result = _git(push_args, timeout=_PUSH_TIMEOUT)
+    result = _git(push_args, timeout=_push_budget())
     if result.returncode == TIMEOUT_RC:
         return _report_push_timeout(branch, _local_head()[0],
                                     remote_name, remote_ref, flags)
@@ -1935,6 +2082,7 @@ def main() -> int:
     use_utf8_stdout()
     _RUN.update({"phase": "not-attempted", "branch": "", "remote": "",
                  "ref": "", "target": "", "verdict": False})
+    _BUDGET["seconds"] = None
     try:
         return _push_op()
     except Exception as exc:  # noqa: BLE001 — deliberate; see _crash_receipt
@@ -1963,13 +2111,26 @@ def _push_op() -> int:
         # for — a dropped `:no-verifyy` runs the very hook it meant to skip.
         listed = ", ".join(unknown)
         print(f"ERROR: unknown flag(s): {listed}")
-        print(f"Accepted: {', '.join(_KNOWN_FLAGS)}")
+        print(f"Accepted: {', '.join(_KNOWN_FLAGS)}, budget=SECONDS")
         print("Nothing was pushed. A flag this op cannot honour is refused "
               "rather than silently dropped — re-run without it, or fix the "
               "spelling.")
         _result(f"NOT PUSHED - no push attempted (unknown flag(s): {listed}; "
-                f"accepted: {', '.join(_KNOWN_FLAGS)})")
+                f"accepted: {', '.join(_KNOWN_FLAGS)}, budget=SECONDS)")
         return 2
+
+    budget, budget_why = _parse_budget(sys.argv[1:])
+    if budget_why:
+        # Refused on the same terms as an unknown flag, and for the same
+        # reason: nothing has moved yet, so stopping costs a retype, and
+        # continuing runs a push under a clock the caller did not choose.
+        print(f"ERROR: unusable :budget — {budget_why}")
+        print(f"Default is {_PUSH_TIMEOUT}s; the most this op can wait is "
+              f"{_PUSH_TIMEOUT_MAX}s. Nothing was pushed.")
+        _result(f"NOT PUSHED - no push attempted (unusable :budget — "
+                f"{budget_why})")
+        return 2
+    _BUDGET["seconds"] = budget
 
     upstream, upstream_why = _upstream_ref()
     # #879: the inherited-wrong upstream. `git worktree add -b <new> <base>`
@@ -2043,6 +2204,13 @@ def _push_op() -> int:
               f"{remote_name}/{branch} ({chosen_how})")
     if flags:
         print(f"Flags: {', '.join(sorted(flags))}")
+    if _BUDGET["seconds"] is not None:
+        # Disclosed, because a flag that is honoured silently and a flag that
+        # was dropped read identically from the receipt (#647). The default is
+        # not printed: it is documented, and every receipt carrying a line
+        # about a number nobody chose is a line nobody reads.
+        print(f"Push budget: {_push_budget()}s (:budget — default is "
+              f"{_PUSH_TIMEOUT}s)")
 
     # --porcelain is what makes the non-fast-forward decision trustworthy: it
     # moves git's per-ref status onto stdout in a machine-readable grammar,
@@ -2062,7 +2230,7 @@ def _push_op() -> int:
     _RUN.update({"phase": "attempted", "branch": branch,
                  "remote": remote_name, "ref": remote_ref,
                  "target": f"{remote_name}/{remote_ref}"})
-    result = _git(push_args, timeout=_PUSH_TIMEOUT)
+    result = _git(push_args, timeout=_push_budget())
     if result.returncode == TIMEOUT_RC:
         return _report_push_timeout(branch, head_before,
                                     remote_name, remote_ref, flags)
