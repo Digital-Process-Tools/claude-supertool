@@ -59,7 +59,10 @@ from typing import NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from pr import _fetch_review_threads_detailed  # noqa: E402  (reuse the gh-pr helper)
+from pr import (  # noqa: E402  (reuse the gh-pr helper and the cap it fetched under)
+    _fetch_review_threads_detailed,
+    THREADS_PAGE_MAX,
+)
 import _board  # noqa: E402  (the board layout shared with gl-mrs / radar)
 import _filter_tokens  # noqa: E402  (the one tokenizer + refusal, shared with gh-issues / gl-mrs)
 import _untrusted  # noqa: E402  (the repo's remote-text convention)
@@ -470,22 +473,34 @@ def _enrich(prs: list[dict], cap: int = ENRICH_CAP, workers: int = ENRICH_WORKER
     flag entirely. On a board — the read that decides which PR to open next —
     that does not just omit a number, it removes the marker that would have
     made somebody look.
+
+    `_unresolved_floor` is the same sentence about the *page* rather than the
+    call (#1508). The count is taken over `reviewThreads(first:
+    THREADS_PAGE_MAX)`, so at the cap it is a floor — and a floor of zero is no
+    information at all. GraphQL returns threads in creation order, so the newest
+    ones are the ones past page 1: a long-running PR whose page-1 threads are all
+    resolved lost the flag by exactly the route #1445 closed. It travels as its
+    own key rather than by collapsing a capped zero into the `None` that means
+    "declined", so `_unresolved` keeps meaning one thing and a floor above zero
+    is not stored as though it were exact.
     """
     targets = prs[:cap]
     if not targets:
         return
 
-    def _one(p: dict) -> int | None:
+    def _one(p: dict) -> tuple[int | None, bool]:
         threads, _ = _fetch_review_threads_detailed(
             p.get("url", ""), p.get("number"))
         if threads is None:
-            return None
-        return sum(1 for t in threads if not t.get("isResolved"))
+            return (None, False)
+        return (sum(1 for t in threads if not t.get("isResolved")),
+                len(threads) >= THREADS_PAGE_MAX)
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         counts = list(ex.map(_one, targets))
-    for p, n in zip(targets, counts):
+    for p, (n, floor) in zip(targets, counts):
         p["_unresolved"] = n
+        p["_unresolved_floor"] = floor
 
 
 # One shared probe (presets/_proc.py). `os.kill(pid, 0)` used to live here,
@@ -598,7 +613,16 @@ def _flags(p: dict) -> str:
         if p["_unresolved"] is None:
             flags.append("threads?")
         elif p["_unresolved"]:
+            # True at the page cap as well: the count is a floor there, but the
+            # flag is a boolean and `at least 1 unresolved` and `1 unresolved`
+            # make the same claim. Hedging a number the reply *does* establish
+            # is the same defect pointed the other way (#1508).
             flags.append("threads")
+        elif p.get("_unresolved_floor"):
+            # A zero counted over a full page of THREADS_PAGE_MAX threads. The
+            # unresolved ones sit past the page or nowhere, and the reply cannot
+            # tell those apart — so the board does not either (#1508).
+            flags.append("threads?")
     return f" [{','.join(flags)}]" if flags else ""
 
 
@@ -646,6 +670,25 @@ def _render_table(prs: list[dict], watched: set[str] | None) -> str:
     if not prs:
         return "No PRs match."
     return "\n".join(_row(p, watched) for p in sorted(prs, key=_sort_key))
+
+
+def _floor_note(prs: list[dict]) -> str | None:
+    """Which reading `threads?` is, for the rows that hit the thread page cap.
+
+    `threads?` has two producers (#1508) and the row is width-sensitive, so the
+    second one is disclosed in a line above the board rather than as a third
+    token: a declined call is transient, a full page is a fact about the PR, and
+    the reader deciding whether to re-run wants to know which.
+
+    Silent when no row hit the cap — a note that appears on every board is one
+    nobody reads by the time it matters.
+    """
+    n = sum(1 for p in prs if p.get("_unresolved_floor"))
+    if not n:
+        return None
+    return (f"{n} PR(s) filled the {THREADS_PAGE_MAX}-thread fetch page, so "
+            f"their thread counts are floors — a `threads?` there is a zero "
+            f"that could not be established, not a call that failed")
 
 
 def _cap_note(per_page: int | None, fetched: int | None) -> str | None:
@@ -1000,6 +1043,9 @@ def main_with_args(arg_str: str) -> int:
         _enrich(prs, cfg["enrich_cap"], cfg["enrich_workers"])
         if len(prs) > cfg["enrich_cap"]:
             print(f"(review-thread enrichment capped at {cfg['enrich_cap']} PRs)")
+        floor_note = _floor_note(prs)
+        if floor_note:
+            print(f"({floor_note})")
 
     watched = _watched_numbers()
     if prs:
