@@ -165,11 +165,21 @@ def test_b_the_next_test_sees_clean_module_state() -> None:
     assert _SENTINEL_DIR not in supertool._VALIDATOR_FINGERPRINT_CACHE
 
 
-def test_every_mutable_global_in_supertool_py_is_reset_or_deliberately_exempt() -> None:
+def test_every_mutable_container_global_in_supertool_py_is_accounted_for() -> None:
     """The reset list is hand-maintained; this makes forgetting loud.
 
     A new module-level dict/list/set is per-run scratch until someone says
     otherwise. Adding one without a decision fails here.
+
+    **A mutable container is what this checks, and the name now says so
+    (#1107).** The property #397 is about is "carries state between calls", and
+    a `str`/`bool`/`None`-sentinel memo does that while being invisible to an
+    `isinstance` over containers — so a green here means "no mutable-container
+    lifetime problems", not "no lifetime problems". Renamed rather than widened
+    because the two checks catch disjoint things and neither subsumes the other:
+    `_WRITE_WARNINGS.append(...)` mutates in place and needs no `global`
+    declaration, while `_VALIDATOR_MEANING_VERSION = h(...)` rebinds and is no
+    container. The rebinding half is `tests/test_core_global_lifetimes_1107.py`.
 
     **This check covers `supertool.py` and nothing else**, and the name now says
     so (#686). Both the snapshot and the restore go through
