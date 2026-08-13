@@ -310,7 +310,14 @@ def foreign_worktree_note(found: ForeignWorktree) -> str:
 
 
 def repo_label() -> str:
-    """Absolute path of the repo the calling op is acting on.
+    """Absolute path of the repo the calling op is acting on, **to print**.
+
+    A display string, not an openable path (#1557, same reason as
+    `ForeignWorktree`): the directory's real name is flattened on the way out,
+    so a separator in it arrives as ``␊``/``[U+000A]`` rather than making a
+    second line at column 0 under a `Repo:` the reader takes as the tool's.
+    Both call sites — `git-commit` and `git-push`, the two ops that write —
+    interpolate it into one printed line and nothing else.
 
     `git-diff` has printed a `Repo:` line for a long time; `git-commit` and
     `git-push` did not — so the two ops that WRITE were the two that never said
