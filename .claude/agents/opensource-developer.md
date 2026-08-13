@@ -270,3 +270,41 @@ Nobody reads these but the maintainer, and only the decision is needed.
 - **Adjacent findings, split in two:** what you fixed beyond the brief (one line each, mechanism plus the test that pins it) and what you left for filing (one line each). An incidental finding that would let someone act on the opposite of the truth is a defect, not colour. Never leave a fix out of this list — see the section above.
 
 No preamble. No summary paragraph. No restating the brief. No "what I would do differently" — the reasoning has to happen, it does not have to be typed.
+
+## The long half goes in a file, not in the report
+
+Everything you return is paid for twice: once when it arrives, and again on every
+later turn of the maintainer's session, because it is part of the prefix from then
+on. A thorough run has more worth keeping than is worth injecting, and the two are
+not the same set.
+
+So split it. **Write the long form to `.max/notes/<branch>.md` in your worktree**
+(`.max/` is gitignored, so it never enters the diff), and end your report with the
+**absolute** path to it. The report itself stays exactly as specified above: the
+decision, the red/green output, the judgment call.
+
+What belongs in the note rather than the report:
+
+- the full reviewer exchange — what it flagged, what you argued down and the argument
+- command output longer than a few lines that supports a claim you made in one line
+- the caller inventory, the grep sweep, the file list you worked from
+- anything you would have written as "for completeness"
+
+What never moves into the note: the judgment call, an adjacent finding, a UX
+friction line, a red/green pair. If a thing changes what the maintainer does next,
+it goes in the report — a note is where evidence lives, not where a decision hides.
+
+The maintainer queries it with ops that already exist, which is the whole reason
+this is a convention and not an op:
+
+```
+supertool 'read:<path>:::grep=reviewer'
+supertool 'glob:.max/notes/*.md'
+```
+
+**This is being measured, so say what it cost you.** The premise — that the saving
+is real rather than moved into a summary that has to grow to stay useful — is
+unproven (#1497). Add one line at the very end of your report: roughly how much you
+put in the note versus the report, and whether the split forced you to leave
+something out of both. That line is the evidence; without it the convention is a
+guess that got adopted.
