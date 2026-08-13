@@ -329,7 +329,9 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
         return "ERROR: GitHub API rate limit exceeded. Wait a few minutes and retry."
     if "403" in s or "forbidden" in s:
         return f"ERROR: permission denied for {resource} #{identifier}. Check repo access (gh auth status)."
-    return f"ERROR: gh failed for {resource} #{identifier}: {stderr.strip()}"
+    # The remote host wrote this text — flattened, never relayed raw (#1606).
+    return (f"ERROR: gh failed for {resource} #{identifier}: "
+            f"{_untrusted.flat(stderr.strip())}")
 
 
 def main() -> int:

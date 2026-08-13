@@ -21,6 +21,7 @@ except ModuleNotFoundError:
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _remote_default as _rd  # noqa: E402
+import _untrusted  # noqa: E402  (the GitHub API writes the failure body — #1606)
 
 
 def _gh(args: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
@@ -180,7 +181,10 @@ def main() -> int:
 
         if result.returncode != 0:
             print(f"ERROR: gh issue create failed (exit {result.returncode})")
-            print(result.stderr.strip() or result.stdout.strip())
+            # Whatever gh echoed here was written by the GitHub API, and it
+            # prints at column 0 with nothing in front of it — flatten, never
+            # relay (#1606). Both arms: the stdout fallback is a second relay.
+            print(_untrusted.flat(result.stderr.strip() or result.stdout.strip()))
             return 1
 
         match = re.search(r"https?://github\.com/[^/\s]+/[^/\s]+/issues/(\d+)", result.stdout)

@@ -966,7 +966,10 @@ def main_with_args(arg_str: str) -> int:
         print(f"ERROR: gh pr list failed: {exc}", file=sys.stderr)
         return 1
     if result.returncode != 0:
-        err = result.stderr.strip() or "unknown error"
+        # Flattened before either use: this reaches a receipt, because the
+        # core appends a failing preset's stderr to it (`_supertool.py`), and
+        # the writer of the text is the GitHub API (#1606).
+        err = _untrusted.flat(result.stderr.strip()) or "unknown error"
         low = err.lower()
         if "not logged in" in low or "401" in err:
             print("ERROR: gh not authenticated. Run: gh auth login", file=sys.stderr)
