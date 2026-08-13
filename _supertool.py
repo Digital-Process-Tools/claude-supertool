@@ -9635,7 +9635,7 @@ def _ordered_batch_fields(op: str, item: Dict[str, Any]) -> Tuple[List[str], str
             return [str(next(iter(lower.values())))], ""
         return [], (
             f"ERROR: batch sub-op '{op}' takes its arguments positionally and has "
-            f"no declared payload field order, so {', '.join(sorted(lower))} "
+            f"no declared payload field order, so {_flat_keys(sorted(lower))} "
             f"cannot be placed. Ordering them alphabetically is a guess, and a "
             f"wrong guess dispatches a different op — so this declines instead. "
             f"Use the colon form for '{op}', or an op with an @payload route.\n"
@@ -9643,7 +9643,7 @@ def _ordered_batch_fields(op: str, item: Dict[str, Any]) -> Tuple[List[str], str
     unknown = sorted(k for k in lower if k not in order)
     if unknown:
         return [], (
-            f"ERROR: unknown field(s) {', '.join(unknown)} in batch '{op}' "
+            f"ERROR: unknown field(s) {_flat_keys(unknown)} in batch '{op}' "
             f"— accepted: {', '.join(order)}\n"
         )
     fields: List[str] = []
@@ -20048,6 +20048,25 @@ def _flat_field(text: str) -> str:
     return text if text.isprintable() else repr(text)
 
 
+def _flat_keys(names: Iterable[object]) -> str:
+    """Caller-written payload key names, rendered into a refusal (#1583).
+
+    A TOML or JSON key is an arbitrary string and may legally contain a
+    newline, so `', '.join(unknown)` put a line of the payload author's
+    choosing at column 0 inside a **system-authored** denial — the same shape
+    #1554 closed for `_CONFIG_PATH` and #1588 for a read path. Five refusals
+    did the unflattened thing; this is the one place that stops.
+
+    `_flat_field`, not `_guard_quote`. The two differ only by the cap, and the
+    cap is `guard_refusal`'s own byte budget: applied to a key it truncates and
+    appends `… (+N chars)`, which leaves the caller unable to find the key in
+    their own payload. The refusal still has to NAME the offending field, so a
+    flattener that renders it unrecognisably trades a forge for a dead end.
+    An ordinary key is printable and passes through byte-identical.
+    """
+    return ", ".join(_flat_field(str(n)) for n in names)
+
+
 def _validate_one_block(path: str, validators: dict, verbose: bool = False) -> List[str]:
     """Render the validator rows for a single ``path`` (no trailing newline join).
 
@@ -21648,7 +21667,7 @@ _TOML_OPS_HEADER = re.compile(r"(?m)^[ \t]*\[\[[ \t]*ops[ \t]*\]\]")
 
 
 def _toml_literal_double_backslashes(raw: str) -> List[Tuple[str, str, str, int]]:
-    r"""`(key, label, first line, count)` per literal block holding a `\\` pair.
+    r"""`(key, label, first line flattened, count)` per literal block with `\\`.
 
     Provenance is the whole point and it is read off the source, not the parsed
     value: in a basic block `\\` IS one backslash and is the correct spelling,
@@ -21678,8 +21697,17 @@ def _toml_literal_double_backslashes(raw: str) -> List[Tuple[str, str, str, int]
             line = content[start:] if stop < 0 else content[start:stop]
             seen = len(_TOML_OPS_HEADER.findall(raw[:i]))
             label = key if seen == 0 else "ops[" + str(seen - 1) + "]." + key
+            # `_flat_field` on the excerpt, not just the truncation (#1583).
+            # `line` was cut on `chr(10)` alone, but this repo's definition of
+            # "one line" is `str.splitlines()` — ten separators (#886) — so a
+            # U+2028 in the caller's own value survived inside the excerpt and
+            # put a line of their choosing at column 0 of the note and of the
+            # refusal that render it. Flattened here rather than at the two
+            # render sites so the tuple's third element means what its name
+            # says everywhere it is read.
             findings.append(
-                (key, label, line.strip()[:_TOML_LITERAL_TAIL_CHARS], total))
+                (key, label,
+                 _flat_field(line.strip())[:_TOML_LITERAL_TAIL_CHARS], total))
         i = raw.find(opener, nxt)
     return findings
 
@@ -22284,7 +22312,7 @@ def _read_op_from_payload(op: str, payload: Any, no_exclude: bool = False) -> st
     allowed = _READ_OP_AT_FIELDS[op]
     unknown = sorted(k for k in p if k not in allowed)
     if unknown:
-        return (f"ERROR: unknown field(s) {', '.join(unknown)} in {op}:@payload "
+        return (f"ERROR: unknown field(s) {_flat_keys(unknown)} in {op}:@payload "
                 f"— accepted: {', '.join(allowed)}\n")
     try:
         # Containment, before any op sees a path (#885). `op_read` is caught by
@@ -22749,7 +22777,7 @@ def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
                    if _first_missing else "")
         raise ValueError(
             f"@file payload for op '{op}' has unknown field(s) "
-            f"{', '.join(unknown)} — accepted: "
+            f"{_flat_keys(unknown)} — accepted: "
             f"{', '.join(_payload_accepted_fields(op, specs))}. Refused rather "
             f"than dropped (#1551): an edit performed without the constraint "
             f"the caller wrote reads, in the receipt, exactly like one "
@@ -23517,7 +23545,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                 batch_ops = None  # signal: already set body
                                 body = (
                                     "ERROR: unknown key(s) "
-                                    + ", ".join(_wrapper_unknown)
+                                    + _flat_keys(_wrapper_unknown)
                                     + " at the top level of this batch payload "
                                     + "— accepted: "
                                     + ", ".join(sorted(_BATCH_WRAPPER_KEYS))
