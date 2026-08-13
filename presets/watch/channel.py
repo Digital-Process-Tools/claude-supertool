@@ -93,7 +93,11 @@ import time
 from pathlib import Path
 from typing import Any, NamedTuple
 
+# Same pair, same order and same reason as `transport.py` (#1624): `naming` is
+# a sibling of this file and nothing outside it is obliged to have put this
+# directory on the path.
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _proc
+sys.path.insert(0, str(Path(__file__).parent))  # for naming, our own sibling
 
 import _proc  # noqa: E402  (the one liveness probe, shared with gl-mrs / gh-prs)
 import _untrusted  # noqa: E402  (the health file is somebody else's text, #1187)

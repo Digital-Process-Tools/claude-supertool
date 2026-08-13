@@ -26,7 +26,15 @@ import time
 from pathlib import Path
 from typing import Any, NamedTuple
 
+# Both directories, and this file's own comes first (#1624). `naming` below is
+# a *sibling*, and until #1624 nothing here put the sibling directory on the
+# path: the bare import resolved only when some other module loaded by path had
+# already inserted it. Under `-n auto` that is a scheduling accident, so the
+# green belonged to whoever else happened to share the worker. A module loaded
+# by `spec_from_file_location` gets no package context, so it has to state its
+# own neighbourhood or borrow somebody's.
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _proc
+sys.path.insert(0, str(Path(__file__).parent))  # for naming, our own sibling
 
 import _proc  # noqa: E402  (the one liveness probe, shared with gl-mrs / gh-prs)
 import _untrusted  # noqa: E402  (the repo's remote-text convention)
