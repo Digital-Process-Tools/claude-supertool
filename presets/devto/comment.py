@@ -46,6 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 from _outbound import append as track_append
 from _resolve import resolve_article_id
 from _session import fetch_csrf_token, get_session_cookie, web_post_json
@@ -142,6 +143,7 @@ def preflight_comment(aid: int, me: str) -> tuple[bool | None, list[str], str]:
 
 
 def main(arg: str) -> None:
+    use_utf8_stdout()
     raw, message, parent, force = parse_args(arg)
     aid = resolve_article_id(raw)
     cookie = get_session_cookie()

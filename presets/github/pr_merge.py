@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Callable, List, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _checks  # noqa: E402
 import _declared_legs  # noqa: E402
 import _publish_safety  # noqa: E402
@@ -1227,6 +1228,7 @@ def parse_argv(argv: Sequence[str]) -> tuple[str, str, bool, bool, str]:
 
 
 def main() -> int:
+    use_utf8_stdout()
     number, method, force, do_cleanup, parse_err = parse_argv(
         [a for a in sys.argv[1:] if a != ""])
     if parse_err:

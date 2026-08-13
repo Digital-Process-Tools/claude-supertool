@@ -34,6 +34,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _untrusted  # noqa: E402  (a runner description and a CI tag are remote text, and these are hand-padded tables — #970)
 
 # GitLab does not write contacted_at on every poll — it throttles the update.
@@ -990,6 +991,7 @@ def _print_full(runners: list[dict]) -> None:
 
 
 def main() -> int:
+    use_utf8_stdout()
     mode = sys.argv[1].lower() if len(sys.argv) > 1 and sys.argv[1] else ""
     if mode and mode not in _MODES:
         print(f"ERROR: unknown mode {mode!r} — use 'full', 'queue', or omit for the fleet table")

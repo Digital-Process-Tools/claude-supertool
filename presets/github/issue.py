@@ -12,6 +12,7 @@ import urllib.parse
 from typing import NamedTuple, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
 import _checks  # noqa: E402  (the one check tally, shared with gh-pr — #815)
@@ -568,6 +569,7 @@ def _print_linked_prs(iid: object, web_url: str = "") -> None:
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) < 2:
         print("ERROR: usage: issue.py NUMBER [full]")
         return 1

@@ -52,6 +52,7 @@ import sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 
 import _checks  # noqa: E402
 import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run / gh-pr)
@@ -972,6 +973,7 @@ def _row(name: str, run: dict, jobs) -> str:
 
 
 def main() -> int:
+    use_utf8_stdout()
     args = [a for a in sys.argv[1:] if a != ""]
 
     repo, default_branch, err = _repo_identity()

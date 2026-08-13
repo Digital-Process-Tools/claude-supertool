@@ -68,6 +68,7 @@ import time
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PRESETS = os.path.dirname(_HERE)
 sys.path.insert(0, _PRESETS)
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 
 import _checks  # noqa: E402  (the one check tally — #454, shared with every board)
 import _untrusted  # noqa: E402  (branch names and paths are not ours — #694/#876)
@@ -1002,6 +1003,7 @@ def build_report(budget: int, workers: int) -> Report:
 
 
 def main() -> int:
+    use_utf8_stdout()
     args = [a for a in sys.argv[1:] if a]
     if args:
         print(f"ERROR: refused — dashboard takes no arguments, got {args[0]!r}")

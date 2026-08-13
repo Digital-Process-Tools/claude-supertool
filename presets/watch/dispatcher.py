@@ -35,6 +35,7 @@ from typing import Any
 # Allow importing transport as a sibling module when launched via `python3 dispatcher.py`.
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _untrusted
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _untrusted  # noqa: E402  (the state files are somebody else's text, #1197)
 import naming  # noqa: E402  (which knob put the state directory where it is, #1477)
 import transport  # noqa: E402
@@ -845,6 +846,7 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
 
 
 def main(argv: list[str]) -> int:
+    use_utf8_stdout()
     if len(argv) < 2:
         print("ERROR: usage: dispatcher.py {watch|unwatch|list|poll} [ARG]")
         return 1

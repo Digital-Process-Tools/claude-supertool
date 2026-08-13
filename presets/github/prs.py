@@ -59,6 +59,7 @@ from typing import NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 from pr import (  # noqa: E402  (reuse the gh-pr helper and the cap it fetched under)
     _fetch_review_threads_detailed,
     THREADS_PAGE_MAX,
@@ -1095,6 +1096,7 @@ def _extra_segments_error(argv: list[str]) -> str | None:
 
 
 def main() -> int:
+    use_utf8_stdout()
     extra = _extra_segments_error(sys.argv)
     if extra:
         print(extra, file=sys.stderr)

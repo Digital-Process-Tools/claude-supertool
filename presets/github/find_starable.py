@@ -20,6 +20,7 @@ import sys
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
 
 
@@ -38,6 +39,7 @@ def parse_args(arg: str) -> tuple[str, int]:
 
 
 def main(arg: str) -> int:
+    use_utf8_stdout()
     topic, n = parse_args(arg)
     query = f"topic:{topic}"
     endpoint = f"search/repositories?q={urllib.parse.quote(query)}&sort=stars&order=desc&per_page={n}"

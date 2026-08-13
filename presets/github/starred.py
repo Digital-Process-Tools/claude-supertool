@@ -8,11 +8,13 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
 
 
 def main(arg: str) -> int:
+    use_utf8_stdout()
     n = int(arg) if arg.strip().isdigit() else env_int("SUPERTOOL_DEFAULT_LIMIT", 30, minimum=1)
     result = subprocess.run(
         ["gh", "api", f"user/starred?per_page={min(n, 100)}"],

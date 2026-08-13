@@ -23,6 +23,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 import _untrusted  # noqa: E402  (an MR's branch, title and author are the opener's text — #965)
@@ -614,6 +615,7 @@ def _emit_grep_hits(
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) < 2:
         print("ERROR: usage: job.py JOB_ID [raw [START [END]]]")
         return 1

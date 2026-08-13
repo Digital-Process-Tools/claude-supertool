@@ -42,6 +42,7 @@ except ModuleNotFoundError:
         tomllib = None  # type: ignore[assignment]
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _checks  # noqa: E402
 import _remote_default as _rd  # noqa: E402
 import _repo_target  # noqa: E402
@@ -243,6 +244,7 @@ def _age_secs(iso: str):
 # ---------------------------------------------------------------------------
 
 def main() -> int:  # noqa: C901
+    use_utf8_stdout()
     raw_arg = sys.argv[1] if len(sys.argv) > 1 else ""
     path = raw_arg[1:] if raw_arg.startswith("@") else raw_arg
     if not path:
