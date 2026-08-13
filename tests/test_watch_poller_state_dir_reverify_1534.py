@@ -111,6 +111,20 @@ def test_a_path_equal_to_the_derivation_is_not_reported_as_overriding_it():
     assert not [n for n in r.notes if naming.STATE_DIR_ENV in n], r.notes
 
 
+def test_the_socket_note_has_the_same_shape_and_the_same_bug():
+    """`poller_env` pins **both** halves, so the socket note read "the socket is
+    X, not X" in the same processes. Reviewer-raised on the #1534 diff: the
+    equality was applied to one of two identical branches."""
+    r = naming.resolve({naming.NAME_ENV: NAME,
+                        naming.SOCK_ENV: naming.sock_for(NAME)})
+    assert not [n for n in r.notes if naming.SOCK_ENV in n], r.notes
+
+    moved = naming.resolve({naming.NAME_ENV: NAME,
+                            naming.SOCK_ENV: "/tmp/elsewhere.sock"})
+    assert [n for n in moved.notes if naming.SOCK_ENV in n], (
+        "a socket that really was moved must still say so")
+
+
 def test_provenance_does_not_claim_an_unset_variable_in_a_child_that_set_it():
     """`state_dir_provenance` fed the operator-facing refusal in
     `dispatcher.py`. Under the old flag a re-exec'd poller sent them to

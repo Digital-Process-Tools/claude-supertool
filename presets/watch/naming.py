@@ -159,17 +159,20 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
     sock = sock_for(name) if name else DEFAULT_SOCK
     state_dir = state_dir_for(name) if name else DEFAULT_STATE_DIR
 
+    # Both notes are gated on the value actually differing. `poller_env` pins
+    # *both* halves into an exec'd poller's environment (#1477), so the
+    # unguarded form printed "the socket is X, not X" and "poller slots are in
+    # X, not X" on every poller surface — an override notice for an override
+    # that did not happen, on the one surface this module exists to keep
+    # trustworthy (#1534).
     if explicit_sock:
-        if name:
+        if name and explicit_sock != sock:
             notes.append(
                 f"{SOCK_ENV} is set and overrides the name: the socket is "
                 f"{explicit_sock}, not {sock}")
         sock = explicit_sock
     if explicit_state:
         if name and explicit_state != state_dir:
-            # Only when it actually overrides. An exec'd poller inherits both
-            # the name and the pinned directory, so the unguarded form printed
-            # "poller slots are in X, not X" on every poller surface (#1534).
             notes.append(
                 f"{STATE_DIR_ENV} is set and overrides the name: poller slots are "
                 f"in {explicit_state}, not {state_dir}")
