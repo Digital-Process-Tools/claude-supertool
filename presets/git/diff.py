@@ -36,7 +36,7 @@ import sys
 # loads scripts via importlib (no dir on path), so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _git_common import _git, use_utf8_stdout  # noqa: E402
+from _git_common import _git, repo_label, use_utf8_stdout  # noqa: E402
 import _untrusted  # noqa: E402  (a diff's paths and added lines are not our text — #1130)
 
 MAX_FILES = 60
@@ -380,11 +380,16 @@ def main() -> int:
         # Surface it as an explicit miss so a wrong-CWD invocation is obvious
         # instead of silently reading as "nothing changed".
         if not _git(["ls-files", "--", arg1]).stdout.strip():
-            root = _git(["rev-parse", "--show-toplevel"]).stdout.strip()
             print("# git-diff (path)")
-            print(f"Repo: {root}")
+            # `repo_label()`, not `--show-toplevel` raw (#1569). git prints the
+            # directory's real name here, so a repo checked out under a name
+            # holding a newline made this line into two — the second at column
+            # 0, under a `Repo:` the reader takes as ours. The CWD is the same
+            # value by another route and is disclosed the same way.
+            print(f"Repo: {repo_label()}")
             if not os.path.exists(arg1):
-                print(f"{_mark('⚠')} {arg1!r} not found under {os.getcwd()} — wrong CWD?")
+                here = _untrusted.flat(os.getcwd(), disclose_newline=True)
+                print(f"{_mark('⚠')} {arg1!r} not found under {here} — wrong CWD?")
                 return 1
             print(f"{_mark('⚠')} {arg1!r} is untracked (not in git).")
             return 0
@@ -393,7 +398,10 @@ def main() -> int:
         mode, scope, diff_args = "working", "working tree vs HEAD", ["HEAD"]
 
     print(f"# git-diff ({mode})")
-    print(f"Repo: {_git(['rev-parse', '--show-toplevel']).stdout.strip()}")
+    # The render `repo_label()`'s own docstring names as the one that has
+    # printed a `Repo:` line for a long time — and the one it never covered,
+    # because #1557 was closed at the sites rather than at the seam (#1569).
+    print(f"Repo: {repo_label()}")
     print(f"Scope: {scope}")
 
     changed = _changed_files(diff_args)

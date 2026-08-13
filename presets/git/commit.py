@@ -43,6 +43,7 @@ from _git_common import (  # noqa: E402
     _first_error_line,
     _git,
     query_open_mr,
+    relayed_block,
     repo_label,
     st_hint,
     use_utf8_stdout,
@@ -495,8 +496,11 @@ def _expand_all():
         ]
     idx = _git(["diff", "--cached", "--name-only", "-z"])
     if idx.returncode != 0:
-        # `str.split()` folds ASCII whitespace and nothing else, so a U+2028
-        # walked through this "one line" normaliser untouched (#1475).
+        # `str.split()` cannot be forged with a separator — `split(None)` uses
+        # the *Unicode* whitespace predicate, so U+2028, U+0085 and the
+        # vertical tab all fold. What walks through it is C0 non-whitespace,
+        # i.e. ESC: an erase-line/cursor-up pair rewrites the receipt above
+        # this line (#851). `flat()` discloses it (#1475, corrected in #1569).
         said = _untrusted.flat(" ".join((idx.stderr or "").split())[:120])
         return [], [
             "ERROR: %s could not be resolved — the index could not be read "
@@ -1122,13 +1126,14 @@ def _failure_receipt(result, head_before: str, head_after: str) -> list:
     installed, so no escalation on its own, but the same seam a remote reaches
     on `git-push` and the same three lines a consumer anchors at column 0.
 
-    `_untrusted.split_lines` then `visible(keep=tab)` per line, exactly as
-    `push._relayed_lines` does it (#1470): the split cuts on LF / CR / CRLF
-    alone, so a U+2028 stays *inside* the line it was written on and is
-    disclosed there rather than putting the rest of the hook's text back at
-    column 0. Tabs survive — a transcript is not parsed by column, and
-    flattening them renders every tab-aligned hook line as `[U+0009]` soup for
-    no forgery prevented.
+    The transcript goes through `_git_common.relayed_block`, which is the same
+    seam `git-push`'s three dumps use. This docstring used to *claim* that —
+    "exactly as `push._relayed_lines` does it" — while restating half of its
+    body inline, and the half it dropped was the `> ` prefix: a hook's lines
+    sat at column 0 under the header, so one printing `Status: COMMITTED` wrote
+    a line no consumer can tell from ours (#1569). The seam moved into
+    `_git_common` in the same change, because the reason the copy existed at
+    all was that `push.py` is not importable from here.
     """
     combined = (result.stdout or "") + chr(10) + (result.stderr or "")
     err = _first_error_line(combined)  # flattened at the seam (#1475)
@@ -1140,10 +1145,7 @@ def _failure_receipt(result, head_before: str, head_after: str) -> list:
     if err:
         lines.append(f"First error: {err}")
     lines.append("")
-    lines.append("--- git output ---")
-    dump = [_untrusted.visible(ln, keep=chr(9))
-            for ln in _untrusted.split_lines(combined.strip())]
-    lines.extend(dump or ["(no output)"])
+    lines.extend(relayed_block(combined))
     lines.append("")
     lines.append("Bypass hooks (only if intentional): "
                  "git commit --no-verify -m '...'")

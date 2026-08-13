@@ -223,13 +223,13 @@ CENSUS = {
     "presets/git/checkout.py": 10,
     "presets/git/commit.py": 9,
     "presets/git/conflicts.py": 2,
-    "presets/git/diff.py": 4,
+    "presets/git/diff.py": 2,  # -2, #1569: both `Repo:` renders -> repo_label()
     "presets/git/diverge.py": 3,
     "presets/git/investigate.py": 4,
     "presets/git/merge.py": 10,
-    "presets/git/push.py": 35,
+    "presets/git/push.py": 32,  # -3, #1569: three dumps -> relayed_block()
     "presets/git/resolve.py": 2,
-    "presets/git/status.py": 16,
+    "presets/git/status.py": 15,  # -1, #1569: the branch -vv sink -> _reason()
     "presets/git/trail.py": 4,
     "presets/git/worktrees.py": 6,
     "presets/github/_release_gate.py": 2,

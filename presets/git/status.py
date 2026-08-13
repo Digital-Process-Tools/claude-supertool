@@ -224,7 +224,14 @@ def _reason(returncode: int, stderr: str) -> str:
     tells the reader to re-authenticate, where "did not answer" would send
     them to raise a timeout that was never the problem.
     """
-    said = " ".join(stderr.split())
+    # `_untrusted.flat` on top of the join, and this is the seam all six call
+    # sites reach (#1569). `str.split()` is not the half that needed fixing: it
+    # already folds every *Unicode* whitespace character, so LF, U+2028 and
+    # U+0085 can never forge a line through it — the comment at `commit.py:498`
+    # claiming otherwise was wrong and is corrected in the same change. What
+    # walks through is C0 non-whitespace, i.e. ESC, and a relayed
+    # `ESC [2K ESC [1A` erases the receipt line above this one (#851).
+    said = _untrusted.flat(" ".join(stderr.split()))
     return f"exit {returncode}: {said[:100]}" if said else f"exit {returncode}"
 
 
@@ -440,7 +447,12 @@ def main() -> int:
         if "not a git repository" in stderr:
             print("ERROR: not inside a git repository.")
         else:
-            print(f"ERROR: git failed: {branch_result.stderr.strip()}")
+            # Through `_reason`, the seam this file already has for exactly this
+            # question (#1569). Raw, it printed a whole multi-line child stream
+            # at column 0: a crafted `core.abbrev` put `Working tree: clean` and
+            # `Stashes: 0` under a `git-status` header that had rendered neither.
+            print("ERROR: git failed: "
+                  f"{_reason(branch_result.returncode, branch_result.stderr)}")
         return 1
 
     current_branch = ""

@@ -4469,7 +4469,16 @@ def _read_edit_hint(path: str, body: str) -> str:
     branches don't route through op_read."""
     if body.startswith("ERROR:"):
         return ""
-    return (f"{mark('↳')} to modify: ./supertool 'edit:::OLD:::NEW:::{path}'"
+    # `_flat_field`, for the reason #1019 flattened the `--- <op> ---` header
+    # two lines above this one and the `edited …` line in `op_edit` — and this
+    # footer was left raw, on the same op, in the same receipt (#1569). A
+    # filename is whatever the filesystem accepted, `str.splitlines()` breaks
+    # on ten separators (#886), and the tail of a forged name lands at column 0
+    # inside what reads as a command to run. The name is disclosed rather than
+    # censored: the hint is unrunnable either way for such a file, and one
+    # naming a path that is not the one read would be worse than a broken one.
+    return (f"{mark('↳')} to modify: "
+            f"./supertool 'edit:::OLD:::NEW:::{_flat_field(path)}'"
             f"  (or edit:@- ; no harness Read needed)\n")
 
 
