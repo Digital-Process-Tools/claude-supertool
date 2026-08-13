@@ -583,6 +583,7 @@ gh-prs:
 | `gitlab-mr` | `glab api projects/:id/merge_requests/<iid>` | `pipeline_failed`, `pipeline_succeeded`, `pipeline_running`, `comment_added`, `merged`, `closed`, `conflicts_appeared`, `mr_unreachable` |
 | `gl-pipeline` | `glab api projects/:id/pipelines/<id>` | `pipeline_succeeded`, `pipeline_failed`, `pipeline_canceled`, `pipeline_running`, `pipeline_unreachable` |
 | `gitlab-mr-feed` | `glab mr list` for a whole filter | `mr_opened`, `mr_merged`, `mr_closed`, `mr_left_feed` |
+| `github-issue-feed` | `gh api repos/{owner}/{repo}/issues` for a whole scope | `issue_opened`, `issue_reopened`, `issue_entered_feed`, `issue_labeled`, `issue_unlabeled`, `issue_assigned`, `issue_unassigned`, `issue_comment_added`, `issue_closed`, `issue_left_feed`, `issues_unreachable` |
 | `gl-runners` | `glab api projects/:id/runners` + the pending/running job queue | `runner_silent`, `runner_liveness_unknown`, `runner_recovered`, `runner_starved`, `queue_liveness_unknown`, `queue_cleared`, `runner_paused`, `runner_added`, `runner_vanished` |
 | `gh-run` | `gh run view <id> --json status,conclusion,workflowName,url,...` | `run_succeeded`, `run_failed`, `run_cancelled`, `run_action_required`, `run_started`, `run_inconclusive`, `run_unreachable` |
 
@@ -676,7 +677,8 @@ An op qualifies when all four hold:
 | `gitlab-mr` / `github-pr` | pipelines, reviews, conflicts, merges — all moved by other people | shipped |
 | `gl-mrs` (population) | MRs open after your session started | shipped as `gitlab-mr-feed` |
 | `gl-runners` | a runner stops taking work; GitLab keeps calling it `online` | shipped |
-| `gl-issue` / `gh-issue` | labels, assignment and comments change; agent workflows key off labels | not yet |
+| `gh-issues` (population) | labels, assignment and comments change; agent workflows key off labels | shipped as `github-issue-feed` |
+| `gl-issues` (population) | the GitLab half of the same gap | not yet |
 | `gh-run` | the GitHub-side mirror of `gl-pipeline` — a run id, watchable with no PR attached | shipped |
 | `devto_comments` / `bluesky` | replies and reactions arrive from strangers | not yet |
 
@@ -1071,6 +1073,75 @@ So each poll records, per iid still in the population, which terminal events a p
 A live poller that owes us the event is also **no longer stopped** on the terminal path. `stop_watcher` SIGTERMs then SIGKILLs, and killing the canonical reporter before it has reported is how one suppressed duplicate becomes no report at all; the unwatch stays on the branch where the feed does the reporting, which is the stale-PID cleanup it was always meant to be.
 
 `radar` ensures exactly one feed poller is alive on every run (a live PID short-circuits the spawn — N radar runs, one feed), and reports it in the footer as `feed ok` / `feed respawned` / `feed DOWN`. A feed that is down, or alive but erroring every tick, gets an explicit `WARNING` line that survives delta suppression — a feed that stopped discovering looks exactly like a day on which nothing happened.
+
+## Issues — `github-issue-feed`
+
+Issues change by other people's hands. A label lands, an assignee changes, someone answers a question you asked days ago — and until [#525](https://github.com/Digital-Process-Tools/claude-supertool/issues/525) nothing in `watch` noticed. Six sources covered pipelines and merge requests; none covered the thing that *starts* the work.
+
+```bash
+./supertool 'watch:github-issue-feed:@open'                       # every open issue
+./supertool 'watch:github-issue-feed:state=open,label=lane-watch' # one lane
+./supertool 'watch:github-issue-feed:state=open,assignee=fdaviddpt'
+```
+
+The ID is a **scope**: `@open` is an alias for `state=open`, anything else is a comma-separated list of `key=value` REST filters — `state`, `assignee`, `creator`, `mentioned`, `milestone`, `labels`, `sort`, `direction`, plus `label=` which may be repeated and is joined into one `labels` parameter. It is an allow-list, and a token outside it does not fall through: see *A scope that was not understood* below.
+
+### Why there is no `watch:github-issue:<n>`
+
+[#525](https://github.com/Digital-Process-Tools/claude-supertool/issues/525)'s body asked for a per-id poller. Its own comment withdrew that, and the comment is right: the motivating case is a workflow keyed off a **label**, and the label arrives on issues nobody spawned a poller for. *Was an issue created?* is unanswerable by construction from a watcher over a number that already exists — building the issue as written would still have answered no.
+
+The reason no per-id tier sits underneath the feed is specific to issues, not a general preference:
+
+| | `gitlab-mr-feed` | `github-issue-feed` |
+|---|---|---|
+| what the list payload carries | iid, title, URL | labels, assignees, comment count, `state_reason`, `created_at` |
+| what the interesting facts are | pipeline status, conflicts, approvals — **none of them in the list** | exactly the fields above |
+| per-member tier | required, one `gitlab-mr` poller per iid | none |
+| duplicate suppression across tiers | required ([#434](https://github.com/Digital-Process-Tools/claude-supertool/issues/434)) | not applicable — one tier, one reporter |
+
+So the whole source is one `gh api` call per poll, whatever the population size, and no process count grows with the number of issues you watch.
+
+### An arrival has three answers, not one
+
+A number that was not in the population last poll arrived somehow, and *how* is a separate question from *that*:
+
+| Event | Claimed when |
+|---|---|
+| `issue_opened` | the row's `created_at` is later than the instant the previous poll recorded — so the issue did not exist at the last look |
+| `issue_reopened` | this feed itself watched the number leave as `issue_closed`, and it is back. Observed, not inferred |
+| `issue_entered_feed` | everything else — relabelled in, reassigned in, the filter changed, or the previous instant is unknown |
+
+`issue_entered_feed` carries `created_at` and `state_reason` so a reader can see what happened without the source asserting it. **`state_reason` is deliberately not read as an edge**: GitHub leaves `reopened` on an issue permanently, so keying on it would announce a reopen from months ago as one that happened now. The reopen window is bounded (the 500 most recent closures this feed observed); past it an arrival degrades to `issue_entered_feed`, which is the honest answer rather than a worse-looking one.
+
+### Labels and assignees report the delta, not the fact of a change
+
+"Labels changed" sends the reader back to the API for the one fact they needed, so `issue_labeled` and `issue_unlabeled` carry `added` / `removed`, a `changed` field spelled `+jimmy-help-needed` / `-blocked`, and the full current set. The comparison is a **set difference**, not a count: GitHub does not promise an order, and one label swapped for another leaves the count unmoved — a length check would report neither side of the swap.
+
+`issue_comment_added` is a rising edge on REST's `comments` field. That field counts issue comments only, so a label edit or an assignment does not move it and the event cannot fire with nothing to read. (The GitLab side of that same question cost two filed issues — see [#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519) and the note on `user_notes_count` in `presets/watch/sources/gitlab-mr/poller.py`.)
+
+### Vanished is not closed
+
+A number leaving `state=open` could have closed, been transferred, been relabelled out of the scope, or the scope could have changed. The feed spends one `gh api` lookup on the truth — departures are rare, so the call is too. A confirmed `closed` is `issue_closed`; anything else, including a lookup that failed, is `issue_left_feed` carrying `issue_state` of `open` or `unknown`.
+
+### A population that could not be established is not an empty one
+
+| Behaviour | |
+|---|---|
+| interval | 120s. Labels move on human timescales, but a label-triggered handoff waiting out a five-minute tick is the friction being fixed rather than half of it. One request per tick against a 5000/hour budget. |
+| first poll | Records the baseline **silently**. Announcing every issue that was already open is not discovery, it is a notification storm. |
+| `is_terminal` | Never. A population has no final state. |
+| fetch failure | No population, no departures, one `issues_unreachable` — **once per outage, not once per poll**. An alert that repeats every two minutes is one people mute, and a muted alert is the original silence by a longer route. |
+| recovery | `known`, `observed_at` and the reopen window survive the outage untouched, so the first successful poll after it re-announces nothing. |
+
+Three things resolve to *population not established* rather than to a shorter population, and all three are the same defect if they do not:
+
+- **A scope that was not understood.** A filter token outside the allow-list is not dropped, because dropping it *widens* the population past what was asked for — the same reasoning as [#939](https://github.com/Digital-Process-Tools/claude-supertool/issues/939) on the GitLab side. The refusal names the token.
+- **More rows than the page cap.** Five pages of 100. Returning the prefix that fit would fire a departure event for every issue past it.
+- **A `gh` failure, a timeout, junk JSON, a missing binary.** Each keeps its own reason, classified through the same `_format_error` the read-only `gh-*` ops use, so an expired token says `gh auth login` in the same words.
+
+### Which repository it watches
+
+Watch state is keyed by issue number alone, so this source resolves its repository exactly as the read-only `gh-*` ops do — `SUPERTOOL_REPO` when set, otherwise the cwd's remote — via `presets/_repo_target.api_path`. The dispatcher hands the poller the spawning process's whole environment, so a `SUPERTOOL_REPO` in force when you type `watch:` is in force in the poller. **The scope cannot carry it**: a watcher ID is a filename component, so `/` is refused, and `owner/name` is therefore not spellable there.
 
 ## Transports
 
