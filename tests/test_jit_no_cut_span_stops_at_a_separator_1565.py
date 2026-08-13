@@ -68,7 +68,14 @@ def _pattern():
 
 
 def _awk_matches(pattern, subject):
-    """Exactly what pre-tool-hook.sh:137 does: match(tolower(cmd), pat)."""
+    """What pre-tool-hook.sh:311 does, less one step that cannot bite here.
+
+    The hook matches `jit_fold_latin1(tolower(full_command))` (built at :184)
+    against `jit_fold_latin1(pattern)`. The fold is omitted because every
+    subject in this file is ASCII, where it is the identity -- but the omission
+    is stated rather than left for a reader to assume it is not there. (The
+    `:137` cited by the three sibling test files is a comment, not the match.)
+    """
     env = dict(os.environ, JIT_PAT=pattern, JIT_SUBJ=subject)
     proc = subprocess.run(
         ["awk", 'BEGIN { if (match(tolower(ENVIRON["JIT_SUBJ"]), '
@@ -130,6 +137,24 @@ MUST_STILL_FIRE = [
 ]
 
 
+# The price of the narrowing, recorded so it is a known residue rather than a
+# surprise. A separator INSIDE the op's own quoted argument ends the span, so
+# these genuine cuts stop being blocked -- they matched at the parent commit.
+#
+# This is not a new class: a bar inside the argument was already unmatched
+# (`gh-job:9:grep:head|tail`, pinned in the 1415 file), because only a
+# tokeniser can tell an argument from a command and the tokeniser belongs to
+# claude-jit-context. The narrowing adds `;` and `&&` to the characters that
+# behave that way, symmetrically. A missed block is the safe direction on this
+# gate; a wrong block teaches people to route around it.
+KNOWN_RESIDUE = [
+    ("a semicolon inside the op's own argument",
+     ST + "'grep:echo a; echo b:.'" + PIPE + "tail -5"),
+    ("a chain operator inside the op's own argument",
+     ST + "'grep:a && b:.'" + PIPE + "tail -5"),
+]
+
+
 @needs_awk
 class TestTheSpanStopsAtACommandSeparator:
 
@@ -142,6 +167,13 @@ class TestTheSpanStopsAtACommandSeparator:
                              ids=[c[0] for c in MUST_STILL_FIRE])
     def test_a_real_cut_is_still_matched(self, label, command):
         assert _awk_matches(_pattern(), command), label
+
+    @pytest.mark.parametrize("label,command", KNOWN_RESIDUE,
+                             ids=[c[0] for c in KNOWN_RESIDUE])
+    def test_a_separator_inside_the_argument_is_a_disclosed_miss(
+            self, label, command):
+        """Asserts the loss, so narrowing it further reddens deliberately."""
+        assert not _awk_matches(_pattern(), command), label
 
 
 def test_the_index_row_and_the_frontmatter_agree():

@@ -32,7 +32,10 @@ with a piped call, because `^`-alternation cannot tell a body from a command.
 Still unmatched: an env-var prefix and a command substitution before the call.
 The span stops at `;` and `&&`, so a *later* command's `| tail` no longer refuses
 the op (#1565); `|` and `2>&1` stay inside it, because a real cut often has both.
-Deliberately not widened — seven wrong blocks over two evenings against no
-observed missed cut (#1433, #1565). The reasoning is in #1415,
+The cost, measured not assumed: a `;` or `&&` **inside the op's own argument**
+now ends the span too, so `'grep:a && b:.'` piped to `tail` goes unseen — the
+same shape as the bar inside an argument, which was already unmatched. A missed
+block is the safe direction here; a wrong one teaches routing around the block.
+The reasoning is in #1415,
 #1426, #1430 and #1433, not here: this body is re-injected in full on every
 match, false ones included, so its length is the price of every wrong block.

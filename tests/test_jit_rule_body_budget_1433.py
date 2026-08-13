@@ -51,8 +51,8 @@ PATHS = REPO / ".claude" / "jit-context" / "paths" / "00-manual"
 
 
 # A paths body is paid once per session, not once per match, so it gets its own
-# ceiling. Same construction as BUDGET: ~150 bytes over the largest compliant
-# rule at the time of writing (docs-index.md, 5,847 -- the section map for a
+# ceiling. Same construction as BUDGET: ~170 bytes over the largest compliant
+# rule at the time of writing (docs-index.md, 5,828 -- the section map for a
 # 124KB file). A ratchet on growth, which is the only honest number available:
 # nothing has measured what a per-session body costs an agent.
 PATHS_BUDGET = 6000
