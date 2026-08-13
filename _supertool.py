@@ -2295,6 +2295,18 @@ def _synonym_invocation_note(op: str, named: List[str]) -> str:
     Empty when the target has no registry `syntax` — every built-in, so
     `write -> paste` and `vi -> vim` are unchanged and stay the whole answers
     the table argues they are.
+
+    **The `syntax` field is printed WHOLE, and for `gh-prs` that buries the
+    answer.** Its 243 characters open with the filter grammar and close with
+    `the release gate is gh-prs:merged-since=TAG,state=merged`, so the sentence
+    the caller needs starts around character 255 of the rendered line. The
+    obvious repair — split on the `  --  ` that separates the two halves — is
+    an inference from **one** field: measured over every shipped preset,
+    86 ops declare a `syntax`, exactly 1 contains that separator, and the
+    length distribution is min 7 / median 29 / p90 66 / max 243, with `gh-prs`
+    the max. So this is not a render that reads a convention badly; it is one
+    field carrying prose that belongs in `description`, and reshaping it moves
+    `ops`, `registry`, `help` and #1405's pinning test. Filed, not fixed here.
     """
     target = _OP_SYNONYMS.get(op.strip().lower())
     if not target or target not in named:
@@ -2302,8 +2314,8 @@ def _synonym_invocation_note(op: str, named: List[str]) -> str:
     syntax = _registry_syntax(target)
     if not syntax:
         return ""
-    return (f"       '{op}' was a whole invocation and '{target}' is only a "
-            f"name — {syntax}\n")
+    return (f"       '{op}' was an invocation; '{target}' is only a name. "
+            f"Syntax: {syntax}\n")
 
 
 def _unknown_op_message(op: str) -> str:
