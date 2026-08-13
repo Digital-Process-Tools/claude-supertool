@@ -24,6 +24,16 @@ first thing anyone would do about that is switch the validator off. This
 repo's own choice lives in `pyproject.toml` under `[tool.ruff.lint]` and is
 pinned by `tests/test_validators_ruff.py`.
 
+**An `exclude` entry is honoured, and honouring it means saying so.** `ruff
+check` is handed `--force-exclude`, so `[tool.ruff] exclude` applies to the
+explicit path this adapter names; a match makes ruff exit 0 with an empty
+array, which is what a clean file looks like too (#1587). The zero-finding arm
+therefore asks a second question — `--show-files` — and reports `skipped` with
+the pattern rather than a verdict about a file nothing opened. The alternative,
+dropping the flag so an explicitly-named file is always linted, is what the
+#1481 release gate does over a hand-built diff list; it is the wrong answer for
+a post-edit validator, and `eslint` already declines an ignored file here.
+
 `rollback_on_fail` is false in every registration of this validator, and that
 is not a default anyone should flip. A lint finding is not a broken file:
 reverting a good edit because it landed next to an unused import destroys work
@@ -42,7 +52,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
-from refusal import absent, tool_fault
+from refusal import absent, skipped, tool_fault
 
 TOOL = "ruff"
 
@@ -63,6 +73,31 @@ TIMEOUT_S = 30
 # about the file; 2 is a fault someone has to fix and stays an `adapter` error.
 RC_CLEAN = 0
 RC_FINDINGS = 1
+
+# What an excluded file looks like, and why it needs a second question.
+#
+# `--force-exclude` applies `[tool.ruff] exclude` to a path handed to ruff
+# explicitly. When it matches, ruff opens nothing and exits 0 with an empty
+# array — byte for byte what a clean file produces (#1587). So a zero-finding
+# run is two different facts wearing the same output, and the only way to tell
+# them apart is to ask ruff which files it would have checked.
+#
+# `--show-files` is that question: it resolves the same configuration and
+# prints the paths that survive exclusion, one per line, nothing on a match.
+# Asking ruff beats reimplementing the answer here — exclusion resolution
+# walks up for `pyproject.toml`/`ruff.toml`, honours `extend-exclude`, and
+# carries a default list (`.venv`, `build`, `node_modules`, …) that a hand
+# written check would drift from on every ruff release.
+#
+# It costs one extra spawn (~50ms, measured against ruff 0.16.1) and only on
+# the arm where the answer is ambiguous: a run that reported findings has
+# demonstrably opened the file.
+_SHOW_FILES_TIMEOUT_S = 10
+
+EXCLUDED_REASON = ("ruff declined to lint this file — it matched an exclude "
+                   "pattern in the ruff configuration resolved for it "
+                   "(`[tool.ruff] exclude`, applied to an explicit path by "
+                   "--force-exclude)")
 
 
 def emit(d: dict) -> None:
@@ -118,6 +153,31 @@ def _to_error(item: dict, file: str) -> dict:
     if isinstance(line, int):
         err.update(context_fields(file, line))
     return err
+
+
+def _would_be_checked(file: str) -> bool | None:
+    """Did ruff consider this file in scope? `None` when the question failed.
+
+    `None` is not `True`. A probe that could not run leaves the zero-finding
+    result unattributable, and publishing `ok` over it is the fabrication this
+    whole change is about — the caller gets the third state with the reason
+    instead.
+    """
+    try:
+        r = subprocess.run([TOOL, "check", "--no-cache", "--force-exclude",
+                            "--show-files", file],
+                           capture_output=True, text=True,
+                           timeout=_SHOW_FILES_TIMEOUT_S,
+                           encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != RC_CLEAN:
+        return None
+    # Ruff prints the surviving paths on stdout and its "No Python files found
+    # under the given path(s)" warning on stderr, so emptiness here is the
+    # whole signal — and no path is compared, which is what keeps this from
+    # becoming a separator question on Windows.
+    return bool((r.stdout or "").strip())
 
 
 def main() -> None:
@@ -181,8 +241,22 @@ def main() -> None:
         return
 
     errors = [_to_error(i, file) for i in items if isinstance(i, dict)]
+
+    if not errors and r.returncode == RC_CLEAN:
+        in_scope = _would_be_checked(file)
+        if in_scope is not True:
+            reason = (EXCLUDED_REASON if in_scope is False else
+                      "ruff reported nothing and `ruff check --show-files` "
+                      "could not say whether the file is excluded, so this "
+                      "run is not a verdict about it")
+            emit(skipped(TOOL, file, reason,
+                         int((time.time() - start) * 1000)))
+            return
+
+    # Recomputed: the scope probe above spawns ruff a second time, and a
+    # duration that stops before it under-reports what the caller waited for.
     emit({"tool": TOOL, "file": file, "ok": not errors, "count": len(errors),
-          "errors": errors, "duration_ms": dur})
+          "errors": errors, "duration_ms": int((time.time() - start) * 1000)})
 
 
 if __name__ == "__main__":
