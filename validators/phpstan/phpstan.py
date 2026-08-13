@@ -208,7 +208,18 @@ def main() -> None:
                 "duration_ms": dur,
             })
             return
-        data = {"totals": {"file_errors": 0}, "files": {}}
+        # rc 0 and nothing on stdout. Measured against phpstan 2.1.55, a clean
+        # run under `--error-format=json` always writes its object —
+        # `{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}` — so
+        # silence here is a run that produced no report, not a file with no
+        # findings. Synthesising `{"totals": {"file_errors": 0}}` for it was
+        # `ok: true` about a file nothing opened (#1547). It stays a `skipped`
+        # rather than a fault: the exit code says phpstan believes it succeeded,
+        # and this adapter has no evidence to contradict that beyond the absence
+        # itself.
+        emit(skipped("phpstan", file, "phpstan exited 0 and produced no output",
+                     dur))
+        return
 
     count = int(data.get("totals", {}).get("file_errors", 0))
     errors = []

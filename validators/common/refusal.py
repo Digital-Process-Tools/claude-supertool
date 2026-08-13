@@ -18,6 +18,15 @@ import socket
 # as opposed to a finding about the file. Deliberately narrow: an exit we cannot
 # explain must stay an error, because swallowing an unknown failure is the same
 # category mistake in the other direction.
+#
+# These match the TOOL's own words, never this module's. `outside_roots()` below
+# emits `path outside <VAR> allowlist` and is deliberately not one of these: it
+# is a local short-circuit whose string goes straight to `skipped()`, so nothing
+# ever asks `is_refusal()` about it. The two were read as a drifted pair in
+# #1548 and are not one. Provenance for every entry — the measured emission it
+# was written for, or an explicit note that nobody has seen it fire — is pinned
+# in tests/test_refusal_pattern_provenance_1548.py, because a pattern that
+# matches nothing looks exactly like a refusal that never happened.
 REFUSAL_PATTERNS = (
     "--paths allowlist",
     "outside the configured",
