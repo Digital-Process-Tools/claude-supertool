@@ -169,7 +169,7 @@ def parse_instant(value: object) -> Optional[datetime]:
 
 
 def split_tagged_commit(rows, boundary_sha):
-    """`(rest, tagged)` — the row whose merge commit IS the tagged commit.
+    """`(rest, tagged, compared)` — the row whose merge commit IS the tagged one.
 
     The boundary is a **commit**. `TAG..BRANCH` excludes it by construction, so
     the local side never sees the PR that produced the tagged commit, and the
@@ -202,9 +202,16 @@ def split_tagged_commit(rows, boundary_sha):
       longer the one the API recorded, the pairing correctly fails, and that
       row keeps its refusal — history was rewritten under the tag and the two
       sources genuinely do disagree.
+
+    `compared` is the third state and it is the whole reason this returns three
+    values (#1521). With no `boundary_sha` there is nothing to compare against,
+    every row is returned untouched, and `tagged is None` — which is exactly
+    what a comparison that ran and matched nothing also returns. `assess` used
+    to render both as "no returned row's merge commit is the tagged commit", a
+    claim the code had not earned on one of the two paths.
     """
     if not boundary_sha:
-        return list(rows), None
+        return list(rows), None, False
     rest = []
     tagged = None
     for row in rows:
@@ -215,7 +222,7 @@ def split_tagged_commit(rows, boundary_sha):
                 tagged = row
             continue
         rest.append(row)
-    return rest, tagged
+    return rest, tagged, True
 
 
 def filter_merged(rows, boundary):
@@ -261,12 +268,24 @@ def select_tag(tags, requested: str = ""):
 
     The rules are the five decisions in the module docstring. Nothing here picks
     silently between two defensible answers — that is what ``AMBIGUOUS`` is for.
+
+    `refs/tags/NAME` resolves to the same tag as `NAME`. `for-each-ref` is asked
+    for `%(refname:short)`, so the map is short names — but a repository that
+    tags releases `2026-08-09` has no other spelling for its own tag, because
+    `looks_like_ref` reads a bare date as a date on purpose and supertool splits
+    an op argument on ':' so no prefix can carry one (#1526). The full ref path
+    is git's own escape and it costs one prefix strip.
     """
     notes = []
     by_name = {t.get("name"): t for t in tags}
 
     if requested:
-        chosen = by_name.get(requested)
+        # The name typed is what every refusal below quotes back: a caller who
+        # wrote the full path must not be told that 'v0.38.0' does not exist.
+        wanted = requested
+        if wanted.startswith("refs/tags/"):
+            wanted = wanted[len("refs/tags/"):]
+        chosen = by_name.get(wanted)
         if chosen is None:
             # Newest first, not alphabetical: `0.3.0, 0.3.1, 0.3.2` is the
             # least useful eight this repository could offer a caller who has
@@ -738,12 +757,7 @@ def render(*, boundary_state, chosen, notes, rows, undated, count_text,
             out.append("  in the API, absent from local history: "
                        + ", ".join("#%d" % n for n in only_api))
 
-    if undated:
-        out.append("")
-        out.append(f"UNPLACED: {len(undated)} merged PR(s) carry a mergedAt "
-                   f"this op could not parse, so they were neither counted nor "
-                   f"ruled out: "
-                   + ", ".join("#%s" % r.get("number") for r in undated))
+    out.extend(unplaced_note(undated))
 
     if unattributed:
         out.append("")
@@ -910,6 +924,25 @@ def merge_order_rows(rows) -> list:
     return out
 
 
+def unplaced_note(undated) -> list:
+    """The rows the clock could not place — or nothing, when it placed them all.
+
+    One wording, two callers. `render` had it inline and `gh-prs`'s date branch
+    threw the rows away entirely (#1521), so the same absence was disclosed on
+    a tag boundary and silently dropped on a date one. Empty when there is
+    nothing to say: a hedge printed over a number that was never in doubt is
+    the opposite failure and costs the disclosure its meaning.
+    """
+    if not undated:
+        return []
+    return [
+        "",
+        f"UNPLACED: {len(undated)} merged PR(s) carry a mergedAt this op could "
+        f"not parse, so they were neither counted nor ruled out: "
+        + ", ".join("#%s" % r.get("number") for r in undated),
+    ]
+
+
 def not_applicable_note() -> list:
     """The gate's own third state, on a boundary that is a date rather than a tag.
 
@@ -967,8 +1000,14 @@ def assess(*, rows, boundary, per_page, fetched, narrowed_by=(),
     tag_name = str((boundary.tag or {}).get("name") or "")
 
     # 1. The boundary row. Identity, not the clock — see `split_tagged_commit`.
-    rest, tagged = split_tagged_commit(rows, boundary.sha)
-    if tagged is not None:
+    rest, tagged, compared = split_tagged_commit(rows, boundary.sha)
+    if not compared:
+        sources.append(
+            "boundary PR: NOT COMPARED — the boundary resolved to a tag "
+            "carrying no commit sha, so no row's merge commit was tested "
+            "against anything. This is NOT 'no row matched': the comparison "
+            "did not run, and the slice below rests on the clock alone")
+    elif tagged is not None:
         sources.append(
             f"boundary PR: #{tagged.get('number')} merged AS the tagged commit "
             f"{_untrusted.flat(str((boundary.tag or {}).get('sha')))} — inside "

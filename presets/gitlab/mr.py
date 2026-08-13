@@ -158,6 +158,71 @@ def _fetch_array(
     return data, None
 
 
+#: The cap is read back off the endpoint string that was actually sent, not
+#: from a constant beside it. #1505 fixed the GitHub side by making the cap
+#: constant build the query so the render's inference could not drift from what
+#: was asked; the GitLab side has no such constant — `per_page=100` is a
+#: literal inside an f-string URL — so the same guarantee is bought by reading
+#: the sent URL instead of a second copy of the number.
+_PER_PAGE = re.compile(r"[?&]per_page=(\d+)")
+
+
+def _page_cap(endpoint: str) -> "int | None":
+    """The `per_page` this endpoint asked for, or ``None`` when it asked for none.
+
+    ``None`` is not zero and not "uncapped by us": an endpoint with no
+    `per_page` gets GitLab's own default page size, which this code does not
+    know, so nothing can be concluded about truncation from the row count. The
+    callers below treat it as "not measured" and hedge nothing — a hedge on
+    every number is what #1505's reviewer raised and had argued down.
+    """
+    match = _PER_PAGE.search(endpoint or "")
+    return int(match.group(1)) if match else None
+
+
+def _fetch_tally(
+    endpoint: str, noun: str, timeout: int = 10,
+) -> "tuple[list | None, str | None, bool]":
+    """`_fetch_array` for a caller that COUNTS what comes back (#1517).
+
+    Third value: the page came back exactly full, so the count taken off it is
+    a floor and not a total. `_fetch_array` does not paginate, and it is shared
+    with callers that do not tally — `pipelines?per_page=1` wants precisely one
+    row — so paginating in there would buy them round-trips nobody asked for
+    and would still leave each render inferring its own truncation. The fact is
+    returned alongside the array instead, which is the answer #1508 gave to the
+    same question one platform over.
+
+    A fetch that failed is not a capped page. It has its own sentence already,
+    and reporting `capped` beside a `reason` would be a second claim about a
+    read that did not happen.
+    """
+    rows, reason = _fetch_array(endpoint, noun, timeout)
+    if reason is not None or rows is None:
+        return None, reason, False
+    cap = _page_cap(endpoint)
+    return rows, None, cap is not None and len(rows) >= cap
+
+
+def _floor(count: int, capped: bool) -> str:
+    """`>=N` off a full page, plain `N` off a short one.
+
+    The same spelling `gh-prs`'s release gate uses for a lower bound, and the
+    asymmetry is the point: a tally over a page that was NOT capped must still
+    print as exact, or the disclosure stops meaning anything.
+    """
+    return f">={count}" if capped else str(count)
+
+
+#: Why the truncation is worst here specifically: GitLab returns discussions
+#: oldest-first, so the page that was never fetched holds the newest and least
+#: resolved threads — the failure runs in the direction nobody checks.
+_PAGE_FULL = ("  ! PAGE FULL — this came off ONE unpaginated page and GitLab "
+              "returned exactly its per_page limit, so the count(s) above are "
+              "a LOWER BOUND, not a total. GitLab pages oldest-first, so what "
+              "is missing is the newest.")
+
+
 def _as_dict(value: object) -> dict:
     """A remote field documented as an object, or `{}` when it came back as
     something else.
@@ -316,7 +381,7 @@ def _named_gl_jobs(pipe_id: str | int, cap: int = _checks.NAMED_CAP) -> list[str
     """
     if not pipe_id:
         return []
-    jobs, reason = _fetch_array(
+    jobs, reason, capped = _fetch_tally(
         f"projects/:id/pipelines/{pipe_id}/jobs?per_page=100", "jobs")
     if reason is not None:
         # Was four `return []` branches. This list is only ever fetched once
@@ -353,7 +418,66 @@ def _named_gl_jobs(pipe_id: str | int, cap: int = _checks.NAMED_CAP) -> list[str
         lines.append(f"  {_untrusted.flat(label)}: {text}")
     if not lines:
         lines.append("  jobs: none non-passing reported for this pipeline")
+    if capped:
+        # The one that has to be said out loud: "none non-passing" off a full
+        # page is a statement about the first hundred jobs, and it reads as a
+        # statement about the pipeline (#1517).
+        lines.append(_PAGE_FULL)
     note = _unreadable(skipped, len(jobs), "pipeline jobs")
+    if note:
+        lines.append(note)
+    return lines
+
+
+def _unresolved_thread_lines(discussions: list, capped: bool) -> list[str]:
+    """`Unresolved threads: N / M`, plus whatever qualifies it.
+
+    Pulled out of `main` so the tally can be asserted at all (#1517). Both
+    numbers used to be printed bare off one `per_page=100` page — on a merge
+    blocker, in the render a poll loop reads every tick.
+    """
+    threads, bad_threads = _dict_elements(discussions or [])
+    bad_notes = notes_total = resolvable = unresolved = 0
+    for entry in threads:
+        # A `notes` field that is not an array counts as one unreadable note:
+        # `(x or [])` let a string through and the loop iterated its characters.
+        thread_notes, bad, seen = _array_elements(entry.get("notes"))
+        bad_notes += bad
+        notes_total += seen
+        marked = [n for n in thread_notes if n.get("resolvable")]
+        if not marked:
+            continue
+        resolvable += 1
+        if not all(n.get("resolved") for n in marked):
+            unresolved += 1
+    lines = [f"Unresolved threads: {_floor(unresolved, capped)} / "
+             f"{_floor(resolvable, capped)}"]
+    if capped:
+        lines.append(_PAGE_FULL)
+    for note in (_unreadable(bad_threads, len(discussions or []), "discussions"),
+                 _unreadable(bad_notes, notes_total, "discussion notes")):
+        if note:
+            lines.append(note)
+    return lines
+
+
+def _failed_jobs_block(jobs: list, capped: bool) -> list[str]:
+    """The failed-jobs section, in one place so its count can be asserted.
+
+    A failed pipeline whose failed-jobs list is empty is a real and surprising
+    answer — a blocked stage, a runner that never picked anything up. Printing
+    nothing rendered it as though the block had never been asked for.
+    """
+    named, bad_jobs = _dict_elements(jobs or [])
+    if named:
+        lines = [f"Failed jobs ({_floor(len(named), capped)}):"]
+        lines.extend(_failed_job_lines(named))
+    else:
+        lines = ["Failed jobs: none — the jobs API reports no failed job "
+                 "on this failed pipeline"]
+    if capped:
+        lines.append(_PAGE_FULL)
+    note = _unreadable(bad_jobs, len(jobs or []), "failed jobs")
     if note:
         lines.append(note)
     return lines
@@ -1101,29 +1225,13 @@ def main() -> int:
     # this endpoint rendered as no `Unresolved threads:` at all: not a zero,
     # not a decline, nothing. An unresolved thread is a merge blocker, which
     # makes silence here the most expensive of the four.
-    discussions, disc_reason = _fetch_array(
+    discussions, disc_reason, disc_capped = _fetch_tally(
         f"projects/:id/merge_requests/{iid}/discussions?per_page=100", "discussions")
     if disc_reason is not None:
         print(f"Unresolved threads: UNKNOWN — {disc_reason}")
     else:
-        threads, bad_threads = _dict_elements(discussions or [])
-        bad_notes = notes_total = resolvable = unresolved = 0
-        for dd in threads:
-            # A `notes` field that is not an array counts as one unreadable
-            # note: `(x or [])` let a string through and the loop iterated its
-            # characters.
-            thread_notes, bad, seen = _array_elements(dd.get("notes"))
-            bad_notes += bad
-            notes_total += seen
-            marked = [n for n in thread_notes if n.get("resolvable")]
-            if not marked:
-                continue
-            resolvable += 1
-            if not all(n.get("resolved") for n in marked):
-                unresolved += 1
-        print(f"Unresolved threads: {unresolved} / {resolvable}")
-        _print_unreadable(bad_threads, len(discussions or []), "discussions")
-        _print_unreadable(bad_notes, notes_total, "discussion notes")
+        for line in _unresolved_thread_lines(discussions, disc_capped):
+            print(line)
 
     # Pipeline + changes
     if pipe_unknown:
@@ -1144,25 +1252,14 @@ def main() -> int:
     # UNKNOWN pipeline: `pipe_status` is "none" there, which is the point —
     # a section prints nothing only when it was never asked for.
     if pipe_status == "failed" and pipe_id:
-        jobs, jobs_reason = _fetch_array(
+        jobs, jobs_reason, jobs_capped = _fetch_tally(
             f"projects/:id/pipelines/{pipe_id}/jobs?per_page=100&scope=failed",
             "jobs")
         if jobs_reason is not None:
             print(f"Failed jobs: UNKNOWN — {jobs_reason}")
         else:
-            named, bad_jobs = _dict_elements(jobs or [])
-            if named:
-                print(f"Failed jobs ({len(named)}):")
-                for line in _failed_job_lines(named):
-                    print(line)
-            else:
-                # A failed pipeline whose failed-jobs list is empty is a real
-                # and surprising answer — a blocked stage, a runner that never
-                # picked anything up. Printing nothing rendered it as though
-                # the block had never been asked for.
-                print("Failed jobs: none — the jobs API reports no failed job "
-                      "on this failed pipeline")
-            _print_unreadable(bad_jobs, len(jobs or []), "failed jobs")
+            for line in _failed_jobs_block(jobs, jobs_capped):
+                print(line)
 
     if additions or deletions:
         print(f"Changes: {changes} files, +{additions} -{deletions}")
@@ -1313,7 +1410,7 @@ def main() -> int:
     # not silence. Mirrors gh-pr behavior.
     human_notes: list = []
     notes_skipped = notes_seen = 0
-    notes, notes_reason = _fetch_array(
+    notes, notes_reason, notes_capped = _fetch_tally(
         f"projects/:id/merge_requests/{iid}/notes?per_page=50&sort=asc", "notes")
     if notes_reason is not None:
         # #812 files this one among the sections that vanish. It is not one:
@@ -1329,7 +1426,14 @@ def main() -> int:
     notes_seen = len(notes or [])
     human_notes = [n for n in readable if not n.get("system", False)]
 
-    print(f"\n## Comments ({len(human_notes)})")
+    # A fourth site of #1517's class, in the same render and not named by the
+    # issue: 50 comments off a page of 50 made the heading claim the MR has
+    # exactly 50. The comment on the UNKNOWN branch above is the whole argument
+    # — a wrong number is indistinguishable from a right one, where a missing
+    # line is at least visibly missing.
+    print(f"\n## Comments ({_floor(len(human_notes), notes_capped)})")
+    if notes_capped:
+        print(_PAGE_FULL)
     _print_unreadable(notes_skipped, notes_seen, "comments")
     if full:
         for r in (_render_note(n, None) for n in human_notes):

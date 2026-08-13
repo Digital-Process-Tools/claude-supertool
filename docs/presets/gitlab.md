@@ -300,6 +300,17 @@ Unresolved threads: 9 / 9
 
 The guard on its own would have traded a loud bug for a quiet one: `9` printed where `12` came back, with nothing saying a narrowing happened, is the reading error this repo files most often. So the disclosure is part of the fix rather than a follow-up, and it appears wherever a count can now be short — under `Assignees:`, `Reviewers:`, `Unresolved threads:`, `Failed jobs (N):`, the `## Files` block, `## Comments (N)` and `:status`'s named-job lines.
 
+**A count taken off a page that came back full is a floor, and prints as one** ([#1517](https://github.com/Digital-Process-Tools/claude-supertool/issues/1517)). `_fetch_array` does not paginate, so four tallies in `gl-mr` were reporting the first page as the whole answer: unresolved threads (a merge blocker), the `:status` job list, the failed-jobs count, and `## Comments (N)`. Each of those now goes through `_fetch_tally`, which reads the `per_page` back off the endpoint string it was handed — the GitLab side has no cap constant to build the query from, so reading the URL that was actually sent is what keeps the render's inference from drifting off what was asked.
+
+```
+Unresolved threads: >=4 / >=100
+  ! PAGE FULL — this came off ONE unpaginated page and GitLab returned exactly
+    its per_page limit, so the count(s) above are a LOWER BOUND, not a total.
+    GitLab pages oldest-first, so what is missing is the newest.
+```
+
+**A tally over a page that was not capped still prints exact.** Hedging every number would cost the hedge its meaning, and `gl-mrs` stays out of this entirely — `presets/gitlab/mrs.py` reads GitLab's own `blocking_discussions_resolved` boolean, with no page involved, which is the shape to prefer wherever the API offers one.
+
 **A field that is not an array at all counts as one unreadable element**, not as an empty one. `Reviewers: none` is a claim about the MR; printing it from a payload nobody could read is the same reading error one level up. An *absent* field is a real empty answer and stays silent.
 
 **A healthy render is byte-identical to before.** The line is emitted only when at least one element was actually dropped, so the case that happens every day — every element an object, which is every observed response — prints nothing extra.
