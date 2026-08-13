@@ -224,8 +224,9 @@ def _reason(returncode: int, stderr: str) -> str:
     tells the reader to re-authenticate, where "did not answer" would send
     them to raise a timeout that was never the problem.
     """
-    # `_untrusted.flat` on top of the join, and this is the seam all six call
-    # sites reach (#1569). `str.split()` is not the half that needed fixing: it
+    # `_untrusted.flat` on top of the join, and this is the seam all seven call
+    # sites reach — six, plus the `branch -vv` sink the same change routed
+    # here (#1569). `str.split()` is not the half that needed fixing: it
     # already folds every *Unicode* whitespace character, so LF, U+2028 and
     # U+0085 can never forge a line through it — the comment at `commit.py:498`
     # claiming otherwise was wrong and is corrected in the same change. What

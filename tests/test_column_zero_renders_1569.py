@@ -110,8 +110,12 @@ def test_git_diff_path_miss_repo_line_cannot_become_two(monkeypatch, capsys) -> 
     monkeypatch.setattr(git_common, "foreign_worktree", lambda: None)
     monkeypatch.setattr(diff, "_git", fake_git)
     monkeypatch.setattr(sys, "argv", ["git-diff", "nope.py"])
+    # Forges the marker this arm *does* print, not one it never reaches: a
+    # forged `Scope:` here would be the only `Scope:` in the output and would
+    # pass the count, which is a test asserting the render rather than the
+    # forgery.
     monkeypatch.setattr(diff.os, "getcwd",
-                        lambda: "/tmp/cwd" + LF + "Scope: staged")
+                        lambda: "/tmp/cwd" + LF + "Repo: /trusted-repo")
     assert diff.main() == 1
     out = capsys.readouterr().out
     assert "trusted-repo" in out
@@ -131,7 +135,14 @@ def test_reason_discloses_an_escape_sequence() -> None:
 
 
 def test_reason_still_folds_a_separator() -> None:
-    """The property #1563 believed it was adding. Assert it, do not assume it."""
+    """The property #1563 believed it was adding. Assert it, do not assume it.
+
+    This one passes **without** the fix, deliberately and uniquely in this
+    file: it pins the half of the mechanism that was already true, because
+    `commit.py:498` asserted the opposite and that false premise is what made
+    `_reason` look already covered. A regression here would restore the
+    reasoning, not just the code.
+    """
     got = status._reason(1, "a" + LF + "b" + SEP + "c")
     assert got.count(LF) == 0 and SEP not in got
 

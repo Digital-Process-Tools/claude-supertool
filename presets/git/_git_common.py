@@ -276,7 +276,8 @@ def foreign_worktree(start: Optional[str] = None) -> Optional[ForeignWorktree]:
     # separator forges through the ordinary route with no attacker involved.
     # There are three renders, not one — this note, and the prose line under it
     # in `status.py` and in `worktrees.py`, each of which prints `here` — plus
-    # `repo_label()`, i.e. the `Repo:` line of every op that writes. Flattening
+    # `repo_label()`, i.e. the `Repo:` line of `git-commit`, `git-push` and —
+    # since #1569, which is this same argument re-filed — `git-diff`. Flattening
     # at the note would have covered one of the four.
     #
     # `disclose_newline=True` because the value is a path: the space `flat()`
@@ -316,14 +317,16 @@ def repo_label() -> str:
     `ForeignWorktree`): the directory's real name is flattened on the way out,
     so a separator in it arrives as ``␊``/``[U+000A]`` rather than making a
     second line at column 0 under a `Repo:` the reader takes as the tool's.
-    Both call sites — `git-commit` and `git-push`, the two ops that write —
-    interpolate it into one printed line and nothing else.
+    All three call sites — `git-commit`, `git-push` and, since #1569,
+    `git-diff` — interpolate it into one printed line and nothing else.
 
     `git-diff` has printed a `Repo:` line for a long time; `git-commit` and
     `git-push` did not — so the two ops that WRITE were the two that never said
     where they wrote. When a commit lands somewhere unexpected, that line is
     the difference between noticing within the minute and noticing next week
-    (#692).
+    (#692). `git-diff` then kept building its own line out of a raw
+    `--show-toplevel` for two more rounds of this defect class, which is #1569:
+    a seam nobody is routed to is a seam that covers one caller.
 
     The work tree when there is one, the git dir otherwise: a bare repo has no
     top level, and printing an empty string there would be worse than printing
