@@ -32,6 +32,7 @@ lines back out of a file ruff is about to read anyway.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -242,6 +243,121 @@ def test_no_file_arg_is_an_adapter_error() -> None:
     out = verdict(_spawn(), adapter=ADAPTER.name)
     assert_declined(out)
     assert out["errors"][0]["code"] == "adapter"
+
+
+# ---------------------------------------------------------------------------
+# `[tool.ruff] exclude` and the file the caller just wrote (#1587)
+# ---------------------------------------------------------------------------
+
+#: A project whose ruff config excludes one name. Built rather than copied:
+#: this repo sets no `exclude`, so a test over the shipped `pyproject.toml`
+#: exercises none of this and passes against the unfixed adapter.
+EXCLUDING_PYPROJECT = (
+    "[tool.ruff]\n"
+    'exclude = ["skipped_by_config.py"]\n'
+    "[tool.ruff.lint]\n"
+    'select = ["E9", "F", "B", "PLE"]\n'
+)
+
+
+@pytest.fixture()
+def excluding(tmp_path: Path) -> Path:
+    (tmp_path / "pyproject.toml").write_text(EXCLUDING_PYPROJECT,
+                                             encoding="utf-8")
+    return tmp_path
+
+
+@needs_ruff
+def test_an_excluded_file_is_the_third_state_not_a_clean_pass(
+    excluding: Path,
+) -> None:
+    """An excluded path is one ruff never opened, so `ok: true` is a fabrication.
+
+    `--force-exclude` applies `[tool.ruff] exclude` to a path handed over
+    explicitly, and ruff then exits 0 with an empty array — byte for byte what
+    a genuinely clean file produces. The file below carries an F821 that every
+    other test in this file relies on ruff reporting.
+    """
+    f = excluding / "skipped_by_config.py"
+    f.write_text("def f():\n    return undefined_thing\n", encoding="utf-8")
+    out = _run(f)
+    assert "skipped" in out, (
+        "an excluded file was reported as a verdict about the file: " + repr(out))
+    assert "exclude" in out["skipped"], out
+    for key in ("ok", "count", "errors"):
+        assert key not in out, f"a skip must not carry {key!r}: {out}"
+
+
+@needs_ruff
+def test_a_file_the_same_config_does_not_exclude_still_gets_a_verdict(
+    excluding: Path,
+) -> None:
+    """The other half: the skip is about the pattern, not about having one.
+
+    A control, not a pin — it passes against the unfixed adapter too, which is
+    the point: it fails if the fix ever over-skips, and nothing else here does.
+    """
+    f = excluding / "linted.py"
+    f.write_text("def f():\n    return undefined_thing\n", encoding="utf-8")
+    out = _run(f)
+    assert "skipped" not in out, out
+    assert "F821" in _codes(out), out
+
+
+def _adapter_module():
+    """The adapter as a module, for the two arms no real ruff can produce."""
+    spec = importlib.util.spec_from_file_location("ruff_adapter_1587", ADAPTER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _Probe:
+    """`ruff check` answers clean; the `--show-files` probe behind it does not."""
+
+    def __init__(self, probe_result: object) -> None:
+        self.probe_result = probe_result
+        self.calls = 0
+
+    def __call__(self, cmd, **kwargs):
+        self.calls += 1
+        if "--show-files" in cmd:
+            if isinstance(self.probe_result, BaseException):
+                raise self.probe_result
+            return subprocess.CompletedProcess(cmd, self.probe_result, "", "")
+        return subprocess.CompletedProcess(cmd, 0, "[]", "")
+
+
+@pytest.mark.parametrize(
+    "probe_result",
+    [2, OSError("gone"), subprocess.TimeoutExpired("ruff", 10)],
+    ids=["nonzero", "oserror", "timeout"],
+)
+def test_a_probe_that_cannot_answer_is_not_a_clean_pass(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    tmp_path: Path, probe_result: object,
+) -> None:
+    """The zero it could not attribute is an absence, not a verdict.
+
+    A `--show-files` that errors, disappears or hangs — an older ruff, a ruff
+    that drops the flag, a wedged machine — leaves the empty finding list
+    meaning either "clean" or "never opened". Falling back to `ok` there is the
+    defect this arm exists to prevent, one level up.
+    """
+    f = tmp_path / "unattributable.py"
+    f.write_text("x = 1" + chr(10), encoding="utf-8")
+    mod = _adapter_module()
+    probe = _Probe(probe_result)
+    monkeypatch.setattr(mod.subprocess, "run", probe)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/ruff")
+    monkeypatch.setattr(mod.sys, "argv", ["ruff.py", str(f)])
+    mod.main()
+    out = json.loads(capsys.readouterr().out.strip())
+    assert probe.calls == 2, "the probe never ran"
+    assert "skipped" in out, out
+    assert "could not say" in out["skipped"], out
+    for key in ("ok", "count", "errors"):
+        assert key not in out, f"a skip must not carry {key!r}: {out}"
 
 
 @needs_ruff
