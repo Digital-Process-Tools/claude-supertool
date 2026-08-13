@@ -310,6 +310,12 @@ def block_outbound(monkeypatch: pytest.MonkeyPatch) -> None:
             _refuse("a reverse DNS lookup", sockaddr)
         return orig["getnameinfo"](sockaddr, *args, **kwargs)
 
+    # Keyed off `_MODULE_PATCHES` / `_METHOD_PATCHES` rather than written out,
+    # and that is not tidiness. Those two are `hasattr`-filtered because
+    # Windows has no `socket.socket.sendmsg`, and a hand-written loop would
+    # have called `monkeypatch.setattr` on a name that is not there --
+    # `AttributeError` out of an autouse fixture, so every test on every
+    # Windows leg, not only the ones that touch a socket.
     replacements = {
         "getaddrinfo": _getaddrinfo,
         "getnameinfo": _getnameinfo,
@@ -317,8 +323,13 @@ def block_outbound(monkeypatch: pytest.MonkeyPatch) -> None:
         "gethostbyname_ex": _one_arg_resolver("gethostbyname_ex"),
         "gethostbyaddr": _one_arg_resolver("gethostbyaddr"),
     }
-    for name, replacement in replacements.items():
-        monkeypatch.setattr(socket, name, replacement)
-    for name, replacement in (("connect", _connect), ("connect_ex", _connect_ex),
-                              ("sendto", _sendto), ("sendmsg", _sendmsg)):
-        monkeypatch.setattr(socket.socket, name, replacement)
+    method_replacements = {
+        "connect": _connect,
+        "connect_ex": _connect_ex,
+        "sendto": _sendto,
+        "sendmsg": _sendmsg,
+    }
+    for name in _MODULE_PATCHES:
+        monkeypatch.setattr(socket, name, replacements[name])
+    for name in _METHOD_PATCHES:
+        monkeypatch.setattr(socket.socket, name, method_replacements[name])

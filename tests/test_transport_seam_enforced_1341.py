@@ -20,7 +20,10 @@ What is enforced now, and how
 -----------------------------
 `tests/conftest.py` arms `_netblock.block_outbound` for **every** test. A stub
 against the wrong name no longer succeeds quietly against a third-party host; it
-fails at `connect`/`getaddrinfo`, naming the destination and what to stub.
+fails at the socket, naming the destination and what to stub. *Which* names is
+`_netblock.PATCHES`, derived from the register -- writing the list here is how
+the disclosure below came to describe a boundary two thirds narrower than the
+one it had.
 
 #1312 measured both methods over 559 test modules. A static grep for transport
 tokens found 2 of the 3 live leaks. The socket recorder found 3 of 3 -- the one

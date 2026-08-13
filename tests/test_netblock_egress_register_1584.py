@@ -204,6 +204,35 @@ def test_every_patched_route_is_one_block_outbound_actually_patches() -> None:
         sorted(declared - available - _netblock.PLATFORM_OPTIONAL))
 
 
+def test_block_outbound_patches_only_names_this_interpreter_has() -> None:
+    """The patch loop must iterate the derived tuples, not a written-out list.
+
+    `_MODULE_PATCHES` / `_METHOD_PATCHES` are `hasattr`-filtered because
+    Windows has no `socket.socket.sendmsg`. A loop that names the four methods
+    inline passes everywhere the author can run it and calls
+    `monkeypatch.setattr` on a missing attribute on Windows -- `AttributeError`
+    out of an autouse fixture, so every test on every Windows leg rather than
+    the ones that touch a socket.
+    """
+    if "sendmsg" not in _netblock._METHOD_PATCHES:
+        pytest.skip("this interpreter already has no sendmsg")
+    # Not `delattr`: `socket.socket.sendmsg` is inherited from `_socket.socket`
+    # and cannot be removed from the subclass, so the platform is simulated on
+    # the derived tuple -- which is the thing the loop is required to read.
+    original = socket.socket.sendmsg
+    shortened = tuple(n for n in _netblock._METHOD_PATCHES if n != "sendmsg")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_netblock, "_METHOD_PATCHES", shortened)
+        with pytest.MonkeyPatch.context() as inner:
+            _netblock.block_outbound(inner)
+            assert socket.socket.sendmsg is original, (
+                "block_outbound replaced a method that is not in "
+                "_METHOD_PATCHES, so it is reading a written-out list; on "
+                "Windows that same list names an attribute that is not there")
+            with pytest.raises(_netblock.OutboundBlocked):
+                _tcp().connect((TEST_NET_1, 80))
+
+
 def test_every_open_route_carries_a_reason() -> None:
     """`OPEN` is the third state; without a reason it is just a shorter list."""
     for name, reason in _netblock.OPEN_ROUTES.items():
