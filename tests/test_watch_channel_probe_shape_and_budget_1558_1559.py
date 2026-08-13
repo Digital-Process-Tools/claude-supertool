@@ -227,6 +227,32 @@ def test_the_budget_shrinks_each_lookups_own_timeout(monkeypatch):
     assert sum(handed) <= channel.MCP_LOOKUP_BUDGET + channel.CLAUDE_TIMEOUT, handed
 
 
+def test_a_spent_budget_does_not_take_credit_for_declining_a_flag(monkeypatch):
+    """A flag-shaped tag reached after the budget is gone is refused for what
+    it is. Both orders end in the third state, so only the stated reason
+    distinguishes them - and the clock played no part in this one."""
+    clock = [1000.0]
+    monkeypatch.setattr(channel, "_now", lambda: clock[0])
+    asked: list[str] = []
+
+    def lookup(name, timeout=None):
+        asked.append(name)
+        clock[0] += channel.MCP_LOOKUP_BUDGET
+        return None, "the lookup failed"
+
+    monkeypatch.setattr(channel, "_configured", lookup)
+    monkeypatch.setattr(channel, "_ps_fields", lambda pid: (
+        (7, "bun channel.ts", "") if pid == 99 else
+        (1, "claude --dangerously-load-development-channels "
+            "server:a server:--help", "")))
+    sub = channel.subscription(99)
+    assert sub.state == channel.SUB_UNKNOWN, sub
+    assert asked == ["a"], asked
+    flag = next(line for line in sub.lines if "--help" in line)
+    assert "option rather than a server name" in flag, flag
+    assert "budget" not in flag, flag
+
+
 # --- #1558/3: the safety class ----------------------------------------------
 
 def test_channel_is_not_declared_read_only():

@@ -67,10 +67,16 @@ report — `channel: FORWARDING` / `NOT DELIVERING` / `CANNOT DETERMINE` /
 `CONTRADICTED` / `BOUND, NOT SUBSCRIBED` — which is what the tests key on and
 what a caller should key on too.
 
-**Measured cost, so nobody is surprised by it.** The subscription probe runs
-`claude mcp get`, which is ~3s on a warm machine (2026-08-13), so this op is no
-longer instant and `radar` pays it once per run when its board has counted an
-accepted emit.
+**Measured cost, so nobody is surprised by it.** The subscription probe spawns
+`claude mcp get` once per `server:` tag — 1.1-2.0s each over six samples on
+2026-08-13, across a live server, a configured-but-dead one and an unknown
+name. So this op is not instant, and `radar` pays it once per run when its
+board has counted an accepted emit. The flag is variadic, so the tag count is
+somebody else's argv rather than a constant: every lookup in one call shares
+`MCP_LOOKUP_BUDGET`, and a tag the budget did not reach is reported unasked
+rather than unconfigured (#1558). That spawn is also why this op is declared
+`acts` and not `read-only` — probing a tag starts whatever the harness has
+configured under a name this tool read out of another process.
 """
 from __future__ import annotations
 
@@ -1155,6 +1161,14 @@ def subscription(pid: Any, pid_note: str = "") -> Subscription:
     undecided: list[str] = []
     deadline = _now() + MCP_LOOKUP_BUDGET
     for name in tags:
+        # Shape before budget, and via the same helper `_configured` guards
+        # with: a tag that cannot be a server name is refused for free, so
+        # reporting it as one the clock ran out on would name a reason the
+        # clock played no part in.
+        objection = _tag_shape_objection(name)
+        if objection:
+            undecided.append(f"{TAG_PREFIX}{_untrusted.flat(name)}: {objection}")
+            continue
         remaining = deadline - _now()
         if remaining <= 0:
             undecided.append(
