@@ -94,6 +94,12 @@ STATE_DIR = RESOLVED.state_dir
 MCP_FILENAME = ".mcp.json"
 CONSUMER_SERVER = "claude-channel"
 
+#: The variables an `.mcp.json` `env` block can use to put the consumer on a
+#: channel. Declaring none of them is not the same as declaring the default: it
+#: means the consumer takes whatever the session it was spawned from exported
+#: (#1541).
+CHANNEL_VARS = (naming.NAME_ENV, naming.SOCK_ENV, naming.STATE_DIR_ENV)
+
 #: Where a consumer publishes its own counters. Derived from the socket path
 #: rather than fixed, so two sessions running on separate `SUPERTOOL_WATCH_SOCK`
 #: paths (the documented multi-session arrangement) get separate health files
@@ -684,25 +690,43 @@ def consumer_lines(resolved: naming.Resolved,
 
     This is the deliverable of #1477 rather than its convenience. A name in
     `.supertool.json` reaches the pollers, `radar` and this op — three of four
-    surfaces — and cannot reach `claude-channel`, which the harness spawns from
-    `.mcp.json`. Configuring three of four *is* the half-configured state
-    `presets/watch/README.md` says is worse than configuring nothing, arriving
-    through a new door. So the name has two homes, and two homes that can
-    disagree get a check.
+    surfaces — and reaches `claude-channel` through none of them: the harness
+    spawns it, from `.mcp.json`. Configuring three of four *is* the
+    half-configured state `presets/watch/README.md` says is worse than
+    configuring nothing, arriving through a new door.
 
-    Three states, and silence is only ever the first of them:
+    **The fourth surface has two routes, and only one of them is checkable
+    here (#1541).** An `.mcp.json` `env` block is a declaration this op can read
+    and compare. An environment variable exported by whatever launched the
+    session — what `bin/supertool-workspace` does, and the only route that does
+    not write a single checkout's private name into an artifact every user
+    installs — is not: the consumer inherits the session's environment, and this
+    process only has its own, which carries whatever supertool injected from
+    `.supertool.json` and says nothing about how the harness was started.
+
+    Four states, and silence is only ever the first of them:
 
       * they agree — no line, unless a name is in play, where one line saying
         which file was read is what makes a two-session setup legible;
       * they disagree — both resolved sockets, named, always;
-      * nothing was established — said so, never rendered as agreement, and
-        only when it could matter (a name, or a non-default socket). On a
-        default channel with no `.mcp.json` anywhere there is nothing to warn
-        about, and a warning printed every time is one nobody reads.
+      * the config names no channel variable at all — the consumer inherits,
+        which is unknown from here and is said as unknown. Before #1541 this
+        arm was folded into "they disagree", on the reasoning that an
+        undeclared consumer is a default one. That reasoning died with the
+        `env` block: it now prints a claim about an environment nobody here
+        has read, and it printed it directly under a `FORWARDING` verdict that
+        contradicted it;
+      * nothing was established — said so, never rendered as agreement.
+
+    The last two are reported only when they could matter (a name, or a
+    non-default socket). On a default channel with no `.mcp.json` anywhere there
+    is nothing to warn about, and a warning printed every time is one nobody
+    reads.
     """
     roots = _mcp_roots() if roots is None else roots
     agreed: list[str] = []
     differed: list[str] = []
+    inherits: list[str] = []
     unread: list[str] = []
     seen: set[str] = set()
     for root in roots:
@@ -714,6 +738,27 @@ def consumer_lines(resolved: naming.Resolved,
         env, why = _declared_env(mcp_path)
         if env is None:
             unread.append(why)
+            continue
+        if not any(var in env for var in CHANNEL_VARS):
+            # The shipped `.mcp.json` declares no channel at all, and since #1541
+            # that is the intended state: a name true of one checkout must not
+            # ride the artifact into every install. The consumer then takes these
+            # variables from the environment of the session that spawned it —
+            # which this process cannot read. Its own copy carries whatever
+            # supertool injected from `.supertool.json`, and that says nothing
+            # about how the harness was launched. So this is the third state, not
+            # a disagreement: the old wording claimed the consumer was on the
+            # default socket, which after #1541 is a statement about an
+            # environment nobody here has seen, printed two lines under a
+            # FORWARDING verdict that contradicts it.
+            inherits.append(
+                f"consumer config {key} names no channel variable, so the "
+                f"consumer inherits it from the session that spawned it")
+            inherits.append(
+                f"that environment is not readable from here: "
+                f"`bin/supertool-workspace` exports {naming.NAME_ENV}, and a "
+                f"session started any other way leaves the consumer on "
+                f"{naming.DEFAULT_SOCK} while this process reads {resolved.sock}")
             continue
         theirs = naming.resolve(env)
         if theirs.sock == resolved.sock:
@@ -728,7 +773,7 @@ def consumer_lines(resolved: naming.Resolved,
     if agreed:
         return agreed if resolved.name else []
     if resolved.name or resolved.sock != naming.DEFAULT_SOCK:
-        return [f"consumer config NOT checked — {why}" for why in unread]
+        return inherits + [f"consumer config NOT checked — {why}" for why in unread]
     return []
 
 

@@ -1439,6 +1439,65 @@ to the socket at all, which is the normal state of most sessions. The footers
 name that case rather than letting the board report an ordinary session as
 broken.
 
+## Opening a session the channel can reach — `bin/supertool-workspace` ([#1538](https://github.com/Digital-Process-Tools/claude-supertool/issues/1538))
+
+Two conditions have to hold at once for a live watch, and neither is the default:
+
+* the session must be started with `--dangerously-load-development-channels
+  server:claude-channel`, or the pollers spawn and emit into nothing;
+* the **working directory** must be the project root whose radar you mean, because
+  `radar` reads `ops.radar.radar_tiers` from the CWD's project root — started
+  elsewhere it opens some other repo's board, or refuses.
+
+```bash
+ln -sf "$PWD/bin/supertool-workspace" ~/.local/bin/supertool-workspace
+supertool-workspace                 # from any directory
+supertool-workspace --model opus    # extra args pass through verbatim
+```
+
+The script resolves the clone from **its own location**, walking the symlink
+first, rather than from a path under `$HOME` — so it works for any checkout, the
+same way `supertool` itself reaches `PATH`. It refuses rather than launching if
+the directory it resolved has no `.supertool.json`, because a session opened over
+a non-project root is a radar with no tiers, which renders as a quiet board.
+
+A shell alias was the earlier recipe and is worse in two ways that both bit: it
+lives in a dotfile no test can read and no clone carries, and the one in
+circulation had no `cd` in it at all.
+
+**The launcher carries this clone's channel name to the consumer, and nothing
+about it ships.** Nothing in `.supertool.json` is read by `channel.ts` — the
+harness spawns it — so the name has to arrive some other way. It arrives in the
+environment: the launcher reads the one `watch_name` its clone declares and
+exports it before `exec`, and a stdio MCP server the harness spawns inherits that
+environment (measured against claude 2.1.219 with a probe server that dumps
+`env`). One source of truth, no second copy to drift.
+
+**Do not put it in this repository's `.mcp.json`.** That file is the *plugin's*:
+its `args` resolve `${CLAUDE_PLUGIN_ROOT}` and it installs for everybody, so a
+name true of one checkout binds every downstream consumer to our socket while
+their own pollers bind the default — the state `presets/watch/README.md` calls
+worse than setting neither, shipped as a default. #1538 did exactly that and
+[#1541](https://github.com/Digital-Process-Tools/claude-supertool/issues/1541)
+took it back out. A name in a *project* `.mcp.json` you wrote for your own
+checkout is a different thing and still works; an explicit
+`SUPERTOOL_WATCH_NAME` already in your environment wins over the launcher's, and
+the launcher says so on stderr rather than moving the paths under a live fleet.
+
+**The trailing `/opensource-manager` prompt is appended only when there is
+nothing else to pass.** `claude [options] [command] [prompt]` takes one
+positional: a second is accepted and then ignored, and a variadic option
+(`--add-dir a b`) swallows whatever follows it. So arguments and the prompt
+cannot both be delivered — with arguments the argv is left exactly as given and
+the launcher says on stderr that the prompt was not appended. Run
+`/opensource-manager` inside the session, or start it with no arguments.
+
+Check the result rather than trusting the recipe:
+
+```bash
+supertool 'channel:health'
+```
+
 ## Is it delivering? — `channel:health` ([#554](https://github.com/Digital-Process-Tools/claude-supertool/issues/554))
 
 The three checks a session reaches for — `pgrep -fl channel.ts`, `lsof` on the

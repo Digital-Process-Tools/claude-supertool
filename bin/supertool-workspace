@@ -1,0 +1,130 @@
+#!/bin/sh
+# Open a Claude session over THIS clone's radar, with the watch channel armed.
+#
+# Two things have to be true at once and neither is the default:
+#
+#   * `radar` reads its tiers from the CWD's project root, so the directory IS
+#     the board selection — started anywhere else it opens some other repo's
+#     radar, or refuses.
+#   * `<channel>` events only reach a session started with the development
+#     channel flag. Without it the pollers still spawn and still emit, and
+#     nothing reads them: a board that looks armed and delivers nothing.
+#
+# The clone is resolved from this script's own location, never from $HOME, so a
+# symlink into ~/.local/bin works for any checkout — the same route `supertool`
+# already takes. Install:
+#
+#     ln -sf "$PWD/bin/supertool-workspace" ~/.local/bin/supertool-workspace
+#
+# Check delivery once inside, before trusting a green board:
+#
+#     supertool 'channel:health'      # FORWARDING | NOT DELIVERING | CANNOT DETERMINE
+#
+# The channel NAME is this clone's state and is read from its own
+# `.supertool.json`, then exported — never written into `.mcp.json`, which is the
+# plugin's file and installs for everybody (#1541). Measured against claude
+# 2.1.219: a stdio MCP server the harness spawns inherits this process's
+# environment, which is what carries the name to the consumer.
+#
+# Arguments are passed through to `claude` verbatim. `claude` reads only its
+# FIRST positional as the prompt and silently ignores later ones, and a variadic
+# option (`--add-dir a b`) swallows whatever follows it — so the trailing
+# `/opensource-manager` prompt is appended ONLY when there is nothing else to
+# pass. With arguments it is not appended, and that is said on stderr rather
+# than dropped in silence (#1541).
+set -eu
+
+# `dirname "$0"` on the symlink gives ~/.local/bin, so read the link first.
+# `readlink -f` is not portable to macOS's stock readlink; walk it instead.
+self=$0
+while [ -L "$self" ]; do
+    link=$(readlink "$self")
+    case $link in
+        /*) self=$link ;;
+        *)  self=$(dirname "$self")/$link ;;
+    esac
+done
+root=$(CDPATH= cd -- "$(dirname -- "$self")/.." && pwd -P)
+
+if [ ! -f "$root/.supertool.json" ]; then
+    echo "supertool-workspace: $root is not a supertool project root" >&2
+    echo "  (no .supertool.json — this script must stay inside the clone it opens)" >&2
+    exit 1
+fi
+
+cd "$root"
+
+# The name has one home: this clone's `.supertool.json`. Reading it here rather
+# than hardcoding a second copy is the point — the ops and the consumer cannot
+# then drift apart. Exactly one distinct name is exported; disagreeing op blocks
+# are a state this script cannot resolve, so it says so and exports nothing.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "supertool-workspace: python3 is not on PATH, so the watch_name in" \
+         "$root/.supertool.json was not read — this session is on the default" \
+         "channel and its consumer will not hear this clone's pollers" >&2
+fi
+name=$(python3 - "$root/.supertool.json" <<'READ_NAME'
+import json, sys
+
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as handle:
+        doc = json.load(handle)
+except (OSError, ValueError) as err:
+    sys.stderr.write(
+        "supertool-workspace: %s could not be read (%s) — no channel name "
+        "exported, so this session is on the default channel\n"
+        % (path, type(err).__name__))
+    raise SystemExit(0)
+
+ops = doc.get("ops") if isinstance(doc, dict) else None
+names = sorted({
+    block["watch_name"]
+    for block in (ops or {}).values()
+    if isinstance(block, dict) and isinstance(block.get("watch_name"), str)
+    and block["watch_name"]
+})
+if len(names) == 1:
+    print(names[0])
+elif names:
+    sys.stderr.write(
+        "supertool-workspace: op blocks in %s disagree about watch_name (%s) — "
+        "none exported. The ops themselves are on different channels; fix that "
+        "file, then run supertool 'channel:health'\n" % (path, ", ".join(names)))
+READ_NAME
+) || name=""
+
+# Precedence, and it is stated rather than silent: an exported value is the one a
+# running poller already captured, and moving the paths underneath a live fleet
+# is the failure `presets/watch/naming.py` documents. So an export wins — and
+# both values are named, because a name losing quietly is the other half of it.
+if [ -n "${SUPERTOOL_WATCH_NAME:-}" ]; then
+    if [ -n "$name" ] && [ "$name" != "$SUPERTOOL_WATCH_NAME" ]; then
+        echo "supertool-workspace: SUPERTOOL_WATCH_NAME is already exported as" \
+             "${SUPERTOOL_WATCH_NAME} and wins; $root/.supertool.json declares" \
+             "$name. The pollers this session spawns follow the export; ops" \
+             "already running elsewhere do not. supertool 'channel:health'" >&2
+    fi
+elif [ -n "$name" ]; then
+    export SUPERTOOL_WATCH_NAME="$name"
+fi
+
+if [ "$#" -eq 0 ]; then
+    exec claude \
+        --dangerously-load-development-channels server:claude-channel \
+        "/opensource-manager"
+fi
+
+# Three states, and this is the third. `claude` takes ONE positional prompt, so
+# appending ours after pass-through arguments hands it a word it throws away —
+# and a variadic option among them swallows it outright. Placing it first would
+# instead throw away the caller's own prompt. So it is not appended, and the
+# reader is told, rather than a promise being kept in the argv and broken in the
+# parse (#1541).
+echo "supertool-workspace: arguments were passed through, so the trailing" \
+     "/opensource-manager prompt was NOT appended — claude reads only its first" \
+     "positional as the prompt. Run /opensource-manager inside the session, or" \
+     "start it with no arguments." >&2
+exec claude \
+    --dangerously-load-development-channels server:claude-channel \
+    "$@"

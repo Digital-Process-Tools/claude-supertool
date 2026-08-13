@@ -517,28 +517,47 @@ an unflagged session's radar as a snapshot, not a live watch, and say which you 
 
 Only needed when you want to be _woken_ by a red PR. Skip all of it for a one-shot board.
 
-1. **Launch with the flag** — it is the only way in. The flag is **undocumented** (absent from
-   `claude --help`, verified 2026-08-07), so no `settings.json` key can be assumed to exist and none
-   should be invented. An alias is the mechanism, and the trailing positional prompt is what stops
-   the skill being forgotten:
+1. **Launch with `bin/supertool-workspace`** (#1538). Two things must be true at once and neither is
+   the default: the flag, which is **undocumented** (absent from `claude --help`, verified
+   2026-08-07, so no `settings.json` key can be assumed and none should be invented), and the
+   **directory**, because `radar` reads its tiers from the CWD's project root — started anywhere
+   else it opens some other repo's board, or refuses. The launcher does both, exports the channel
+   name out of the clone's own `.supertool.json` so the harness-spawned consumer inherits it, and
+   passes any extra arguments through verbatim:
 
    ```bash
-   alias ossradar='claude --dangerously-load-development-channels server:claude-channel "/opensource-manager"'
+   ln -sf ~/Documents/claude-supertool/bin/supertool-workspace ~/.local/bin/supertool-workspace
+   supertool-workspace                      # from anywhere
    ```
 
-2. **Probe transport before rendering anything.** The script lives in the DVSI tree only, so use the
-   absolute path — a relative one does not resolve from `claude-supertool`:
+   **With no arguments it also appends `/opensource-manager`, and with arguments it does not** —
+   `claude` takes one positional prompt, so a second is silently ignored and a variadic option
+   (`--add-dir a b`) swallows it outright (measured, 2.1.219). It says so on stderr rather than
+   dropping it quietly (#1541); type the skill yourself in that case.
+
+   **This used to prescribe a shell alias, which was the wrong mechanism** — an alias lives in a
+   dotfile no test can see, no clone carries and nothing keeps current, and the one written here
+   had no `cd`, so it opened a session over whatever directory you happened to be standing in. The
+   launcher resolves the clone from its own location rather than from `$HOME`, the same route
+   `supertool` already takes to PATH.
+
+2. **Ask the op whether the channel is delivering** — three states, and it honours the name:
 
    ```bash
-   python3 ~/Documents/dvsi-tree/workspace1/dvsi/.claude/skills/pipeline-radar/probe-channel.py
+   supertool 'channel:health'      # FORWARDING | NOT DELIVERING | CANNOT DETERMINE
    ```
 
-   - `rc=1` — no socket: the channel server is not running. Say so; do not promise a watch.
-   - `rc=2` — stale socket / orphaned server: kill leftovers, restart the session, probe again.
-   - `rc=0` — **the write succeeded, which is not delivery.** Look for a `<channel ... id="99999">`
-     tag in this session. Tag present → confirmed. No tag → transport is broken; say it out loud.
+   `NOT DELIVERING` is a definite negative: nothing is listening, so every event a poller emits
+   right now is lost at the source. `CANNOT DETERMINE` is the state older tooling reported as green
+   — bound but publishing no counters, or counters written by a pid that is gone — and it names the
+   process holding the socket, so *nothing is consuming this* and *another session is consuming
+   this* stop rendering identically. `forwarded` means handed to the MCP transport and **never**
+   means delivered: whether an event reached a session is observable only from inside that session.
 
-   Then ignore id `99999` on every board for the rest of the session.
+   **This step used to point at `probe-channel.py` by absolute path inside the DVSI tree.** That
+   script predates the op and defaults to a hardcoded `/tmp/supertool-watch.sock`, so against this
+   repo's named channel it returns a confident `FAIL: no socket` — an absence produced by the tool,
+   read as an absence in the world, which is the defect this repo exists to fix. Do not port it.
 
 3. **Only now run `radar`** to spawn and heal the watchers. Order matters: transport is best-effort,
    so an event emitted while nothing is listening is consumed and never re-sent.

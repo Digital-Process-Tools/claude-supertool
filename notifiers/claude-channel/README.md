@@ -405,9 +405,13 @@ failure this is preventing. Two ways forward:
 - give this session a channel of its own with `SUPERTOOL_WATCH_NAME=<name>`,
   which derives this socket *and* the producers' poller state directory from one
   word ([#1477](https://github.com/Digital-Process-Tools/claude-supertool/issues/1477)).
-  Set it in this server's `env` block in `.mcp.json` and as a `watch_name` key on
-  the watch ops in `.supertool.json`; `channel:health` compares the two files and
-  says so when they disagree. `SUPERTOOL_WATCH_SOCK=/tmp/supertool-watch-$$.sock`
+  Export it in the environment the session is launched from — the harness passes
+  its own environment to the servers it spawns, which is what
+  `bin/supertool-workspace` relies on — or set it in this server's `env` block in
+  a project `.mcp.json` you ship to nobody (never in a plugin's, #1541). Set
+  `watch_name` on the watch ops in `.supertool.json` for the producers;
+  `channel:health` compares the two files, and says the comparison could not be
+  made when the consumer's name is inherited rather than declared. `SUPERTOOL_WATCH_SOCK=/tmp/supertool-watch-$$.sock`
   still works and still has to be set **both** here and on every Phase 1 poller —
   it overrides the name, and setting only one of the pair is the failure mode the
   name exists to remove.
@@ -428,7 +432,7 @@ outage — trading a silent bug for a loud one, which is not an improvement.
 
 | Env var                  | Default                          | Purpose                                              |
 | ------------------------ | -------------------------------- | ---------------------------------------------------- |
-| `SUPERTOOL_WATCH_NAME`   | unset                            | One name for a whole channel, deriving `/tmp/supertool-watch-<name>.sock` here and the matching poller state directory on the producers ([#1477](https://github.com/Digital-Process-Tools/claude-supertool/issues/1477)). One path component, `^[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z` (JavaScript's `$` is already end-of-input, so `channel.ts` spells it `$`); anything else is ignored, reported on stderr, and the default socket is bound rather than half a private one. This is the variable to put in this server's `env` block in `.mcp.json` — nothing in `.supertool.json` reaches this process, and `channel:health` compares the two files and reports a disagreement. |
+| `SUPERTOOL_WATCH_NAME`   | unset                            | One name for a whole channel, deriving `/tmp/supertool-watch-<name>.sock` here and the matching poller state directory on the producers ([#1477](https://github.com/Digital-Process-Tools/claude-supertool/issues/1477)). One path component, `^[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z` (JavaScript's `$` is already end-of-input, so `channel.ts` spells it `$`); anything else is ignored, reported on stderr, and the default socket is bound rather than half a private one. Nothing in `.supertool.json` reaches this process, so it arrives either inherited from the environment the session was launched with (`bin/supertool-workspace` exports it; the harness passes its environment to the servers it spawns) or from this server's `env` block in a project-local `.mcp.json` — never a plugin's, which installs for every user (#1541). `channel:health` compares the two files where the name is declared, and reports the comparison as not made where it is inherited. |
 | `SUPERTOOL_WATCH_SOCK`   | `/tmp/supertool-watch.sock`      | UDS path. Set the same value on Phase 1 producers. Also the way to run a second session's channel alongside a first — see "Start-up and socket ownership". **Overrides `SUPERTOOL_WATCH_NAME`** — it is the value a running poller already captured — and says so on stderr when both are set. |
 | `SUPERTOOL_CHANNEL_ATTR_MAX`  | `2048`      | Max chars in one attribute value. Larger values are withheld and disclosed — see "Size limits". |
 | `SUPERTOOL_CHANNEL_EVENT_MAX` | `8192`      | Max chars across all of one event's attributes, keys included. |

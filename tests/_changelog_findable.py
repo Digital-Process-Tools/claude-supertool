@@ -96,20 +96,28 @@ def assert_change_is_findable(issue: int, root: Path = REPO_ROOT) -> None:
     release moves the change from the first to the second. Asserting only the
     first is what #941, #953 and #1053 are.
 
-    The CHANGELOG side is a substring test, which is loose: "953" also occurs
-    inside "125,953". That looseness is inherited from #941's and #953's own
-    fixed versions and is left as it stands — tightening it to a link shape
-    would encode one entry format into every future entry, and this guard's
-    job is release-survival, not citation style.
+    The CHANGELOG side stays format-agnostic — any entry mentioning the number
+    counts, because tightening it to a link shape would encode one entry format
+    into every future entry and this guard's job is release-survival, not
+    citation style. What it is **not** is a bare substring test any more: "1541"
+    occurs inside "154177" in this repo's own CHANGELOG.md, so a module for a
+    four-digit issue with no fragment at all passed green (#1541, found while
+    the guard was being called for the first time on that number). Measured
+    across every `assert_change_is_findable` call site at the time: exactly one
+    — that one — depended on a digit-substring match, so the boundary costs
+    nothing and removes a whole vacuous-pass class.
     """
     number = str(int(issue))
     if sorted((root / FRAGMENT_DIR).glob(number + ".*.md")):
         return
     changelog = root / "CHANGELOG.md"
     text = changelog.read_text(encoding="utf-8") if changelog.is_file() else ""
-    assert number in text, (
+    found = re.search(r"(?<![0-9])" + number + r"(?![0-9])", text) is not None
+    assert found, (
         "#{0} is neither a pending {1}/{0}.<section>.md fragment nor an entry "
-        "in CHANGELOG.md — the change is not findable in either place. Exactly "
+        "in CHANGELOG.md (as a number in its own right — a longer number "
+        "containing these digits does not count) — the change is not findable "
+        "in either place. Exactly "
         "one of those two is true at any moment: the release consumes the "
         "fragment and writes the entry. Looked in {2} and {3}."
         .format(number, FRAGMENT_DIR, (root / FRAGMENT_DIR), changelog))
