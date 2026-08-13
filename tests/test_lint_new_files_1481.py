@@ -215,6 +215,35 @@ def test_a_renamed_file_is_checked(repo: Path) -> None:
     assert "F401" in out, out
 
 
+def test_a_ruff_exclude_cannot_silently_drop_a_file_from_the_report(
+    repo: Path,
+) -> None:
+    """The gate's own file list is hand-built from the diff, not discovered.
+
+    `--force-exclude` makes ruff apply `[tool.ruff] exclude` to paths handed to
+    it explicitly, so a new file under an excluded pattern is dropped from the
+    invocation while ruff still exits 0 — and the report then lists it as
+    checked and clean. That is #1481's exact failure mode reproduced inside the
+    gate written to close it, and it bypasses the `declined` state built for
+    precisely this uncertainty. Without the flag, an explicitly-named path is
+    always checked, so `N file(s) ... all clean` is a claim the run earned.
+    """
+    (repo / "added.py").write_text(DEAD_IMPORT, encoding="utf-8")
+    (repo / "pyproject.toml").write_text(
+        "[tool.ruff]" + chr(10)
+        + 'exclude = ["added.py"]' + chr(10)
+        + "[tool.ruff.lint]" + chr(10)
+        + 'select = ["E9", "F", "B", "PLE"]' + chr(10)
+        + 'ignore = ["F401", "F841", "F541"]' + chr(10),
+        encoding="utf-8")
+    _commit(repo)
+    code, out = _gate(repo)
+    assert code == gate.EXIT_FINDING, (
+        "an excluded path was listed as checked and clean without ruff ever "
+        "opening it:" + chr(10) + out)
+    assert "F401" in out, out
+
+
 def test_the_gate_names_the_rules_it_re_enables(repo: Path) -> None:
     """A finding on a rule the tree ignores is confusing without this line."""
     (repo / "added.py").write_text(DEAD_IMPORT, encoding="utf-8")

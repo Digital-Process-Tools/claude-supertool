@@ -216,7 +216,20 @@ def run(base: str, head: str = "HEAD", cwd: str = ".",
                "lacks a tool. `skipped`, never `ok` — same rule as "
                "validators/ruff/ruff.py."])[1]
 
-    argv = [binary, "check", "--no-cache", "--force-exclude", "--quiet",
+    # No `--force-exclude`, deliberately, and this is not the copy-paste of
+    # `validators/ruff/ruff.py` it looks like it should be. That flag makes ruff
+    # apply `[tool.ruff] exclude` to paths handed to it EXPLICITLY, rather than
+    # only to its own directory walk. This file list is not a walk — it is built
+    # from the diff — so with the flag on, a new file under any exclude pattern
+    # is dropped from the invocation, ruff still exits 0, and the report below
+    # lists it under "all clean" having never opened it. That is #1481's own
+    # failure mode reproduced inside the gate written to close it, and it routes
+    # around the `declined` state built for exactly this doubt. Inert on today's
+    # config, which sets no `exclude` at all — which is the reason it would have
+    # shipped and stayed invisible until somebody added one for an unrelated
+    # reason. Without the flag an explicitly-named path is always checked, so
+    # the file count this run reports is a count it earned.
+    argv = [binary, "check", "--no-cache", "--quiet",
             "--output-format", "concise",
             "--extend-select", ",".join(EXTRA_RULES)] + files
     rc, out, err = _run(argv, cwd)
