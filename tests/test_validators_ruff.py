@@ -292,7 +292,11 @@ def test_an_excluded_file_is_the_third_state_not_a_clean_pass(
 def test_a_file_the_same_config_does_not_exclude_still_gets_a_verdict(
     excluding: Path,
 ) -> None:
-    """The other half: the skip is about the pattern, not about having one."""
+    """The other half: the skip is about the pattern, not about having one.
+
+    A control, not a pin — it passes against the unfixed adapter too, which is
+    the point: it fails if the fix ever over-skips, and nothing else here does.
+    """
     f = excluding / "linted.py"
     f.write_text("def f():\n    return undefined_thing\n", encoding="utf-8")
     out = _run(f)

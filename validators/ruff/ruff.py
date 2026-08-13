@@ -89,15 +89,24 @@ RC_FINDINGS = 1
 # carries a default list (`.venv`, `build`, `node_modules`, …) that a hand
 # written check would drift from on every ruff release.
 #
-# It costs one extra spawn (~50ms, measured against ruff 0.16.1) and only on
-# the arm where the answer is ambiguous: a run that reported findings has
-# demonstrably opened the file.
-_SHOW_FILES_TIMEOUT_S = 10
-
-EXCLUDED_REASON = ("ruff declined to lint this file — it matched an exclude "
-                   "pattern in the ruff configuration resolved for it "
-                   "(`[tool.ruff] exclude`, applied to an explicit path by "
-                   "--force-exclude)")
+# It costs one extra spawn (~50ms, measured against ruff 0.16.1 on macOS; not
+# measured on Windows, where process creation is dearer) and only on the arm
+# where the answer is ambiguous: a run that reported findings has demonstrably
+# opened the file.
+#
+# The probe shares TIMEOUT_S rather than carrying a tighter budget of its own.
+# A separate wall would let a loaded machine finish the lint and blow the
+# probe, turning a real `ok` into a decline over nothing about the file.
+#
+# The reason names no single config key. `--force-exclude` enforces `exclude`,
+# `extend-exclude` and ruff's built-in default list at once, and `--show-files`
+# reports the outcome, not which of the three produced it — so a message
+# blaming `[tool.ruff] exclude` sends a reader with an `extend-exclude` entry
+# to a key they never wrote.
+EXCLUDED_REASON = ("ruff declined to lint this file — it is excluded by the "
+                   "ruff configuration resolved for it (`exclude`, "
+                   "`extend-exclude`, or ruff's built-in defaults; "
+                   "`ruff check --show-files` on this path lists nothing)")
 
 
 def emit(d: dict) -> None:
@@ -166,8 +175,7 @@ def _would_be_checked(file: str) -> bool | None:
     try:
         r = subprocess.run([TOOL, "check", "--no-cache", "--force-exclude",
                             "--show-files", file],
-                           capture_output=True, text=True,
-                           timeout=_SHOW_FILES_TIMEOUT_S,
+                           capture_output=True, text=True, timeout=TIMEOUT_S,
                            encoding="utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
         return None
