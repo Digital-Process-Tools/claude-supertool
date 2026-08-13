@@ -3836,15 +3836,26 @@ def _maybe_restart_mcp(entry: object) -> str:
     for name in known:
         outcome = _mcp_stop_server(name)
         (restarted if outcome.ok else failed).append(name)
+    # Through `_flat_keys`, like the payload-key refusals of #1583, and for the
+    # same mechanism: a server name is an arbitrary JSON string, `restartMcp`
+    # accepts it verbatim, and `', '.join` would put a line of that string's
+    # choosing at column 0 inside a line supertool signs — a second
+    # `mcp: restarted 9 daemon(s)` the tool never said. Lower severity than
+    # #1583's, and named rather than assumed: these come from
+    # `.supertool.json`, which #146's trust note places at the same level as
+    # the validators and custom ops it declares alongside them. Done anyway
+    # because the alternative is one call cheaper and the reasoning has to be
+    # re-derived by every reader who checks (#1489 release audit).
     note = ""
     if restarted:
-        note += f"mcp: restarted {len(restarted)} daemon(s) ({', '.join(restarted)})\n"
+        note += (f"mcp: restarted {len(restarted)} daemon(s) "
+                 f"({_flat_keys(restarted)})\n")
     if failed:
-        note += (f"mcp: FAILED to stop {len(failed)} daemon(s) ({', '.join(failed)})"
+        note += (f"mcp: FAILED to stop {len(failed)} daemon(s) ({_flat_keys(failed)})"
                  f" — they may still answer from a stale index"
                  f" (SUPERTOOL_DEBUG=1 for the reason)\n")
     if unknown:
-        note += f"mcp: unknown server(s) ignored ({', '.join(unknown)})\n"
+        note += f"mcp: unknown server(s) ignored ({_flat_keys(unknown)})\n"
     return note
 
 
@@ -4204,8 +4215,10 @@ def _read_window_note(path: str, limit: int, offset: int,
     actually came back, and `read:PATH:{offset}-{offset+limit-1}` is the one a
     caller who read `:A:B` as START:END was after. Until #1417 only the second
     was offered, and only when LIMIT <= OFFSET, deferring the wider band to
-    `_read_range_note` (#382). That deferral was to a function which is itself
-    gated — on overshoot, or LIMIT < 2*OFFSET — so `read:f:1:40` on a long file
+    `_read_range_note` (#382 — deleted in #1489, which folded its clause into
+    this line; only its gate survives, as `_range_note_fires`). That deferral
+    was to a speaker itself gated — on overshoot, or LIMIT < 2*OFFSET — so
+    `read:f:1:40` on a long file
     tripped neither and got no hint at all. That shape is #1138's own archetype
     and, measured over 5,598 real `read:PATH:N:M` calls in this machine's
     transcripts, 1,877 of them (34%) sat in the same hole.
@@ -4269,8 +4282,9 @@ def _read_window_note(path: str, limit: int, offset: int,
         # Two spellings, and the receipt names both because they answer two
         # different questions: what came back, and what was probably meant.
         # Until #1417 only the second was offered and only when LIMIT <=
-        # OFFSET, on the reasoning that `_read_range_note` (#382) owned the
-        # other band. It does not: #382 is itself gated on overshoot or
+        # OFFSET, on the reasoning that `_read_range_note` (#382, since
+        # deleted) owned the other band. It did not: #382 is itself gated on
+        # overshoot or
         # LIMIT < 2*OFFSET, so `read:f:1:40` on a long file — #1138's own
         # archetype, and the commonest shape there is — satisfied neither gate
         # and was told nothing. A deferral to a speaker who is silent is the
@@ -4280,15 +4294,31 @@ def _read_window_note(path: str, limit: int, offset: int,
         hint = (f"; OFFSET is a skip count, so {offset} {skipped_word} skipped: "
                 f"this window is read:{path}:{req_start}-{got_end}")
         # The FACT above fires always. The GUESS below — which lines the caller
-        # was probably after — fires only when `_read_range_note` is silent,
-        # because that function makes the same guess from the same numbers and
-        # arrives somewhere else: on `read:f:20:25` this line said "for lines
-        # 20-44" while #382's note said "For lines 20-25", one call, two
-        # answers to one question. The original code avoided that by withholding
-        # the whole hint whenever LIMIT > OFFSET, which also withheld the fact
-        # and is how #1138's shape ended up with nothing at all. Splitting the
-        # two keeps the fact everywhere and leaves the guess to one speaker.
-        if not limit_synthetic and not _range_note_fires(offset, limit, line_count):
+        # was probably after — has two spellings and exactly one speaker.
+        # Until #1489 the second belonged to `_read_range_note` (#382), which
+        # printed it as a trailing `note:` UNDER the body: a correct sentence
+        # arriving after the reader had already paid for the wrong window,
+        # beside a `window:` line above the body that had already said
+        # OFFSET:LIMIT. One question, one answer, and it goes where #1432 put
+        # the rest of this disclosure.
+        #
+        # Which spelling is #382's gate, unchanged: an overshoot of EOF, or a
+        # LIMIT that lands near its OFFSET rather than independent of it, is
+        # the shape of an END misread as a LIMIT (`read:f:52:72` wanting lines
+        # 52-72). Anything else is an ordinary skip-then-read, and the lines
+        # that caller was after are OFFSET..OFFSET+LIMIT-1.
+        if limit_synthetic:
+            pass
+        elif _range_note_fires(offset, limit, line_count):
+            span = limit - offset + 1
+            # The span of what was ASKED FOR, not of what came back: the byte
+            # cap can cut the window short, and naming the lines returned here
+            # would state a number the call did not produce (#1020).
+            hint += (f" — this asked for {limit} lines from offset {offset}, "
+                     f"which is OFFSET:LIMIT, not START:END; for lines "
+                     f"{offset}-{limit} ({span} lines) use "
+                     f"read:{path}:{offset}-{limit}")
+        else:
             hint += (f" — for lines {offset}-{offset + limit - 1} use "
                      f"read:{path}:{offset}-{offset + limit - 1}")
     suppressed = (last_scanned - offset) - shown
@@ -4340,22 +4370,7 @@ _READ_RANGE_RE = re.compile(r"\d+-\d+")
 
 
 def _range_note_fires(offset: int, limit: int, total: int) -> bool:
-    """Would `_read_range_note` speak for these numbers?
-
-    Split out so `_read_window_note` can stay quiet about which reading was
-    MEANT wherever #382 already says so. Both derive their guess from the same
-    three numbers and reach different ranges — #382 reads `:A:B` as START:END,
-    the window line reads it as OFFSET:LIMIT — so exactly one of them may
-    answer that question on any given read. The gate itself is documented on
-    `_read_range_note`; this is the same expression, not a second opinion.
-    """
-    if offset <= 0 or limit <= 0 or limit <= offset or total <= 0:
-        return False
-    return not (offset + limit <= total and limit >= 2 * offset)
-
-
-def _read_range_note(path: str, offset: int, limit: int, body: str) -> str:
-    """One-line nudge when `read:PATH:A:B` looks like a misread line range (#382).
+    """Does `read:PATH:A:B` look like a line range misread as OFFSET:LIMIT (#382)?
 
     `:A:B` is OFFSET:LIMIT, but it reads like START:END to anyone who has used
     `sed -n 'A,Bp'`, and the overshoot is quiet — the output just looks long.
@@ -4372,22 +4387,13 @@ def _read_range_note(path: str, offset: int, limit: int, body: str) -> str:
 
     Disclosure rather than refusal, because both readings are legitimate here
     and there is no gate that separates them without breaking working calls.
+    Until #1489 this gate had a function of its own, `_read_range_note`, which
+    printed the same disclosure a second time below the body; it now decides
+    only which of `_read_window_note`'s two guesses is offered.
     """
-    if body.startswith("ERROR:"):
-        return ""
-    total = _count_lines(path)
-    if not _range_note_fires(offset, limit, total):
-        return ""
-    # What was ASKED FOR, not what came back: the byte cap can truncate the
-    # window, and #382's "read N lines" then states a number the call did not
-    # produce — the same reporting-a-number-as-a-fact defect one level down.
-    # The span is always true and carries the contrast better anyway.
-    span = limit - offset + 1
-    return (
-        f"note: this asked for {limit} lines from offset {offset} — those "
-        f"args are OFFSET:LIMIT, not START:END. For lines {offset}-{limit} "
-        f"({span} lines), use read:{path}:{offset}-{limit}\n"
-    )
+    if offset <= 0 or limit <= 0 or limit <= offset or total <= 0:
+        return False
+    return not (offset + limit <= total and limit >= 2 * offset)
 
 
 def _abstract_lang(path: str) -> str:
@@ -5320,6 +5326,7 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
                     inner, path, 1, context, excl, candidates=candidates)))
         current_file: str = ""
         first_group = True
+        cut: List[Tuple[str, int]] = []
         for group in groups:
             group_file = group[0][0] if group else ""
             if group_file != current_file:
@@ -5330,11 +5337,15 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
                 out.append("  --\n")
             first_group = False
             for _fp, lineno, kind, content in group:
+                if len(content) > _grep_line_cap():
+                    cut.append((_fp, lineno))
                 capped = _cap_grep_line(content)
                 if kind == "match":
                     out.append(f"  {lineno}:{capped}\n")
                 else:
                     out.append(f"  {lineno}-{capped}\n")
+        if cut:
+            out.insert(2, _grep_cut_note(cut))
         out.append("\n")
         return _cap_context_window("".join(out), "grep_around")
 
@@ -5373,11 +5384,16 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
         out.append(_quote_pair_note(pattern, lambda inner: _grep_recursive(
             inner, path, 1, excl, candidates=candidates)))
     current_file = ""
+    cut: List[Tuple[str, int]] = []
     for fp, lineno, content in hits:
         if fp != current_file:
             current_file = fp
             out.append(f"{fp}\n")
+        if len(content) > _grep_line_cap():
+            cut.append((fp, lineno))
         out.append(f"  {lineno}:{_cap_grep_line(content)}\n")
+    if cut:
+        out.insert(2, _grep_cut_note(cut))
     out.append("\n")
 
     # Auto-read: single small file + at least one match → emit full file.
@@ -5403,6 +5419,10 @@ _AROUND_DIR_SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", ".to
 _AROUND_DIR_MAX_FILES = 20
 
 
+def _grep_line_cap() -> int:
+    return _get_op_int("grep", "max_line_chars", MAX_GREP_LINE_CHARS)
+
+
 def _cap_grep_line(content: str) -> str:
     """Truncate one grep output line to a char budget (#363).
 
@@ -5412,10 +5432,32 @@ def _cap_grep_line(content: str) -> str:
     Configurable via builtin-ops.grep.max_line_chars or
     SUPERTOOL_GREP_MAX_LINE_CHARS.
     """
-    cap = _get_op_int("grep", "max_line_chars", MAX_GREP_LINE_CHARS)
+    cap = _grep_line_cap()
     if len(content) <= cap:
         return content
     return f"{content[:cap]}… (+{len(content) - cap} chars)"
+
+
+def _grep_cut_note(cut: List[Tuple[str, int]]) -> str:
+    """Name the read that recovers a line `grep` cut (#1489).
+
+    `… (+191 chars)` says a line was cut and nothing about how to get the
+    rest, which is what a caller wants precisely when the cut line is the
+    `edit` anchor they came for. `read:PATH:N-N` returns it byte-exactly —
+    measured against raw bytes on files from 500 to 20000 chars with tabs,
+    trailing spaces and unicode (#1489, PR #1576) — so the remedy exists and
+    was simply not written down where the truncation happens.
+
+    Above the body rather than under it, for #945's reason: a note that
+    arrives after the output it would have replaced is a round-trip late.
+    """
+    if not cut:
+        return ""
+    fp, lineno = cut[0]
+    plural = "" if len(cut) == 1 else "s"
+    return (f"note: {len(cut)} line{plural} cut at {_grep_line_cap()} chars — "
+            f"read:PATH:LINE-LINE returns a cut line byte-exactly, e.g. "
+            f"read:{fp}:{lineno}-{lineno}\n")
 
 
 def _cap_context_window(text: str, op_name: str) -> str:
@@ -9099,7 +9141,8 @@ def _normalise_ws(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-def _edit_miss_diagnostic(old: str, content: str, new: str = "") -> str:
+def _edit_miss_diagnostic(old: str, content: str, new: str = "",
+                          path: str = "") -> str:
     """Why `old` didn't match (#380).
 
     `ERROR: old string not found` was the whole message, so the natural next
@@ -9156,28 +9199,232 @@ def _edit_miss_diagnostic(old: str, content: str, new: str = "") -> str:
                     break
 
     # 3. Nearest line. Even one line of "closest is line 142: ..." turns a
-    #    three-call debug loop into one.
+    #    three-call debug loop into one — when it is right about which line.
     if not hints:
-        first = next((ln for ln in old.splitlines() if ln.strip()), "")
-        if first:
-            best_ratio, best_i = 0.0, 0
-            matcher = difflib.SequenceMatcher(a=first, autojunk=False)
-            for i, ln in enumerate(lines, 1):
-                matcher.set_seq2(ln)
-                if matcher.real_quick_ratio() <= best_ratio:
-                    continue
-                if matcher.quick_ratio() <= best_ratio:
-                    continue
-                ratio = matcher.ratio()
-                if ratio > best_ratio:
-                    best_ratio, best_i = ratio, i
-            if best_ratio >= 0.6:
-                hints.append(
-                    f"nearest match at line {best_i} ({best_ratio:.0%}): "
-                    f"{lines[best_i - 1]!r}"
-                )
+        near = _edit_nearest_hint(old, lines, path)
+        if near:
+            hints.append(near)
 
     return "".join(f"  {mark('↳')} {h}\n" for h in hints)
+
+
+# Below this the hint is withheld: not close enough to be worth a look.
+_EDIT_NEAR_FLOOR = 0.6
+# Two candidates within this much of each other are a tie, not a ranking. The
+# run that filed #1489 got 68% twice, ~800 lines apart, and the difference
+# between the two was noise the score could not carry.
+_EDIT_NEAR_TIE = 0.02
+# Windows char-scored per block anchor. The line-level pass ranks first and is
+# O(file); this second pass is O(window²) each, so it is bounded rather than
+# left to the corpus.
+_EDIT_NEAR_WINDOWS = 20
+# `difflib.SequenceMatcher.ratio()` is O(len(a) × len(b)), and
+# `_EDIT_DIAG_MAX_LINES` bounds this scan by LINE COUNT — the one dimension a
+# minified file is small in. Measured: 60 lines of 40 KB, one anchor of 39 KB,
+# 220s for a SINGLE comparison and over 30 minutes for the file. Two bounds,
+# because either alone leaves the other open: each comparison is clipped, and
+# the total is capped in cells so a file of many long lines cannot spend the
+# saving line by line.
+_EDIT_NEAR_MAX_CHARS = 1000
+_EDIT_NEAR_BUDGET = 20_000_000
+
+
+def _nearest_clip(text: str) -> str:
+    return text[:_EDIT_NEAR_MAX_CHARS]
+
+
+def _nearest_line_candidates(
+        needle: str,
+        lines: List[str]) -> Tuple[List[Tuple[float, int]], float, bool]:
+    """Every line scoring within `_EDIT_NEAR_TIE` of the best, the best, and
+    whether the cost budget ran out before the file did.
+
+    The prefilter bar is `best - tie`, not `best`: a rival that merely EQUALS
+    the leader has to be computed, because withholding on a tie is the whole
+    point and a skipped line cannot be seen to tie. Identical lines are scored
+    once and cached — a file of repeated boilerplate is exactly the input this
+    is for, and it is also the one that would otherwise re-score every line.
+
+    An exhausted budget is returned rather than swallowed: what has been
+    scored so far is a best-of-a-prefix, and reporting it as the file's
+    nearest match is the confidently-wrong hint this whole function is about.
+    """
+    best = 0.0
+    scored: List[Tuple[float, int]] = []
+    seen: Dict[str, float] = {}
+    needle = _nearest_clip(needle)
+    spent = 0
+    matcher = difflib.SequenceMatcher(a=needle, autojunk=False)
+    for i, ln in enumerate(lines, 1):
+        ratio = seen.get(ln)
+        if ratio is None:
+            bar = best - _EDIT_NEAR_TIE
+            clipped = _nearest_clip(ln)
+            matcher.set_seq2(clipped)
+            if matcher.real_quick_ratio() < bar or matcher.quick_ratio() < bar:
+                # The bar only rises, so a line hopeless now stays hopeless.
+                seen[ln] = -1.0
+                continue
+            spent += len(needle) * len(clipped)
+            if spent > _EDIT_NEAR_BUDGET:
+                return [], best, True
+            ratio = matcher.ratio()
+            seen[ln] = ratio
+        elif ratio < 0:
+            continue
+        if ratio > best:
+            best = ratio
+        scored.append((ratio, i))
+    return [(r, i) for r, i in scored if r >= best - _EDIT_NEAR_TIE], best, False
+
+
+def _nearest_block_candidates(
+        anchor: List[str],
+        lines: List[str]) -> Tuple[List[Tuple[float, int]], float, bool, int]:
+    """The same, for a multi-line anchor, scored on the WHOLE block (#1489).
+
+    Scoring the first non-blank line only — what this did until #1489 — reads
+    `def handler(request):` and reports whichever copy of that boilerplate
+    comes first, at a percentage that is a fact about one line of an anchor
+    the caller wrote several lines of. Two passes:
+
+    1. A sliding multiset of whitespace-normalised lines over every window of
+       the anchor's height, O(file), which ranks windows by how many of the
+       anchor's lines they contain at all. Order-insensitive and exact-match,
+       so it locates rather than scores: a real near-miss differs in one line
+       and lands at (n-1)/n while boilerplate lands far below it.
+    2. The character ratio, on the top-ranked windows only, so the percentage
+       printed is comparable with the single-line hint's and the second pass
+       is bounded by `_EDIT_NEAR_WINDOWS` regardless of file size.
+    """
+    n = len(anchor)
+    if n > len(lines):
+        return [], 0.0, False, 0
+    want: Dict[str, int] = {}
+    for ln in anchor:
+        key = _normalise_ws(ln)
+        want[key] = want.get(key, 0) + 1
+    norm = [_normalise_ws(ln) for ln in lines]
+    have: Dict[str, int] = {}
+    matched = 0
+    best_hits = 0
+    tops: List[int] = []
+    top_count = 0
+    for i, key in enumerate(norm):
+        have[key] = have.get(key, 0) + 1
+        if have[key] <= want.get(key, 0):
+            matched += 1
+        if i >= n:
+            gone = norm[i - n]
+            if have[gone] <= want.get(gone, 0):
+                matched -= 1
+            have[gone] -= 1
+        if i < n - 1:
+            continue
+        start = i - n + 2  # 1-based first line of this window
+        if matched > best_hits:
+            best_hits, tops, top_count = matched, [start], 1
+        elif matched == best_hits and matched > 0:
+            top_count += 1
+            if len(tops) < _EDIT_NEAR_WINDOWS:
+                tops.append(start)
+    if best_hits <= 0:
+        # Not one line of the anchor occurs anywhere. There is no block to
+        # point at, and the first line's own score has already been measured
+        # to carry no information about the block — so say nothing rather
+        # than name a line at a number that looks like evidence.
+        return [], 0.0, False, 0
+    anchor_text = _nearest_clip("\n".join(anchor))
+    matcher = difflib.SequenceMatcher(a=anchor_text, autojunk=False)
+    scored: List[Tuple[float, int]] = []
+    best = 0.0
+    spent = 0
+    for start in tops:
+        window = _nearest_clip("\n".join(lines[start - 1:start - 1 + n]))
+        spent += len(anchor_text) * len(window)
+        if spent > _EDIT_NEAR_BUDGET:
+            return [], best, True, 0
+        matcher.set_seq2(window)
+        ratio = matcher.ratio()
+        if ratio > best:
+            best = ratio
+        scored.append((ratio, start))
+    near = [(r, i) for r, i in scored if r >= best - _EDIT_NEAR_TIE]
+    # More windows tied on the line pass than were char-scored, and every one
+    # that WAS scored is still tied: the tie count is a floor, and the hint
+    # says "at least N". Returned as its own number rather than smuggled into
+    # the candidate list as a negative line — that spelling sorted ahead of
+    # every real candidate and was printed as the nearest line (PR review).
+    floor = top_count if top_count > len(tops) and len(near) == len(tops) else 0
+    return near, best, False, floor
+
+
+def _edit_nearest_hint(old: str, lines: List[str], path: str = "") -> str:
+    """One line naming where `old` nearly matched — or that it cannot say.
+
+    Three states, not two (docs/validators.md, "Declining instead of
+    guessing"): a location, nothing at all, and `cannot suggest` when several
+    places score the same. A confidently wrong line number costs more than no
+    line number — the caller reads the wrong 30 lines and re-anchors against
+    them — so a tie is reported as a tie rather than resolved by file order.
+    """
+    anchor = old.splitlines()
+    while anchor and not anchor[0].strip():
+        anchor.pop(0)
+    while anchor and not anchor[-1].strip():
+        anchor.pop()
+    if not anchor:
+        return ""
+    if len(anchor) == 1:
+        cands, best, exhausted = _nearest_line_candidates(anchor[0], lines)
+        tie_floor = 0
+    else:
+        cands, best, exhausted, tie_floor = _nearest_block_candidates(
+            anchor, lines)
+    if exhausted:
+        return ("cannot suggest a nearest match: comparing these lines cost "
+                "more than the scan's budget, so what it had found is a "
+                "best-so-far and not a best. Anchor on a shorter, more "
+                "distinctive snippet")
+    if not cands or best < _EDIT_NEAR_FLOOR:
+        return ""
+    n = len(anchor)
+    cands.sort(key=lambda c: (-c[0], c[1]))
+    best_i = cands[0][1]
+    # Overlapping windows describe one neighbourhood, not two candidates.
+    rivals = [i for _r, i in cands[1:] if abs(i - best_i) >= n]
+    if rivals:
+        total = tie_floor if tie_floor > 1 + len(rivals) else 1 + len(rivals)
+        at_least = "at least " if total > 1 + len(rivals) else ""
+        shown = ", ".join(str(i) for i in ([best_i] + rivals)[:3])
+        extra = total - 3
+        more = f" and {extra} more" if extra > 0 else ""
+        return (f"cannot suggest a nearest match: {at_least}{total} places "
+                f"score the same ({best:.0%}) — lines {shown}{more}. The "
+                f"anchor does not tell them apart; re-anchor on a longer or "
+                f"more distinctive block")
+    if n == 1:
+        return (f"nearest match at line {best_i} ({best:.0%}{_nearest_clip_note(anchor, lines, best_i, n)}): "
+                f"{_elide(lines[best_i - 1], _EDIT_NEAR_MAX_CHARS)!r}")
+    end = best_i + n - 1
+    where = f": read:{path}:{best_i}-{end}" if path else ""
+    return (f"nearest match at lines {best_i}-{end} "
+            f"({best:.0%}{_nearest_clip_note(anchor, lines, best_i, n)}){where}")
+
+
+def _nearest_clip_note(anchor: List[str], lines: List[str],
+                       start: int, n: int) -> str:
+    """Say so when the percentage is about a prefix rather than the whole text.
+
+    A number computed over the first 1000 characters of a 40 KB line is not
+    wrong, but read as a score for the line it is a claim nobody made."""
+    longest = max([len(ln) for ln in anchor]
+                  + [len(ln) for ln in lines[start - 1:start - 1 + n]])
+    if n > 1:
+        longest = max(longest, len("\n".join(anchor)))
+    if longest <= _EDIT_NEAR_MAX_CHARS:
+        return ""
+    return f", scored on the first {_EDIT_NEAR_MAX_CHARS} characters"
 # A mutating op prints its full arguments in the section header and then the
 # diff underneath, so for a content-heavy edit the old and new strings appear
 # twice. Above this many characters the header is rebuilt from the parsed
@@ -9909,7 +10156,7 @@ def op_edit(old: str, new: str, path: str) -> str:
     if count == 0:
         _SKIP_COUNT[0] += 1
         return (f"ERROR: old string not found in {path}\n"
-                + _edit_miss_diagnostic(old, content, new))
+                + _edit_miss_diagnostic(old, content, new, path))
     if count > 1:
         _SKIP_COUNT[0] += 1
         return (
@@ -22389,9 +22636,8 @@ def _read_op_from_payload(op: str, payload: Any, no_exclude: bool = False) -> st
             return "ERROR: @payload for op 'read' missing required field 'path'\n"
         offset = _payload_int(p, "offset", 0)
         limit = _payload_int(p, "limit", 0)
-        body = op_read(path, offset, limit, str(p.get("grep", "") or ""),
+        return op_read(path, offset, limit, str(p.get("grep", "") or ""),
                        _payload_bool(p, "full"))
-        return body + _read_range_note(path, offset, limit, body)
     except ValueError as exc:
         return f"ERROR: {exc}\n"
 
@@ -23264,8 +23510,6 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     break
             body = op_read(path, offset, limit, grep_filter, force_full,
                            range_form)
-            if not range_form:
-                body += _read_range_note(path, offset, limit, body)
         elif op == "grep":
             # Before the parse, and off the same peel the parse uses: a third
             # trailing integer is peeled and never read, so `grep:PAT:PATH:5:3:2`

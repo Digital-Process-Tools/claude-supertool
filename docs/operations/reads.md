@@ -157,9 +157,16 @@ last line is not a tie: the caller has everything from the start of the window,
 and nothing follows.
 
 ```
-window: offset 40 + limit 60 (OFFSET:LIMIT form) = lines 41-100; returning lines 41-100 of 100, stopping at line 100: the end of the file, and the limit was reached at the same line — the file ending settles it, nothing follows line 100; OFFSET is a skip count, so 40 lines were skipped: this window is read:hundred.txt:41-100
-note: this asked for 60 lines from offset 40 — those args are OFFSET:LIMIT, not START:END. For lines 40-60 (21 lines), use read:hundred.txt:40-60
+window: offset 40 + limit 60 (OFFSET:LIMIT form) = lines 41-100; returning lines 41-100 of 100, stopping at line 100: the end of the file, and the limit was reached at the same line — the file ending settles it, nothing follows line 100; OFFSET is a skip count, so 40 lines were skipped: this window is read:hundred.txt:41-100 — this asked for 60 lines from offset 40, which is OFFSET:LIMIT, not START:END; for lines 40-60 (21 lines) use read:hundred.txt:40-60
 ```
+
+That last clause used to be a second line, printed as `note:` **below** the body
+([#1489](https://github.com/Digital-Process-Tools/claude-supertool/issues/1489)).
+It said what the line above it had already said — OFFSET:LIMIT, not START:END —
+and it said it after the reader had paid for the 60-line window it was warning
+them about. [#1432](https://github.com/Digital-Process-Tools/claude-supertool/issues/1432)
+moved this disclosure above the body; the trailing copy stayed behind. One
+question, one answer, above the cost.
 
 Until [#1342](https://github.com/Digital-Process-Tools/claude-supertool/issues/1342)
 this read `coincide here — which one ended the window cannot be told apart`. The

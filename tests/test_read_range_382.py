@@ -131,8 +131,14 @@ def test_note_fires_on_misread_range(tmp_path: Path) -> None:
     # Reworded under #1020: "read 48 lines" is only true when the byte cap did
     # not truncate the window, and on the call #1020 filed it did. The note now
     # reports the window that was ASKED FOR, which is true in both cases.
-    assert "note: this asked for 72 lines from offset 52" in out
+    #
+    # Folded into the `window:` line under #1489: it used to be printed a
+    # second time as a trailing `note:` below the body, where the reader had
+    # already paid for the wrong window. Same sentence, one copy, above it.
+    assert "this asked for 72 lines from offset 52" in out
     assert "(21 lines)" in out
+    assert out.count("OFFSET:LIMIT, not START:END") == 1
+    assert out.index("OFFSET:LIMIT, not START:END") < out.index("line53")
 
 
 def test_no_note_when_window_fits(tmp_path: Path) -> None:
