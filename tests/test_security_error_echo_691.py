@@ -44,6 +44,11 @@ def _no_outbound(monkeypatch: pytest.MonkeyPatch) -> None:
     whatever the internet said. `test_create_session_does_not_print_the_password`
     is the sharp one: its assertion is that a *credential echoed by the remote*
     is redacted, and the echo it injects had never once been delivered.
+
+    Redundant since #1341: `tests/conftest.py` arms `block_outbound` for every
+    test in the suite, so this file is no longer what guards it and deleting
+    this fixture would reopen nothing. It is kept for the history above, which
+    is about *these* two tests and belongs beside them.
     """
     block_outbound(monkeypatch)
 

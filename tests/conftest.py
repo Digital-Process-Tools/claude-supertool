@@ -142,12 +142,14 @@ def _block_outbound_network():
     defined this early in the file is set up first and therefore torn down
     *last*; asking it for `monkeypatch` instantiates that fixture here, which
     moves its `undo()` to after `_guard_repo_git_state`'s teardown. Measured:
-    six tests in `test_git_resolve.py` monkeypatch `os.path.isfile` to
-    `lambda p: True`, CPython 3.13+ `pathlib` routes `Path.is_file()` through
-    `os.path.isfile`, and the guard's after-snapshot then read every directory
-    under `refs/heads/` as a ref file it could not open — reporting six
-    fabricated ref mutations and erroring the teardown of tests that had
-    changed nothing. A private context cannot reorder anything.
+    `test_git_resolve.py` and `test_git_resolve_validate_scope_876.py`
+    monkeypatch `os.path.isfile` to `lambda p: True`, CPython 3.13+ `pathlib`
+    routes `Path.is_file()` through `os.path.isfile`, and the guard's
+    after-snapshot then read every *directory* under `refs/heads/` as a ref
+    file it could not open. Each such test's teardown errored with six
+    fabricated ref mutations, for 18 errors across those two files — plus one
+    more in a concurrent worker, which is the shared-repo fan-out #433
+    documents. A private context cannot reorder anything.
     """
     if _netblock is None:
         yield

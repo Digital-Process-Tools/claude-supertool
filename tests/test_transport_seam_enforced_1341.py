@@ -118,11 +118,13 @@ def test_the_guard_fixture_does_not_take_the_shared_monkeypatch() -> None:
     `conftest.py`, so it is set up first and torn down **last**. Requesting the
     shared `monkeypatch` fixture from it instantiates `monkeypatch` at that
     point, which moves `monkeypatch.undo()` to after `_guard_repo_git_state`'s
-    teardown. Six tests in `test_git_resolve.py` patch `os.path.isfile` to
-    `lambda p: True`; CPython 3.13+ routes `Path.is_file()` through
-    `os.path.isfile`; the git guard's after-snapshot then read every directory
-    under `refs/heads/` as an unreadable ref file and errored the teardown of
-    tests that had changed nothing -- 19 such errors on the first full run.
+    teardown. `test_git_resolve.py` and `test_git_resolve_validate_scope_876.py`
+    patch `os.path.isfile` to `lambda p: True`; CPython 3.13+ routes
+    `Path.is_file()` through `os.path.isfile`; the git guard's after-snapshot
+    then read every *directory* under `refs/heads/` as an unreadable ref file
+    and errored the teardown of tests that had changed nothing -- 18 errors
+    across those two files on the first full run, and a nineteenth in a
+    concurrent worker via the shared-repo fan-out #433 documents.
 
     A private `pytest.MonkeyPatch.context()` cannot reorder anything, which is
     why the fixture builds its own.
