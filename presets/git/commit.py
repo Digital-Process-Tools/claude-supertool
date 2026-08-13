@@ -436,26 +436,40 @@ def _payload_route_add_lines(to_add):
 
     Empty segments are dropped, which is what makes `":::--all"` come back as
     the one-element array it was meant to be rather than as `["", "--all"]`.
+
+    Every token that was actually split on is named, not the first one found:
+    a `paths` holding one ':::'-joined entry and one ','-joined entry would
+    otherwise have both taken apart under a line naming only one of them —
+    a remedy that is right about the split and wrong about the reason, which
+    is the shape this whole change exists to remove.
+
+    `_known_to_git` runs a subprocess, so it is asked only about an entry that
+    holds a candidate token at all. The order matters on a long refused list
+    and nothing else depends on it.
     """
-    split, found = [], ""
+    split, found = [], []
     for p in to_add:
         tok = ""
-        if not _known_to_git(p, set()):
-            for cand in _PAYLOAD_JOINS:
-                if cand in p and [x for x in p.split(cand) if x]:
+        for cand in _PAYLOAD_JOINS:
+            if cand in p and [x for x in p.split(cand) if x]:
+                if not _known_to_git(p, set()):
                     tok = cand
-                    break
+                break
         if tok:
-            found = found or tok
+            if tok not in found:
+                found.append(tok)
             split.extend([x for x in p.split(tok) if x])
         else:
             split.append(p)
     if not found:
         return []
+    named = " and ".join(repr(t) for t in found)
+    one = len(found) == 1
+    verb = "is not a separator" if one else "are not separators"
     lines = [
         "  On this route `paths` is a TOML array — one entry per path.",
-        "  %r is not a separator inside an entry; it reached git as part of"
-        % (found,),
+        "  %s %s inside an entry; %s reached git as part of"
+        % (named, verb, "it" if one else "they"),
         "  the pathspec. Did you mean:",
     ]
     if len(split) > _LIST_CAP:

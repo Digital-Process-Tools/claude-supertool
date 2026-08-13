@@ -94,6 +94,21 @@ def test_payload_all_token_joined_on_the_triple_colon_names_the_array(
     assert 'paths = ["--all"]' in out, out
 
 
+def test_payload_names_every_token_it_split_on_not_the_first(
+        tmp_path: Path) -> None:
+    """Two entries, two different joins — the line names both.
+
+    Naming only the first would be right about the split and wrong about the
+    reason for half of it, which is the shape this whole issue is about.
+    """
+    work = _repo(tmp_path)
+    out = _run(["git-commit:@-"], cwd=work,
+               stdin='message = "t"\npaths = ["a.txt:::b.txt", "c.txt,d.txt"]\n')
+    assert "':::' and ',' are not separators" in out, out
+    assert "they reached git" in out, out
+    assert 'paths = ["a.txt", "b.txt", "c.txt", "d.txt"]' in out, out
+
+
 def test_payload_array_with_a_typo_gets_no_separator_note(
         tmp_path: Path) -> None:
     """A correct route, a correct shape, one path that does not exist.
