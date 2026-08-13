@@ -10,6 +10,7 @@ from collections import Counter
 from typing import Sequence
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 
 import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
 import _declared_legs  # noqa: E402  (the second leg count, shared with gh-pr / gh-branch)
@@ -332,6 +333,7 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) < 2:
         print("ERROR: usage: run.py RUN_ID")
         return 1

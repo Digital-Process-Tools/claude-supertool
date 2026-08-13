@@ -19,6 +19,7 @@ import sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
 import _untrusted  # noqa: E402  (a job name is CI-config text, and this is a column-aligned table — #965)
 
@@ -107,6 +108,7 @@ def _print_failed_detail(failed: list[dict]) -> None:
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) < 2:
         print("ERROR: usage: pipeline.py PIPELINE_ID [active|failed]")
         return 1

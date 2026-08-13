@@ -45,6 +45,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _checks  # noqa: E402  (NAMED_CAP — the repo's disclosure cap, #605/#619)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _untrusted  # noqa: E402  (every field below is written by the check's App — #851)
@@ -464,6 +465,7 @@ def _usage() -> int:
 
 
 def main() -> int:
+    use_utf8_stdout()
     args = sys.argv[1:]
     if not args or not args[0].strip():
         return _usage()

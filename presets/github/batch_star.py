@@ -27,6 +27,7 @@ from _env import env_float  # noqa: E402  (the one numeric-knob reader)
 import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
 
 sys.path.insert(0, str(Path(__file__).parent))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _candidates  # noqa: E402  (the line format both ends honour — #1387)
 
 #: How much of `gh`'s error text one row may carry, measured on what prints.
@@ -52,6 +53,7 @@ def star(repo: str) -> tuple[bool, str]:
 
 
 def main(arg: str) -> int:
+    use_utf8_stdout()
     raw = arg.strip()
     if raw.startswith("file://"):
         raw = raw[len("file://"):]

@@ -20,6 +20,7 @@ import _repo_target  # noqa: E402  (the repo this call is about, when not the cw
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _pr_diff  # noqa: E402  (the review shape of a PR's diff — #875)
 
 DESCRIPTION_MAX = 2000
@@ -860,6 +861,7 @@ def _run_diff(number: str, path: str | None) -> int:
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) < 2:
         # Kept in step with MODES and with _mode_refusal's own list: a usage
         # line that omits a mode the op has is the #1346 defect pointed the

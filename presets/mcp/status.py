@@ -29,6 +29,7 @@ from pathlib import Path
 # Shared path helpers (#148): per-user runtime dir, NOT /tmp.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _proc  # noqa: E402  (the one liveness probe — never os.kill(pid, 0), #429)
 from _paths import list_pidfiles, read_pid, runtime_dir  # noqa: E402
 
@@ -96,6 +97,7 @@ STATUS_UNKNOWN = "unknown"
 
 
 def main() -> int:
+    use_utf8_stdout()
     cfg, config_error = find_supertool_json()
     if config_error:
         # Above the table, on stdout, and not in place of it (#569). The rows

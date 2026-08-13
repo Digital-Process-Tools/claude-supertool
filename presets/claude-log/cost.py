@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _console (#1388)
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 from _common import (  # noqa: E402
     Redactor,
     decline_lines,
@@ -507,6 +509,7 @@ def render(st, header_lines, red):
 
 
 def main():
+    use_utf8_stdout()
     args = sys.argv[1:]
     red = Redactor(enabled=not wants_raw(args))
     limit = 10

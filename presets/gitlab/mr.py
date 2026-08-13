@@ -15,6 +15,7 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).parent))  # for mrs._conflict_label
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _checks (#619)
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 
 # Imported by name, not `import mrs` — main() already binds a local `mrs`
 # (the branch-lookup result list), which would shadow a module import.
@@ -948,6 +949,7 @@ def _render_name_status(
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) < 2:
         print("ERROR: usage: mr.py NUMBER [status|full]")
         return 1

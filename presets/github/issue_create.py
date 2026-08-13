@@ -19,6 +19,7 @@ except ModuleNotFoundError:
         tomllib = None  # type: ignore[assignment]
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _remote_default as _rd  # noqa: E402
 
 
@@ -56,6 +57,7 @@ def _validate(payload: dict) -> str | None:
 
 
 def main() -> int:
+    use_utf8_stdout()
     raw_arg = sys.argv[1] if len(sys.argv) > 1 else ""
     path = raw_arg[1:] if raw_arg.startswith("@") else raw_arg
     if not path:

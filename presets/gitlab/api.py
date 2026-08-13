@@ -64,6 +64,7 @@ import urllib.parse
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _untrusted  # noqa: E402  (the body is written by whoever opened the object)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
@@ -447,6 +448,7 @@ def render(raw_stdout: str, path: str, paginated: bool, cap: int) -> None:
 
 
 def main() -> int:
+    use_utf8_stdout()
     raw_arg = sys.argv[1] if len(sys.argv) > 1 else ""
     path, paginated = parse_args(raw_arg)
 

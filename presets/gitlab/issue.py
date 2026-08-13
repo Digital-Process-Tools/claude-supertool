@@ -14,6 +14,7 @@ import sys
 import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
 import _checks  # noqa: E402  (the shared CI vocabulary, incl. NO_PIPELINE — #815)
@@ -343,6 +344,7 @@ def _download_images(image_urls: list[str], issue_number: str) -> list[str]:
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) < 2:
         print("ERROR: usage: issue.py NUMBER [full]")
         return 1

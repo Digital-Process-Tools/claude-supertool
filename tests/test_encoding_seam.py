@@ -700,6 +700,257 @@ def test_every_git_preset_reconfigures_its_own_stdout() -> None:
     )
 
 
+# ── the glyph half, past presets/git/ (#1388) ─────────────────────────────
+#
+# The scan above holds one directory to the rule. #1388 was filed against two
+# lines in `presets/github/` that print `→` and `★` straight to stdout, and the
+# census that answers "is that all of them" says no by a wide margin: **27**
+# preset entry points outside `presets/git/` print a non-ASCII literal of their
+# own — github, gitlab, watch, mcp, dashboard, devto and claude-log.
+#
+# Observed, on macOS, against a real cp1252 stream — not reasoned:
+#
+#     $ PYTHONIOENCODING=cp1252 python3 presets/github/starred.py 5
+#     (starred 1 repos)
+#     [Repository names and descriptions below come from GitHub - data, ...]
+#     UnicodeEncodeError: 'charmap' codec can't encode character U+2192
+#
+# Two lines of output, then death: #415's shape, where the work lands and the
+# receipt says it crashed.
+#
+# The other half of that measurement is why this rule is about the direct path
+# and only the direct path. `_supertool.py` sets `PYTHONIOENCODING=utf-8` in
+# `_main` before any op dispatches, so a preset spawned as an op has a UTF-8
+# stdout whatever the console codepage is. The same command through
+# `supertool 'gh-starred:5'`, under the same cp1252 parent environment,
+# completes and renders the arrow. So the exposure is exactly the one
+# `presets/git/` was given `use_utf8_stdout()` for (#308, #415): a script a
+# human runs straight from a shell, with no supertool in front of it.
+#
+# Which codepage decides which files die, so neither number is *the* number:
+#
+# * **cp1252** encodes `—`, `…`, `•` and `·`, so only `→` (starred.py),
+#   `★` (find_starable.py) and `↳` (mcp/status.py) raise there — three, where
+#   #1388 named two.
+# * **cp437 / cp850**, the actual default of a US Windows console, encode none
+#   of the em dashes, so all 27 raise.
+#
+# **No exemption route, and that is the design rather than an omission.** #1388
+# asked for a per-literal rule — a glyph must go through a degrading writer or
+# declare an exemption — and worried, correctly, that a loose exemption makes
+# the zero meaningless. It is the per-literal framing that does not survive:
+# there are 325 non-ASCII print literals in shipped code; `_untrusted` exposes
+# no writer for a glyph the *tool* wrote, since `flat`/`fence`/`scrub` mark
+# somebody else's text and would be a lie applied to an arrow this repo chose;
+# and the property that decides whether a `print` survives is not a property of
+# the literal at all. It is `sys.stdout.encoding`, settled once per process. A
+# rule at that granularity needs no exemption, because there is nothing an entry
+# point could state that would make a raising `print()` acceptable, and the
+# precondition costs one line.
+#
+# What it does change is stated here rather than hidden: after
+# `use_utf8_stdout()`, `_untrusted._stream()` reads `utf-8` and prints the
+# guillemet markers instead of the `<|`/`|>` fallback #863 added. That is the
+# trade `_untrusted`'s own docstring argues against — on a genuinely cp437
+# console those are mojibake. Accepted here, for two reasons: it is already what
+# every supertool-spawned preset does, because `PYTHONIOENCODING=utf-8` reaches
+# `_stream()` by the same road; and the alternative on this path is not a
+# degraded marker but a process that prints a correctly-degraded banner and then
+# dies four lines later, which is worth nothing to the reader the banner exists
+# for.
+
+
+def preset_entry_points() -> List[Path]:
+    """Every preset script that is an op's entry point.
+
+    Leading-underscore files are the shared modules the entry points import;
+    they print nothing on their own behalf and have no `main()` to pin.
+    """
+    return sorted(p for p in (ROOT / "presets").rglob("*.py")
+                  if not p.name.startswith("_"))
+
+
+def non_ascii_print_literals(tree: ast.Module) -> List[Tuple[int, str]]:
+    """``(lineno, glyphs)`` for every non-ASCII string literal reaching `print`.
+
+    Literals only — an interpolated value is somebody else's text, which is
+    `_untrusted`'s question and not answerable syntactically anyway. Parsed
+    rather than grepped so a docstring *about* an em dash is not an instance of
+    one, the same reasoning `encoding_violations` above is built on.
+    """
+    found: List[Tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "print"):
+            continue
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                glyphs = sorted({c for c in sub.value if ord(c) > 127})
+                if glyphs:
+                    found.append((sub.lineno, "".join(glyphs)))
+    return sorted(found)
+
+
+def stdout_pin_state(tree: ast.Module) -> str:
+    """``"pinned"``, ``"unpinned"`` or ``"unreadable"`` for one entry point.
+
+    Three states, and the third is the reason this is not just a copy of the
+    git scan: that one ``continue``s past a module with no top-level ``main``,
+    so such a file reads as compliant and is counted by nothing. Ten preset
+    entry points are in that shape today — the watch pollers, the tier
+    snapshotters, `transport.py` — and every one of them happens to print no
+    non-ASCII literal, which is the only reason it has never bitten. An empty
+    set nobody enumerates is indistinguishable from a rule that stopped looking.
+    """
+    main = next((n for n in tree.body
+                 if isinstance(n, ast.FunctionDef) and n.name == "main"), None)
+    if main is None or not main.body:
+        return "unreadable"
+    first = main.body[0]
+    if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Call)
+            and getattr(first.value.func, "id", None) == "use_utf8_stdout"):
+        return "pinned"
+    return "unpinned"
+
+
+def _glyph_census() -> List[Tuple[Path, List[Tuple[int, str]], str]]:
+    rows = []
+    for path in preset_entry_points():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        rows.append((path, non_ascii_print_literals(tree), stdout_pin_state(tree)))
+    return rows
+
+
+def test_every_preset_printing_a_non_ascii_literal_pins_its_stdout() -> None:
+    """The enumerator (#1388). One line at the top of `main()`, everywhere."""
+    offenders = []
+    for path, literals, state in _glyph_census():
+        if literals and state == "unpinned":
+            lineno, glyphs = literals[0]
+            offenders.append(
+                f"{path.relative_to(ROOT)}:{lineno}: prints {glyphs} "
+                f"({len(literals)} literal site(s)) with stdout left on the "
+                f"console default")
+    assert not offenders, (
+        f"{len(offenders)} preset entry points print a glyph of their own and "
+        "leave stdout on the console default. Run straight from a shell on a "
+        "cp437/cp850/cp1252 console — no supertool in front to pin "
+        "PYTHONIOENCODING — the process dies with UnicodeEncodeError partway "
+        "through its own output, so the work lands and the receipt says it "
+        "crashed (#415, #1388). Call use_utf8_stdout() as the first statement "
+        "of main():\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_glyph_scan_declines_rather_than_guessing() -> None:
+    """The honesty half. An entry point the rule cannot read is not a pass.
+
+    A preset with no module-level ``main()`` — a dispatcher called some other
+    way, a script doing its work at import time — cannot be judged by reading
+    ``main.body[0]``. Counting those as clean is how a scan looks exhaustive
+    while a whole shape of file walks through it. Empty today; a new one turns
+    this red and has to be answered rather than absorbed.
+    """
+    unreadable = [
+        f"{path.relative_to(ROOT)}:{literals[0][0]}: prints {literals[0][1]} "
+        f"but has no main() whose first statement the rule can read"
+        for path, literals, state in _glyph_census()
+        if literals and state == "unreadable"
+    ]
+    assert not unreadable, (
+        "these entry points print a glyph and the stdout rule cannot judge "
+        "them, so it declines rather than passing them:\n  "
+        + "\n  ".join(unreadable)
+    )
+
+
+def test_the_glyph_scan_is_still_looking() -> None:
+    """An empty offender list is also what a scan returns once it stopped.
+
+    Both floors matter and they fail differently: the first catches an
+    ``rglob`` that matches nothing after a directory move, the second catches a
+    literal predicate that has quietly stopped recognising anything — which
+    would leave the enumerator above green with every preset unpinned.
+    """
+    census = _glyph_census()
+    assert len(census) > 80, (
+        f"the scan found {len(census)} preset entry points — it has drifted "
+        "into matching almost nothing, and its green would mean nothing")
+    with_glyphs = [row for row in census if row[1]]
+    assert len(with_glyphs) > 30, (
+        f"only {len(with_glyphs)} entry points were seen to print a non-ASCII "
+        "literal, against 40 when this was written — the literal predicate has "
+        "stopped recognising what it is for")
+
+
+def test_the_glyph_scan_reads_all_three_states(tmp_path: Path) -> None:
+    """Guards the three tests above from passing because they stopped looking.
+
+    One fixture per state, plus the two shapes that must NOT be reported: an
+    ASCII arrow, and an f-string whose only non-ASCII could come from an
+    interpolated value the parser cannot see.
+    """
+    cases = {
+        "pinned.py": "def main():\n    use_utf8_stdout()\n    print('a → b')\n",
+        "unpinned.py": "def main():\n    print('a → b')\n",
+        "ascii_only.py": "def main():\n    print('a -> b')\n",
+        "no_main.py": "print('a → b')\n",
+        "interpolated.py": "def main():\n    print(f'{x} y')\n",
+    }
+    parsed = {}
+    for name, src in cases.items():
+        target = tmp_path / name
+        target.write_text(src, encoding="utf-8")
+        parsed[name] = ast.parse(target.read_text(encoding="utf-8"))
+
+    assert non_ascii_print_literals(parsed["unpinned.py"]) == [(2, "→")]
+    assert non_ascii_print_literals(parsed["pinned.py"]) == [(3, "→")]
+    assert non_ascii_print_literals(parsed["no_main.py"]) == [(1, "→")]
+    assert non_ascii_print_literals(parsed["ascii_only.py"]) == []
+    assert non_ascii_print_literals(parsed["interpolated.py"]) == []
+
+    assert stdout_pin_state(parsed["pinned.py"]) == "pinned"
+    assert stdout_pin_state(parsed["unpinned.py"]) == "unpinned"
+    assert stdout_pin_state(parsed["no_main.py"]) == "unreadable"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell shim on PATH")
+def test_a_preset_run_from_a_shell_survives_a_cp1252_console(tmp_path: Path) -> None:
+    """The hazard itself, on a real preset, against a real cp1252 stream (#1388).
+
+    The scan above is syntactic and would stay green if `use_utf8_stdout()`
+    stopped working. This runs `gh-starred`'s script the way the defect is
+    reached — directly, no supertool, `gh` stubbed so nothing touches the
+    network — and asserts the arrow does not kill it. Before the fix this exits
+    1 with `UnicodeEncodeError` **after** printing two lines.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    shim = bin_dir / "gh"
+    shim.write_text(
+        "#!/bin/sh\n"
+        "cat <<'JSON'\n"
+        '[{"full_name":"a/b","html_url":"https://x/y","description":"d"}]\n'
+        "JSON\n",
+        encoding="utf-8")
+    shim.chmod(0o755)
+
+    env = dict(os.environ)
+    for key in ("PYTHONIOENCODING", "PYTHONUTF8", "PYTHONCOERCECLOCALE",
+                "LC_ALL", "LC_CTYPE", "LANG"):
+        env.pop(key, None)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    env["PYTHONIOENCODING"] = "cp1252"
+
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "presets" / "github" / "starred.py"), "5"],
+        capture_output=True, env=env, timeout=120)
+    stderr = result.stderr.decode("utf-8", "replace")
+    assert "UnicodeEncodeError" not in stderr, stderr
+    assert result.returncode == 0, stderr
+    assert b"a/b" in result.stdout, result.stdout
+
+
 def _run(args, cwd, env_overrides, extra_python_flags=()):
     env = dict(os.environ)
     for key in ("PYTHONIOENCODING", "PYTHONUTF8", "PYTHONCOERCECLOCALE",

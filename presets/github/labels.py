@@ -81,6 +81,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 
 import _repo_target  # noqa: E402  (the repo this call is about, when not cwd's)
 import _untrusted  # noqa: E402  (label names and descriptions are remote text)
@@ -549,6 +550,7 @@ def tally_main(prefix: str, rows: list[dict], target: str) -> int:
 
 
 def main() -> int:
+    use_utf8_stdout()
     prefix, arg_err = parse_args(sys.argv[1:])
     if arg_err:
         print(arg_err)
