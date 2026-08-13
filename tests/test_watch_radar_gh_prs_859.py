@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+import _live_gh
+
 ROOT = Path(__file__).parent.parent
 WATCH_DIR = ROOT / "presets" / "watch"
 
@@ -399,30 +401,43 @@ def test_radar_state_names_a_tier_it_cannot_resolve(monkeypatch, capsys):
 # 8. live — the fixtures cannot reach the shapes real GitHub produces
 # ---------------------------------------------------------------------------
 
-def _gh_ready() -> bool:
-    try:
-        r = subprocess.run(["gh", "auth", "status"], capture_output=True,
-                           text=True, timeout=20, encoding="utf-8",
-                           errors="replace")
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return r.returncode == 0
-
-
+@pytest.mark.slow
 def test_live_board_over_this_repo(state_dir):
-    # Probed inside the test, not at collection: a module-level `skipif` runs
-    # `gh auth status` on every collection of the whole suite.
-    if not _gh_ready():
-        pytest.skip("gh not authenticated")
+    # `slow`, which in this repo means "runs on a schedule", not "runs
+    # nowhere": .github/workflows/slow-tests.yml selects exactly this marker
+    # daily and its header exists to say so. That is the venue a live API call
+    # belongs in, and the reasoning is worth writing down because the first
+    # pass at #1568 got it backwards.
+    #
+    # It used to sit in the default selection guarded by a `gh auth status`
+    # probe, and the argument for keeping it there was that moving it would
+    # cost the coverage it exists for — the fixtures above cannot produce the
+    # shapes real GitHub does. That argument assumed the test was exercising
+    # live GitHub in CI. It was not: `gh auth status` exits non-zero on a
+    # runner with no credentials, so it skipped on all twelve legs of every
+    # run since it was written. Deleting the probe did not add coverage, it
+    # turned a permanent skip into a red — PR #1586, four legs, on gh's
+    # Actions-only "set the GH_TOKEN environment variable" message.
+    #
+    # So the marker is the opposite of a retreat. Here it runs on one leg with
+    # a token daily, where before it ran nowhere; and it can no longer red an
+    # unrelated diff, because it is off the per-push path entirely. That is
+    # both halves of #1568 rather than one.
+    #
+    # `_live_gh.reachable` still guards the call, because a scheduled run can
+    # still be rate-limited and a laptop can still have no `gh`. It skips
+    # countably on those and re-raises everything else.
+    #
     # `state=open`, not `author=` (#974). This test was spelled `author=` to
     # mean "the whole board, unfiltered" — which worked only because an empty
     # value walked through #939's refusal, satisfied `has_role`, and suppressed
     # the `--author @me` default. That is the widening #974 refuses, so the
     # spelling no longer exists; a real narrowing filter is what this test
     # meant and it keeps the live GitHub shapes it exists to exercise.
-    lines, _healthy = tier.radar_report(
-        {"_arg": "state=open", "default_branch": "",
-         "_watch": lambda *a, **k: "alive"})
+    with _live_gh.reachable(tier.RadarUnreachable, tier.RadarUnconfigured):
+        lines, _healthy = tier.radar_report(
+            {"_arg": "state=open", "default_branch": "",
+             "_watch": lambda *a, **k: "alive"})
     text = "\n".join(lines)
     assert "scope" in text
     assert "open" in text

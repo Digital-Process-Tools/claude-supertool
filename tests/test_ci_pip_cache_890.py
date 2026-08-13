@@ -23,7 +23,7 @@ from _workflow_parse import job_blocks, job_steps, run_blocks
 
 REPO = Path(__file__).resolve().parents[1]
 
-_ALL_JOBS = ("pytest", "coverage", "notifiers")
+_ALL_JOBS = ("pytest", "coverage", "notifiers", "lint-new")
 
 
 def _setup_python_steps(job_name: str) -> list:
@@ -36,7 +36,7 @@ def _setup_python_steps(job_name: str) -> list:
     return steps
 
 
-def test_the_job_discovery_still_finds_the_three_jobs() -> None:
+def test_the_job_discovery_still_finds_every_job() -> None:
     assert set(job_blocks()) == set(_ALL_JOBS), (
         "the set of CI jobs changed; this file's job list needs updating too")
 

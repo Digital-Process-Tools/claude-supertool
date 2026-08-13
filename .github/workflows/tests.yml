@@ -303,6 +303,58 @@ jobs:
       # must not survive in a new form.
       - name: Coverage gate
         run: python -X utf8 .github/scripts/coverage_gate.py
+  lint-new:
+    # #1481: an error that arrives already-dead is invisible to both existing
+    # lint gates at once. The pytest job deliberately runs no `ruff check .` —
+    # the comment on its install step says why, and this job does not reverse
+    # it — and the supertool `ruff` validator reports only what an edit
+    # *introduces*, which a file arriving whole cannot do. PR #1473 merged
+    # 22/22 green with three unreachable imports in a file it created, every
+    # edit to which reported `ruff : ok (no new errors)`.
+    #
+    # Scoped to the diff, never the tree: the paths this PR adds, copies or
+    # renames, where "pre-existing" is not a category a path with no history
+    # can be in. A new rule in a ruff release then reds only a PR that is
+    # already touching the file, which is the cost the pytest job's comment
+    # refuses to socialise onto whoever pushes next.
+    name: lint (files this PR adds or renames)
+    runs-on: ubuntu-latest
+    # Not sized from observation — this job has never run. It is a checkout, a
+    # pip install and one ruff invocation over a handful of files, i.e. the
+    # `notifiers` shape (24-37s observed) rather than the pytest one, so it
+    # takes the `notifiers` budget by analogy and says so. Re-derive it from
+    # this job's own durations once there are some; a number carried over from
+    # a different job class is exactly what #702 was filed about.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The gate diffs against the PR's base. `actions/checkout` defaults
+          # to depth 1, under which `origin/<base>` does not resolve — and an
+          # unresolvable base yields an empty file list, which reads exactly
+          # like a clean one. The script declines rather than passing there
+          # (exit 2), so this line is belt to that braces, not the only thing
+          # standing between a shallow clone and a false green.
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install ruff (the same one the dev extra pins)
+        # `.[dev]` rather than a hand-typed `pip install ruff`, for the reason
+        # #890 gives on the two jobs above: the cache key is `pyproject.toml`,
+        # so what gets installed has to be what that file declares. It also
+        # keeps this gate and the post-edit validator on one linter version
+        # instead of two that drift.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+      - name: Lint the files this PR adds, copies or renames
+        # Three states on every run, pass or fail — `ok`, `finding`, `declined`
+        # — because "nothing to report" and "I could not look" print the same
+        # way otherwise, and that equivalence is the whole of #1481.
+        run: python -X utf8 .github/scripts/lint_new_files.py
   notifiers:
     # #557: the matrix above runs pytest and nothing else, so
     # `notifiers/claude-channel/` — TypeScript, started in every radar session —
