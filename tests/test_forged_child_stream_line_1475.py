@@ -255,7 +255,17 @@ SINK_SHAPES = tuple(SHAPE_PROBES)
 #: right of an assignment, both of which the model already speaks for; padding
 #: the bound with sites the census reports by name makes it unreadable in the
 #: one direction it exists to be read.
-UNRESOLVED = 104
+#:
+#: 104 -> 105 on 2026-08-14, and the arithmetic is worth keeping because the
+#: ratchet did its job. #1636 measured 104 against a tree that did not yet
+#: contain #1632's `upstream_refs`; both PRs were green on their own
+#: merge-bases, and `master` went red the moment the second landed - the #1257
+#: shape, which `gh-pr-merge` discloses as `BEHIND: master is N commits ahead`
+#: on every merge. The added site is `presets/git/worktrees.py:719`,
+#: `for line in _untrusted.split_lines(res.stdout)`: a loop over a child
+#: stream, already flattened, and unmodelled by this scan rather than
+#: unhandled by the product. Re-baselined after locating it, never before.
+UNRESOLVED = 105
 
 #: Calls whose result cannot be a string, so the taint stops there. A type
 #: argument, not an allowlist: `json.loads(r.stdout)` yields a dict, and every
