@@ -32,6 +32,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 _ROOT = Path(__file__).parent.parent
 
 
@@ -78,10 +80,27 @@ def _payload(status: str, conclusion: str | None, jobs: Any) -> dict:
 
 
 def _render(monkeypatch, capsys, payload: dict) -> str:
+    """Narrow on purpose (#1488) — see the twin in
+    `tests/test_gh_run_header_tally_789.py`. Patching `subprocess.run` replaces
+    every spawn in the process, `_branch_locale`'s git calls included, so a
+    fall-through feeds them the run payload and it echoes into the render.
+    """
     def fake(argv, *a, **kw):
-        if list(argv)[:2] == ["git", "rev-parse"]:
+        argv = list(argv)
+        if argv[:2] == ["git", "rev-parse"]:
             return _Completed("master\n")
-        return _Completed(json.dumps(payload))
+        if argv[:3] == ["gh", "run", "view"]:
+            return _Completed(json.dumps(payload))
+        if argv[:2] == ["gh", "api"] and "/jobs?" in " ".join(argv):
+            # The second leg source. See the twin in
+            # `tests/test_gh_run_header_tally_789.py`: the old fall-through fed
+            # it the run payload, which carries its own `jobs` list, so it
+            # parsed and the second source was silently the first one.
+            jobs = payload.get("jobs") or []
+            return _Completed(json.dumps(
+                {"total_count": len(jobs),
+                 "jobs": [{"name": j.get("name")} for j in jobs]}))
+        raise AssertionError(f"unstubbed command: {argv!r}")
 
     monkeypatch.setattr(run.subprocess, "run", fake)
     monkeypatch.setattr(sys, "argv", ["run.py", "30972816902"])
@@ -349,3 +368,70 @@ def test_a_step_carrying_neither_field_is_not_counted_resolved(
     jobs = [_job("partial", "in_progress", None, steps=steps, job_id=11)]
     out = _render(monkeypatch, capsys, _payload("in_progress", None, jobs))
     assert "1/2 steps" in _table_row(out, "partial"), _table_row(out, "partial")
+
+# ---------------------------------------------------------------------------
+# the fixture answers only what it models (#1488)
+# ---------------------------------------------------------------------------
+
+class _Spy:
+    """A `monkeypatch` proxy that keeps hold of the fake `subprocess.run`.
+
+    See the twin in `tests/test_gh_run_header_tally_789.py` — `_render` installs
+    its stub as a closure, so interposing here is what lets a test ask the stub
+    a question without reshaping every call site in this file.
+    """
+
+    def __init__(self, monkeypatch) -> None:
+        self._mp = monkeypatch
+        self.installed = None
+        self.seen: list = []
+
+    def setattr(self, target, name=None, value=None, **kwargs):
+        if name == "run" and callable(value):
+            inner = value
+
+            def watched(argv, *a, **kw):
+                result = inner(argv, *a, **kw)
+                self.seen.append((list(argv), getattr(result, "stdout", "")))
+                return result
+
+            self.installed = watched
+            value = watched
+        return self._mp.setattr(target, name, value, **kwargs)
+
+    def __getattr__(self, item):
+        return getattr(self._mp, item)
+
+
+def test_the_fixture_refuses_a_command_it_never_modelled(monkeypatch, capsys) -> None:
+    """#1488: a stub that answers every spawn cannot be told from the product.
+
+    `monkeypatch.setattr(run.subprocess, "run", ...)` sets the attribute on the
+    shared `subprocess` module, so every spawn in the process is faked, not just
+    `run.py`'s — `presets/_branch_locale.py`'s git calls included. A
+    fall-through hands those the run payload JSON, and it comes back out inside
+    the rendered header. Latent here because nothing asserts on that line; the
+    cost lands on the next author.
+    """
+    spy = _Spy(monkeypatch)
+    _render(spy, capsys, _payload("completed", "success",
+                                  [_job("a", "completed", "success")]))
+    assert spy.installed is not None
+
+    with pytest.raises(AssertionError, match="unstubbed command"):
+        spy.installed(["git", "worktree", "list", "--porcelain"])
+
+
+def test_the_git_call_the_render_really_makes_is_not_answered_with_run_json(
+        monkeypatch, capsys) -> None:
+    """`git rev-parse --abbrev-ref HEAD` runs on every render; its answer must
+    be a branch name, not the run payload."""
+    spy = _Spy(monkeypatch)
+    _render(spy, capsys, _payload("completed", "success",
+                                  [_job("a", "completed", "success")]))
+
+    git_calls = [(argv, out) for argv, out in spy.seen if argv[:1] == ["git"]]
+    assert git_calls, f"no git spawn was recorded at all: {spy.seen!r}"
+    for argv, out in git_calls:
+        assert "databaseId" not in out, (
+            f"{argv!r} was answered with the run payload (#1488): {out!r}")

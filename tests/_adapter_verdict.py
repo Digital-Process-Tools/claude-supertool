@@ -39,6 +39,8 @@ from typing import Any
 
 import pytest
 
+import _core_timeout_census
+
 __all__ = [
     "verdict", "describe", "assert_ok", "assert_declined", "assert_adapter_ok",
     "stalled_at_its_own_wall", "skip_if_stalled",
@@ -354,6 +356,7 @@ def core_timed_out(payload: Any) -> str | None:
         if payload.get(CORE_TIMEOUT_KEY) is not True:
             return None
         return (
+            f"{_core_timeout_census.TOKEN}: "
             "the core's own spawn wall fired before the adapter answered, so "
             "there is no verdict about this file to assert on — "
             f"{describe(payload)}"
@@ -392,11 +395,24 @@ def run_one_or_skip(name: str, spec: dict, target: str, **kwargs: Any) -> Any:
     `supertool` is imported here rather than at module scope because several
     test files insert the repo root on `sys.path` before importing it, and this
     module is imported from some of them.
+
+    **Every call is counted, declined or not (#1523).** The right to decline had
+    no floor under it: a runner slow enough to blow the core's wall on every
+    spawn muted all 42 sites at once and the session still exited 0, having
+    asserted nothing about the validator core. `_core_timeout_census` turns the
+    two numbers into a terminal-summary line and reds the session when the
+    decline count reaches the call count. Counting happens here rather than in
+    `skip_if_core_timed_out` because tests call that one directly on hand-built
+    payloads to assert *on* the arm, and those are not spawns.
     """
     import supertool
 
-    return skip_if_core_timed_out(
-        supertool._validator_run_one(name, spec, target, **kwargs))
+    payload = supertool._validator_run_one(name, spec, target, **kwargs)
+    reason = core_timed_out(payload)
+    _core_timeout_census.record(reason is not None)
+    if reason is not None:
+        pytest.skip(reason)
+    return payload
 
 
 def assert_adapter_ok_or_skip_if_stalled(

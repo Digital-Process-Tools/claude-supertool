@@ -71,11 +71,38 @@ def _payload(status: str, conclusion: str | None, jobs: Any,
 
 
 def _render(monkeypatch, capsys, payload: dict) -> str:
-    """Run the op end to end against a faked `gh`, return stdout."""
+    """Run the op end to end against a faked `gh`, return stdout.
+
+    **Narrow on purpose (#1488).** `monkeypatch.setattr(run.subprocess, "run",
+    ...)` sets the attribute on the shared `subprocess` module, so this replaces
+    every spawn in the process, not `run.py`'s alone. A fall-through therefore
+    hands `presets/_branch_locale.py`'s git calls the run payload as their
+    stdout, and it comes back out inside the rendered header — an assertion
+    written against the full render can then match text the product never
+    produced. Each command this fixture models gets an arm; anything else is a
+    failure, not a wrong answer.
+    """
     def fake(argv, *a, **kw):
-        if list(argv)[:2] == ["git", "rev-parse"]:
+        argv = list(argv)
+        if argv[:2] == ["git", "rev-parse"]:
             return _Completed("master\n")
-        return _Completed(json.dumps(payload))
+        if argv[:3] == ["gh", "run", "view"]:
+            return _Completed(json.dumps(payload))
+        if argv[:2] == ["gh", "api"] and "/jobs?" in " ".join(argv):
+            # `_declared_legs` — the *second* leg source, read to disclose a
+            # shortfall. The old fall-through handed it the run payload, and a
+            # run payload carries its own `jobs` list, so it parsed and the
+            # second source silently became the first one. That is #804's own
+            # defect ("a second source read through the first one is not a
+            # second source") reproduced inside #804's fixture. Modelled
+            # explicitly here, agreeing with the payload, because these suites
+            # are about the header tally; disagreement is
+            # `tests/test_gh_run_matrix_reconcile_804.py`'s subject.
+            jobs = payload.get("jobs") or []
+            return _Completed(json.dumps(
+                {"total_count": len(jobs),
+                 "jobs": [{"name": j.get("name")} for j in jobs]}))
+        raise AssertionError(f"unstubbed command: {argv!r}")
 
     monkeypatch.setattr(run.subprocess, "run", fake)
     monkeypatch.setattr(sys, "argv", ["run.py", "30972816902"])
@@ -313,3 +340,80 @@ def test_job_states_length_always_matches_the_job_count() -> None:
     assert states is not None and len(states) == 4
     assert run.job_states("not a list") is None
     assert run.job_states(None) is None
+
+# ---------------------------------------------------------------------------
+# the fixture answers only what it models (#1488)
+# ---------------------------------------------------------------------------
+
+class _Spy:
+    """A `monkeypatch` proxy that keeps hold of the fake `subprocess.run`.
+
+    `_render` installs its stub as a closure, so there is otherwise no way to
+    ask the stub a question. Interposing here is what lets a test drive a
+    command the fixture was never taught and see what comes back, without
+    reshaping every call site in this file.
+    """
+
+    def __init__(self, monkeypatch) -> None:
+        self._mp = monkeypatch
+        self.installed = None
+        self.seen: list = []
+
+    def setattr(self, target, name=None, value=None, **kwargs):
+        if name == "run" and callable(value):
+            inner = value
+
+            def watched(argv, *a, **kw):
+                result = inner(argv, *a, **kw)
+                self.seen.append((list(argv), getattr(result, "stdout", "")))
+                return result
+
+            self.installed = watched
+            value = watched
+        return self._mp.setattr(target, name, value, **kwargs)
+
+    def __getattr__(self, item):
+        return getattr(self._mp, item)
+
+
+def test_the_fixture_refuses_a_command_it_never_modelled(monkeypatch, capsys) -> None:
+    """#1488: a stub that answers every spawn cannot be told from the product.
+
+    `monkeypatch.setattr(run.subprocess, "run", ...)` sets the attribute on the
+    shared `subprocess` module, so it is not `run.py`'s spawns that are faked —
+    it is every spawn in the process, `presets/_branch_locale.py`'s git calls
+    included. With a fall-through, those git calls receive the run payload JSON
+    as their stdout and it comes back out inside the rendered header. Nothing
+    here asserts on that line today, which is exactly why it survived: the cost
+    lands on the next author, whose assertion against the full render matches
+    text the product never produced.
+
+    The bar this repo applies — *would this still pass if the code did
+    nothing?* — cannot be evaluated at all while the fixture is that wide.
+    """
+    spy = _Spy(monkeypatch)
+    _render(spy, capsys, _payload("completed", "success",
+                                  [_job("a", "completed", "success")]))
+    assert spy.installed is not None
+
+    with pytest.raises(AssertionError, match="unstubbed command"):
+        spy.installed(["git", "worktree", "list", "--porcelain"])
+
+
+def test_the_git_call_the_render_really_makes_is_not_answered_with_run_json(
+        monkeypatch, capsys) -> None:
+    """The narrow arm, verified against a spawn that actually happens.
+
+    `_branch_locale.current_branch()` runs `git rev-parse --abbrev-ref HEAD` on
+    every render. Its answer must be a branch name; a payload coming back there
+    is #1488 verbatim.
+    """
+    spy = _Spy(monkeypatch)
+    _render(spy, capsys, _payload("completed", "success",
+                                  [_job("a", "completed", "success")]))
+
+    git_calls = [(argv, out) for argv, out in spy.seen if argv[:1] == ["git"]]
+    assert git_calls, f"no git spawn was recorded at all: {spy.seen!r}"
+    for argv, out in git_calls:
+        assert "databaseId" not in out, (
+            f"{argv!r} was answered with the run payload (#1488): {out!r}")
