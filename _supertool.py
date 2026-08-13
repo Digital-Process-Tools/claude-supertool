@@ -16808,11 +16808,12 @@ def guard_refusal(verdict: GuardVerdict) -> str:
     # next moves the directory the op acts on (#1554, `_cwd_retargets_note`).
     lines.append(
         "An op named above is loaded from "
-        # Flattened like every other value this message quotes: `_CONFIG_PATH`
-        # is a directory name, and a directory name may legally contain a
-        # newline — which would put a line of somebody's choosing inside a
-        # system-authored denial, the exact hole #1391 closed for `use` and
-        # `description`.
+        # Flattened like every other value this message quotes. `_CONFIG_PATH`
+        # is the `.supertool.json` the loader found, so every component above
+        # its last is a directory name — and a directory name may legally
+        # contain a newline, which would put a line of somebody's choosing
+        # inside a system-authored denial: the exact hole #1391 closed for
+        # `use` and `description`.
         + (_guard_quote(_CONFIG_PATH, _GUARD_USE_CAP) if _CONFIG_PATH
            else "this project's .supertool.json")
         + " — a preset or project op does not exist in a directory with no "
@@ -22256,8 +22257,10 @@ def _missing_field_create_clause(op: str, name: str,
     `edit:@-` with `path` + `new` and no `old` refuses by naming the field, and
     the field is not the reader's problem: when nothing exists at `path`, no
     spelling of `old` would have worked and `edit` does not create. Filling in a
-    `create = true` that `edit` has never had is the shape this was reported in,
-    and that key is silently dropped one line further on.
+    `create = true` that `edit` has never had is the shape this was reported in.
+    That key used to be dropped in silence one line further on; since #1551 it
+    is refused by name, and this clause is appended to that refusal rather than
+    replaced by it — "unknown field(s) create" is true and is not the answer.
 
     Conditioned on the path actually being absent, so a genuine missing-field
     typo on a file that IS there keeps the message it had — naming `paste` there
