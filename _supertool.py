@@ -21637,7 +21637,7 @@ _TOML_OPS_HEADER = re.compile(r"(?m)^[ \t]*\[\[[ \t]*ops[ \t]*\]\]")
 
 
 def _toml_literal_double_backslashes(raw: str) -> List[Tuple[str, str, str, int]]:
-    r"""`(key, label, first line, count)` per literal block holding a `\\` pair.
+    r"""`(key, label, first line flattened, count)` per literal block with `\\`.
 
     Provenance is the whole point and it is read off the source, not the parsed
     value: in a basic block `\\` IS one backslash and is the correct spelling,
@@ -21667,8 +21667,17 @@ def _toml_literal_double_backslashes(raw: str) -> List[Tuple[str, str, str, int]
             line = content[start:] if stop < 0 else content[start:stop]
             seen = len(_TOML_OPS_HEADER.findall(raw[:i]))
             label = key if seen == 0 else "ops[" + str(seen - 1) + "]." + key
+            # `_flat_field` on the excerpt, not just the truncation (#1583).
+            # `line` was cut on `chr(10)` alone, but this repo's definition of
+            # "one line" is `str.splitlines()` — ten separators (#886) — so a
+            # U+2028 in the caller's own value survived inside the excerpt and
+            # put a line of their choosing at column 0 of the note and of the
+            # refusal that render it. Flattened here rather than at the two
+            # render sites so the tuple's third element means what its name
+            # says everywhere it is read.
             findings.append(
-                (key, label, line.strip()[:_TOML_LITERAL_TAIL_CHARS], total))
+                (key, label,
+                 _flat_field(line.strip())[:_TOML_LITERAL_TAIL_CHARS], total))
         i = raw.find(opener, nxt)
     return findings
 
