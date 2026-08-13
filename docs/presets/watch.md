@@ -582,7 +582,7 @@ gh-prs:
 | `github-pr` | `gh pr view <N> --json state,mergeable,reviewDecision,statusCheckRollup,comments,...` | `checks_failed`, `checks_succeeded`, `checks_pending`, `review_approved`, `review_changes_requested`, `comment_added`, `merged`, `closed`, `conflicts_appeared`, `pr_unreachable` |
 | `gitlab-mr` | `glab api projects/:id/merge_requests/<iid>` | `pipeline_failed`, `pipeline_succeeded`, `pipeline_running`, `comment_added`, `merged`, `closed`, `conflicts_appeared`, `mr_unreachable` |
 | `gl-pipeline` | `glab api projects/:id/pipelines/<id>` | `pipeline_succeeded`, `pipeline_failed`, `pipeline_canceled`, `pipeline_running`, `pipeline_unreachable` |
-| `gitlab-mr-feed` | `glab mr list` for a whole filter | `mr_opened`, `mr_merged`, `mr_closed`, `mr_left_feed` |
+| `gitlab-mr-feed` | `glab mr list` for a whole filter | `mr_opened`, `mr_merged`, `mr_closed`, `mr_left_feed`, `mrs_unreachable` |
 | `github-issue-feed` | `gh api repos/{owner}/{repo}/issues` for a whole scope | `issue_opened`, `issue_reopened`, `issue_entered_feed`, `issue_labeled`, `issue_unlabeled`, `issue_assigned`, `issue_unassigned`, `issue_comment_added`, `issue_closed`, `issue_left_feed`, `issues_unreachable` |
 | `gl-runners` | `glab api projects/:id/runners` + the pending/running job queue | `runner_silent`, `runner_liveness_unknown`, `runner_recovered`, `runner_starved`, `queue_liveness_unknown`, `queue_cleared`, `runner_paused`, `runner_added`, `runner_vanished` |
 | `gh-run` | `gh run view <id> --json status,conclusion,workflowName,url,...` | `run_succeeded`, `run_failed`, `run_cancelled`, `run_action_required`, `run_started`, `run_inconclusive`, `run_unreachable` |
@@ -1051,7 +1051,19 @@ The ID is a **scope**: `@me` and `@reviewer` are aliases for `gl-mrs` filters, a
 | known iid with a dead watcher | Respawned. Coverage is continuous for the same reason discovery is. |
 | vanished iid | One `glab api` lookup, then `mr_merged` / `mr_closed` / `mr_left_feed` — the terminal two only when no per-MR poller announces that transition itself. |
 | `is_terminal` | Never. A population has no final state. |
-| fetch failure | No events, state kept. An unreachable GitLab must never read as "everything vanished". |
+| fetch failure | One `mrs_unreachable`, no departures, state kept. An unreachable GitLab must never read as "everything vanished" — nor as "nothing changed". |
+
+**A population that could not be established is not an empty one** ([#1602](https://github.com/Digital-Process-Tools/claude-supertool/issues/1602)). Until then a failed fetch returned `[], state`: no departures, which was right, and no disclosure either, which meant an expired token produced a feed that was alive, green in `watches`, and silent forever. That is byte-identical to a feed correctly reporting that nothing changed — and a feed's healthy steady state *is* silence, so this is the one source where the house defect has no second signal to be noticed by.
+
+`fetch_population` now answers `(pop, "")` or `(None, why)`, and the first failure of a streak emits one `mrs_unreachable` carrying the classified reason (`glab not authenticated. Run: glab auth login`) and `last_known_count` — what the last poll that could see found, not a claim about GitLab now. It is **edge-triggered** on a `lookup` flag in state: an alert repeating every five minutes for a token that expired yesterday is one people mute, and a muted alert is the original silence by a longer route.
+
+The key is plural for a reason. `mr_unreachable` (per-MR source) says "I could not look up !33175"; `mrs_unreachable` says "I could not establish which MRs exist at all". One `only=` string can carry both, so they had better not read as the same sentence.
+
+**The trap specific to a feed** is on the recovery side: a source that treats an outage as an empty population announces every member as a fresh arrival when the network comes back. The whole previous state is carried forward — `known`, and each member's recorded `covers` — so the poll after an outage reports the transitions that happened *during* it and nothing else.
+
+`mrs_unreachable` is in `DEFAULT_FEED_ONLY`. Every `radar` run spawns the feed with that filter, so an event held out of it reaches the operator only if they configured a non-default `only=` — i.e. never, in the configuration the defect lives in. Same argument that put `mr_unreachable` in `DEFAULT_ONLY` ([#541](https://github.com/Digital-Process-Tools/claude-supertool/issues/541)).
+
+On the board, a feed that cannot see gets **its own** warning line and its own `feed sight:` row under `radar:--state`, distinct from `feed      : … last error:` — the dispatcher writes `last_error` from a poller *exception*, and a `(None, why)` fetch raises nothing at all. A board whose feed is blind is also not `healthy`, because `quiet_when_healthy` drops a healthy tier's lines wholesale and would otherwise delete the warning on the way out.
 
 **Vanished is not merged.** An iid leaving `author=@me,state=opened` could have merged, closed, been reassigned, or the filter could have changed. Guessing `mr_merged` is right most of the time and confidently wrong the rest, so the feed spends one lookup on the truth — departures are rare, so the call is too. Only a confirmed `merged`/`closed` stops the watcher and, since the per-MR watcher reaches the same conclusion within 30s and owns the desktop ping, `mr_merged`/`mr_closed` are emitted on the wire **without** a notification so a merge never pings twice. A still-open MR gets `mr_left_feed` and **keeps its watcher** — following an MR the feed no longer returns is legitimate, the same distinction `radar`'s prune already makes.
 

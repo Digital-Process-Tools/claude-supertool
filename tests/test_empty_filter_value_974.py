@@ -309,7 +309,10 @@ def test_mr_feed_poller_declines_a_scope_it_cannot_narrow(
             "narrow — that is the widened population the guard exists to stop")
 
     monkeypatch.setattr(feed.mrs, "_run", explode)
-    assert feed.fetch_population("author=") is None
+    pop, error = feed.fetch_population("author=")
+    assert pop is None
+    # #1602: the refusal was right and silent. It now says which token.
+    assert "author=" in error
 
 
 def test_mr_feed_poller_still_resolves_a_good_scope(
@@ -318,8 +321,9 @@ def test_mr_feed_poller_still_resolves_a_good_scope(
         return subprocess.CompletedProcess(cmd, 0, json.dumps([_mr(21)]), "")
 
     monkeypatch.setattr(feed.mrs, "_run", fake_run)
-    got = feed.fetch_population("author=@me")
+    got, error = feed.fetch_population("author=@me")
     assert got is not None and "21" in got
+    assert error == ""
 
 
 def test_radar_gh_prs_tier_refuses_an_empty_value() -> None:

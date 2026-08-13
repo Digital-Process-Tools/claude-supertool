@@ -631,10 +631,15 @@ def _feed_state(tmp_path: Path, body: dict) -> Path:
 def test_radar_starts_the_feed_poller_with_the_shared_feed_defaults(env, capsys) -> None:
     _set_live(env, [_mr(33161)])
     _run(env, capsys)
-    assert _feed_spawns(env) == [
-        ("gitlab-mr-feed", "@me",
-         ["mr_opened", "mr_merged", "mr_closed", "mr_left_feed"]),
-    ]
+    # Against `defaults` rather than a literal: the claim is that radar spawns
+    # the feed with the *shared* filter and not a local copy of it, and a
+    # hand-written list makes every addition to that filter look like a
+    # regression here (#1602 was the second).
+    expected = [e for e in mr_tier.defaults.DEFAULT_FEED_ONLY.split(",") if e]
+    assert _feed_spawns(env) == [("gitlab-mr-feed", "@me", expected)]
+    # The two the filter exists for, named so the assertion above cannot pass
+    # against an empty or truncated default.
+    assert {"mr_opened", "mrs_unreachable"} <= set(expected)
 
 
 def test_a_second_radar_run_does_not_start_a_second_feed_poller(env, capsys) -> None:

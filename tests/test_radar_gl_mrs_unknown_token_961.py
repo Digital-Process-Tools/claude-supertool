@@ -20,8 +20,9 @@ Worse here than at the op level. `gh-prs` printing an unfiltered board wastes a
 read; this tier resolves a *population* and then spawns over it — `heal()` starts
 a per-MR watcher for every iid, and `feed_scope()` names the discovery feed. A
 silently widened scope therefore fires `mr_opened` for strangers' MRs. The
-mr-feed poller already declines exactly this (`fetch_population` returns `None`
-on an unapplied token, #939); the tier is the same shape and did not get it.
+mr-feed poller already declines exactly this (`fetch_population` answers with a
+`None` population on an unapplied token — `(None, why)` since #1602, #939); the
+tier is the same shape and did not get it.
 
 Three things are pinned, and the second and third are on the same line as the
 first:

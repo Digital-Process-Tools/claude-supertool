@@ -48,6 +48,19 @@ import pytest
 
 _ROOT = Path(__file__).parent.parent
 
+# `presets/watch` on the path, for the one test here that loads the mr-feed
+# poller. That poller loads `watch/transport.py`, which inserts `presets/` for
+# `_proc` and then imports `naming` out of its *own* directory, which nothing
+# puts on the path. It resolved anyway whenever some other watch test module
+# had already inserted it — and `addopts` carries `-n auto`, so whether the two
+# land in the same xdist worker is a scheduling accident. Measured on this file
+# alone, unchanged: three runs failed 0, 2 and 2 times with
+# `ModuleNotFoundError: No module named 'naming'`. A test that cannot be run by
+# itself is one whose green is a fact about its neighbours.
+for _dir in (str(_ROOT / "presets" / "watch"), str(_ROOT / "presets")):
+    if _dir not in sys.path:
+        sys.path.insert(0, _dir)
+
 
 def _load(name: str, rel: str):
     spec = importlib.util.spec_from_file_location(name, _ROOT / rel)
@@ -487,9 +500,18 @@ def test_the_mr_feed_poller_declines_a_scope_it_cannot_apply(
 
     A watcher scope with an unapplied token describes a *wider* population than
     the caller asked for, so building it anyway spawns pollers over strangers'
-    MRs and fires an mr_opened for each. `None` is this function's established
-    "could not establish the population" — the safe direction, since an empty
-    dict would fire a departure for every MR instead.
+    MRs and fires an mr_opened for each. A `None` *population* is this
+    function's "could not establish the population" — the safe direction, since
+    an empty dict would fire a departure for every MR instead.
+
+    #1602 widened the return to `(population, why)`, matching the
+    `github-issue-feed` precedent, so the reason survives instead of collapsing
+    into the `None`: #939's guard was correct and silent, and a scope nobody can
+    fix is the one failure that never clears itself. The property pinned here is
+    unchanged and is asserted through the shape that exists now — the two halves
+    are separate assertions on purpose, because the tuple itself is *truthy* and
+    a caller reading it for falsiness would turn this refusal back into a
+    population.
     """
     feed = _load(
         "gitlab_mr_feed_939",
@@ -500,7 +522,16 @@ def test_the_mr_feed_poller_declines_a_scope_it_cannot_apply(
         raise AssertionError("glab must not be called for an unapplied scope")
 
     monkeypatch.setattr(feed.mrs, "_run", _must_not_run)
-    assert feed.fetch_population("author=@me,onlygreen") is None
+    population, why = feed.fetch_population("author=@me,onlygreen")
+    assert population is None, (
+        f"an unapplied token must not resolve to a population — not the wide "
+        f"one it failed to narrow, and not an empty one either, which would "
+        f"read as a departure for every MR; got {population!r}"
+    )
+    assert "onlygreen" in why, (
+        f"the refusal must name the token that could not be applied, or the "
+        f"scope that caused it cannot be repaired: {why!r}"
+    )
 
 
 def test_a_value_the_backend_rejects_is_not_this_ops_business(
