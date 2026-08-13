@@ -697,7 +697,7 @@ See [docs/contributing.md](docs/contributing.md) — custom ops, presets, valida
 
 **Linux/macOS:** works out of the box.
 
-**Windows:** works via Git Bash or WSL (the plugin's `hooks/session-start.sh`, `hooks/pre-bash-guard.sh` and `.githooks/pre-push` are bash scripts; the Python tool itself is cross-platform). Native `cmd.exe` / PowerShell without bash won't fire the hooks — see the raw-command guard note below for what that costs. The pre-push hook needs a real `pythonX.Y` on `PATH` (or `PYTHON=` pointing at one) — it will not run the bare name `python3`, which on Windows can resolve to the App Execution Alias stub and block forever inside `git push`. See [docs/contributing.md](docs/contributing.md#running-tests).
+**Windows:** works via Git Bash or WSL (the plugin's `hooks/session-start.sh`, `hooks/pre-bash-guard.sh` and `.githooks/pre-push` are bash scripts; the Python tool itself is cross-platform). Native `cmd.exe` / PowerShell without bash won't fire either plugin hook, and the two costs are different — see the raw-command guard note and the session-start note below. The pre-push hook needs a real `pythonX.Y` on `PATH` (or `PYTHON=` pointing at one) — it will not run the bare name `python3`, which on Windows can resolve to the App Execution Alias stub and block forever inside `git push`. See [docs/contributing.md](docs/contributing.md#running-tests).
 
 **Windows and the raw-command guard, when there is no bash at all** ([#1378](https://github.com/Digital-Process-Tools/claude-supertool/issues/1378)): the guard is then *inert*, and a session where it never ran looks exactly like one where it ran and found nothing. This paragraph used to say there was nothing for it to gate on such a host, on the grounds that Claude Code would have no `Bash` tool there. That was wrong by this repo's own [#1413](https://github.com/Digital-Process-Tools/claude-supertool/issues/1413): where the PowerShell tool is enabled Claude treats PowerShell as the primary shell and routes shell commands through it, which is why `hooks.json` matches `Bash|PowerShell`. There are commands to gate and no bash to gate them with.
 
@@ -709,6 +709,19 @@ python3 hooks/guard-selftest.py      # anywhere else
 ```
 
 It reports `enforcing`, `could not run` (naming what it tried) or `nothing to test`, and it says plainly that it cannot tell whether Claude Code invokes the hook — only whether this host can run it. Everything stated here about native `cmd.exe`/PowerShell is **reasoned, not observed**: nobody on this project has that host.
+
+**Windows and the session-start hook, when there is no bash at all** ([#1401](https://github.com/Digital-Process-Tools/claude-supertool/issues/1401)): this is the half you notice. The guard's failure above is *silent* — it is asked, it cannot run, and a session where the gate never ran looks like one where it ran and found nothing. `SessionStart` is gated by nothing at all: it fires under any tool configuration, once per session, and its failure costs you something you can see. What you lose is the `./supertool` wrapper and the op roster the session normally opens with, so the model is not told which ops exist.
+
+Nothing needs installing to get both back — call the tool by path, which needs no shell:
+
+```
+py -3 supertool.py 'ops:roster'        # Windows
+python3 supertool.py 'ops:roster'      # anywhere else
+```
+
+Wherever these docs write `./supertool`, use that path instead. `hooks/guard-selftest.py` says all of this too, on the host itself.
+
+**This gap is accepted and disclosed rather than fixed, deliberately.** Every candidate repair is a change to a host nobody here can run, shipped to every plugin user: adding `args` switches the hooks to exec form, where `command` *is* resolved on `PATH` — the `CreateProcess` search that finds System32's WSL launcher under the name `bash`, so the obvious repair introduces the defect. A second PowerShell entry is a non-zero hook on every POSIX session to serve one Windows one. A command string valid under both `sh -c` and PowerShell is a polyglot. And rewriting the hooks in Python does not help, because exec form would still have to name an interpreter: `python`/`python3` are the App Execution Alias stubs that block rather than error, the versioned names are absent on Windows, and `py -3` is absent everywhere else — which is exactly why the interpreter ladder exists, and the ladder is itself a shell script. Graded **reasoned, not observed** throughout; what is observed is only that both `hooks.json` entries name `bash`.
 
 **Windows and the raw-command guard's interpreter:** `hooks/pre-bash-guard.sh` needs a Python it can name. Neither python.org's installer nor GitHub's `hostedtoolcache` creates `python3.9`–`python3.14`, so the guard falls back to `py -3`, the Windows Python launcher, after every versioned name and after an activated virtualenv. With no interpreter at all the guard does not silently pass: it says in the transcript that it could not run, and allows the command. See [docs/configuration.md](docs/configuration.md).
 
