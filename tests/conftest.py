@@ -134,11 +134,18 @@ if (_PRESETS / "_env.py").is_file():
 # found 3 of 3. The one it alone caught contained no transport token at all,
 # because it was a missing stub rather than a wrong one.
 #
-# Blind spot, stated here rather than discovered later: this binds `socket` in
-# the pytest process only. A test that shells out to `supertool.py` or a preset
-# gets an unpatched child. Loopback and AF_UNIX stay open on purpose —
-# `test_http_bounds.py` and the `claude-channel` suites bind real servers on
-# 127.0.0.1 and those are hermetic.
+# Blind spot — and it is several things, not the one thing this comment used to
+# name (#1584). "It binds `socket` in the pytest process only" read as a closed
+# list, and it was not: `connect_ex`, four `gethost*`/`getnameinfo` resolvers
+# and a UDP `sendto` all walked out of an armed context until #1584 patched
+# them. The boundary now lives in `_netblock.ROUTES` / `SOCKET_ROUTES`, which
+# classify every callable `socket` exposes, and in `BEYOND_THE_PROCESS`, which
+# states the four things no in-process patch can reach. A register goes red
+# when a route arrives unclassified; a sentence does not.
+#
+# Loopback and AF_UNIX stay open on purpose — `test_http_bounds.py` and the
+# `claude-channel` suites bind real servers on 127.0.0.1 and those are
+# hermetic.
 #
 # Tolerated rather than assumed, exactly as `_paths` and `_env` above.
 _netblock = None
