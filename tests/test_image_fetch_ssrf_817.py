@@ -7,9 +7,9 @@ The attack, verified by hand against `master` before a line was changed:
 `_extract_image_urls` matched it (any `http(s)` URL, no allowlist),
 `_download_images` fetched it with `urllib.request.urlretrieve` — the *default*
 opener, so `presets/_http.py`'s `SafeRedirectHandler` never saw it — wrote the
-response body to `/tmp/supertool-images/gh/N/`, and the op printed the path
-under `## Images`. The agent reading that output opens the file. Blind SSRF
-becomes full-read SSRF.
+response body to `/tmp/supertool-images/gh/N/` (that root moved in #1506), and
+the op printed the path under `## Images`. The agent reading that output opens
+the file. Blind SSRF becomes full-read SSRF.
 
 Three separate holes, and the audit named one:
 
@@ -501,9 +501,19 @@ def test_the_reported_attack_fetches_nothing(name: str, body: str, tmp_path, mon
     assert [r.state for r in results] == [issue.IMAGE_REFUSED], f"{name} was not refused: {results}"
     on_disk = [p for p in (tmp_path / "img").rglob("*") if p.is_file()]
     assert on_disk == [], f"{name} left bytes on disk: {on_disk}"
-    assert not (tmp_path / "img").exists(), (
-        f"{name} was refused but still created {tmp_path / 'img'} — a refusal "
-        f"should leave nothing, not an empty directory"
+    # The root itself is now created up front and proven ours before any
+    # destination is checked against it (#1506) — a boundary that does not exist
+    # yet cannot be proven to be anybody's. What must stay absent is the
+    # *per-issue* directory, which is the one that records that this issue was
+    # read: `_http.download` still makes it only after the body has passed the
+    # policy and the cap. That was always the property this line was buying; the
+    # root says nothing about which issue was fetched, is per-user, and outlives
+    # the call regardless of what any one call decided.
+    left = sorted(p.name for p in (tmp_path / "img").iterdir())
+    assert left == [], (
+        f"{name} was refused but still created {tmp_path / 'img'}/{left} — a "
+        f"refusal must leave no record of the issue, not even an empty "
+        f"per-issue directory"
     )
 
 

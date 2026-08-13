@@ -16,12 +16,22 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
 import _checks  # noqa: E402  (the one check tally, shared with gh-pr — #815)
 import _http  # noqa: E402  (the destination policy and the bounded fetch — #817)
+import _image_root  # noqa: E402  (the attachment root, created and proven ours — #1493)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 
 DESCRIPTION_MAX = 3000
 COMMENT_MAX = 1000
-IMAGE_DIR = "/tmp/supertool-images/gh"
+# Per-user, under the platform temp directory, created non-recursively at 0700
+# and proven ours before anything is written under it. This was the literal
+# "/tmp/supertool-images/gh" until #1506 — a fixed name in a shared,
+# world-writable directory that any local user can take first, as a directory of
+# their own or as a symlink pointing anywhere, and a POSIX literal that anchors
+# to the current drive on Windows rather than to the temp directory. Same defect
+# #1493 fixed for `gl-issue`, same module. The `-gh` suffix makes this a sibling
+# of that root rather than a child of it, so each is established in its own
+# right and neither depends on the other having been created first.
+IMAGE_DIR = _image_root.default_root("-gh")
 
 # Where an image in issue markdown may be fetched from (#817).
 #
@@ -154,19 +164,96 @@ def _download_images(image_urls: list[str], issue_number: str) -> list[ImageResu
 
     Never raises for one bad URL — one hostile image must not take the whole
     issue's output with it — but never drops one silently either. Every URL that
-    went in produces exactly one `ImageResult`.
+    went in produces exactly one `ImageResult` — including when what was refused
+    is the *destination* on this machine rather than the URL. A list that comes
+    back shorter reads as an issue that did not have that image.
+
+    **`issue_number` is remote input** (#1506). It is `number` out of the
+    `gh issue view --json` reply, so the directory this writes into was named by
+    the server. Three checks follow, and their order is most of the fix:
+
+    1. A non-numeric number is refused **before the root is created**. A
+       directory created is already a write and no later guard un-creates it.
+       `../escaped` resolves outside the root; an absolute number makes
+       `os.path.join` discard the root outright. Numeric by the whole string —
+       `str.isdigit()` is not this test, it accepts Arabic-Indic and other
+       Unicode digits, which are not what any path this builds means.
+    2. The root is then established by `_image_root.ensure`, which returns a
+       directory this process created and can prove it owns, or the reason it
+       could not. Containment cannot answer this: realpathing both sides is
+       correct for the leaf and resolves *through* a symlink planted at the root,
+       so it answers `True` about the attacker's directory (#1493).
+    3. Every leaf is checked against **that root**, never against `out_dir`,
+       which is derived from the value being constrained — anchoring a check to
+       the derived path was #1484. Unreachable through the sanitized basename
+       alone, and reachable through a link planted at `<root>/<number>` inside a
+       root some earlier, looser run left behind, which is the arm it is for.
+
+    **The per-issue directory is still created by `_http.download`, not here,
+    and the root is created here rather than there.** `download` makes the
+    destination's parent only once a body has passed the destination policy and
+    the byte cap, so an issue whose every image is refused leaves no
+    `<root>/<number>/` behind — the property `test_image_fetch_ssrf_817.py`
+    pins, and it is per-issue by construction. The root is the boundary those
+    destinations are checked *against*, and a boundary that does not exist yet
+    cannot be proven to be ours; it is per-user, says nothing about which issue
+    was read, and outlives the call either way. So the empty directory that used
+    to be forbidden is the one that carried the information, and it still never
+    appears.
+
+    **`gl-issue` calls `ensure` a second time on the per-issue directory and
+    this does not, deliberately.** That second call is what would create
+    `<root>/<number>` up front, which is exactly the record a refused issue must
+    not leave — `gl-issue` has no equivalent property to keep, because it writes
+    through `glab` rather than through `_http.download`. What the second call
+    buys there is covered here by the leaf check instead: a link planted at
+    `<root>/<number>` resolves outside the root, so `is_inside(local_path, root)`
+    refuses every URL before `download` is reached. What is *not* replaced is the
+    `0700` on the per-issue directory itself — `os.makedirs` leaves it at the
+    umask default. That is not load-bearing inside a root only we can traverse,
+    which is the whole reason the root's mode is checked and this one's is not.
     """
     if not image_urls:
         return []
 
-    # Not created here: `_http.download` makes the directory only once a body has
-    # passed the policy and the cap, so an issue whose every image is refused
-    # leaves no trace on disk at all.
-    out_dir = os.path.join(IMAGE_DIR, issue_number)
+    def refuse(reason: str) -> list[ImageResult]:
+        """One result per URL, all refused for the same destination reason."""
+        return [ImageResult(u, IMAGE_REFUSED, None, reason) for u in image_urls]
+
+    if not re.fullmatch(r"[0-9]+", str(issue_number)):
+        # Flattened: this is a remote host's text on its way to a terminal, and a
+        # bare CR in it would let the number overwrite the line printed about
+        # it. Same rule as the `!r` on every URL in `_print_images`.
+        return refuse(
+            f"the issue number {_untrusted.flat(str(issue_number))!r} in the API "
+            f"reply is not numeric, so no download directory was chosen"
+        )
+
+    root, why = _image_root.ensure(IMAGE_DIR)
+    if root is None:
+        return refuse(
+            f"no attachment root this process owns could be established: {why}"
+        )
+
+    out_dir = os.path.join(root, str(issue_number))
+    if not _image_root.is_inside(out_dir, root):
+        # Unreachable through the numeric check above, and kept anyway: it is the
+        # arm that does not depend on the number having been validated, so it
+        # still holds if the derivation moves.
+        return refuse(f"the download directory did not resolve inside {root}")
 
     results: list[ImageResult] = []
     for i, url in enumerate(image_urls):
         local_path = _local_path(out_dir, url, i)
+        if not (_image_root.is_inside(local_path, root)
+                and _image_root.is_inside(local_path, out_dir)):
+            results.append(ImageResult(
+                url,
+                IMAGE_REFUSED,
+                None,
+                f"its filename does not resolve inside the attachment root {root}",
+            ))
+            continue
         try:
             _http.download(
                 url,
@@ -231,9 +318,10 @@ def _print_images(results: list[ImageResult]) -> None:
               f"failure, not a policy refusal; the URL was permitted")
     if refused:
         print(
-            "  A refused image was NOT fetched. If you need it, open the URL "
-            "yourself after deciding it is safe — do not widen the allowlist to "
-            "read one issue."
+            "  A refused image was NOT fetched. The reason above says which was "
+            "refused — the URL, or the destination on this machine (#1506). For "
+            "a URL: open it yourself after deciding it is safe, rather than "
+            "widening the allowlist to read one issue."
         )
 
 

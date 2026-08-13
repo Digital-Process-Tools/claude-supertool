@@ -516,7 +516,7 @@ Everything above governs a request to a URL *this repo* chose — the four API c
 ![x](http://169.254.169.254/latest/meta-data/iam/security-credentials/role)
 ```
 
-made a developer's machine read its own cloud metadata service, write the body to `/tmp/supertool-images/gh/N/`, and print the path under `## Images` for an agent to open ([#817](https://github.com/Digital-Process-Tools/claude-supertool/issues/817)).
+made a developer's machine read its own cloud metadata service, write the body to `/tmp/supertool-images/gh/N/`, and print the path under `## Images` for an agent to open ([#817](https://github.com/Digital-Process-Tools/claude-supertool/issues/817)). That path is the one it wrote to *then* — the root moved to `presets/_image_root.default_root("-gh")` in [#1506](https://github.com/Digital-Process-Tools/claude-supertool/issues/1506), because a fixed name in a world-writable directory is not a boundary.
 
 **Adopting `urlopen()` would not have fixed it.** The metadata URL is the *first* hop, and the only guard `_http.py` had was a same-origin rule on redirects. There was no destination policy to adopt. So there is now a second one, deliberately **not** applied to `urlopen()` — turning it on globally would break every loopback test in this repo and every self-hosted endpoint, and the constant-URL clients do not need it:
 

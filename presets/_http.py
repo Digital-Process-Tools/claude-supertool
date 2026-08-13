@@ -542,10 +542,13 @@ def download(
         data = read_capped(resp, limit=limit)
 
     # The directory is created here and not by the caller, so that a refused URL
-    # leaves *nothing* behind — not even an empty `/tmp/supertool-images/gh/N/`.
+    # leaves *nothing* behind — not even an empty `<attachment root>/<issue>/`.
     # An empty directory is a small thing, but it is also a record that the
     # machine considered the fetch, and a caller that pre-creates it cannot tell
-    # a refused issue from a fetched one afterwards.
+    # a refused issue from a fetched one afterwards. This is a claim about
+    # `dest`'s own parent: `gh-issue` establishes the *root* that parent sits in
+    # before it calls here, because a boundary its destinations are checked
+    # against cannot be proven to be ours before it exists (#1506).
     parent = os.path.dirname(dest)
     if parent:
         os.makedirs(parent, exist_ok=True)
