@@ -225,6 +225,52 @@ def test_a_session_with_no_gated_call_declines_rather_than_passing(
     assert res.returncode == 0, out
 
 
+_IMPORT_TIME_CHILD = """
+import supertool
+from _adapter_verdict import run_one_or_skip
+
+supertool._validator_run_one = lambda *a, **k: {
+    "ok": False, "count": 1, "timeout": True,
+    "errors": [{"code": "orchestrator", "msg": "timeout after 10s"}]}
+
+try:
+    run_one_or_skip("t", {"builtin": "python", "cmd": "x"}, "f")
+except BaseException:
+    pass
+
+
+def test_unrelated():
+    assert True
+"""
+
+
+def test_a_gated_call_made_outside_any_test_is_not_dropped(
+        tmp_path: Path) -> None:
+    """No test item reports it, so nothing could carry it (#1523).
+
+    `pytest_runtest_makereport` fires only around a test item, so a gated call
+    made at import or collection time is never drained by it. With `-k` matching
+    no test, the decline was dropped entirely: the census printed `NOT CHECKED`
+    and the session exited 0, having had a real decline handed to it and lost
+    it. That is the defect this whole file is about, produced by the counter
+    built to detect it.
+    """
+    target = tmp_path / "test_import_time_1523.py"
+    target.write_text(_IMPORT_TIME_CHILD, encoding="utf-8")
+    res = subprocess.run(
+        [sys.executable, "-m", "pytest", str(target), "-p", "no:cacheprovider",
+         "-p", "_core_timeout_census", "-q", "-n0", "--no-cov",
+         "-k", "nothing_matches_this", "--rootdir", str(tmp_path)],
+        cwd=str(tmp_path), env=_child_env(), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=300)
+    out = res.stdout + res.stderr
+
+    assert census.NOT_CHECKED not in out, (
+        "a declined gated call was dropped without a trace: " + out)
+    assert "1 of 1 gated calls declined" in out, out
+    assert res.returncode != 0, out
+
+
 @pytest.mark.parametrize("workers", ["-n0", "-n2"])
 def test_the_repo_own_suite_is_wired_to_the_census(workers: str) -> None:
     """The plugin existing is not the plugin running. This asserts the census

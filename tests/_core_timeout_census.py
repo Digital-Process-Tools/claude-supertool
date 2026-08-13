@@ -193,6 +193,33 @@ def pytest_runtest_logreport(report: Any) -> None:
         add_totals(calls, declines)
 
 
+def flush_residual() -> None:
+    """Fold counts that no test-item report could carry into the totals.
+
+    `pytest_runtest_makereport` only fires around a test item, so a gated call
+    made at import or collection time is never drained by it. Two outcomes were
+    reproduced, and the second is the one that matters: with a test running
+    afterwards the count is attributed to that test -- harmless, because the
+    verdict reads totals and not nodeids -- and with none running afterwards
+    (`-k` matching nothing) the decline was **dropped entirely**, so a real
+    decline vanished under a `NOT CHECKED` and exit 0. An absence produced by
+    the counter, read as an absence in the world.
+
+    Idempotent: `drain` resets, so calling this from both the summary and
+    sessionfinish costs nothing whichever runs first.
+
+    **What this cannot reach, stated rather than implied:** a residual left in
+    an xdist *worker*. The worker has no report to attach it to and no other
+    channel to the controller, so an import-time gated call under `-n auto` is
+    still counted only if some test in that worker reports afterwards. Nothing
+    in the 42 sites does this today; the note is here so the next person does
+    not read the fix as wider than it is.
+    """
+    calls, declines = drain()
+    if calls:
+        add_totals(calls, declines)
+
+
 def _is_worker(config: Any) -> bool:
     """An xdist worker process, whose totals are one slice of the run.
 
@@ -208,6 +235,7 @@ def pytest_terminal_summary(terminalreporter: Any, exitstatus: Any = None,
                             config: Any = None) -> None:
     if _is_worker(getattr(terminalreporter, "config", None)):
         return
+    flush_residual()
     line, _finding = verdict(*totals())
     terminalreporter.write_line(line)
     terminalreporter.write_line(POPULATION)
@@ -216,6 +244,7 @@ def pytest_terminal_summary(terminalreporter: Any, exitstatus: Any = None,
 def pytest_sessionfinish(session: Any, exitstatus: Any = None) -> None:
     if _is_worker(getattr(session, "config", None)):
         return
+    flush_residual()
     _line, finding = verdict(*totals())
     if finding:
         session.exitstatus = 1
