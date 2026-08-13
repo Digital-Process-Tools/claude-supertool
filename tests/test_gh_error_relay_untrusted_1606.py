@@ -268,7 +268,7 @@ def test_pr_create_failure_relay_is_flattened(monkeypatch, capsys, tmp_path):
     # assertion is that exactly one survives and it is the op's -- not that
     # none does.
     assert _forged_verdicts(both) == [
-        f"[result] no PR created (topic -> master in o/r)"
+        "[result] no PR created (topic -> master in o/r)"
     ], _forged_verdicts(both)
     assert SEP not in both, "a raw U+2028 in the receipt is the forgery itself"
     assert "[U+2028]" in both, "the separator never reached the render"
