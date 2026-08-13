@@ -175,9 +175,26 @@ emitted where the answer is on hand is that contract used as a shrug, and it
 costs a round-trip to establish something already on screen. Left alone it also
 erodes the real declines.
 
-The genuine tie is still declined — the byte cap and the limit landing on the
-same line while file remains, where nothing on hand says which bound would move
-first if the other were raised.
+**The byte cap and the limit cannot coincide at all**
+([#1616](https://github.com/Digital-Process-Tools/claude-supertool/issues/1616)).
+The cap is tested *after* a whole line has been emitted, so it never truncates a
+line — it drops the ones that would have followed. A window that reached its own
+limit, or the end of the file, had none to drop, and the cap cost it nothing.
+`read:mid.txt:2-2` on a 25 KB line used to open with `cut short by the
+20000-byte cap and the limit was reached coincide here`, having returned every
+byte — while `grep`'s own `… (+N chars)` note points callers at that exact read
+*promising* byte-exactness.
+
+Reaching the cap and being cut by it are separate facts and the note says which:
+
+```
+window: range 2-2 (START-END form); returning lines 2-2 of 4, stopping at line 2: the limit was reached — the 20000-byte cap was reached on that line and dropped nothing; it stops whole lines and never truncates one, so these bytes are complete
+```
+
+Silence would be the other half of the same defect — the output *is* at the cap,
+so a window one line wider will lose lines, and a caller planning the next read
+needs to know. The `... (truncated at 20000 bytes …)` footer is gated on the same
+fact: it counted lines the caller had not asked for as ones it had withheld.
 
 ### Compact mode
 

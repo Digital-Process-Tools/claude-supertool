@@ -4055,6 +4055,12 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             capped = True
             break
 
+    # The cap is tested AFTER a whole line has been emitted, so it never
+    # truncates a line — it drops the ones that would have come next. When the
+    # loop stopped at `end` there were none to drop, and calling that a
+    # truncation contradicted `grep`'s byte-exact remedy in the very render it
+    # sends the caller to (#1616).
+    cap_cut = capped and last_scanned < end
     unsearched = 0
     # Collected rather than appended: every line in here is a note *about* the
     # scan, and it is inserted above the content at the end of this function.
@@ -4110,7 +4116,14 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
                 return False
 
             filter_notes.append(_quote_pair_note(grep_filter, _filter_probe))
-    elif filter_regex and capped:
+    elif filter_regex and cap_cut:
+        # `cap_cut`, not `capped`: the cap is only what stopped the scan when
+        # the loop broke before the window's own end. A limit that ended the
+        # scan on a line that happened to carry the total over the cap left
+        # lines unsearched too, and blaming the cap for them attributes the
+        # limit's work to the wrong bound — the same misattribution #1616
+        # removed one render over, found reviewing that fix.
+        #
         # The byte cap breaks the scan loop, not just the emission: a filtered
         # read that matched and *then* hit the cap has stopped looking. This
         # used to fall through to the generic `elif capped:` wording below,
@@ -4141,7 +4154,7 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             f"(the grep= filter searched lines {offset + 1}-{last_scanned} "
             f"of {line_count} — {unsearched} line{plural} outside that range "
             f"{verb} NOT searched)\n")
-    elif capped:
+    elif cap_cut:
         remaining = line_count - last_scanned
         out.append(
             f"... (truncated at {_get_op_int('read', 'max_bytes', MAX_READ_BYTES)} bytes "
@@ -4181,7 +4194,7 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         out.insert(1, _read_window_note(
             path, limit if not lift_line_cap else max(0, line_count - offset),
             offset, line_count, printed,
-            last_scanned=last_scanned, capped=capped,
+            last_scanned=last_scanned, capped=cap_cut, cap_reached=capped,
             byte_cap=byte_cap if apply_byte_cap else 0,
             limit_synthetic=lift_line_cap,
             range_form=range_form,
@@ -4193,7 +4206,8 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
 
 def _read_window_note(path: str, limit: int, offset: int,
                       line_count: int, shown: int, last_scanned: int = 0,
-                      capped: bool = False, byte_cap: int = 0,
+                      capped: bool = False, cap_reached: bool = False,
+                      byte_cap: int = 0,
                       limit_synthetic: bool = False,
                       range_form: bool = False,
                       skipped_by: str = "") -> str:
@@ -4237,6 +4251,15 @@ def _read_window_note(path: str, limit: int, offset: int,
     remained. When two reasons land on the same line the note says they
     coincide rather than picking the flattering one — an end it cannot
     attribute is declined, not guessed.
+
+    `capped` and `cap_reached` are two different facts and were one flag until
+    #1616. The cap is tested after a whole line has been emitted, so it drops
+    the lines that would have followed and never truncates one: only when the
+    loop stopped short of the window's own end did it cost anything, and that
+    is `capped`. `cap_reached` alone — the output sits at the cap but the
+    limit or EOF ended the read anyway — is disclosed as a fact and kept out
+    of `reasons`, where it had been offered as a rival explanation for an end
+    that was not in doubt.
     """
     req_start = offset + 1
     req_end = offset + limit
@@ -4357,11 +4380,29 @@ def _read_window_note(path: str, limit: int, offset: int,
                  + f" at the same line — the file ending settles it, "
                  f"nothing follows line {last_scanned}")
     else:
-        # Still a genuine decline: more file remains, and nothing on hand says
-        # which bound would move first if the other were raised.
+        # Reached by nothing today, and said so rather than left to be
+        # discovered: since #1616 `capped` means the loop stopped short of the
+        # window's own end, which excludes both EOF and the limit, so the only
+        # pair that can occur is EOF+limit and that is the branch above. This
+        # is the shape a future fourth reason would take, not a live path — a
+        # decline where more file remains and nothing on hand says which bound
+        # would move first if the other were raised.
         stops = (f", stopping at line {last_scanned}: "
                  + " and ".join(reasons)
                  + " coincide here — which one ended the window cannot be told apart")
+    if cap_reached and not capped:
+        # The output IS at the cap, so a wider window will lose lines and the
+        # caller is entitled to know. What it did NOT do is cost this call
+        # anything: the cap is tested after a whole line is emitted, so it
+        # drops following lines and never truncates one, and this window ended
+        # at its own limit or at EOF regardless. Stated rather than dropped
+        # into `reasons`, where it was offered as a rival explanation and made
+        # `read:f:2-2` on a 25 KB line report itself truncated while returning
+        # every byte — contradicting the byte-exact remedy `grep` prints to
+        # send callers here (#1616).
+        stops += (f" — the {byte_cap}-byte cap was reached on that line and "
+                  f"dropped nothing; it stops whole lines and never truncates "
+                  f"one, so these bytes are complete")
     return (f"window: {asked}; returning lines {req_start}-{last_scanned} "
             f"of {line_count}{held}{stops}{hint}\n")
 
@@ -9393,11 +9434,23 @@ def _edit_nearest_hint(old: str, lines: List[str], path: str = "") -> str:
     best_i = cands[0][1]
     # Overlapping windows describe one neighbourhood, not two candidates.
     rivals = [i for _r, i in cands[1:] if abs(i - best_i) >= n]
-    if rivals:
+    # `tie_floor` is its own trigger, not a modifier on `rivals` (#1614). It
+    # means more windows tied on the line pass than were char-scored at all,
+    # and every one that WAS scored is still tied — so the unscored ones are
+    # unlocated, and the leader is one sample of a set the tool never saw. For
+    # an anchor taller than `_EDIT_NEAR_WINDOWS` all 20 sampled starts sit
+    # inside one `n`-line neighbourhood by construction, so `rivals` is empty
+    # for arithmetic reasons and gating on it made the floor dead code for
+    # exactly the long-anchor case #1489 was filed about.
+    if rivals or tie_floor:
         total = tie_floor if tie_floor > 1 + len(rivals) else 1 + len(rivals)
         at_least = "at least " if total > 1 + len(rivals) else ""
-        shown = ", ".join(str(i) for i in ([best_i] + rivals)[:3])
-        extra = total - 3
+        picked = ([best_i] + rivals)[:3]
+        shown = ", ".join(str(i) for i in picked)
+        # Against what was actually listed, not against a hardcoded 3: with
+        # `rivals` empty only the leader is named, and `total - 3` then
+        # undercounts the withheld places by two.
+        extra = total - len(picked)
         more = f" and {extra} more" if extra > 0 else ""
         return (f"cannot suggest a nearest match: {at_least}{total} places "
                 f"score the same ({best:.0%}) — lines {shown}{more}. The "
