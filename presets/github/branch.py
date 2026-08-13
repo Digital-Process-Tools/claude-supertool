@@ -49,7 +49,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
@@ -173,6 +173,25 @@ def ref_mode(ref: str, resolved_sha: str) -> str:
     return MODE_COMMIT if sha.startswith(ref.lower()) else MODE_BRANCH
 
 
+_ISO = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def _created(run: object):
+    """A run's creation time, or ``None`` when the field cannot be read.
+
+    ``None`` is a third answer and stays one: a run with no readable timestamp
+    is not a run created at the epoch, and must not sort as though it were.
+    """
+    if not isinstance(run, dict):
+        return None
+    try:
+        return datetime.strptime(
+            str(run.get("createdAt") or "").strip(), _ISO).replace(
+                tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 def previous_head(runs: object, sha: str) -> tuple[str, set]:
     """`(sha, workflow names)` of the newest run set that is *not* this SHA.
 
@@ -180,21 +199,32 @@ def previous_head(runs: object, sha: str) -> tuple[str, set]:
     run on this commit". It is evidence, not a rule: a path filter makes the
     absence legitimate, so nothing here ever concludes on its own — see
     `verdict()`, which only lets it block green inside the creation window.
+
+    **Newest by `createdAt`, not by list position** (#1618). This read the
+    first entry with a different SHA, which is the newest only if GitHub hands
+    back the list in the order this op assumed. On 2026-08-13 it did not: the
+    op named `d7e67ee` as master's previous head — a commit 527 commits and 17
+    days behind, carrying one run — and then reported that run's workflow as
+    absent from the head. A newest-60 window on that branch cannot contain a
+    17-day-old run, so the order was not descending, and nothing here checked.
+    Ordering by the field GitHub stamps is free and does not care.
+
+    A list where no entry has a readable timestamp falls back to position,
+    which is the old behaviour and the only one left: refusing to name a
+    previous head would delete the evidence rather than qualify it.
     """
     if not isinstance(runs, list):
         return "", set()
-    prev = ""
-    for r in runs:
-        if not isinstance(r, dict):
-            continue
-        s = str(r.get("headSha") or "")
-        if s and s != sha:
-            prev = s
-            break
-    if not prev:
+    others = [r for r in runs if isinstance(r, dict)
+              and str(r.get("headSha") or "") not in ("", sha)]
+    if not others:
         return "", set()
+    dated = [r for r in others if _created(r) is not None]
+    newest = (max(dated, key=lambda r: (_created(r), _run_id(r))) if dated
+              else others[0])
+    prev = str(newest.get("headSha") or "")
     names = {str(r.get("workflowName") or "?") for r in runs
-             if isinstance(r, dict) and r.get("headSha") == prev}
+             if isinstance(r, dict) and str(r.get("headSha") or "") == prev}
     return prev, names
 
 
@@ -330,6 +360,59 @@ def no_run_verdict(sha: str, age_secs: object, grace: int = _GRACE) -> tuple:
                     "workflow covers this ref is UNKNOWN — a path filter and a "
                     "workflow that never fired look identical from here. "
                     "Check the repo's Actions tab.")
+
+
+def listing_behind_secs(runs: object, age_secs: object):
+    """How far the newest run in the listing predates the head commit itself.
+
+    `None` when either side is unreadable; the value may be negative, which
+    means the listing is level with the head and nothing needs saying.
+
+    The number is what separates the two readings. A listing whose newest
+    entry is 23s older than the head is one that has plainly not caught up
+    yet; one whose newest entry is 17 days older — #1618's — is a listing that
+    answered about some other slice of history entirely, and a reader shown
+    only "zero runs" cannot tell those apart.
+    """
+    if age_secs is None:
+        return None
+    stamps = [t for t in
+              (_created(r) for r in (runs if isinstance(runs, list) else []))
+              if t is not None]
+    if not stamps:
+        return None
+    head_at = datetime.now(timezone.utc) - timedelta(seconds=int(age_secs))
+    return int((head_at - max(stamps)).total_seconds())
+
+
+def stale_listing_lines(runs: object, selected: dict, sha: str,
+                        age_secs: object, grace: int = _GRACE) -> list:
+    """The doubt the previous-head block inherits when nothing came back (#1618).
+
+    That block is built from the same `gh run list` answer as the verdict. When
+    the answer contains no run at all on the head, every sentence in it rests
+    on the listing having caught up — and it need not have: at the v0.41.0
+    release gate the listing omitted two runs that had existed on the head for
+    twelve minutes, and returned them three minutes later, unchanged.
+
+    Only inside the creation window. Past it, a commit with no runs is an
+    ordinary and legitimate state — a path filter, a disabled workflow — and a
+    hedge printed on every such call forever is a disclosure that gets tuned
+    out, which is worse than not writing it.
+    """
+    if selected or age_secs is None or int(age_secs) > grace:
+        return []
+    lines = [f"  This listing did not see the head commit at all: it returned "
+             f"zero runs on {sha[:7]}, so the line above rests on it having "
+             f"caught up. It need not have — on 2026-08-13 `gh run list` "
+             f"omitted two runs that had existed for 12 minutes and returned "
+             f"them 3 minutes later, unchanged (#1618). Re-ask before acting "
+             f"on this."]
+    behind = listing_behind_secs(runs, age_secs)
+    if behind is not None and behind > 0:
+        lines.append(f"  Newest run anywhere in the listing: {_duration(behind)}"
+                     f" older than the head commit itself.")
+    return lines
 
 
 def scope_clause(undispatched: list, unestablished: str, n_wf: int) -> str:
@@ -1119,13 +1202,18 @@ def main() -> int:
 
     if missing:
         print()
-        print(f"Workflows on the previous head {prev_sha[:7]} with no run on "
-              f"{sha[:7]}:")
+        print(f"Workflows with a run on the previous head {prev_sha[:7]} and "
+              f"none returned on {sha[:7]}:")
         for name in missing:
-            print(f"  {_untrusted.flat(name)} — did NOT run on this commit. "
-                  "That is a different "
-                  "sentence from 'ran and passed'; whether a path filter "
-                  "excluded it or a run is still to be created is UNKNOWN.")
+            print(f"  {_untrusted.flat(name)} — no run for it was RETURNED on "
+                  "this commit. That is a different sentence from 'ran and "
+                  "passed', and a different one again from 'did not run': an "
+                  "empty listing is an absence produced by this query, not an "
+                  "observed one (#1618). Whether a path filter excluded it, a "
+                  "run is still to be created, or the listing has not caught "
+                  "up is UNKNOWN.")
+        for line in stale_listing_lines(runs, selected, sha, age):
+            print(line)
 
     # Zero for every *established* verdict, green or not. Nonzero is reserved
     # for "this op could not answer" — the family's convention (`gh-run` exits
