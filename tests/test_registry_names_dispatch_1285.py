@@ -32,6 +32,7 @@ _REGISTRIES = {
     "_PARALLEL_SAFE_OPS": lambda: set(supertool._PARALLEL_SAFE_OPS),
     "_PATH_ARG_POSITIONS": lambda: set(supertool._PATH_ARG_POSITIONS),
     "_READ_OP_TARGETS": lambda: set(supertool._READ_OP_TARGETS),
+    "_MAX_COLON_SLOTS": lambda: set(supertool._MAX_COLON_SLOTS),
     "_OP_SAFETY_BUILTIN": lambda: set(supertool._OP_SAFETY_BUILTIN),
 }
 

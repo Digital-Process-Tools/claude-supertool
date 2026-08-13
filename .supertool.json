@@ -34,7 +34,7 @@
   "builtin-ops": {
     "read": {
       "syntax": "read:PATH[:OFFSET:LIMIT|:START-END|:full]",
-      "description": "Read file (300 lines, 20KB cap). abstract:1 → tree-sitter symbol map instead of source for big files, any supported language; falls back to raw and says why. Inline grep= filter contains ':'? Use read:@payload.toml or read:@- (fields: path, offset, limit, grep, full).",
+      "description": "Read file (300 lines, 20KB cap). abstract:1 → tree-sitter symbol map instead of source for big files, any supported language; falls back to raw and says why. Inline grep= filter contains ':'? Use read:@payload.toml or read:@- (fields: path, offset, limit, grep, full). A token past the last slot read uses is REFUSED, never dropped: read:PATH:::lines=A-B used to return the whole file, and an ignored narrowing returns MORE than was asked for, which reads as a superset of correct (#1582). Empty tokens and one grep= are the only things the tail accepts.",
       "example": "read:supertool.py:1:50"
     },
     "read-grep": {
@@ -45,7 +45,7 @@
     },
     "grep": {
       "syntax": "grep:PATTERN:PATH[:LIMIT[:CONTEXT]][:no-auto-read]",
-      "description": "Search (10 results def). CONTEXT=N lines around match. Lines capped at max_line_chars (500). :no-auto-read suppresses single-file auto-read PATTERN is a Python regex — there is no re: prefix here (that is between:re:...), so a leading re: is literal text and becomes part of the first alternation branch (#1065). Pattern contains ':'? The colon CLI can't tell where it ends, so the tokens left of PATH are rejoined and the effective pattern is echoed above the report — use grep:@payload.toml or grep:@- (fields: pattern, path, limit, context, count, no_auto_read). A PATH slot that comes out as '.' — an empty one (grep:PAT:PATH:) or a literal one (grep:PAT:PATH:.), which the parser cannot tell apart — is declined rather than scanned: the rejoin would swallow the file you named and sweep the whole tree instead, and that sweep succeeds (#1417).",
+      "description": "Search (10 results def). CONTEXT=N lines around match. Lines capped at max_line_chars (500). :no-auto-read suppresses single-file auto-read PATTERN is a Python regex — there is no re: prefix here (that is between:re:...), so a leading re: is literal text and becomes part of the first alternation branch (#1065). Pattern contains ':'? The colon CLI can't tell where it ends, so the tokens left of PATH are rejoined and the effective pattern is echoed above the report — use grep:@payload.toml or grep:@- (fields: pattern, path, limit, context, count, no_auto_read). A PATH slot that comes out as '.' — an empty one (grep:PAT:PATH:) or a literal one (grep:PAT:PATH:.), which the parser cannot tell apart — is declined rather than scanned: the rejoin would swallow the file you named and sweep the whole tree instead, and that sweep succeeds (#1417). Nothing follows CONTEXT: a third trailing integer (grep:PAT:PATH:5:3:2) is REFUSED rather than dropped, since dropping it ran a call nobody typed at exit 0 (#1345).",
       "example": "grep:dispatch:supertool.py:10:2"
     },
     "grep-count": {

@@ -18,6 +18,44 @@ File reading and directory listing ops. Reach for these when you know the path a
 | `tree` | `tree:PATH` or `tree:PATH:DEPTH` | Directory structure with depth limit (default 3). Hides dotfiles. Files listed before subdirectories. |
 | `diff` | `diff:PATH1:PATH2` | Unified diff between two files. |
 
+### A token these ops do not read is refused, not dropped
+
+Every op in the table above takes a fixed number of colon slots. A **non-empty**
+token past the last one it reads is refused, naming the token and quoting the
+op's own syntax line:
+
+```
+$ supertool 'read:CLAUDE.md:::lines=66-76'
+ERROR: read: 1 argument past the last slot read reads — 'lines=66-76'.
+  Dropped rather than refused before #1582, so the call ran without it: a narrowing that was ignored returns MORE than was asked for, and nothing in the result says so.
+  Syntax: read:PATH[:OFFSET:LIMIT|:START-END|:full]
+  For a line range use the syntax form: read:CLAUDE.md:66-76
+  A value that contains ':' cannot be spelled on the colon CLI — use read:@- (fields: path, offset, limit, grep, full).
+```
+
+That call used to return all 102 lines of the file. This is the worst shape the
+drop has, and the reason
+[#1582](https://github.com/Digital-Process-Tools/claude-supertool/issues/1582)
+was filed rather than shrugged at: **an ignored narrowing returns MORE than was
+asked for, and more always reads as a superset of correct.** The lines you wanted
+are present, in order, under a plausible header, alongside the 91 you did not.
+Measured before the fix, twelve read ops were probed with one junk token appended
+and twelve answered and dropped it.
+
+`read`'s tail is the one exception to a plain slot count, because the filter can
+land in any trailing slot: empty tokens (the `:::` in `read:PATH:::grep=P` yields
+two) and **one** `grep=` are accepted, and nothing else. A second `grep=` is an
+extra too — the scan takes the first, so the second was silently the one that did
+not apply.
+
+`grep` has the same rule expressed on its own peel: nothing follows CONTEXT, so
+`grep:PAT:PATH:5:3:2` is refused rather than run as `5:3`
+([#1345](https://github.com/Digital-Process-Tools/claude-supertool/issues/1345)).
+`glob`'s flag slot is refused the same way when it holds anything but
+`no-auto-read`. `around` and `between` are unaffected: neither keeps its
+arguments in fixed slots, and both already fail loudly by absorbing the extra
+token into the PATH slot.
+
 The window line names which of the two grammars ran — `(OFFSET:LIMIT form)` or
 `(START-END form)` — because they are one character apart and return different
 windows, and until
@@ -112,13 +150,27 @@ against the requested end as EOF, so a capped read opened with `stopping at line
 146 lines remained. The false claim came first, and it is the one a caller
 quotes.
 
-When two of them land on the same line — LIMIT reached exactly at EOF — the note
-says so rather than choosing:
+When two of them land on the same line, the note names both — and says which one
+decides, whenever it can. **EOF decides.** `last_scanned >= line_count` is a fact
+the note already prints in its own text (`of 100`), so a window ending on the
+last line is not a tie: the caller has everything from the start of the window,
+and nothing follows.
 
 ```
-window: offset 40 + limit 60 (OFFSET:LIMIT form) = lines 41-100; returning lines 41-100 of 100, stopping at line 100: the end of the file and the limit was reached coincide here — which one ended the window cannot be told apart; OFFSET is a skip count, so 40 lines were skipped: this window is read:hundred.txt:41-100
+window: offset 40 + limit 60 (OFFSET:LIMIT form) = lines 41-100; returning lines 41-100 of 100, stopping at line 100: the end of the file, and the limit was reached at the same line — the file ending settles it, nothing follows line 100; OFFSET is a skip count, so 40 lines were skipped: this window is read:hundred.txt:41-100
 note: this asked for 60 lines from offset 40 — those args are OFFSET:LIMIT, not START:END. For lines 40-60 (21 lines), use read:hundred.txt:40-60
 ```
+
+Until [#1342](https://github.com/Digital-Process-Tools/claude-supertool/issues/1342)
+this read `coincide here — which one ended the window cannot be told apart`. The
+three-state contract exists so a checker that *cannot* answer says so; a decline
+emitted where the answer is on hand is that contract used as a shrug, and it
+costs a round-trip to establish something already on screen. Left alone it also
+erodes the real declines.
+
+The genuine tie is still declined — the byte cap and the limit landing on the
+same line while file remains, where nothing on hand says which bound would move
+first if the other were raised.
 
 ### Compact mode
 
