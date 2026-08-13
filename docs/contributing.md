@@ -924,6 +924,22 @@ that have nothing to do with presets. An exempt name must be written at
 `tests/test_lazy_cache_lifetimes_1322.py` fails the build on any new `None`
 sentinel added to the exempt tuple.
 
+**"Mutable" is not the property; "rebound while a call is running" is**
+([#1107](https://github.com/Digital-Process-Tools/claude-supertool/issues/1107)).
+A `str` memo, a `bool` probe flag and a `None` sentinel all carry state from one
+call into the next, and none of them is a container, so the sweep over
+`dict`/`list`/`set` in `test_state_reset_and_lint_timeout.py` cannot see any of
+them — its green means "no mutable-container lifetime problems", which is what
+its name now says. `tests/test_core_global_lifetimes_1107.py` holds the other
+half: every module-level name some function declares `global` must appear in
+`RESET_GLOBALS`, `RESET_EXEMPT_GLOBALS`, or `FIXTURE_RESTORED_GLOBALS` — the
+names the autouse fixture saves and restores by hand, which is a real third
+mechanism (the suite *forces* RTK off and tree-sitter absent rather than
+restoring their import-time values) and had no declaration until #1107. That
+table is verified against the fixture's own source: a declared name the fixture
+does not assign after its `yield` fails the build, because a declaration nobody
+checks is a comment.
+
 ### Never reach a preset module by bare import
 
 `presets/*/` basenames are **op names**, not module names. Twenty of them are

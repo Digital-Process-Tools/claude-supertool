@@ -851,11 +851,15 @@ def _guard_repo_git_state():
     raise AssertionError(GIT_STATE_MUTATED.format(changed=", ".join(changed)))
 
 
-# Module-level mutable state that must not survive a test (#397). Every entry
-# is per-invocation scratch or a cache; the fixture below restores each to its
-# import-time value between tests, in place, because supertool holds direct
-# references to these objects. test_state_reset_and_lint_timeout.py fails when
-# a new mutable global appears in neither tuple — the forgetting is otherwise
+# Module-level state that must not survive a test (#397). Every entry is
+# per-invocation scratch or a cache; the fixture below restores each to its
+# import-time value between tests — in place for a live container, because
+# supertool holds direct references to those objects, and by rebinding for
+# everything else (#1107), which is the only way to restore a `str`, a `bool`
+# or a `None` sentinel. test_state_reset_and_lint_timeout.py fails when a new
+# mutable *container* appears in neither tuple, and
+# test_core_global_lifetimes_1107.py fails when a new name the code *rebinds at
+# run time* appears in none of the three tables — the forgetting is otherwise
 # silent, and shows up as a test that passes alone and fails in suite order.
 RESET_GLOBALS = (
     "_BRANCH_CACHE",
@@ -899,6 +903,46 @@ RESET_GLOBALS = (
     # for one that never ran.
     "_ARG_SEP",
     "_CUSTOM_OP_OK",
+    # Per-invocation scratch in the same sense, and rebound rather than mutated,
+    # which is why the #397 container sweep never saw either (#1107). `main()`
+    # sets them at entry, so production is safe; a test that drives `dispatch`
+    # or a `cwd:`-shifted op directly never reaches that, and the next test then
+    # reads the previous one's invocation directory as its own.
+    "_INVOCATION_DIR",
+    "_CWD_SHIFT",
+    # The flag half of `_FORMAT_QUEUE`, which is two entries above (#1107).
+    # Queue reset, gate not: a test that raised mid-batch left deferral ON, and
+    # every later formatter in that worker was queued for a flush nobody runs.
+    "_DEFER_FORMATTERS",
+    # A `str` memo built at first use from `_INSTALL_DIR` — #1322's shape, in a
+    # type the #397 sweep cannot see, and the case #1107 was filed from. It
+    # keys the validator cache: computed while a test pointed `_INSTALL_DIR` at
+    # a tmp_path, it is the hash of `schema-unreadable`, and every later entry
+    # in that worker is written and read under a key space no install has.
+    "_VALIDATOR_MEANING_VERSION",
+    # Memo of `builtin-ops.grep.extensions`, derived from `_load_config()` —
+    # and the fixture below hands every test `_CONFIG = {}`. Same mechanism as
+    # `_mcp_specs` below: one test that forces a real config load fixes this
+    # repo's own extension filter onto every later `grep:` in that worker.
+    "_GREP_EXTENSIONS_EFFECTIVE",
+    # Both halves of the `presets/_untrusted.py` probe, loaded by path from
+    # `_INSTALL_DIR` (#1107). A test that patches the install dir and reaches
+    # any redaction sets `_TRIED = True` with `_FLAT = None` — permanently, and
+    # silently, since the fallback still returns a string. Every later secret
+    # in that worker is rendered by `repr()` instead of the real flattener,
+    # which is a redaction guarantee downgraded by an unrelated test.
+    "_UNTRUSTED_FLAT",
+    "_UNTRUSTED_FLAT_TRIED",
+    # The function memoised out of `presets/mcp/_paths.py`, resolved from
+    # `_MCP_DAEMON_SCRIPT` (#1107). Same load-by-path shape as the two above.
+    "_MCP_SOCKET_PID_PATHS_FN",
+    # `_AT_FILE_REGISTRY`'s guard flag. The registry itself stays exempt below
+    # because `_build_at_file_registry` rebinds it wholesale rather than
+    # mutating it — but that rebuild only happens when this flag is False, so
+    # exempting the flag too made a registry built under one test's config
+    # permanent for the worker. Resetting the flag is what makes the
+    # exemption's own argument true (#1107).
+    "_AT_FILE_REGISTRY_BUILT",
     "_REPO_ROOT_WALK_CACHE",
     "_TS_GRAMMAR_FAILED",
     "_VALIDATOR_DEFER_QUEUE",
@@ -1061,6 +1105,33 @@ PRESET_SELF_CLEARING_GLOBALS: dict[str, tuple[str, ...]] = {
 #: should have to be argued for in review rather than added to quiet a build.
 PRESET_RESET_EXEMPT_GLOBALS: dict[str, tuple[str, ...]] = {}
 
+#: Held per test by the autouse fixture below, which saves each one before the
+#: test and assigns it again after — the route the RTK, config, tree-sitter and
+#: ctags probes have always used, and which had no name until #1107. Declaring
+#: them is what lets `test_core_global_lifetimes_1107.py` tell a name the
+#: fixture handles from one nobody classified, and that guard verifies the claim
+#: against the fixture's own source rather than believing this tuple.
+#:
+#: This is a third mechanism, not a third opinion: these are probe results the
+#: suite deliberately *forces* (RTK off, no tree-sitter, no ctags) rather than
+#: restores to their import-time value, which is why they cannot simply move
+#: into RESET_GLOBALS.
+#: `_CONFIG` is restored by the same fixture and is deliberately NOT here: it
+#: is already classified, in RESET_EXEMPT_GLOBALS above, and one name carrying
+#: two declarations is how the two disagree later.
+FIXTURE_RESTORED_GLOBALS = (
+    "_CONFIG_CHECKED",
+    "_CONFIG_PATH",
+    "_CTAGS_CHECKED",
+    "_CTAGS_PATH",
+    "_IN_ALIAS",
+    "_RTK_CHECKED",
+    "_RTK_PATH",
+    "_TS_AVAILABLE",
+    "_TS_CHECKED",
+    "_TS_PACKAGE",
+)
+
 _PRISTINE_GLOBALS = {
     name: copy.deepcopy(getattr(supertool, name)) for name in RESET_GLOBALS
 }
@@ -1070,24 +1141,27 @@ def _reset_module_state():
     for name in RESET_GLOBALS:
         current = getattr(supertool, name)
         pristine = copy.deepcopy(_PRISTINE_GLOBALS[name])
-        if pristine is None:
-            # A lazily-built cache whose unbuilt state IS `None` (#1322).
-            # In-place restoration cannot express that: `current` is a dict by
-            # the time anything has called the builder, and `current.clear()`
-            # would leave a *built and empty* map — indistinguishable from
-            # "this install declares no repo-targetable ops", which is the
-            # defect. Rebinding restores the sentinel, so the next caller
-            # rebuilds. supertool reads these through the module global on
-            # every call, never through a captured reference.
-            setattr(supertool, name, None)
-        elif isinstance(current, dict):
+        if isinstance(pristine, dict) and isinstance(current, dict):
             current.clear()
             current.update(pristine)
-        elif isinstance(current, set):
+        elif isinstance(pristine, set) and isinstance(current, set):
             current.clear()
             current.update(pristine)
-        else:
+        elif isinstance(pristine, list) and isinstance(current, list):
             current[:] = pristine
+        else:
+            # Everything that is not a live container of the same kind is
+            # rebound. That covers the `None` sentinel #1322 added this arm for
+            # — `current` is a dict by the time anything has called the builder,
+            # and `current.clear()` would leave a *built and empty* map,
+            # indistinguishable from "this install declares no repo-targetable
+            # ops" — and it covers the `str`, `bool` and tuple memos #1107
+            # added, which reach neither `.clear()` nor `[:]` at all: the old
+            # fallback raised `TypeError` on a bool and would have made adding
+            # one to this tuple fail the whole suite. supertool reads all of
+            # these through the module global on every call, never through a
+            # captured reference.
+            setattr(supertool, name, pristine)
     if _env is not None:
         for name in PRESET_RESET_GLOBALS["presets/_env.py"]:
             getattr(_env, name).clear()
@@ -1102,7 +1176,6 @@ def _disable_rtk_and_config():
     old_rtk_path = supertool._RTK_PATH
     old_config_checked = supertool._CONFIG_CHECKED
     old_config = supertool._CONFIG
-    old_config_path = supertool._CONFIG_PATH
     old_config_path = supertool._CONFIG_PATH
     old_ts_checked = supertool._TS_CHECKED
     old_ts_available = supertool._TS_AVAILABLE
