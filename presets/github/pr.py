@@ -930,7 +930,7 @@ def main() -> int:
         result = _gh([
             "pr", "view", arg, "--json",
             "number,title,state,author,headRefName,baseRefName,labels,"
-            "milestone,reviewDecision,reviews,mergeCommit,mergeable,"
+            "milestone,reviewDecision,reviews,mergeCommit,mergedAt,mergeable,"
             "isDraft,url,body,comments,additions,deletions,changedFiles,"
             "statusCheckRollup,assignees,createdAt,updatedAt,headRefOid"
         ])
@@ -958,6 +958,15 @@ def main() -> int:
         review_decision = d.get("reviewDecision") or "none"
         check_states = _checks.github_states(d.get("statusCheckRollup"))
         merge_commit = (d.get("mergeCommit") or {}).get("oid", "")
+        # Merge evidence, at parity with `gl-mr:status` (#628). `gh pr merge`
+        # can print nothing on success, so the merge is read back off the
+        # remote — and this op answered only half of it, which cost four
+        # hand-rolled `gh pr view --json state,mergedAt,mergeCommit` calls in
+        # one evening. `mergedAt` rides in the dashboard fetch already being
+        # made, so the line costs no extra call. Printed unconditionally with
+        # `-` for absent, the way the GitLab twin does: a key that appears only
+        # on merged PRs cannot be grepped for on an open one.
+        merged_at = d.get("mergedAt") or "-"
         web_url = d.get("url", "")
         conflicts = "yes" if mergeable == "CONFLICTING" else "no"
         print(f"#{iid} | state: {state} | mergeable: {mergeable} | conflicts: {conflicts}")
@@ -988,6 +997,7 @@ def main() -> int:
         if unit_line:
             print(unit_line)
         print(f"review: {review_decision}")
+        print(f"merged_at: {merged_at}")
         if merge_commit:
             print(f"merge_commit: {merge_commit[:12]}")
         if web_url:

@@ -642,7 +642,22 @@ A commit with no check runs used to print one sentence — `Checks: none reporte
 
 **Cost:** the extra lookup (one GraphQL call for the head commit's date) is made **only** when the rollup is empty. A PR with check runs pays nothing, which is the overwhelmingly common case on this hot path. The window is `_checks.CHECK_CREATION_GRACE_SECS`, 15min — roughly 3x the worst first-run latency measured on this repo (99s, 165s, ~2min, 4.5min).
 
-**Casing:** the full dashboard prints `Title Case:` labels throughout (`State:`, `Checks:`, `Mergeable:`, `Merge commit:`); `:status` prints `lowercase:` labels throughout (`state:`, `checks:`, `mergeable:`, `merge_commit:`) as part of its terser, ~250-byte machine-oriented format. Each mode is internally consistent but the two never match each other, so grep the casing for the mode you're reading, not both — `grep 'Checks:'` finds nothing in `:status` output, and that silence means "wrong case", not "no checks".
+**Casing:** the full dashboard prints `Title Case:` labels throughout (`State:`, `Checks:`, `Mergeable:`, `Merge commit:`); `:status` prints `lowercase:` labels throughout (`state:`, `checks:`, `mergeable:`, `merged_at:`, `merge_commit:`) as part of its terser, ~250-byte machine-oriented format. Each mode is internally consistent but the two never match each other, so grep the casing for the mode you're reading, not both — `grep 'Checks:'` finds nothing in `:status` output, and that silence means "wrong case", not "no checks".
+
+### `:status` reports the same facts as `gl-mr:status`, or says why not
+
+`gh-pr` and `gl-mr` are visibly forked from a common ancestor and nothing pinned them together, so improving one side reached the other only if somebody remembered. [#620](https://github.com/Digital-Process-Tools/claude-supertool/issues/620) is what that costs: the identical `_load_payload` defect sat in both `issue_create.py` files and was fixed on one side by hand. [#628](https://github.com/Digital-Process-Tools/claude-supertool/issues/628) pins the `:status` **fact-key set** instead of merging the code — sharing a renderer is the larger change and it fights real API differences, while a parity test is cheap and fails the day someone improves one side only.
+
+The bar is `docs/validators.md`'s three-state contract applied to output shape: **every fact one side reports, the other reports or explicitly declines.** "Not applicable on this platform" is an answer; silence is not. `tests/test_gh_gl_status_parity_628.py` renders both ops against fixtures in two states, merged and open — half these keys are conditional, so a one-state fixture would compare whichever branch happened to run — and refuses any divergence not carried in one of two lists, each with a reason per entry:
+
+| | GitHub | GitLab | Why the two spellings |
+| --- | --- | --- | --- |
+| mergeability | `mergeable:` | `merge_status:` | Disjoint vocabularies — `MERGEABLE`/`CONFLICTING`/`UNKNOWN` against `can_be_merged`/`cannot_be_merged`/`unchecked`. One spelling would claim a comparability that is not there. |
+| CI state | `checks:` | `pipeline:` | A flat list of check runs against one pipeline object whose jobs nest in stages. The summed leg tally exists only on the GitHub side; that is a gap in the value, not in the fact set, and it is tracked rather than frozen. |
+
+The one exemption today is `review:`, which GitHub reports and GitLab does not: `reviewDecision` rides in the `gh pr view --json` call already being made, while GitLab approvals are a separate `/merge_requests/:iid/approvals` request and `:status` is the poll-loop render. Three further tests keep that list from becoming a record of every divergence nobody could be bothered to fix — a paired spelling that stops being emitted fails, an exemption for a fact the exempted side now reports fails, and an entry with no reason fails.
+
+**`merged_at:` was the first thing that pin caught.** `gh pr merge` can print nothing on success, so a merge has to be read back off the remote — and `gh-pr:status` answered only half of that, which cost four hand-rolled `gh pr view --json state,mergedAt,mergeCommit` calls in a single evening while the GitLab twin handed all three over free. `mergedAt` now rides in the dashboard fetch already being made, so the line costs no extra call, and it prints unconditionally with `-` for absent the way the GitLab twin does: a key that appears only on merged PRs cannot be grepped for on an open one.
 
 ### A red tally names its legs
 

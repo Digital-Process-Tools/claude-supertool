@@ -409,6 +409,15 @@ def main() -> int:
             description, description_total, description_withheld))
 
     # 2. Related MRs, with each one's pipeline (#815)
+    #
+    # "Related", not "Linked" — and the difference from `gh-issue`'s
+    # `Linked PRs:` is deliberate rather than drift (#628). This endpoint is
+    # `related_merge_requests`: anything referencing the issue, closing or
+    # not. The GitHub twin asks GraphQL `closedByPullRequestsReferences`,
+    # which answers "will this close it" — and #780 exists because a PR that
+    # merely mentions an issue used to count there. Renaming this heading to
+    # match would make the word claim the stronger fact GitLab was never
+    # asked for. `/issues/:iid/closed_by` is the endpoint for that question.
     _print_related_mrs(iid, full)
 
     # 3. Description (markdown attributes already stripped, above the cap)
