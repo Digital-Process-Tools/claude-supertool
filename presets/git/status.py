@@ -182,9 +182,12 @@ def _unborn_head() -> bool:
     established there is no HEAD, and returns False so the caller discloses.
     """
     probe = _git(["rev-parse", "--verify", "--quiet", "HEAD"])
+    # `bool` because this is a predicate, not a relay: the stderr is weighed for
+    # emptiness and never rendered, so the taint stops at the type (#1562).
+    said = bool(probe.stderr.strip())
     return (probe.returncode != 0
             and probe.returncode != TIMEOUT_RC
-            and not probe.stderr.strip())
+            and not said)
 
 
 def _staged_path(line: str) -> str:
@@ -609,7 +612,7 @@ def main() -> int:
                     _note_failed(diff_cmd, diff_head)
                     print(f"⚠ {STAGED_PROVENANCE_UNKNOWN} — `git "
                           f"{' '.join(diff_cmd)}` did not answer "
-                          f"({_reason(diff_head.returncode, diff_head.stderr)}). "
+                          f"({_reason(diff_head.returncode, _untrusted.flat(diff_head.stderr))}). "
                           f"This run did not check whether the staged content "
                           f"exists in any file here.")
                 else:
