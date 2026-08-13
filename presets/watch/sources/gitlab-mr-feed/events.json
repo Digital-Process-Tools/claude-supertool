@@ -4,6 +4,7 @@
     {"key": "mr_opened",    "label": "A new MR appeared in the feed"},
     {"key": "mr_merged",    "label": "A watched MR left the feed by merging"},
     {"key": "mr_closed",    "label": "A watched MR left the feed by closing"},
-    {"key": "mr_left_feed", "label": "An MR left the feed while still open (reassigned, or the filter changed)"}
+    {"key": "mr_left_feed", "label": "An MR left the feed while still open (reassigned, or the filter changed)"},
+    {"key": "mrs_unreachable", "label": "The population could not be established — a query that failed or a scope with an unknown token, not a GitLab that went quiet. Fires once per outage, not once per poll"}
   ]
 }

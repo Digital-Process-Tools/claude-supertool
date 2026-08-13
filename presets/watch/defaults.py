@@ -65,7 +65,15 @@ DEFAULT_FEED_SCOPE = "@me"
 # mr_merged/mr_closed are on so a merge is still reported when no per-MR
 # watcher was alive to report it; the feed emits them without a desktop
 # notification so the normal path does not ping twice.
-DEFAULT_FEED_ONLY = "mr_opened,mr_merged,mr_closed,mr_left_feed"
+# mrs_unreachable is IN as of #1602, for the same argument that put
+# mr_unreachable in DEFAULT_ONLY above and one degree stronger. Every radar run
+# spawns the feed with this filter, so leaving it out would mean an outage
+# reaches the operator only if they went and configured a non-default `only=` —
+# i.e. never, in the default configuration, which is the one the defect lives
+# in. A feed reports discoveries, so its silence is its healthy state and there
+# is no second signal to notice its absence by. Edge-triggered: one line when
+# your token expires, nothing while it works.
+DEFAULT_FEED_ONLY = "mr_opened,mr_merged,mr_closed,mr_left_feed,mrs_unreachable"
 
 VALUES = {
     "feed": DEFAULT_FEED,

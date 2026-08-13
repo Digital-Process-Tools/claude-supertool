@@ -12,7 +12,15 @@ This source polls the *population* instead of one member of it:
     state       {iid: {title, web_url}} for everything the filter returns
     new iid     spawn watch:gitlab-mr:<iid>, emit mr_opened
     gone iid    look the MR up, then emit mr_merged / mr_closed / mr_left_feed
+    no answer   emit mrs_unreachable once, change nothing else
     terminal    never — discovery has no end state
+
+A population that could not be established is not an empty one. An
+unreachable GitLab, an expired token or a scope carrying an unknown filter
+token used to return `[], state` — alive, green in `watches`, and silent
+forever, which is byte-identical to a feed correctly reporting that nothing
+changed (#1602). A feed's healthy steady state *is* silence, so this is the
+one source where the house defect is invisible by construction.
 
 The watcher id is a *scope*, either an alias below or a literal `gl-mrs`
 filter string, so the caller chooses the population (`@me` for what you wrote,
@@ -45,6 +53,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -80,6 +89,27 @@ transport = _load("feed_watch_transport", _WATCH_DIR / "transport.py")
 # The strings double as MR states, which is why one tuple serves both readings.
 TERMINAL_EVENTS = ("merged", "closed")
 
+# What this source can put on the wire. `events.json` is asserted equal to it:
+# a declared key nothing emits is an untrue claim, and an emitted key nothing
+# declares cannot be named in `only=`.
+#
+# `mrs_unreachable` is plural on purpose. `mr_unreachable`, from the per-MR
+# source, says "I could not look up MR !33175"; this one says "I could not
+# establish which MRs exist at all", which is a fact about the population and
+# not about any member of it. Two events one `only=` string can carry side by
+# side had better not read as the same sentence.
+EVENT_KEYS = (
+    "mr_opened",
+    "mr_merged",
+    "mr_closed",
+    "mr_left_feed",
+    "mrs_unreachable",
+)
+
+# The `lookup` flag in state, which makes the outage event edge-triggered.
+LOOKUP_OK = "ok"
+LOOKUP_UNAVAILABLE = "unavailable"
+
 _dispatcher_module: ModuleType | None = None
 
 
@@ -96,12 +126,17 @@ def resolve_filter(scope: str) -> str:
     return ALIASES.get(scope, scope)
 
 
-def fetch_population(scope: str) -> dict[str, dict[str, str]] | None:
-    """{iid: {title, web_url}} for the scope's filter. None on any failure.
+def fetch_population(scope: str) -> tuple[dict[str, dict[str, str]] | None, str]:
+    """`({iid: {title, web_url}}, "")`, or `(None, why)` on any failure.
 
-    None is deliberately not an empty dict: an unreachable GitLab must never
+    `None` is deliberately not an empty dict: an unreachable GitLab must never
     read as "every MR you had is gone", which would fire a departure event for
     each of them.
+
+    The reason travels with it rather than collapsing to a bare `None` (#1602,
+    the #541 shape). A caller holding only `None` can say the population was
+    not established; it cannot say an expired token is why, and "run `glab auth
+    login`" is the whole actionable content of the report.
 
     No pipeline enrichment — the feed answers "which MRs exist", and the
     per-MR watcher it spawns answers "what is happening to this one". One
@@ -117,23 +152,36 @@ def fetch_population(scope: str) -> dict[str, dict[str, str]] | None:
         # population than the caller asked for, so building it anyway would
         # spawn watchers over strangers' MRs and fire an mr_opened for each.
         # None is this function's "could not establish the population", and it
-        # is the safe direction: no events either way (#939).
-        return None
+        # is the safe direction: no events either way (#939). What #939 could
+        # not do was say so — the refusal was correct and silent, and a scope
+        # nobody can fix is the one failure that never clears itself.
+        return None, (f"ERROR: scope {scope!r} carries a token gl-mrs cannot "
+                      f"apply ({', '.join(sorted(unknown))}), so the "
+                      f"population was not established")
     cfg = mrs._get_config()
     out: dict[str, dict[str, str]] = {}
     for filters in mrs._expand_filters(multi):
         try:
             result = mrs._run(mrs._build_list_cmd(filters, cfg["per_page"]))
-        except (OSError, ValueError):
-            return None
+        except FileNotFoundError:
+            return None, ("ERROR: glab not found — install from "
+                          "https://gitlab.com/gitlab-org/cli")
+        except subprocess.TimeoutExpired:
+            # A `SubprocessError`, not an `OSError`, so the old arm did not
+            # hold it and a slow GitLab killed the tick out of `poll()`
+            # instead of being reported as an outage.
+            return None, f"ERROR: glab timed out listing MRs for scope {scope!r}"
+        except (OSError, ValueError) as err:
+            return None, f"ERROR: glab could not run for scope {scope!r}: {err}"
         if result.returncode != 0:
-            return None
+            return None, mr_op._format_error(result.stderr or "", "MR list", scope)
         try:
             data = json.loads(result.stdout)
         except json.JSONDecodeError:
-            return None
+            return None, f"ERROR: invalid JSON from glab for scope {scope!r}"
         if not isinstance(data, list):
-            return None
+            return None, (f"ERROR: unexpected payload shape from glab for "
+                          f"scope {scope!r}")
         for m in data:
             if not isinstance(m, dict) or m.get("iid") is None:
                 continue
@@ -141,7 +189,7 @@ def fetch_population(scope: str) -> dict[str, dict[str, str]] | None:
                 "title": str(m.get("title") or ""),
                 "web_url": str(m.get("web_url") or ""),
             })
-    return out
+    return out, ""
 
 
 def lookup_mr_state(iid: str) -> str:
@@ -264,13 +312,41 @@ def _departure(iid: str, meta: dict[str, Any]) -> dict[str, Any] | None:
 
 def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     scope = str(ctx.get("id") or defaults.DEFAULT_FEED_SCOPE)
-    current = fetch_population(scope)
-    if current is None:
-        return [], state
+    current, error = fetch_population(scope)
 
     raw_known = state.get("known")
     baseline = not isinstance(raw_known, dict)
     known: dict[str, dict[str, Any]] = raw_known if isinstance(raw_known, dict) else {}
+
+    if current is None:
+        # Three answers, not two: ok, a finding, and *cannot tell*.
+        #
+        # Said once per outage rather than once per poll. An alert repeating
+        # every five minutes for an expired token is one people mute, and a
+        # muted alert is the original silence by a longer route.
+        #
+        # `{**state, ...}` is the recovery guarantee, and the part a naive
+        # port breaks. `known` carries both the population and each member's
+        # `covers`; reset it and the first successful poll after the outage
+        # re-announces every open MR as an `mr_opened` — one notification
+        # storm per network blip, which is the failure the baseline rule at
+        # the top of this file exists to prevent.
+        new_state = {**state, "lookup": LOOKUP_UNAVAILABLE, "error": error}
+        if state.get("lookup") == LOOKUP_UNAVAILABLE:
+            return [], new_state
+        return [{
+            "event": "mrs_unreachable",
+            "payload": {
+                "scope": scope,
+                "error": error,
+                # `last_known_`, not a bare count: this tick read nothing, so
+                # the number describes the last poll that could see rather
+                # than what GitLab holds now.
+                "last_known_count": len(known),
+            },
+            "notify_title": f"MR feed {scope} — cannot tell",
+            "notify_message": error,
+        }], new_state
 
     events: list[dict] = []
     watched = live_watchers()
@@ -297,7 +373,10 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
             if departure is not None:
                 events.append(departure)
 
-    return events, {"scope": scope, "known": current}
+    # `lookup` is rewritten on every successful poll, not only when it was
+    # unavailable: a flag that clears lazily makes the *next* outage silent,
+    # which is this defect again one tick later.
+    return events, {"scope": scope, "known": current, "lookup": LOOKUP_OK}
 
 
 def is_terminal(state: dict) -> bool:

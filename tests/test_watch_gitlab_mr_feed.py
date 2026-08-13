@@ -61,8 +61,14 @@ def rig(monkeypatch):
 
 
 def _population(rig, *pops):
-    """Queue one population per poll; the last one repeats."""
-    seq = list(pops)
+    """Queue one population per poll; the last one repeats.
+
+    `fetch_population` answers `(pop, "")` or `(None, why)` since #1602 — the
+    reason a population could not be established travels with the failure
+    instead of collapsing into a value that also means "nothing changed".
+    """
+    seq = [(p, "") if p is not None else (None, "ERROR: glab could not run")
+           for p in pops]
 
     def _fetch(_scope):
         return seq.pop(0) if len(seq) > 1 else seq[0]
@@ -248,19 +254,25 @@ def test_a_departed_iid_leaves_the_known_set(rig) -> None:
 # failure — an unreachable GitLab must not read as "everything vanished"
 # ---------------------------------------------------------------------------
 
-def test_a_failed_fetch_emits_nothing_and_keeps_the_known_set(rig) -> None:
+def test_a_failed_fetch_fires_no_departure_and_keeps_the_known_set(rig) -> None:
+    """The event it *does* fire is `mrs_unreachable` (#1602, pinned in
+    test_watch_feed_unreachable_1602.py). What must not appear here is a
+    departure: an outage read as an empty population announces every MR you
+    have as gone, and then as new again on recovery."""
     _population(rig, _pop(33175, 33176))
     _, state = feed.poll({}, CTX)
-    rig["monkeypatch"].setattr(feed, "fetch_population", lambda _s: None)
+    rig["monkeypatch"].setattr(feed, "fetch_population",
+                               lambda _s: (None, "ERROR: glab could not run"))
     events, new_state = feed.poll(state, CTX)
-    assert events == []
+    assert [e["event"] for e in events] == ["mrs_unreachable"]
     assert sorted(new_state["known"]) == ["33175", "33176"]
 
 
 def test_a_failed_fetch_does_not_stop_any_watcher(rig) -> None:
     _population(rig, _pop(33175, 33176))
     _, state = feed.poll({}, CTX)
-    rig["monkeypatch"].setattr(feed, "fetch_population", lambda _s: None)
+    rig["monkeypatch"].setattr(feed, "fetch_population",
+                               lambda _s: (None, "ERROR: glab could not run"))
     feed.poll(state, CTX)
     assert rig["calls"]["stopped"] == []
 
@@ -277,7 +289,7 @@ def test_fetch_population_queries_the_resolved_filter(monkeypatch) -> None:
     seen: list[list[str]] = []
     monkeypatch.setattr(feed.mrs, "_run",
                         lambda cmd, timeout=25: (seen.append(cmd), _completed(0, "[]"))[1])
-    assert feed.fetch_population("@me") == {}
+    assert feed.fetch_population("@me") == ({}, "")
     assert "--author" in seen[0] and "@me" in seen[0]
     assert "--merged" not in seen[0] and "--all" not in seen[0]
 
@@ -291,7 +303,7 @@ def test_fetch_population_is_one_call_and_skips_pipeline_enrichment(monkeypatch)
     monkeypatch.setattr(feed.mrs, "_run",
                         lambda cmd, timeout=25: (calls.append(cmd), _completed(0, payload))[1])
     monkeypatch.setattr(feed.mrs, "_enrich", lambda *a, **k: enriched.append(1))
-    assert feed.fetch_population("@me") == {"33176": {"title": "t", "web_url": "u"}}
+    assert feed.fetch_population("@me") == ({"33176": {"title": "t", "web_url": "u"}}, "")
     assert len(calls) == 1
     assert enriched == []
 
@@ -299,12 +311,12 @@ def test_fetch_population_is_one_call_and_skips_pipeline_enrichment(monkeypatch)
 def test_fetch_population_returns_none_on_a_glab_error(monkeypatch) -> None:
     monkeypatch.setattr(feed.mrs, "_run",
                         lambda *a, **k: _completed(1, "", "401 Unauthorized"))
-    assert feed.fetch_population("@me") is None
+    assert feed.fetch_population("@me")[0] is None
 
 
 def test_fetch_population_returns_none_on_unparseable_output(monkeypatch) -> None:
     monkeypatch.setattr(feed.mrs, "_run", lambda *a, **k: _completed(0, "not json"))
-    assert feed.fetch_population("@me") is None
+    assert feed.fetch_population("@me")[0] is None
 
 
 def test_fetch_population_returns_none_when_glab_is_missing(monkeypatch) -> None:
@@ -312,7 +324,7 @@ def test_fetch_population_returns_none_when_glab_is_missing(monkeypatch) -> None
         raise OSError("glab not found")
 
     monkeypatch.setattr(feed.mrs, "_run", _boom)
-    assert feed.fetch_population("@me") is None
+    assert feed.fetch_population("@me")[0] is None
 
 
 def test_lookup_mr_state_reads_the_live_state(monkeypatch) -> None:
@@ -363,7 +375,8 @@ def test_the_feed_polls_on_human_timescales_not_ci_timescales() -> None:
 def test_declared_events_match_what_poll_can_emit() -> None:
     declared = {e["key"] for e in
                 json.loads((SOURCE_DIR / "events.json").read_text(encoding="utf-8"))["events"]}
-    assert declared == {"mr_opened", "mr_merged", "mr_closed", "mr_left_feed"}
+    assert declared == {"mr_opened", "mr_merged", "mr_closed", "mr_left_feed",
+                        "mrs_unreachable"}
 
 
 def test_every_default_filtered_event_is_declared_by_this_source() -> None:
@@ -408,14 +421,16 @@ def _glab(monkeypatch, by_author: dict[str, list[int]], fail_for: tuple = ()) ->
 
 def test_a_two_author_scope_fans_out_and_unions(monkeypatch) -> None:
     seen = _glab(monkeypatch, {"@me": [1, 2], "modular.system": [2, 3]})
-    pop = feed.fetch_population("author=@me,author=modular.system,state=opened")
+    pop, error = feed.fetch_population(
+        "author=@me,author=modular.system,state=opened")
     assert seen == ["@me", "modular.system"]
     assert sorted(pop) == ["1", "2", "3"]
+    assert error == ""
 
 
 def test_a_single_author_scope_still_makes_exactly_one_call(monkeypatch) -> None:
     seen = _glab(monkeypatch, {"@me": [1]})
-    assert sorted(feed.fetch_population("@me")) == ["1"]
+    assert sorted(feed.fetch_population("@me")[0]) == ["1"]
     assert seen == ["@me"]
 
 
@@ -423,7 +438,10 @@ def test_one_failing_query_fails_the_whole_poll(monkeypatch) -> None:
     """Half a population is worse than none: every iid the missing query would
     have returned reads as a departure and fires an event saying so."""
     _glab(monkeypatch, {"@me": [1]}, fail_for=("modular.system",))
-    assert feed.fetch_population("author=@me,author=modular.system,state=opened") is None
+    pop, error = feed.fetch_population(
+        "author=@me,author=modular.system,state=opened")
+    assert pop is None
+    assert error.startswith("ERROR")
 
 
 # ---------------------------------------------------------------------------

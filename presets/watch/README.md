@@ -94,6 +94,11 @@ watcher and an `mr_opened` event, departed iids are looked up and reported as
 what actually happened to them. `radar` keeps exactly one alive and says so when
 it is not.
 
+A population it could not establish — an unreachable GitLab, an expired token, a
+scope carrying a filter token `gl-mrs` cannot apply — is **not** an empty one: it
+emits one `mrs_unreachable` per outage and no departures, and keeps `known` so
+recovery does not announce every open MR as new (#1602).
+
 `github-issue-feed` polls a population of GitHub issues and has **no per-id
 tier** — every fact worth watching on an issue (labels, assignees, comment
 count, closure) is already in the list payload, so there is nothing for a

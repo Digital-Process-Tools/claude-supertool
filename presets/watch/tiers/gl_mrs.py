@@ -641,6 +641,33 @@ def feed_error(scope: str = FEED_SCOPE) -> str:
     return mrs._untrusted.flat(str((state.get("last_error") or {}).get("message") or ""))
 
 
+#: The feed poller's own `LOOKUP_UNAVAILABLE`, spelled again rather than
+#: imported — importing it would load the source module on every board render.
+#: `test_watch_feed_unreachable_1602` asserts the two are the same string, so
+#: the copy cannot drift into a check that silently never matches.
+FEED_LOOKUP_UNAVAILABLE = "unavailable"
+
+
+def feed_blind(scope: str = FEED_SCOPE) -> str:
+    """Why the feed could not establish its population, or "" when it could.
+
+    A third fact, not a rewording of the two above (#1602). `feed_pid` answers
+    "is the poller running", `feed_error` answers "did it crash" — the
+    dispatcher writes `last_error` from a poller *exception*. A poll that
+    reached GitLab and got a 401 raises nothing: it returns cleanly, having
+    seen nothing, and both of those two report a healthy feed. That is the
+    whole defect, and it needs its own read.
+
+    Flat, and for the same reason as `feed_error` (#1197): this string is
+    `glab` stderr, written by a poller into a world-writable file at a
+    predictable name, and printed into a multi-line report. The third render.
+    """
+    state = transport.read_state(FEED_SOURCE, scope).get("source_state") or {}
+    if not isinstance(state, dict) or state.get("lookup") != FEED_LOOKUP_UNAVAILABLE:
+        return ""
+    return mrs._untrusted.flat(str(state.get("error") or ""))
+
+
 # ---------------------------------------------------------------------------
 # 4. report
 # ---------------------------------------------------------------------------
@@ -921,7 +948,8 @@ def _footer(open_mrs: list[dict], covered: set[str], healed: list[str],
 
 
 def _feed_warnings(feed: str, feed_err: str,
-                   others: list[str] | None = None) -> list[str]:
+                   others: list[str] | None = None,
+                   blind: str = "") -> list[str]:
     """A blind board must say so. A dead or erroring feed discovers nothing,
     and the symptom of that is a board that simply stops gaining rows — which
     is exactly what an all-quiet day looks like.
@@ -940,6 +968,13 @@ def _feed_warnings(feed: str, feed_err: str,
                    "longer being respawned. New MRs will NOT be discovered.")
     elif feed_err:
         out.append(f"radar: WARNING — MR feed poller is failing to poll: {feed_err}")
+    # Its own line, and not an `elif`: "the poller crashed" and "the poller ran
+    # and could not see" are different repairs, and a live poller can carry
+    # both. Folding it into `feed_err` would name a crash that did not happen.
+    if blind:
+        out.append(f"radar: WARNING — MR feed poller is alive but could not "
+                   f"establish its population, so nothing has been discovered "
+                   f"since: {blind}")
     for other in others or []:
         out.append(f"radar: NOTE — a feed poller is also live on scope '{other}', "
                    f"which this board does not cover. Its MRs are not on this "
@@ -989,7 +1024,8 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
            losses: list[str] | None = None,
            page_capped: bool = False,
            now: str | None = None,
-           stale_running_minutes: float = STALE_RUNNING_MINUTES) -> list[str]:
+           stale_running_minutes: float = STALE_RUNNING_MINUTES,
+           feed_blind: str = "") -> list[str]:
     """Full board on cold start; changed + standing-problem rows afterwards.
 
     `label` names the population on every board, the default one included
@@ -1046,7 +1082,7 @@ def render(open_mrs: list[dict], covered: set[str], healed: list[str],
     elision = (snapshot.elided_note(elided, len(board_mrs), "MRs", "!", "gl-mrs")
                if shown else [])
 
-    lines = (_feed_warnings(feed, feed_err, other_scopes)
+    lines = (_feed_warnings(feed, feed_err, other_scopes, feed_blind)
              + _unchecked_warning(mrs._unchecked_count(open_mrs), len(open_mrs))
              + elision
              + snapshot.departed_note(departed, "MR", "!", "gl-mr:<iid>",
@@ -1135,6 +1171,9 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     scope = feed_scope(multi)
     feed = watch(FEED_SOURCE, scope, feed_only())
     feed_err = feed_error(scope) if feed == "alive" else ""
+    # Only for a live poller: a dead one is already reported above, and its
+    # last state file would say "unavailable" forever after.
+    blind = feed_blind(scope) if feed == "alive" else ""
 
     exclusions, excl_problems = read_exclusions()
     excluded, excl_lines = resolve_exclusions(open_mrs, exclusions, covered)
@@ -1165,7 +1204,8 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     lines = render(open_mrs, covered, healed, drifted, pruned, uncovered, previous,
                    feed, feed_err, label, excluded, excl_problems + excl_lines,
                    other_scopes, loss_warnings(healed, refused), page_capped,
-                   now=stamped_at, stale_running_minutes=stale_after)
+                   now=stamped_at, stale_running_minutes=stale_after,
+                   feed_blind=blind)
     # The snapshot records the whole population, excluded rows included:
     # keyed on what is true, not on what was printed. Otherwise the run after
     # an exclusion is lifted reports a months-old MR as new.
@@ -1181,7 +1221,11 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     # `departed` counts against health for the reason spelled out on the
     # docstring above: `quiet_when_healthy` drops `lines` wholesale, and a
     # departure-only tick is entirely elided rows plus one summary line.
-    healthy = not (uncovered or other_scopes or feed_err or departed
+    # `blind` counts against health because `healthy` means "this tier could
+    # tell you the truth" and radar's `quiet_when_healthy` drops a healthy
+    # tier's lines wholesale — claiming health here would delete the warning
+    # on the way out, which is the silence this fix removes, one layer up.
+    healthy = not (uncovered or other_scopes or feed_err or departed or blind
                    or mrs._unchecked_count(open_mrs)
                    or feed in ("failed", "capped"))
     return lines, healthy
@@ -1222,6 +1266,12 @@ def radar_state(options: dict | None = None) -> list[str]:
     out.append(f"  feed      : scope {scope!r}, pid "
                f"{pid or pid_refusal or 'none recorded'}"
                f"{f' — last error: {err}' if err else ''}")
+    # Its own row. "The poller crashed" and "the poller ran and could not
+    # establish the population" are different facts with different repairs,
+    # and this view is the one someone opens to find out which (#1602).
+    blind = feed_blind(scope)
+    if blind:
+        out.append(f"  feed sight: could NOT establish the population — {blind}")
     for other in other_feed_scopes(scope):
         out.append(f"  feed ALSO : scope {other!r} is live and is NOT on this board")
 
