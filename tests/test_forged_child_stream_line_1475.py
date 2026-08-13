@@ -243,7 +243,7 @@ CENSUS = {
     "presets/github/job.py": 4,  # -1, #1606: the _format_error relay
     "presets/github/labels.py": 1,  # -1, #1606: the _format_error relay
     "presets/github/pr.py": 6,
-    "presets/github/pr_create.py": 5,
+    "presets/github/pr_create.py": 3,  # -2, #1606: both arms of one relay
     "presets/github/pr_merge.py": 5,
     "presets/github/prs.py": 1,  # -1, #1606: the list-failure relay
     "presets/github/run.py": 2,  # -1, #1606: the _format_error relay

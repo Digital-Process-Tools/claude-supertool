@@ -118,7 +118,12 @@ def _gh(args: list[str], timeout: int = TIMEOUT) -> GhCall:
         return GhCall(False, error=f"gh timed out after {timeout}s")
     if r.returncode != 0:
         kind = _gh_error_kind(r.stderr)
-        detail = r.stderr.strip() or f"gh exited {r.returncode}"
+        # Flattened here rather than at the three prints that render `.error`:
+        # one seam covers every consumer, including the not-found probe's, and
+        # the writer of this text is the GitHub API (#1606). The bucketing above
+        # still reads the raw stderr, so no classification moves.
+        detail = (_untrusted.flat(r.stderr.strip())
+                  or f"gh exited {r.returncode}")
         return GhCall(False, absent=(kind == "notfound"), error=detail)
     try:
         return GhCall(True, json.loads(r.stdout or "null"))

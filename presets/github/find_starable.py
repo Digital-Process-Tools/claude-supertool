@@ -48,7 +48,11 @@ def main(arg: str) -> int:
         capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
-        sys.stderr.write(f"ERROR: gh search failed: {result.stderr.strip()[:200]}\n")
+        # Flatten first, slice second — the same order this file already spells
+        # out for a description twenty lines below (#970). The writer of this
+        # text is the GitHub API (#1606).
+        detail = _untrusted.flat(result.stderr.strip())[:200]
+        sys.stderr.write(f"ERROR: gh search failed: {detail}\n")
         return 1
     try:
         data = json.loads(result.stdout)

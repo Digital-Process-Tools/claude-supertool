@@ -225,3 +225,70 @@ def test_starred_failure_relay_is_flattened(monkeypatch, capsys):
     assert mod.main("") == 1
     out = capsys.readouterr()
     _assert_receipt_clean(out.out + out.err, "github/starred.py")
+
+# ---------------------------------------------------------------------------
+# Four more, named by the independent review of the commit above. Same shape,
+# same directory; `pr_create` is the sharpest, because it prints the remote's
+# body on the line directly ABOVE its own `[result]` verdict.
+# ---------------------------------------------------------------------------
+
+
+def test_check_gh_call_error_is_flattened(monkeypatch, capsys):
+    """Flattened in `GhCall`'s constructor rather than at the three prints that
+    read `.error`: one seam covers every consumer, including the not-found
+    probe's."""
+    mod = _load("gh1606_check", "github/check.py")
+    monkeypatch.setattr(mod, "subprocess", _subprocess_shim(_failing(HOSTILE)))
+    _assert_flattened(mod._gh(["gh", "api", "x"]).error, "github/check.py GhCall")
+    assert mod._show_check("1") == 1
+    out = capsys.readouterr()
+    _assert_receipt_clean(out.out + out.err, "github/check.py _show_check")
+
+
+def test_pr_create_failure_relay_is_flattened(monkeypatch, capsys, tmp_path):
+    """The remote's body prints one line above `[result] no PR created`, so a
+    forged verdict does not merely sort first -- it sorts first over a real one
+    this op wrote itself."""
+    mod = _load("gh1606_pr_create", "github/pr_create.py")
+    payload = tmp_path / "pr.toml"
+    payload.write_text(
+        chr(10).join(['repo = "o/r"', 'base = "master"', 'head = "topic"',
+                      'title = "t"', 'body = "b"', ""]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "_gh", lambda *a, **k: _failing(HOSTILE))
+    monkeypatch.setattr(sys, "argv", ["pr_create.py", f"@{payload}"])
+
+    rc = mod.main()
+
+    assert rc == 1
+    out = capsys.readouterr()
+    both = out.out + out.err
+    # The only site whose own render contains a `[result]` line, so the
+    # assertion is that exactly one survives and it is the op's -- not that
+    # none does.
+    assert _forged_verdicts(both) == [
+        f"[result] no PR created (topic -> master in o/r)"
+    ], _forged_verdicts(both)
+    assert SEP not in both, "a raw U+2028 in the receipt is the forgery itself"
+    assert "[U+2028]" in both, "the separator never reached the render"
+    assert "gateway said no" in both, "disclosed, not stripped"
+
+
+def test_find_followable_warn_relay_is_flattened(monkeypatch, capsys):
+    mod = _load("gh1606_find_followable", "github/find_followable.py")
+    monkeypatch.setattr(mod, "subprocess", _subprocess_shim(_failing(HOSTILE)))
+    assert mod.fetch("users/x") == []
+    out = capsys.readouterr()
+    _assert_receipt_clean(out.out + out.err, "github/find_followable.py")
+
+
+def test_find_starable_error_relay_is_flattened(monkeypatch, capsys):
+    """Flatten then slice: the 200-char cut made first leaves whatever the
+    separator started (#970), which is the trap this file already documents
+    twelve lines below the relay."""
+    mod = _load("gh1606_find_starable", "github/find_starable.py")
+    monkeypatch.setattr(mod, "subprocess", _subprocess_shim(_failing(HOSTILE)))
+    assert mod.main("python") == 1
+    out = capsys.readouterr()
+    _assert_receipt_clean(out.out + out.err, "github/find_starable.py")
