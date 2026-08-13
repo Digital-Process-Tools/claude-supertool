@@ -708,9 +708,13 @@ def upstream_refs():
                 "--format=%(refname:strip=2)%09%(upstream)%09%(upstream:remotename)",
                 "refs/heads/"])
     if res.returncode != 0:
+        # `flat`, not the bare line: this is git's own stderr about refs a
+        # remote named, and it is rendered as one line of the board. The
+        # ratchet in `tests/test_forged_child_stream_line_1475.py` is what
+        # caught this site — the targeted runs never touched it.
         why = _untrusted.split_lines((res.stderr or "").strip())
-        return None, (why[0] if why else
-                      f"git for-each-ref exited {res.returncode}")
+        return None, _untrusted.flat(why[0] if why else
+                                     f"git for-each-ref exited {res.returncode}")
     ups = {}
     for line in _untrusted.split_lines(res.stdout):
         # A git ref name cannot contain a tab, so three fields is the whole

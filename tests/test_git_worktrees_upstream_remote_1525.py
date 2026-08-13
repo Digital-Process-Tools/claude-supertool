@@ -219,6 +219,19 @@ def test_not_measured_is_visibly_different_from_measured_and_clean(box) -> None:
     assert "not measured" in unmeasured.token, unmeasured.token
 
 
+def test_the_row_line_itself_says_the_count_was_not_taken(box) -> None:
+    """The evidence line is not enough: the row line is what gets scanned, and
+    it is where `not measured` and `in sync` used to be the same six words."""
+    _sync, tracker = box.state("ghost")
+    entry = {"path": "/tmp/st-wt/1525", "branch": "ghost", "detached": False,
+             "bare": False, "locked": None, "prunable": None, "gitdir": None}
+    rows = [(entry, wt.Assessment(wt.STATE_UNKNOWN, ["no positive signal"]),
+             tracker)]
+    row_line = [ln for ln in wt.render(rows).splitlines()
+                if ln.startswith(wt.STATE_UNKNOWN)][0]
+    assert "not measured" in row_line, row_line
+
+
 def test_upstreams_that_could_not_be_read_decline_rather_than_guess(box) -> None:
     """`None` is the tool failing to look. It must not fall back to the
     origin-preferred ref, which is the guess the issue is about."""
