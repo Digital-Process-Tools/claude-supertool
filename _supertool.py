@@ -19359,7 +19359,12 @@ def _formatter_render_row(result: Dict[str, Any]) -> Optional[str]:
     ok=True and metrics.lines_added == 0 and metrics.lines_removed == 0.
     Failures always produce a row.
     """
-    name = result.get("name") or result.get("tool") or "?"
+    # Every adapter-supplied field on this row goes through `_flat_cell`, for
+    # the reason in its docstring: the validator twin has routed `tool`,
+    # `skipped` and `msg` since #895 and this formatter twin never adopted it,
+    # so a name or a message carrying any of the ten separators
+    # `str.splitlines()` breaks on wrote its own row at column 0 (#1522).
+    name = _flat_cell(result.get("name") or result.get("tool") or "?")
     ok = result.get("ok", False)
     dur = result.get("duration_ms", 0)
     metrics = result.get("metrics") or {}
@@ -19374,7 +19379,16 @@ def _formatter_render_row(result: Dict[str, Any]) -> Optional[str]:
             return None  # quiet clean run
         status = "ok" if ok else "fail"
         if raw:
-            return f"{name:8s}: {status}       {raw}"
+            # `raw` is a *block* — the reader asked for a legacy adapter's
+            # output verbatim, and flattening an eslint report into one
+            # 2000-character line answers the column-0 problem by destroying
+            # the thing it protects. So it keeps its lines and every line after
+            # the first is indented under the row, which is the same answer
+            # `op_validate_staged` gives a validator block. Only the *fields*
+            # (`name`, `msg`) are flattened.
+            body = "\n             ".join(
+                _flat_field(ln) for ln in _LINE_BREAK_RE_STR.split(raw))
+            return f"{name:8s}: {status}       {body}"
         return f"{name:8s}: {status}"
 
     if ok and added == 0 and removed == 0:
@@ -19385,7 +19399,10 @@ def _formatter_render_row(result: Dict[str, Any]) -> Optional[str]:
     else:
         errors = result.get("errors") or []
         msg = result.get("msg") or (errors[0].get("msg") if errors else "") or "failed"
-        msg = str(msg)[:120]
+        # `_flat_cell(…, 120)` rather than `str(msg)[:120]`: the slice cut with
+        # no marker, so a message that ended there and one that was cut read
+        # alike — the same pair `_flat_cell` separates for every other row.
+        msg = _flat_cell(msg, 120)
         line = f"{name:8s}: fail       ({dur}ms)  {msg}"
     return line
 
@@ -20992,7 +21009,14 @@ def op_format(path: str, tool_filter: Optional[list] = None, verbose: bool = Fal
             for e in errors:
                 line_n = f"L{e['line']}" if e.get("line") else "  "
                 code = e.get("code") or ""
-                msg = (e.get("msg") or "").strip().replace("\n", " ")
+                # `_flat_cell`, not `.replace(newline)`: the latter is one
+                # separator out of the ten `str.splitlines()` breaks on, and a
+                # lone CR returns the cursor to column 0 without making a line
+                # at all. Every sibling render already routes through here; this
+                # was the outlier, on the verbose path a human reads after a
+                # formatter has objected (#1522). No `limit`, because verbose
+                # means untruncated.
+                msg = _flat_cell(e.get("msg") or "")
                 out.append(f"  {line_n} {code}  {msg}")
         else:
             out.append(row)

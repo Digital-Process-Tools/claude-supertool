@@ -448,7 +448,11 @@ def main() -> int:
                       f"{_checks.label(state)}")
                 names = red_steps(job)
                 for step_name in names[:_STEP_CAP]:
-                    print(f"    step: {step_name}")
+                    # The job-name cell above has been flattened since #965;
+                    # this line was not. A step name is whatever the branch's
+                    # own CI config called it, which for a fork PR is not this
+                    # repository's text (#1522).
+                    print(f"    step: {_untrusted.flat(step_name)}")
                 if len(names) > _STEP_CAP:
                     print(f"    +{len(names) - _STEP_CAP} more")
 
