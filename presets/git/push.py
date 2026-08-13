@@ -67,13 +67,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _untrusted  # noqa: E402  (an MR/PR target branch is the opener's text — #1038)
 from _git_common import (  # noqa: E402
+    GIT_OUTPUT_HEAD_LINES as _GIT_OUTPUT_HEAD_LINES,
+    GIT_OUTPUT_TAIL_LINES as _GIT_OUTPUT_TAIL_LINES,
     TIMEOUT_RC,
     MrLookup,
     _first_error_line,
     _git,
+    bounded_lines,
     install_dir,
     query_open_mr_result,
     reject_fetch_option,
+    relayed_block,
+    relayed_lines as _relayed_lines,
     repo_label,
     st_hint,
     use_utf8_stdout,
@@ -844,13 +849,10 @@ _HOOK_HEAD_LINES = 3
 _HOOK_TAIL_LINES = 12
 
 # The same bound on the arm a reader has to act on — the push git refused,
-# where `--- git output ---` dumps the child's whole output. Wider, because
-# that dump is the only evidence of *why* it was refused: pytest names the
-# failing tests in its summary at the very end, and the hook names the arm it
-# took at the very start. Measured 2026-08-12 pushing to a local `master`: the
-# unbounded dump was an 11,449-item pytest run, ~11,000 lines, in a receipt.
-_GIT_OUTPUT_HEAD_LINES = 5
-_GIT_OUTPUT_TAIL_LINES = 30
+# where `--- git output ---` dumps the child's whole output — is
+# `_git_common.GIT_OUTPUT_{HEAD,TAIL}_LINES`, imported above. It lives there
+# with `relayed_block`, which is the only thing that renders that header
+# (#1569); the numbers are a property of the dump, not of this file.
 
 
 def _split_hook_stdout(push_stdout: str) -> tuple[list[str], bool]:
@@ -888,58 +890,14 @@ def _split_hook_stdout(push_stdout: str) -> tuple[list[str], bool]:
 
 def _bounded_hook_lines(lines: list[str], head: int = _HOOK_HEAD_LINES,
                         tail: int = _HOOK_TAIL_LINES) -> list[str]:
-    """`lines`, elided in the middle if long — and never silently.
+    """`_git_common.bounded_lines` at the *hook relay's* narrower bound.
 
-    Both ends are kept rather than a tail, because both ends carry the answer:
-    a hook announces which arm it took on its first line and its outcome on its
-    last, and a pytest run names the failing tests in a summary at the very end.
-    The message itself says only what was dropped — this is also the generic
-    dump for a push git refused, where no hook need be involved at all.
+    A wrapper rather than a second implementation (#1569): the elision itself
+    is shared with the `--- git output ---` dumps, and only the head/tail
+    numbers differ — this relay carries a hook's own transcript under a `| `
+    prefix, that one carries the whole reason a push was refused.
     """
-    if len(lines) <= head + tail + 1:
-        return lines
-    return (lines[:head]
-            + [f"... {len(lines) - head - tail} line(s) not shown - first "
-               f"{head} and last {tail} kept; re-run the push by hand to see "
-               "all of it"]
-            + lines[-tail:])
-
-
-def _relayed_lines(lines: list[str]) -> list[str]:
-    """Each line of a child's output, kept to one line of ours (#1470).
-
-    The `| ` / `> ` prefix a relay puts in front of a line, and the column-0
-    dump under `--- git output ---`, are the only thing separating a third
-    party's bytes from supertool's own output — and a prefix holds only for as
-    long as the line stays one line. `_untrusted.split_lines` cuts on LF / CR /
-    CRLF alone, by design (#1081), so a U+2028 survives *inside* a relayed line
-    and puts everything after it back at column 0 for every consumer that
-    splits the way `str.splitlines()` does. #623 made `[result]` the line a
-    caller reads as the verdict, and a forged one sorts first.
-
-    `remote:` lines are written by whatever server you push to, so on the
-    stderr path the text is a third party's outright. The local pre-push hook
-    is code already running on this machine and is no escalation on its own; it
-    goes through the same call because the seam is the same one, it costs
-    nothing, and a half-flattened seam is the one that gets re-filed.
-
-    ESC goes with it, which is the other way to rewrite a receipt — a relayed
-    `ESC [2K ESC [1A` deletes the line above it (#851's argument, applied to a
-    child stream). Disclosed, never stripped: the forged text stays legible as
-    `[U+2028]` and `[U+001B]`.
-
-    Tabs are kept, which is why this is not `flat()`. `flat()` drops them
-    because it renders a one-line *field* on a line the tool owns, where a tab
-    can imitate a board's column structure; a relayed transcript is neither —
-    it is the child's own lines under a prefix or a header, and no consumer
-    parses it by column. A tab cannot make a line and cannot move a cursor
-    anywhere it has not already been, so keeping it is exactly the trade
-    `scrub()` makes for a block, and dropping it would render every
-    tab-aligned hook transcript and git porcelain block as `[U+0009]` soup —
-    breaking the thing #1448 shipped four hours earlier, for no forgery it
-    prevents.
-    """
-    return [_untrusted.visible(ln, keep=chr(9)) for ln in lines]
+    return bounded_lines(lines, head, tail)
 
 
 def _report_prepush_hook(push_stdout: str, push_stderr: str,
@@ -1821,16 +1779,14 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
             err = _untrusted.flat(_first_error_line(combined))
             if err:
                 print(f"First error: {err}")
-            print("\n--- git output ---")
             # Bounded, like every other dump of a child's stream in this file
-            # (#1490). No hook disclosure here on purpose: no push of this
+            # (#1490), and under the `> ` prefix all four of them now carry
+            # (#1569). No hook disclosure here on purpose: no push of this
             # route's own has run yet, so there is nothing about a hook this
             # arm could state that would be about the failure it is reporting.
-            dump = _relayed_lines(
-                _bounded_hook_lines(_untrusted.split_lines(combined.strip()),
-                                    _GIT_OUTPUT_HEAD_LINES,
-                                    _GIT_OUTPUT_TAIL_LINES))
-            print("\n".join(dump) if dump else "(no output)")
+            print("")
+            for ln in relayed_block(combined):
+                print(ln)
             _result(f"NOT PUSHED - REJECTED (non-fast-forward)  {branch} -> "
                     f"{target} - rebase could not start")
             return rebase.returncode
@@ -1883,15 +1839,12 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
         # what it cannot say is whether a hook was in the picture at all.
         _report_prepush_hook(result.stdout or "", result.stderr or "", flags,
                              relay=False)
-        print("\n--- git output ---")
         # Bounded (#1490). This is the arm where the transcript is largest: a
         # push rejected after a clean rebase is a push whose hook has just run
         # the suite, and #1454 measured the unbounded case at ~11,000 lines.
-        dump = _relayed_lines(
-            _bounded_hook_lines(_untrusted.split_lines(combined.strip()),
-                                _GIT_OUTPUT_HEAD_LINES,
-                                _GIT_OUTPUT_TAIL_LINES))
-        print("\n".join(dump) if dump else "(no output)")
+        print("")
+        for ln in relayed_block(combined):
+            print(ln)
         _result(f"NOT PUSHED - REJECTED after a clean rebase  {branch} -> {target}")
         return result.returncode
 
@@ -2187,16 +2140,13 @@ def _push_op() -> int:
         # between, and it was left to the reader to resolve (#1448).
         _report_prepush_hook(result.stdout or "", result.stderr or "", flags,
                              relay=False)
-        print("\n--- git output ---")
         # Bounded, because the commonest thing that stops a push here is a hook
         # that ran a test suite, and its transcript is not the receipt (#1448).
         # The two ends are the two things a reader needs: the arm the hook
         # announced, and what it refused on.
-        dumped = _relayed_lines(
-            _bounded_hook_lines(_untrusted.split_lines(combined.strip()),
-                                _GIT_OUTPUT_HEAD_LINES,
-                                _GIT_OUTPUT_TAIL_LINES))
-        print("\n".join(dumped) if dumped else "(no output)")
+        print("")
+        for ln in relayed_block(combined):
+            print(ln)
         _result(f"NOT PUSHED - REJECTED  {branch} -> {remote_name}/{remote_ref}"
                 + (f" - {err}" if err else ""))
         return result.returncode

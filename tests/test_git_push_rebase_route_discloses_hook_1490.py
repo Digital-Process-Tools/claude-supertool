@@ -244,14 +244,20 @@ def test_the_rejected_after_rebase_dump_is_bounded(box) -> None:
 def test_the_rebase_could_not_start_dump_is_bounded(box, monkeypatch) -> None:
     """The other unbounded dump on this route. Reached with an unstaged change,
     which git refuses to rebase over and which leaves no unmerged paths."""
+    # Spied in `_git_common`, not in `push`: the dump moved behind
+    # `relayed_block`, which is where the header and the `> ` prefix are now
+    # emitted together so neither can be shipped without the other (#1569).
+    # The bound is the property this asserts, and it did not change.
+    git_common = sys.modules["_git_common"]
     calls = []
-    real = push._bounded_hook_lines
+    real = git_common.bounded_lines
 
-    def spy(lines, head=push._HOOK_HEAD_LINES, tail=push._HOOK_TAIL_LINES):
+    def spy(lines, head=git_common.GIT_OUTPUT_HEAD_LINES,
+            tail=git_common.GIT_OUTPUT_TAIL_LINES):
         calls.append((head, tail))
         return real(lines, head, tail)
 
-    monkeypatch.setattr(push, "_bounded_hook_lines", spy)
+    monkeypatch.setattr(git_common, "bounded_lines", spy)
     Path(box.mine, "a.txt").write_text("dirty", encoding="utf-8")
     rc, out = box.drive_push()
     assert rc != 0, out

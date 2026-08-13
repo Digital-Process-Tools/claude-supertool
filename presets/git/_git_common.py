@@ -276,7 +276,8 @@ def foreign_worktree(start: Optional[str] = None) -> Optional[ForeignWorktree]:
     # separator forges through the ordinary route with no attacker involved.
     # There are three renders, not one — this note, and the prose line under it
     # in `status.py` and in `worktrees.py`, each of which prints `here` — plus
-    # `repo_label()`, i.e. the `Repo:` line of every op that writes. Flattening
+    # `repo_label()`, i.e. the `Repo:` line of `git-commit`, `git-push` and —
+    # since #1569, which is this same argument re-filed — `git-diff`. Flattening
     # at the note would have covered one of the four.
     #
     # `disclose_newline=True` because the value is a path: the space `flat()`
@@ -316,14 +317,16 @@ def repo_label() -> str:
     `ForeignWorktree`): the directory's real name is flattened on the way out,
     so a separator in it arrives as ``␊``/``[U+000A]`` rather than making a
     second line at column 0 under a `Repo:` the reader takes as the tool's.
-    Both call sites — `git-commit` and `git-push`, the two ops that write —
-    interpolate it into one printed line and nothing else.
+    All three call sites — `git-commit`, `git-push` and, since #1569,
+    `git-diff` — interpolate it into one printed line and nothing else.
 
     `git-diff` has printed a `Repo:` line for a long time; `git-commit` and
     `git-push` did not — so the two ops that WRITE were the two that never said
     where they wrote. When a commit lands somewhere unexpected, that line is
     the difference between noticing within the minute and noticing next week
-    (#692).
+    (#692). `git-diff` then kept building its own line out of a raw
+    `--show-toplevel` for two more rounds of this defect class, which is #1569:
+    a seam nobody is routed to is a seam that covers one caller.
 
     The work tree when there is one, the git dir otherwise: a bare repo has no
     top level, and printing an empty string there would be worse than printing
@@ -471,6 +474,116 @@ def _first_error_line(text: str) -> str:
         if s and not _looks_like_success(s):
             return _untrusted.flat(s)
     return ""
+
+
+# How much of a child's transcript a `--- git output ---` dump carries. Head
+# *and* tail, never a plain tail: a hook announces which arm it took on its
+# FIRST line and pytest names the failing tests in a summary at the very END,
+# so one end alone drops either the disclosure or the cause. Measured
+# 2026-08-12 pushing to a local `master`: the unbounded dump was an 11,449-item
+# pytest run, ~11,000 lines, inside a receipt (#1454, #1490).
+GIT_OUTPUT_HEAD_LINES = 5
+GIT_OUTPUT_TAIL_LINES = 30
+
+#: What marks a relayed line as the child's rather than the tool's. `> ` and
+#: not `| `, matching the stderr half of `push._report_prepush_hook`: a
+#: `--- git output ---` dump is stdout and stderr concatenated, so its
+#: provenance is exactly the "three processes write here and nothing marks the
+#: boundary" case that prefix already means.
+RELAY_PREFIX = "> "
+
+#: The one opening delimiter a relayed transcript has. Printed only by
+#: `relayed_block`, so that nothing can print it without the prefix below it
+#: (#1569) — `tests/test_column_zero_renders_1569.py` is the census.
+RELAY_HEADER = "--- git output ---"
+
+
+def bounded_lines(lines: list[str], head: int = GIT_OUTPUT_HEAD_LINES,
+                  tail: int = GIT_OUTPUT_TAIL_LINES) -> list[str]:
+    """`lines`, elided in the middle if long — and never silently.
+
+    Both ends are kept rather than a tail, because both ends carry the answer:
+    a hook announces which arm it took on its first line and its outcome on its
+    last, and a pytest run names the failing tests in a summary at the very end.
+    The message itself says only what was dropped — this is also the generic
+    dump for a push git refused, where no hook need be involved at all.
+    """
+    if len(lines) <= head + tail + 1:
+        return lines
+    return (lines[:head]
+            + [f"... {len(lines) - head - tail} line(s) not shown - first "
+               f"{head} and last {tail} kept; re-run the push by hand to see "
+               "all of it"]
+            + lines[-tail:])
+
+
+def relayed_lines(lines: list[str]) -> list[str]:
+    """Each line of a child's output, kept to one line of ours (#1470).
+
+    The `| ` / `> ` prefix a relay puts in front of a line is the only thing
+    separating a third party's bytes from supertool's own output — and a prefix
+    holds only for as long as the line stays one line. `_untrusted.split_lines`
+    cuts on LF / CR / CRLF alone, by design (#1081), so a U+2028 survives
+    *inside* a relayed line and puts everything after it back at column 0 for
+    every consumer that splits the way `str.splitlines()` does. #623 made
+    `[result]` the line a caller reads as the verdict, and a forged one sorts
+    first.
+
+    `remote:` lines are written by whatever server you push to, so on the
+    stderr path the text is a third party's outright. The local pre-push hook
+    is code already running on this machine and is no escalation on its own; it
+    goes through the same call because the seam is the same one, it costs
+    nothing, and a half-flattened seam is the one that gets re-filed.
+
+    ESC goes with it, which is the other way to rewrite a receipt — a relayed
+    `ESC [2K ESC [1A` deletes the line above it (#851's argument, applied to a
+    child stream). Disclosed, never stripped: the forged text stays legible as
+    `[U+2028]` and `[U+001B]`.
+
+    Tabs are kept, which is why this is not `flat()`. `flat()` drops them
+    because it renders a one-line *field* on a line the tool owns, where a tab
+    can imitate a board's column structure; a relayed transcript is neither —
+    it is the child's own lines under a prefix or a header, and no consumer
+    parses it by column. A tab cannot make a line and cannot move a cursor
+    anywhere it has not already been, so keeping it is exactly the trade
+    `scrub()` makes for a block, and dropping it would render every
+    tab-aligned hook transcript and git porcelain block as `[U+0009]` soup —
+    breaking the thing #1448 shipped four hours earlier, for no forgery it
+    prevents.
+
+    **In `_git_common`, not in `push` (#1569).** It was defined in `push.py`,
+    where no sibling preset can reach it, so `commit._failure_receipt` restated
+    its body — and dropped the prefix while claiming in its own docstring to
+    relay "exactly as `push._relayed_lines` does it". A seam a caller cannot
+    import is a seam that gets copied, and a copy is where the property is lost.
+    """
+    return [_untrusted.visible(ln, keep=chr(9)) for ln in lines]
+
+
+def relayed_block(text: str, *, head: int = GIT_OUTPUT_HEAD_LINES,
+                  tail: int = GIT_OUTPUT_TAIL_LINES) -> list[str]:
+    """A child's whole transcript as lines of ours: header, then every line
+    under `> `.
+
+    The header alone was the containment until #1569, and a header is an
+    *opening* delimiter with no close: under it the child's lines sat at column
+    0, so a pre-commit hook printing `Status: COMMITTED` or `[result] 1 op run`
+    wrote lines a consumer cannot tell from supertool's own. `relayed_lines`
+    guarantees one line stays one line; the prefix is what says whose line it
+    is. Neither half works without the other, so they are emitted together
+    here rather than left to four call sites to pair up correctly.
+
+    Bounded, because the commonest thing that produces one of these is a hook
+    that ran a test suite and its transcript is not the receipt (#1448, #1490).
+    `(no output)` rather than an empty block: a dump that prints nothing and a
+    child that printed nothing are the same shape on screen, which is this
+    repo's own defect class.
+    """
+    lines = relayed_lines(bounded_lines(
+        _untrusted.split_lines(text.strip()), head, tail))
+    if not lines:
+        return [RELAY_HEADER, "(no output)"]
+    return [RELAY_HEADER] + [RELAY_PREFIX + ln for ln in lines]
 
 
 #: One page of open PRs is enough for every worktree a fleet realistically
