@@ -183,6 +183,22 @@ def test_a_contradiction_names_both_pids_so_it_can_be_acted_on(sock):
     assert str(os.getpid()) in report, report
 
 
+@pytest.fixture(autouse=True)
+def _subscribed(monkeypatch):
+    """Pin the #1543 subscription probe to `subscribed`.
+
+    That probe reads the process that spawned the socket-holder, which here is
+    whatever launched pytest, and answers `CANNOT DETERMINE` for anything it
+    does not recognise as a session. This file is about peer identity, so the
+    verdict it asserts must not move with the machine the suite runs on. The
+    probe's own three states are pinned in
+    `tests/test_watch_channel_subscription_1543.py`.
+    """
+    monkeypatch.setattr(
+        channel, "subscription",
+        lambda *args, **kwargs: channel.Subscription(channel.SUB_SUBSCRIBED, []))
+
+
 @needs_peer_creds
 def test_a_health_file_naming_the_socket_holder_still_forwards(sock):
     """The check must not cost the healthy answer."""

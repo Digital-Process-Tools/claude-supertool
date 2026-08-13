@@ -290,12 +290,22 @@ def test_health_reports_the_consumers_own_forwarded_count(tmp_path):
                   last_forwarded=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     try:
         result = _run_health(path)
-        assert result.returncode == RC_FORWARDING, result.stdout + result.stderr
-        assert "FORWARDING" in result.stdout
         # The whole rendered line, not three substrings. `"2" in stdout` is true
         # of a timestamp, of `2048`, and of a report that never printed a
         # dropped count at all — an assertion that a broken renderer passes.
         assert "41 lines read, 39 forwarded, 2 dropped" in result.stdout
+        # The verdict is deliberately NOT asserted here since #1543. This test
+        # runs the op in a subprocess, where the subscription probe cannot be
+        # stubbed, and its answer is a fact about the machine the suite runs on:
+        # the socket-holder is pytest, whose parent is a shell, and a shell is
+        # `CANNOT DETERMINE` rather than a session. What is asserted is that the
+        # counters render and that the verdict is one of the three the
+        # subscription answer selects between — never `NOT DELIVERING` or
+        # `CONTRADICTED`, which would be about this fixture rather than about
+        # the machine. `channel: FORWARDING` itself is pinned in-process, where
+        # the probe is stubbed: tests/test_watch_channel_subscription_1543.py.
+        assert result.returncode in (RC_FORWARDING, RC_UNKNOWN,
+                                     channel.RC_NOT_SUBSCRIBED), result.stdout
     finally:
         srv.close()
         os.unlink(path)
@@ -370,7 +380,14 @@ def test_health_never_presents_the_published_pid_as_a_verified_identity(tmp_path
             assert "CONTRADICTED" in result.stdout
             assert str(stranger.pid) in result.stdout
         else:
-            assert result.returncode == RC_FORWARDING, result.stdout + result.stderr
+            # The two sentences are the claim; the code is not asserted, for the
+            # reason given in
+            # `test_health_reports_the_consumers_own_forwarded_count` above —
+            # since #1543 the verdict also depends on whether a session is
+            # subscribed, which this subprocess route cannot stub and which is a
+            # fact about the machine rather than about this fixture.
+            assert result.returncode in (RC_FORWARDING, RC_UNKNOWN,
+                                         channel.RC_NOT_SUBSCRIBED), result.stdout
             assert "self-reported" in result.stdout
             assert "pids are reusable" in result.stdout
     finally:

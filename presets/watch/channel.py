@@ -9,7 +9,7 @@ does not pretend otherwise.** `channel.ts` reaches the session through
 `mcp.notification()` — a JSON-RPC notification, so no id, no response and
 nothing to await — and it never writes back to the producer connection either.
 No ack exists to read. That is a finding, not a gap in this implementation, and
-it is why the answer here has three states rather than two:
+it is why the answer here has five states rather than two:
 
     NOT DELIVERING   a definite negative. Nothing is listening on the socket, so
                      every event a poller emits right now is lost at the source.
@@ -34,6 +34,18 @@ it is why the answer here has three states rather than two:
                      defect. Peer credentials do not close the forgery, because
                      a same-uid process that binds the socket *and* writes the
                      file is its own peer; what they catch is the disagreement.
+    BOUND, NOT SUBSCRIBED
+                     a consumer is bound, verified and counting, and no session
+                     is subscribed to its channel (#1543), so every event it
+                     reads is handed to a transport nobody is listening on. A
+                     fifth state for the same reason as the fourth: it is a
+                     finding. Subscription is only partly observable from
+                     outside the session and `subscription()` claims exactly the
+                     part that is — the process that spawned the socket-holder,
+                     and whether the channel tag in its argv names a *configured*
+                     MCP server. Everything it could not ask is `CANNOT
+                     DETERMINE` with the reason, never this and never the one
+                     above it.
 
 `CANNOT DETERMINE` is the point of the op rather than its failure mode. It is
 the state today's tooling reports as green, and reporting it as green produced a
@@ -42,16 +54,23 @@ account) — first "transport is fine" off `sent ok`, then "the radar is dead" o
 a drop line, while it had already recovered.
 
 Exit codes are the states, on purpose: 0 forwarding, 1 not delivering, 3 cannot
-determine, 4 contradicted. A single non-zero would put answers this op exists to
-separate back into one bucket, and 4 is separate from 3 for the same reason —
-"I could not tell" and "I can tell, and it is wrong" call for different actions.
+determine, 4 contradicted, 5 bound but not subscribed. A single non-zero would
+put answers this op exists to separate back into one bucket, and 4 and 5 are
+separate from 3 for the same reason — "I could not tell" and "I can tell, and it
+is wrong" call for different actions.
 
 **Measured caveat, so nobody builds on a code that is not there.** The supertool
 wrapper reports any non-zero op as `FAIL` and exits 1, so 3 survives only when
 this file is run directly (`python3 presets/watch/channel.py health`). Through
-`supertool 'channel:health'` the three states are carried by the *first line* of
-the report — `channel: FORWARDING` / `NOT DELIVERING` / `CANNOT DETERMINE` —
-which is what the tests key on and what a caller should key on too.
+`supertool 'channel:health'` the states are carried by the *first line* of the
+report — `channel: FORWARDING` / `NOT DELIVERING` / `CANNOT DETERMINE` /
+`CONTRADICTED` / `BOUND, NOT SUBSCRIBED` — which is what the tests key on and
+what a caller should key on too.
+
+**Measured cost, so nobody is surprised by it.** The subscription probe runs
+`claude mcp get`, which is ~3s on a warm machine (2026-08-13), so this op is no
+longer instant and `radar` pays it once per run when its board has counted an
+accepted emit.
 """
 from __future__ import annotations
 
@@ -59,8 +78,10 @@ import calendar
 import errno
 import json
 import os
+import shlex
 import socket
 import struct
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -130,6 +151,44 @@ RC_UNKNOWN = 3
 #: the health file was written by a process that is not holding the socket.
 #: Folding it into 3 would be the defect this whole op exists to remove.
 RC_CONTRADICTED = 4
+#: A fifth, and the same argument again (#1543). A consumer that is bound,
+#: verified and counting, with no session subscribed to its channel, is a
+#: finding: every event it reads is handed to a transport nobody is listening
+#: on. `CANNOT DETERMINE` would say nothing was established, and 0 would say
+#: the opposite of the truth.
+RC_NOT_SUBSCRIBED = 5
+
+#: The subscription question, in the same three states as everything else here.
+SUB_SUBSCRIBED = "subscribed"
+SUB_NOT_SUBSCRIBED = "not-subscribed"
+SUB_UNKNOWN = "unknown"
+
+#: A channel's events reach a session only when that session was started with
+#: this flag, and the tag it carries names a server the harness has
+#: **configured**. Both halves were measured against claude 2.1.219 in #1544:
+#: without the flag the consumer runs and delivers nothing, and with the flag
+#: naming a `--mcp-config` server the harness answers
+#: `server:NAME - no MCP server configured with that name` and the consumer
+#: still runs and still delivers nothing. That second state is #1543.
+CHANNEL_FLAG = "--dangerously-load-development-channels"
+TAG_PREFIX = "server:"
+
+#: `claude mcp get NAME` is the harness's own answer to "is NAME configured" —
+#: the same question `bin/supertool-workspace` asks before registering the
+#: consumer, so this op and the launcher cannot disagree about it. It is read
+#: for its EXIT CODE; the only prose consulted is the refusal that distinguishes
+#: "no such server" from "the lookup failed", and anything else is the third
+#: state. It health-checks the named server as a side effect, which for this
+#: repo's consumer is a second instance that refuses to start rather than
+#: unlinking a live incumbent (#550).
+CLAUDE_BIN = "claude"
+CLAUDE_UNKNOWN_SERVER = "No MCP server named"
+CLAUDE_TIMEOUT = 15
+
+#: `ps` reads a process's parent and argv. Cheap, and absent on Windows — where
+#: the spawn raises `FileNotFoundError` and lands in the third state by name
+#: rather than escaping as a traceback.
+PS_TIMEOUT = 5
 
 #: Linux. `SO_PEERCRED` on a connected AF_UNIX socket yields `struct ucred` —
 #: three native ints, pid first — for the process on the other end. Read from
@@ -835,6 +894,232 @@ def _holder_lines(path: str) -> list[str]:
     ]
 
 
+class Subscription(NamedTuple):
+    """One subscription answer: the state, and the report lines that carry it.
+
+    `lines` is already indented for the report and already flattened — an argv
+    is somebody else's text, read out of a process table anyone on this machine
+    can write into (#1423).
+    """
+
+    state: str
+    lines: list[str]
+
+
+def _sub(state: str, head: str, rest: tuple[str, ...] = ()) -> Subscription:
+    return Subscription(
+        state, [f"  session  : {head}"] + [f"             {line}" for line in rest])
+
+
+def _ps_fields(pid: int) -> tuple[int | None, str, str]:
+    """`(ppid, argv, refusal)` for one pid — never `(0, "")` for "did not look".
+
+    `-ww` rather than the default width: macOS truncates the command column to
+    the terminal width when stdout is not a tty, which silently cuts the flag
+    this whole probe is looking for off the end of a session's argv. Measured
+    2026-08-13 — a plain `ps -ax -o command=` redirected to a file lost it.
+    """
+    try:
+        done = subprocess.run(
+            ["ps", "-ww", "-o", "ppid=,command=", "-p", str(pid)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=PS_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as err:
+        return None, "", f"`ps` could not be run ({type(err).__name__})"
+    if done.returncode != 0:
+        return None, "", f"`ps` found no process {pid}"
+    text = done.stdout.decode("utf-8", "replace").strip()
+    if not text:
+        return None, "", f"`ps` returned nothing for pid {pid}"
+    ppid_text, _, argv = text.splitlines()[0].strip().partition(" ")
+    try:
+        ppid = int(ppid_text)
+    except ValueError:
+        return None, "", f"`ps` output for pid {pid} did not begin with a ppid"
+    return ppid, argv.strip(), ""
+
+
+def _configured(name: str) -> tuple[bool | None, str]:
+    """Does the harness have an MCP server called `name`? Three answers.
+
+    `True` and `False` are both findings; `None` is the admission, and it is
+    returned for every outcome that is not one of the two the CLI states
+    plainly. A non-zero exit whose text this reader does not recognise is not a
+    missing server: it is a lookup that failed.
+    """
+    try:
+        done = subprocess.run(
+            [CLAUDE_BIN, "mcp", "get", name],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=CLAUDE_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as err:
+        return None, f"`{CLAUDE_BIN} mcp get` could not be run ({type(err).__name__})"
+    if done.returncode == 0:
+        return True, ""
+    out = done.stdout.decode("utf-8", "replace")
+    if CLAUDE_UNKNOWN_SERVER in out:
+        return False, ""
+    return None, (f"`{CLAUDE_BIN} mcp get` exited {done.returncode} without saying "
+                  f"the name is unknown")
+
+
+def _channel_tags(argv: str) -> tuple[list[str] | None, str]:
+    """The `server:` names a session argv subscribes to, `[]`, or why not.
+
+    `[]` is a positive finding — this session armed no channel. `None` is the
+    admission, and the case that produces it is why this is not a `split()`:
+    the flag is variadic, so a server name containing a space arrives as two
+    tokens. Reading the first would manufacture a name the harness has never
+    heard of, and the confident false negative that follows is this op's own
+    defect wearing the fix for it.
+    """
+    try:
+        tokens = shlex.split(argv)
+    except ValueError:
+        return None, "the session argv did not tokenise"
+    values: list[str] = []
+    for index, token in enumerate(tokens):
+        if token == CHANNEL_FLAG:
+            for value in tokens[index + 1:]:
+                if value.startswith("-"):
+                    break
+                values.append(value)
+        elif token.startswith(CHANNEL_FLAG + "="):
+            values.append(token[len(CHANNEL_FLAG) + 1:])
+    if not values:
+        return [], ""
+    if not all(value.startswith(TAG_PREFIX) for value in values):
+        return None, (f"a value after {CHANNEL_FLAG} is not a `{TAG_PREFIX}` tag, so "
+                      f"a server name containing a space cannot be told from a "
+                      f"second entry")
+    return [value[len(TAG_PREFIX):] for value in values], ""
+
+
+def _looks_like_a_session(argv: str) -> bool:
+    """Is this argv recognisably a Claude session?
+
+    Deliberately generous, because the cost of the two errors is not
+    symmetrical: a session this fails to recognise costs a `CANNOT DETERMINE`,
+    and one it recognises wrongly costs a definite verdict about a channel it
+    knows nothing about. A harness launched as `node .../cli.js` is not
+    recognised here and lands in the third state by design.
+    """
+    if CHANNEL_FLAG in argv:
+        return True
+    first = argv.split(" ", 1)[0]
+    return first == CLAUDE_BIN or first.endswith("/" + CLAUDE_BIN)
+
+
+def subscription(pid: Any, pid_note: str = "") -> Subscription:
+    """Is any session subscribed to the channel this consumer serves? (#1543)
+
+    The chain, and every link of it is read rather than assumed: the consumer
+    is spawned by the session as an MCP server, so its **parent** is the
+    session; a session subscribes only through `CHANNEL_FLAG`; and the harness
+    refuses a tag naming a server it has not got configured. Two of those are
+    in the process table and the third is `claude mcp get`.
+
+    What this does NOT establish, and the report says so on the positive arm:
+    that the configured server the tag names is the one holding this socket.
+    Two channel-capable servers under one session satisfy both halves
+    separately. It is a narrower doubt than the one #1543 was filed about, and
+    naming it is cheaper than a probe that would still not close it.
+    """
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return _sub(SUB_UNKNOWN,
+                    "NOT established — no consumer pid to ask about",
+                    ("nothing here says whether a session is subscribed",))
+    origin = f" ({pid_note})" if pid_note else ""
+    ppid, _argv, why = _ps_fields(pid)
+    if ppid is None:
+        return _sub(SUB_UNKNOWN,
+                    f"NOT established — the parent of consumer pid {pid}{origin} "
+                    f"was not read",
+                    (why,))
+    if ppid <= 1:
+        return _sub(SUB_NOT_SUBSCRIBED,
+                    f"none — consumer pid {pid}{origin} has been reparented to pid "
+                    f"{ppid}, so the",
+                    ("session that spawned it has exited. A consumer outlives its "
+                     "session only",
+                     "as an orphan, and an orphan has nobody to deliver to"))
+    _, parent_argv, parent_why = _ps_fields(ppid)
+    if not parent_argv:
+        return _sub(SUB_UNKNOWN,
+                    f"NOT established — pid {ppid} spawned this consumer and its "
+                    f"argv was not read",
+                    (parent_why,))
+    shown = _untrusted.flat(parent_argv)
+    if not _looks_like_a_session(parent_argv):
+        return _sub(SUB_UNKNOWN,
+                    f"NOT established — pid {ppid} spawned this consumer and is not "
+                    f"recognisably",
+                    (f"a Claude session: {shown}",
+                     "a session launched under another argv reads the same from "
+                     "here, so this",
+                     "is a declined probe rather than a definite negative"))
+    tags, tag_why = _channel_tags(parent_argv)
+    if tags is None:
+        return _sub(SUB_UNKNOWN,
+                    f"NOT established — the argv of session pid {ppid} did not parse",
+                    (tag_why, shown))
+    if not tags:
+        return _sub(SUB_NOT_SUBSCRIBED,
+                    f"none — session pid {ppid} spawned this consumer and carries no",
+                    (f"{CHANNEL_FLAG} tag, so nothing it",
+                     "is handed is surfaced. Every event read here is discarded",
+                     f"session argv: {shown}"))
+    # Every tag is asked, and an unresolved one does not end the loop: the flag
+    # is variadic, a session subscribed through the second tag is subscribed,
+    # and returning `CANNOT DETERMINE` off the first would be an absence
+    # produced by the order of somebody else's argv.
+    undecided: list[str] = []
+    for name in tags:
+        answer, ask_why = _configured(name)
+        if answer:
+            return _sub(SUB_SUBSCRIBED,
+                        f"subscribed — session pid {ppid} carries "
+                        f"{TAG_PREFIX}{_untrusted.flat(name)}, and the",
+                        ("harness has a server configured under that name",
+                         "NOT established: that the configured server is the one "
+                         "holding this",
+                         "socket. Two channel-capable servers would satisfy both "
+                         "halves apart"))
+        if answer is None:
+            undecided.append(f"{TAG_PREFIX}{_untrusted.flat(name)}: {ask_why}")
+    if undecided:
+        return _sub(SUB_UNKNOWN,
+                    f"NOT established — whether the harness has the server(s) "
+                    f"session pid {ppid}",
+                    ("asked for configured was not settled", *undecided))
+    named = ", ".join(TAG_PREFIX + _untrusted.flat(name) for name in tags)
+    return _sub(SUB_NOT_SUBSCRIBED,
+                f"none — session pid {ppid} asked for {named}, and the harness has",
+                ("no MCP server configured with that name. It refuses the tag at "
+                 "startup and",
+                 "the session subscribes to nothing; a server loaded from "
+                 "`--mcp-config` binds",
+                 "this socket and reaches that state (#1544)"))
+
+
+def subscription_for_socket(path: str) -> Subscription:
+    """The same answer, for a caller that has not already resolved the holder.
+
+    One inference path for two surfaces, the way `transport.delivery_of` is one
+    for three: `radar` and this op disagreeing about the same question is how
+    the board and the health report ended up saying different things about the
+    same socket in the first place.
+    """
+    holder, why = peer_pid(path)
+    if holder is not None:
+        return subscription(holder)
+    record, _ = read_health(path)
+    claimed = record.get("pid") if isinstance(record, dict) else None
+    if isinstance(claimed, int):
+        return subscription(claimed, "self-reported by the health file")
+    return _sub(SUB_UNKNOWN,
+                "NOT established — no consumer pid was resolved for this socket",
+                (why or "the health file names no pid",))
+
+
 def health(path: str) -> tuple[int, str]:
     """The whole report, and the exit code that encodes its state."""
     state, detail = probe_socket(path)
@@ -927,15 +1212,40 @@ def health(path: str) -> tuple[int, str]:
             "             nothing here proves that process is the one holding the socket",
         ]
 
-    return RC_FORWARDING, "\n".join([
-        "channel: FORWARDING", *head,
-        _health_note(),
-        *identity,
+    # #1543: every line above is about the producer half, and all of them were
+    # true in the incident that filed this — bound socket, verified holder,
+    # fresh counters — while the session had refused the channel tag at startup
+    # and nothing could ever arrive. `FORWARDING` with `last forwarded never`
+    # renders identically to a quiet morning, so the subscription answer decides
+    # the verdict rather than being printed under one that contradicts it.
+    sub = subscription(holder if holder is not None else claimed,
+                       "" if holder is not None else "self-reported by the health file")
+    counters = [
         f"  counters : {_num(_counter(record, 'lines_read'))} lines read, "
         f"{_num(_counter(record, 'forwarded'))} forwarded, "
         f"{_num(_counter(record, 'dropped'))} dropped",
         f"             last forwarded {_stamp(record, 'last_forwarded', 'never')}"
         f" (counters refreshed {_stamp(record, 'updated')})",
+    ]
+    if sub.state == SUB_NOT_SUBSCRIBED:
+        # The counters stay, and they are still true: they are what the consumer
+        # read and handed on. What they are not is evidence of delivery, and
+        # under this verdict a reader can see both facts at once.
+        return RC_NOT_SUBSCRIBED, "\n".join([
+            "channel: BOUND, NOT SUBSCRIBED", *head,
+            _health_note(), *identity, *sub.lines, *counters, "", CEILING,
+        ])
+    if sub.state == SUB_UNKNOWN:
+        return RC_UNKNOWN, "\n".join([
+            "channel: CANNOT DETERMINE", *head,
+            _health_note(), *identity, *sub.lines, *counters, "", CEILING,
+        ])
+    return RC_FORWARDING, "\n".join([
+        "channel: FORWARDING", *head,
+        _health_note(),
+        *identity,
+        *sub.lines,
+        *counters,
         "", CEILING,
     ])
 

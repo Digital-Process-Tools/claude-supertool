@@ -85,6 +85,7 @@ _HERE = Path(__file__).parent
 sys.path.insert(0, str(_HERE))
 sys.path.insert(0, str(_HERE.parent))  # for _untrusted
 import _untrusted  # noqa: E402  (the state files are somebody else's text, #1423)
+import channel  # noqa: E402  (one subscription answer for both surfaces, #1543)
 import dispatcher  # noqa: E402
 import transport  # noqa: E402
 
@@ -450,7 +451,38 @@ def delivery_banner() -> list[str]:
         head = (f"radar: delivery — no watcher has recorded an emit yet across "
                 f"{total} state file(s), so nothing here says whether the socket "
                 f"delivers.")
-    return [head, "       " + _DELIVERY_FOOTNOTE, *_destination_lines(rows)]
+    lines = [head, "       " + _DELIVERY_FOOTNOTE, *_destination_lines(rows)]
+    if took:
+        # #1543. `accepted` is the ceiling of the producer half: a listener took
+        # the bytes. Every arm above that counts one is a claim about a socket,
+        # and the incident this was filed from had a healthy socket, a verified
+        # consumer and no session subscribed to the channel — so the bytes were
+        # taken and then discarded, under a line that reads as delivery.
+        lines += _subscription_lines()
+    return lines
+
+
+def _subscription_lines() -> list[str]:
+    """Whether a session is subscribed, for the arms that counted an `accepted`.
+
+    Silent on the positive, like `_destination_lines` and for the same reason:
+    a line printed every tick is one nobody reads, and this banner's convention
+    is that news is shouted. `channel.subscription_for_socket` is the single
+    inference path — this board and `channel:health` answering the same
+    question two ways is how they came to disagree about one socket.
+    """
+    sub = channel.subscription_for_socket(transport.SOCK_PATH)
+    if sub.state == channel.SUB_SUBSCRIBED:
+        return []
+    if sub.state == channel.SUB_NOT_SUBSCRIBED:
+        head = ("radar: DELIVERY — the consumer on this socket is BOUND, NOT "
+                "SUBSCRIBED: the events counted above were read and then "
+                "discarded, because no session is subscribed to this channel.")
+    else:
+        head = ("radar: DELIVERY — whether any session is SUBSCRIBED to this "
+                "channel was not established, so nothing above says the events "
+                "counted reached one.")
+    return [head, *["       " + line.strip() for line in sub.lines]]
 
 
 def _destination_lines(rows: list[tuple[str, str, str]]) -> list[str]:

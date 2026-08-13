@@ -87,6 +87,22 @@ def bound(monkeypatch):
         channel, "probe_socket", lambda path: ("accepted", "stubbed probe"))
 
 
+@pytest.fixture(autouse=True)
+def _subscribed(monkeypatch):
+    """A session subscribed to the channel, so the arm under test is reached.
+
+    Since #1543 the `FORWARDING` verdict also depends on whether any session is
+    subscribed, which is a fact about the machine the suite runs on — the
+    process that spawned the socket-holder is a shell here, and the honest
+    answer for a shell is `CANNOT DETERMINE`. This file is about a hostile
+    health file, not about that probe, so the probe is pinned rather than
+    inherited.
+    """
+    monkeypatch.setattr(
+        channel, "subscription",
+        lambda *args, **kwargs: channel.Subscription(channel.SUB_SUBSCRIBED, []))
+
+
 # --- #1187: the strings are somebody else's words ---------------------------
 
 def test_a_forged_line_in_started_cannot_stand_alone_in_the_report(bound, tmp_path):
