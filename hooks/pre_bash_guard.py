@@ -43,6 +43,13 @@ from the registry rather than from a second hardcoded list. An
 `additionalContext` line under every PowerShell call anyone writes is one
 nobody reads, which is the same silence with a token cost — the reasoning
 `_guard_segments` already applies to a `$` in an argument.
+
+**Most calls do not reach `_supertool` at all** (#1377). Importing it was
+~142 ms of the wrapper's measured 301 ms per Bash call, and it was paid for
+`ls -la /tmp` exactly as for `git push`. `_may_be_replaced` below is a
+necessary condition read straight off the shipped presets, so a command that
+names no replaced binary — and cannot expand into one — is answered without
+the import. What that trades away is named in `_may_be_replaced`.
 """
 from __future__ import annotations
 
@@ -50,6 +57,190 @@ import json
 import os
 import re
 import sys
+
+
+def _names_word(command: str, word: str) -> bool:
+    """Is *word* a whole command word here, `.exe` and friends included?
+
+    The same two spellings `_guard_command_word` folds together, written once
+    and used by both readers below.
+    """
+    return bool(re.search(r"(?<![\w.-])" + re.escape(word)
+                          + r"(?:\.(?:exe|cmd|bat))?(?![\w.-])",
+                          command, re.IGNORECASE))
+
+
+#: `$` and a backtick. A command word the shell expands is one this file
+#: cannot read, so the fast path hands it to the real guard rather than
+#: deciding it: `$GH_BIN pr view` names no `gh` in its own text.
+_EXPANSION = re.compile("[$`]")
+
+
+def _preset_directories(root: str):
+    """(directory, required) for every preset tier that is not per-project.
+
+    `_find_preset_file` resolves three: `{project}/presets`, then
+    `~/.config/supertool/presets`, then the install's own. The project tier is
+    the caller's, because it moves with cwd and is handled by
+    `_project_declares_replaces`; the other two are scanned here.
+
+    Missing the user tier was a live hole (#1377, found in review): a project
+    whose `.supertool.json` enables a user-level preset has no literal
+    `"replaces"` anywhere in its own tree, so nothing bailed, and the word the
+    preset declared was not in the list either. The command took the fast path
+    and ran unguarded.
+    """
+    return [(os.path.join(root, "presets"), True),
+            (os.path.join(os.path.expanduser("~"), ".config", "supertool",
+                          "presets"), False)]
+
+
+def _replaced_words(root: str):
+    """Every command word those presets declare, or None if unknown.
+
+    A flat scan of `presets/*.json`, which is emphatically **not** how the
+    guard itself reads the registry — `_guard_replacements` goes through
+    `_op_registry` because a partial project override merges key by key and a
+    hand-rolled walk turns such an op into a stub (#1356). That hazard is one
+    of *under*-collecting, and this list is only ever used to decide whether
+    to go and ask the real one. Over-collecting costs a wasted import;
+    under-collecting is a command that runs unguarded, so anything unexpected
+    returns None and the caller takes the slow path.
+
+    `tests/test_guard_hook_cost_1377.py` pins the containment against
+    `guard_command_words` preset by preset, which is what keeps two readers of
+    one registry from drifting apart silently.
+    """
+    words = set()
+    for directory, required in _preset_directories(root):
+        names = _preset_names(directory)
+        if names is None:
+            if required:
+                return None
+            continue
+        if _collect_words(directory, names, words) is None:
+            return None
+    return frozenset(words)
+
+
+def _preset_names(directory: str):
+    """The `.json` files in *directory*, or None if it could not be listed."""
+    try:
+        return sorted(name for name in os.listdir(directory)
+                      if name.endswith(".json"))
+    except OSError:
+        return None
+
+
+def _collect_words(directory: str, names, words):
+    """Add every declared command word, or None on anything unexpected."""
+    for name in names:
+        try:
+            with open(os.path.join(directory, name), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError, UnicodeDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        ops = data.get("ops")
+        if ops is None:
+            continue
+        if not isinstance(ops, dict):
+            return None
+        for definition in ops.values():
+            if not isinstance(definition, dict):
+                continue
+            raw = definition.get("replaces")
+            if raw is None:
+                continue
+            if not isinstance(raw, list):
+                return None
+            for item in raw:
+                if not isinstance(item, dict):
+                    return None
+                argv = str(item.get("argv") or "").split()
+                if not argv:
+                    return None
+                words.add(argv[0])
+    return words
+
+
+def _project_declares_replaces(start: str, root: str) -> bool:
+    """Does any config on the way up declare a `replaces` of its own?
+
+    True also means "could not tell". The file changes under the user's hands
+    between one Bash call and the next, so nothing about it is cached and
+    nothing about it is parsed: reproducing which words a project override
+    contributes is `_op_registry`'s job, and a second implementation of that
+    is the drift #1356 names. Noticing the file has an opinion is cheap and
+    correct; acting on the opinion stays the real guard's.
+
+    Every `.supertool.json` on the path is read, not merely the nearest.
+    `_load_config` keeps walking past one it cannot parse, so the nearest file
+    is not always the effective one — and a project's own `presets/` directory
+    is searched before the plugin's, so it can introduce a word of its own.
+
+    That last check skips a `presets/` that **is** the plugin's own, compared
+    by device and inode the way `session-start.sh` compares the two trees.
+    Without it this repository's own checkout — where the project root and the
+    plugin root are one directory — took the slow path on every command,
+    which is the one host where the saving was measured.
+    """
+    needle = chr(34) + "replaces" + chr(34)
+    shipped = os.path.join(root, "presets")
+
+    def declares(path: str) -> bool:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                return needle in fh.read()
+        except OSError:
+            return True
+
+    def is_shipped(path: str) -> bool:
+        try:
+            return os.path.samefile(path, shipped)
+        except OSError:
+            return False
+
+    directory = os.path.abspath(start)
+    while True:
+        config = os.path.join(directory, ".supertool.json")
+        if os.path.isfile(config):
+            if declares(config):
+                return True
+            presets = os.path.join(directory, "presets")
+            try:
+                names = [] if is_shipped(presets) else sorted(
+                    os.listdir(presets))
+            except OSError:
+                names = []
+            for name in names:
+                if name.endswith(".json") and declares(
+                        os.path.join(presets, name)):
+                    return True
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return False
+        directory = parent
+
+
+def _may_be_replaced(command: str, words) -> bool:
+    """Could any registry entry claim this command? A necessary condition.
+
+    Wrong in one direction only: a True that did not need to be costs the
+    import this exists to skip, where a False that should have been True is a
+    command running unguarded with nothing said about it. So an expansion is
+    True, not analysed.
+
+    What the False branch gives up is the `undecided` note on a command that
+    names nothing replaced — `. ./script.sh` no longer says its argument was
+    not read. That is the narrowing #1413 already applied to the PowerShell
+    disclosure, for the reason it gives there: a line under every command
+    anyone writes is one nobody reads. The DENY direction loses nothing.
+    """
+    if _EXPANSION.search(command):
+        return True
+    return any(_names_word(command, word) for word in words)
 
 
 def _emit(payload: dict) -> None:
@@ -85,6 +276,17 @@ def main() -> int:
 
     root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(
         os.path.dirname(os.path.abspath(__file__)))
+
+    # Before the import, because the import is the cost (#1377). Ordered
+    # cheapest-first: the two regex screens decide most commands without ever
+    # stat-ing the ancestor chain.
+    words = _replaced_words(root)
+    if (words is not None
+            and not _may_be_replaced(command, words)
+            and not _project_declares_replaces(os.getcwd(), root)):
+        _nothing_to_say()
+        return 0
+
     if root not in sys.path:
         sys.path.insert(0, root)
     try:
@@ -99,15 +301,11 @@ def main() -> int:
         except Exception as exc:  # pragma: no cover - defensive
             _undecided(f"the registry could not be read ({exc})")
             return 0
-        # A whole word, optionally carrying a Windows executable suffix --
-        # the same two spellings `_guard_command_word` folds together. Any
-        # OTHER dot ends the match, so `cat gh.log` does not read as `gh`:
-        # this line only decides whether to print a disclosure, and one that
-        # fires on a filename is one nobody reads.
-        named = [word for word in words
-                 if re.search(r"(?<![\w.-])" + re.escape(word)
-                              + r"(?:\.(?:exe|cmd|bat))?(?![\w.-])",
-                              command, re.IGNORECASE)]
+        # Any dot other than an executable suffix ends the match, so
+        # `cat gh.log` does not read as `gh`: this line only decides whether
+        # to print a disclosure, and one that fires on a filename is one
+        # nobody reads.
+        named = [word for word in words if _names_word(command, word)]
         if not named:
             _nothing_to_say()
         else:
