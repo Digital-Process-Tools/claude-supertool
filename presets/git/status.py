@@ -29,6 +29,7 @@ import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
 import _untrusted  # noqa: E402  (an MR/PR title and target branch are the opener's text — #965)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _git_common import ANSWERED_NONE, TIMEOUT_RC, st_hint, use_utf8_stdout  # noqa: E402
+from _git_common import foreign_worktree, foreign_worktree_note  # noqa: E402  (#1536)
 from _git_common import _git as _spawn_git  # noqa: E402
 
 
@@ -40,6 +41,16 @@ from _git_common import _git as _spawn_git  # noqa: E402
 _GIT_TIMEOUT_DEFAULT = 5
 
 INCOMPLETE_MARKER = "git-status INCOMPLETE"
+
+#: Staged content that matches nothing on disk: the index differs from HEAD
+#: while the file itself matches HEAD. Nothing here can say who staged it —
+#: that is the point of the wording, and of the marker being separate from the
+#: Staged list rather than replacing it (#1536).
+STAGED_ABSENT_MARKER = "STAGED CONTENT NOT IN THIS TREE"
+
+#: Three states, not two. The check above needs one more `git diff`, and a
+#: `git diff` that did not answer is not a clean answer.
+STAGED_PROVENANCE_UNKNOWN = "Staged provenance UNKNOWN"
 
 # Every call that could not answer this invocation, as (command, why).
 # Module-level because the calls are scattered through `main()` and the note
@@ -105,6 +116,20 @@ def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedPro
     if res.returncode == TIMEOUT_RC:
         _UNANSWERED.append(("git " + " ".join(args), res.stderr))
     return res
+
+
+def _staged_path(line: str) -> str:
+    """The path a porcelain-v1 staged line is about, as `git diff` would name it.
+
+    Both readers run with `core.quotePath` at its default, so a path with a
+    byte above 0x7F is octal-quoted identically on both sides and the strings
+    compare. A rename stages `R  old -> new`; the diff against HEAD names the
+    destination, so that is the side to read.
+    """
+    path = line[3:]
+    if line[:1] in ("R", "C") and " -> " in path:
+        path = path.split(" -> ", 1)[1]
+    return path
 
 
 def _reason(returncode: int, stderr: str) -> str:
@@ -394,6 +419,15 @@ def main() -> int:
                     base_divergence = f"vs {base_branch}: {parts_str}"
 
     print(f"# git-status")
+    # Before any number below it, because none of them is a fact about this
+    # directory when this fires: git here is reading another tree's index,
+    # HEAD and refs, and a stage or commit made here lands over there (#1536).
+    _copy = foreign_worktree()
+    if _copy is not None:
+        print(foreign_worktree_note(_copy))
+        print(f"  `cp` cannot copy a worktree — its `.git` is a pointer, not a "
+              f"repository. `git worktree add` is the operation. Nothing below "
+              f"describes {_copy[0]}.")
     if unknown_mode:
         print(f"⚠ mode {mode!r} is not one of full|porcelain|brief — it was "
               f"ignored, and what follows is the DEFAULT render, not the one "
@@ -470,6 +504,38 @@ def main() -> int:
                     print(f"  {l}")
                 if not full and len(staged) > 20:
                     print(f"  ... ({len(staged) - 20} more)")
+                # Which of these staged changes exists in a file here? A path
+                # whose worktree content still matches HEAD was staged from
+                # something this tree does not have — the shape a stray
+                # `git checkout <sha> -- <path>` leaves, including one run by
+                # another process through a copied worktree (#1536). Asked only
+                # when something is staged, so an unborn HEAD (where this call
+                # legitimately fails) costs nothing on the ordinary run.
+                diff_cmd = ["diff", "--name-only", "HEAD"]
+                diff_head = _git(diff_cmd)
+                _note_failed(diff_cmd, diff_head)
+                if diff_head.returncode != 0:
+                    print(f"⚠ {STAGED_PROVENANCE_UNKNOWN} — `git "
+                          f"{' '.join(diff_cmd)}` did not answer "
+                          f"({_reason(diff_head.returncode, diff_head.stderr)}). "
+                          f"This run did not check whether the staged content "
+                          f"exists in any file here.")
+                else:
+                    differs = set(diff_head.stdout.splitlines())
+                    absent = [l for l in staged if _staged_path(l) not in differs]
+                    if absent:
+                        print(f"⚠ {STAGED_ABSENT_MARKER} ({len(absent)}) — the "
+                              f"index differs from HEAD while the file on disk "
+                              f"matches it, so committing these would write "
+                              f"content no file here has. Who staged them "
+                              f"cannot be told from here: it is equally the "
+                              f"shape of a `git checkout <sha> -- <path>` run "
+                              f"by another process through a copied worktree "
+                              f"(#1536) and of a stage you undid by hand.")
+                        for l in (absent if full else absent[:20]):
+                            print(f"    {l}")
+                        if not full and len(absent) > 20:
+                            print(f"    ... ({len(absent) - 20} more)")
             if unstaged:
                 print(f"\n### Unstaged ({len(unstaged)})")
                 for l in (unstaged if full else unstaged[:20]):

@@ -174,6 +174,105 @@ def _list_conflicts() -> tuple[list[str], str]:
     return [l for l in res.stdout.splitlines() if l.strip()], ""
 
 
+#: Said out loud wherever a `Repo:` line or a status header is printed, and the
+#: string the tests key on. Short, upper-case and unpunctuated so a reader
+#: scanning a wall of git output cannot mistake it for prose.
+FOREIGN_WORKTREE_MARKER = "COPIED WORKTREE"
+
+
+def _gitfile_target(dot: str) -> Optional[str]:
+    """The git directory a `.git` *file* names, absolute — or None.
+
+    A linked worktree and a submodule both have a gitfile; this only reads it,
+    it does not decide which of the two it found.
+    """
+    try:
+        with open(dot, "r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.startswith("gitdir:"):
+                    target = line.split(":", 1)[1].strip()
+                    if not target:
+                        return None
+                    if not os.path.isabs(target):
+                        target = os.path.join(os.path.dirname(dot), target)
+                    return os.path.normpath(target)
+    except OSError:
+        return None
+    return None
+
+
+def _same_path(a: str, b: str) -> bool:
+    return (os.path.normcase(os.path.realpath(a))
+            == os.path.normcase(os.path.realpath(b)))
+
+
+def foreign_worktree(start: Optional[str] = None) -> Optional[tuple[str, str]]:
+    """`(this tree, the tree git has registered)` when they are not the same one.
+
+    A linked worktree's `.git` is a gitfile — one line of text naming the real
+    git directory — so `cp -a` copies the *pointer*. Every git command in the
+    copy then reads and writes the ORIGINAL worktree's index, HEAD and refs,
+    with nothing in any output saying so. That is how #1536 happened: a
+    `git checkout <sha> -- <path>` inside a copy staged a revert of two files
+    into a worktree nobody was watching.
+
+    It is decidable exactly and locally, with no filesystem scan and no spawn:
+    `.git/worktrees/<name>/gitdir` holds the path of the `.git` file git
+    registered for that worktree. If this directory's own `.git` is not that
+    file, this directory is not the registered one.
+
+    None means "no reason to think otherwise", and is deliberately returned for
+    every case that cannot be settled — an unreadable back-pointer, a submodule
+    gitfile (`.git/modules/...`, not `worktrees/...`), no repository at all. A
+    banner printed on a run that could not tell is a banner nobody reads on the
+    run that could.
+    """
+    here = os.path.abspath(start if start is not None else os.getcwd())
+    # Walk up the way git does: `cd src && git status` must reach the same
+    # answer as one run at the top, or `cd` hides the disclosure.
+    while True:
+        dot = os.path.join(here, ".git")
+        if os.path.exists(dot):
+            break
+        parent = os.path.dirname(here)
+        if parent == here:
+            return None
+        here = parent
+    if not os.path.isfile(dot):
+        return None  # an ordinary repository: `.git` is the directory itself
+    admin = _gitfile_target(dot)
+    if admin is None:
+        return None
+    if os.path.basename(os.path.dirname(admin)) != "worktrees":
+        return None  # a submodule, or a layout this cannot speak about
+    try:
+        with open(os.path.join(admin, "gitdir"), "r",
+                  encoding="utf-8", errors="replace") as handle:
+            registered_dot = handle.read().strip()
+    except OSError:
+        return None
+    if not registered_dot or _same_path(registered_dot, dot):
+        return None
+    return (here, os.path.dirname(registered_dot))
+
+
+def _with_foreign_note(label: str) -> str:
+    """#1536: in a copied worktree, `--show-toplevel` names the copy — which is
+    the one directory the write does NOT reach. This line exists to say where a
+    write landed (#692), so it has to name the other tree, not only this one."""
+    found = foreign_worktree()
+    if found is None:
+        return label
+    return f"{label}\n  {foreign_worktree_note(found)}"
+
+
+def foreign_worktree_note(found: tuple[str, str]) -> str:
+    """One line naming the tree a write from here will actually land in."""
+    return (f"⚠ {FOREIGN_WORKTREE_MARKER} — this directory is not the one git "
+            f"registered for its git directory; the index, HEAD and refs "
+            f"reached from here belong to {found[1]} (#1536)")
+
+
 def repo_label() -> str:
     """Absolute path of the repo the calling op is acting on.
 
@@ -190,7 +289,7 @@ def repo_label() -> str:
     """
     top = _git(["rev-parse", "--show-toplevel"])
     if top.returncode == 0 and top.stdout.strip():
-        return top.stdout.strip()
+        return _with_foreign_note(top.stdout.strip())
     bare = _git(["rev-parse", "--absolute-git-dir"])
     if bare.returncode == 0 and bare.stdout.strip():
         return f"{bare.stdout.strip()} (bare)"
