@@ -1,0 +1,16 @@
+{
+  "source": "github-issue-feed",
+  "events": [
+    {"key": "issue_opened",        "label": "A new issue appeared — created since the previous poll"},
+    {"key": "issue_reopened",      "label": "An issue this feed watched close is open again"},
+    {"key": "issue_entered_feed",  "label": "An issue entered the scope without being new to it — relabelled in, reassigned, or the filter changed"},
+    {"key": "issue_labeled",       "label": "Labels added — the payload names which"},
+    {"key": "issue_unlabeled",     "label": "Labels removed — the payload names which"},
+    {"key": "issue_assigned",      "label": "Assignees added"},
+    {"key": "issue_unassigned",    "label": "Assignees removed"},
+    {"key": "issue_comment_added", "label": "New comment on the issue"},
+    {"key": "issue_closed",        "label": "A watched issue left the scope by closing"},
+    {"key": "issue_left_feed",     "label": "An issue left the scope while still open, or could not be looked up"},
+    {"key": "issues_unreachable",  "label": "The population could not be established — a query that failed or was truncated, not a tracker that went quiet. Fires once per outage, not once per poll"}
+  ]
+}
