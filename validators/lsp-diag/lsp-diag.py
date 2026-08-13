@@ -70,8 +70,11 @@ MSG_MAX = 2000
 _MARKERS = "•*"
 
 #: cclsp's own list header. Framing — neither a diagnostic nor message text — so
-#: it is dropped rather than carried, and it must not be counted (#1520).
-_HEADER_RE = re.compile(r"^Found\s+\d+\s+diagnostic\(s\)\s+for\s+.*:$")
+#: it is dropped rather than carried, and it must not be counted (#1520). Its
+#: number is captured because it is the server's own statement of how many
+#: entries it is about to print, and `header_count` reconciles it against the
+#: records this parser actually built (#1537).
+_HEADER_RE = re.compile(r"^Found\s+(\d+)\s+diagnostic\(s\)\s+for\s+.*:$")
 
 
 def first_segment(line: str) -> tuple[str, str]:
@@ -152,6 +155,79 @@ def _framing(lines: list[str]) -> bool:
     return False
 
 
+def header_count(lines: list[str]) -> int | None:
+    """`N` from the server's own list header, or None if it sent no header.
+
+    Read from the **first physical line only** — not the first line that
+    carries something, which is where `_framing` draws its line. The two rules
+    differ because the hazards do. `_framing` skips blanks and headers to find
+    the first framed line, and that is safe for it: it asks a yes/no question
+    whose wrong answer is bounded. This reads a *number*, and every line the
+    server sends can carry text echoed out of the file under validation — one
+    of the five inline breaks or an unescaped LF puts that text at the start of
+    a physical line (#1486, #1500), so "first non-blank" is a position the file
+    can reach by emitting a leading newline. Index 0 is not: `main()` strips
+    supertool's own `--- diag:FILE ---` line and its trailing whitespace, so
+    position 0 is the first byte the server wrote.
+
+    **What this does not close, and cannot.** In the bulletless variant the
+    server sends no header at all, and a first line that matches `_HEADER_RE`
+    end to end is then indistinguishable from one — some other tool's output,
+    or a file's own text if it ever reaches position 0, would be read as a
+    count. Nothing in the text can tell those apart, so the containment is on
+    the consequence instead: `_reconcile` returns a `severity: "warning"`
+    record, which cannot make `ok` false, cannot reach `NOT CHECKED`, and
+    cannot revert an edit. A forged N buys one misleading advisory line and no
+    verdict. Claiming more than that here would be the overclaim this adapter
+    keeps being fixed for.
+
+    None is "no number", which is a different fact from "the numbers agree" —
+    `_reconcile` keeps them apart rather than letting an absent header read as
+    a match.
+    """
+    if not lines:
+        return None
+    m = _HEADER_RE.match(first_segment(lines[0])[0].strip())
+    return int(m.group(1)) if m else None
+
+
+def _reconcile(claimed: int | None, produced: int) -> dict | None:
+    """The server's count against the records this parser built, or None (#1537).
+
+    Three states, not two. No header is not agreement and not a finding: there
+    is nothing to compare, so the receipt says nothing rather than implying the
+    two numbers matched. Agreement is silent too — a disclosure that fires on
+    every run is one nobody reads.
+
+    A disagreement is a **disclosure, never a `skipped`**. A skip discards every
+    record beside it, and when the server framed 3 entries and 2 parsed, those 2
+    are measurements of the file that were correctly made; throwing them away to
+    say "I do not know" is the loud bug traded for the quiet one, and it is the
+    #482 shape this adapter has already been bitten by once.
+
+    Severity is `warning` in both directions, so this record can never be the
+    reason `ok` is false. That matters structurally: `_validator_not_checked`
+    fires on `ok: false` with *every* error `code: "adapter"` and renders the
+    whole run `NOT CHECKED`. A note added to say the receipt may be short must
+    not be able to erase the receipt.
+
+    `code: "adapter"` because it is this parser reporting on its own parse, not
+    a finding about the file — which is also why it carries no line or col.
+    """
+    if claimed is None or claimed == produced:
+        return None
+    if claimed > produced:
+        why = (f"parsed {produced} of the {claimed} diagnostic(s) this server "
+               "said it was listing — findings may be missing from this "
+               "receipt, so its count is a floor and not a measurement")
+    else:
+        why = (f"built {produced} record(s) from output that said it was "
+               f"listing {claimed} — records here were not framed by the "
+               "server and may not be its findings")
+    return {"line": None, "col": None, "severity": "warning",
+            "code": "adapter", "msg": "count reconciliation: " + why}
+
+
 def parse_cclsp_diagnostics(text: str, file: str) -> list[dict]:
     """Parse cclsp's get_diagnostics text output into the SCHEMA error shape.
 
@@ -161,8 +237,21 @@ def parse_cclsp_diagnostics(text: str, file: str) -> list[dict]:
       "[error] message at line X:Y"   (some variants)
     Falls back to one generic error if format doesn't match.
     """
+    physicals = split_lines(text)
+    #: Read before anything else can return, because the clean-answer arm below
+    #: is reachable from the file's own bytes and this is the one number that
+    #: contradicts it (#1537).
+    claimed = header_count(physicals)
+
     if "No diagnostics found" in text or "no errors, warnings, or hints" in text.lower():
-        return []
+        # Matched as a substring of the WHOLE text, so a diagnostic *message*
+        # quoting either phrase returns [] for the entire file — the file under
+        # validation choosing a clean verdict, the #482 shape reached from the
+        # inside. The server's own header cannot appear in genuinely clean
+        # output, so when one is there claiming entries, the two statements
+        # disagree and the receipt says so instead of rendering the file clean.
+        note = _reconcile(claimed, 0)
+        return [note] if note else []
 
     errors: list[dict] = []
     #: Remainders from lines that produced no record of their own. Kept, because
@@ -171,7 +260,6 @@ def parse_cclsp_diagnostics(text: str, file: str) -> list[dict]:
     #: becoming one, because `count` is what `_validator_regressed` subtracts
     #: and a fragment minting a record is #1486.
     orphans: list[str] = []
-    physicals = split_lines(text)
     #: #1500 bounded the parse to the first segment of a line, where a segment
     #: ends at one of the five INLINE breaks. LF is not one of them by
     #: construction — it is the framing character — so a server message
@@ -248,11 +336,23 @@ def parse_cclsp_diagnostics(text: str, file: str) -> list[dict]:
         # path built the message. A server message is the server's, and it can
         # be any length.
         err["msg"] = _cap(err["msg"], MSG_MAX)
+    #: Counted here, before the fallback advisory below: that advisory is this
+    #: adapter's own text, not a diagnostic the server framed, and reconciling
+    #: against it would report `parsed 1 of the 3` for a parse that read none.
+    produced = len(errors)
     if not errors:
         # Unrecognized but non-empty → keep the text as a single advisory
         if not text.startswith("diag:"):  # ignore supertool's own error messages
             errors.append({"line": None, "col": None, "severity": "info",
                            "code": "lsp", "msg": text.strip()[:500]})
+    note = _reconcile(claimed, produced)
+    if note:
+        # A record rather than a suffix on someone else's `msg`, which is where
+        # the orphan fragments go. Those are text the server sent about the
+        # file; this is a statement about the receipt, it has to survive when
+        # there is no other record to hang it on, and a consumer keying on
+        # `code` has to be able to find it.
+        errors.append(note)
     return errors
 
 
