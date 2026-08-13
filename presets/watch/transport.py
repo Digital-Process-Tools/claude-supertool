@@ -14,6 +14,7 @@ hiccupped.
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import shutil
@@ -60,11 +61,35 @@ SOCK_ENV = naming.SOCK_ENV
 # The sub-op a poller runs under, and the path that identifies it in `ps`. A
 # poller is forked, so without an exec it wears *its parent's* argv: every
 # per-MR watcher displays the feed's command line, which in #511 was read as
-# three duplicate feed pollers and cost two wrong kills. These two constants are
-# the whole of the labelling — everything that identifies a poller from outside
-# reads them back.
+# three duplicate feed pollers and cost two wrong kills. These constants and
+# `CHANNEL_PREFIX` below are the whole of the labelling — everything that
+# identifies a poller from outside reads them back.
 POLL_SUBOP = "poll"
 DISPATCHER_TAIL = "watch/dispatcher.py"
+
+# The third label token, and the whole of #1514. `(source, id)` is not an
+# identity on this machine: it is an identity *within a channel*. The slot
+# itself is a pid file held `O_CREAT|O_EXCL` by one process per state directory
+# (#476), so two pollers are on the same slot only when they contend for the
+# same pid file — which makes `STATE_DIR`, not the channel name, the thing the
+# label has to carry. A name and an explicit `SUPERTOOL_WATCH_STATE_DIR` can
+# name the same directory, and two names can be pointed at one directory; both
+# are the same slot space and the digest says so, where the name would not.
+#
+# Appended as a trailing `chan=` token rather than inserted after the sub-op,
+# because `dispatcher._parse_args` already ignores unrecognised trailing tokens
+# — so a poller re-exec'd under this argv parses back exactly as before and no
+# dispatcher change is needed to keep the label runnable.
+CHANNEL_PREFIX = "chan="
+
+# A digest and not the path, for three reasons that all matter. `ps` output is
+# split on whitespace by `_ps_rows`, and an operator-supplied state directory
+# may contain spaces — a raw path would silently become two tokens and stop
+# matching. `ps` is readable by every user on the machine, and a channel's
+# directory is not something this tool needs to publish there. And a fixed
+# 12-character token keeps the command line short enough to stay readable,
+# which is the property #511 bought with the exec in the first place.
+_CHANNEL_KEY_CHARS = 12
 
 # How many recorded deaths a slot may accumulate before `radar.heal` stops
 # respawning it. Healing is right (#417's amendment argues reconcile-and-heal
@@ -1081,7 +1106,32 @@ def poller_argv(source: str, watcher_id: str, only: list[str] | None = None) -> 
     ]
     if only:
         argv.append("only=" + ",".join(only))
+    argv.append(CHANNEL_PREFIX + channel_key())
     return argv
+
+
+def channel_key(state_dir: str | None = None) -> str:
+    """The token that names this poller's slot space in its own argv (#1514).
+
+    `STATE_DIR` is read at call time rather than closed over, because the tests
+    and the poller re-exec both move it — the same reason `_state_dir_names`
+    reads it late.
+
+    `normpath` first: `/tmp/x` and `/tmp/x/` are one directory and produce one
+    pid file, so they have to produce one key. A poller and the process that
+    forked it agree by construction — `poller_env` pins the resolved value into
+    the child's environment rather than letting it re-derive.
+
+    `os.fsencode` rather than a hand-picked codec, because this is a path and
+    that is the function that knows how the platform spells one — POSIX
+    `surrogateescape`, Windows `mbcs`/`surrogatepass`. A plain
+    `encode("utf-8", "surrogateescape")` raises on an unpaired high surrogate,
+    which is reachable from a Windows path, and a `poller_argv` that raises
+    would take the spawn down with it.
+    """
+    resolved = STATE_DIR if state_dir is None else state_dir
+    digest = hashlib.sha256(os.fsencode(os.path.normpath(resolved)))
+    return digest.hexdigest()[:_CHANNEL_KEY_CHARS]
 
 
 def poller_env() -> dict[str, str]:
@@ -1199,38 +1249,83 @@ def _probe_ps_scan() -> bool:
     return _ran(("ps",)) != 0
 
 
-def _labelled(tokens: list[str]) -> tuple[str, str] | None:
-    """The (source, id) an argv announces, or None when it announces nothing.
+def _labelled(tokens: list[str]) -> tuple[str | None, str, str] | None:
+    """The (channel, source, id) an argv announces, or None for a non-poller.
 
     Requires the four tokens in sequence — `.../watch/dispatcher.py`, `poll`,
     SOURCE, ID — so the parent `dispatcher.py watch ...` invocation, `radar.py`,
     and a grep for any of them are all excluded.
+
+    The channel is `None` when no `chan=` token follows, and that is a third
+    answer rather than a default (#1514). Such a poller was started before this
+    token existed: it may be on this channel or on any other, and nothing in
+    its argv can tell them apart. Reporting it as either would be a claim made
+    on evidence that is not there — which is the same shape as the four rows
+    the issue was filed against, arriving from the opposite direction.
     """
     for i, tok in enumerate(tokens):
         if not tok.replace("\\", "/").endswith(DISPATCHER_TAIL):
             continue
         if i + 3 < len(tokens) and tokens[i + 1] == POLL_SUBOP:
-            return tokens[i + 2], tokens[i + 3]
+            channel = None
+            for extra in tokens[i + 4:]:
+                if extra.startswith(CHANNEL_PREFIX):
+                    channel = extra[len(CHANNEL_PREFIX):]
+                    break
+            return channel, tokens[i + 2], tokens[i + 3]
     return None
 
 
 def scan_poller_pids() -> tuple[dict[tuple[str, str], list[int]], bool]:
-    """Every labelled poller on this machine, grouped by slot. Read-only.
+    """Every labelled poller **of this channel**, grouped by slot. Read-only.
 
     Returns ({(source, id): [pid, ...]}, scanned). One `ps` per call, not one
     per watcher: `watches` renders fifteen rows on this machine.
 
     Spawns nothing, signals nothing.
+
+    Three states, and two of them are excluded here on purpose (#1514)
+    ----------------------------------------------------------------
+
+    `_labelled` answers with one of three things about a poller's channel: this
+    one, another one, or nothing at all. This function returns the first and
+    drops the other two, because every caller it has decides an *action* —
+    `watcher_pids` feeds `unwatch`'s multi-kill, `dispatcher.reap_duplicate_
+    pollers` signals, `list_watchers` publishes the `no pidfile` marker an
+    operator acts on. A PID may only be acted on here when its own argv proves
+    it is ours; nothing else is evidence, and inferring it is what cost two
+    live watchers in #511.
+
+    Before this it returned all three, keyed by `(source, id)` alone, and both
+    halves of that were wrong in the same way. `watches` under a named channel
+    listed the default channel's pollers as its own untracked orphans and
+    offered `unwatch:SOURCE:ID` against them. And the reap grouped one poller
+    per channel on the same slot as one slot with two pollers, kept the one its
+    own pid file named, and stopped the other — a cross-channel kill, which is
+    a different severity from a cross-channel listing.
+
+    What the exclusion costs, stated rather than hidden: a poller carrying no
+    channel token is one started before this label existed, and it becomes
+    invisible to the scan. That is not a new blind spot — it is the one
+    `docs/presets/watch.md` already describes for pollers predating the #511
+    labelling, one generation later, and it clears the same way (`pkill -f
+    presets/watch/` once, or a `radar` tick that respawns the fleet). A
+    *tracked* one is unaffected: `watcher_pids` unions the pid file's own PID,
+    and the pid file is per state directory by construction.
     """
     rows = _ps_rows()
     if rows is None:
         return {}, False
+    mine = channel_key()
     found: dict[tuple[str, str], list[int]] = {}
     for pid, tokens in rows:
-        key = _labelled(tokens)
-        if key is None:
+        label = _labelled(tokens)
+        if label is None:
             continue
-        found.setdefault(key, []).append(pid)
+        channel, source, watcher_id = label
+        if channel != mine:
+            continue
+        found.setdefault((source, watcher_id), []).append(pid)
     for pids in found.values():
         pids.sort()
     return found, True
