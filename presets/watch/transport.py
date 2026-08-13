@@ -278,10 +278,13 @@ def claim_pidfile(source: str, watcher_id: str) -> int:
     # A state directory *derived from a name* is one nobody has made yet, and
     # `os.open` inside a missing directory raises ENOENT — which lands correctly
     # in `CLAIM_UNKNOWN` and tells the operator to check a variable they
-    # deliberately did not set. Only a derived one is created: a path the
-    # operator supplied, or the `/tmp` default, stays unanswerable rather than
-    # being manufactured (#693). Created here rather than at import, because a
-    # module must not make directories because somebody imported it (#1477).
+    # deliberately did not set. Only a derived one is created: a state directory
+    # naming some other path, or the `/tmp` default, stays unanswerable rather
+    # than being manufactured (#693). Created here rather than at import, because
+    # a module must not make directories because somebody imported it (#1477).
+    # "Derived" is equality with `naming.state_dir_for(name)` and not "the
+    # variable is unset", which is why this call does something in a poller
+    # re-exec'd through `poller_env` rather than returning at the flag (#1534).
     if naming.ensure_state_dir(RESOLVED, STATE_DIR):
         return CLAIM_UNKNOWN
     for _ in range(2):

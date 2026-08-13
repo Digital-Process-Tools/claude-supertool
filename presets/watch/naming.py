@@ -97,11 +97,27 @@ class Resolved(NamedTuple):
     state_dir: str
     notes: list[str]
     refusal: str
-    #: True only when the state directory was derived from the name. A path the
+    #: True when the state directory **is the one the name derives**. A path the
     #: operator handed over — or the `/tmp` default — is theirs, and its absence
     #: stays an unanswerable state rather than something this code manufactures
     #: (#693). `ensure_state_dir` will only create what this flag covers.
+    #:
+    #: A question about the *value*, not about which variable delivered it, and
+    #: that is #1534: `transport.poller_env` exports the resolved state
+    #: directory, so a re-exec'd poller saw an explicit `SUPERTOOL_WATCH_STATE_DIR`
+    #: and read its own parent's derivation as somebody else's path. The flag was
+    #: `False` there, `ensure_state_dir` returned without asking anything, and
+    #: nothing between the parent's check and the child's first write
+    #: re-established the directory. `state_dir_for(name)` is public and
+    #: reproducible, so equality with it settles ownership without a marker that
+    #: has to survive an exec — and an environment naming a *different* path is
+    #: the operator-supplied case it always was.
     state_dir_is_derived: bool = False
+    #: Whether `SUPERTOOL_WATCH_STATE_DIR` carried the value, which is no longer
+    #: the same question as the one above. Only `state_dir_provenance` reads it:
+    #: telling an operator the variable is unset inside a child whose environment
+    #: sets it is the misdirection #1477 removed, arriving from the other side.
+    state_dir_env_set: bool = False
 
 
 def sock_for(name: str) -> str:
@@ -150,7 +166,10 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
                 f"{explicit_sock}, not {sock}")
         sock = explicit_sock
     if explicit_state:
-        if name:
+        if name and explicit_state != state_dir:
+            # Only when it actually overrides. An exec'd poller inherits both
+            # the name and the pinned directory, so the unguarded form printed
+            # "poller slots are in X, not X" on every poller surface (#1534).
             notes.append(
                 f"{STATE_DIR_ENV} is set and overrides the name: poller slots are "
                 f"in {explicit_state}, not {state_dir}")
@@ -168,7 +187,8 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
 
     return Resolved(name=name, sock=sock, state_dir=state_dir,
                     notes=notes, refusal=refusal,
-                    state_dir_is_derived=bool(name) and not explicit_state)
+                    state_dir_is_derived=bool(name) and state_dir == state_dir_for(name),
+                    state_dir_env_set=bool(explicit_state))
 
 
 def state_dir_provenance(resolved: Resolved) -> str:
@@ -181,6 +201,12 @@ def state_dir_provenance(resolved: Resolved) -> str:
     a silent one, and it is the same misdirection this file exists to remove.
     """
     if resolved.state_dir_is_derived:
+        if resolved.state_dir_env_set:
+            # A re-exec'd poller, or an operator who exported the derivation by
+            # hand. The directory is ours either way, but saying the variable is
+            # unset would be false in a process that can read it (#1534).
+            return (f"{STATE_DIR_ENV} is set to the path {NAME_ENV}="
+                    f"{resolved.name} derives")
         return (f"{STATE_DIR_ENV} is not set — this directory was derived from "
                 f"{NAME_ENV}={resolved.name}")
     if resolved.state_dir != DEFAULT_STATE_DIR:
@@ -292,17 +318,29 @@ def ensure_state_dir(resolved: Resolved, state_dir: str) -> str:
     deliberately did not set. Correct and useless: the point of the name is not
     having to know about the directory.
 
-    **It creates only what this process derived, and that boundary is the whole
-    care in this function.** A `SUPERTOOL_WATCH_STATE_DIR` the operator supplied
-    — and the `/tmp` default — is somebody else's path, and a missing one there
-    is an *unanswerable* state that `cmd_watch` reports rather than repairs
+    **It creates only the directory the name derives, and that boundary is the
+    whole care in this function.** A `SUPERTOOL_WATCH_STATE_DIR` naming some
+    other path — and the `/tmp` default — is somebody else's, and a missing one
+    there is an *unanswerable* state that `cmd_watch` reports rather than repairs
     (#693, `tests/test_unanswerable_checks_693.py`). Manufacturing it would trade
     a loud refusal for a poller quietly spawned into a directory nobody asked
     for, which is the same trade this repo keeps filing against.
 
+    **The question is the value, not the variable (#1534).** It used to be "the
+    operator did not set `SUPERTOOL_WATCH_STATE_DIR`", and `transport.poller_env`
+    sets it — so a re-exec'd poller read the directory *its own parent derived*
+    as operator-supplied, this function returned `""` without asking anything,
+    and the establishment below happened exactly once, in the parent, before the
+    spawn. Everything downstream inherited that: `claim_pidfile` and, since
+    #1540, every `write_state` in the poller. `state_dir_is_derived` is now
+    equality with `state_dir_for(name)`, which survives an exec because the
+    derivation is reproducible rather than because a marker was carried.
+
     `state_dir` is passed rather than read off `resolved` because callers
     monkeypatch the module constant; the flag says whether creating is allowed,
-    the argument says where.
+    the argument says where. The two are not cross-checked, deliberately — every
+    caller passes `transport.STATE_DIR`, which is `RESOLVED.state_dir`, and a
+    test that patches one and not the other is asking about the argument.
 
     **Creating it is not the same as establishing it, and this used to be
     `os.makedirs(state_dir, mode=0o700, exist_ok=True)` (#1518).** The derived
