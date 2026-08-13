@@ -357,6 +357,55 @@ def test_the_timeout_receipt_names_the_clock_the_push_actually_got(
         "cut from, so the caller cannot tell why it was short:" + os.linesep + out)
 
 
+def test_the_unattributed_recovery_stall_names_no_budget_at_all(
+        box, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The backstop arm knows a call stalled, not which one — so it says so.
+
+    Found by review of this change, not by the issue. `_push_op` wraps the
+    whole recovery in `except subprocess.TimeoutExpired` as a backstop for
+    calls that do not report their own stage, and it passes no clock. Before
+    #1615 the receipt could safely default to `_RECOVER_TIMEOUT`, because that
+    *was* the clock on every call it covers. It is not any more — the fetch and
+    the rebase now take the smaller of that and the push deadline — so a number
+    printed here would be a budget nothing was measured against, which is this
+    repository's own defect class aimed at its own new field.
+    """
+    box.move_remote_ahead()
+    box.commit("mine.txt", "mine")
+
+    def stall(*a, **k):
+        raise subprocess.TimeoutExpired(cmd=["git", "rebase"], timeout=1)
+
+    monkeypatch.setattr(push, "_recover_by_rebase", stall)
+
+    rc, out = box.drive_push("budget=600")
+
+    assert rc != 0, out
+    verdict = _verdict(out)
+    assert "TIMED OUT" in verdict, verdict
+    assert str(push._RECOVER_TIMEOUT) not in out, (
+        "the receipt named " + str(push._RECOVER_TIMEOUT) + "s as the clock "
+        "that cut, and this arm does not know which call stalled or what it "
+        "was launched with:" + os.linesep + out)
+
+
+def test_the_stage_that_knows_its_clock_still_reports_it(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The other half: `None` must not have made every recovery receipt vague.
+
+    The fetch and rebase arms do know what they were launched with and pass it
+    in, and dropping the number there would cost the caller the one figure that
+    tells them whether to raise `_RECOVER_TIMEOUT` or `:budget`.
+    """
+    monkeypatch.setattr(push, "_rebase_state", lambda: "not-started")
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        push._report_recovery_timeout("fetch", "feature", "origin/feature", 45)
+    out = buf.getvalue()
+    assert "45s" in out, out
+    assert "(45s)" in _verdict(out), _verdict(out)
+
+
 def test_the_deadline_is_cleared_between_runs(box) -> None:
     """Module state, like `_RUN` and `_BUDGET['seconds']` (#686).
 

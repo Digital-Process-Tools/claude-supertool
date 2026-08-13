@@ -1964,10 +1964,17 @@ def _report_recovery_timeout(stage: str, branch: str, target: str,
     # that cut is not always `_RECOVER_TIMEOUT`. Reporting the constant when
     # the deadline was the tighter of the two names a budget that did not
     # expire, and sends the reader to raise the wrong number.
-    allowed = _RECOVER_TIMEOUT if allowed is None else allowed
+    #
+    # `None` is therefore a third state — *which* clock cut is unknown — and
+    # not a default of `_RECOVER_TIMEOUT`. The backstop arm in `_push_op`
+    # catches a stall it cannot attribute to a particular call, so a number
+    # there would be a budget nothing was measured against. The two arms that
+    # do know pass theirs in.
+    budget_said = "its budget" if allowed is None else f"its {allowed}s budget"
+    budget_tag = "" if allowed is None else f" ({allowed}s)"
     state = _rebase_state()
-    print(f"Status: {stage_up} TIMED OUT ✗ — exceeded its {allowed}s "
-          f"budget while recovering the non-fast-forward push")
+    print(f"Status: {stage_up} TIMED OUT ✗ — exceeded {budget_said} "
+          f"while recovering the non-fast-forward push")
     if state == "in-progress":
         print("Your worktree has a REBASE IN PROGRESS — git paused it and the "
               "clock ran out before it finished. Nothing was pushed.")
@@ -1976,25 +1983,26 @@ def _report_recovery_timeout(stage: str, branch: str, target: str,
         print("  • finish it — resolve if needed, then `git rebase --continue`")
         print("  • undo it — `git rebase --abort` (back to before the push, "
               "nothing changed)")
-        _result(f"NOT PUSHED - {stage_up} TIMED OUT ({allowed}s)  "
+        _result(f"NOT PUSHED - {stage_up} TIMED OUT{budget_tag}  "
                 f"{branch} -> {target} - REBASE IN PROGRESS: finish with "
                 "`git rebase --continue` or undo with `git rebase --abort`")
     elif state == "not-started":
         print("No rebase is in progress — the working tree is unchanged and "
               "your branch is where it was.")
-        print(f"Retry. If this repo genuinely needs more than "
-              f"{allowed}s to {stage}, the budget is _RECOVER_TIMEOUT "
-              "in presets/git/push.py — or, when the push deadline was the "
+        print("Retry. If this repo genuinely needs more than "
+              + (f"{allowed}s " if allowed is not None else "")
+              + f"to {stage}, the budget is _RECOVER_TIMEOUT in "
+              "presets/git/push.py — or, when the push deadline was the "
               "tighter of the two, `git-push:budget=SECONDS`. Raising "
               "ops.git-push.timeout alone will not move either.")
-        _result(f"NOT PUSHED - {stage_up} TIMED OUT ({allowed}s)  "
+        _result(f"NOT PUSHED - {stage_up} TIMED OUT{budget_tag}  "
                 f"{branch} -> {target} - no rebase started, working tree "
                 "unchanged")
     else:
         print("Could NOT determine whether a rebase is in progress — git did "
               "not answer. Your worktree may or may not be paused mid-rebase.")
         print("Check before anything else: `git status`")
-        _result(f"NOT PUSHED - {stage_up} TIMED OUT ({allowed}s)  "
+        _result(f"NOT PUSHED - {stage_up} TIMED OUT{budget_tag}  "
                 f"{branch} -> {target} - rebase state UNKNOWN, run "
                 "`git status` before retrying")
     return 1
