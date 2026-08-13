@@ -2192,6 +2192,32 @@ def _near_miss_ops(op: str) -> List[Tuple[str, str]]:
     return hits[:_NEAR_MISS_MAX]
 
 
+def _cwd_retargets_note(op: str) -> str:
+    """`cwd:` moves what the op ACTS on, not only where its config is read.
+
+    The half of #1554 that is worse than the one filed. The guard blocks a raw
+    `git commit` and names `git-commit`; the op is unavailable in a directory
+    with no `.supertool.json` above it, and this message then offers
+    `cwd:<project-path>`. Obeyed literally by someone standing in a throwaway
+    repository under a scratchpad path — the #1536 agent's situation, three
+    times in one run — that runs the op against a *different repository*.
+    Measured: `cwd:<project>` followed by `git-status` reported the project's
+    branch and working tree, not the caller's.
+
+    So the escape hatch is kept and its scope is stated. A remedy that merely
+    fails again costs a round-trip; one that succeeds somewhere else is the
+    `misdirects` class proper, and this is the one line that separates them.
+    """
+    return (
+        f"       'cwd:' moves the directory the op ACTS on as well as the one "
+        f"its config is read from, so it is\n"
+        f"       the fix only when the work is in that project — never a way "
+        f"to run '{op}' against THIS\n"
+        f"       directory. For a repository no project covers, this op has no "
+        f"route to it (#1554).\n"
+    )
+
+
 def _unknown_op_message(op: str) -> str:
     """Answer "can I do this?" in three states, not two (#614).
 
@@ -2219,7 +2245,8 @@ def _unknown_op_message(op: str) -> str:
                 f'       Fix: add "{preset}" to that file\'s "presets" list, or make '
                 f"this call's first op 'cwd:<project-path>' pointing at a project "
                 f"that already enables it.\n"
-                f"       'ops' lists what is loaded here.\n"
+                + _cwd_retargets_note(op)
+                + f"       'ops' lists what is loaded here.\n"
             )
         return (
             f"ERROR: op '{op}' is unavailable here, not unknown — it is provided by "
@@ -2228,7 +2255,8 @@ def _unknown_op_message(op: str) -> str:
             f"so no preset ops and no project ops are loaded — only the built-ins.\n"
             f"       Fix: run it from a project that enables the '{preset}' preset, "
             f"or make this call's first op 'cwd:<project-path>'.\n"
-            f"       'ops' lists what is loaded here.\n"
+            + _cwd_retargets_note(op)
+            + f"       'ops' lists what is loaded here.\n"
         )
     msg = f"ERROR: unknown operation: {op}\n"
     # Above the roster, not instead of it (#1222). The suggestion can still be
@@ -2821,6 +2849,26 @@ def _unconsumed_arg_tokens(cmd_template: str, parts: List[str]) -> List[str]:
     return extra if any(extra) else []
 
 
+def _declared_path_slots(entry: Any) -> List[int]:
+    """The argument positions this registry entry declares as paths (#1560).
+
+    Read-only, and deliberately tolerant: a malformed `"paths"` yields `[]`
+    here rather than a second copy of the refusal, because
+    `_preset_path_containment` runs first at dispatch and an op whose
+    declaration does not parse never reaches a message that quotes it. What
+    this answers is the one question a refusal needs — "is there a containment
+    claim, and over which positions" — so the message cannot describe a
+    boundary the gate does not enforce.
+    """
+    if not isinstance(entry, dict):
+        return []
+    decl = entry.get("paths")
+    if not isinstance(decl, dict) or not isinstance(decl.get("args"), list):
+        return []
+    return [i for i in decl["args"]
+            if isinstance(i, int) and not isinstance(i, bool) and i >= 0]
+
+
 def _dropped_tokens_refusal(
         op: str, entry: Any, cmd_template: str, dropped: List[str]) -> str:
     """Name the text that will not be passed, and what would pass it.
@@ -2831,6 +2879,25 @@ def _dropped_tokens_refusal(
     downstream of the containment check, which is #1135's shape. It would also
     change what every existing `{arg}` op receives. `{args}` is already the
     pass-through, so the fix is to say which one the template asked for.
+
+    **And for an op that declares `"paths"`, that pass-through is not offered**
+    (#1560). The paragraph above is the reason this function will not widen the
+    placeholder internally, and the message used to hand the operator the same
+    manoeuvre in one line, with no word about extending the declaration
+    alongside it. Measured on a fixture op declaring
+    `{"args": [1], "root": "cwd"}`: `showit:../outside.txt` is refused at
+    position 1, and after obeying the advice `showit:a.txt:../outside.txt`
+    printed the file. So the remedy performed exactly what the refusal declined
+    to — the `misdirects` shape, and the reader most likely to obey a refusal
+    verbatim is an agent, immediately.
+
+    What replaces it is the third state rather than a reworded one-liner: the
+    declaration would have to name every position the widened template can
+    receive, and `args` is a fixed index list while `{args}` takes an unbounded
+    tail, so it contains that tail only up to the highest index it names. There
+    is no one-line `cmd` change that keeps such an op contained, and saying so
+    is more use than a remedy that reads as freshly checked. Pinned in
+    `tests/test_payload_key_and_misdirect_refusals_1551_1554_1560.py`.
     """
     sep = _ARG_SEP[0] or ":"
     used = [p for p in _ONE_ARG_PLACEHOLDERS if p in cmd_template]
@@ -2846,13 +2913,35 @@ def _dropped_tokens_refusal(
         "       Refused rather than dropped (#873): a discarded ':dry' once ran "
         "an op in live mode",
         "       while its receipt read as a dry run.",
-        "       To take every token, write {args} (one shell-quoted argv word "
-        "per token) or",
-        "       {argjoin} (every token rejoined with ':::' as a single "
-        "argument) in the cmd.",
-        "       To carry several fields inside the first token, separate them "
-        "with ',' or '|'.",
     ]
+    gated = _declared_path_slots(entry)
+    if gated:
+        positions = ", ".join(str(i) for i in gated)
+        lines += [
+            "       Widening the cmd to {args} or {argjoin} is NOT the remedy "
+            "here: this op declares",
+            f'       "paths": {{"args": [{positions}]}}, so only argument '
+            f"position(s) {positions} are containment-checked,",
+            "       and a template that consumes the whole tail hands every "
+            "later position to the child",
+            "       unchecked (#1135, #1560). Extending that `args` list "
+            "alongside it is necessary and not",
+            "       sufficient — it is a fixed index list, so it holds an "
+            "unbounded {args} tail only up to",
+            "       the highest index it names. There is no one-line cmd "
+            "change that keeps this op contained.",
+            "       What IS checked is the first token: carry several fields "
+            "inside it, separated by ',' or '|'.",
+        ]
+    else:
+        lines += [
+            "       To take every token, write {args} (one shell-quoted argv "
+            "word per token) or",
+            "       {argjoin} (every token rejoined with ':::' as a single "
+            "argument) in the cmd.",
+            "       To carry several fields inside the first token, separate "
+            "them with ',' or '|'.",
+        ]
     if isinstance(syntax, str) and syntax:
         lines.append(f"       This op documents: {syntax}")
     return chr(10).join(lines) + chr(10)
@@ -16709,6 +16798,28 @@ def guard_refusal(verdict: GuardVerdict) -> str:
     # refusal that had just blocked a tag push. A general claim about a
     # per-op decision goes stale the moment any op changes; `guard:` answers
     # per command and cannot.
+    # Where the named op can be RUN, which is not a general claim: every op the
+    # guard can name comes from `_op_registry`, i.e. from `config["ops"]`, and
+    # nothing builtin carries a `replaces` entry — so a block is proof that a
+    # `.supertool.json` was found here, and equally that the op does not exist
+    # where one is not. The #1536 agent obeyed a block from a fixture repo
+    # under a scratchpad path and met "op 'git-commit' is unavailable here";
+    # the round-trip was avoidable, and the `cwd:` it would have been offered
+    # next moves the directory the op acts on (#1554, `_cwd_retargets_note`).
+    lines.append(
+        "An op named above is loaded from "
+        # Flattened like every other value this message quotes: `_CONFIG_PATH`
+        # is a directory name, and a directory name may legally contain a
+        # newline — which would put a line of somebody's choosing inside a
+        # system-authored denial, the exact hole #1391 closed for `use` and
+        # `description`.
+        + (_guard_quote(_CONFIG_PATH, _GUARD_USE_CAP) if _CONFIG_PATH
+           else "this project's .supertool.json")
+        + " — a preset or project op does not exist in a directory with no "
+          ".supertool.json above it, and `cwd:` moves the directory the op "
+          "acts on rather than reaching back to this one. If this command was "
+          "to run outside such a project, there is no one-line replacement "
+          "for it there.")
     lines.append("Only invocations an op supersedes are declared under "
                  "`replaces`, so a raw call nothing maps runs untouched — "
                  "ask before running it with supertool 'guard:COMMAND'. This "
@@ -21996,10 +22107,17 @@ def _at_file_payload_hint(op: str) -> str:
     if not specs:
         return ""
     quote = "'" * 3
+    # Every key the route ACCEPTS, not only the positional ones the worked
+    # example below can demonstrate. `replace_all` is a boolean rather than a
+    # content field, so it has no line in the example — and listing it in the
+    # refusal's "accepted:" while omitting it here made the two lines of one
+    # message disagree about the same set (#1551).
     names = ", ".join(
         name + ("[]" if variadic else "") + (" (optional)" if optional else "")
         for name, optional, variadic in specs
     )
+    for extra in _payload_accepted_fields(op, specs)[len(specs):]:
+        names += f", {extra} (optional)"
     lines = [
         f"  {op}:@... reads its fields from the payload. Keys: {names}",
         f"    ./supertool '{op}:@-' <<'EOF'",
@@ -22179,6 +22297,63 @@ def _missing_field_create_clause(op: str, name: str,
     )
 
 
+#: Payload keys that belong to the ROUTE rather than to any op's field list.
+#:
+#: `op` names a batch sub-item's operation. `literal_backslashes` is the
+#: top-level doubled-backslash opt-in (#1096) — and for a single-op payload the
+#: top level IS the op's own table, so refusing it here would delete the one
+#: spelling that says "I meant two characters". Inside `[[ops]]` it is already
+#: refused by `_payload_literal_backslashes_misplaced`, before this runs.
+#:
+#: Accepted everywhere and advertised nowhere: listing them among an op's
+#: fields would read as an invitation to set them per-op, which is what #1096
+#: refused to implement.
+_PAYLOAD_ROUTE_KEYS = frozenset({"op", _PAYLOAD_LITERAL_BS_KEY})
+
+#: And the same question one level up, at the top of a `batch` payload. The
+#: wrapper used to read `ops` and `continue_on_error` and ignore everything
+#: else, so a misspelt `continue_on_error` — a flag that decides whether the
+#: rest of the batch runs after a failure — was dropped in silence. Found while
+#: fixing #1551; the same class, the same route, one level out.
+_BATCH_WRAPPER_KEYS = frozenset(
+    {"ops", "continue_on_error", _PAYLOAD_LITERAL_BS_KEY})
+
+#: `replace_all` is read at exactly one place in dispatch — the `edit` arm,
+#: where true promotes the op to `replace`. On any other op it is inert, so it
+#: is an op field of `edit` and an unknown key everywhere else.
+_PAYLOAD_REPLACE_ALL_OPS = ("edit",)
+
+
+def _payload_accepted_fields(
+        op: str, specs: List[Tuple[str, bool, bool]]) -> List[str]:
+    """The op-field names a payload for *op* may carry, in argument order."""
+    names = [name for name, _optional, _variadic in specs]
+    if op in _PAYLOAD_REPLACE_ALL_OPS:
+        names.append("replace_all")
+    return names
+
+
+def _payload_unknown_fields(op: str, specs: List[Tuple[str, bool, bool]],
+                            lower_payload: Dict[str, Any]) -> List[str]:
+    """Keys this op does not implement — refused, never dropped (#1551).
+
+    Every other input surface in this tool already holds this line and says so:
+    `_read_op_from_payload` ("unknown field(s) … — accepted: …"),
+    `_ordered_batch_fields` for a batch sub-op with no payload route, `ops`'s
+    own argument, and the `gh-issues` filter keys, whose contract states it
+    outright — "an unrecognised token or filter key is REFUSED, never dropped".
+    The mutating payload route was the one that did not, and it is the route
+    that WRITES: `edit:@-` carrying `count = 1` ran with no count and answered
+    with the ordinary ambiguity refusal, correct about the match and silent
+    about the constraint the caller believed they had applied.
+
+    Derived from the registry that drives the route rather than hand-listed, so
+    an op whose `syntax` gains a field cannot be refused for using it.
+    """
+    known = set(_payload_accepted_fields(op, specs)) | _PAYLOAD_ROUTE_KEYS
+    return [k for k in lower_payload if k not in known]
+
+
 def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
     """Convert a JSON payload dict to (parts, replace_all) for the given op.
 
@@ -22207,6 +22382,29 @@ def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
         raise ValueError(f"@file route not supported for op '{op}'")
     # Case-insensitive key lookup — normalise payload keys once.
     lower_payload = {k.lower(): v for k, v in payload.items()}
+    unknown = sorted(_payload_unknown_fields(op, specs, lower_payload))
+    if unknown:
+        # The create clause rides along rather than being displaced by this
+        # refusal. `edit:@-` with `path` + `new` + `create = true` is the shape
+        # #1334 was filed about, and "unknown field(s) create" is true but not
+        # the answer: what the caller needs is that nothing exists at `path`,
+        # that `edit` never creates, and which op does. Naming the key AND the
+        # remedy is strictly more than either — dropping the second would trade
+        # #1551 for #1334.
+        _first_missing = next(
+            (name for name, optional, _variadic in specs
+             if not optional and name not in lower_payload), "")
+        _clause = (_missing_field_create_clause(op, _first_missing,
+                                                lower_payload)
+                   if _first_missing else "")
+        raise ValueError(
+            f"@file payload for op '{op}' has unknown field(s) "
+            f"{', '.join(unknown)} — accepted: "
+            f"{', '.join(_payload_accepted_fields(op, specs))}. Refused rather "
+            f"than dropped (#1551): an edit performed without the constraint "
+            f"the caller wrote reads, in the receipt, exactly like one "
+            f"performed with it" + _clause
+        )
     parts = [op]
     for name, optional, variadic in specs:
         if name not in lower_payload:
@@ -22923,8 +23121,27 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                 '{"ops": [...]} for batch.\n'
                             )
                         else:
-                            batch_ops = raw_payload.get("ops", [])
-                            continue_on_error = bool(raw_payload.get("continue_on_error", True))
+                            _wrapper_unknown = sorted(
+                                k for k in raw_payload
+                                if str(k).lower() not in _BATCH_WRAPPER_KEYS)
+                            if _wrapper_unknown:
+                                batch_ops = None  # signal: already set body
+                                body = (
+                                    "ERROR: unknown key(s) "
+                                    + ", ".join(_wrapper_unknown)
+                                    + " at the top level of this batch payload "
+                                    + "— accepted: "
+                                    + ", ".join(sorted(_BATCH_WRAPPER_KEYS))
+                                    + ". Refused rather than dropped (#1551): "
+                                    + "a misspelt `continue_on_error` ran the "
+                                    + "rest of the batch past a failed op "
+                                    + "while the payload said to stop, and "
+                                    + "nothing in the receipt disagreed."
+                                    + chr(10)
+                                )
+                            else:
+                                batch_ops = raw_payload.get("ops", [])
+                                continue_on_error = bool(raw_payload.get("continue_on_error", True))
                     else:
                         batch_ops = []
                         continue_on_error = True
