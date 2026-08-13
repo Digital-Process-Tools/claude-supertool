@@ -1,7 +1,6 @@
 ---
 title: "docs/ — index, not a summary"
 match: "docs/"
-mode: once, remind
 ---
 
 # `docs/contributing.md` (124KB / 1415 lines) — section map

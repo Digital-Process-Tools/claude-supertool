@@ -1,7 +1,6 @@
 ---
 title: "changelog.d/ — CommonMark-gated fragments"
 match: "changelog.d/"
-mode: once, remind
 ---
 
 # Filename grammar

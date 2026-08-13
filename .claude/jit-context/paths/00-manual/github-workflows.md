@@ -1,7 +1,6 @@
 ---
 title: ".github/workflows/ — CI shape and log-reading"
 match: ".github/workflows/"
-mode: once, remind
 ---
 
 # Workflows that exist (only these three)

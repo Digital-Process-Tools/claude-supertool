@@ -1,7 +1,7 @@
 ---
 title: "Piping a supertool op through head/tail/sed selects against the answer"
 tool: Bash
-match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(python3?[[:space:]]+(-m[[:space:]]+)?)?([^[:space:]]*/)?supertool(\.py)?[[:space:]][^\n]*[[:space:]'"]\|[[:space:]]*(head|tail|sed|cut|awk)
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(python3?[[:space:]]+(-m[[:space:]]+)?)?([^[:space:]]*/)?supertool(\.py)?[[:space:]]([^;&\n]|&[^&[:space:]])*[[:space:]'"]\|[[:space:]]*(head|tail|sed|cut|awk)
 mode: block
 ---
 
@@ -30,7 +30,9 @@ the same rule, written and said out loud twice, was skimmed each time.
 quote, at command position. Still matched: a heredoc body line that *begins*
 with a piped call, because `^`-alternation cannot tell a body from a command.
 Still unmatched: an env-var prefix and a command substitution before the call.
-Deliberately not widened further — four wrong blocks in one evening across three
-callers against no observed missed cut (#1433). The reasoning is in #1415,
+The span stops at `;` and `&&`, so a *later* command's `| tail` no longer refuses
+the op (#1565); `|` and `2>&1` stay inside it, because a real cut often has both.
+Deliberately not widened — seven wrong blocks over two evenings against no
+observed missed cut (#1433, #1565). The reasoning is in #1415,
 #1426, #1430 and #1433, not here: this body is re-injected in full on every
 match, false ones included, so its length is the price of every wrong block.

@@ -1,7 +1,6 @@
 ---
 title: "presets/github/ — GitHub op quirks"
 match: "presets/github/"
-mode: once, remind
 ---
 
 # Location

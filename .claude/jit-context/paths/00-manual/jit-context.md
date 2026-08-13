@@ -1,12 +1,12 @@
 ---
 title: "Writing a jit rule"
 match: .claude/jit-context/
-mode: remind
 ---
 
 - **The `.md` is inert.** `00-index.tsv` in the same directory is what the hook reads. Tools: `tool⇥match⇥file⇥mode⇥keyword⇥` (6 fields, trailing tab); column 2 is a regex only when it opens with `~`, otherwise a lowercased substring. Paths: `pattern⇥file` (2 fields); column 1 is **always** a regex (`match()`, `pre-path-hook.sh:105`) — not a literal prefix. No row = a rule that never runs, which reads exactly like a rule that never matches.
+- **A paths rule has no mode, so do not write one** (refused by `tests/test_jit_paths_rules_declare_no_mode_1442.py`). `build_path_tsv` reads only `match:`, and `pre-path-hook.sh:347` dedups every paths rule per session before the pattern is tried: all are `once`, none can be `block`. Eleven carried an inert `mode:` in two spellings, which is what made #1442 ask which should fire less — on 2026-08-12 `jit-context.md` (no `once`) and `docs-index.md` (`once`) fired at the same three timestamps.
 - **Verify by running the forbidden command.** Nothing else distinguishes the two. The hook logs to `.discovery/logs/hooks.log`, and the field that answers is the rule-name one: `(none)` means nothing fired. **Not `[shown:0]`** — a `block` that fired and refused the command prints it too (`13039 … tool:supertool-no-cut.md(…) [shown:0]`, measured #1433), so reading that field concludes a live rule is dead.
-- **Keep it short.** Injected in full on every match — length is a cost paid forever, and on a `block` it is the price of every *wrong* block too. Table of replacement ops, the measurement, stop. An indexed `tools/` rule over 3,200 bytes is now red (`tests/test_jit_rule_body_budget_1433.py`, #1433 — one 3,884-byte body was reported as the largest single input cost of an agent's run).
+- **Keep it short.** A `tools/` body is injected on every match — length is a cost paid forever, and on a `block` it is the price of every *wrong* block too. A `paths/` body is paid once per session instead, which is why the two carry different ceilings. Table of replacement ops, the measurement, stop. An indexed `tools/` rule over 3,200 bytes is now red (`tests/test_jit_rule_body_budget_1433.py`, #1433 — one 3,884-byte body was reported as the largest single input cost of an agent's run).
 - **Point at the op, never at a way around it.** If the entry explains how to get the answer by hand, fix the op instead.
 
 Three `match` traps, measured 2026-08-10. The `jit-index` validator now refuses the first two at write time (#1254), so you should meet them as a rolled-back edit rather than as a rule that never fires:

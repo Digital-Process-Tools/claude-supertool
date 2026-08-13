@@ -1,7 +1,6 @@
 ---
 title: "presets/git/ — every splitlines() here is judged, not swept"
 match: "presets/git/"
-mode: once, remind
 ---
 
 **Register test — first gate a new site hits.** A new `x.splitlines()` under

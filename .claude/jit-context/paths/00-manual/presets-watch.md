@@ -1,7 +1,6 @@
 ---
 title: "presets/watch/ — pidfile sentinels, poller identity, radar --state, channel.health"
 match: "presets/watch/"
-mode: once, remind
 ---
 
 # pidfile reads — `transport.py`

@@ -1,7 +1,6 @@
 ---
 title: "tests/ — the full suite is non-hermetic"
 match: "tests/"
-mode: once, remind
 ---
 
 # Before you run the full suite
