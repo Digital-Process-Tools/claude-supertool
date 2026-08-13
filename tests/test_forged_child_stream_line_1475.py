@@ -218,7 +218,7 @@ _SCANNED = ("presets/github", "presets/gitlab", "presets/git")
 
 #: file -> how many child-stream relays reach a sink unmarked. May only shrink.
 CENSUS = {
-    "presets/git/_git_common.py": 7,
+    "presets/git/_git_common.py": 5,
     "presets/git/blame.py": 2,
     "presets/git/checkout.py": 10,
     "presets/git/commit.py": 9,

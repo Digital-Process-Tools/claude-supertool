@@ -20,7 +20,7 @@ import shlex
 import shutil
 import subprocess
 import sys
-from typing import Optional
+from typing import NamedTuple, Optional
 
 # Sibling import: `_env` lives one directory up. Arranged here rather than at
 # each call site, so that importing this module is enough to get the knob —
@@ -33,7 +33,7 @@ if os.path.dirname(_HERE) not in sys.path:
     sys.path.insert(0, os.path.dirname(_HERE))
 
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
-import _untrusted  # noqa: E402  (a child stream is somebody else's text — #1475)
+import _untrusted  # noqa: E402  (a child stream, and a path off disk, are somebody else's text — #1475, #1557)
 
 
 def use_utf8_stdout() -> None:
@@ -207,7 +207,22 @@ def _same_path(a: str, b: str) -> bool:
             == os.path.normcase(os.path.realpath(b)))
 
 
-def foreign_worktree(start: Optional[str] = None) -> Optional[tuple[str, str]]:
+class ForeignWorktree(NamedTuple):
+    """The two paths the copied-worktree banner names, **ready to render**.
+
+    Both fields are flattened (#1557) and neither is usable as a path any more:
+    a separator in one arrives as ``␊``/``[U+000A]``, so `open()` on it would
+    miss. That is the point — every consumer of this tuple prints it, and the
+    field names say so at the next call site rather than in a comment three
+    files away. The comparison that decides whether there is a copy at all runs
+    on the raw values, inside `foreign_worktree()`, before either is flattened.
+    """
+
+    here_display: str
+    registered_display: str
+
+
+def foreign_worktree(start: Optional[str] = None) -> Optional[ForeignWorktree]:
     """`(this tree, the tree git has registered)` when they are not the same one.
 
     A linked worktree's `.git` is a gitfile — one line of text naming the real
@@ -254,7 +269,23 @@ def foreign_worktree(start: Optional[str] = None) -> Optional[tuple[str, str]]:
         return None
     if not registered_dot or _same_path(registered_dot, dot):
         return None
-    return (here, os.path.dirname(registered_dot))
+    # Flattened HERE, at the producer, rather than in `foreign_worktree_note()`
+    # (#1557). Both values are paths off disk that nothing gates: `gitdir` holds
+    # whatever wrote it, and git itself writes the path handed to
+    # `git worktree add`, so a worktree directory whose *name* contains a line
+    # separator forges through the ordinary route with no attacker involved.
+    # There are three renders, not one — this note, and the prose line under it
+    # in `status.py` and in `worktrees.py`, each of which prints `here` — plus
+    # `repo_label()`, i.e. the `Repo:` line of every op that writes. Flattening
+    # at the note would have covered one of the four.
+    #
+    # `disclose_newline=True` because the value is a path: the space `flat()`
+    # gives a title would render a directory name that is not on disk, and the
+    # reader of this banner has to be able to identify which tree is meant.
+    return ForeignWorktree(
+        _untrusted.flat(here, disclose_newline=True),
+        _untrusted.flat(os.path.dirname(registered_dot), disclose_newline=True),
+    )
 
 
 def _with_foreign_note(label: str) -> str:
@@ -267,15 +298,26 @@ def _with_foreign_note(label: str) -> str:
     return f"{label}\n  {foreign_worktree_note(found)}"
 
 
-def foreign_worktree_note(found: tuple[str, str]) -> str:
-    """One line naming the tree a write from here will actually land in."""
+def foreign_worktree_note(found: ForeignWorktree) -> str:
+    """One line naming the tree a write from here will actually land in.
+
+    One line, and nothing off disk can make it two: `found` is flattened by its
+    producer (#1557).
+    """
     return (f"⚠ {FOREIGN_WORKTREE_MARKER} — this directory is not the one git "
             f"registered for its git directory; the index, HEAD and refs "
             f"reached from here belong to {found[1]} (#1536)")
 
 
 def repo_label() -> str:
-    """Absolute path of the repo the calling op is acting on.
+    """Absolute path of the repo the calling op is acting on, **to print**.
+
+    A display string, not an openable path (#1557, same reason as
+    `ForeignWorktree`): the directory's real name is flattened on the way out,
+    so a separator in it arrives as ``␊``/``[U+000A]`` rather than making a
+    second line at column 0 under a `Repo:` the reader takes as the tool's.
+    Both call sites — `git-commit` and `git-push`, the two ops that write —
+    interpolate it into one printed line and nothing else.
 
     `git-diff` has printed a `Repo:` line for a long time; `git-commit` and
     `git-push` did not — so the two ops that WRITE were the two that never said
@@ -288,12 +330,18 @@ def repo_label() -> str:
     nothing. "unknown" rather than a guess when git answers neither — a wrong
     repo name is the one output worse than no repo name.
     """
+    # Flattened for the same reason the foreign-worktree paths are, and by the
+    # same argument (#1557): git prints the directory's real name here, and a
+    # repository checked out under a name carrying a line separator makes this
+    # line into two — the second at column 0, in the render of an op that
+    # WRITES. That needs no copied worktree and no `gitdir` file at all.
     top = _git(["rev-parse", "--show-toplevel"])
     if top.returncode == 0 and top.stdout.strip():
-        return _with_foreign_note(top.stdout.strip())
+        return _with_foreign_note(
+            _untrusted.flat(top.stdout.strip(), disclose_newline=True))
     bare = _git(["rev-parse", "--absolute-git-dir"])
     if bare.returncode == 0 and bare.stdout.strip():
-        return f"{bare.stdout.strip()} (bare)"
+        return f"{_untrusted.flat(bare.stdout.strip(), disclose_newline=True)} (bare)"
     return "unknown"
 
 

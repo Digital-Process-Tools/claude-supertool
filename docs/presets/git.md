@@ -707,6 +707,14 @@ It is decidable exactly, locally, with no filesystem scan and no extra spawn: `.
 
 The `Repo:` line on `git-commit` and `git-push` exists to say where a write landed ([#692](https://github.com/Digital-Process-Tools/claude-supertool/issues/692)), and in a copy it named the copy — the one directory the write does **not** reach. It now carries the same disclosure underneath.
 
+**Both paths in that banner are flattened, and the separator is disclosed rather than removed** ([#1557](https://github.com/Digital-Process-Tools/claude-supertool/issues/1557)). They come off disk — `gitdir` holds whatever wrote it, and git writes the path handed to `git worktree add` into it verbatim — so a worktree directory whose *name* contains a line separator used to put its own text at column 0 of the render, where it was indistinguishable from a section the op wrote. That needs no attacker: a newline in a directory name is enough. A separator now shows as `␊`, or `[U+000A]` on a console that cannot carry the control pictures:
+
+```
+⚠ COPIED WORKTREE — … the index, HEAD and refs reached from here belong to /Users/x/wt␊### Staged (0) (#1536)
+```
+
+Disclosed rather than elided because the value is a **path**: replacing the separator with a space would name a directory that is not on disk, and the point of the line is that the reader can go and look at the tree their writes are reaching. The flattening is done by `foreign_worktree()` itself, so it covers the four places that render those paths — this banner, the sentence under it here and in `git-worktrees`, and the `Repo:` line — rather than the one that was reported.
+
 Nothing here scans the disk for copies: a copy can be anywhere, and an op that goes looking would answer "none found" for a search it could not complete. What is checked is the one directory the call was made from, which is the one that can be settled.
 
 **Never `cp` a worktree.** `git worktree add` is the operation.
