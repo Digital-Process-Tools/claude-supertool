@@ -271,15 +271,18 @@ def write(prefix: str, digest: str, entries: dict[str, Any], member: str) -> Non
     A half-written snapshot is a board that reports rows as changed which did
     not change, so the failure mode of an unwritable state dir is "no delta
     this run", never "a wrong delta next run".
+
+    **Through `transport.write_json_contained`, not a second `open` (#1540).**
+    This wrote `f"{target}.tmp"` — a fully predictable name in `STATE_DIR`,
+    which is world-writable `/tmp` on the unnamed default — with a plain
+    `open(..., "w")`, so a symlink planted at it was followed and any file this
+    uid can write was truncated and refilled. That is #1540's mechanism exactly,
+    one file over, and it had no guard at all rather than one that degrades on
+    Windows.
+
+    The refusal is still discarded here, and that is unchanged rather than
+    endorsed: both callers are `-> None` and neither has a surface to print it
+    on, which is a separate decision from containing the write.
     """
-    target = path(prefix, digest)
-    tmp = f"{target}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({member: entries}, f, indent=2)
-        os.replace(tmp, target)
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+    # The returned refusal is deliberately not consumed here — see above.
+    transport.write_json_contained(path(prefix, digest), {member: entries})

@@ -20,6 +20,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -77,6 +78,23 @@ DEATH_RESPAWN_LIMIT = 3
 # the second place that opens a /tmp path by predictable name). Windows has no
 # such flag, and 0 leaves the open otherwise unchanged.
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+# The state file's temporary name, which is where the write is contained (#1540,
+# #1542). `tempfile.mkstemp` is the boundary rather than a fourth hand-rolled
+# open, because its documented contract is exactly the one wanted here — the name
+# carries ~40 bits nobody can predict, and the open is
+# `O_RDWR|O_CREAT|O_EXCL` plus `O_NOFOLLOW` and `O_BINARY` **where the platform
+# has them**, at mode 0o600. `O_EXCL` is what makes it a guarantee instead of a
+# check: the name comes into existence with our create, so there is no window in
+# which anything could have been planted at it and nothing to verify afterwards.
+#
+# `O_BINARY` matters and is easy to lose: without it a Windows descriptor is in
+# the CRT's *text* mode and the `TextIOWrapper` over it translates the newline a
+# second time, so every state file would carry CR CR LF. Legal JSON whitespace,
+# so nothing goes red; the file simply stops matching the one the builtin
+# `open()` writes. `mkstemp(text=False)` passes it, which is why this route is
+# used rather than an `os.open` that would have to remember to.
+_STATE_TMP_SUFFIX = ".tmp"
 
 # `claim_pidfile` could not answer: the open failed, no file was created, and
 # nothing here knows who — if anyone — holds the slot. Distinct from `0` ("it is
@@ -388,19 +406,151 @@ def emit_socket(payload: dict[str, Any]) -> Emit:
     return Emit(EMIT_ACCEPTED, f"{SOCK_PATH} accepted the bytes")
 
 
-def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> None:
-    """Atomically replace the status file with the latest known state."""
-    path = state_path(source, watcher_id)
-    tmp = f"{path}.tmp"
+def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> str:
+    """Atomically replace the status file. "" when it landed, else why not.
+
+    **Every writer proves the name, not just the one that spawns a poller
+    (#1540).** #1518 established the derived state directory and wired it into
+    `claim_pidfile`, which is the one path through here that was never the
+    problem. This function is reached from `record_death` — `watches`, `unwatch`
+    and the `radar` heal — and from `clear_deaths`, in reader processes that
+    never claimed a slot, and it opened `f"{path}.tmp"` with a plain
+    `open(..., "w")`. The channel name is public (`6047d98` commits
+    `"watch_name": "oss-supertool"` to this repo's own `.supertool.json`), so a
+    co-tenant holding `/tmp/supertool-watch-<name>` with a stale pid file and a
+    symlink at `<name>.state.json.tmp` got the link followed and any file we can
+    write truncated and refilled with JSON whose `last_event.payload` is remote
+    text.
+
+    Two guards, because they cover different populations and neither subsumes
+    the other:
+
+    * **An unpredictable temporary name, created `O_CREAT|O_EXCL`** — the only
+      guard the **unnamed** default gets, where the state files sit loose in
+      world-writable `/tmp` and there is no derived directory to establish.
+      This was `O_NOFOLLOW` on a fixed `<path>.tmp`, the write mirror of the
+      `O_RDONLY|O_NOFOLLOW` `read_state_checked` and `read_pid_checked` have
+      carried since #1197 and #1200, and that asymmetry was the original bug —
+      but `O_NOFOLLOW` does not exist on Windows, `getattr(os, "O_NOFOLLOW", 0)`
+      is `0` there, and a guard that cannot run renders as a guard that passed:
+      three `windows-latest` legs of #1542 followed the planted link and
+      overwrote the victim while ubuntu and macOS were green (job
+      #94267071435). A flag that half the platforms lack cannot be the
+      boundary. A name nobody can predict cannot be pre-taken, and `O_EXCL`
+      refuses even a lucky guess, on every platform and with no flag to
+      degrade. `O_NOFOLLOW` is still passed where it exists — `mkstemp` adds it
+      — as the second line, not the first.
+    * `naming.ensure_state_dir` for the **named** channel: a squatter who owns
+      the directory rather than planting a link inside it. Asked **on every
+      write, not memoized.** A first draft cached the successful answer, which
+      is the shape this repo keeps filing: `O_NOFOLLOW` guards the final
+      component only, so a cached "established" would let a directory swapped
+      after the first write be followed on every write after it, and the cache
+      would be reporting an old measurement as a current fact. Re-asking costs
+      an `mkdir` that fails `EEXIST`, one `open`, one `fchmod` and one `fstat`,
+      against a poll tick measured in seconds.
+
+    `os.replace` is claimed to need no guard of its own: rename does not follow
+    a symlink at its final component, so a link planted at `<name>.state.json`
+    is replaced rather than written through. **Observed on POSIX, reasoned on
+    Windows** — `os.replace` is `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` there
+    and a reparse point at the destination is believed to be replaced rather
+    than traversed, which nobody here can run. The final-name arm of
+    `tests/test_watch_state_write_containment_1540.py` exists to let the
+    Windows leg answer that instead of this comment.
+
+    **Nothing planted is unlinked.** Same reading as `read_state_checked`: a
+    symlink at one of these names is evidence, and quietly deleting it would
+    repair the channel while destroying the only trace that somebody planted
+    it. The `unlink` below can only ever remove a file `mkstemp` created in
+    this call, since `O_EXCL` means no pre-existing name was opened at all.
+
+    **The residual is litter, not exposure.** A fixed `.tmp` was reused by the
+    next write; an unpredictable one is not, so a hard kill (SIGKILL, OOM,
+    reboot) between the create and the `os.replace` leaves one
+    `<name>.state.json.<random>.tmp` behind that nothing collects. Every
+    *handled* failure below unlinks. Named rather than swept, because a sweep
+    of files it cannot attribute is a delete this function has no business
+    doing.
+
+    Returning the refusal rather than swallowing it is the other half of #1540:
+    `record_death` reported a death as recorded and `clear_deaths` reported a
+    ledger as acknowledged, both off an `OSError` this function had discarded.
+    """
+    why = naming.ensure_state_dir(RESOLVED, STATE_DIR)
+    if why:
+        return why
+    return write_json_contained(state_path(source, watcher_id), state)
+
+
+def write_json_contained(path: str, payload: Any) -> str:
+    """Replace `path` with `payload` as JSON. "" when it landed, else why not.
+
+    The containment `write_state` documents at length, in one place because
+    `tiers/_snapshot.write` writes into the same directory under a name of the
+    same shape and had no guard at all — it opened `f"{target}.tmp"` with a
+    plain `open(..., "w")`, so #1540's whole mechanism applied to it unchanged
+    and on every platform rather than only where `O_NOFOLLOW` is missing. A
+    second copy of this is how the fixed defect comes back.
+
+    It does **not** establish a directory: that is a question about a *derived*
+    state directory (#693) and belongs to the caller that knows whether it has
+    one.
+
+    Two deliberate changes from the fixed-name spelling, both reviewer-raised:
+
+    * **The refusal names `path`, not the temporary.** It used to name the
+      `.tmp`, which was then a stable name an operator could go and look at.
+      The temporary is now different on every call and means nothing to a
+      reader, while the file they care about is the one that did not get
+      replaced.
+    * **There is no `ELOOP`/`EMLINK` arm any more.** It said "this is somebody
+      redirecting the write at another file", which was true of a symlink at
+      the fixed `.tmp` and cannot be true of a name `O_EXCL` just created. The
+      one way to reach that errno now is a link in the *containing directory*,
+      where that sentence would send an operator to the wrong file, so the
+      generic message is the honest one.
+    """
+    shown = _untrusted.flat(path)
+    directory, name = os.path.split(path)
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
+        fd, tmp = tempfile.mkstemp(prefix=f"{name}.", suffix=_STATE_TMP_SUFFIX,
+                                   dir=directory)
+    except OSError as err:
+        # A missing or squatted directory lands here, and so does an
+        # unwritable one. `mkstemp` retries a colliding name 20 times before
+        # raising, so `FileExistsError` here is not a lost race.
+        return f"{shown} could not be opened for writing ({type(err).__name__})"
+    try:
+        handle = os.fdopen(fd, "w", encoding="utf-8")
+    except OSError as err:
+        # `os.fdopen` does not take the descriptor on its failing arm (#1184's
+        # own reviewer), so both the fd and the file we just created are ours
+        # to clean up.
+        os.close(fd)
+        _discard(tmp)
+        return f"{shown} could not be opened for writing ({type(err).__name__})"
+    try:
+        with handle as f:
+            json.dump(payload, f, indent=2)
         os.replace(tmp, path)
+    except OSError as err:
+        _discard(tmp)
+        return f"{shown} could not be written ({type(err).__name__})"
+    return ""
+
+
+def _discard(tmp: str) -> None:
+    """Remove a temporary file this process created. Silent on failure.
+
+    Only ever called on a path `mkstemp` returned, which is why it may unlink
+    at all: `O_EXCL` means the name did not exist before this call, so there is
+    no chance of removing somebody else's planted evidence.
+    """
+    try:
+        os.unlink(tmp)
     except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        pass
 
 
 def read_state_checked(source: str, watcher_id: str) -> tuple[dict[str, Any] | None, str]:
@@ -556,8 +706,10 @@ def record_death(source: str, watcher_id: str, pid: int) -> bool:
         return False
     ledger.append({"pid": pid, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     current["deaths"] = ledger
-    write_state(source, watcher_id, current)
-    return True
+    # False when nothing reached disk. "Newly recorded" off a write whose
+    # `OSError` was swallowed is the absence-read-as-presence shape one layer
+    # in: the respawn cap counted a death the ledger does not hold (#1540).
+    return not write_state(source, watcher_id, current)
 
 
 def clear_deaths(source: str, watcher_id: str) -> bool:
@@ -572,8 +724,9 @@ def clear_deaths(source: str, watcher_id: str) -> bool:
     if "deaths" not in current:
         return False
     current.pop("deaths", None)
-    write_state(source, watcher_id, current)
-    return True
+    # `dispatcher` prints an acknowledgement off this bool, so a refused write
+    # made `unwatch` claim it had cleared a ledger still sitting on disk (#1540).
+    return not write_state(source, watcher_id, current)
 
 
 def reap_dead_pidfile(source: str, watcher_id: str) -> int:
