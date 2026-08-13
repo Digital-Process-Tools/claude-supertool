@@ -154,10 +154,19 @@ def test_the_launcher_resolves_its_root_from_itself_not_from_home() -> None:
 
 
 def test_the_launcher_names_the_flag_the_channel_actually_needs() -> None:
-    """Without it the pollers still spawn and nothing reads them."""
+    """Without it the pollers still spawn and nothing reads them.
+
+    The server NAME is deliberately not pinned here. It moved once already:
+    `claude-channel` is what the plugin's `.mcp.json` declares, and outside a
+    plugin load its `${CLAUDE_PLUGIN_ROOT}` is empty, so that server fails to
+    spawn. Whether the tag names a server that is actually declared is checked
+    against the launched argv in
+    tests/test_workspace_launcher_1541.py::test_the_channel_tag_names_a_server_the_config_declares,
+    which a grep over the source cannot do.
+    """
     body = LAUNCHER.read_text(encoding="utf-8")
     assert "--dangerously-load-development-channels" in body
-    assert "server:claude-channel" in body
+    assert "server:" in body
 
 
 def test_the_launcher_changes_directory_before_launching() -> None:

@@ -196,14 +196,69 @@ def test_an_operators_own_export_wins_and_is_said_out_loud(tmp_path: Path) -> No
 @posix_only
 def test_the_prompt_is_appended_when_there_is_nothing_else(tmp_path: Path) -> None:
     run = _launch(tmp_path)
-    assert run.argv[-1] == PROMPT, run.argv
+    assert PROMPT in run.argv, run.argv
+
+
+@posix_only
+def test_the_prompt_never_follows_the_variadic_channel_flag(tmp_path: Path) -> None:
+    """`--dangerously-load-development-channels` is variadic, so a positional
+    after it is read as a second channel entry rather than as the prompt.
+
+    Measured against claude 2.1.219, which refused the launch outright:
+
+        --dangerously-load-development-channels entries must be tagged:
+        /opensource-manager
+
+    This test used to assert `run.argv[-1] == PROMPT`, pinning the prompt to the
+    one position claude will not read it in.
+    """
+    run = _launch(tmp_path)
+    flag = run.argv.index("--dangerously-load-development-channels")
+    assert run.argv.index(PROMPT) < flag, (
+        f"{PROMPT} sits after the variadic channel flag, where claude reads it "
+        f"as an untagged channel entry and refuses to start: {run.argv}")
 
 
 @posix_only
 def test_the_flag_the_channel_needs_is_still_passed(tmp_path: Path) -> None:
     run = _launch(tmp_path)
     assert "--dangerously-load-development-channels" in run.argv, run.argv
-    assert "server:claude-channel" in run.argv, run.argv
+    tag = run.argv[run.argv.index("--dangerously-load-development-channels") + 1]
+    assert tag.startswith("server:"), run.argv
+
+
+@posix_only
+def test_the_channel_tag_names_a_server_the_config_declares(tmp_path: Path) -> None:
+    """The two flags have to agree, and nothing else checks that they do.
+
+    `--dangerously-load-development-channels server:NAME` selects a channel by
+    name; `--mcp-config FILE` is where that name is defined. A tag naming a
+    server no config declares is a session that starts, prints no error, binds
+    no socket and delivers nothing -- the pollers keep emitting into it.
+
+    Measured 2026-08-13: the repo's own `.mcp.json` declares `claude-channel`
+    with `bun ${CLAUDE_PLUGIN_ROOT}/...`, which is empty outside a plugin load,
+    so that server failed to spawn and six pollers emitted into nothing while
+    the board rendered normally. Passing the server through `--mcp-config`
+    instead is not a fix: the server starts and binds the socket, and the tag is
+    still refused with `no MCP server configured with that name`, which is worse
+    because the board then looks armed.
+
+    So the launcher registers the server itself, and the name it registers must
+    be the name it tags.
+    """
+    run = _launch(tmp_path)
+    tag = run.argv[run.argv.index("--dangerously-load-development-channels") + 1]
+    name = tag.split(":", 1)[1]
+
+    body = (tmp_path / "clone" / "bin" / "supertool-workspace").read_text(
+        encoding="utf-8")
+    assert "claude mcp add" in body, (
+        "the launcher tags a server it never registers, and a server loaded any "
+        "other way is refused by the channel resolver")
+    assert f"server={name}" in body, (
+        f"the channel tag names {name!r} but the launcher registers a different "
+        f"name -- the session would start with no consumer")
 
 
 @posix_only
