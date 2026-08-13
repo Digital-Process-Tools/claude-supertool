@@ -38,6 +38,16 @@ try:
 except ImportError:  # pragma: no cover - only in the synthetic-repo suites
     _lint_budget = None
 
+# Same tolerance, same reason (#1523). This one is registered as a plugin rather
+# than called from the hooks below: it needs `pytest_runtest_makereport`,
+# `pytest_runtest_logreport` and `pytest_sessionfinish` as well as a summary
+# line, and re-declaring four hooks here to forward to four hooks there is three
+# more places for the wiring to be half-done.
+try:
+    import _core_timeout_census  # noqa: E402
+except ImportError:  # pragma: no cover - only in the synthetic-repo suites
+    _core_timeout_census = None
+
 # `presets/mcp/_paths.py` probes its platform capabilities at *import*
 # (`_LISTDIR_TAKES_FD`, `_RELATIVE_OPS`, `_ANCESTRY_DIR_FD`) precisely so that a
 # test double installed over `os.listdir`/`os.chmod`/`os.open` is never read as
@@ -105,6 +115,19 @@ def pytest_configure(config):
     import os
     os.environ.setdefault("SUPERTOOL_ALLOW_OUTSIDE_CWD", "1")
     os.environ.setdefault("SUPERTOOL_ALLOW_VIM_SHELL", "1")
+    # #1523: put a floor under the #1501 skip. Registered in EVERY process,
+    # controller and xdist worker alike, because the two halves live on
+    # different sides: the counting hook (`pytest_runtest_makereport`) can only
+    # run where the test ran, and the verdict (`pytest_sessionfinish`) only
+    # means anything where the exit status is the run's. Registering on the
+    # controller alone was measured on 2026-08-13 to report `NOT CHECKED` under
+    # `-n auto` while 42 gated calls ran -- the census reduced to the exact
+    # absence it exists to detect. The worker-side suppression of the verdict is
+    # in `_core_timeout_census` itself, next to the hooks it suppresses.
+    if _core_timeout_census is not None:
+        _core_timeout_census.reset_totals()
+        config.pluginmanager.register(_core_timeout_census,
+                                      "core-timeout-census")
     # No test may resolve the watch channel against whoever is running it.
     # `presets/watch/{transport,channel,radar}` resolve `RESOLVED` at *import*,
     # so a `SUPERTOOL_WATCH_NAME` exported in the shell lands before any fixture

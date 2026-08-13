@@ -1323,6 +1323,49 @@ narrowing this guard's trigger to accommodate a new import — weakening a worki
 guard to keep a diff small. Worth knowing before adding the import to an
 eighth file: budget for its bare `["ok"] is <bool>` sites too.
 
+### A `subprocess.run` stub gets an arm per command, never a fall-through
+
+`monkeypatch.setattr(preset.subprocess, "run", fake)` does not patch *that preset's* spawns. `subprocess` is one module object, so it patches every spawn in the process — including `presets/_branch_locale.py`'s git calls and `presets/_declared_legs.py`'s second-source `gh api`. A stub with a trailing `return _Completed(json.dumps(payload))` therefore answers commands it was never written for, with the payload of a different one.
+
+Two ways that has cost real time:
+
+- [#850](https://github.com/Digital-Process-Tools/claude-supertool/issues/850) — `git worktree list` was answered with run JSON, parsed, and then reported as the fields the op had fetched.
+- [#1488](https://github.com/Digital-Process-Tools/claude-supertool/issues/1488) — a run payload carries its own `jobs` list, so the *second* leg source parsed it happily and silently became the first source. That is #804's own defect ("a second source read through the first one is not a second source") reproduced inside #804's fixtures.
+
+The shape:
+
+```python
+def fake(argv, *a, **kw):
+    argv = list(argv)
+    if argv[:2] == ["git", "rev-parse"]:
+        return _Completed("master")
+    if argv[:3] == ["gh", "run", "view"]:
+        return _Completed(json.dumps(payload))
+    raise AssertionError(f"unstubbed command: {argv!r}")
+```
+
+An unstubbed command is a failure, not a wrong answer. Model only what the render actually spawns — an arm nothing exercises is folklore, and the refusal names the command to add when a new one appears. A fixture that answers every spawn cannot tell "the product rendered this" from "my stub echoed this", so the bar this repo applies — *would this still pass if the code did nothing?* — cannot be evaluated at all while it is that wide.
+
+### A skip that mutes a whole population must red the run
+
+`run_one_or_skip` ([#1501](https://github.com/Digital-Process-Tools/claude-supertool/issues/1501)) lets a unit-test call site decline when the *core's* own spawn wall fires: the payload is not a verdict about the file, so asserting on it would publish a machine limit as a product finding. 42 sites carry that right and nothing put a floor under it — a uniformly loaded runner makes all of them decline at once, pytest prints `0 failed`, and the suite has said nothing whatsoever about the validator core while exiting 0 ([#1523](https://github.com/Digital-Process-Tools/claude-supertool/issues/1523)).
+
+`tests/_core_timeout_census.py` prints one line in every terminal summary, whether the count is zero or not, and it can red the session:
+
+```
+core-timeout(#1501): 0 of 61 gated calls declined -- 61 adapter verdicts were actually asserted on
+core-timeout(#1501): NOT CHECKED -- no gated call ran in this selection ...
+core-timeout(#1501): FINDING -- 3 of 3 gated calls declined, so this run asserted ZERO adapter verdicts ...
+```
+
+Three things worth knowing before you touch it:
+
+- **The denominator is gated calls, not skipped tests.** The two older census lines (`symlink-capability(#1143)`, `lint-budget(#1360)`) count skipped reports against every skip in the session, which moves with the platform. This one counts the calls, so a runner that skips more for unrelated reasons does not move it.
+- **The bar is categorical, not a percentage.** `declines == calls` is the statement *this run asserted zero adapter verdicts*, true or false on every platform for the same reason. The measured baseline is zero (`0 of 61` on a full macOS run), so any percentage would be a number nobody measured — and a false red on a slow Windows leg is the exact publication #1501 exists to prevent. A leg that declined 41 of 42 prints `41 of 42` and stays green.
+- **Do not fake the core through `run_one_or_skip`.** A test that monkeypatches `supertool._validator_run_one` into a wall payload and routes it through the wrapper records a *real* decline, because from the census's side the two are indistinguishable — that is the point of the key. Assert on the arm with `core_timed_out` or `skip_if_core_timed_out` directly. A file that got this wrong read `11 passed` and exited 1.
+
+The plugin is registered from `tests/conftest.py` in **every** process, controller and xdist worker alike: the counting hook can only run where the test ran, and the verdict only means anything where the exit status is the run's. Registering on the controller alone reported `NOT CHECKED` under `-n auto` while 42 gated calls went through — a census reduced to the exact absence it exists to detect.
+
 ### Pin third-party actions to a sha, never to a major tag
 
 Every `uses:` in `.github/workflows/` names a 40-character commit sha with a

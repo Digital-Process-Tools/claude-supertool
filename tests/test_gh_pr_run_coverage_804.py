@@ -32,6 +32,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 _ROOT = Path(__file__).parent.parent
 
 
@@ -116,8 +118,16 @@ class _Gh:
             return _Completed(json.dumps({"total_count": 0, "jobs": []}))
         if argv[:2] == ["gh", "api"]:            # graphql review threads
             return _Completed(json.dumps({"data": {}}))
-        self.view_argv = argv
-        return _Completed(json.dumps(_pr_payload(self.rollup)))
+        if argv[:3] == ["gh", "pr", "view"]:
+            self.view_argv = argv
+            return _Completed(json.dumps(_pr_payload(self.rollup)))
+        # Anything else is a command this fixture has not been taught. The
+        # fall-through used to answer it with the PR payload *and* record it as
+        # the view call, so `git worktree list` was parsed as PR JSON and then
+        # reported as the fields that were fetched — #1488, and the same defect
+        # `tests/test_gh_run_matrix_reconcile_804.py` closed in #850. An
+        # unstubbed command is a failure now, not a wrong answer.
+        raise AssertionError(f"unstubbed command: {argv!r}")
 
 
 def _run_row(run_id: str, name: str, status: str = "in_progress") -> dict:
@@ -243,3 +253,46 @@ def test_the_head_sha_is_actually_requested(monkeypatch, capsys) -> None:
         f"`headRefOid` not among the fields fetched: {gh.view_argv}")
     assert gh.runs_calls, "the commit's runs were never listed"
     assert SHA in " ".join(gh.runs_calls[0]), gh.runs_calls[0]
+
+# ---------------------------------------------------------------------------
+# the fixture answers only what it models (#1488)
+# ---------------------------------------------------------------------------
+
+def test_the_fixture_refuses_a_command_it_never_modelled() -> None:
+    """#1488: the fall-through answered every unmatched spawn with the PR
+    payload *and* recorded it as `view_argv` — so `git worktree list`, which
+    `_branch_locale.check()` runs on every `gh-pr` render, was parsed as PR JSON
+    and then reported as the fields that were fetched. The sibling suite
+    `tests/test_gh_run_matrix_reconcile_804.py` closed exactly this in #850; the
+    same fall-through survived here.
+    """
+    gh = _Gh([], [], {})
+    with pytest.raises(AssertionError, match="unstubbed command"):
+        gh(["git", "cat-file", "-p", "HEAD"])
+
+
+def test_the_view_call_is_recorded_from_the_command_not_the_fall_through(
+        monkeypatch, capsys) -> None:
+    """`view_argv` must be the `gh pr view` argv, whatever else was spawned."""
+    gh = _Gh([], [], {})
+    _render(monkeypatch, capsys, gh)
+
+    assert gh.view_argv[:3] == ["gh", "pr", "view"], gh.view_argv
+
+
+def test_the_render_spawns_only_commands_this_fixture_models(
+        monkeypatch, capsys) -> None:
+    """The refusal above is only worth anything if the render still completes.
+
+    Measured while narrowing (#1488): `gh-pr:status` on this path spawns exactly
+    `gh pr view` and one `gh api graphql`, and no git at all -- which is why
+    this file gets no `git worktree list` arm. `_branch_locale.check()` runs in
+    `gh-pr`'s *full* render, not the status one, so modelling it here would be a
+    fixture arm nothing exercises. If a future test renders full mode, it gets a
+    loud `unstubbed command` naming what to add, rather than a PR payload.
+    """
+    gh = _Gh([], [], {})
+    out = _render(monkeypatch, capsys, gh)
+
+    assert "checks:" in out, out
+    assert gh.view_argv[:3] == ["gh", "pr", "view"], gh.view_argv
