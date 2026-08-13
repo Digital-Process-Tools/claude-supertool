@@ -72,13 +72,18 @@ _PER_TEST_RE = re.compile(r"--timeout[= ](\d+)")
 #: Set at roughly 2x the worst duration ever observed for the class, so that
 #: tightening one past the point where a slow runner could trip it fails here
 #: with the evidence attached rather than in a red leg nobody caused.
-MIN_BUDGET_MIN = {"pytest": 20, "notifiers": 5, "coverage": 8}
+#:
+#: `lint-new` (#1481) has never run, so its pair is by analogy and says so here
+#: rather than pretending to a measurement: checkout + `pip install -e .[dev]`
+#: + one ruff invocation over a handful of files is the `notifiers` shape, not
+#: the pytest one. Re-derive both from its own durations once there are some.
+MIN_BUDGET_MIN = {"pytest": 20, "notifiers": 5, "coverage": 8, "lint-new": 5}
 
 #: Ceilings. A budget large enough to be indistinguishable from GitHub's
 #: six-hour default is the defect wearing the fix's clothes: the board still
 #: reads `pending` for longer than anyone waits. Roughly 2x the chosen budget,
 #: which leaves room to raise one for a real reason and none to disable it.
-MAX_BUDGET_MIN = {"pytest": 60, "notifiers": 30, "coverage": 40}
+MAX_BUDGET_MIN = {"pytest": 60, "notifiers": 30, "coverage": 40, "lint-new": 30}
 
 
 #: `job_blocks` and `job_budget` now live in `tests/_workflow_parse.py`,
@@ -100,7 +105,7 @@ def test_the_job_discovery_is_not_empty() -> None:
 
 
 def test_the_job_discovery_finds_the_jobs_that_exist() -> None:
-    assert set(job_blocks()) == {"pytest", "notifiers", "coverage"}, (
+    assert set(job_blocks()) == {"pytest", "notifiers", "coverage", "lint-new"}, (
         "the set of CI jobs changed. Give the new one a timeout-minutes sized "
         "from its own observed duration, then add it to MIN_BUDGET_MIN and "
         "MAX_BUDGET_MIN here — the whole point of #722 is that a job cannot "

@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+import _live_gh
+
 ROOT = Path(__file__).parent.parent
 WATCH_DIR = ROOT / "presets" / "watch"
 
@@ -399,30 +401,32 @@ def test_radar_state_names_a_tier_it_cannot_resolve(monkeypatch, capsys):
 # 8. live — the fixtures cannot reach the shapes real GitHub produces
 # ---------------------------------------------------------------------------
 
-def _gh_ready() -> bool:
-    try:
-        r = subprocess.run(["gh", "auth", "status"], capture_output=True,
-                           text=True, timeout=20, encoding="utf-8",
-                           errors="replace")
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return r.returncode == 0
-
-
 def test_live_board_over_this_repo(state_dir):
-    # Probed inside the test, not at collection: a module-level `skipif` runs
-    # `gh auth status` on every collection of the whole suite.
-    if not _gh_ready():
-        pytest.skip("gh not authenticated")
+    # Stays in the default selection (#1568). It is the only test here that
+    # reaches real GitHub, and the reason section 8 exists is that the fixtures
+    # above cannot produce the shapes it does — so marking it out of the
+    # default run would cost exactly the coverage it was written for.
+    #
+    # What it must not do is turn a busy socket into a red leg: on 2026-08-12
+    # this was the single failure of a ~12,000-test run whose diff touched only
+    # `hooks/`, and it passed in isolation seconds later. `_live_gh.reachable`
+    # skips — countably, with `conftest` printing the count, its denominator
+    # and its population every run — when the tier says the API was NOT
+    # reached, and re-raises everything else. The `gh auth status` probe that
+    # used to open this test is gone with it: `live_open_prs` classifies a
+    # missing or unauthenticated `gh` itself, so the probe was a second spawn
+    # asking a question the call below already answers.
+    #
     # `state=open`, not `author=` (#974). This test was spelled `author=` to
     # mean "the whole board, unfiltered" — which worked only because an empty
     # value walked through #939's refusal, satisfied `has_role`, and suppressed
     # the `--author @me` default. That is the widening #974 refuses, so the
     # spelling no longer exists; a real narrowing filter is what this test
     # meant and it keeps the live GitHub shapes it exists to exercise.
-    lines, _healthy = tier.radar_report(
-        {"_arg": "state=open", "default_branch": "",
-         "_watch": lambda *a, **k: "alive"})
+    with _live_gh.reachable(tier.RadarUnreachable):
+        lines, _healthy = tier.radar_report(
+            {"_arg": "state=open", "default_branch": "",
+             "_watch": lambda *a, **k: "alive"})
     text = "\n".join(lines)
     assert "scope" in text
     assert "open" in text

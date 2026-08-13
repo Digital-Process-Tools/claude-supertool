@@ -38,6 +38,13 @@ try:
 except ImportError:  # pragma: no cover - only in the synthetic-repo suites
     _lint_budget = None
 
+# Same tolerance, same reason (#1568): the live-GitHub reachability guard and
+# its countable skip. Reported in words rather than omitted, as above.
+try:
+    import _live_gh  # noqa: E402
+except ImportError:  # pragma: no cover - only in the synthetic-repo suites
+    _live_gh = None
+
 # Same tolerance, same reason (#1523). This one is registered as a plugin rather
 # than called from the hooks below: it needs `pytest_runtest_makereport`,
 # `pytest_runtest_logreport` and `pytest_sessionfinish` as well as a summary
@@ -358,6 +365,26 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     skipped = terminalreporter.stats.get("skipped", []) or []
     _symlink_summary(terminalreporter, skipped)
     _lint_budget_summary(terminalreporter, skipped)
+    _live_gh_summary(terminalreporter, skipped)
+
+
+def _token_skips(skipped, token: str) -> int:
+    """How many of `skipped` carry `token` in their stated reason.
+
+    One reader for three counters (#1568). The two above grew the same six
+    lines independently, and the third would have been a third copy of a
+    `longrepr` shape that is a tuple on some paths and an object on others --
+    the kind of duplication that goes wrong in one copy and stays right in the
+    others, which is exactly how #1232 read `0` while four tests were failing
+    for the reason it was counting.
+    """
+    n = 0
+    for report in skipped:
+        longrepr = getattr(report, "longrepr", None)
+        text = longrepr[2] if isinstance(longrepr, tuple) and len(longrepr) > 2 else str(longrepr)
+        if token in str(text):
+            n += 1
+    return n
 
 
 def _symlink_summary(terminalreporter, skipped):
@@ -365,12 +392,7 @@ def _symlink_summary(terminalreporter, skipped):
         terminalreporter.write_line(
             "symlink capability: NOT CHECKED -- tests/_symlink.py is not in this tree")
         return
-    n = 0
-    for report in skipped:
-        longrepr = getattr(report, "longrepr", None)
-        text = longrepr[2] if isinstance(longrepr, tuple) and len(longrepr) > 2 else str(longrepr)
-        if _symlink.TOKEN in str(text):
-            n += 1
+    n = _token_skips(skipped, _symlink.TOKEN)
     available, why = _symlink.symlink_support()
     if available:
         terminalreporter.write_line(
@@ -381,6 +403,26 @@ def _symlink_summary(terminalreporter, skipped):
             f"{_symlink.TOKEN}: unavailable -- {n} of {len(skipped)} skipped tests "
             f"did NOT run for this reason. Reason: {why}")
     terminalreporter.write_line(_POPULATION)
+
+
+def _live_gh_summary(terminalreporter, skipped):
+    """Count the skips where the live GitHub API was not reached (#1568).
+
+    Same shape as the two above, same reason: the suite has exactly one test
+    that talks to real GitHub, it stays in the default selection on purpose,
+    and a run that could not reach the API has not exercised the shapes it is
+    there for. Printed at zero too -- a silently-skipped live test is the
+    absence-read-as-clean defect this repo files against itself -- and with its
+    denominator and its population, so a non-zero count is not read as a total
+    (#1274).
+    """
+    if _live_gh is None:
+        terminalreporter.write_line(
+            "live-gh: NOT CHECKED -- tests/_live_gh.py is not in this tree")
+        return
+    n = _token_skips(skipped, _live_gh.TOKEN)
+    terminalreporter.write_line(_live_gh.verdict_line(n, len(skipped)))
+    terminalreporter.write_line(_live_gh.POPULATION)
 
 
 def _lint_budget_summary(terminalreporter, skipped):
@@ -397,12 +439,7 @@ def _lint_budget_summary(terminalreporter, skipped):
         terminalreporter.write_line(
             "lint budget: NOT CHECKED -- tests/_lint_budget.py is not in this tree")
         return
-    n = 0
-    for report in skipped:
-        longrepr = getattr(report, "longrepr", None)
-        text = longrepr[2] if isinstance(longrepr, tuple) and len(longrepr) > 2 else str(longrepr)
-        if _lint_budget.TOKEN in str(text):
-            n += 1
+    n = _token_skips(skipped, _lint_budget.TOKEN)
     terminalreporter.write_line(_lint_budget.verdict_line(n, len(skipped)))
     terminalreporter.write_line(_lint_budget.POPULATION)
 

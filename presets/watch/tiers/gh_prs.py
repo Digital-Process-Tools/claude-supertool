@@ -65,7 +65,12 @@ Every route by which this board could narrow itself says so:
   auth / rate   a non-zero `gh pr list` raises `RadarError`. Radar prints it on
                 stderr and exits non-zero; nothing is healed and **nothing is
                 snapshotted**, because acting on a population we could not read
-                is how a cache gets overwritten with a guess.
+                is how a cache gets overwritten with a guess. The subset of
+                those failures that mean the request never landed — no
+                credentials, throttled, or the socket — raise the
+                `RadarUnreachable` subclass, so a caller can tell "GitHub did
+                not answer" from "the board says X" without matching on the
+                message (#1568). Radar treats both identically.
   empty match   a filter that selected nothing is reported *with its scope*.
                 "No open PRs" and "this filter matched nothing" are different
                 facts and only one of them is about the world.
@@ -212,6 +217,66 @@ class RadarError(RuntimeError):
     """The board could not be built. Never degrade to 'all green'."""
 
 
+class RadarUnreachable(RadarError):
+    """The board could not be built because GitHub was not reached (#1568).
+
+    A subclass, so every existing `except RadarError` — radar's tier isolation,
+    `radar_state`'s filter arm — keeps behaving exactly as it did. What it adds
+    is a state a *caller* can branch on: "the API did not answer" is not the
+    same fact as "the board says X", and until this they arrived as one type
+    carrying different prose.
+
+    The consumer that needed the distinction is the suite. A live `gh` call in
+    the default test selection turned a busy socket into a red leg that read as
+    a verdict about the diff (#1568); `tests/_live_gh.py` skips countably on
+    this class and re-raises everything else. A caller that matched on the
+    message instead would drift the day one of these strings is reworded, which
+    is the predicate `tests/_lint_budget.py` argues against at length.
+
+    Deliberately NOT raised for a reply that arrived and was wrong — an
+    unparseable body, a JSON object where a list belongs. `gh` answered there,
+    and what it said is a finding about the boundary.
+    """
+
+
+#: Substrings of `gh`'s own stderr that mean the request never landed. Read on
+#: the failure path only, never on a green.
+#:
+#: A whitelist, and the direction matters: an UNRECOGNISED failure stays a
+#: plain `RadarError` and stays red. The inverse — treat anything unmatched as
+#: a transport problem — would swallow the malformed-argv class this tier can
+#: genuinely produce (`_build_list_cmd` builds the filter flags), which is a
+#: product bug wearing a flake's clothes. Adding a marker here is a decision
+#: somebody makes with a log in front of them.
+#:
+#: `401`/`not logged in` and the rate-limit pair were already special-cased
+#: below with their own messages; they move into this set unchanged, because
+#: "no credentials" and "throttled" are both "GitHub did not answer this
+#: question today" from every caller's point of view.
+_UNREACHABLE_MARKERS = (
+    "not logged in",
+    "401",
+    "rate limit",
+    "403",
+    # gh's transport layer surfaces Go's net errors verbatim.
+    "dial tcp",
+    "no such host",
+    "connection refused",
+    "connection reset",
+    "network is unreachable",
+    "i/o timeout",
+    "tls handshake timeout",
+    "client.timeout",
+    "error connecting to",
+)
+
+
+def _unreachable(err: str) -> bool:
+    """Does this `gh` stderr describe a request that never landed?"""
+    low = err.lower()
+    return any(marker in low for marker in _UNREACHABLE_MARKERS)
+
+
 # ---------------------------------------------------------------------------
 # the one filter
 # ---------------------------------------------------------------------------
@@ -352,14 +417,31 @@ def live_open_prs(filters: dict[str, str]) -> list[dict]:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
                                 encoding="utf-8", errors="replace")
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        raise RadarError(f"gh pr list failed: {exc}") from exc
+        # The spawn itself never completed, so nothing was asked of GitHub:
+        # `gh` absent, hung against the 30s budget, or killed. Unreachable by
+        # construction (#1568).
+        raise RadarUnreachable(f"gh pr list failed: {exc}") from exc
     if result.returncode != 0:
         err = (result.stderr or "").strip() or "unknown error"
+        if result.returncode < 0:
+            # Killed by a signal. `subprocess` reports `-N` for that, and a
+            # process that was killed did not finish deciding anything — under
+            # a loaded `-n auto` run the OOM killer and a runner's own reaper
+            # both land here, usually with empty stderr, which the arm below
+            # would render as `gh pr list: unknown error` and read as a verdict
+            # about the board. Not a prose match: the sign of the return code
+            # is the whole predicate (#1568).
+            raise RadarUnreachable(
+                f"gh pr list was killed by signal {-result.returncode} "
+                f"before it answered: {err}")
         low = err.lower()
         if "not logged in" in low or "401" in err:
-            raise RadarError("gh not authenticated. Run: gh auth login")
+            raise RadarUnreachable("gh not authenticated. Run: gh auth login")
         if "rate limit" in low or "403" in err:
-            raise RadarError(f"gh refused the query (rate limit or permission): {err}")
+            raise RadarUnreachable(
+                f"gh refused the query (rate limit or permission): {err}")
+        if _unreachable(err):
+            raise RadarUnreachable(f"gh could not reach the API: {err}")
         raise RadarError(f"gh pr list: {err}")
     try:
         data = json.loads(result.stdout)
