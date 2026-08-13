@@ -8,7 +8,7 @@ so a U+2028 survives *inside* a relayed line and everything the reader anchors
 at column 0 becomes the writer's to choose.
 
 **The fix is at the seam, not at the sites.** Seven sites were named and the
-sweep found 182 candidates in 40 files, which is what a per-site fix earns: the
+sweep below finds 174 in 36 files, which is what a per-site fix earns: the
 same defect re-filed once per call. So
 
 * `_git_common._first_error_line` flattens what it returns. Every caller —

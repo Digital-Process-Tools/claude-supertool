@@ -16,9 +16,12 @@ put two forged marker lines at column 0 *above* any genuine one. A reader — or
 the column-0-anchored grep the receipt is written to be read with — sees a
 rollback that did not happen, attached to a file that was in fact edited.
 
-`_flat_cell` — the one implementation of "this value occupies exactly one
-line", #895 — already existed. These two call sites had never adopted it,
-which is this tracker's most common shape.
+`_flat_field` — the one implementation of "this value occupies exactly one
+line" for a value the tool prints on a line of its own, #881/#886 — already
+existed. These renders had never adopted it, which is this tracker's most
+common shape. `_flat_field` and not its sibling `_flat_cell`: the cell variant
+strips and bounds, and a header that drops a trailing space or truncates a long
+path is answering about a different file.
 
 The bar, the same one `tests/test_forged_branch_line_965.py` holds:
 
