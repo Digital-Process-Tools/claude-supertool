@@ -220,15 +220,21 @@ def cmd_unwatch(parts: list[str]) -> int:
 
     So the breadth is bounded by evidence, not by a guess: every PID here comes
     from a process whose own argv names this exact source and id as whole
-    tokens (see `transport.poller_argv`), each is printed with its provenance
-    before any signal is sent, one that will not die is named rather than
-    swallowed, and an absence is only reported as an absence when the scan that
-    would have found a survivor actually ran.
+    tokens **and names this channel** (see `transport.poller_argv`), each is
+    printed with its provenance before any signal is sent, one that will not
+    die is named rather than swallowed, and an absence is only reported as an
+    absence when the scan that would have found a survivor actually ran.
+
+    The channel token is #1514: without it this stopped a poller belonging to
+    another channel, offered by a board that had listed it as this channel's
+    own orphan.
 
     Not reached, and it matters: a poller spawned before the labelling landed
     still wears its parent's argv, so it cannot be told apart from the process
-    that forked it. `pkill -f presets/watch/` remains the only way to clear
-    those, once. See docs/presets/watch.md.
+    that forked it — and since #1514 the same is true of one whose argv names
+    no channel, which is any poller started before that token existed.
+    `pkill -f presets/watch/` remains the only way to clear those, once. See
+    docs/presets/watch.md.
     """
     try:
         source, watcher_id, _ = _parse_args(parts)
@@ -560,6 +566,13 @@ def reap_duplicate_pollers() -> list[str]:
         argv, the scan cannot see it, and nothing can tell it from the process
         that forked it. `pkill -f 'presets/watch/'` once, as docs/presets/watch.md
         says — that judgement is an operator's, not this function's.
+      * A poller on another channel, or one whose argv predates the `chan=`
+        token and so names no channel at all (#1514). `scan_poller_pids`
+        returns neither, and that is where the bound lives rather than here.
+        Two channels each running one poller for the same `(source, id)` are
+        two slots — two pid files, in two state directories — and grouping
+        them as one made the reap stop the poller this channel's pid file did
+        not name. A cross-channel kill, reached through a listing bug.
       * Anything at all, when `ps` could not be read.
 
     The survivor is the pidfile's PID when it is one of the live ones, so the

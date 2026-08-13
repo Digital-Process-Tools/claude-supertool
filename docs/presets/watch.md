@@ -2028,7 +2028,7 @@ So a slot is now read as a **set**, from two independent sources:
 | source of truth | what it knows | what it misses |
 | --- | --- | --- |
 | the PID file | which poller *claimed* the slot | anything that did not claim it; whether the claimant is still alive |
-| a `ps` scan for labelled pollers | every live poller that names this slot in its own argv | a poller spawned before the labelling landed (see below) |
+| a `ps` scan for labelled pollers | every live poller that names this slot **and this channel** in its own argv | a poller spawned before the labelling landed, and one spawned before the channel token landed (see below) |
 
 `watches` renders the union. An id with more than one live poller shows its count and every PID; a poller whose PID file was deleted is listed as `no pidfile` instead of vanishing. `unwatch` acts on the union: it prints every PID with its provenance (`tracked` / `untracked`) **before** signalling anything, stops each one, names any it could not stop rather than aborting the rest, and exits `1` if any refused.
 
@@ -2077,6 +2077,7 @@ So the reap acts only on what a PID proves about itself:
 | A slot with **2+ labelled pollers** | all but one stopped, each named | Their own argv names the same slot as whole tokens, so they are duplicates *of each other* — stopping all but one provably leaves the slot covered. |
 | A slot with **one** poller, tracked or orphan | untouched | A lone orphan is the only thing polling that slot. Killing it trades a duplicate nobody has for a blind spot, which is the trade [#513](https://github.com/Digital-Process-Tools/claude-supertool/issues/513) says is the wrong way round. |
 | A poller **from before the labelling** | untouched, and invisible | It wears its parent's argv; nothing can tell it from the process that forked it. `pkill -f 'presets/watch/'` once — that call is an operator's, not the tool's. |
+| A poller **on another channel**, or one from before the `chan=` token | untouched, and invisible | Its slot is a different pid file, or nobody can say which pid file it is. Two channels each running one poller for the same `(source, id)` are not two pollers on one slot ([#1514](https://github.com/Digital-Process-Tools/claude-supertool/issues/1514)). |
 | **Any**, when a present `ps` did not answer | untouched, and said out loud, every time | See the decline below. |
 | **Any**, on a machine whose `ps` can never answer | untouched, and said by `watches` instead | The scan can never answer here, so the board would carry the same line forever. See below. |
 
@@ -2140,13 +2141,39 @@ In #511 those rows were read as duplicate feed pollers and two were killed. They
 Pollers spawned since #511 fix this at the source: after the fork the grandchild `exec`s into an argv that names itself, so the command line is not a label describing the process — it *is* the process, and it is the same argv the scan matches on, which is why `ps` and `watches` cannot drift apart:
 
 ```
-26951 /usr/bin/python3 …/presets/watch/dispatcher.py poll gitlab-mr 19509
-26968 /usr/bin/python3 …/presets/watch/dispatcher.py poll gitlab-mr-feed author=@me,state=opened
+26951 /usr/bin/python3 …/presets/watch/dispatcher.py poll gitlab-mr 19509 chan=e9671acd2448
+26968 /usr/bin/python3 …/presets/watch/dispatcher.py poll gitlab-mr-feed author=@me,state=opened chan=e9671acd2448
 ```
 
 `exec` rather than `setproctitle`: no new dependency, and the PID is unchanged, so the claim taken before the fork and the PID reported up the pipe both stay valid. If the `exec` fails the poller runs anyway, unlabelled — a working poller that is hard to see beats no poller.
 
 The limit, stated plainly: **a poller started before this landed still wears its parent's argv**, so neither the scan nor `unwatch` can find it, and nothing can tell it apart from the process that spawned it. Clearing those is a one-time `pkill -f 'presets/watch/'` followed by a fresh `radar`. Every poller started after it is reachable by `unwatch`.
+
+#### The label names a channel, not just a slot ([#1514](https://github.com/Digital-Process-Tools/claude-supertool/issues/1514))
+
+`chan=` is the third token, and it is why a board of one channel stopped listing another channel's pollers as its own.
+
+`(source, id)` is not an identity on a machine — it is an identity *within a channel*. The slot itself is a pid file held `O_CREAT|O_EXCL` by one process per state directory, so two pollers are on one slot only when they contend for one pid file. Without a channel dimension in the label, the scan enumerated every labelled poller on the box, found no pid file for the other channel's ones under *its* state directory, and reported them as its own `no pidfile` orphans:
+
+```
+$ SUPERTOOL_WATCH_NAME=oss-supertool supertool 'watches'
+watches: name oss-supertool … poller slots /tmp/supertool-watch-oss-supertool
+SOURCE          ID     PID    STARTED  LAST_EVENT  DELIVERY  NOTE
+gitlab-mr       19509  9997   -        -           no emit   no pidfile
+gitlab-mr       33698  9995   -        -           no emit   no pidfile
+gitlab-mr-feed  @me    32473  -        -           no emit   no pidfile
+gl-runners      fleet  32475  -        -           no emit   no pidfile
+```
+
+Every row belonged to the default channel, `channel:health` in the same call said that channel had never spawned anything, and `no pidfile` is the marker an operator acts on — with `unwatch:SOURCE:ID`, which would have stopped somebody else's watcher.
+
+**The reap was the sharper half, and the issue left it open.** `radar`'s reap reads the same scan. One poller per channel on the same slot grouped as one slot with two pollers; the survivor is the one *this* channel's pid file names, so the other channel's was stopped. A cross-channel kill, not a cross-channel listing.
+
+**What the token carries is the state directory, digested — not the channel name.** `SUPERTOOL_WATCH_NAME` and an explicit `SUPERTOOL_WATCH_STATE_DIR` can name one directory, and two names can be pointed at one directory; those are one slot space and the digest says so where a name would not. It is a digest rather than the path because `ps` output is split on whitespace (an operator-supplied directory may contain one), because `ps` is world-readable and a channel's directory is not something this tool needs to publish there, and because a fixed 12 characters keeps the command line readable.
+
+**Three states, and only one is acted on.** A poller's argv says this channel, another channel, or nothing at all. Only the first is returned by the scan, because every caller of it decides an action — `unwatch`'s multi-kill, the reap's signal, the `no pidfile` marker on the board. A PID is acted on only when its own argv proves it is ours.
+
+The third state is the cost, stated rather than hidden: **a poller started before this token existed carries no channel and becomes invisible to the scan.** That is not a new blind spot — it is exactly the pre-#511 population described above, one generation later, and it clears the same way: `pkill -f 'presets/watch/'` once, or a `radar` tick that respawns the fleet. A poller whose pid file this channel holds is unaffected, because `watcher_pids` unions the pid file's own PID and the pid file is per state directory by construction.
 
 ### A watcher that died keeps saying so ([#513](https://github.com/Digital-Process-Tools/claude-supertool/issues/513))
 

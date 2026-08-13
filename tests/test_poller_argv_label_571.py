@@ -13,6 +13,11 @@ goes through, scans for a token ending in `watch/dispatcher.py` and checks the
 *next* token is `poll`. It never looks at tokens[0]. So argv[0]'s content is
 also not part of the signature.
 
+It answers `(channel, source, id)` since #1514 — the label gained a trailing
+`chan=` token so a poller can be attributed to the state directory it holds its
+slot in. That widened the tuple these round trips compare; it did not change
+which tokens are matched on, which is what this file is about.
+
 Both halves together are why the fallback rescued nothing while costing
 something real: #564 read this line as a Windows blast radius and had to be
 re-diagnosed. These tests pin the two facts that make argv[0] free — it is
@@ -65,17 +70,18 @@ def test_poller_argv_documents_that_argv0_is_label_only() -> None:
 def test_the_argv_poller_argv_builds_still_matches() -> None:
     """Round trip, common case: a normal non-empty sys.executable."""
     argv = transport.poller_argv("gitlab-mr", "33248", [])
-    assert transport._labelled(argv) == ("gitlab-mr", "33248")
+    assert transport._labelled(argv) == (transport.channel_key(), "gitlab-mr", "33248")
 
 
 def test_the_argv_still_matches_with_an_only_filter() -> None:
     argv = transport.poller_argv("gitlab-mr", "33248", ["pipeline_failed", "merged"])
-    assert transport._labelled(argv) == ("gitlab-mr", "33248")
+    assert transport._labelled(argv) == (transport.channel_key(), "gitlab-mr", "33248")
 
 
 def test_the_feed_watchers_argv_still_matches() -> None:
     argv = transport.poller_argv("gitlab-mr-feed", "author=@me,state=opened", [])
-    assert transport._labelled(argv) == ("gitlab-mr-feed", "author=@me,state=opened")
+    assert transport._labelled(argv) == (
+        transport.channel_key(), "gitlab-mr-feed", "author=@me,state=opened")
 
 
 def test_matching_does_not_depend_on_argv0_at_all() -> None:
@@ -83,7 +89,8 @@ def test_matching_does_not_depend_on_argv0_at_all() -> None:
     started reading tokens[0], this fails and #571's premise is void."""
     argv = transport.poller_argv("gitlab-mr", "33248", [])
     for label in ("", "python3", "/opt/weird/bin/python3.14", "supertool-watcher"):
-        assert transport._labelled([label] + argv[1:]) == ("gitlab-mr", "33248")
+        assert transport._labelled([label] + argv[1:]) == (
+            transport.channel_key(), "gitlab-mr", "33248")
 
 
 def test_an_empty_sys_executable_still_produces_a_matchable_argv(monkeypatch) -> None:
@@ -94,4 +101,4 @@ def test_an_empty_sys_executable_still_produces_a_matchable_argv(monkeypatch) ->
     monkeypatch.setattr(sys, "executable", "")
     argv = transport.poller_argv("gitlab-mr", "33248", [])
     assert argv[0] == ""
-    assert transport._labelled(argv) == ("gitlab-mr", "33248")
+    assert transport._labelled(argv) == (transport.channel_key(), "gitlab-mr", "33248")
