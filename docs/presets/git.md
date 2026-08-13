@@ -695,6 +695,46 @@ An abandoned call is never rendered as a git that succeeded and printed nothing.
 
 The footer stays as well, deliberately. The marker is where the eye is; the footer is the line that survives a `| tail` and the one a script greps. Neither is printed on a run where every call answered, so the common case gains nothing to skim past.
 
+### A copied worktree writes into the repository it was copied from
+
+A linked worktree's `.git` is a **gitfile**: one line of text naming the real git directory. `cp -a` copies that pointer, not the repository — so every git command run in the copy reads and writes the *original* worktree's index, `HEAD` and refs, and nothing in any output used to say so ([#1536](https://github.com/Digital-Process-Tools/claude-supertool/issues/1536)). Observed live: a `git checkout <sha> -- validators/` run inside a copy staged a revert of two production files into a worktree nobody was watching, and it came within one `git-commit` receipt of riding into the commit that claimed to fix them.
+
+It is decidable exactly, locally, with no filesystem scan and no extra spawn: `.git/worktrees/<name>/gitdir` holds the path of the `.git` file git registered for that worktree. If this directory's own `.git` is not that file, this directory is not the registered one. `git-status`, `git-worktrees`, `git-commit` and `git-push` all say so, `git-status` and `git-worktrees` before any other line, because none of the numbers below it is a fact about the directory the reader is standing in:
+
+```
+⚠ COPIED WORKTREE — this directory is not the one git registered for its git directory; the index, HEAD and refs reached from here belong to /Users/x/wt (#1536)
+```
+
+The `Repo:` line on `git-commit` and `git-push` exists to say where a write landed ([#692](https://github.com/Digital-Process-Tools/claude-supertool/issues/692)), and in a copy it named the copy — the one directory the write does **not** reach. It now carries the same disclosure underneath.
+
+Nothing here scans the disk for copies: a copy can be anywhere, and an op that goes looking would answer "none found" for a search it could not complete. What is checked is the one directory the call was made from, which is the one that can be settled.
+
+**Never `cp` a worktree.** `git worktree add` is the operation.
+
+### Staged content that no file in this tree has
+
+`git-status` cannot tell who staged something. What it can see is that the index differs from `HEAD` while the file on disk still matches `HEAD` — staged content that no file here has, which is exactly the shape a stray `git checkout <sha> -- <path>` leaves, and equally the shape of a stage you later undid by hand. So the render names what it could not determine rather than listing it under `Staged` like ordinary work, and it never suppresses the list ([#1536](https://github.com/Digital-Process-Tools/claude-supertool/issues/1536)):
+
+```
+### Staged (1)
+  MM validators/fence.py
+⚠ STAGED CONTENT NOT IN THIS TREE (1) — the index differs from HEAD while the file on disk matches it, so committing these would write content no file here has. …
+    MM validators/fence.py
+```
+
+Three states, as everywhere else here: the discriminator is one `git diff --name-only -z HEAD`, asked only when something is staged, and a `git diff` that did not answer prints `⚠ Staged provenance UNKNOWN — …` rather than the silence that reads as a clean answer.
+
+`-z` is load-bearing, not tidiness. **The two readers do not print the same path**, measured on a real repository:
+
+```
+git status --porcelain=v1     M  "with space.txt"     M  "uni \303\251.txt"
+git diff --name-only HEAD        with space.txt          "uni \303\251.txt"
+```
+
+porcelain quotes a space because its own format is space-separated; `--name-only` does not, and `core.quotePath` has no bearing on that half. Comparing the printed forms put every staged file with a space in its name under the marker above. `-z` hands the raw path back from the diff side, and porcelain's quoting is undone on the other, so the comparison is between the two names git actually holds.
+
+One state is silence rather than a third state, deliberately: a repository with **no commits yet** has no HEAD for the index to be a revert of, so the question is meaningless rather than unanswered, and `git init && git add .` gains nothing to skim past. It is established rather than inferred — `git rev-parse --verify --quiet HEAD` answers "no such ref" as exit 1 with an empty stderr, spawned only where the diff has already failed. A probe that timed out, or failed with something to say, has not established anything and the `UNKNOWN` line prints.
+
 ### `ahead N, behind M` after a rebase is not lost work
 
 Straight after a successful `git rebase origin/master`, `git-status` printed `ahead 5, behind 1` and nothing else ([#1028](https://github.com/Digital-Process-Tools/claude-supertool/issues/1028)). That count is arithmetically true and its ordinary meaning is the opposite of what happened: `ahead N, behind M` is the render for two histories that have genuinely diverged, while here nothing was lost and the remote merely holds the pre-rebase originals of commits the branch already carries. Two agents stopped mid-task on separate lanes the same night to work out which of the two they were in.

@@ -63,6 +63,7 @@ if os.path.dirname(_HERE) not in sys.path:
 from _git_common import (  # noqa: E402
     _git, use_utf8_stdout, query_open_prs_by_branch,
     query_merged_prs_for_branches,
+    foreign_worktree, foreign_worktree_note,  # #1536
 )
 from _env import env_int  # noqa: E402
 import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
@@ -984,6 +985,16 @@ def parse_args(argv: list) -> tuple:
 
 def main() -> int:
     use_utf8_stdout()
+    # First line of the report, before the refusals below it: this op answers
+    # "whose tree is this" everywhere except about the directory it was called
+    # from, and a copied worktree is the one case where the listing that
+    # follows is a listing of somebody else's repository (#1536).
+    _copy = foreign_worktree()
+    if _copy is not None:
+        print(foreign_worktree_note(_copy))
+        print(f"  {_copy[0]} is a copy — `cp` copies a worktree's `.git` "
+              f"pointer, not its repository. It is not in the list below, "
+              f"because git does not know it exists.")
     wanted, want_pr = parse_args(sys.argv[1:])
     if wanted.startswith("-"):
         print(f"ERROR: refused — PATH must name a worktree, not an option: {wanted!r}")
