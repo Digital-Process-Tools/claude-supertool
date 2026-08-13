@@ -3887,7 +3887,17 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
     in_claude = os.environ.get("CLAUDE_CODE_ENTRYPOINT", "") != ""
     byte_cap = _get_op_int("read", "max_bytes", MAX_READ_BYTES)
     apply_byte_cap = in_claude or not force_full
-    if not apply_byte_cap:
+    # Two separate lifts, and they were one flag. `full` removes the DEFAULT
+    # line cap; it does not remove a window the caller typed. Without the
+    # `range_form` guard, `read:f:2-4:full` from a human shell returned lines
+    # 2..EOF — and the window note, keyed off the same flag, relabelled it
+    # `range 2-8 (START-END form)` and then said the stop had no reason it could
+    # name. That is this lane's defect one level worse than a drop: the
+    # discarded END laundered by the line written to disclose it. The byte cap
+    # stays lifted, which is the rest of what `full` means, so
+    # `read:BIG:1-5000:full` still comes back whole (#1582).
+    lift_line_cap = not apply_byte_cap and not range_form
+    if lift_line_cap:
         end = line_count  # ignore line cap too when human asks for full file
 
     filter_regex = None
@@ -4057,11 +4067,11 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         # the caller reads *after* paying for the wrong window is not a
         # disclosure (#945).
         out.insert(1, _read_window_note(
-            path, limit if apply_byte_cap else max(0, line_count - offset),
+            path, limit if not lift_line_cap else max(0, line_count - offset),
             offset, line_count, printed,
             last_scanned=last_scanned, capped=capped,
             byte_cap=byte_cap if apply_byte_cap else 0,
-            limit_synthetic=not apply_byte_cap,
+            limit_synthetic=lift_line_cap,
             range_form=range_form,
             skipped_by=("the grep= filter" if filter_regex
                         else "compact mode" if compact else "")))

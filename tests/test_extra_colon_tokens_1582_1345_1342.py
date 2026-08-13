@@ -186,6 +186,40 @@ def test_fixed_slot_ops_are_unaffected_without_an_extra_token(
 
 
 # ---------------------------------------------------------------------------
+# Adjacent, found while auditing the read tail: `full` beside an explicit range
+# ---------------------------------------------------------------------------
+
+def test_full_does_not_swallow_an_explicit_range(
+        tmp_path: Path, monkeypatch) -> None:
+    """`read:PATH:2-4:full` returned lines 2..EOF from a human shell.
+
+    `full` lifts the default line cap; the range is not a default. Worse than a
+    plain drop, because the window note then relabelled the result `range 2-8
+    (START-END form)` — the discarded END laundered by the line written to
+    disclose it. The byte cap stays lifted, which is the rest of what `full`
+    means.
+    """
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    f = _lines(tmp_path, "doc.md", 8)
+    out = supertool.dispatch(f"read:{f}:2-4:full")
+    assert "range 2-8" not in out, (
+        "the note reported a range the caller never typed: " + repr(out))
+    assert "line5" not in out, (
+        "the explicit END was discarded: " + repr(out))
+    assert "line2" in out and "line4" in out, repr(out)
+
+
+def test_full_without_a_range_still_lifts_the_line_cap(
+        tmp_path: Path, monkeypatch) -> None:
+    """The guard must not reach the shape `full` exists for."""
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    monkeypatch.setattr(supertool, "MAX_READ_LINES", 3, raising=False)
+    f = _lines(tmp_path, "doc.md", 8)
+    out = supertool.dispatch(f"read:{f}:full")
+    assert "line8" in out, repr(out)
+
+
+# ---------------------------------------------------------------------------
 # #1342 — the window note
 # ---------------------------------------------------------------------------
 
