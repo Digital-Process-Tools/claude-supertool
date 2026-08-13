@@ -69,6 +69,8 @@ def test_a_watch_module_imports_with_nobody_else_on_the_path(
         [sys.executable, "-c", _PROBE, str(_WATCH / name)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=str(tmp_path),
         timeout=60,
     )
