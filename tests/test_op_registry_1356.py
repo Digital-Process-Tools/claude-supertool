@@ -313,10 +313,15 @@ class TestThisRepoIsTheInstance:
     The set is a register, not a limit: it grows when this repo deliberately
     adds a config key to a shipped op. `watches` and `channel` joined on
     2026-08-12 carrying `watch_name`, which is how #1477's channel name reaches
-    those two surfaces at all (`presets/watch/README.md`). Update the list with
-    the reason; never relax the assertion, because a shadowing entry that
-    nobody registered is exactly the stub-replacing-a-definition defect this
-    file exists for.
+    those two surfaces at all (`presets/watch/README.md`). `git-push` joined on
+    2026-08-13 carrying `budget: 1500` (#1631): this repo's own pre-push hook
+    runs the full suite on a push to `master` — 309.86s measured — against a
+    300s default, so every such push timed out having sent nothing. This entry
+    is also the live instance of the key-by-key merge, since it supplies
+    `budget` alone and the op's `timeout` has to survive it or the budget is
+    validated against nothing. Update the list with the reason; never relax the
+    assertion, because a shadowing entry that nobody registered is exactly the
+    stub-replacing-a-definition defect this file exists for.
     """
 
     def test_the_shadowed_ops_are_still_the_registered_set(self) -> None:
@@ -332,7 +337,7 @@ class TestThisRepoIsTheInstance:
         shadowed = sorted(n for n, e in config["ops"].items()
                           if isinstance(e, dict) and n in preset_ops)
         assert shadowed == [
-            "channel", "dashboard", "git-diff", "radar", "watches",
+            "channel", "dashboard", "git-diff", "git-push", "radar", "watches",
         ], shadowed
 
     def test_a_naive_walk_loses_git_diff_from_the_path_naming_set(self) -> None:
