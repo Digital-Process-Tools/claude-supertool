@@ -697,7 +697,18 @@ See [docs/contributing.md](docs/contributing.md) — custom ops, presets, valida
 
 **Linux/macOS:** works out of the box.
 
-**Windows:** works via Git Bash or WSL (the plugin's `hooks/session-start.sh`, `hooks/pre-bash-guard.sh` and `.githooks/pre-push` are bash scripts; the Python tool itself is cross-platform). Native `cmd.exe` / PowerShell without bash won't fire the hooks — and on such a host Claude Code has no `Bash` tool either, so there is nothing for the raw-command guard to gate. The pre-push hook needs a real `pythonX.Y` on `PATH` (or `PYTHON=` pointing at one) — it will not run the bare name `python3`, which on Windows can resolve to the App Execution Alias stub and block forever inside `git push`. See [docs/contributing.md](docs/contributing.md#running-tests).
+**Windows:** works via Git Bash or WSL (the plugin's `hooks/session-start.sh`, `hooks/pre-bash-guard.sh` and `.githooks/pre-push` are bash scripts; the Python tool itself is cross-platform). Native `cmd.exe` / PowerShell without bash won't fire the hooks — see the raw-command guard note below for what that costs. The pre-push hook needs a real `pythonX.Y` on `PATH` (or `PYTHON=` pointing at one) — it will not run the bare name `python3`, which on Windows can resolve to the App Execution Alias stub and block forever inside `git push`. See [docs/contributing.md](docs/contributing.md#running-tests).
+
+**Windows and the raw-command guard, when there is no bash at all** ([#1378](https://github.com/Digital-Process-Tools/claude-supertool/issues/1378)): the guard is then *inert*, and a session where it never ran looks exactly like one where it ran and found nothing. This paragraph used to say there was nothing for it to gate on such a host, on the grounds that Claude Code would have no `Bash` tool there. That was wrong by this repo's own [#1413](https://github.com/Digital-Process-Tools/claude-supertool/issues/1413): where the PowerShell tool is enabled Claude treats PowerShell as the primary shell and routes shell commands through it, which is why `hooks.json` matches `Bash|PowerShell`. There are commands to gate and no bash to gate them with.
+
+No hook can disclose this — every hook here is a bash script, so a line inside one does not run on the host it would be describing. The check is one you run, and it needs no shell:
+
+```
+py -3 hooks/guard-selftest.py        # Windows
+python3 hooks/guard-selftest.py      # anywhere else
+```
+
+It reports `enforcing`, `could not run` (naming what it tried) or `nothing to test`, and it says plainly that it cannot tell whether Claude Code invokes the hook — only whether this host can run it. Everything stated here about native `cmd.exe`/PowerShell is **reasoned, not observed**: nobody on this project has that host.
 
 **Windows and the raw-command guard's interpreter:** `hooks/pre-bash-guard.sh` needs a Python it can name. Neither python.org's installer nor GitHub's `hostedtoolcache` creates `python3.9`–`python3.14`, so the guard falls back to `py -3`, the Windows Python launcher, after every versioned name and after an activated virtualenv. With no interpreter at all the guard does not silently pass: it says in the transcript that it could not run, and allows the command. See [docs/configuration.md](docs/configuration.md).
 

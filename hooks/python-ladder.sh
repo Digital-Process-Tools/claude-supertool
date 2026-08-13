@@ -86,8 +86,14 @@ SUPERTOOL_LADDER_RUNGS="python3.9-python3.14, an activated virtualenv's own inte
 
 # supertool_python_identifies INTERPRETER [ARG...] - is this argv a Python 3?
 #
-# The event JSON arrives on stdin for the guard and only the real run may
-# consume it, so the probe reads from /dev/null.
+# `session-start.sh`'s alone since #1377: it runs supertool with real
+# arguments, whose free-form output cannot identify the interpreter that
+# produced it, and it pays this probe once per session. `pre-bash-guard.sh`
+# ran it once per Bash call for 52ms of a 301ms wrapper and now identifies a
+# candidate by the envelope its real run writes.
+#
+# Reads /dev/null rather than inheriting stdin, so a probe never consumes
+# input a caller's real run still needs.
 supertool_python_identifies() {
     _said=$("$@" -c "$SUPERTOOL_LADDER_PROBE" 2>/dev/null </dev/null) || return 1
     [ "$_said" = "supertool-python-3" ]

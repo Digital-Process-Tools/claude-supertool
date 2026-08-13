@@ -29,7 +29,29 @@
 # empty ladder did, so an interpreter that executed and said nothing rendered
 # exactly like a clean verdict. `pre_bash_guard.py` therefore always writes an
 # envelope, and empty stdout here means the guard did not answer.
+#
+# **One spawn per call, not two** (#1377). A candidate used to be proved a
+# Python 3 by a throwaway `-c` run and then spawned again for the answer —
+# 52ms of a measured 301ms wrapper, on every Bash call, to learn something the
+# answer itself carries. The envelope is now the identification: only this
+# script writes one, so a candidate that produces it both is a Python 3 and
+# ran. #1402's guard against a launcher that prints a preamble of its own
+# survives as a *prefix* test rather than an equality test, and #1390's "ran
+# and said nothing" is still reachable — no envelope, no verdict, next rung.
+# `supertool_python_identifies` stays in the ladder for session-start.sh,
+# whose callback runs supertool with real arguments and cannot prefix-test the
+# free-form output, and which pays its one probe once per session rather than
+# once per command.
 BIN="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}/hooks/pre_bash_guard.py"
+
+#: What every path through pre_bash_guard.py starts its stdout with.
+#: `tests/test_guard_hook_cost_1377.py` pins that this is what `_emit` writes.
+ENVELOPE_PREFIX='{"hookSpecificOutput"'
+
+#: The event JSON, read once. It used to be consumed by whichever rung ran
+#: first, which is why the old probe had to read /dev/null; held here, every
+#: rung can be offered the same input and a failed one costs nothing.
+EVENT=$(cat)
 
 decline() {
     printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"supertool raw-command guard did not run: '"$1"'. The command was allowed - this is a statement about the guard, not about the command."}}'
@@ -46,21 +68,29 @@ LADDER="$(cd "$(dirname "$0")" && pwd)/python-ladder.sh"
 . "$LADDER" 2>/dev/null || decline "the shared interpreter ladder could not be sourced"
 
 # attempt INTERPRETER [ARG...] — answer through this candidate, or return 1.
+#
+# A rung that fails is recorded and the walk continues, where the old shape
+# declined outright on a non-zero exit. Trying the next name is strictly more
+# robust: a host with a broken python3.14 and a working python3.12 used to get
+# no guard at all.
 # shellcheck disable=SC2329  # invoked indirectly, as supertool_python_each's callback
 attempt() {
-    supertool_python_identifies "$@" || return 1
-    out=$("$@" "$BIN")
+    out=$(printf '%s' "$EVENT" | "$@" "$BIN")
     rc=$?
-    if [ "$rc" -ne 0 ]; then
-        decline "the interpreter exited $rc"
-    fi
-    if [ -z "$out" ]; then
-        decline "the interpreter ran and produced no verdict"
-    fi
-    printf '%s' "$out"
-    exit 0
+    case "$out" in
+        "$ENVELOPE_PREFIX"*)
+            printf '%s' "$out"
+            exit 0
+            ;;
+    esac
+    LAST_TRIED="$*"
+    LAST_RC="$rc"
+    return 1
 }
 
 supertool_python_each attempt
 
+if [ -n "${LAST_TRIED:-}" ]; then
+    decline "$LAST_TRIED exited $LAST_RC without writing a verdict"
+fi
 decline "no $SUPERTOOL_LADDER_RUNGS on PATH that executes (the bare name python3 is never tried, see hooks/python-ladder.sh)"
