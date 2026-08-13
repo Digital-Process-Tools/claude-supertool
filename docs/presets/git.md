@@ -722,7 +722,18 @@ Nothing here scans the disk for copies: a copy can be anywhere, and an op that g
     MM validators/fence.py
 ```
 
-Three states, as everywhere else here: the discriminator is one `git diff --name-only HEAD`, asked only when something is staged, and a `git diff` that did not answer prints `⚠ Staged provenance UNKNOWN — …` rather than the silence that reads as a clean answer.
+Three states, as everywhere else here: the discriminator is one `git diff --name-only -z HEAD`, asked only when something is staged, and a `git diff` that did not answer prints `⚠ Staged provenance UNKNOWN — …` rather than the silence that reads as a clean answer.
+
+`-z` is load-bearing, not tidiness. **The two readers do not print the same path**, measured on a real repository:
+
+```
+git status --porcelain=v1     M  "with space.txt"     M  "uni \303\251.txt"
+git diff --name-only HEAD        with space.txt          "uni \303\251.txt"
+```
+
+porcelain quotes a space because its own format is space-separated; `--name-only` does not, and `core.quotePath` has no bearing on that half. Comparing the printed forms put every staged file with a space in its name under the marker above. `-z` hands the raw path back from the diff side, and porcelain's quoting is undone on the other, so the comparison is between the two names git actually holds.
+
+One state is silence rather than a third state, deliberately: a repository with **no commits yet** has no HEAD for the index to be a revert of, so the question is meaningless rather than unanswered, and `git init && git add .` gains nothing to skim past. It is established rather than inferred — `git rev-parse --verify --quiet HEAD` answers "no such ref" as exit 1 with an empty stderr, spawned only where the diff has already failed. A probe that timed out, or failed with something to say, has not established anything and the `UNKNOWN` line prints.
 
 ### `ahead N, behind M` after a rebase is not lost work
 

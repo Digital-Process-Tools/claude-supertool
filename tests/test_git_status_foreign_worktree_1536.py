@@ -213,7 +213,16 @@ def _dead(returncode: int, stderr: str) -> subprocess.CompletedProcess:
     )
 
 
-def _render(monkeypatch, *, porcelain: str, diff_head) -> str:
+#: `git rev-parse --verify --quiet HEAD` in a repository that has commits.
+_HEAD_EXISTS = _ok("abc1234\n")
+
+#: The same call in one that has none. Exit 1 and an EMPTY stderr is
+#: `--quiet`'s contract for "no such ref", and it is what tells an unborn HEAD
+#: apart from a git that failed — without reading git's English.
+_HEAD_UNBORN = _dead(1, "")
+
+
+def _render(monkeypatch, *, porcelain: str, diff_head, head_probe=_HEAD_EXISTS) -> str:
     def fake(args, timeout=None):
         head = args[0] if args else ""
         if head == "status":
@@ -227,6 +236,8 @@ def _render(monkeypatch, *, porcelain: str, diff_head) -> str:
         if head == "rev-parse":
             if "--abbrev-ref" in args:
                 return _ok("fix/1536\n")
+            if args[-1:] == ["HEAD"]:
+                return head_probe
             return _dead(1, "")
         if head == "rev-list":
             return _ok("0\t0\n")
@@ -243,6 +254,64 @@ def _render(monkeypatch, *, porcelain: str, diff_head) -> str:
     with redirect_stdout(buf):
         status.main()
     return buf.getvalue()
+
+
+# Measured on git 2.x, in a real repository, because the two readers do NOT
+# agree and the whole comparison rests on it:
+#
+#   git status --porcelain=v1     M  "with space.txt"     M  "uni \303\251.txt"
+#   git diff --name-only HEAD        with space.txt          "uni \303\251.txt"
+#
+# porcelain quotes a space (its own format is space-separated); `--name-only`
+# does not. The raw path is the only form both can be brought to, and `-z` is
+# what gets it from the diff side.
+
+
+def test_a_space_in_a_staged_path_is_not_a_false_alarm(tmp_path, monkeypatch) -> None:
+    """Ordinary staged work on a file whose name has a space in it."""
+    monkeypatch.chdir(tmp_path)
+    out = _render(
+        monkeypatch,
+        porcelain='M  "with space.txt"\n',
+        diff_head=_ok("with space.txt\0"),
+    )
+    assert status.STAGED_ABSENT_MARKER not in out, (
+        "a staged path git quoted on one side and not the other was reported "
+        "as content no file here has — a loud false alarm on an ordinary edit"
+    )
+
+
+def test_an_octal_escaped_staged_path_is_not_a_false_alarm(tmp_path, monkeypatch) -> None:
+    """`core.quotePath` octal-escapes the UTF-8 bytes; `-z` hands them back raw."""
+    monkeypatch.chdir(tmp_path)
+    out = _render(
+        monkeypatch,
+        porcelain='M  "uni \\303\\251.txt"\n',
+        diff_head=_ok("uni é.txt\0"),
+    )
+    assert status.STAGED_ABSENT_MARKER not in out
+
+
+def test_a_quoted_path_really_absent_is_still_flagged(tmp_path, monkeypatch) -> None:
+    """The unquoting must not disable the check it exists to make work."""
+    monkeypatch.chdir(tmp_path)
+    out = _render(
+        monkeypatch,
+        porcelain='MM "with space.txt"\n',
+        diff_head=_ok(""),
+    )
+    assert status.STAGED_ABSENT_MARKER in out
+
+
+def test_a_rename_from_a_quoted_source_reads_its_destination(tmp_path, monkeypatch) -> None:
+    """` -> ` inside the quoted source half must not be read as the separator."""
+    monkeypatch.chdir(tmp_path)
+    out = _render(
+        monkeypatch,
+        porcelain='R  "old -> file.py" -> new.py\n',
+        diff_head=_ok("old -> file.py\0new.py\0"),
+    )
+    assert status.STAGED_ABSENT_MARKER not in out
 
 
 def test_staged_content_no_file_here_has_is_disclosed(tmp_path, monkeypatch) -> None:
@@ -267,7 +336,7 @@ def test_ordinary_staged_work_gains_no_marker(tmp_path, monkeypatch) -> None:
     out = _render(
         monkeypatch,
         porcelain="M  validators/fence.py\n",
-        diff_head=_ok("validators/fence.py\n"),
+        diff_head=_ok("validators/fence.py\0"),
     )
     assert status.STAGED_ABSENT_MARKER not in out
     assert "### Staged (1)" in out
@@ -279,7 +348,7 @@ def test_a_staged_rename_is_read_on_its_destination(tmp_path, monkeypatch) -> No
     out = _render(
         monkeypatch,
         porcelain="R  a.py -> b.py\n",
-        diff_head=_ok("a.py\nb.py\n"),
+        diff_head=_ok("a.py\0b.py\0"),
     )
     assert status.STAGED_ABSENT_MARKER not in out
 
@@ -295,6 +364,57 @@ def test_the_check_that_could_not_run_says_so(tmp_path, monkeypatch) -> None:
     assert status.STAGED_PROVENANCE_UNKNOWN in out
     assert "unable to read index" in out
     assert status.STAGED_ABSENT_MARKER not in out
+
+
+def test_an_unborn_head_says_nothing_at_all(tmp_path, monkeypatch) -> None:
+    """`git init && git add .` is an ordinary state, not a failed check.
+
+    With no HEAD there is nothing the index could be a revert of, so the
+    question is meaningless rather than unanswered — and a `git diff HEAD`
+    that legitimately cannot run must not spend a paragraph plus the
+    INCOMPLETE footer saying so on every fresh repository.
+    """
+    monkeypatch.chdir(tmp_path)
+    out = _render(
+        monkeypatch,
+        porcelain="A  a.txt\n",
+        diff_head=_dead(128, "fatal: ambiguous argument 'HEAD': unknown revision"),
+        head_probe=_HEAD_UNBORN,
+    )
+    assert status.STAGED_PROVENANCE_UNKNOWN not in out
+    assert status.STAGED_ABSENT_MARKER not in out
+    assert status.INCOMPLETE_MARKER not in out, (
+        "a fresh repository was reported as a run with a skipped section"
+    )
+    assert "### Staged (1)" in out
+
+
+def test_a_failed_diff_in_a_repository_that_has_commits_still_says_unknown(
+    tmp_path, monkeypatch
+) -> None:
+    """The silence above is bought by one probe, and only that probe buys it:
+    a HEAD that exists and a diff that failed is still an unanswered check."""
+    monkeypatch.chdir(tmp_path)
+    out = _render(
+        monkeypatch,
+        porcelain="A  a.txt\n",
+        diff_head=_dead(128, "fatal: unable to read index"),
+        head_probe=_HEAD_EXISTS,
+    )
+    assert status.STAGED_PROVENANCE_UNKNOWN in out
+    assert status.INCOMPLETE_MARKER in out
+
+
+def test_a_probe_that_did_not_answer_does_not_buy_silence(tmp_path, monkeypatch) -> None:
+    """A `rev-parse` that timed out has not established there is no HEAD."""
+    monkeypatch.chdir(tmp_path)
+    out = _render(
+        monkeypatch,
+        porcelain="A  a.txt\n",
+        diff_head=_dead(128, "fatal: unable to read index"),
+        head_probe=_dead(status.TIMEOUT_RC, "timed out after 5s"),
+    )
+    assert status.STAGED_PROVENANCE_UNKNOWN in out
 
 
 def test_a_clean_tree_asks_nothing_and_says_nothing(tmp_path, monkeypatch) -> None:
