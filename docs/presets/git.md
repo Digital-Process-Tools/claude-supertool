@@ -411,6 +411,16 @@ was really message text. Nothing is ever folded back into the message: guessing
 wrong in that direction would commit the already-staged fileset under a mangled
 subject and print a success receipt for it.
 
+When `git add` does fail, whatever the op prints under it is **the route's own
+convention, or nothing**
+([#1489](https://github.com/Digital-Process-Tools/claude-supertool/issues/1489)).
+On the `:::` form a comma-joined pathspec is offered back split, under the
+separator rule. On the `@payload` form the rule quoted is `paths`' — a TOML
+array, one entry per path — and an entry holding `:::` or `,` is offered back as
+an array. A pathspec with no separator in it at all gets neither: git named the
+fault, nothing here can name a remedy, and the third state is silence rather
+than a rule the caller did not break.
+
 Every git op runs against the repository discovered from the **current working directory**, and says which one that was. `git-diff`, `git-commit` and `git-push` each stamp a `Repo: <toplevel>` header (a bare repo reports its git dir, marked `(bare)`); `git-commit` prints it before staging, so it is on the receipt even when a hook rejects the commit or nothing was staged.
 
 That is not a formality. Git's `GIT_DIR`, `GIT_WORK_TREE` and five siblings override discovery-from-cwd, and git exports them to every hook it runs — so a supertool call made from inside a git hook inherits a pointer to whatever repo invoked the hook. Before [#692](https://github.com/Digital-Process-Tools/claude-supertool/issues/692) that silently retargeted the op, and the receipt named no repository to contradict it.
