@@ -846,9 +846,16 @@ def _boundary_slice(*, rows, plan, boundary, filters, flags, per_page) -> int:
         # A date boundary is a listing, not a verdict — so it keeps the board's
         # own exit code. There is nothing here for a release gate to fail on.
         instant = _filter_tokens.parse_iso_instant(plan.value)
-        kept, _undated = _release_gate.filter_merged(rows, instant)
+        kept, undated = _release_gate.filter_merged(rows, instant)
+        # `undated` used to be dropped here (#1521). A row whose mergedAt will
+        # not parse has not been shown to be outside the window — it has not
+        # been placed at all — and the tag branch has always said so. Discarding
+        # it on the date branch made the same rows vanish from the listing with
+        # nothing said and an exit of 0, which is this op's own defect class
+        # sitting inside the op that renders it.
         lines = ([_release_gate.page_note(page=fetched, limit=per_page)]
-                 + _release_gate.not_applicable_note())
+                 + _release_gate.not_applicable_note()
+                 + _release_gate.unplaced_note(undated))
         if narrowed_by:
             lines.append(f"population: narrowed by {', '.join(narrowed_by)}")
         code = 0

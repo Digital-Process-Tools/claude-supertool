@@ -41,6 +41,7 @@ sentences:
 """
 from __future__ import annotations
 
+import re
 import string
 
 # Sentinel domain: the value must parse as an integer >= 1. Used for `per=`,
@@ -74,9 +75,18 @@ ISO_INSTANT = ("an ISO-8601 date or instant (2026-08-09, or "
 #
 # A tag name contains no ':'. It is the only colon-free spelling of a
 # second-precision boundary, which is why the release gate is expressed as one.
+#
+# A tag whose name is itself date-shaped — `2026-08-09`, a common release
+# convention — is read as the date, and `looks_like_ref` refuses it as a ref on
+# purpose (`2026-13-45` is a typo, not a tag to go hunting for). That left such
+# a repository with no spelling at all for its own tag while this sentence named
+# one, so `refs/tags/NAME` is accepted and named here: git's own spelling, free
+# of ':', and never parseable as a date (#1526).
 ISO_INSTANT_OR_TAG = ("an ISO-8601 date or instant (2026-08-09, or "
                       "2026-08-09T16:07:45+00:00), or the name of a tag in "
-                      "this clone (v0.34.0)")
+                      "this clone (v0.34.0) — a tag whose name is itself a "
+                      "date is read as the date, so spell that one "
+                      "refs/tags/2026-08-09")
 
 # An allowlist rather than a list of forbidden characters, because this value
 # is handed to `git` as an argument. Every spelling in this repository's own
@@ -95,6 +105,12 @@ def looks_like_ref(value: object) -> bool:
     A date-shaped value is deliberately NOT a candidate ref. `2026-13-45` is a
     typo in a date, and "no tag by that name" is the wrong sentence to hand
     somebody who typed one — they would go looking for a tag they never meant.
+
+    `refs/tags/2026-08-09` is how a repository that tags releases by date names
+    its own tag anyway (#1526). It passes here for free — the four-digit test
+    reads the start of the string — and `select_tag` matches it against
+    `for-each-ref`'s short names. Until that pair existed the refusal named a
+    remedy ("spell it as a date, or as a ref") that this input had neither of.
     """
     text = str(value or "")
     if not text or text != text.strip():
@@ -108,30 +124,75 @@ def looks_like_ref(value: object) -> bool:
     return all(c in _REF_ALLOWED for c in text)
 
 
+#: The one accepted spelling of an instant — extended ISO-8601, and nothing
+#: else. Written out here rather than delegated to `datetime.fromisoformat`,
+#: whose grammar WIDENED in 3.11. Measured 2026-08-13, CPython 3.9.6 (this
+#: project's floor) against 3.11.11:
+#:
+#:     20260809      ValueError        2026-08-09 00:00:00
+#:     2026-W32-1    ValueError        2026-08-03 00:00:00
+#:
+#: `gh-prs:merged-since=` routes on `parse_iso_instant(value) is None`, so on
+#: 3.11+ `merged-since=20260809` was a date boundary at midnight UTC and on the
+#: floor it was a tag name hunted in the local clone — the same call, two
+#: answers, neither disclosed (#1526). Which way it resolves matters less than
+#: that it resolves once, in this repository's code; the floor's grammar is the
+#: one kept, because it is the one every green CI leg has already run against.
+#: Basic format (`20260809`) reaches `looks_like_ref` and is a tag name on every
+#: interpreter now.
+_ISO_INSTANT = re.compile(
+    r"(?P<y>\d{4})-(?P<mo>\d{2})-(?P<d>\d{2})"
+    r"(?:[Tt ](?P<h>\d{2}):(?P<mi>\d{2})"
+    r"(?::(?P<s>\d{2})(?:[.,](?P<f>\d+))?)?"
+    r"(?P<tz>[Zz]|[+-]\d{2}:?\d{2}(?::?\d{2})?)?)?"
+)
+
+
 def parse_iso_instant(value: object):
     """The one clock, as a UTC `datetime`, or ``None``.
 
-    `gh` emits a `Z` suffix and `git` emits a numeric offset.
-    `datetime.fromisoformat` on the supported floor (3.9) does not accept `Z`,
-    so it is rewritten before parsing rather than compared as text — comparing
-    the two spellings as strings is #1209, where `"16:07:45Z" > "17:13:43+02:00"`
-    is False at the second character and a release was silently delayed.
+    `gh` emits a `Z` suffix and `git` emits a numeric offset. Both are read
+    here rather than compared as text — comparing the two spellings as strings
+    is #1209, where `"16:07:45Z" > "17:13:43+02:00"` is False at the second
+    character and a release was silently delayed.
+
+    The grammar is `_ISO_INSTANT` above and it is deliberately this module's
+    own rather than `datetime.fromisoformat`'s: that one accepts different
+    values on 3.9 and on 3.11+, and this function is what decides whether a
+    filter value is a date or a tag name (#1526).
 
     A value that will not parse returns ``None``. Every caller treats that as
     "could not place", never as "old" and never as "now".
     """
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     text = str(value or "").strip()
-    if not text:
+    match = _ISO_INSTANT.fullmatch(text)
+    if match is None:
         return None
-    if text.endswith(("Z", "z")):
-        text = text[:-1] + "+00:00"
+    fraction = (match.group("f") or "")[:6].ljust(6, "0")
     try:
-        parsed = datetime.fromisoformat(text)
+        parsed = datetime(
+            int(match.group("y")), int(match.group("mo")), int(match.group("d")),
+            int(match.group("h") or 0), int(match.group("mi") or 0),
+            int(match.group("s") or 0), int(fraction))
     except ValueError:
+        # Shaped like a date and not one: `2026-13-45`. The shape check is the
+        # regex and the calendar check is the constructor's; neither is the
+        # other's, and a February 30th must not become a boundary.
         return None
-    if parsed.tzinfo is None:
+    zone = match.group("tz") or ""
+    if zone and zone not in ("Z", "z"):
+        digits = zone[1:].replace(":", "")
+        offset = timedelta(hours=int(digits[0:2]), minutes=int(digits[2:4]),
+                           seconds=int(digits[4:6] or 0))
+        try:
+            tzinfo = timezone(-offset if zone[0] == "-" else offset)
+        except ValueError:
+            # `+25:00`. A zone that cannot exist is not a zone to guess at.
+            return None
+        parsed = parsed.replace(tzinfo=tzinfo)
+    else:
         # A naive stamp is not a UTC stamp, but the alternative is to drop the
         # value entirely. Both git and gh always carry a zone, so this branch
         # exists for the bare `2026-08-09` a caller types by hand.

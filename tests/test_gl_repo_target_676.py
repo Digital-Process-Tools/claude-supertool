@@ -295,7 +295,15 @@ TARGETABLE_SOURCES = ["gitlab/issue.py", "gitlab/mr.py", "gitlab/job.py",
 #: target into it: `gl_api_path` itself, or a module-local api runner that
 #: calls it on every endpoint it is handed. Anything else is a call site that
 #: reads the cwd's project under a target, silently and well-formedly.
-_SUBSTITUTING_CALLS = {"gl_api_path", "_glab_api", "_fetch_json", "_fetch_array"}
+#:
+#: This is a name allowlist and it does not follow wrappers, so a new one has
+#: to be added by hand — `_fetch_tally` arrived with #1517 and turned four
+#: already-substituted endpoints red. It qualifies under the rule above: it
+#: forwards the endpoint it was handed to `_fetch_array` unaltered and adds
+#: only a page-cap reading of that same string. Adding a name here that does
+#: NOT forward every endpoint would disarm the check for all four ops.
+_SUBSTITUTING_CALLS = {"gl_api_path", "_glab_api", "_fetch_json", "_fetch_array",
+                       "_fetch_tally"}
 
 
 def _literal_prefix(node: ast.AST) -> str:

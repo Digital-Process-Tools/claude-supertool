@@ -82,19 +82,19 @@ def test_the_clock_really_does_put_the_release_pr_after_its_own_tag() -> None:
 
 
 def test_the_row_whose_merge_is_the_tagged_commit_is_removed_by_identity() -> None:
-    rest, tagged = rg.split_tagged_commit([RELEASE_PR, LATER_PR], TAG_SHA)
+    rest, tagged, _compared = rg.split_tagged_commit([RELEASE_PR, LATER_PR], TAG_SHA)
     assert [r["number"] for r in rest] == [1404]
     assert tagged is not None and tagged["number"] == 1403
 
 
 def test_the_boundary_row_is_handed_back_so_it_can_be_disclosed() -> None:
     """Removing it silently would be the mute button this op exists to refuse."""
-    _rest, tagged = rg.split_tagged_commit([RELEASE_PR], TAG_SHA)
+    _rest, tagged, _compared = rg.split_tagged_commit([RELEASE_PR], TAG_SHA)
     assert tagged is RELEASE_PR
 
 
 def test_a_row_merged_as_some_other_commit_is_left_alone() -> None:
-    rest, tagged = rg.split_tagged_commit([LATER_PR], TAG_SHA)
+    rest, tagged, _compared = rg.split_tagged_commit([LATER_PR], TAG_SHA)
     assert [r["number"] for r in rest] == [1404]
     assert tagged is None
 
@@ -107,7 +107,7 @@ def test_an_amended_merge_commit_no_longer_matches_and_keeps_its_refusal() -> No
     is. That row deserves the refusal; the release PR does not.
     """
     amended = dict(RELEASE_PR, mergeCommit={"oid": "0" * 40})
-    rest, tagged = rg.split_tagged_commit([amended], TAG_SHA)
+    rest, tagged, _compared = rg.split_tagged_commit([amended], TAG_SHA)
     assert tagged is None
     assert [r["number"] for r in rest] == [1403]
 
@@ -117,13 +117,14 @@ def test_a_row_carrying_no_merge_commit_is_not_guessed_at() -> None:
     for row in ({"number": 7}, {"number": 7, "mergeCommit": None},
                 {"number": 7, "mergeCommit": {}},
                 {"number": 7, "mergeCommit": "a6c3a8b"}):
-        rest, tagged = rg.split_tagged_commit([row], TAG_SHA)
+        rest, tagged, _compared = rg.split_tagged_commit([row], TAG_SHA)
         assert tagged is None, row
         assert rest == [row]
 
 
 def test_an_unknown_boundary_sha_excludes_nothing() -> None:
-    rest, tagged = rg.split_tagged_commit([RELEASE_PR, LATER_PR], "")
+    rest, tagged, compared = rg.split_tagged_commit([RELEASE_PR, LATER_PR], "")
+    assert compared is False, "nothing to compare against is not a comparison"
     assert [r["number"] for r in rest] == [1403, 1404]
     assert tagged is None
 

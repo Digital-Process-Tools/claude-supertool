@@ -19,6 +19,8 @@ git remote set-url origin https://github.com/Digital-Process-Tools/claude-supert
 
 **The `set-url` is not optional.** A plain clone points `origin` at a local path, which reddens `test_live_board_over_this_repo` and `test_no_cli_at_all_is_not_an_absence_either`. Both fail identically on the base commit, so without it you manufacture two failures on every run and cannot tell them from real ones.
 
+**Commit first — a clone copies commits, not your working tree.** Uncommitted work is simply absent from it, so the run is green about master and reads as green about your change. Measured 2026-08-13 in `st-wt/1521`: 12,112 passed against a diff that was not in the clone; the same suite over the commit found a real red. Add `-b <branch>` and check `git log --oneline -1` in the clone before trusting the number.
+
 **Targeted runs in your own worktree are fine.** It is the full suite that does the damage.
 
 # Two ways a test here lies about the platform
