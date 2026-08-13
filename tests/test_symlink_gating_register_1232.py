@@ -68,6 +68,12 @@ ROOT = TESTS.parent
 PLATFORM_TOKENS = (
     "os.name == 'nt'", 'os.name == "nt"',
     "sys.platform == 'win32'", 'sys.platform == "win32"',
+    # Skip-unless-POSIX: the same claim as `os.name == 'nt'` spelled the other
+    # way round, and the spelling four files in this tree actually use. Its
+    # mirror images are deliberately NOT tokens -- `sys.platform != "win32"`
+    # and `platform.system() != "Windows"` skip everywhere EXCEPT Windows,
+    # which is the one runner this register exists for (#1620).
+    "os.name != 'posix'", 'os.name != "posix"',
     "platform.system() == 'Windows'",
     "AF_UNIX", "geteuid", "O_NOFOLLOW",
     "posix_only", "needs_dir_fd", "needs_nofollow", "needs_relative_ops",
@@ -243,6 +249,7 @@ REGISTER = {
     'tests/test_git_state_guard.py::_guarded_project': E,
     'tests/test_git_timeout_disclosure_650.py::_git_only_path': P,
     'tests/test_glob_containment_1366.py::test_a_wildcard_landing_on_an_outward_symlink_refuses_the_whole_call': B,
+    'tests/test_guard_envelope_serialisation_1613.py::_toolbox': P,
     'tests/test_mcp_daemon_dirfd_598.py::TestAFailedLogOpenDoesNotOrphanTheServer.test_a_squatted_stderr_symlink_does_not_leave_the_subprocess_running': P,
     'tests/test_mcp_runtime_dir_nofollow_583.py::TestASymlinkedRuntimeDirStillWorks.test_a_symlink_to_a_missing_dir_is_refused_with_a_sentence': P,
     'tests/test_mcp_runtime_dir_nofollow_583.py::linked': B,
@@ -433,3 +440,35 @@ def test_the_classifier_refuses_a_gate_that_would_not_have_fired() -> None:
         "fires first and the gate never runs")
     assert mech(prose, call) == UNGATED, (
         "a docstring mentioning require_symlink() was read as a call")
+
+
+def test_a_posix_only_module_is_platform_skipped_however_it_is_spelled() -> None:
+    """`skipif(os.name != 'posix')` is `skipif(os.name == 'nt')` reversed.
+
+    The register recognised only the second spelling, so a file that runs
+    nowhere but POSIX was labelled UNGATED -- an absence of *recognition*
+    rendered as an absence of *gate*, which is the defect this repo keeps
+    having. The one direction that must never be a token is the mirror:
+    `sys.platform != "win32"` runs ONLY on Windows, the single runner the
+    whole register is about.
+    """
+    def mech(mark):
+        src = (mark + chr(10)
+               + "def _helper(tmp_path):" + chr(10)
+               + "    (tmp_path / 'l').symlink_to(tmp_path)" + chr(10))
+        sites = _sites_in_source("tests/synthetic.py", src)
+        return sites["tests/synthetic.py::_helper"][0][1]
+
+    assert mech("pytestmark = pytest.mark.skipif(os.name != 'posix', "
+                "reason='x')") == P
+    assert mech('pytestmark = pytest.mark.skipif(os.name != "posix", '
+                'reason="x")') == P
+    assert mech("pytestmark = pytest.mark.skipif(os.name == 'nt', "
+                "reason='x')") == P, "the spelling already recognised"
+    assert mech("pytestmark = pytest.mark.skipif(sys.platform != 'win32', "
+                "reason='x')") == UNGATED, (
+        "a Windows-only test was read as platform-skipped -- it runs on "
+        "exactly the runner that may lack the privilege")
+    assert mech("pytestmark = pytest.mark.skipif(sys.version_info < (3, 12), "
+                "reason='x')") == UNGATED, (
+        "a mark that says nothing about the platform certified a site")

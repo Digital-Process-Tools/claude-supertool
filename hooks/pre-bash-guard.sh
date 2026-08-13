@@ -63,8 +63,55 @@ ENVELOPE_PREFIX='{"hookSpecificOutput"'
 #: rung can be offered the same input and a failed one costs nothing.
 EVENT=$(cat)
 
+#: The last value passed to `_json_string`, escaped. A global rather than a
+#: `$(...)` result on purpose: a command substitution is a fork, on a hook
+#: that runs before every Bash call.
+JSON_STRING=
+
+# _json_string VALUE - VALUE, safe as the contents of a JSON string literal.
+#
+# **This exists because three of `decline`'s four call sites pass a value the
+# hook did not author** (#1613). `$LAST_TRIED` and `$PARTIAL_TRIED` are the
+# argv of the rung that failed, and the first rung is
+# `"$VIRTUAL_ENV/bin/python3"` - so a directory name reached a JSON string
+# literal built by concatenation. A `"` in it closed `additionalContext`, and
+# everything after it was parsed as sibling keys of the same object with
+# `permissionDecision` among them: Claude Code read a directory name as this
+# hook's own verdict. A bare `"` with nothing after it is the other half - an
+# unparseable document, so no decision and no note at all, which is the
+# silent fail-open this file's header opens by refusing.
+#
+# **Escaped in bash rather than serialised by an interpreter, and that is not
+# a performance argument** (though it is also free: three parameter
+# expansions, no fork and no exec - 0.049ms per call, measured over 10,000
+# iterations under bash 3.2 on macOS, against the ~300ms wrapper #1594 cut
+# down, and paid at most once per invocation because `decline` exits).
+# `decline` is reached *because* no interpreter answered. Handing
+# the envelope to `python3` at the one moment the ladder has just finished
+# proving there is no `python3` is not slower, it is unreachable.
+#
+# Three substitutions, and the order of the first two is load-bearing: the
+# backslash pass has to run before the quote pass, or it doubles the
+# backslashes the quote pass just wrote. Backslash and quote are *escaped*
+# rather than replaced, so `C:\venv\Scripts` stays the path it is - a Windows
+# disclosure with its separators rewritten names a directory that does not
+# exist, which is #1378's complaint. Everything non-printable is replaced
+# instead: JSON forbids a raw control character inside a string, and a
+# `\u00XX` escape cannot be built by parameter expansion. Under a non-UTF-8
+# locale `[[:print:]]` is byte-wise, so a non-ASCII path degrades to one `?`
+# per byte - legible loss, and still a document that parses.
+_json_string() {
+    JSON_STRING=${1//\\/\\\\}
+    JSON_STRING=${JSON_STRING//\"/\\\"}
+    JSON_STRING=${JSON_STRING//[![:print:]]/?}
+}
+
+# Every sink goes through here, present and future: escaping inside `decline`
+# rather than at its four call sites is what stops a fifth call site
+# reintroducing this.
 decline() {
-    printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"supertool raw-command guard did not run: '"$1"'. The command was allowed - this is a statement about the guard, not about the command."}}'
+    _json_string "$1"
+    printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"supertool raw-command guard did not run: '"$JSON_STRING"'. The command was allowed - this is a statement about the guard, not about the command."}}'
     exit 0
 }
 
