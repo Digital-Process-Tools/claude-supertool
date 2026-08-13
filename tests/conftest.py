@@ -409,19 +409,32 @@ def _live_gh_summary(terminalreporter, skipped):
     """Count the skips where the live GitHub API was not reached (#1568).
 
     Same shape as the two above, same reason: the suite has exactly one test
-    that talks to real GitHub, it stays in the default selection on purpose,
-    and a run that could not reach the API has not exercised the shapes it is
-    there for. Printed at zero too -- a silently-skipped live test is the
-    absence-read-as-clean defect this repo files against itself -- and with its
-    denominator and its population, so a non-zero count is not read as a total
-    (#1274).
+    that talks to real GitHub, and a run that could not reach the API has not
+    exercised the shapes it is there for. Printed at zero too -- a
+    silently-skipped live test is the absence-read-as-clean defect this repo
+    files against itself -- and with its denominator and its population, so a
+    non-zero count is not read as a total (#1274).
+
+    Two numbers, because the states are not interchangeable. A transient
+    unreachable fixes itself; an unconfigured runner produces the same skip
+    forever until somebody sets a token. Summed, the second would be unreadable
+    in both directions -- permanently non-zero counts stop being read, and once
+    a token IS set a non-zero one can no longer be recognised as "the env line
+    was deleted".
+
+    That test is `slow` since #1568, so in a default selection this reads 0
+    because it was never selected. That is not the same fact as reaching the
+    API, which is why `POPULATION` says so rather than leaving the zero to be
+    over-read.
     """
     if _live_gh is None:
         terminalreporter.write_line(
             "live-gh: NOT CHECKED -- tests/_live_gh.py is not in this tree")
         return
     n = _token_skips(skipped, _live_gh.TOKEN)
-    terminalreporter.write_line(_live_gh.verdict_line(n, len(skipped)))
+    unconfigured = _token_skips(skipped, _live_gh.UNCONFIGURED)
+    terminalreporter.write_line(
+        _live_gh.verdict_line(n, unconfigured, len(skipped)))
     terminalreporter.write_line(_live_gh.POPULATION)
 
 

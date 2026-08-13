@@ -20,8 +20,16 @@ on:
 # Read-only: this job runs tests and publishes nothing. Declared rather than
 # inherited, because the repository default is what a future settings change
 # would silently widen.
+#
+# `pull-requests: read` is #1568's, and it is the whole grant: the one `slow`
+# test that reaches GitHub calls `gh pr list` against this repository, which is
+# public, so the token buys authentication rather than access. It cannot write,
+# comment, merge, tag or release, and it expires when the job ends. Named here
+# rather than left to the repository default for the reason the paragraph above
+# gives — a settings change would otherwise widen it without touching this file.
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   slow:
@@ -48,5 +56,26 @@ jobs:
         # -n auto: these tests are individually heavy, not numerous, so
         # parallelism still helps. --no-cov: this job measures nothing about
         # coverage, only whether the disclosure paths still pass.
+        #
+        # GH_TOKEN is #1568. `tests/test_watch_radar_gh_prs_859.py::
+        # test_live_board_over_this_repo` is the suite's only live GitHub call
+        # and it is `slow`, so this job is the only place it is selected.
+        # Without a token `gh` exits 4 before making a request, the test skips
+        # countably, and `slow` would mean `nowhere` — which is exactly what
+        # this workflow's header exists to refuse. With it the test runs once a
+        # day on one leg, off the per-push critical path, where a rate limit
+        # cannot red anybody's diff.
+        #
+        # NOT set on the twelve pytest legs in tests.yml, deliberately. That
+        # would put a live API call back on the per-push path (#1568's whole
+        # complaint), hand a credential to the environment of ~12,400 tests and
+        # the ~900 subprocesses they spawn, and buy nothing: the response is a
+        # JSON payload, identical on ubuntu, macOS and Windows, so twelve legs
+        # answer the same question twelve times. It also sits against #1341,
+        # whose autouse fixture refuses non-loopback sockets for every test and
+        # which conftest documents a subprocess as ESCAPING rather than as
+        # being permitted.
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python -X utf8 -m pytest -m 'slow' -n auto --tb=short --no-cov --durations=25 -q

@@ -239,6 +239,40 @@ class RadarUnreachable(RadarError):
     """
 
 
+class RadarUnconfigured(RadarUnreachable):
+    """`gh` has no credentials here, so it refused before asking (#1568).
+
+    A subclass of `RadarUnreachable` rather than a sibling, because every
+    consumer that already treats "not reached" as "not a verdict about the
+    board" must keep doing so without being taught a second name — the same
+    argument that makes `RadarUnreachable` a `RadarError`.
+
+    It is still a distinct state, and the difference is what the reader should
+    do. An unreachable API is transient: the socket blipped, try again, and the
+    next run is green. An UNCONFIGURED one is standing — it will produce the
+    same result on every run, forever, until somebody sets a token. Summing the
+    two would make the second unreadable in both directions: a permanently
+    non-zero count is wallpaper, and once a token IS set, a non-zero count can
+    no longer be read as "somebody deleted the env line", which is a real
+    finding about the workflow. #1274's argument, one level over.
+
+    The predicate is `gh`'s own exit code, not its prose. Measured on gh 2.50.0:
+    exit 4 is its auth-configuration code and nothing else produces it — both
+    spellings of "no credentials" (`gh auth login` interactively, `set the
+    GH_TOKEN environment variable` under Actions) exit 4, while a *rejected*
+    token exits 1 with `HTTP 401` and every product failure exits 1. That
+    distinction is exact and matters: a rejected token means the request landed.
+
+    Filed because PR #1586 went red on four legs with the Actions spelling,
+    which carries no 401, no rate limit and no Go net error — nothing a prose
+    predicate could ever have caught.
+    """
+
+
+#: `gh`'s dedicated exit code for "I have no credentials to use". Not a
+#: message, so it cannot be reworded out from under this.
+GH_RC_NO_CREDENTIALS = 4
+
 #: Substrings of `gh`'s own stderr that mean the request never landed. Read on
 #: the failure path only, never on a green.
 #:
@@ -434,6 +468,13 @@ def live_open_prs(filters: dict[str, str]) -> list[dict]:
             raise RadarUnreachable(
                 f"gh pr list was killed by signal {-result.returncode} "
                 f"before it answered: {err}")
+        if result.returncode == GH_RC_NO_CREDENTIALS:
+            # Checked before the message arms below, because `gh` spells this
+            # differently depending on whether it thinks it is interactive, and
+            # the CI spelling matches none of them.
+            raise RadarUnconfigured(
+                "gh has no credentials in this environment, so it refused "
+                "before making a request: " + err)
         low = err.lower()
         if "not logged in" in low or "401" in err:
             raise RadarUnreachable("gh not authenticated. Run: gh auth login")

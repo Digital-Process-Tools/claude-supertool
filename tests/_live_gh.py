@@ -45,26 +45,45 @@ import pytest
 #: CI leg can be resolved to `N did not reach the live GitHub API here`.
 TOKEN = "live-gh(#1568)"
 
+#: The standing half. Contains `TOKEN` on purpose, so a skip carrying it is
+#: counted in BOTH numbers: the total says how many runs missed the API, and
+#: this one says how many of those will still be missing it tomorrow.
+UNCONFIGURED = TOKEN + ":unconfigured"
+
 
 @contextlib.contextmanager
-def reachable(unreachable_error: type):
+def reachable(unreachable_error: type, unconfigured_error: type):
     """Skip, countably, if the API was not reached. Never tolerate.
 
-    `unreachable_error` is passed in rather than imported: the tier is loaded
-    by `importlib.util.spec_from_file_location` in the test modules that use
-    it, so there is no import path to name here, and a second copy of that
-    loader in this file would be a second thing to keep in step.
+    Two verdicts, one skip. Both mean the live path went unexercised and
+    neither is a statement about the diff, so both skip rather than fail --
+    but a reader does different things with them. A transient unreachable is
+    news that means nothing: try again. An UNCONFIGURED runner produces the
+    same skip on every run until somebody sets a token, which is a standing
+    hole in coverage rather than a blip.
+
+    The classes are passed in rather than imported: the tier is loaded by
+    `importlib.util.spec_from_file_location` in the test modules that use it,
+    so there is no import path to name here, and a second copy of that loader
+    in this file would be a second thing to keep in step. `unconfigured_error`
+    is caught first because it is a SUBCLASS of `unreachable_error`, and an
+    `except` on the parent would swallow it.
     """
     try:
         yield
+    except unconfigured_error as exc:
+        pytest.skip(
+            "{0}: {1} -- `gh` has no credentials on this runner, so it refused "
+            "before making a request. The live path was NOT exercised and will "
+            "not be on the next run either: this one does not fix itself. If "
+            "this is CI, the job needs `GH_TOKEN` and `pull-requests: read`; "
+            "if it is a laptop, `gh auth login`.".format(UNCONFIGURED, exc))
     except unreachable_error as exc:
         pytest.skip(
             "{0}: {1} -- the live GitHub API was NOT reached, so this run "
             "says nothing about the shapes it exercises. Not a finding about "
-            "the board and not a finding about the diff. Do NOT convert this "
-            "into a marker or a module-level skipif: #1568 kept the test in "
-            "the default selection on purpose, and this skip is what makes "
-            "that affordable.".format(TOKEN, exc))
+            "the board and not a finding about the diff. Transient: nothing to "
+            "do but run it again.".format(TOKEN, exc))
 
 
 #: One line for the terminal summary, printed whether the count is zero or not.
@@ -72,15 +91,30 @@ POPULATION = (
     "  ^ counts skips carrying that token only, not every test that touches "
     "GitHub: a tier failure that is NOT a transport failure is deliberately "
     "not counted and stays red, and a site held off this runner by an "
-    "unrelated marker skips without the token. Full population, derived from "
-    "the AST: tests/test_live_gh_gating_1568.py")
+    "unrelated marker skips without the token. The live test is `slow`, so on "
+    "a default selection this is 0 because it was never selected -- which is "
+    "not the same as reaching the API, and `.github/workflows/slow-tests.yml` "
+    "is where it is. Full population, derived from the AST: "
+    "tests/test_live_gh_gating_1568.py")
 
 
-def verdict_line(n: int, total: int) -> str:
-    """``N of M skipped``, never a bare ``N`` (#1274)."""
-    return (
+def verdict_line(n: int, unconfigured: int, total: int) -> str:
+    """``N of M skipped``, never a bare ``N`` (#1274), and the standing share.
+
+    Two numbers on one line rather than two lines or one number. One number
+    would make the second unreadable: after a token is set its expected value
+    is 0, so a non-zero one is a finding about the workflow -- but only if it
+    is not summed with a transient blip whose expected value is not 0.
+    """
+    line = (
         "{0}: {1} of {2} skipped tests did NOT reach the live GitHub API -- "
         "`gh` absent, unauthenticated, rate-limited or unreachable (expect 0 "
         "where a working `gh` is on PATH; a non-zero count means the live "
         "shapes went unexercised on this runner, not that they are "
         "wrong)".format(TOKEN, n, total))
+    if unconfigured:
+        line += (
+            "; {0} of them because `gh` has no credentials here, which will "
+            "not fix itself -- set GH_TOKEN on the job, or `gh auth login`"
+            .format(unconfigured))
+    return line

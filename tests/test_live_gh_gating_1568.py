@@ -1,24 +1,44 @@
-"""A live `gh` call in the default selection reds on the network (#1568).
+"""A live `gh` call on the per-push critical path (#1568).
 
 `tests/test_watch_radar_gh_prs_859.py::test_live_board_over_this_repo` shells
-out to `gh pr list` and runs inside the ~12,000-test xdist selection. On
-2026-08-12 it was the single failure of a full run whose diff touched only
-`hooks/`, and it passed in isolation seconds later. The red said nothing about
-the change; it said the socket was busy.
+out to `gh pr list`. On 2026-08-12 it was the single failure of a full run whose
+diff touched only `hooks/`, and it passed in isolation seconds later. The red
+said nothing about the change; it said the socket was busy.
 
-The route taken is the third of the three the issue lists, and it is the only
-one that keeps the coverage on both sides:
+**The venue and the classifier are two separate fixes and the first pass only
+did the second.** That pass argued the test should stay in the default
+selection because moving it would cost the coverage it exists for -- a sentence
+resting on a premise nobody checked. The test was guarded by a `gh auth status`
+probe, which exits non-zero on a runner with no credentials, so it had skipped
+on all twelve legs of every CI run since it was written. It was not buying CI
+coverage; deleting the probe did not add any, it converted a permanent skip into
+a red (PR #1586, four legs, on gh's Actions-only "set the GH_TOKEN environment
+variable" message -- which carries no 401, no rate limit and no Go net error, so
+no prose predicate could have caught it).
 
-* the test stays in the default selection, so the live GitHub shapes it exists
-  to exercise are still exercised on every run that *can* reach them;
-* the tier now separates "I could not reach the API" from "the board says X",
+So the test is now `slow`, and in this repo that means it runs on a schedule
+rather than nowhere: `.github/workflows/slow-tests.yml` selects that marker
+daily and now carries `GH_TOKEN` and `pull-requests: read`, so the live path is
+genuinely exercised there -- one leg, once a day, off the path where a rate
+limit can red somebody's diff. That is more coverage than it had, not less.
+
+On top of that venue, the classifier keeps it honest wherever it runs:
+
+* the tier separates "I could not reach the API" from "the board says X",
   as a `RadarUnreachable` subclass of `RadarError` rather than as a prose match
   the caller re-derives -- `tests/_lint_budget.py` argues that predicate at
   length and this is the same one;
+* `RadarUnconfigured` narrows that to the standing case -- `gh` has no
+  credentials, so it refused before asking -- keyed on gh's own exit code 4
+  rather than on its message. Measured on gh 2.50.0: both spellings of "no
+  credentials" exit 4 and nothing else does, a *rejected* token exits 1 with
+  `HTTP 401`, and every product failure exits 1;
 * an unreachable API skips **countably**, carrying `_live_gh.TOKEN`, and
   `conftest` prints the count, its denominator and its population every run
-  including when it is zero. A silently-skipped live test is the absence-read-
-  as-clean shape this repo files against itself, so the skip is not silent.
+  including when it is zero -- breaking out the unconfigured share, because one
+  fixes itself and the other does not. A silently-skipped live test is the
+  absence-read-as-clean shape this repo files against itself, so the skip is
+  not silent.
 
 What is deliberately NOT skipped: any other failure. A malformed argv, a
 response that is not a JSON list, a filter the tier refuses -- all of those are
@@ -37,7 +57,7 @@ import pytest
 
 import _live_gh
 
-ROOT = Path(__file__).parent.parent
+ROOT = REPO = Path(__file__).parent.parent
 WATCH_DIR = ROOT / "presets" / "watch"
 LIVE_MODULE = Path(__file__).parent / "test_watch_radar_gh_prs_859.py"
 LIVE_TEST = "test_live_board_over_this_repo"
@@ -119,6 +139,53 @@ def test_a_gh_failure_that_is_not_transport_stays_a_plain_radar_error(
     assert not isinstance(caught.value, tier.RadarUnreachable), caught.value
 
 
+@pytest.mark.parametrize("stderr", [
+    # The two spellings `gh` uses for the same fact. The second is the one CI
+    # emits, and the one the classifier missed: PR #1586 went red on four legs
+    # with it, because it carries no marker any prose predicate would catch --
+    # no 401, no rate limit, no Go net error.
+    "To get started with GitHub CLI, please run:  gh auth login",
+    "gh: To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN "
+    "environment variable.",
+])
+def test_gh_refusing_for_want_of_credentials_is_unconfigured(
+    monkeypatch, stderr
+) -> None:
+    """Exit 4 is `gh`'s own auth-configuration code, and nothing else uses it.
+
+    Measured on gh 2.50.0: both spellings of "no credentials" exit 4, a
+    *rejected* token exits 1 with `HTTP 401`, and every product failure --
+    unknown flag, unknown subcommand -- exits 1. So the predicate is the exit
+    code, not the message, which is what `tests/_lint_budget.py` argues for and
+    what a prose match here could never have been.
+    """
+    monkeypatch.setattr(tier.subprocess, "run",
+                        lambda *a, **k: _Result(4, "", stderr))
+    with pytest.raises(tier.RadarUnconfigured):
+        tier.live_open_prs({"state": "open"})
+
+
+def test_unconfigured_is_a_kind_of_unreachable_not_a_rival_to_it() -> None:
+    """Everything that treats `RadarUnreachable` as "not a product verdict"
+    must keep doing so without being taught a second name -- the same reason
+    `RadarUnreachable` is itself a `RadarError`."""
+    assert issubclass(tier.RadarUnconfigured, tier.RadarUnreachable)
+
+
+def test_a_rejected_token_is_not_unconfigured(monkeypatch) -> None:
+    """Credentials were present and the API refused them. That request landed.
+
+    It is still `RadarUnreachable` -- nothing about the board was learned --
+    but it is not the standing, configurational absence, and conflating the two
+    would make the unconfigured count unreadable.
+    """
+    monkeypatch.setattr(tier.subprocess, "run",
+                        lambda *a, **k: _Result(1, "", "HTTP 401: Bad credentials"))
+    with pytest.raises(tier.RadarUnreachable) as caught:
+        tier.live_open_prs({"state": "open"})
+    assert not isinstance(caught.value, tier.RadarUnconfigured), caught.value
+
+
 def test_a_gh_killed_by_a_signal_is_unreachable(monkeypatch) -> None:
     """`subprocess` reports `-N`, and stderr is usually empty.
 
@@ -167,7 +234,7 @@ def test_the_subclass_still_reaches_every_existing_radar_error_handler() -> None
 
 def test_the_guard_skips_an_unreachable_api_carrying_the_token() -> None:
     with pytest.raises(pytest.skip.Exception) as caught:
-        with _live_gh.reachable(tier.RadarUnreachable):
+        with _live_gh.reachable(tier.RadarUnreachable, tier.RadarUnconfigured):
             raise tier.RadarUnreachable("gh refused the query (rate limit)")
     assert _live_gh.TOKEN in str(caught.value), caught.value
     assert "rate limit" in str(caught.value), caught.value
@@ -176,21 +243,50 @@ def test_the_guard_skips_an_unreachable_api_carrying_the_token() -> None:
 def test_the_guard_does_not_swallow_a_product_error() -> None:
     """The arm that makes this a gate rather than a tolerance."""
     with pytest.raises(tier.RadarError):
-        with _live_gh.reachable(tier.RadarUnreachable):
+        with _live_gh.reachable(tier.RadarUnreachable, tier.RadarUnconfigured):
             raise tier.RadarError("radar: gh-prs tier cannot honour 'nope'")
 
 
 def test_the_guard_lets_an_assertion_through() -> None:
     with pytest.raises(AssertionError):
-        with _live_gh.reachable(tier.RadarUnreachable):
+        with _live_gh.reachable(tier.RadarUnreachable, tier.RadarUnconfigured):
             raise AssertionError("the board was wrong")
+
+
+def test_the_guard_skips_an_unconfigured_runner_with_its_own_reason() -> None:
+    """Same skip, different verdict. The reader's action differs: a blip fixes
+    itself and an unset token does not."""
+    with pytest.raises(pytest.skip.Exception) as caught:
+        with _live_gh.reachable(tier.RadarUnreachable, tier.RadarUnconfigured):
+            raise tier.RadarUnconfigured("gh has no credentials here")
+    text = str(caught.value)
+    assert _live_gh.TOKEN in text, text
+    assert _live_gh.UNCONFIGURED in text, text
+
+
+def test_an_unconfigured_skip_is_also_counted_as_a_run_that_missed_the_api(
+) -> None:
+    """The nesting is deliberate: the total must not lose the unconfigured
+    ones, or `N of M did not reach the API` becomes false."""
+    assert _live_gh.TOKEN in _live_gh.UNCONFIGURED
 
 
 def test_the_verdict_line_names_its_denominator() -> None:
     """`N of M`, never a bare `N` (#1274)."""
-    line = _live_gh.verdict_line(2, 97)
+    line = _live_gh.verdict_line(2, 0, 97)
     assert _live_gh.TOKEN in line
     assert "2 of 97" in line
+
+
+def test_the_verdict_line_breaks_out_the_unconfigured_share() -> None:
+    """One line, two numbers. Sharing a single count would make the second
+    unreadable: after a token is set, its expected value is 0 and a non-zero
+    one is a finding about the workflow -- but only if it is not summed with a
+    transient blip whose expected value is not 0."""
+    line = _live_gh.verdict_line(3, 3, 97)
+    assert "3 of 97" in line, line
+    assert "3 of them" in line or "3 because" in line, line
+    assert "will not fix itself" in line, line
 
 
 def test_the_population_line_says_what_the_count_is_not() -> None:
@@ -208,20 +304,39 @@ def _live_test_node() -> ast.FunctionDef:
     raise AssertionError(LIVE_TEST + " is no longer in " + LIVE_MODULE.name)
 
 
-def test_the_live_test_is_still_in_the_default_selection() -> None:
-    """Route 1 -- mark it out of the default run -- was considered and refused.
+def test_the_live_test_runs_somewhere() -> None:
+    """It must run in CI. WHERE is the decision; "nowhere" is the failure.
 
-    A `slow`/`benchmark` marker or a `skip` decorator here costs the coverage
-    the test was written for: the fixtures cannot reach the shapes real GitHub
-    produces, which is what section 8 of that module exists to say. If somebody
-    decides that trade is right after all, this test is the place to argue it.
+    This replaces an earlier assertion that the test carried no marker at all,
+    which was written on a premise nobody checked: that being in the default
+    selection meant being exercised in CI. It was not. `_gh_ready()` ran
+    `gh auth status`, which exits non-zero on a runner with no credentials, so
+    the test skipped on all twelve legs of every run since it was written --
+    and the old assertion could not see that, because "in the default selection
+    and skipping forever" satisfied it exactly.
+
+    So the pin is the stronger property. The test is marked `slow`, and
+    `.github/workflows/slow-tests.yml` -- which exists so that a test excluded
+    from the per-push legs runs *less often* rather than *nowhere* -- gives its
+    job the token that lets it reach the API. Either half missing puts the live
+    shapes back to being exercised on nobody's machine but a maintainer's.
     """
     decorators = [ast.unparse(d) for d in _live_test_node().decorator_list]
-    assert not decorators, (
-        LIVE_TEST + " grew " + repr(decorators) + ". Moving it out of the "
-        "default selection buys quiet at the price of the live coverage -- "
-        "#1568 chose the third route instead, and the skip is countable so "
-        "nobody has to trade one for the other.")
+    assert "pytest.mark.slow" in decorators, (
+        LIVE_TEST + " is not marked `slow`, so it sits on the per-push "
+        "critical path where a live API call reds somebody's unrelated diff -- "
+        "which is the whole of #1568. Decorators: " + repr(decorators))
+
+    workflow = (REPO / ".github" / "workflows" / "slow-tests.yml").read_text(
+        encoding="utf-8")
+    assert "GH_TOKEN" in workflow, (
+        "slow-tests.yml does not set GH_TOKEN, so the one job that selects "
+        "this test cannot authenticate and it skips there too -- `slow` would "
+        "then mean `nowhere`, which that workflow's own header exists to "
+        "refuse.")
+    assert "pull-requests: read" in workflow, (
+        "slow-tests.yml does not grant `pull-requests: read`, so `gh pr list` "
+        "cannot answer with the token it is given")
 
 
 def test_the_live_test_routes_its_failure_through_the_guard() -> None:
