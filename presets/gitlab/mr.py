@@ -1089,7 +1089,15 @@ def main() -> int:
     if slim:
         iid = d.get("iid", arg)
         state = d.get("state", "?")
-        merge_status = d.get("merge_status", "?")
+        # Same expression as `:full` below, and it used to be `.get(k, "?")`
+        # (#628). Two ways that answered worse on the render read most often:
+        # a present-but-empty `merge_status` never reached the default, so the
+        # line rendered blank — which reads as a rendering bug rather than an
+        # unanswered question; and GitLab deprecated `merge_status` in favour
+        # of `detailed_merge_status`, so an instance that has stopped
+        # populating the old key got `?` over a value already in this payload.
+        merge_status = (d.get("merge_status")
+                        or d.get("detailed_merge_status") or "?")
         has_conflicts = d.get("has_conflicts", False)
         fresh, pipe_reason = _latest_pipeline(iid)
         pipeline = fresh or _as_dict(d.get("pipeline")) or _as_dict(d.get("head_pipeline"))
