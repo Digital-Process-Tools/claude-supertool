@@ -1545,7 +1545,11 @@ had already healed.
 and the tool now says so instead of implying otherwise.** The bridge sends a
 JSON-RPC *notification* — no id, no response, nothing to await — and
 `channel.ts` never writes back to the producer connection either. There is no
-ack to read, at either end. So the answer has three states:
+ack to read, at either end. **Whether a session is *subscribed* to the channel
+is a different question, and half of it is readable from outside** — see the
+row below and
+[#1543](https://github.com/Digital-Process-Tools/claude-supertool/issues/1543).
+So the answer has five states:
 
 | State | Exit | What is actually known |
 |---|---|---|
@@ -1553,6 +1557,46 @@ ack to read, at either end. So the answer has three states:
 | `FORWARDING` | 0 | A consumer is bound and its published counters are fresh: N lines read, N forwarded, N dropped, last forwarded at T |
 | `CANNOT DETERMINE` | 3 | Bound, but publishing no counters, or counters written by a pid that is gone, or counters that stopped refreshing, or counters with no readable `forwarded` number, or a health file that is a symlink and was not followed. This is the state the old tooling reported as green. It now names the process holding the socket — see below |
 | `CONTRADICTED` | 4 | The process holding the socket is not the one the health file names ([#1192](https://github.com/Digital-Process-Tools/claude-supertool/issues/1192)). A finding, not a degraded read — a forged file, or a stale one left beside a legitimate consumer |
+| `BOUND, NOT SUBSCRIBED` | 5 | A consumer is bound, verified and counting, and **no session is subscribed to its channel** ([#1543](https://github.com/Digital-Process-Tools/claude-supertool/issues/1543)): the events it reads are handed to a transport nobody is listening on, and discarded |
+
+**`BOUND, NOT SUBSCRIBED` is the state every other row above renders as a quiet
+morning.** On 2026-08-13 the channel over this clone reported `FORWARDING` with
+a bound socket, a verified socket-holder and `0 lines read, 0 forwarded` — every
+line true — while the session had refused the channel tag at startup with
+`server:supertool-channel - no MCP server configured with that name`. It cost
+about an hour, and the only thing that caught it was sending an event by hand
+and watching for it in the other terminal.
+
+**Subscription is only partly observable from outside the target session, and
+the op claims exactly the part that is.** A channel reaches a session only when
+that session was started with `--dangerously-load-development-channels
+server:NAME` *and* `NAME` is a server the harness has **configured** — both
+halves measured against claude 2.1.219 in
+[#1544](https://github.com/Digital-Process-Tools/claude-supertool/issues/1544).
+So two facts are read: the process that spawned the socket-holder (`ps`, via the
+consumer's ppid — the harness spawns an MCP server as a child of the session),
+and whether the tag in its argv names a configured server (`claude mcp get`, the
+same question `bin/supertool-workspace` asks before it registers the consumer).
+
+| What is read | Verdict |
+|---|---|
+| The session carries no channel tag | `BOUND, NOT SUBSCRIBED` |
+| The tag names a server the harness does not have configured — what a `--mcp-config` server produces | `BOUND, NOT SUBSCRIBED` |
+| The socket-holder has been reparented to pid 1, so its session has exited | `BOUND, NOT SUBSCRIBED` |
+| The tag names a configured server | `FORWARDING` |
+| No `ps`, no `claude` on PATH, an argv that does not tokenise, a spawner not recognisable as a session, a tag list whose values could be one name with a space | `CANNOT DETERMINE`, **with the reason** |
+
+The last row is the point rather than the fallback: a probe that could not run
+must never render as the answer it was looking for. What the positive arm does
+*not* establish is said on the line itself — that the configured server the tag
+names is the one holding **this** socket. Two channel-capable servers under one
+session satisfy the two halves separately, and closing that would take a third
+probe that still could not see inside the session.
+
+**It costs a `claude` invocation, ~3s measured 2026-08-13**, so `channel:health`
+is no longer instant, and `radar` pays it once per run — only when the board has
+counted an `accepted` emit, which is the arm that would otherwise read as
+delivery.
 
 **`CONTRADICTED` is a fourth code and not a flavour of 3**, because "I could
 not tell" and "I can tell, and it is wrong" call for different actions. Folding
