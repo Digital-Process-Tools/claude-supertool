@@ -365,6 +365,18 @@ class _BudgetAfterSpawn:
         self.waited = time.monotonic() - begin
         return started + self.waited + self.budget
 
+    # Orderable against an int since #1615: the recovery calls now take the
+    # smaller of `_RECOVER_TIMEOUT` and what is left of the push deadline, and
+    # `min()` has to be able to see that this object is the smaller one. The
+    # comparison is on the nominal budget — the lazy part is *when* the clock
+    # starts, not how long it runs — so `min` keeps this object and `__radd__`
+    # still arms the barrier inside `subprocess.run`.
+    def __lt__(self, other) -> bool:
+        return self.budget < other
+
+    def __gt__(self, other) -> bool:
+        return self.budget > other
+
     def __str__(self) -> str:
         return str(self.budget)
 
