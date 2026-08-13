@@ -19,6 +19,7 @@ end.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -50,7 +51,8 @@ def _probe_file(tmp_path: Path) -> str:
 
     An absolute path would be interpolated into the payloads below, and on
     Windows that is `C:\\Users\\...` — a drive-letter colon the op tokenizer
-    splits on, and backslashes a TOML basic string would read as escapes.
+    splits on, and backslashes that both a JSON string and a TOML basic string
+    would read as escapes.
     Neither has anything to do with what is under test, so the path never
     leaves the cwd.
     """
@@ -58,53 +60,47 @@ def _probe_file(tmp_path: Path) -> str:
     return "probe.txt"
 
 
-# (id, op, payload template, the key stem the caller must still be able to find)
+# These five payloads are JSON, and that is load-bearing rather than taste.
+#
+# A key carrying a newline has to be a QUOTED key, and the fallback TOML parser
+# this repo ships for Python <3.11 (`_mini_toml_loads`) supports bare keys
+# only: `"kk" = 1`, byte-identical in meaning to `kk = 1`, dies at `bad key at
+# offset 0` before dispatch is ever reached. The first version of this test was
+# TOML and so was green on 3.11+ and red on the 3.9/3.10 legs with a parse
+# error, pinning nothing at all on a third of the supported matrix.
+#
+# JSON goes through `json.loads` on every supported interpreter, so these cases
+# reach the same five refusal sites identically everywhere. Do not convert them
+# back to TOML while that parser gap stands.
+#
+# (id, op, payload, key stem, the forged line the caller tried to write)
 def _cases(probe: str):
-    forged_key_lower = "kk" + chr(92) + "n" + _FORGED_LOWER
-    forged_key_upper = "KK" + chr(92) + "n" + _FORGED_UPPER
+    forged_key_lower = "kk" + NL + _FORGED_LOWER
+    forged_key_upper = "KK" + NL + _FORGED_UPPER
     return [
         # _batch_positional_fields: no declared field order (site 1).
         ("batch-no-order", "batch:@-",
-         NL.join([
-             "[[ops]]",
-             'op = "git-diff"',
-             '"' + forged_key_lower + '" = 1',
-             '"bb" = 2',
-         ]) + NL,
+         json.dumps({"ops": [
+             {"op": "git-diff", forged_key_lower: 1, "bb": 2}]}),
          "kk", _FORGED_LOWER),
         # _batch_positional_fields: unknown field (site 2).
         ("batch-sub-op", "batch:@-",
-         NL.join([
-             "[[ops]]",
-             'op = "tree"',
-             'path = "."',
-             '"' + forged_key_lower + '" = 1',
-         ]) + NL,
+         json.dumps({"ops": [
+             {"op": "tree", "path": ".", forged_key_lower: 1}]}),
          "kk", _FORGED_LOWER),
         # _read_op_from_payload: unknown field (site 3).
         ("read-op-payload", "grep:@-",
-         NL.join([
-             'pattern = "a"',
-             'path = "' + probe + '"',
-             '"' + forged_key_lower + '" = 1',
-         ]) + NL,
+         json.dumps({"pattern": "a", "path": probe, forged_key_lower: 1}),
          "kk", _FORGED_LOWER),
         # _at_file_to_parts: unknown field (site 4, added by #1551).
         ("at-file-to-parts", "edit:@-",
-         NL.join([
-             'path = "' + probe + '"',
-             'old = "a"',
-             'new = "b"',
-             '"' + forged_key_lower + '" = 1',
-         ]) + NL,
+         json.dumps({"path": probe, "old": "a", "new": "b",
+                     forged_key_lower: 1}),
          "kk", _FORGED_LOWER),
         # _dispatch_impl batch wrapper: unknown key (site 5, added by #1551).
         # Raw keys, so the case survives and an uppercase forge is reachable.
         ("batch-wrapper", "batch:@-",
-         NL.join([
-             'ops = ["read:' + probe + '"]',
-             '"' + forged_key_upper + '" = 1',
-         ]) + NL,
+         json.dumps({"ops": ["read:" + probe], forged_key_upper: 1}),
          "KK", _FORGED_UPPER),
     ]
 
