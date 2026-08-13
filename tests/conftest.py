@@ -30,6 +30,14 @@ try:
 except ImportError:  # pragma: no cover - only in the synthetic-repo suites
     _symlink = None
 
+# Same tolerance, same reason (#1360): the synthetic-repo suites copy this file
+# alone, so `_lint_budget.py` is not there either. Reported in words rather than
+# omitted, for the same reason as above.
+try:
+    import _lint_budget  # noqa: E402
+except ImportError:  # pragma: no cover - only in the synthetic-repo suites
+    _lint_budget = None
+
 # `presets/mcp/_paths.py` probes its platform capabilities at *import*
 # (`_LISTDIR_TAKES_FD`, `_RELATIVE_OPS`, `_ANCESTRY_DIR_FD`) precisely so that a
 # test double installed over `os.listdir`/`os.chmod`/`os.open` is never read as
@@ -253,21 +261,31 @@ _POPULATION = (
 
 
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
-    """Count the symlink skips apart from the other ~680 (#1143), and say so.
+    """Resolve the suite's skip count into its stated reasons, and say so.
 
     `688 skipped` is a number. `N of 688 skipped, because this runner has no
     create-symlink privilege` is a fact somebody can act on -- it is the
     difference between an absence in the world and an absence the tooling
-    produced. Printed whether the count is zero or not: silence would be
-    indistinguishable from not having looked, and the denominator and
-    `_POPULATION` are printed with it so a non-zero count is not read as a
-    total either (#1274).
+    produced. Two reasons are broken out that way, each in its own helper below:
+    the create-symlink privilege (#1143) and the post-edit lint budget (#1360).
+
+    Both print whether the count is zero or not -- silence would be
+    indistinguishable from not having looked -- and each prints its denominator
+    and its population next to the number, so a non-zero count is not read as a
+    total either (#1274). Neither is reached through the other: this hook used to
+    return early when `_symlink` was absent from the tree, which would now omit
+    the lint line silently -- the same absence, one layer up (#1360).
     """
+    skipped = terminalreporter.stats.get("skipped", []) or []
+    _symlink_summary(terminalreporter, skipped)
+    _lint_budget_summary(terminalreporter, skipped)
+
+
+def _symlink_summary(terminalreporter, skipped):
     if _symlink is None:
         terminalreporter.write_line(
             "symlink capability: NOT CHECKED -- tests/_symlink.py is not in this tree")
         return
-    skipped = terminalreporter.stats.get("skipped", []) or []
     n = 0
     for report in skipped:
         longrepr = getattr(report, "longrepr", None)
@@ -284,6 +302,30 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
             f"{_symlink.TOKEN}: unavailable -- {n} of {len(skipped)} skipped tests "
             f"did NOT run for this reason. Reason: {why}")
     terminalreporter.write_line(_POPULATION)
+
+
+def _lint_budget_summary(terminalreporter, skipped):
+    """Count the lint-budget skips apart from the rest (#1360).
+
+    Same shape as the symlink line above, and for the same reason: a post-edit
+    lint that timed out means the verdict path was never exercised on this
+    runner, and a suite that reports it as a pass is the absence-read-as-presence
+    defect this repo keeps filing. Printed at zero too -- silence is
+    indistinguishable from not having looked -- and with its denominator and its
+    population, so a non-zero count is not read as a total (#1274).
+    """
+    if _lint_budget is None:
+        terminalreporter.write_line(
+            "lint budget: NOT CHECKED -- tests/_lint_budget.py is not in this tree")
+        return
+    n = 0
+    for report in skipped:
+        longrepr = getattr(report, "longrepr", None)
+        text = longrepr[2] if isinstance(longrepr, tuple) and len(longrepr) > 2 else str(longrepr)
+        if _lint_budget.TOKEN in str(text):
+            n += 1
+    terminalreporter.write_line(_lint_budget.verdict_line(n, len(skipped)))
+    terminalreporter.write_line(_lint_budget.POPULATION)
 
 
 # Git exports these to every hook it runs. A hook that invokes pytest (our

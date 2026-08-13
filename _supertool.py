@@ -10213,8 +10213,13 @@ def _vim_render_diff(before: str, after: str) -> str:
 
 _LINT_TIMEOUT_DEFAULT = 5
 
+#: The one decline that is an environment limit rather than a finding: the
+#: checker was there, it started, and the budget ran out. Named so the suite can
+#: key on the product's own declaration instead of a copied literal (#1360).
+_LINT_TIMEOUT_PREFIX = "--- POST-EDIT LINT TIMED OUT"
+
 _LINT_DECLINE_PREFIXES = (
-    "--- POST-EDIT LINT TIMED OUT",
+    _LINT_TIMEOUT_PREFIX,
     "--- POST-EDIT LINT DECLINED",
 )
 
@@ -10314,7 +10319,7 @@ def _vim_render_lint(path: str) -> str:
         )
     except subprocess.TimeoutExpired:
         return (
-            f"--- POST-EDIT LINT TIMED OUT — {tool} ({timeout}s) ---\n"
+            f"{_LINT_TIMEOUT_PREFIX} — {tool} ({timeout}s) ---\n"
             "lint did not run to completion; the file was NOT checked. "
             "Raise SUPERTOOL_LINT_TIMEOUT if this recurs.\n"
         )

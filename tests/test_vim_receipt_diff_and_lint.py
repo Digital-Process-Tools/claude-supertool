@@ -14,6 +14,8 @@ from pathlib import Path
 
 import supertool
 
+import _lint_budget
+
 
 # ---------------------------------------------------------------------------
 # B) Unified diff section
@@ -76,6 +78,7 @@ def test_php_lint_success_when_php_available(tmp_path: Path) -> None:
     f = tmp_path / "x.php"
     f.write_text("<?php\necho 'hi';\n")
     out = supertool.op_vim(str(f), "G␞oecho 'bye';")
+    _lint_budget.require_lint_verdict(out)
     assert "--- lint: php -l ---" in out
     assert "FAILED" not in out
 
@@ -87,6 +90,7 @@ def test_php_lint_failure_makes_it_obvious(tmp_path: Path) -> None:
     f.write_text("<?php\necho 'hi';\n")
     # Break syntax: append a stray '}' on a new line
     out = supertool.op_vim(str(f), "G␞o}")
+    _lint_budget.require_lint_verdict(out)
     assert "POST-EDIT LINT FAILED" in out
     assert "php -l" in out
 
@@ -114,15 +118,11 @@ def test_xml_lint(tmp_path: Path) -> None:
     # Break it
     out = supertool.op_vim(str(f), "/<\\/root>␞x")
     if shutil.which("xmllint"):
-        # A decline is a third state, not a lenient pass: this test still
-        # demands a verdict, and says which of the two it did not get (#553).
-        assert "POST-EDIT LINT TIMED OUT" not in out, (
-            "xmllint declined instead of reaching a verdict — the runner blew "
-            "the lint budget, not the code. Raise SUPERTOOL_LINT_TIMEOUT "
-            "(conftest sets it for the suite). The decline itself is pinned by "
-            "test_vim_receipt_reports_a_lint_decline_not_a_verdict, not here.\\n"
-            + out
-        )
+        # A decline is a third state, and it is neither a verdict nor a lenient
+        # pass: the budget is an environment limit, so this site skips
+        # countably instead of reddening (#1360). Raising the budget is what
+        # #553 and #1360 have each already bought once.
+        _lint_budget.require_lint_verdict(out)
         assert "POST-EDIT LINT FAILED" in out
         assert "xmllint" in out
     else:
@@ -177,6 +177,7 @@ def test_py_lint_failure(tmp_path: Path) -> None:
     f.write_text("def f():\n    return 1\n")
     # Break syntax with stray colon
     out = supertool.op_vim(str(f), "G␞o:bad syntax")
+    _lint_budget.require_lint_verdict(out)
     assert "POST-EDIT LINT FAILED" in out
     assert "py_compile" in out
 
@@ -185,6 +186,7 @@ def test_py_lint_success(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("def f():\n    return 1\n")
     out = supertool.op_vim(str(f), "G␞oprint('ok')")
+    _lint_budget.require_lint_verdict(out)
     assert "--- lint: py_compile ---" in out
     assert "FAILED" not in out
 
@@ -224,6 +226,7 @@ def test_vim_lint_fail_receipt_warns_no_rollback(tmp_path):
     original = "def foo():\n    if True:\n        pass\n"
     f.write_text(original)
     out = supertool.op_vim(str(f), "/if True:\x1bo    broken_indent = 1\x1b")
+    _lint_budget.require_lint_verdict(out)
     assert "POST-EDIT LINT FAILED" in out
     assert "file modified despite syntax fail" in out, (
         f"receipt should warn the file was modified despite lint fail, got:\n{out}"
@@ -322,6 +325,7 @@ def test_the_python_lint_runs_the_interpreter_that_is_running_supertool(
     f.write_text("a = 1\n")
     out = supertool.op_vim(str(f), "G␞ob = 2")
 
+    _lint_budget.require_lint_verdict(out)
     assert "--- lint: py_compile ---" in out
     assert seen.get("cmd"), f"py_compile never spawned:\n{out}"
     assert seen["cmd"][0] == sys.executable, (
