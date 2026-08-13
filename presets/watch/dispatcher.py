@@ -127,9 +127,12 @@ def cmd_watch(parts: list[str]) -> int:
         return 1
     if status == "unclaimable":
         # The provenance rather than a fixed variable name (#1477): under
-        # `SUPERTOOL_WATCH_NAME` the state directory is derived and
-        # `SUPERTOOL_WATCH_STATE_DIR` is unset, so naming it here would send the
-        # operator to a knob that is not in force.
+        # `SUPERTOOL_WATCH_NAME` the state directory is derived, so naming
+        # `SUPERTOOL_WATCH_STATE_DIR` here would send the operator to a knob
+        # that is not the one in force. Derived no longer implies that variable
+        # is unset — a poller re-exec'd through `poller_env` is handed the
+        # derivation in it — and `state_dir_provenance` says which of the two
+        # this process is (#1534).
         print(f"ERROR: could not claim the slot for {source}:{watcher_id} — its "
               f"pid file at {transport.pid_path(source, watcher_id)} could not "
               f"be created. Nothing was started, and nothing here knows whether "

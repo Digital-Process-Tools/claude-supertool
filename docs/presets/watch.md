@@ -1199,9 +1199,21 @@ believing in a private channel they do not have.
 that — but moving the base is a migration for every running poller and belongs
 in its own issue. What the name does buy for free is that the directory it
 derives is created `0700` rather than inheriting `/tmp`'s mode. Only a *derived*
-directory is created: a `SUPERTOOL_WATCH_STATE_DIR` the operator supplied stays
+directory is created: a `SUPERTOOL_WATCH_STATE_DIR` naming some other path stays
 unanswerable when it is missing, and `watch` reports that rather than
 manufacturing it ([#693](https://github.com/Digital-Process-Tools/claude-supertool/issues/693)).
+
+"Derived" is a question about the **value** — the state directory equals what
+`SUPERTOOL_WATCH_NAME` derives — and not about which variable delivered it
+([#1534](https://github.com/Digital-Process-Tools/claude-supertool/issues/1534)).
+It used to be "the operator did not set `SUPERTOOL_WATCH_STATE_DIR`", and
+`poller_env` sets it, so a re-exec'd poller read the directory *its own parent
+derived* as somebody else's and skipped every establishment check for the life
+of the process. The parent verified once before the spawn and nothing
+re-established it after. Equality with the derivation survives an exec because
+the derivation is reproducible, so nothing extra has to be carried across it —
+and an environment naming a *different* directory is the operator-supplied case
+it always was.
 
 **And no read path creates it either, so the reads have to answer over a
 directory that is not there yet.** Between naming a channel and the first
@@ -1293,6 +1305,12 @@ inherited, and re-deriving after an exec is only equivalent while every input
 survives it. A poller that resolved a different socket from its parent is the
 #1309 split with nobody positioned to notice, so what the parent decided is
 what the child is given.
+
+That pinning is also what made the child stop verifying its own state directory
+until [#1534](https://github.com/Digital-Process-Tools/claude-supertool/issues/1534):
+an exported path looked operator-supplied on the far side of the exec. Nothing
+about `poller_env` changed — what changed is what `resolve` reads off the value
+it exports.
 
 **`radar` says when a fleet is delivering somewhere else.** The delivery
 banner reads each watcher's own `sock_path` and compares it with the socket
