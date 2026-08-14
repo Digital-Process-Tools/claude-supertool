@@ -1,8 +1,19 @@
 """#1130 - the `presets/git/` audit table, as a build gate instead of a paragraph.
 
 Third and largest of the forged-boundary audits: #1105 read `presets/github`,
-#1119 read `presets/gitlab`, and this one reads `presets/git` - 38
-`str.splitlines()` call sites across 27 enclosing functions in 11 files.
+#1119 read `presets/gitlab`, and this one reads `presets/git` - 27
+`str.splitlines()` call sites across 24 enclosing functions in 9 files.
+
+Those numbers were 38 / 27 / 11 until #1681, which narrowed the eleven sites in
+six functions that render EVERY line of a log stream, counted. That is a
+different question from the one this register asks, and the register could not
+have answered it: the deciding rule below asks whether a forged row is
+survivable, and at an every-line render it is - a `NOT QUOTED, harmless` entry
+saying "a forged split can only inflate the count" is a correct answer to the
+question it was asked. What made those eleven worth narrowing anyway is that the
+inflated count IS the product there, and that narrowing the split alone would
+have left the separator live in a rendered row; the repair is `split_lines`
+plus `visible()`, and it is not a repair this table's third arm reaches for.
 
 Same construction as `test_preset_twin_splitlines_register_1119.py`, and the
 same reason: a table in a changelog fragment is a statement about the day it was
@@ -26,8 +37,10 @@ branch and one commit subject each carrying a U+2028:
 * `blame --line-porcelain` -> raw, in `summary` and in the content line.
 * stderr -> never a pathname, so never in scope at all.
 
-So the rule answered for **3 of the 27 entries below**, and was quoted at all
-27. Those three are the readers that read a path and nothing else. The rest are
+So the rule answered for **3 of the 27 entries then below**, and was quoted at
+all 27. Those three are the readers that read a path and nothing else - six,
+now that #1681 has narrowed away every other split in three of those functions.
+The rest are
 not defects - most are safe on grounds that are just as good and are not this
 one - but "safe by quoting" was the wrong sentence in twenty-four places, and a
 wrong reason is what a later reader extends to the next call site.
@@ -37,12 +50,15 @@ three, and `test_every_register_entry_names_the_ground_it_rests_on` refuses an
 entry that names none:
 
 * ``QUOTED PATH`` - the reader reads a pathname and git quoted it first. The
-  rule as published, applied where it holds. Three entries.
+  rule as published, applied where it holds. Six entries: three, plus the three
+  functions #1681 emptied of everything else (`checkout.py::main`,
+  `diverge.py::main`, `status.py::main` are each down to their one
+  `--porcelain` / `--name-status` read).
 * ``NOT QUOTED, harmless`` - quoting does not reach this stream, and the entry
   says what does: the harm is fail-safe (a forged row can only refuse), or
   fail-closed, or inflates a count that is loud in the direction it inflates,
   or the text's author is the local operator rather than a stranger.
-  Twenty-three entries.
+  Seventeen entries.
 * ``NOT QUOTED, open`` - quoting does not reach it and the harm is real. One:
   `investigate.py`'s blame parse. Named here rather than left implied, and
   carried in `.claude/jit-context/paths/00-manual/presets-git.md`.
@@ -83,8 +99,8 @@ GROUNDS = ("QUOTED PATH - ", "NOT QUOTED, harmless - ", "NOT QUOTED, open - ")
 
 #: How many entries rest on each, published so a drift is one visible line in a
 #: diff rather than a re-derivation. Asserted exact in both directions.
-GROUND_TALLY = {"QUOTED PATH - ": 3,
-                "NOT QUOTED, harmless - ": 23,
+GROUND_TALLY = {"QUOTED PATH - ": 6,
+                "NOT QUOTED, harmless - ": 17,
                 "NOT QUOTED, open - ": 1}
 
 #: Phrases that state the argument #1652 retired. An entry may describe it in
@@ -119,12 +135,11 @@ REGISTER: dict[str, str] = {
 
     # -- checkout.py --------------------------------------------------------
     "presets/git/checkout.py::main":
-        "NOT QUOTED, harmless - two sites, and only one is a path read. "
-        "`status --porcelain=v1` is quoted and is counted into "
-        "staged/unstaged/untracked, where a forged row can only inflate a "
-        "count. `log -3 --format=%h %ad %an | %s` is NOT quoted - a subject "
-        "carries U+2028 raw - and is rendered as three indented lines, parsed "
-        "for nothing.",
+        "QUOTED PATH - one site now. `status --porcelain=v1` is quoted and is "
+        "counted into staged/unstaged/untracked, never rendered per line, so a "
+        "forged row could only inflate a count - and a separator cannot reach "
+        "it anyway. The `log -3` render beside it WAS the second site and is "
+        "on `_untrusted.split_lines` + `visible()` since #1681.",
 
     # -- commit.py ----------------------------------------------------------
     "presets/git/commit.py::_with_coauthor":
@@ -140,10 +155,11 @@ REGISTER: dict[str, str] = {
 
     # -- diverge.py ---------------------------------------------------------
     "presets/git/diverge.py::main":
-        "NOT QUOTED, harmless - two sites, one of each. Log subjects are not "
-        "quoted and `diff --name-status` rows are; both are rendered as a "
-        "capped list with a count beside it, nothing is parsed out of either, "
-        "and a forged split can only inflate the count it prints.",
+        "QUOTED PATH - one site now: `diff --name-status`, whose every field "
+        "is a pathname and is octal-quoted before this split sees it. The log "
+        "read beside it was the second site and is on "
+        "`_untrusted.split_lines` + `visible()` since #1681 - a subject is not "
+        "a pathname, and `len(shown)` is printed next to the rows.",
 
     # -- investigate.py -----------------------------------------------------
     "presets/git/investigate.py::main":
@@ -185,17 +201,11 @@ REGISTER: dict[str, str] = {
         "QUOTED PATH - `status --porcelain`, printed as a 'you forgot to "
         "commit this' list rather than parsed. Quoting applies and is on; a "
         "forged row only adds to a warning that exists to be noticed.",
-    "presets/git/push.py::_discarded_by_force":
-        "NOT QUOTED, harmless - `log %h %an: %s` over the commits a force-push "
-        "discarded. Neither an author nor a subject is quoted, so a separator "
-        "in one does reach the split - and it INFLATES that list, the loud "
-        "direction, on the one check here whose failure must never read as "
-        "reassurance.",
-    "presets/git/push.py::_incoming_commits":
-        "NOT QUOTED, harmless - the same unquoted log shape for commits the "
-        "remote added. `behind` is the length of this list and drives a "
-        "warning plus a cap line; a forged split can inflate it and cannot "
-        "hide a commit.",
+    # `_discarded_by_force` and `_incoming_commits` were here, both on the
+    # "inflates a count, in the loud direction" ground - which is true and was
+    # not enough (#1681). The inflated count IS the receipt at both: one is the
+    # only statement `git-push` makes about what a force-push destroyed, the
+    # other is `behind`. Both are on `_untrusted.split_lines` + `visible()`.
     "presets/git/push.py::_recover_by_rebase":
         "QUOTED PATH - `diff --name-only --diff-filter=U` after a failed "
         "rebase. A non-empty list selects the conservative arm - leave the "
@@ -256,22 +266,21 @@ REGISTER: dict[str, str] = {
 
     # -- status.py ----------------------------------------------------------
     "presets/git/status.py::main":
-        "NOT QUOTED, harmless - five sites, one of which is a path read. "
-        "`branch -vv` is DEAD (its only assignment, `current_branch`, is never "
-        "read; the render uses `rev-parse`); `for-each-ref` refname-TAB-track "
-        "is unquoted, but a refname cannot carry a TAB, so a fragment has no "
-        "track field and the `'ahead' in track` test drops it; log subjects "
-        "and `stash list` are unquoted and rendered with a count; only "
-        "`status --porcelain=v1` is a quoted path read.",
+        "QUOTED PATH - one site now, of the five this entry used to cover: "
+        "`status --porcelain=v1`. The `branch -vv` split was DEAD and is "
+        "deleted; `for-each-ref`, the `log -5` render and `stash list` are on "
+        "`_untrusted.split_lines` + `visible()` since #1681. The `for-each-ref` "
+        "one is why the old entry was wrong rather than merely incomplete: it "
+        "argued a fragment is dropped by the `'ahead' in track` test, which is "
+        "true and means the SURVIVING row is rendered under a truncated "
+        "refname no branch here has.",
 
     # -- trail.py -----------------------------------------------------------
-    "presets/git/trail.py::main":
-        "NOT QUOTED, harmless - two pickaxe log reads, rendered and counted, "
-        "plus a `git show` hunk extractor keyed on `diff --git` / `@@`. Only "
-        "the `diff --git` header carries a quoted path; subjects and hunk "
-        "content do not. Left alone because its output is a search render, not "
-        "a review gate - the worst a forged `@@` does is drop context lines "
-        "from a display the reader is already reading.",
+    # `trail.py::main` was here with three sites, on the ground that its output
+    # is a search render rather than a review gate. #1681 narrowed all three,
+    # and one of them was never `forges` at all: the pickaxe render feeds
+    # `c.split()[0]` back to `git show` as argv, and `git show --output=<file>`
+    # writes that file - so a commit subject chose a path on the reader's disk.
 
     # -- worktrees.py -------------------------------------------------------
     "presets/git/worktrees.py::parse_worktree_list":
@@ -361,6 +370,17 @@ def test_the_narrowed_readers_did_not_quietly_revert() -> None:
         ("presets/git/worktrees.py::remote_branch_names",
          "a refname is not a pathname and check-ref-format accepts U+2028, so "
          "one published ref could become two records (#1654)"),
+        ("presets/git/push.py::_discarded_by_force",
+         "the list length is the only statement git-push makes about what a "
+         "force-push destroyed, and a discarded commit's own subject chose it "
+         "(#1681)"),
+        ("presets/git/push.py::_incoming_commits",
+         "`behind` is the length of this list, and an incoming commit's "
+         "subject chose it (#1681)"),
+        ("presets/git/trail.py::main",
+         "the pickaxe render hands `c.split()[0]` to `git show` as argv, so a "
+         "forged line put an option there - `git show --output=<file>` writes "
+         "that file (#1681)"),
     ):
         assert gone not in sites, f"{gone} is on str.splitlines() again: {why}"
 

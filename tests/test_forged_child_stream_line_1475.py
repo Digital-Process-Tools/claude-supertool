@@ -8,7 +8,7 @@ so a U+2028 survives *inside* a relayed line and everything the reader anchors
 at column 0 becomes the writer's to choose.
 
 **The fix is at the seam, not at the sites.** Seven sites were named and the
-sweep below finds 154 sites in 33 files, which is what a per-site fix earns:
+sweep below finds 144 sites in 32 files, which is what a per-site fix earns:
 the same defect re-filed once per call. So
 
 * `_git_common._first_error_line` flattens what it returns. Every caller —
@@ -184,7 +184,7 @@ def test_a_tab_survives_the_commit_relay() -> None:
 # grows quietly — which is the failure mode of the thing it would be guarding".
 #
 # **So this is not a zero-assertion, and pretending otherwise is what would
-# make it useless.** Measured on this branch: 154 candidate sites in 33 files
+# make it useless.** Measured on this branch: 144 candidate sites in 32 files
 # across `presets/git`, `presets/github` and `presets/gitlab`. Not all are
 # defects — `push._local_head` returns `r.stdout.strip()`, and that is a SHA —
 # and closing them is four lanes of work this PR is not.
@@ -282,7 +282,17 @@ SINK_SHAPES = tuple(SHAPE_PROBES)
 #: `git/merge.py`, and `worktrees.py`'s stderr decline) bind the result to a
 #: name and did not move the number. Located by differencing the per-file tally
 #: against the merge-base, before the number moved — never after.
-UNRESOLVED = 108
+#:
+#: 108 -> 111 on 2026-08-14 (#1681). Three added sites, all the same shape as
+#: the four above — `for line in _untrusted.split_lines(<stream>)`, a child
+#: stream inside a call's arguments in a `for` iterable, so no name carries the
+#: taint onward and `_accounted_for` does not model it. They are
+#: `presets/git/checkout.py` (+1, the `log -3` render) and
+#: `presets/git/status.py` (+2, the `for-each-ref` and `log -5` renders). The
+#: branch's other seven narrowings bind to a name and did not move it. Located
+#: by differencing the per-file tally against the merge-base, before the number
+#: moved.
+UNRESOLVED = 111
 
 #: Calls whose result cannot be a string, so the taint stops there. A type
 #: argument, not an allowlist: `json.loads(r.stdout)` yields a dict, and every
@@ -310,10 +320,14 @@ CENSUS = {
     "presets/git/diverge.py": 3,
     "presets/git/investigate.py": 4,
     "presets/git/merge.py": 9,  # -1, #1654: `_fresh_merge_ref`'s fetch stderr
-    "presets/git/push.py": 33,  # +1, #1626: a `.write` sink
-    "presets/git/resolve.py": 6,  # +4, #1626: two `failed.append` relays, two keys
+    "presets/git/push.py": 32,  # -1, #1681: `_discarded_by_force`'s log relay
+    # 0, not 3: the two `failed.append` relays and the direct print #1638 named
+    # are flattened, and the four sites #1626's widening had also disclosed here
+    # went with them (they are the same two relays' other arm plus the two
+    # dict keys the scan counts beside them).
+    "presets/git/resolve.py": 0,  # -6, #1638
     "presets/git/status.py": 18,  # +3, #1626: three `.append` sinks
-    "presets/git/trail.py": 4,
+    "presets/git/trail.py": 1,  # -3, #1681: two log renders and _format_error
     "presets/git/worktrees.py": 5,  # -1, #1654: the third `for-each-ref` decline
     "presets/github/_release_gate.py": 2,
     "presets/github/batch_follow.py": 1,

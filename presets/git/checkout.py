@@ -12,9 +12,12 @@ import sys
 
 # Sibling import: runtime puts this dir on sys.path[0]; the test harness
 # loads scripts via importlib (no dir on path), so add it explicitly.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(0, os.path.dirname(_HERE))  # for _untrusted (#1681)
 
 from _git_common import _git, use_utf8_stdout  # noqa: E402
+import _untrusted  # noqa: E402  (a commit subject is not this tool's text — #1681)
 
 def _ref_missing(ref: str) -> bool:
     """True when this repo cannot resolve `ref` to a commit.
@@ -337,8 +340,14 @@ def main() -> int:
     log_res = _git(["log", "-3", "--format=%h %ad %an | %s", "--date=short"])
     if log_res.returncode == 0 and log_res.stdout.strip():
         print("\n## Last 3 commits")
-        for line in log_res.stdout.strip().splitlines():
-            print(f"  {line}")
+        # `split_lines` AND `visible`, never either alone (#1681). `%s` is not
+        # a pathname, so `core.quotePath` never touched it and a U+2028 in a
+        # subject reaches here raw: `str.splitlines()` printed a fourth row
+        # under a "Last 3" header. Narrowing the split alone would fix the row
+        # count and hand the separator to the terminal live, inside a line this
+        # tool presents as its own — a count traded for a cursor command.
+        for line in _untrusted.split_lines(log_res.stdout.strip()):
+            print(f"  {_untrusted.visible(line)}")
 
     return 0
 

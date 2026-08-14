@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
 
 from _git_common import _git, use_utf8_stdout  # noqa: E402
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
+import _untrusted  # noqa: E402  (a commit subject is not this tool's text — #1681)
 
 DEFAULT_MAX_COMMITS = 20
 DEFAULT_CONTEXT = 3
@@ -35,7 +36,10 @@ def _format_error(stderr: str, pattern: str) -> str:
         return "ERROR: not inside a git repository."
     if "bad revision" in s:
         return f"ERROR: invalid revision range while searching for {pattern!r}."
-    return f"ERROR: git failed searching for {pattern!r}: {stderr.strip()}"
+    # git's stderr at column 0 of a line this tool owns (#1638's shape, found
+    # here by #1681's test).
+    return (f"ERROR: git failed searching for {pattern!r}: "
+            f"{_untrusted.flat(stderr.strip())}")
 
 
 def main() -> int:
@@ -70,7 +74,17 @@ def main() -> int:
         print(_format_error(log_result.stderr, pattern))
         return 1
 
-    commits = [l.strip() for l in log_result.stdout.strip().splitlines() if l.strip()]
+    # Both halves, and here the split is more than a render (#1681). `%an` and
+    # `%s` are not pathnames, so a U+2028 in either reaches this raw: with
+    # `str.splitlines()` the tail of a subject became a LINE, the Timeline
+    # count grew by one, and — the part that is not `forges` at all —
+    # `c.split()[0]` below hands that line's first token to `git show` as
+    # argv. `git show --output=<file>` writes that file (measured, git 2.46.2),
+    # so a commit message chose a path on the reader's disk. `split_lines` is
+    # what closes it; `visible` keeps the separator out of the rendered row.
+    commits = [_untrusted.visible(l.strip())
+               for l in _untrusted.split_lines(log_result.stdout.strip())
+               if l.strip()]
 
     if not commits:
         # Try regex search as fallback
@@ -82,7 +96,10 @@ def main() -> int:
             log_args_regex.extend(["--", path])
         regex_result = _git(log_args_regex, timeout=15)
         if regex_result.returncode == 0:
-            commits = [l.strip() for l in regex_result.stdout.strip().splitlines() if l.strip()]
+            # Same stream, same shape, same repair as the pickaxe read above.
+            commits = [_untrusted.visible(l.strip())
+                       for l in _untrusted.split_lines(regex_result.stdout.strip())
+                       if l.strip()]
             if commits:
                 print("(matched via regex -G, not exact pickaxe -S)")
 
@@ -129,7 +146,12 @@ def main() -> int:
     for sha in detailed:
         # Get the commit one-liner
         msg_result = _git(["log", "-1", "--format=%h %ad %an | %s", "--date=short", sha])
-        msg = msg_result.stdout.strip() if msg_result.returncode == 0 else sha
+        # One commit, so this is a SELECTION and `flat` is the whole answer
+        # (#1681) — unlike the every-line renders above, there is no other
+        # segment for a separator to hide. It is interpolated into a `###`
+        # heading this tool owns.
+        msg = (_untrusted.flat(msg_result.stdout.strip())
+               if msg_result.returncode == 0 else sha)
 
         # Get the diff for this commit, filtered to lines containing the pattern
         diff_args = ["show", sha, f"--diff-filter=ACDMR", f"-U{context}"]
@@ -143,7 +165,17 @@ def main() -> int:
             continue
 
         # Extract only hunks containing the pattern
-        diff_lines = diff_result.stdout.splitlines()
+        # Both halves, disclosed BEFORE the parse rather than at the print
+        # (#1681). This loop keys on `diff --git` and `@@` at column 0 over
+        # file CONTENT, which git never quotes: with `str.splitlines()` a
+        # U+2028 inside an added line put a forged `@@` at the start of a line,
+        # which flushed the real hunk early and dropped the context after it
+        # from a render that claims to have cut nothing. Disclosing first makes
+        # the forged header a substring rather than a line, so the parse and
+        # the render agree. `keep` is the TAB: this is indented source, not a
+        # column-aligned cell.
+        diff_lines = [_untrusted.visible(l, keep="\t")
+                      for l in _untrusted.split_lines(diff_result.stdout)]
         relevant_hunks: list[str] = []
         current_hunk: list[str] = []
         current_file = ""

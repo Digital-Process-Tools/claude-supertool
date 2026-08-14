@@ -286,6 +286,12 @@ def _union_file(path: str) -> tuple[bool, str]:
         with open(path, "rb") as fh:
             raw = fh.read()
     except OSError as e:
+        # NOT flattened, and that is a measured decision rather than an
+        # oversight (#1638). This reason reaches the same `✗ PATH: REASON` row
+        # as the three child-stream relays below, but `str(OSError)` reprs the
+        # filename, so a U+2028 in a conflicted path arrives here already
+        # spelled as its six-character escape — ASCII that cannot open a line.
+        # Verified on CPython 3.14; pinned by the 1638 test file.
         return False, f"cannot read: {e}"
     try:
         text = raw.decode("utf-8")
@@ -844,7 +850,9 @@ def _resolve_partial(path: str, side: str, selected: set[int], force: bool = Fal
 
     add = _git(["add", "--", path])
     if add.returncode != 0:
-        print(f"  ✗ {path}: {add.stderr.strip() or add.stdout.strip()}")
+        # Same relay, printed directly rather than collected (#1638).
+        print(f"  ✗ {path}: "
+              f"{_untrusted.flat(add.stderr.strip() or add.stdout.strip())}")
         return 1
     digest = _validate_paths([path]).get(path)
     print(f"  ✓ {path}: {resolved} of {total} block(s) resolved — all blocks clean, staged")
@@ -964,7 +972,14 @@ def main() -> int:
         else:
             co = _git(["checkout", f"--{side}", "--", path])
             if co.returncode != 0:
-                failed.append((path, co.stderr.strip() or co.stdout.strip()))
+                # A child's stream reaching the `✗ PATH: REASON` row below
+                # (#1638). `_untrusted.split_lines` cuts on LF/CR/CRLF alone by
+                # design, so a U+2028 survives inside what the render treats as
+                # one line and puts chosen text at column 0, where a `[result]`
+                # a consumer greps for sorts first. #1622 (`4bcb1b2`) is the
+                # shape.
+                failed.append((path, _untrusted.flat(
+                    co.stderr.strip() or co.stdout.strip())))
                 continue
         # HARD GATE — never stage a file that still carries a conflict marker.
         marker_lines = _scan_markers(path)
@@ -975,7 +990,8 @@ def main() -> int:
             continue
         add = _git(["add", "--", path])
         if add.returncode != 0:
-            failed.append((path, add.stderr.strip() or add.stdout.strip()))
+            failed.append((path, _untrusted.flat(
+                add.stderr.strip() or add.stdout.strip())))
             continue
         resolved.append(path)
 
