@@ -21,6 +21,7 @@ from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
+import _secrets  # noqa: E402  (the one GitLab token-prefix list — #1645)
 import _untrusted  # noqa: E402  (a job name is CI-config text, and this is a column-aligned table — #965)
 
 # Statuses that answer "what's still going on right now".
@@ -66,7 +67,12 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
         return (f"ERROR: {resource} #{identifier} not found "
                 f"{_repo_target.not_found_scope()}. "
                 f"{_repo_target.gl_not_found_hint()}")
-    if "401" in s or "unauthorized" in s or "glpat_" in s or "authenticate" in s or "bad token" in s or "token expired" in s:
+    # `_secrets.mentions_gitlab_token`, not a literal: this line read `glpat_`
+    # until #1645, GitLab mints `glpat-`, and the only test over it used the
+    # same wrong spelling. One list, cited to GitLab's docs, in one file.
+    if ("401" in s or "unauthorized" in s or "authenticate" in s
+            or "bad token" in s or "token expired" in s
+            or _secrets.mentions_gitlab_token(s)):
         return "ERROR: glab not authenticated. Run: glab auth login"
     if "403" in s or "forbidden" in s:
         return f"ERROR: permission denied for {resource} #{identifier}. Check your GitLab access token permissions."

@@ -83,6 +83,59 @@ def _prefixed(body: str) -> str:
     return _L + r"(?P<secret>" + body + r")" + _R
 
 
+#: Every token prefix GitLab documents, read off its own "Security > Tokens"
+#: page (https://docs.gitlab.com/security/tokens/) on 2026-08-14. Thirteen, all
+#: hyphenated -- GitLab mints no underscore form of any of them, which is what
+#: #1645 was: four `gl-*` error classifiers tested for ``glpat_`` and the one
+#: test over them used the same wrong spelling, so nothing disagreed.
+#:
+#: A tuple rather than a regex literal because two subsystems read it -- the
+#: redaction rule below, and `mentions_gitlab_token` for the classifiers. Four
+#: files restating a prefix list is how they came to disagree with the fifth.
+#: `tests/test_glab_token_prefix_1645.py` holds the documented list and asserts
+#: this against it; that file is the citation, this is the single definition.
+GITLAB_TOKEN_PREFIXES: tuple[str, ...] = (
+    "glpat-",    # personal / project / group access, impersonation
+    "gloas-",    # OAuth application secret
+    "gldt-",     # deploy token
+    "glrt-",     # runner authentication
+    "glrtr-",    # runner authentication, created via a registration token
+    "glcbt-",    # CI/CD job token
+    "glptt-",    # pipeline trigger
+    "glft-",     # feed
+    "glimt-",    # incoming mail
+    "glagent-",  # agent for Kubernetes
+    "glwt-",     # workspace
+    "glsoat-",   # SCIM OAuth
+    "glffct-",   # feature flags client
+)
+
+_GITLAB_PREFIX_ALT = "|".join(re.escape(p) for p in GITLAB_TOKEN_PREFIXES)
+
+#: One pattern, used both as the redaction rule below and as the classifiers'
+#: test. A credential is a prefix AND a body -- `gldt-`, `glft-`, `glwt-` and
+#: `glrt-` are five characters, and a bare substring test over them reads
+#: `gldt-staging.example.internal` and `projects/glft-report` as tokens. The
+#: caller that would do so routes a `glab` failure to "run glab auth login"
+#: and DISCARDS the remote's own message, so a loose test there does not fail
+#: safe: it trades one wrong hint for another and deletes the evidence.
+_GITLAB_TOKEN_RE = re.compile(
+    _prefixed(r"(?:" + _GITLAB_PREFIX_ALT + r")[A-Za-z0-9_\-]{16,}"))
+
+
+def mentions_gitlab_token(text: object) -> bool:
+    """Does this text carry something shaped like a GitLab token?
+
+    The same pattern the redaction rule uses, deliberately: the two questions
+    are one question, and a classifier that recognises a credential the
+    redactor does not is the pair disagreeing again, which is what #1645 was.
+
+    This is NOT a redactor and must never be used as one -- it says only that
+    a match exists, never that anything was removed. `redact()` is.
+    """
+    return bool(_GITLAB_TOKEN_RE.search(str(text or "")))
+
+
 _RULES: list[tuple[str, re.Pattern[str]]] = [
     # -- private key blocks: first, they can contain anything ---------------
     ("private-key", re.compile(
@@ -95,7 +148,11 @@ _RULES: list[tuple[str, re.Pattern[str]]] = [
     ("openai-api-key", re.compile(_prefixed(r"sk-[A-Za-z0-9]{32,}"))),
     ("github-token", re.compile(_prefixed(r"gh[pousr]_[A-Za-z0-9]{20,}"))),
     ("github-pat", re.compile(_prefixed(r"github_pat_[A-Za-z0-9_]{20,}"))),
-    ("gitlab-token", re.compile(_prefixed(r"gl(?:pat|rt|ptt|soat|cbt|dt)-[A-Za-z0-9_\-]{16,}"))),
+    # Seven of the thirteen documented prefixes were absent here until #1645 --
+    # `glrtr-`, `gloas-`, `glft-`, `glimt-`, `glagent-`, `glwt-` and `glffct-`
+    # are minted by GitLab and were unrecognised, so a transcript carrying one
+    # was relayed whole.
+    ("gitlab-token", _GITLAB_TOKEN_RE),
     ("aws-access-key-id", re.compile(_prefixed(r"(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}"))),
     ("slack-token", re.compile(_prefixed(r"xox[abprse]-[A-Za-z0-9\-]{10,}"))),
     ("google-api-key", re.compile(_prefixed(r"AIza[A-Za-z0-9_\-]{35}"))),

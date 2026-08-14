@@ -850,6 +850,18 @@ Absence *is* the escape hatch, and the opt-out (`raw_command_guard: false`) is r
 
 Nothing else in the `glab` surface is touched. `glab issue list` has no board op on the GitLab side, `glab mr diff` renders patch hunks `gl-mr` does not produce, and every write — `glab mr merge`, `glab mr create`, `glab ci run`, `glab ci retry`, `glab release create` — has no op and stays usable.
 
+## When a `glab` call fails
+
+`gl-issue`, `gl-mr`, `gl-pipeline` and `gl-job` classify `glab`'s stderr into one actionable sentence — not found, not authenticated, forbidden — and relay anything else verbatim through the untrusted-text fence. The authentication arm is taken on `401`, `unauthorized`, `authenticate`, `bad token`, `token expired`, **or a GitLab token appearing in the error** — one of its documented prefixes followed by a 16-character-plus body, which is the same pattern `_secrets.redact()` scrubs by.
+
+That last clause read `glpat_` until [#1645](https://github.com/Digital-Process-Tools/claude-supertool/issues/1645). GitLab mints `glpat-`, with a hyphen, and no underscore form of any of its thirteen documented token prefixes. So an error naming a real token missed the arm and took the generic relay instead — which is both the wrong advice and the branch that echoes the remote's text, token included, back to stdout and (since [#1602](https://github.com/Digital-Process-Tools/claude-supertool/issues/1602)) to a desktop notification.
+
+The prefix list now lives once, in `presets/_secrets.py` as `GITLAB_TOKEN_PREFIXES`, read by both the redactor and the four classifiers. `tests/test_glab_token_prefix_1645.py` holds GitLab's documented list — quoted from `https://docs.gitlab.com/security/tokens/`, read 2026-08-14 — and asserts the shared tuple against it, so the repo's copy is checked against a cited source rather than against another copy of itself. That is the actual defect #1645 filed: the one test over the classifiers used the same wrong spelling as the code, so the pair agreed with each other and with no GitLab that ever existed.
+
+**A prefix alone is not a token, and the looser test was tried first.** `gldt-`, `glft-`, `glwt-` and `glrt-` are five characters, so a bare substring test reads `gldt-staging.example.internal` and `projects/glft-report` as credentials. The arm it routes to *discards* the remote's message and prints `glab auth login` instead, so being loose there is not the safe direction — it swaps one wrong hint for another and deletes the text that named what actually failed. Prefix and body, one pattern shared with the redactor; pinned by `NOT_CREDENTIALS` in the same test file.
+
+The classifier is **not** a redactor and never was. `_secrets.redact()` is, and it is wired into `claude-log` and `git/resolve` only — there is no global scrub over preset output. Whether there should be is a separate question.
+
 ## Configuration
 
 `gl-mrs` enrichment is tunable (parallelism, how many MRs to enrich, page size):
