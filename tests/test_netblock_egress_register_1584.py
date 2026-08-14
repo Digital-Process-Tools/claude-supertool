@@ -27,12 +27,21 @@ that is the third state, not a shorter list.
 from __future__ import annotations
 
 import socket
+import sys
 import tempfile
 from pathlib import Path
 
 import pytest
 
 import _netblock
+
+
+#: Parametrised rather than looped, so a failure names the route in the test id.
+#: Asserted non-empty at collection because a `parametrize` over an empty list
+#: is a green leg that ran nothing -- this repo's own defect class, in the file
+#: whose subject is that defect class.
+PLATFORM_ONLY_NAMES = sorted(_netblock.PLATFORM_ONLY)
+assert PLATFORM_ONLY_NAMES, "PLATFORM_ONLY is empty: these tests would run nothing"
 
 
 TEST_NET_1 = "192.0.2.1"  # RFC 5737, guaranteed not routed.
@@ -185,6 +194,11 @@ def test_the_register_only_classifies_names_that_exist() -> None:
     """
     stale = set(_netblock.ROUTES) - _module_callables() - _netblock.PLATFORM_OPTIONAL
     assert stale == set(), sorted(stale)
+    # `SOCKET_ROUTES` was outside this check until #1642 -- the same half-derived
+    # shape as the bug that file exists for, one register over: a method name no
+    # Python has could sit there forever and read as coverage.
+    stale = set(_netblock.SOCKET_ROUTES) - _socket_methods() - _netblock.PLATFORM_OPTIONAL
+    assert stale == set(), sorted(stale)
 
 
 def test_every_patched_route_is_one_block_outbound_actually_patches() -> None:
@@ -231,6 +245,36 @@ def test_block_outbound_patches_only_names_this_interpreter_has() -> None:
                 "Windows that same list names an attribute that is not there")
             with pytest.raises(_netblock.OutboundBlocked):
                 _tcp().connect((TEST_NET_1, 80))
+
+
+@pytest.mark.parametrize("name", PLATFORM_ONLY_NAMES)
+def test_every_platform_only_route_is_classified(name) -> None:
+    """The population is derived, so it cannot see another platform's names.
+
+    `ioctl` is Windows-only, was in no register, and went red on all four
+    Windows legs of PR #1642 while macOS and Linux stayed green -- the derived
+    check working exactly as designed and arriving one platform at a time,
+    which is the register learning its own boundary from CI. `PLATFORM_ONLY`
+    states those names ahead of the leg; this is what makes stating them
+    load-bearing rather than a comment.
+    """
+    register = dict(_netblock.ROUTES, **_netblock.SOCKET_ROUTES)
+    assert name in register, name
+    assert name in _netblock.PLATFORM_OPTIONAL, name
+
+
+@pytest.mark.parametrize("name", PLATFORM_ONLY_NAMES)
+def test_a_platform_only_route_is_present_exactly_on_its_platform(name) -> None:
+    """Turns a reasoned claim into an observed one, on whichever leg can.
+
+    Not vacuous here: on macOS and Linux this asserts every `win32` name is
+    absent, which is the half a POSIX author can check. On a Windows leg the
+    same assertion runs the other way and observes the presence that this
+    file, written on macOS, could only reason about from CPython's source.
+    """
+    expected = sys.platform.startswith(_netblock.PLATFORM_ONLY[name])
+    present = hasattr(socket, name) or hasattr(socket.socket, name)
+    assert present == expected, (name, sys.platform, present)
 
 
 def test_every_open_route_carries_a_reason() -> None:

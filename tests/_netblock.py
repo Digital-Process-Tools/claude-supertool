@@ -33,6 +33,10 @@ fails when one of them arrives unclassified, and a route that cannot be covered
 is `OPEN` with its reason next to it rather than absent. That is this repo's
 third state applied to the guard's own boundary: `blocked`, `local`, and *I
 cannot see this one, and here is why*.
+
+A derived population sees one platform, though, and `PLATFORM_ONLY` below is
+where that stops being silent: `socket.socket.ioctl` is Windows-only, so it was
+in no register and no POSIX leg could notice (#1642).
 """
 from __future__ import annotations
 
@@ -172,12 +176,15 @@ SOCKET_ROUTES = {
     "set_inheritable": INERT,
     "getpeername": INERT,
     "getsockname": INERT,
+    "ioctl": OPEN,
     "share": OPEN,
 }
 
-#: Why each `OPEN` route is open. Every one of them is the same shape: a
-#: descriptor whose `connect` happened somewhere this guard was not watching,
-#: so wrapping it in a `socket` object afterwards inherits nothing.
+#: Why each `OPEN` route is open. Four of them are one shape: a descriptor whose
+#: `connect` happened somewhere this guard was not watching, so wrapping it in a
+#: `socket` object afterwards inherits nothing. `ioctl` is a second shape and is
+#: spelled out rather than filed under the first (#1642) -- "they are all the
+#: same thing" is how the next name gets waved through.
 OPEN_ROUTES = {
     "dup": "duplicates a descriptor that may already be connected -- the "
            "connect this guard would have refused happened before the wrap.",
@@ -187,17 +194,52 @@ OPEN_ROUTES = {
                  "connect happened in a process this guard never patched.",
     "share": "Windows: hands this socket to another process, which is not "
              "running an armed pytest and is not bound by anything here.",
+    "ioctl": "Windows: `WSAIoctl`. It addresses no peer -- but `SIO_RCVALL` "
+             "puts the interface into promiscuous receive, and after it a "
+             "plain `recv` returns traffic between other hosts. This guard "
+             "refuses destinations, and that traffic has none: at `recv` it "
+             "is indistinguishable from the loopback bytes the suite is "
+             "entitled to. Not patched rather than not patchable -- refusing "
+             "it means deciding per control code on a platform nobody who "
+             "maintains this file can run, and a guess there would be "
+             "coverage claimed rather than had.",
 }
 
 #: Names that legitimately do not exist on every platform or Python. A name
 #: missing here is a route that cannot be taken, which is the safe direction;
 #: what the register must never carry is a name no Python has.
 PLATFORM_OPTIONAL = frozenset({
-    "CMSG_LEN", "CMSG_SPACE", "sethostname", "fromshare", "share",
+    "CMSG_LEN", "CMSG_SPACE", "sethostname", "fromshare", "share", "ioctl",
     "if_indextoname", "if_nameindex", "if_nametoindex",
     "recv_fds", "send_fds", "sendmsg", "sendmsg_afalg",
     "recvmsg", "recvmsg_into", "sendfile",
 })
+
+#: Routes that exist on exactly one platform family, with the platform that has
+#: them. The register's population is derived from the running interpreter,
+#: which is the right way to catch a name a later Python grows -- and is blind
+#: by construction to a name only another platform has. `socket.socket.ioctl`
+#: arrived exactly that way (#1642): classified nowhere, invisible to every
+#: POSIX author and to the macOS and Linux legs, and red on all four Windows
+#: legs one PR after the register shipped. A register that learns one
+#: platform-only name per release is the sentence it replaced, one layer in.
+#:
+#: So the names CPython guards with `MS_WINDOWS` in `Modules/socketmodule.c` are
+#: stated here and classified above. That claim is **reasoned from CPython's
+#: source, not observed** -- nobody who can edit this file can run Windows --
+#: and `test_a_platform_only_route_is_present_exactly_on_its_platform` is what
+#: converts it into an observation on whichever leg does run there. It also
+#: fails here, on POSIX, if one of these ever shows up where it should not.
+#:
+#: Only `win32` is listed, and that is not an oversight: the macOS and Linux
+#: populations are derived on every green leg of every PR, so they are observed
+#: rather than reasoned. Windows was the one platform whose population no green
+#: leg had ever agreed with.
+PLATFORM_ONLY = {
+    "ioctl": "win32",
+    "share": "win32",
+    "fromshare": "win32",
+}
 
 _MODULE_PATCHES = tuple(
     n for n, c in ROUTES.items() if c == PATCHED and hasattr(socket, n))

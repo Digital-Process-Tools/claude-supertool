@@ -143,6 +143,13 @@ if (_PRESETS / "_env.py").is_file():
 # states the four things no in-process patch can reach. A register goes red
 # when a route arrives unclassified; a sentence does not.
 #
+# It goes red on the leg that has the route, though, and that is a boundary of
+# its own: the population is `dir(socket)` on the running interpreter, so a
+# Windows-only name is invisible to every POSIX author and to every POSIX leg.
+# `socket.socket.ioctl` arrived that way and reddened four Windows legs one PR
+# after the register shipped. `_netblock.PLATFORM_ONLY` states the win32 names
+# so they are classified before the leg finds them (#1642).
+#
 # Loopback and AF_UNIX stay open on purpose — `test_http_bounds.py` and the
 # `claude-channel` suites bind real servers on 127.0.0.1 and those are
 # hermetic.
