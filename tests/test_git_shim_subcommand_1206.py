@@ -37,7 +37,12 @@ import test_status_swallowed_705 as t705
 
 TESTS = Path(__file__).resolve().parent
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX /bin/sh shim")
+#: Only the tests that actually *run* a `/bin/sh` shim need this. It used to be
+#: a module-level `pytestmark`, which also skipped the class gate and every
+#: rule test -- all of them pure AST and regex work with no shell in sight. A
+#: platform mark that reaches past what it is about reports coverage the leg
+#: does not have, which is the same defect the gate below exists for.
+posix_shim = pytest.mark.skipif(os.name == "nt", reason="POSIX /bin/sh shim")
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -62,6 +67,7 @@ def _run(bindir: Path, *args: str, timeout: float = 30):
                           env=dict(os.environ, PATH=str(bindir)))
 
 
+@posix_shim
 @pytest.mark.parametrize("prefix", [
     ["--literal-pathspecs"],
     ["--no-optional-locks"],
@@ -82,6 +88,7 @@ def test_a_global_flag_before_the_subcommand_still_reaches_the_failing_shim(
     assert "unable to read index file" in r.stderr
 
 
+@posix_shim
 def test_the_shim_is_reached_through_the_dash_C_form_the_suite_actually_uses(
     tmp_path: Path
 ) -> None:
@@ -93,6 +100,7 @@ def test_the_shim_is_reached_through_the_dash_C_form_the_suite_actually_uses(
     assert r.returncode == 128, repr((r.returncode, r.stdout, r.stderr))
 
 
+@posix_shim
 def test_the_stalling_shim_also_matches_past_a_global_flag(tmp_path: Path) -> None:
     """Same defect, the other builder: it must still hang, not fall through."""
     d = t705._bindir(tmp_path)
@@ -101,6 +109,7 @@ def test_the_stalling_shim_also_matches_past_a_global_flag(tmp_path: Path) -> No
         _run(d, "--literal-pathspecs", "status", "--porcelain", timeout=3)
 
 
+@posix_shim
 def test_the_timeout_suite_shim_matches_past_a_global_flag(tmp_path: Path) -> None:
     """`test_git_timeout_disclosure_650` builds the same shape separately."""
     bindir = Path(t650._failing_git_path(tmp_path, "diff"))
@@ -109,6 +118,7 @@ def test_the_timeout_suite_shim_matches_past_a_global_flag(tmp_path: Path) -> No
     assert "fatal: shim" in r.stderr
 
 
+@posix_shim
 def test_a_subcommand_named_only_as_an_argument_is_not_intercepted(
     tmp_path: Path
 ) -> None:
@@ -218,6 +228,49 @@ def cannot_be_a_git_subcommand_test(text: str) -> bool:
     return bool(operands) and all(o.startswith("-") for o in operands)
 
 
+#: A shell loop that consumes its arguments. `$1` inside one is "the argument
+#: currently under the cursor", not "the first argument" -- the loop has already
+#: walked past every global flag by the time the word is read, so there is no
+#: position for it to slide to. Non-greedy to the *first* `done`, so a second
+#: loop later in the same literal is a second span rather than one long one.
+_LOOP_BODY = re.compile(r"(?:^|[\s;&|(])(?:while|until|for)\b.*?\bdone\b", re.S)
+
+#: Every construct `_looks_like_the_class` counts as testing `$1`. Kept as one
+#: tuple so the span check below cannot drift from the detection above it.
+_TESTS_DOLLAR_ONE = (
+    _CASE_ON_DOLLAR_ONE,
+    _COMPARED_WITH_DOLLAR_ONE,
+    _COMPARED_WITH_DOLLAR_ONE_REVERSED,
+)
+
+
+def _shifts_through_argv(text: str) -> bool:
+    """True when every `$1` test in TEXT sits inside a loop that shifts.
+
+    This is the #1598 exemption, and it is a statement about git's grammar in
+    the same way #1412's option rule is -- not about which file the code is in.
+    `tests/_gitshim.py`'s dispatcher is the one correct implementation of the
+    pattern this gate hunts, and the widened population makes it the gate's
+    single hit. Naming the file would re-create the allowlist #1412 deleted,
+    and would bless every shim that file ever acquires; naming the *shape*
+    exempts the construct wherever anybody writes it.
+
+    Deliberately narrow in three ways, each pinned by a test below. A loop with
+    no `shift` consumes nothing, so `$1` is still the first word. A `$1` test
+    outside the loop is not covered by a dispatcher that happens to sit above
+    it. And an empty set of tests is not "all of them inside a loop" -- there
+    is nothing here to exempt, and `_looks_like_the_class` has already decided
+    that case.
+    """
+    spans = [m.span() for m in _LOOP_BODY.finditer(text) if "shift" in m.group(0)]
+    if not spans:
+        return False
+    positions = [m.start() for rx in _TESTS_DOLLAR_ONE for m in rx.finditer(text)]
+    return bool(positions) and all(
+        any(start <= p < end for start, end in spans) for p in positions
+    )
+
+
 def _looks_like_the_class(text: str) -> bool:
     """The gate's entire rule for one string constant: tested, and not exempt.
 
@@ -228,15 +281,34 @@ def _looks_like_the_class(text: str) -> bool:
     """
     text = _unquoted(text)
     tested = _CASE_ON_DOLLAR_ONE.search(text) or _operands_compared_with_dollar_one(text)
-    return bool(tested) and not cannot_be_a_git_subcommand_test(text)
+    if not tested:
+        return False
+    return not (
+        cannot_be_a_git_subcommand_test(text) or _shifts_through_argv(text)
+    )
 
 
-def _sh_literals_matching_dollar_one():
+def _modules_scanned(root: Path = TESTS) -> list:
+    """Every Python module under `tests/`, not only the `test_*.py` ones.
+
+    Until #1598 this was `glob("test_*.py")`, and the gate's zero was read as
+    "no shim in the suite decides a subcommand from `$1`" when it meant "no
+    shim in the files whose names begin with `test_`". `tests/_gitshim.py`,
+    `tests/_git_decline.py`, `tests/conftest.py` and everything under
+    `tests/fixtures/` were never opened -- and a *shared* shim is exactly the
+    thing that lives in a helper module. Recursive, because `tests/fixtures/`
+    holds real modules and a directory is not a boundary the defect respects.
+    """
+    return [p for p in sorted(root.rglob("*.py"))
+            if "__pycache__" not in p.parts
+            and p.name not in _FIRST_ARG_IS_HONEST
+            and p.name != Path(__file__).name]
+
+
+def _sh_literals_matching_dollar_one(root: Path = TESTS):
     """Every string constant in the suite that tests `$1` inside a shim."""
     hits = []
-    for path in sorted(TESTS.glob("test_*.py")):
-        if path.name in _FIRST_ARG_IS_HONEST or path.name == Path(__file__).name:
-            continue
+    for path in _modules_scanned(root):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:  # pragma: no cover - a broken fixture module
@@ -251,10 +323,11 @@ def _sh_literals_matching_dollar_one():
                     if isinstance(v, ast.Constant) and isinstance(v.value, str)
                 )
             if text and _looks_like_the_class(text):
+                name = path.relative_to(root).as_posix()
                 # An f-string is walked as the JoinedStr and again as each of
                 # its Constant parts, so the same shim would otherwise be named
                 # twice and the list would read as a longer class than it is.
-                hit = (path.name, node.lineno, text.strip()[:70])
+                hit = (name, node.lineno, text.strip()[:70])
                 if not any(h[:2] == hit[:2] for h in hits):
                     hits.append(hit)
     return hits
@@ -413,9 +486,93 @@ def test_the_narrowing_did_not_just_move_the_hole_into_the_allowlist() -> None:
 
 def test_the_scan_still_reads_every_test_module_it_did_before() -> None:
     """A rule can also be narrowed by quietly reading fewer files."""
-    scanned = [p.name for p in sorted(TESTS.glob("test_*.py"))
-               if p.name not in _FIRST_ARG_IS_HONEST
-               and p.name != Path(__file__).name]
+    scanned = [p.name for p in _modules_scanned()]
     assert len(scanned) > 500, len(scanned)
     assert "test_status_swallowed_705.py" in scanned
     assert "test_hook_interpreter_windows_1401_1402.py" in scanned
+
+
+# ---------------------------------------------------------------------------
+# #1598 -- the population the gate scans, and the shape that exempts the one
+# correct implementation of the pattern.
+# ---------------------------------------------------------------------------
+
+
+def test_the_scan_reads_every_python_module_in_the_suite_not_only_test_files(
+) -> None:
+    """`tests/*.py` is the claim; `tests/test_*.py` was the population (#1598).
+
+    A shared shim belongs in a helper module -- that is what a helper module is
+    for -- and every helper, `conftest.py` and every fixture module returned the
+    gate's same clean zero because none of them was ever opened.
+    """
+    scanned = {p.relative_to(TESTS).as_posix() for p in _modules_scanned()}
+    for name in ("_gitshim.py", "_git_decline.py", "conftest.py",
+                 "fixtures/mock_mcp_server.py"):
+        assert name in scanned, (name, len(scanned))
+
+
+def test_a_shim_planted_in_a_helper_module_is_reported(tmp_path: Path) -> None:
+    """The gate's zero has to mean "I looked there", not "I did not look".
+
+    Held against a directory rather than the tree, because the tree is clean by
+    construction: a scan that only ever runs over a passing population cannot
+    tell a widened glob from a narrow one.
+    """
+    (tmp_path / "_helper_shim.py").write_text(
+        """SHIM = 'if [ "$1" = "status" ]; then exit 128; fi'""" + os.linesep,
+        encoding="utf-8",
+    )
+    (tmp_path / "conftest.py").write_text(
+        """SHIM = 'case "$1" in diff) exit 1 ;; esac'""" + os.linesep,
+        encoding="utf-8",
+    )
+    found = {name for name, _line, _text in _sh_literals_matching_dollar_one(tmp_path)}
+    assert found == {"_helper_shim.py", "conftest.py"}, found
+
+
+def test_a_fixture_module_below_tests_is_reached_too(tmp_path: Path) -> None:
+    """`tests/fixtures/` holds real modules, so `glob` is not deep enough."""
+    sub = tmp_path / "fixtures" / "resolve"
+    sub.mkdir(parents=True)
+    (sub / "helper.py").write_text(
+        """SHIM = 'if [ "$1" = "stash" ]; then sleep 30; fi'""" + os.linesep,
+        encoding="utf-8",
+    )
+    found = {name for name, _line, _text in _sh_literals_matching_dollar_one(tmp_path)}
+    assert found == {"fixtures/resolve/helper.py"}, found
+
+
+def test_the_canonical_dispatcher_is_exempt_by_its_shape_not_by_its_filename(
+) -> None:
+    """`_gitshim`'s `while`/`shift` loop is the *correct* implementation.
+
+    It is the one hit the widened population produces, and it must not be
+    answered by putting `_gitshim.py` back on a filename list: #1412 removed
+    that list on purpose, so that the judgement stops depending on where the
+    code sits. `$1` inside a loop that shifts is "the argument being examined",
+    not "the first argument" -- there is no position for it to slide to, which
+    is the same grammar argument #1412 used for an option at `$1`.
+    """
+    import _gitshim
+
+    assert not _looks_like_the_class(_gitshim._SUBCOMMAND_FUNCTION)
+    assert not _looks_like_the_class(
+        _gitshim.dispatch_on_subcommand("status", "exit 128", "/usr/bin/git")
+    )
+    assert "_gitshim.py" not in _FIRST_ARG_IS_HONEST
+
+
+@pytest.mark.parametrize("shim", [
+    # A dispatcher loop above does not bless a first-argument decision below it.
+    'while [ $# -gt 0 ]; do case "$1" in -*) shift ;; *) break ;; esac; done'
+    '\nif [ "$1" = "status" ]; then exit 128; fi\n',
+    # A loop that never shifts is not walking argv; `$1` stays the first word.
+    'while true; do if [ "$1" = "status" ]; then exit 128; fi; done',
+    # `for` over a fixed list shifts nothing either.
+    'for x in a b; do if [ "$1" = "diff" ]; then exit 1; fi; done',
+])
+def test_the_dispatcher_exemption_does_not_bless_a_first_argument_decision(
+    shim: str,
+) -> None:
+    assert _looks_like_the_class(shim), shim

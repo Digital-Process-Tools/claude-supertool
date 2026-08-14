@@ -20,7 +20,10 @@ What is enforced now, and how
 -----------------------------
 `tests/conftest.py` arms `_netblock.block_outbound` for **every** test. A stub
 against the wrong name no longer succeeds quietly against a third-party host; it
-fails at `connect`/`getaddrinfo`, naming the destination and what to stub.
+fails at the socket, naming the destination and what to stub. *Which* names is
+`_netblock.PATCHES`, derived from the register -- writing the list here is how
+the disclosure below came to describe a boundary two thirds narrower than the
+one it had.
 
 #1312 measured both methods over 559 test modules. A static grep for transport
 tokens found 2 of the 3 live leaks. The socket recorder found 3 of 3 -- the one
@@ -32,9 +35,16 @@ is how a green stops meaning anything.
 
 The blind spot, stated rather than discovered later
 ---------------------------------------------------
-This blocks sockets **in the pytest process only**. A test that shells out to
-`supertool.py` or a preset as a subprocess is not covered -- the child has its
-own unpatched `socket` module. Loopback and `AF_UNIX` stay open on purpose:
+"In the pytest process only" was this file's whole disclosure, and it read as
+exhaustive when it was one item of several (#1584). The measured boundary is
+`_netblock.ROUTES` / `SOCKET_ROUTES` -- every callable the `socket` module and
+the `socket.socket` type expose, classified, with
+`tests/test_netblock_egress_register_1584.py` going red on one that arrives
+unclassified -- and `_netblock.BEYOND_THE_PROCESS`, which names the four
+routes no in-process patch reaches at all. A child process is the first of
+those four: it has its own unpatched `socket` module.
+
+Loopback and `AF_UNIX` stay open on purpose:
 `test_http_bounds.py` and the `claude-channel` suites bind real servers on
 `127.0.0.1`, and those are hermetic because the process under test is the one
 that answered.
