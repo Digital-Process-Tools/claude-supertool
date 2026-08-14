@@ -91,5 +91,24 @@ def test_a_readable_file_is_unaffected(tmp_path: Path) -> None:
     assert "thing" in out, out
 
 
+def test_the_abstract_read_does_not_relabel_unreadable_as_no_symbols(tmp_path: Path) -> None:
+    """`read:` falls back to raw source, and must say WHICH failure it hit.
+
+    `_abstract_map` gained the new marker as a fallback trigger and kept one
+    reason string for all of them, so an unreadable file came back as `no
+    symbols found in X (python)` — plus, with no tree-sitter installed, a
+    footnote about which tier ran. That is #1680 again one layer up, in the
+    caller. Raised by the independent review of the first commit.
+    """
+    f = _unreadable(tmp_path)
+    _needs_denial(f)
+
+    body, reason = supertool._abstract_map(str(f), "python", 4096)
+
+    assert body == "", body
+    assert "no symbols found" not in reason, reason
+    assert "could not read" in reason, reason
+
+
 def test_change_is_documented() -> None:
     assert_change_is_findable("1680", Path(__file__).resolve().parent.parent)

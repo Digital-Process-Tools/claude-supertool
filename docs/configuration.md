@@ -176,7 +176,7 @@ Use `{file}`/`{dir}` for file operations, `{arg}`/`{args}` for non-file argument
 
 ## Extra config keys as environment variables
 
-Any key in a custom op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`) is passed to the subprocess as a `SUPERTOOL_` prefixed environment variable:
+Any key in a custom op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`, `restartMcp`, `replaces`, `paths`, `exitStatus`) is passed to the subprocess as a `SUPERTOOL_` prefixed environment variable:
 
 ```json
 {

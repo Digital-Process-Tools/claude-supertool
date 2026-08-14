@@ -4708,9 +4708,15 @@ def _abstract_map(path: str, lang: str, size_bytes: int) -> Tuple[str, str]:
       not theoretical.
     """
     body = op_map(path)
+    if _UNREADABLE_MARKER in body:
+        # Its own arm, not the one below (#1680). "No symbols found" about a
+        # file nothing opened is the defect this state exists to end, one layer
+        # up in the caller — and the tree-sitter footnote under it would
+        # explain which tier ran for a file no tier received a byte of.
+        why = _map_unreadable_reason(path) or "the reason is no longer visible"
+        return "", f"{_UNREADABLE_MARKER} {path}: {why} — no tier looked at it"
     if (body.startswith("ERROR:") or "(no symbols)" in body
             or _NO_PARSER_MARKER in body
-            or _UNREADABLE_MARKER in body
             or "no supported files" in body):
         reason = f"no symbols found in {path} ({lang})"
         if not _has_tree_sitter():
