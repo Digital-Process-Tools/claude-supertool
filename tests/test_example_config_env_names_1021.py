@@ -38,7 +38,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #: than imported: `_RESERVED_KEYS` is a local inside that function.
 RESERVED = frozenset({
     "cmd", "timeout", "description", "syntax", "example", "status",
-    "restartMcp", "replaces", "paths",
+    "restartMcp", "replaces", "paths", "exitStatus",
 })
 
 _ENV = re.compile(r"SUPERTOOL_[A-Z0-9_]+")
