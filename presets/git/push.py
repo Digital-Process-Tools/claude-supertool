@@ -1580,7 +1580,14 @@ def _discarded_by_force(old_remote_sha: str) -> tuple[Optional[list[str]], str]:
         f"git log {old_remote_sha} --not HEAD")
     if r is None:
         return None, why
-    return [ln for ln in r.stdout.splitlines() if ln.strip()], ""
+    # Both halves (#1681). Neither `%an` nor `%s` is a pathname, so quoting
+    # never reached them: `str.splitlines()` let a discarded commit's own
+    # author or subject add a row to — and inflate the count of — the one
+    # check in this file whose failure must never read as reassurance.
+    # `visible` here rather than at the print below, so the list that is
+    # counted and the list that is rendered are the same list.
+    return [_untrusted.visible(ln)
+            for ln in _untrusted.split_lines(r.stdout) if ln.strip()], ""
 
 
 def _report_discard_unknown(target: str, why: str, look: str) -> str:
@@ -2291,7 +2298,11 @@ def _incoming_commits(ref: str) -> tuple[list[str], int, int]:
     that has no tracking ref yet.
     """
     log = _git(["log", "--format=%h %an: %s", f"HEAD..{ref}"])
-    incoming = [ln for ln in log.stdout.splitlines() if ln.strip()]
+    # Both halves, for `_discarded_by_force`'s reason (#1681): `behind` is the
+    # length of this list and drives a warning plus a cap line, and every
+    # element is rendered at `  {ln}` by the caller.
+    incoming = [_untrusted.visible(ln)
+                for ln in _untrusted.split_lines(log.stdout) if ln.strip()]
     mine = _git(["rev-list", "--count", f"{ref}..HEAD"])
     ahead = int(mine.stdout.strip()) if mine.returncode == 0 and mine.stdout.strip().isdigit() else 0
     return incoming, len(incoming), ahead

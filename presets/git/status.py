@@ -456,12 +456,12 @@ def main() -> int:
                   f"{_reason(branch_result.returncode, branch_result.stderr)}")
         return 1
 
-    current_branch = ""
-    tracking = ""
-    for line in branch_result.stdout.splitlines():
-        if line.startswith("* "):
-            current_branch = line[2:].strip()
-            break
+    # `branch -vv` is run for its RETURN CODE only — it is the "are we in a
+    # repository" probe above. Its stdout used to be split here into
+    # `current_branch`/`tracking`, and neither was ever read: the render below
+    # takes the branch from `rev-parse --abbrev-ref HEAD`. Deleted with #1681,
+    # which had to judge every split in this function and found this one
+    # answering nobody.
 
     # Cleaner branch + remote info
     branch_name_result = _git(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -548,8 +548,17 @@ def main() -> int:
                    "--format=%(refname:short)\t%(upstream:track)", "refs/heads"])
     if others.returncode == 0 and not brief:
         rows = []
-        for line in others.stdout.splitlines():
-            name, _, track = line.partition("\t")
+        # Both halves (#1681), and this one fails QUIET, which is why it is
+        # here. A refname is not a pathname and `check-ref-format` accepts
+        # U+2028 in one (#1654), so `str.splitlines()` cut `feat<U+2028>ure`
+        # in two: the head fragment carries no TAB and the `'ahead' in track`
+        # test below drops it, and the row that survived was rendered under a
+        # name — `ure` — that no branch here has. A reader was told about
+        # unpushed work on a branch they cannot check out, and the real one was
+        # named nowhere. `keep` is the TAB, because the partition below is the
+        # format's own field separator rather than content.
+        for line in _untrusted.split_lines(others.stdout):
+            name, _, track = _untrusted.visible(line, keep="\t").partition("\t")
             track = track.strip()
             # Only actionable divergence — skip the current branch (covered
             # above) and stale [gone] branches (merged, upstream pruned).
@@ -568,8 +577,10 @@ def main() -> int:
     log_result = _git(["log", "-5", "--format=%h %ad %an | %s", "--date=short"])
     if log_result.returncode == 0 and log_result.stdout.strip() and not brief:
         print(f"\n## Last 5 commits")
-        for line in log_result.stdout.strip().splitlines():
-            print(f"  {line}")
+        # Both halves (#1681): a subject is not quoted, and every line here is
+        # rendered rather than selected from.
+        for line in _untrusted.split_lines(log_result.stdout.strip()):
+            print(f"  {_untrusted.visible(line)}")
 
     # 3. Working tree
     status_cmd = ["status", "--porcelain=v1"]
@@ -669,7 +680,11 @@ def main() -> int:
               f"answer "
               f"({_reason(stash_result.returncode, stash_result.stderr)}).")
     if stash_result.returncode == 0 and stash_result.stdout.strip():
-        stashes = stash_result.stdout.strip().splitlines()
+        # Both halves (#1681): a stash message carries the branch name and the
+        # commit subject it was taken over, neither quoted, and `len(stashes)`
+        # is printed in the header beside the rows.
+        stashes = [_untrusted.visible(ln)
+                   for ln in _untrusted.split_lines(stash_result.stdout.strip())]
         print(f"\n## Stashes ({len(stashes)})")
         for s in (stashes if full else stashes[:5]):
             print(f"  {s}")

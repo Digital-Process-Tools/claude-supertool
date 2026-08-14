@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
 
 from _git_common import _git, use_utf8_stdout  # noqa: E402
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
+import _untrusted  # noqa: E402  (a commit subject is not this tool's text — #1681)
 
 DEFAULT_BASE = "master"
 DEFAULT_MAX_COMMITS = 30
@@ -83,7 +84,12 @@ def main() -> int:
         log = _git(["log", f"-{max_commits}", f"{base}..{branch}",
                     "--format=%h %ad %an | %s", "--date=short"])
         if log.returncode == 0 and log.stdout.strip():
-            shown = log.stdout.strip().splitlines()
+            # Both halves (#1681): `len(shown)` is printed beside the rows,
+            # so the split decides the count a reader acts on, and `visible`
+            # is what keeps the separator out of a row the tool owns. A log
+            # subject is not a pathname, so quoting never reached it.
+            shown = [_untrusted.visible(ln)
+                     for ln in _untrusted.split_lines(log.stdout.strip())]
             print(f"\n## Commits in {branch} not in {base} ({len(shown)} of {ahead})")
             for line in shown:
                 print(f"  {line}")
