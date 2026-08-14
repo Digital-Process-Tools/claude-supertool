@@ -398,9 +398,15 @@ The second half used to read *"what would the op that did it for me look like?"*
 **But search the tracker and the docs BEFORE writing the design.** Florian said it twice — _"you should look at radar doc"_, then a bare link to **#898** — and both times I was mid-draft, writing a "judgment calls" section for a question the docs (`radar_tiers`, registration order = render order, unconfigured **refuses** rather than defaulting, #528's reasoning) and #898 had already answered. Search the concept, not my wording — I would have searched "dashboard boards" and #898 is titled "multiple scoped radars".
 
 ```bash
-gh issue list --state all --search "<the concept, not my phrasing>"
+supertool 'gh-issues:search=<the concept, not my phrasing>,state=all,per=20'
 supertool 'read:docs/presets/<the-op>.md:::grep=<concept>'
 ```
+
+`search=` is **server-side** — it goes to `gh issue list --search`, so it narrows the population
+rather than the page, and the render names the engine and the scope it covered. This line said to run
+that `gh` call raw until 2026-08-14, when the guard refused it and I went looking for a filter that
+had been on the op all along. GitHub's qualifier language (`in:title`) is unreachable here and refused
+rather than half-applied, because a `:` in the value is split by the op tokenizer.
 
 **And check whether the surface already exists before inventing a second one.** I filed `tick` with a boundary — "radar is event-driven, `tick` is pull-based" — **asserted rather than derived**, before #859 had even landed radar's GitHub tier, which already printed three of `tick`'s five sections. Florian: _"radar is like a dashboard for a flight tour de control, you get a dashboard and a live event streams"_ — one model of the airspace, two renders.
 
