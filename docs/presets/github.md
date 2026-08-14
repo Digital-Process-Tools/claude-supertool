@@ -1481,12 +1481,35 @@ the ones that escaped it — and that is invisible to a per-label listing by
 construction. Same reason `gh-issues:nomilestone` is a flag rather than an
 absence in a milestone listing.
 
-**`frozen` is a sum, so it is `?` whenever either side is.** The counts come
-from GitHub's search API, one query per cell, `is:issue` — enumerating closed
-issues would hit a cap and render a *floor* as a burn-down denominator, which
-makes a burn-down look better than it is. A search that did not answer renders
-`?`, never `0`, and it poisons the sum on its row rather than being added as
-zero. `frozen` is the number a human is asked to trust over weeks.
+**The two columns are read two different ways, and fail independently**
+([#1628](https://github.com/Digital-Process-Tools/claude-supertool/issues/1628)).
+`closed` is GitHub's search API, one query per label plus one for the NONE
+bucket, `is:issue` — enumerating closed issues would hit a cap and render a
+*floor* as a burn-down denominator, which makes a burn-down look better than it
+is. `open` is a client-side group-by over **one** issue listing, the same call
+the multi-label check already made.
+
+That split is the whole of #1628. A search per label cost `2N + 2` calls against
+an API allowing 30 a minute, and the cohort family grows by one label per
+release: on 2026-08-13 the op refused at 15 labels, and on 2026-08-14, past
+`GH_LABELS_TALLY_MAX=16`, it returned **34 of 34 cells `?`** — while the same run
+still printed `all 74 open issues` from the listing it was holding. So the
+`Open:` and `Closed:` header lines are separate sentences: a rate-limited search
+now costs the closed column and leaves the open one intact, which is the number
+the tick actually turns on.
+
+**`frozen` is a sum, so it is `?` whenever either side is** — and `>=` whenever
+either side is a floor. A search that did not answer renders `?`, never `0`, and
+it poisons the sum on its row rather than being added as zero. The cost of
+moving `open` off search is that an enumeration has a cap where a search did
+not, so a capped listing makes every open cell — and every `frozen` — a floor,
+rendered `>=N` with `GH_LABELS_ISSUE_CAP` named. `frozen` is the number a human
+is asked to trust over weeks.
+
+`GH_LABELS_TALLY_MAX` (default 24, one search call per label plus one) stays as
+the escape hatch. It is not `29`, which `N + 1 <= 30` alone would give: the old
+bound sat exactly on the limit at 14 labels and did not hold, because this op is
+never the only search in its minute.
 
 **The NONE row's closed cell is a total, not a burn-down**, and says so: it
 counts everything ever closed without a label of the family, including
