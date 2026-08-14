@@ -244,11 +244,22 @@ _LOOP_BODY = re.compile(r"(?:^|[\s;&|(])(?:while|until|for)\b.*?\bdone\b", re.S)
 #: `shift=1` assigns to a variable that happens to be called `shift`, and the
 #: word boundary because `shiftcount` is not the builtin either.
 _SHIFT_COMMAND = re.compile(
-    r"(?:^|[\n;&|(){}`]|\b(?:do|then|else|elif)\b)[ \t]*shift\b(?!=)"
+    r"(?:^|[\n;&|(){}`)]|\b(?:do|then|else|elif)\b)[ \t]*shift\b(?!=)"
 )
 
-#: The two characters `_outside_quotes` opens a quoted span on.
+#: The two characters the two passes below open a quoted span on.
 _QUOTES = '"' + "'"
+
+
+def _spaced(text: str) -> str:
+    """TEXT with the quote characters turned into spaces, offsets preserved.
+
+    `_unquoted` *deletes* them, which is right for reading operands and wrong
+    for anything that has to say where in TEXT it found something. This is the
+    same normalisation measured in TEXT's own coordinates, so a span taken here
+    lines up with one taken from `_outside_quotes`.
+    """
+    return "".join(" " if ch in _QUOTES else ch for ch in text)
 
 
 def _outside_quotes(text: str) -> str:
@@ -326,19 +337,30 @@ def _shifts_through_argv(text: str) -> bool:
     the direction that costs a false report rather than a silent gate: an
     exemption that cannot be established is not an exemption.
     """
-    # Two readings of the same literal, and a `shift` has to survive both. The
-    # unquoted one carries the offsets the span check below is stated in; the
-    # blanked one is the only one that knows a `;` inside an `echo` argument is
-    # not a separator, and it cannot supply offsets because `_unquoted` deletes
-    # characters. So it is used as a whole-literal veto rather than per span.
-    if not _SHIFT_COMMAND.search(_outside_quotes(text)):
+    # Two readings of the literal, both in its own coordinates, so a span from
+    # one indexes into the other. `commands` is where the loop and its `shift`
+    # have to be found, because it is the only reading that knows the `;` in
+    # `echo "trap: ; shift"` is an argument rather than a separator. `visible`
+    # is where the `$1` tests are counted, because blanking a quoted span would
+    # take `"$1"` with it. Reviewing the first cut of this fix found that a
+    # per-literal `shift` check plus quote-stripped spans rebuilds #1661 one
+    # level in: any real `shift` anywhere licensed a loop whose only `shift`
+    # was a quoted word.
+    commands = _outside_quotes(text)
+    visible = _spaced(text)
+    positions = [m.start() for rx in _TESTS_DOLLAR_ONE for m in rx.finditer(visible)]
+    if len(positions) != sum(len(rx.findall(_unquoted(text)))
+                             for rx in _TESTS_DOLLAR_ONE):
+        # The two normalisations disagree about how many `$1` tests are here --
+        # `[ x"$1" = x"status" ]` is one test to `_unquoted` and none to
+        # `_spaced`, because deleting the quotes joins `x` to `$1` and blanking
+        # them does not. An exemption cannot be aligned with a set of tests
+        # this cannot count, so it is not granted.
         return False
-    text = _unquoted(text)
-    spans = [m.span() for m in _LOOP_BODY.finditer(text)
+    spans = [m.span() for m in _LOOP_BODY.finditer(commands)
              if _SHIFT_COMMAND.search(m.group(0))]
     if not spans:
         return False
-    positions = [m.start() for rx in _TESTS_DOLLAR_ONE for m in rx.finditer(text)]
     return bool(positions) and all(
         any(start <= p < end for start, end in spans) for p in positions
     )
@@ -695,8 +717,28 @@ def test_the_word_shift_in_a_loop_is_not_a_shift(shim: str) -> None:
     + 'done',
     # `shift` with a count, reached through `then` rather than a separator.
     'while [ $# -gt 0 ]; do if [ "$1" = "status" ]; then shift 2; fi; done',
+    # `shift` as the body of a `case` arm, reached through `)`.
+    'while [ $# -gt 0 ]; do case "$1" in status) exit 128 ;; *) shift ;; esac; done',
 ])
 def test_a_shift_that_actually_runs_still_exempts_the_loop(shim: str) -> None:
     """The #1598 exemption has to survive #1661's narrowing, or the fix for a
     silenced gate is a gate that reports its one correct implementation."""
     assert not _looks_like_the_class(shim), shim
+
+
+@pytest.mark.parametrize("shim", [
+    # A real `shift` elsewhere in the literal does not license a *loop* whose
+    # only `shift` is inside a quoted argument. Found by review on this fix:
+    # the first cut vetoed on the whole literal and then picked its spans out
+    # of the quote-stripped text, where `echo "trap: ; shift"` reads as a
+    # separator and a command again -- #1661 rebuilt one level in.
+    'shift; while true; do echo "trap: ; shift; hah"; '
+    'if [ "$1" = "status" ]; then exit 128; fi; break; done',
+    # The `x"$1"` idiom survives quote *deletion* and not quote *blanking*, so
+    # the two readings disagree about how many `$1` tests this literal holds.
+    # An exemption that cannot be aligned with the tests it claims to cover is
+    # not granted, even though this particular loop really does shift.
+    'while [ $# -gt 0 ]; do [ x"$1" = x"status" ] && exit 128; shift; done',
+])
+def test_an_exemption_that_cannot_be_established_is_not_granted(shim: str) -> None:
+    assert _looks_like_the_class(shim), shim

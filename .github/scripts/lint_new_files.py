@@ -273,6 +273,12 @@ def run(base: str, head: str = "HEAD", cwd: str = ".",
     # path at all, and ruff then exits 0 with an empty stdout -- which arrives
     # at the `all clean` arm below listing a file nothing opened. Measured with
     # ruff 0.16.1; the separator is what makes the count a count it earned.
+    # `--quiet` is load-bearing beyond terseness: without it ruff appends a
+    # `Found N error(s).` summary, which names no path, and the finding arm
+    # below would then decline to state its count on every run that has a
+    # finding at all. `test_the_finding_count_is_the_files_carrying_findings_
+    # not_the_files_checked` runs real ruff and asserts the headline verbatim,
+    # so dropping the flag reds that test rather than degrading in silence.
     argv = [binary, "check", "--no-cache", "--quiet",
             "--output-format", "concise",
             "--extend-select", ",".join(EXTRA_RULES), "--"] + files
