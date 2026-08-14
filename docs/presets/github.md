@@ -1300,6 +1300,34 @@ which a newest-60 window on that branch cannot contain. So the flat sentence was
 wrong about *which* commit it was comparing against as well. `dashboard` and
 `watch`'s `gh-prs` tier call the same helper and get the same fix.
 
+**And "by `createdAt`" is itself a claim the op now checks and states**
+([#1644](https://github.com/Digital-Process-Tools/claude-supertool/issues/1644)).
+It reads exactly one spelling, `%Y-%m-%dT%H:%M:%SZ`. `2026-08-13T21:52:04+00:00`
+is the same instant in legal RFC3339 and does not parse, so an undated run was
+dropped from the ranking with nothing said — and a listing where *nothing* parses
+fell all the way back to list position, which is the behaviour above. Both read
+identically to a correct answer. The op now prints which happened:
+
+```
+  2 of 7 runs on other commits could not be dated and were NOT ranked (`createdAt` not in `%Y-%m-%dT%H:%M:%SZ` form). Previous head 60ec9b1 is the newest of the 5 that could be dated; an undated run may be newer than it, so it is the best available answer rather than an established one.
+```
+
+and, for the fallback:
+
+```
+  Previous head 60ec9b1 was taken from LIST POSITION, not from time: none of the 7 runs on other commits carried a readable `createdAt` … so whether 60ec9b1 is really the previous head is UNKNOWN, and every line below that names it inherits that.
+```
+
+Nothing is printed when every candidate parsed, which is every ordinary call —
+`gh run list --json createdAt` emits the `Z` form on this repo today, so this is
+a declaration of an assumption about somebody else's output, not a live defect.
+**The parser is deliberately not widened.** Accepting more spellings would make
+the assumption invisible again rather than declared; the third state this repo
+asks for is "I could not date these N runs", not a quietly larger accept set. The
+line prints above the `Workflows with a run on the previous head …` block and
+whether or not that block appears, because an empty missing-list derived from the
+wrong previous head is the reading that would otherwise print nothing at all.
+
 ## A SHA is a question this op can answer
 
 The release gate in `/opensource-manager` reads *"the default branch is green at

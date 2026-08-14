@@ -299,6 +299,19 @@ def _created(run: object):
         return None
 
 
+def _prev_candidates(runs: object, sha: str) -> list:
+    """The runs that could be the previous head — every run on some other SHA.
+
+    One reader for the population, because `previous_head` ranks it and
+    `previous_head_basis` reports on it, and a disclosure computed over a
+    second, drifting definition of "candidate" would be worse than none.
+    """
+    if not isinstance(runs, list):
+        return []
+    return [r for r in runs if isinstance(r, dict)
+            and str(r.get("headSha") or "") not in ("", sha)]
+
+
 def previous_head(runs: object, sha: str) -> tuple[str, set]:
     """`(sha, workflow names)` of the newest run set that is *not* this SHA.
 
@@ -318,12 +331,12 @@ def previous_head(runs: object, sha: str) -> tuple[str, set]:
 
     A list where no entry has a readable timestamp falls back to position,
     which is the old behaviour and the only one left: refusing to name a
-    previous head would delete the evidence rather than qualify it.
+    previous head would delete the evidence rather than qualify it. That
+    fallback, and the partial case where only *some* candidates parse, are
+    both disclosed by `previous_head_lines` — see `previous_head_basis` for
+    why the answer is qualified rather than widened or withheld (#1644).
     """
-    if not isinstance(runs, list):
-        return "", set()
-    others = [r for r in runs if isinstance(r, dict)
-              and str(r.get("headSha") or "") not in ("", sha)]
+    others = _prev_candidates(runs, sha)
     if not others:
         return "", set()
     dated = [r for r in others if _created(r) is not None]
@@ -333,6 +346,70 @@ def previous_head(runs: object, sha: str) -> tuple[str, set]:
     names = {str(r.get("workflowName") or "?") for r in runs
              if isinstance(r, dict) and str(r.get("headSha") or "") == prev}
     return prev, names
+
+
+#: What `previous_head` ranked by. `time` is the claim the docstring makes;
+#: `position` is the fallback #1618 was written to remove and which survives
+#: only for a listing nothing in it can date; `none` is no candidate at all.
+BASIS_TIME = "time"
+BASIS_POSITION = "position"
+BASIS_NONE = "none"
+
+
+def previous_head_basis(runs: object, sha: str) -> tuple[str, int, int]:
+    """`(basis, undated, candidates)` — how the previous head was chosen (#1644).
+
+    `previous_head` promises "newest", and delivers it only for runs whose
+    `createdAt` is spelled the one way `_created` reads. A run in any other
+    spelling — `+00:00` is the same instant in legal RFC3339 — is dropped from
+    the ranking, and a listing where none parses is ranked by list position,
+    which is exactly what #1618 removed. Neither shows in the output: the
+    previous-head line reads identically whichever happened.
+
+    So this reports the basis rather than widening the parser. A wider
+    `strptime` would make the assumption invisible again instead of declared,
+    and this repo's contract is three states — the third one here is "I could
+    not date these N runs", not a quietly larger accept set.
+    """
+    others = _prev_candidates(runs, sha)
+    if not others:
+        return BASIS_NONE, 0, 0
+    undated = sum(1 for r in others if _created(r) is None)
+    basis = BASIS_POSITION if undated == len(others) else BASIS_TIME
+    return basis, undated, len(others)
+
+
+def previous_head_lines(runs: object, sha: str, prev_sha: str) -> list:
+    """The sentence a previous head that could not be ranked by time needs.
+
+    Empty for the ordinary case, which is every call where every candidate
+    carried a readable timestamp. A hedge printed on every call forever is a
+    disclosure that gets tuned out, which is worse than not writing it — the
+    same reason `stale_listing_lines` is gated on the creation window.
+
+    Printed whether or not any workflow turns out to be missing: an empty
+    `missing` list derived from the wrong previous head is a false negative,
+    and it is the one that prints nothing at all.
+    """
+    basis, undated, candidates = previous_head_basis(runs, sha)
+    if basis == BASIS_NONE or not undated:
+        return []
+    short = (prev_sha or "")[:7] or "?"
+    if basis == BASIS_POSITION:
+        return [f"  Previous head {short} was taken from LIST POSITION, not "
+                f"from time: none of the {candidates} runs on other commits "
+                f"carried a readable `createdAt` (this op reads `{_ISO}` and "
+                "counts every other spelling as undated). That is the "
+                "behaviour #1618 removed — GitHub does not guarantee the "
+                "listing is newest-first, and on 2026-08-13 it was not — so "
+                f"whether {short} is really the previous head is UNKNOWN, and "
+                "every line below that names it inherits that."]
+    return [f"  {undated} of {candidates} runs on other commits could not be "
+            f"dated and were NOT ranked (`createdAt` not in `{_ISO}` form). "
+            f"Previous head {short} is the newest of the "
+            f"{candidates - undated} that could be dated; an undated run may "
+            "be newer than it, so it is the best available answer rather than "
+            "an established one."]
 
 
 def run_phase(run: object) -> str:
@@ -1330,6 +1407,16 @@ def main() -> int:
               "BRANCH` carries that comparison. What IS covered is the "
               f"declared set at {sha[:7]}, above, which is the stronger of the "
               "two and does not depend on history.")
+
+    # Before the `missing` block, not inside it: that block is one of the
+    # things this qualifies, and an empty `missing` derived from the wrong
+    # previous head is the reading that prints nothing at all (#1644).
+    basis_lines = ([] if mode == MODE_COMMIT
+                   else previous_head_lines(runs, sha, prev_sha))
+    if basis_lines:
+        print()
+        for line in basis_lines:
+            print(line)
 
     if missing:
         print()

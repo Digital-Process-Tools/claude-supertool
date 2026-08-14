@@ -43,8 +43,13 @@ mr    = _load("gitlab_mr",    "presets/gitlab/mr.py")
 job   = _load("gitlab_job",   "presets/gitlab/job.py")
 pipe  = _load("gitlab_pipeline", "presets/gitlab/pipeline.py")
 
-# Sentinel token value — never a real credential
-FAKE_TOKEN = "glpat_fake_token_xyz"
+# Sentinel token value — never a real credential. `glpat-`, with a hyphen: this
+# fixture used to spell it `glpat_`, which is the same wrong spelling the four
+# classifiers under test carried, so the pair agreed with each other and with no
+# GitLab that ever existed (#1645). The prefix list and its source are pinned in
+# tests/test_glab_token_prefix_1645.py; this stays a literal because these tests
+# are about output, not about the prefix table.
+FAKE_TOKEN = "glpat-fake-token-xyz-0123456789"
 
 # ---------------------------------------------------------------------------
 # Shared helpers
