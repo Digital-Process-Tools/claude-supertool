@@ -182,13 +182,21 @@ def test_every_query_excludes_pull_requests(monkeypatch, capsys) -> None:
 
 
 def test_open_and_closed_are_asked_for_separately(monkeypatch, capsys) -> None:
+    """Retargeted by #1628, not deleted. The two columns are still two
+    separate questions; what changed is that `open` stopped being one of the
+    searches. `2N + 2` calls against a 30-a-minute API returned a board of 34
+    `?` at 16 cohorts, and the listing that answers `open` was already being
+    fetched on the same run. Asserting the open search is *absent* is what
+    stops the old plan creeping back one filter at a time.
+    """
     gh = _Gh()
-    _render(monkeypatch, capsys, ["tally=cohort-"], gh)
+    out = _render(monkeypatch, capsys, ["tally=cohort-"], gh)
     for name in ("cohort-1", "cohort-2", "cohort-3"):
-        assert any(f'label:"{name}"' in q and "is:open" in q
-                   for q in gh.queries), name
         assert any(f'label:"{name}"' in q and "is:closed" in q
                    for q in gh.queries), name
+    assert all("is:open" not in q for q in gh.queries), gh.queries
+    # The column is still filled, from the issue listing: open 2, closed 1.
+    assert re.search(r"cohort-1\s+2\s+1\s+3", out), out
 
 
 def test_the_none_bucket_negates_every_member(monkeypatch, capsys) -> None:
@@ -285,9 +293,11 @@ def test_the_tally_is_not_the_vocabulary(monkeypatch, capsys) -> None:
         "under it is the render the caller did not ask for")
 
 def test_a_family_too_large_to_query_refuses(monkeypatch, capsys) -> None:
-    """Two search calls per label, and the search API is rate limited. Past a
-    bound the honest answer is a refusal naming the knob, not a board where
-    half the cells are `?` because the limiter cut in halfway down."""
+    """One search call per label since #1628 — `closed` only — and the search
+    API is still rate limited. Past a bound the honest answer is a refusal
+    naming the knob, not a board where half the cells are `?` because the
+    limiter cut in halfway down. The bound moved 14 -> 24; 40 labels is past
+    both, so this test says the same thing it always did."""
     rows = [{"name": f"cohort-{i}", "description": ""} for i in range(40)]
     gh = _Gh(label_rows=rows)
     out = _render(monkeypatch, capsys, ["tally=cohort-"], gh)
