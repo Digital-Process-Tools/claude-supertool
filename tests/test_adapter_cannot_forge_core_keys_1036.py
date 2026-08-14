@@ -90,9 +90,17 @@ def _core_only() -> frozenset:
 
 
 #: The decisions that are the core's alone to make.
+#:
+#: `_validator_measured_count` is the newest (#1717) and it arrived by *moving*
+#: the `count` read out of `_validator_regressed`. That is the shape this list
+#: is weakest against — the containment property was unchanged, the class check
+#: stayed green, and the only thing that went red was the headroom guard below,
+#: reporting `count` as pre-authorised because nothing registered still read it.
+#: A decision extracted into a helper leaves this tuple silently narrower than
+#: the set of functions an adapter payload can steer.
 DECISIONS = ("_validator_no_verdict", "_validator_regressed",
              "_validator_baseline", "_validator_gate_did_not_run",
-             "_validator_not_checked")
+             "_validator_not_checked", "_validator_measured_count")
 
 
 def _keys_read_by_decisions() -> frozenset:

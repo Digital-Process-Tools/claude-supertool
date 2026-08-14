@@ -19992,6 +19992,50 @@ def _validator_no_verdict(data: Optional[Dict[str, Any]]) -> Optional[str]:
     return _validator_not_checked(data)
 
 
+def _validator_measured_count(data: Optional[Dict[str, Any]]) -> int:
+    """`count`, minus the rows that measured nothing. The only count to subtract.
+
+    SCHEMA.md gives an `adapter` row `ok: false, count: 1` because something is
+    broken that someone has to fix — and then promises, per result, that the
+    core "never subtracts it from a baseline in either direction and never
+    reverts an edit over it" (#969). Until #1717 that promise was delivered
+    through `_validator_not_checked`, whose test is `all(code == "adapter")`,
+    so it held only for a payload that was *entirely* absence.
+
+    A mixed payload — real findings beside a row the checker could not finish —
+    fails that `all()`, and rightly: the file WAS measured, and rendering it
+    `NOT CHECKED` would hide four real findings behind one stall. But the guard
+    was also the rollback guard, so the same payload fell through to arithmetic
+    that read the absence as a finding: before 1, after 2, delta +1, and on a
+    `rollback_on_fail` validator a correct edit was written back to its pre-edit
+    bytes. `cargo-check` ships this shape on master — a crate diagnostic naming
+    another file keeps its text and takes `code: "adapter"` (#754).
+
+    Two questions were sharing one predicate. This is the second one, and it is
+    per row where the first is per payload: *did this row measure the file?*
+
+    `orchestrator` is deliberately not subtracted here, for the same reason
+    `_validator_not_checked` excludes it. The core's own timeout arrives as a
+    whole fabricated payload carrying `timeout: True`, which `_validator_no_verdict`
+    catches before any arithmetic runs, so a core `orchestrator` row can never
+    reach this function beside a finding. One that does is an adapter writing
+    the core's provenance code into its own payload, and honouring it would hand
+    an adapter the rollback bypass #1036 closed at the other door.
+
+    A `count` that is not a number is not a measurement either; it reads as 0
+    rather than raising in the middle of an edit. Nothing is excused by that:
+    an `ok: false` result against a clean baseline still regresses on `ok`.
+    """
+    if not isinstance(data, dict):
+        return 0
+    count = data.get("count", 0)
+    if isinstance(count, bool) or not isinstance(count, (int, float)):
+        return 0
+    absences = sum(1 for e in (data.get("errors") or [])
+                   if isinstance(e, dict) and (e.get("code") or "") == "adapter")
+    return max(count - absences, 0)
+
+
 def _validator_baseline(before: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """The pre-op result, or None when it holds no verdict to subtract from.
 
@@ -20109,6 +20153,13 @@ def _validator_regressed(before: Optional[Dict[str, Any]], after: Dict[str, Any]
     a non-verdict *after* the op was read as a new failure and, on a
     `rollback_on_fail` validator, reverted the edit; a non-verdict *before* it
     was read as a pre-existing one and excused a real regression.
+
+    That guard is per *payload*, and it has to be — `_validator_not_checked`
+    answers a rendering question where `all()` is correct. The rollback question
+    is per *row*, so a payload mixing real findings with one stall row walked
+    past the guard and reverted a correct edit anyway. The counts subtracted
+    below come from `_validator_measured_count`, which is that second question
+    (#1717).
     """
     if "skipped" in after:
         return False
@@ -20117,8 +20168,8 @@ def _validator_regressed(before: Optional[Dict[str, Any]], after: Dict[str, Any]
     if after.get("ok", False):
         return False
     before = _validator_baseline(before)
-    b_count = before.get("count", 0) if before else 0
-    a_count = after.get("count", 0)
+    b_count = _validator_measured_count(before) if before else 0
+    a_count = _validator_measured_count(after)
     b_ok = before.get("ok", True) if before else True
     if b_count == a_count and b_ok == after.get("ok", False):
         return False
@@ -20208,8 +20259,14 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
     baseline = _validator_baseline(before)
     b_unknown = baseline is None
     before = baseline
-    b_count = before.get("count", 0) if before else 0
-    a_count = after.get("count", 0)
+    # The same subtraction the marker is computed from, so the arrow and the
+    # marker cannot disagree about the row they share (#1717). Raw counts made
+    # a mixed payload print `1 → 2 (+1)` beside a ✓ — one new error, and
+    # nothing wrong — and the "new" row was the schema's channel for an
+    # absence. The rows themselves are still listed below with their codes, so
+    # the stall is on the page; it is only out of the arithmetic.
+    b_count = _validator_measured_count(before) if before else 0
+    a_count = _validator_measured_count(after)
     delta = a_count - b_count
     b_ok = before.get("ok", True) if before else True
     a_ok = after.get("ok", False)
