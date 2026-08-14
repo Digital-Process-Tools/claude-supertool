@@ -11,24 +11,25 @@ either way, and keeps it answered:
     which code in this repo can remove a directory it did not create?
 
 **Why an AST walk and not a grep.** This tree mentions `rmtree` and `rm -rf`
-constantly -- 94 lines across 48 files match a grep, and all but a couple of
-dozen are prose, changelog entries, or shell-injection payloads a test asserts
-are *never* executed. A count taken from that grep reads as an inventory and is
-not one. Only `ast.Call` nodes are sites here, which is also why the synthetic
-sources further down are invisible to the sweep: a call inside a string literal
-is an `ast.Constant`, not a call.
+constantly. `supertool 'grep:rmtree|rm -rf:.:1'` reports 108 matches over 1092
+files at the commit that wrote this line -- and the great majority are prose,
+changelog entries, or shell-injection payloads a test asserts are *never*
+executed, plus around 25 in this file itself. A count taken from that grep
+reads as an inventory and is not one. Only `ast.Call` nodes are sites here,
+which is also why the synthetic sources further down are invisible to the
+sweep: a call written inside a string literal is an `ast.Constant`, not a call.
 
-**The population, at the commit this was written.** 29 directory-removal sites
-across 27 files: 26 `shutil.rmtree`, 2 `subprocess.run(["rm", "-rf", ...])`, 1
+**The population, at the commit this was written.** 30 directory-removal sites
+across 28 files: 26 `shutil.rmtree`, 2 `subprocess.run(["rm", "-rf", ...])`, 2
 `git worktree remove`, and zero `os.rmdir` / `os.removedirs` / `Path.rmdir`.
 Only two are outside `tests/` -- `validators/gitleaks/gitleaks.py`, which
 removes the private directory it made for one scan, and
-`presets/github/pr_merge.py`, the only site whose path the caller never
-composed. Any total written in prose is a measurement of one commit; the tests
-below re-derive, and they are what a reader should believe when a number
+`presets/github/pr_merge.py`, the only site in the tree whose path the caller
+never composed. Any total written in prose is a measurement of one commit; the
+tests below re-derive, and they are what a reader should believe when a number
 disagrees with them.
 
-**The verdict, re-derived on every run.** Every one of the 28 sites that
+**The verdict, re-derived on every run.** Every one of the 29 sites that
 composes its own target resolves to a directory the same file created --
 `tempfile.mkdtemp`, a `TemporaryDirectory`, or pytest's `tmp_path`. Not one is
 built from the repository root, from the current working directory, or from an
@@ -36,6 +37,16 @@ argument the caller does not control. `_supertool.py`, which every op runs
 through, contains no directory removal at all. So nothing here explains a
 missing `.git`, and that absence is itself the finding: if there was a
 mechanism, it is outside the code this file can see.
+
+**One site was missed on the first pass, and how says more than the count.**
+`tests/test_branch_worktree_locale_850.py:218` executes a real `git worktree
+remove` through a helper that takes the argv words as positional arguments
+rather than as a list; the detector read only the list spelling, so the site
+was absent from the population rather than misclassified in it -- a register
+answering `ok` about a call it had never seen, which is precisely the defect
+class it was written to catch, committed inside the thing catching it. The
+runner set is derived from each file's own call graph now, not from a list of
+helper names, because the list was what made the miss possible.
 
 **What "owned" means, and what it deliberately refuses.** The question is
 #1246's -- which argument names a directory, and who knows what that directory
@@ -64,7 +75,7 @@ PASSTHROUGH = ("str", "Path", "dirname", "abspath", "realpath", "resolve",
 FRAMEWORK = ("tmp_path", "tmp_path_factory", "tmpdir", "tmpdir_factory")
 
 OWNED = "OWNED: made by this file, or handed over by pytest"
-GIT = "GIT: the path came from `git worktree list`, and the arm is gated"
+GIT = "GIT: a worktree removal of a path this code did not compose"
 UNOWNED = "UNOWNED"
 
 #: Directories this sweep does not enter -- none of them hold source of ours,
@@ -74,10 +85,49 @@ UNOWNED = "UNOWNED"
 SKIP_DIRS = (".git", ".max", ".venv", "venv", ".tox", "node_modules",
              "site-packages", "__pycache__", ".pytest_cache", "build", "dist")
 
-#: Callables that actually spawn an argv. Anything else holding the same list
-#: is asserting about a command, not running one.
-RUNNERS = ("run", "Popen", "call", "check_call", "check_output",
-           "_git", "_git_rc", "_run")
+#: Callables that spawn an argv on their own. Anything else holding the same
+#: list is asserting about a command, not running one.
+SPAWNERS = ("run", "Popen", "call", "check_call", "check_output", "system")
+
+
+def _runners(module):
+    """Names in this file that reach a subprocess, derived rather than listed.
+
+    A hardcoded list of helper names is the wrong shape and was measurably
+    wrong: it named `_git`, `_git_rc` and `_run`, and the first pass of this
+    register still missed the executed `git worktree remove` at
+    `tests/test_branch_worktree_locale_850.py:218`, because that helper takes
+    its words as *positional arguments* rather than a list. Deriving the set --
+    a function is a runner if its body reaches `subprocess`, transitively --
+    means a helper named anything at all is still seen.
+    """
+    # One walk builds the call graph; the fixed point then runs over names
+    # only. Re-walking every def on every round instead cost 4.5s a sweep on
+    # this tree, on a file filed under `lane-ci-cost`.
+    calls = {}
+    for node in ast.walk(module):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        names = calls.setdefault(node.name, set())
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            func = call.func
+            if isinstance(func, ast.Attribute):
+                # `subprocess.run(...)` spawns; `mock.run(...)` does not, and
+                # neither does a `.run()` on something we cannot see.
+                if func.attr in SPAWNERS and "subprocess" in ast.unparse(func.value):
+                    names.add(func.attr)
+            elif isinstance(func, ast.Name):
+                names.add(func.id)
+    runners = set(SPAWNERS)
+    for _round in range(len(calls) + 1):
+        grown = set(name for name, called in calls.items()
+                    if name not in runners and called & runners)
+        if not grown:
+            break
+        runners |= grown
+    return runners
 
 
 def _scopes(module, node):
@@ -158,6 +208,32 @@ def _sources(module, scopes, target):
     return []
 
 
+def _classes(module):
+    """`name -> ClassDef` for every class defined in this file."""
+    return dict((n.name, n) for n in ast.walk(module)
+                if isinstance(n, ast.ClassDef))
+
+
+def _receiver_class(receiver, module, scopes):
+    """The ClassDef whose instance `receiver` is, or None when it cannot be told.
+
+    `self` is the enclosing class. Anything else has to have been built by a
+    visible constructor call -- `box = _Repo()`. Nothing else counts: guessing
+    is what produced the false OWNED this exists to stop.
+    """
+    classes = _classes(module)
+    if isinstance(receiver, ast.Name) and receiver.id == "self":
+        for node in reversed(list(scopes)):
+            if isinstance(node, ast.ClassDef):
+                return node
+        return None
+    for bound in _sources(module, scopes, ast.unparse(receiver)):
+        if (isinstance(bound, ast.Call) and isinstance(bound.func, ast.Name)
+                and bound.func.id in classes):
+            return classes[bound.func.id]
+    return None
+
+
 def _is_owned(expr, module, scopes, depth=0, seen=()):
     """Does `expr` name a directory this file made?
 
@@ -211,9 +287,19 @@ def _is_owned(expr, module, scopes, depth=0, seen=()):
         if isinstance(expr, ast.Name) and expr.id in FRAMEWORK:
             return True
         sources = _sources(module, scopes, key)
-        if isinstance(expr, ast.Attribute):
+        if isinstance(expr, ast.Attribute) and not sources:
             # `box.tmp` where `_Repo.__init__` set `self.tmp = mkdtemp(...)`.
-            sources = sources + _sources(module, scopes, "self." + expr.attr)
+            #
+            # Resolved through the receiver's *class*, never by looking for
+            # `self.<attr>` anywhere in the file. The loose version certified
+            # `box.tmp` for any `box` at all as soon as some unrelated class in
+            # the same module happened to assign `self.tmp = mkdtemp()` -- a
+            # false OWNED, which is the only direction of error that matters
+            # here, since it is the one that lets an unsafe removal through.
+            owner = _receiver_class(expr.value, module, scopes)
+            if owner is None:
+                return False
+            sources = _bindings_in(owner, "self." + expr.attr)
         sources = [s for s in sources
                    if ast.unparse(s) not in seen + (key,)
                    and not (isinstance(s, (ast.List, ast.Tuple)) and not s.elts)]
@@ -224,11 +310,13 @@ def _is_owned(expr, module, scopes, depth=0, seen=()):
     return False
 
 
-def _removal_target(node):
+def _removal_target(node, runners):
     """The directory a call would destroy, or `(None, None)` if it destroys none.
 
-    Returns `(expr, kind)`. `kind` is `"git"` for `git worktree remove`, whose
-    path git itself reported and the caller never composed.
+    Returns `(expr, kind)`. `kind` is `"worktree"` for `git worktree remove`,
+    which may or may not be composed by the caller -- `_sites_in_source`
+    decides that by asking the same ownership question it asks of everything
+    else, and only an unowned one is exempted.
     """
     func = node.func
     name = (func.attr if isinstance(func, ast.Attribute)
@@ -244,11 +332,20 @@ def _removal_target(node):
     # Only a call that *runs* an argv removes anything. A test asserting on
     # `["worktree", "remove", path]` is reading a receipt, and a register that
     # counted it would report removals nobody performs.
-    if name not in RUNNERS:
+    if name not in runners or not node.args:
         return None, None
-    if not node.args or not isinstance(node.args[0], (ast.List, ast.Tuple)):
+    # Two spellings, and reading only the first is what hid a real site: a
+    # helper may take the argv as a list (`_git_rc(["worktree", "remove", p])`)
+    # or as its own positional arguments (`_git("worktree", "remove", p)`).
+    if isinstance(node.args[0], (ast.List, ast.Tuple)):
+        elts = node.args[0].elts
+    else:
+        elts = list(node.args)
+    if any(isinstance(e, ast.Starred) for e in elts):
+        # `["git", *args]` -- the words are not in this file's AST. Almost all
+        # of these are the generic helper definitions whose *callers* carry the
+        # verb, and those callers are read above.
         return None, None
-    elts = node.args[0].elts
     words = [e.value for e in elts
              if isinstance(e, ast.Constant) and isinstance(e.value, str)]
     if not words:
@@ -261,7 +358,7 @@ def _removal_target(node):
             w.startswith("-") and set(w[1:]) & set("rR") for w in words[1:]):
         return (operands[1] if len(operands) > 1 else None), "call"
     if "worktree" in words and "remove" in words:
-        return (operands[-1] if operands else None), "git"
+        return (operands[-1] if operands else None), "worktree"
     return None, None
 
 
@@ -270,17 +367,22 @@ def _sites_in_source(rel, source, found=None):
     found = {} if found is None else found
     _BINDINGS.clear()
     module = ast.parse(source)
+    runners = _runners(module)
     for node in ast.walk(module):
         if not isinstance(node, ast.Call):
             continue
-        target, kind = _removal_target(node)
+        target, kind = _removal_target(node, runners)
         if target is None:
             continue
         scopes = _scopes(module, node)
-        if kind == "git":
+        if _is_owned(target, module, scopes):
+            # A `git worktree remove` of a path the test built itself is as
+            # owned as any other removal, and gets no exemption for its verb.
+            mechanism = OWNED
+        elif kind == "worktree":
             mechanism = GIT
         else:
-            mechanism = OWNED if _is_owned(target, module, scopes) else UNOWNED
+            mechanism = UNOWNED
         key = "{0}::{1}".format(
             rel, ".".join(n.name for n in scopes) or "<module>")
         found.setdefault(key, []).append((node.lineno, mechanism))
@@ -299,6 +401,14 @@ def _call_sites():
     would subtract a file from the population and leave the answer looking
     exactly like a file with no removals in it -- the absence-read-as-absence
     shape this register exists to keep out of the suite.
+
+    **Every `.py` file is parsed, and a byte prefilter was tried and removed.**
+    Skipping files whose bytes hold none of `rmtree` / `rmdir` / `worktree` /
+    `"rm"` cut a sweep from 21s to 8s. But a prefilter is a grep, and this
+    register exists because a grep over this tree reads as an inventory and is
+    not one -- so it needs a test that parses everything and demands the same
+    answer, which costs the 21s back plus the 8s. Measured, the fast path plus
+    its proof was slower than never taking it.
     """
     if _SWEEP:
         return _SWEEP[0]
@@ -309,8 +419,7 @@ def _call_sites():
         if any(part in SKIP_DIRS for part in path.relative_to(ROOT).parts):
             continue
         try:
-            source = path.read_text(encoding="utf-8")
-            _sites_in_source(rel, source, found)
+            _sites_in_source(rel, path.read_text(encoding="utf-8"), found)
         except (OSError, UnicodeDecodeError, SyntaxError, ValueError) as exc:
             unreadable.append((rel, type(exc).__name__))
     _SWEEP.append((found, unreadable))
@@ -334,6 +443,11 @@ REGISTER = {
     # here at all -- git reported it -- and the arm ahead of it refuses on
     # three separate reads before it fires (#1280, #1290).
     'presets/github/pr_merge.py::_cleanup_worktree': GIT,
+
+    # An executed `git worktree remove`, and the site the first cut of this
+    # register did not see: its helper takes the argv words as positional
+    # arguments rather than as a list. The path is the fixture's `tmp_path`.
+    'tests/test_branch_worktree_locale_850.py::test_a_branch_checked_out_nowhere_still_warns_and_still_advises': OWNED,
 
     'tests/test_git_checkout_pathspec_756.py::repo': OWNED,
     'tests/test_git_checkout_rebase_state_900.py::repo': OWNED,
@@ -366,61 +480,85 @@ REGISTER = {
 }
 
 
-def test_every_directory_removal_site_is_registered() -> None:
-    """A new removal must be classified here before it can be merged."""
+def test_the_register_is_the_tree() -> None:
+    """Six claims about the sweep, and one sweep to answer all six.
+
+    They are one test rather than six because `pyproject.toml` runs the suite
+    under `-n auto`, whose default `--dist load` scatters the tests of a file
+    across workers -- and each worker that gets one pays its own full-tree
+    sweep, ~20s of `ast.parse` over 939 files. Six separate tests were six
+    sweeps. (An `xdist_group` mark does not fix that: it is honoured only
+    under `--dist loadgroup`, which this repo does not set.) The order runs
+    outward from "the population is whole", which is also the order a reader
+    wants to learn about failures in.
+    """
     live = _mechanisms()
+    _sites, unreadable = _call_sites()
+
+    # 1. The population is only a population if nothing dropped out of it. A
+    #    file the walk could not parse is not a file without removals in it.
+    assert not unreadable, (
+        "these files were counted in no verdict below, so nothing here is "
+        "claimed about them: " + repr(unreadable))
+
+    # 2. The load-bearing one, and the answer to #1635's first question. A
+    #    site reclassified UNOWNED by a later edit -- a `mkdtemp` swapped for
+    #    a path out of the environment, a teardown that starts joining an
+    #    argument onto its root -- turns this red on the commit that does it,
+    #    not on the run that loses somebody's checkout.
+    unowned = sorted(k for k, mech in live.items() if UNOWNED in mech)
+    assert not unowned, (
+        "these can remove a directory whose provenance is not established: "
+        + repr({k: live[k] for k in unowned}))
+
+    # 3. A new removal must be classified here before it can be merged.
     missing = sorted(k for k in live if k not in REGISTER)
     assert not missing, (
         "directory-removal sites with no entry in REGISTER -- add them with "
         "the mechanism that proves each owns what it deletes: "
         + repr({k: live[k] for k in missing}))
 
-
-def test_no_registered_site_has_disappeared() -> None:
-    """An entry with no call site left is a stale claim, which is the shape
-    this repo keeps mistaking for a true one."""
-    live = _mechanisms()
+    # 4. An entry with no call site left is a stale claim, which is the shape
+    #    this repo keeps mistaking for a true one.
     stale = sorted(k for k in REGISTER if k not in live)
     assert not stale, "REGISTER entries with no call site left: " + repr(stale)
 
-
-def test_nothing_removes_a_directory_it_cannot_prove_it_owns() -> None:
-    """The load-bearing one, and the answer to #1635's first question.
-
-    Every removal must resolve to a directory the same file made. A site that
-    is reclassified UNOWNED by a later edit -- a `mkdtemp` swapped for a path
-    from the environment, a teardown that starts joining an argument onto its
-    root -- turns this red on the commit that does it, not on the run that
-    loses somebody's checkout.
-    """
-    live = _mechanisms()
-    unowned = sorted(k for k, mech in live.items() if UNOWNED in mech)
-    assert not unowned, (
-        "these can remove a directory whose provenance is not established: "
-        + repr({k: live[k] for k in unowned}))
-
-
-def test_the_recorded_mechanism_is_still_the_one_in_the_code() -> None:
-    """The label is re-derived, never trusted."""
-    live = _mechanisms()
+    # 5. The label is re-derived, never trusted.
     drifted = dict((k, (REGISTER[k], live[k])) for k in REGISTER
                    if k in live and REGISTER[k] != live[k])
     assert not drifted, (
         "the mechanism recorded here is no longer the mechanism in the code "
         "(recorded, actual): " + repr(drifted))
 
+    # 6. `GIT` is an exemption, so the set that holds it is pinned by name. A
+    #    `git worktree remove` is the one removal whose path can legitimately
+    #    come from outside -- git reported it. That is also a hole big enough
+    #    to hide a second one in, so it is not a category anyone joins
+    #    quietly: a new unowned worktree removal has to argue for itself here.
+    exempt = sorted(k for k, mech in live.items() if mech == GIT)
+    assert exempt == ['presets/github/pr_merge.py::_cleanup_worktree'], exempt
 
-def test_every_python_file_in_the_tree_was_actually_read() -> None:
-    """The population is only a population if nothing dropped out of it.
 
-    A file the walk could not parse is not a file without removals in it, and
-    a register that quietly skipped one would answer `ok` about code it never
-    looked at.
+def test_no_skipped_directory_holds_source_of_ours() -> None:
+    """`SKIP_DIRS` shrinks the population, so it is checked rather than trusted.
+
+    Adding `"presets"` to it would be a one-word edit that silently removes a
+    whole subsystem from every verdict above, and nothing else here would go
+    red. Anything listed must not be a directory of ours holding `.py` files.
+
+    `.git` is exempt from the check rather than expected by it, because its
+    spelling is not stable: a directory in a clone, a *file* in a linked
+    worktree. Asserting it was present passed in the live checkout and failed
+    in the worktree this was written in -- an environment-dependent assertion,
+    which is the same defect as a platform-dependent one.
     """
-    _sites, unreadable = _call_sites()
-    assert not unreadable, (
-        "these files were counted in no verdict above, so nothing here is "
-        "claimed about them: " + repr(unreadable))
+    live = sorted(name for name in SKIP_DIRS
+                  if name != ".git"
+                  and (ROOT / name).is_dir()
+                  and any((ROOT / name).rglob("*.py")))
+    assert not live, (
+        "these skipped names are real directories in this repo that hold "
+        "Python, so the sweep is not reading them: " + repr(live))
 
 
 def test_the_core_removes_no_directory_at_all() -> None:
@@ -482,6 +620,34 @@ def test_the_classifier_refuses_a_path_it_cannot_prove_ownership_of() -> None:
                 "    shutil.rmtree(d)") == UNOWNED, (
         "one owning assignment does not certify a name that is also bound to "
         "something we were handed")
+
+    assert mech("import shutil, tempfile",
+                "class Thing:",
+                "    def __init__(self):",
+                "        self.tmp = tempfile.mkdtemp()",
+                "def cleanup(box):",
+                "    shutil.rmtree(box.tmp)") == UNOWNED, (
+        "`box` is whatever the caller passed. An unrelated class in the same "
+        "file assigning `self.tmp = mkdtemp()` certified it until the receiver "
+        "was resolved through its own class")
+
+    assert mech("import shutil, tempfile",
+                "class Repo:",
+                "    def __init__(self):",
+                "        self.tmp = tempfile.mkdtemp()",
+                "def cleanup():",
+                "    box = Repo()",
+                "    shutil.rmtree(box.tmp)") == OWNED, (
+        "a receiver built by a visible constructor does carry its class's "
+        "ownership, and tightening the rule above must not have cost that")
+
+    assert mech("import subprocess",
+                "def _sh(*args, cwd):",
+                "    subprocess.run(['git', *args], cwd=cwd)",
+                "def t(tmp_path):",
+                "    _sh('worktree', 'remove', str(tmp_path), cwd='.')") == OWNED, (
+        "a helper taking its argv as positional arguments executes a real "
+        "removal, and reading only the list spelling hid one in this tree")
 
     assert not _sites_in_source(
         "tests/synthetic.py",
