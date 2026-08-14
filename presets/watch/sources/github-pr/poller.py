@@ -54,6 +54,68 @@ _VIEW_FIELDS = (
 
 TERMINAL_PR_STATES = {"MERGED", "CLOSED"}
 
+# The four answers to "did the account this poller authenticates as write the
+# comments that just arrived" (#1612). Four rather than two, for the reason this
+# repository files against itself once a month: a poller that cannot tell has to
+# say so, or its silence is read as the weaker fact being false.
+#
+#   true     every comment new since the last poll is the viewer's
+#   false    none of them is
+#   mixed    some are and some are not — a batch, and the reader must look
+#   unknown  the rows do not carry the flag, so nothing here can tell
+#
+# It is `author_is_viewer`, not `by_you`. #1612 offered both; `by_you` claims
+# more than anything here can know, because the token this poller authenticates
+# as is *also* what a human maintainer comments under by hand. What GitHub
+# answers is "the viewer authored it", and the field is named after the question
+# that was actually asked.
+#
+# And it is a field rather than a filter. The event is true; only the reader's
+# most likely conclusion from it is false. A consumer can filter on a field it
+# can see, a session that posted a comment and wants confirmation it landed
+# still gets one, and nothing is dropped — a dropped real comment is invisible,
+# which is the more expensive of the two failures by a long way.
+AUTHORSHIP_VIEWER = "true"
+AUTHORSHIP_OTHER = "false"
+AUTHORSHIP_MIXED = "mixed"
+AUTHORSHIP_UNKNOWN = "unknown"
+
+
+def _author_is_viewer(new_comments: list) -> str:
+    """One of the four constants above, over the comments new since last poll.
+
+    `viewerDidAuthor` rides on the `comments` array `_VIEW_FIELDS` already asks
+    for, so this costs no extra API call and needs no identity lookup: no
+    `gh api user`, nothing cached per process, nothing to go stale, and no
+    comparison of two logins that a rename would quietly break.
+
+    The whole slice is read rather than its last row, because `new_count` can
+    exceed 1 and `author` names only the last. A batch ending on the viewer's
+    own reply would otherwise report as entirely self-authored, and the
+    stranger's comment underneath it — the one thing worth waking up for — is
+    the part that would disappear. Hence `mixed`.
+
+    Anything unexpected — a row that is not a dict, a flag that is not a bool,
+    an empty slice — is `unknown` rather than a guess. `unknown` is also what a
+    `gh` predating the field returns here, and that degradation is safe by
+    construction: it says nothing instead of saying the wrong thing.
+    """
+    if not new_comments:
+        return AUTHORSHIP_UNKNOWN
+    flags = []
+    for row in new_comments:
+        if not isinstance(row, dict):
+            return AUTHORSHIP_UNKNOWN
+        flag = row.get("viewerDidAuthor")
+        if not isinstance(flag, bool):
+            return AUTHORSHIP_UNKNOWN
+        flags.append(flag)
+    if all(flags):
+        return AUTHORSHIP_VIEWER
+    if not any(flags):
+        return AUTHORSHIP_OTHER
+    return AUTHORSHIP_MIXED
+
 
 def _rollup_state(rollup: list | None) -> str:
     """Aggregate gh's statusCheckRollup into a single state string.
@@ -238,12 +300,19 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         delta = comments_count - prev_comments_count
         latest = comments_list[-1] if comments_list else {}
         author = ((latest.get("author") or {}).get("login") if isinstance(latest, dict) else "") or "?"
+        # The tail of the list is what arrived since the last poll. A deleted
+        # comment lowers the count and fires nothing, so the slice can only be
+        # wrong on a poll where a delete and an add landed together — and that
+        # case degrades to a mislabelled row, never to a dropped event, because
+        # the field decides nothing about what is emitted.
+        new_comments = comments_list[-delta:] if 0 < delta <= len(comments_list) else []
         events.append({
             "event": "comment_added",
             "payload": {
                 "url": url,
                 "title": title,
                 "author": author,
+                "author_is_viewer": _author_is_viewer(new_comments),
                 "new_count": delta,
             },
             "notify_title": f"#{number} new comment{'s' if delta > 1 else ''}",

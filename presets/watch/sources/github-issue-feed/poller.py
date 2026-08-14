@@ -420,6 +420,17 @@ def _changes(number: str, before: dict[str, Any], after: dict[str, Any]) -> list
         events.append({
             "event": "issue_comment_added",
             "payload": {**_base_payload(number, after),
+                        # Always `unknown`, and said out loud rather than
+                        # omitted (#1612). One `/issues` page carries a comment
+                        # *count* and no authorship whatever, so this source
+                        # cannot answer "did I write it" for any value of I —
+                        # it would take a second call per event to learn. The
+                        # attribute being absent would leave the reader's
+                        # default ("someone replied") standing unchallenged,
+                        # which is the inference #1612 is about; `github-pr`
+                        # answers the same key from `viewerDidAuthor`, so a
+                        # consumer reads one field across both sources.
+                        "author_is_viewer": "unknown",
                         "new_count": comments - prev_comments,
                         "comments": comments},
             "notify_title": f"#{number} new comment"

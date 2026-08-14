@@ -997,7 +997,36 @@ So `comment_added` was excluded for one stated reason, that reason was not true,
 
 **What the count genuinely cannot do is say who commented**, so `comment_added` also fires on your own comments. That is a real limitation and it is not the one the event was held back for; it is cheap to live with and expensive to fix, since distinguishing authors *would* need the per-poll `/notes` call [#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519) costed. If it bothers you, drop `comment_added` from `only=`.
 
+This paragraph is about `gitlab-mr` and stays true there. The two GitHub sources answer it — see [`author_is_viewer`](#did-you-write-it-yourself-1612) below, which costs them nothing because GitHub puts the answer on a payload they already fetch.
+
 `new_count` is the **delta** since the previous poll, not the running total. A count that goes *down* (a deleted comment) fires nothing — the guard is a rising edge — and the first poll of an MR records a baseline without firing, so joining a conversation already in progress does not announce every comment in it.
+
+### Did you write it yourself? ([#1612](https://github.com/Digital-Process-Tools/claude-supertool/issues/1612))
+
+A session that comments on a PR as part of its normal loop got its own comment back thirty seconds later, as an event indistinguishable from somebody answering it. The event is *true*; what is false is the reader's most likely conclusion from it, and the harm is the ratio rather than the line — an event stream where half the comment events are your own trains you to skim the ones that are not.
+
+So `comment_added` (`github-pr`) and `issue_comment_added` (`github-issue-feed`) carry **`author_is_viewer`**, four-valued:
+
+| Value | |
+|---|---|
+| `true` | every comment new since the last poll was written by the account this poller authenticates as |
+| `false` | none of them was |
+| `mixed` | some were and some were not — the batch has a stranger in it, and `author` names only its last comment |
+| `unknown` | this poller cannot tell |
+
+**A field, not a filter.** Nothing is suppressed. A dropped real comment is invisible, and a session that posts a comment and wants confirmation it landed is a real case; a consumer can filter on a field it can see, and could not filter on an inference the emitter never wrote down.
+
+**`author_is_viewer`, not `by_you`.** The field says *the account*, because that is all GitHub is being asked. The token a session posts under is also what a human maintainer comments under by hand, so `by_you` would claim a distinction nothing here can make. That distinction is the one thing this does not close: it separates you-and-your-maintainer from everybody else, not you from your maintainer.
+
+**Where the answer comes from, per source:**
+
+| Source | | |
+|---|---|---|
+| `github-pr` | `viewerDidAuthor`, per comment, on the `comments` array `gh pr view --json` already returns | **zero extra API calls**, no identity lookup, nothing cached per process and nothing to go stale. A `gh` that does not return the flag yields `unknown` — a safe degradation, because it says nothing rather than something wrong |
+| `github-issue-feed` | nothing | **always `unknown`.** One `/issues` page carries a comment count and no authorship whatever; learning it would cost a second call per event. Said out loud rather than omitted, so the default reading does not stand unchallenged |
+| `gitlab-mr` | nothing | the field is **absent** — see the [`user_notes_count`](#comment_added-is-in-the-default-set-519) paragraph above. GitLab would need the per-poll `/notes` call [#519](https://github.com/Digital-Process-Tools/claude-supertool/issues/519) costed |
+
+`mixed` is why the whole slice of new comments is read rather than the last row: a batch ending on your own reply would otherwise report as entirely self-authored, and the stranger's comment underneath it — the one worth waking up for — is the part that would disappear.
 
 ### `conflicts_appeared` requires a diff ([#465](https://github.com/Digital-Process-Tools/claude-supertool/issues/465))
 
