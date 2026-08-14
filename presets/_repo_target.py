@@ -19,6 +19,7 @@ the empty/None form and the caller behaves exactly as it did before.
 from __future__ import annotations
 
 import os
+import re
 import urllib.parse
 
 ENV_VAR = "SUPERTOOL_REPO"
@@ -70,6 +71,39 @@ def api_path(suffix: str) -> str:
         return f"repos/{{owner}}/{{repo}}/{suffix}"
     owner, name = pair
     return f"repos/{owner}/{name}/{suffix}"
+
+
+#: What a GitHub `owner/name` may be made of. Used only to decide whether a
+#: slug read back off the API is fit to be pasted into a printed command; a
+#: slug that does not match is not repaired, it is declined.
+_SLUG = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
+
+
+def api_path_for_display(suffix: str, slug: str) -> str:
+    """:func:`api_path`, with a slug the caller has already read filled in.
+
+    **For a path that is printed for a human to paste, never for argv.** The two
+    are different consumers of one string and #1670 is the third time in this
+    codebase they were treated as one. `gh api` expands `{owner}`/`{repo}` from
+    the cwd's remote, which is right for a command this process runs *here* and
+    wrong for a command handed to a reader: pasted in another checkout the same
+    line names another repository and says nothing about having changed meaning.
+    The receipt around it already prints the concrete slug twice, in its own
+    header and in its `URL:` line.
+
+    A repo target still wins, and is still *replaced rather than accompanied*
+    (#1281): with a target set this returns exactly what :func:`api_path`
+    returns, so the printed line and the executed one cannot disagree about
+    which repository the call is about. `slug` is the cwd's identity and is not
+    that answer.
+
+    A `slug` that is empty or not `owner/name` is declined rather than pasted
+    in — the placeholders are a correct command, and a path built out of a
+    partial answer is not.
+    """
+    if owner_repo() is not None or not _SLUG.fullmatch(slug or ""):
+        return api_path(suffix)
+    return f"repos/{slug}/{suffix}"
 
 
 def no_repo_error(cli_example: str) -> str:

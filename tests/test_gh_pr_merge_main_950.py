@@ -473,7 +473,12 @@ def test_cleanup_is_named_after_a_verified_merge_and_never_run(monkeypatch,
     _install(monkeypatch, h, argv=["944"])
     m.main()
     out = capsys.readouterr().out
-    assert "Cleanup — not run by this op" in out
+    # "this invocation", not "this op" (#1670): the op does clean up, on
+    # `|cleanup`, and the header used to deny it 69 lines above the pointer
+    # that offers it. That the offered token is a real route is pinned by
+    # property rather than by wording in
+    # `test_gh_pr_merge_cleanup_pointer_1670.py`.
+    assert "Cleanup — not run by this invocation" in out
     assert "fix/924" in out
     assert "Deliberately not chained" in out
 
