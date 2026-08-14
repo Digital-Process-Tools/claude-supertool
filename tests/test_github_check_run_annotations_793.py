@@ -95,6 +95,11 @@ def _check_mod():
 
 _REAL_RUN = subprocess.run
 
+# What `gh repo view --json nameWithOwner` answers for this checkout. The op
+# reads it on the error paths that print a `gh api …` command for a reader to
+# paste, so those name a repository rather than gh's cwd placeholders (#1679).
+CWD_SLUG = "Digital-Process-Tools/claude-supertool"
+
 NO_SUCH_STDERR = "gh: Not Found (HTTP 404)\n"
 BLOB_NOT_FOUND_STDOUT = (
     '﻿<?xml version="1.0" encoding="utf-8"?><Error><Code>BlobNotFound</Code>'
@@ -197,6 +202,12 @@ def _fake_gh(
             return subprocess.CompletedProcess(
                 args, 0,
                 json.dumps({"headBranch": "b", "event": "push", "pullRequests": []}), "")
+        if cmd == "repo" and url == "view":
+            # #1679: an error path that prints a `gh api …` command for the
+            # reader reads the cwd's slug back, so the printed line names a
+            # repository instead of gh's cwd-resolved placeholders.
+            return subprocess.CompletedProcess(
+                args, 0, json.dumps({"nameWithOwner": CWD_SLUG}), "")
         raise AssertionError(f"unstubbed gh call: {args!r}")
 
     return fake_run

@@ -64,7 +64,23 @@ MESSAGE_MAX = 500
 
 
 def _api_path(suffix: str) -> str:
+    """A `gh api` path this process **executes**. Placeholders are correct here.
+
+    `gh api` expands `{owner}`/`{repo}` from the cwd's remote, which is right
+    for a call made here and is what a `repo:` target replaces (#673/#1281).
+    """
     return _repo_target.api_path(suffix)
+
+
+def _printable_api_path(suffix: str) -> str:
+    """A `gh api` path **printed for a reader to paste** (#1679).
+
+    A different consumer of the same string, and the distinction #1670 drew in
+    `pr_merge`: pasted in another checkout the placeholder form names another
+    repository and says nothing about having changed meaning. Under a `repo:`
+    target this is `_api_path` exactly, so the two cannot disagree.
+    """
+    return _repo_target.api_path_printable(suffix)
 
 
 def _gh_error_kind(stderr: str) -> str:
@@ -161,7 +177,7 @@ def _not_found_message(check_id: str, probe: GhCall) -> str:
         f"instead could not be established — that probe did not answer: "
         f"{probe.error}. This op is not guessing between a wrong id and an id "
         f"in the other namespace. Retry, or read it directly with: "
-        f"gh api {_api_path('actions/jobs/' + check_id)}"
+        f"gh api {_printable_api_path('actions/jobs/' + check_id)}"
     )
 
 
@@ -379,7 +395,7 @@ def render_check(check_id: str, check: dict, *, routed_from: str = "",
             f"\nERROR: the check run was read, but its annotations were not: "
             f"{ann.error}. Whether this check flagged any line is UNKNOWN — "
             f"this is not zero annotations. Retry, or: gh api "
-            f"{_api_path('check-runs/' + check_id + '/annotations')}"
+            f"{_printable_api_path('check-runs/' + check_id + '/annotations')}"
         )
         return 1
     annotations = ann.data if isinstance(ann.data, list) else []

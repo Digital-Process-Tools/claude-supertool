@@ -44,14 +44,43 @@ def test_missing_log_hint_names_the_target(monkeypatch) -> None:
     )
 
 
-def test_missing_log_hint_keeps_the_placeholders_without_a_target(
+def test_missing_log_hint_names_the_cwd_repo_without_a_target(
         monkeypatch) -> None:
-    """No target: the string must be byte-identical to what it always was."""
+    """No target: the hint names the cwd's repository rather than gh's placeholders.
+
+    This assertion is inverted from the one #673 shipped, on purpose (#1679).
+    It used to demand the string stay byte-identical without a target, which
+    was right while the only consumer of the difference was a `repo:` call —
+    but the *placeholder* form is itself the defect for a line a reader pastes:
+    `gh api` resolves `{owner}`/`{repo}` from whatever cwd it lands in, so the
+    same command names a different repository in every checkout and says
+    nothing about having changed meaning. #1670 drew that distinction in
+    `pr_merge`; this is the same one, arriving here.
+    """
     monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
+    monkeypatch.setattr(job._repo_target, "cwd_slug",
+                        lambda timeout=15: "o/r")
 
     msg = job._missing_log_message("999", None, False, "boom")
 
-    assert "gh api repos/{owner}/{repo}/actions/jobs/999" in msg
+    assert "gh api repos/o/r/actions/jobs/999" in msg, msg
+    assert "{owner}" not in msg, msg
+
+
+def test_missing_log_hint_declines_to_the_placeholders_when_the_slug_is_unread(
+        monkeypatch) -> None:
+    """The third state: gh could not say which repository this is.
+
+    The placeholders are still a *correct* command in the reader's own
+    checkout, so this loses the improvement and nothing else — never a path
+    built out of half an answer.
+    """
+    monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
+    monkeypatch.setattr(job._repo_target, "cwd_slug", lambda timeout=15: "")
+
+    msg = job._missing_log_message("999", None, False, "boom")
+
+    assert "gh api repos/{owner}/{repo}/actions/jobs/999" in msg, msg
 
 
 @pytest.mark.parametrize("suffix", ["", "/logs"])
