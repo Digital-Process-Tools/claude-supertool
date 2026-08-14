@@ -42,15 +42,28 @@ TIMEOUT_S = 30
 # was handed survives none of that — an ignore match, or a file that is not
 # there — it has nothing to lint, prints its usage banner on **stdout** and
 # exits 0 (measured, markdownlint-cli 0.49.1: 1501 bytes of help). A file it
-# genuinely linted clean prints nothing at all, on either stream.
+# genuinely linted clean prints nothing on stdout.
 #
-# So the discriminator is the output, not a probe: there is no `--file-info`
-# equivalent here, and any output on a zero exit means the run was not about
-# this file. That direction is the safe one — a future release that chatters on
-# a clean run turns verdicts into declines, which is loud and honest, where the
-# reverse fabricates a pass (#1601).
+# So the discriminator is stdout, not a probe: there is no `--file-info`
+# equivalent here, and output on stdout at a zero exit means the run was not
+# about this file.
+#
+# **stderr is not part of that question**, and reading `stdout + stderr` was a
+# real misreport rather than a conservative one (#1601 audit). markdownlint is
+# a Node program, and Node writes its own chatter to stderr over runs that
+# worked perfectly — one `[DEP0040] DeprecationWarning` turned every clean
+# markdown file into a `skipped` that named a determinate, false cause, and in
+# a repo where this validator fires on every markdown edit that is markdown
+# linting silently off everywhere.
+#
+# The residual this leaves is a markdownlint that fails while exiting 0 and
+# says so only on stderr: that would be read as clean. It is accepted rather
+# than guarded, because nothing can tell that apart from a deprecation warning
+# by content, and the guard we had for it disabled the linter on the case that
+# actually happens. A tool that fails exits non-zero, and both non-zero arms
+# below read stderr.
 NOTHING_LINTED_REASON = (
-    "markdownlint exited 0 and printed something, which is what it does when "
+    "markdownlint exited 0 and printed to stdout, which is what it does when "
     "the path resolved to no files to lint — an ignore-file match "
     "(`.markdownlintignore`, `--ignore-path`) or a path that is not there — "
     "so this run is not a verdict about the file: ")
@@ -107,7 +120,7 @@ def main() -> None:
     duration = int((time.time() - start) * 1000)
 
     if result.returncode == 0:
-        chatter = ((result.stdout or "") + (result.stderr or "")).strip()
+        chatter = (result.stdout or "").strip()
         if chatter:
             lines = split_lines(chatter)
             emit(skipped(TOOL, file,
