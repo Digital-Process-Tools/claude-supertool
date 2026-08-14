@@ -206,12 +206,14 @@ The flag exports `SUPERTOOL_PLAIN=1` so preset ops (run as subprocesses) inherit
 
 If you want to force the model to batch via supertool — typical for autonomous / Kevin-style runs — block the competing tools at the Claude Code layer. Two paths:
 
+**The write tools are the load-bearing half.** The raw-command guard below is a `PreToolUse` hook on `Bash`, so `Edit`, `Write`, `MultiEdit` and `NotebookEdit` never reach it — a heredoc rewriting a file is refused while `Edit` making the same change to the same file is not, with no op, no post-edit validator and no rollback-on-syntax-failure ([#1671](https://github.com/Digital-Process-Tools/claude-supertool/issues/1671)). Until this release the lists below omitted all four, so following the recipe exactly left that route open.
+
 **Settings (interactive sessions):** add a `permissions.deny` block to `.claude/settings.json`:
 
 ```json
 {
   "permissions": {
-    "deny": ["Grep", "Glob", "LS", "Bash(find:*)", "Bash(cat:*)", "Bash(grep:*)", "Bash(ls:*)", "Bash(sed:*)", "Bash(awk:*)", "Bash(tail:*)", "Bash(head:*)"]
+    "deny": ["Grep", "Glob", "LS", "Edit", "Write", "MultiEdit", "NotebookEdit", "Bash(find:*)", "Bash(cat:*)", "Bash(grep:*)", "Bash(ls:*)", "Bash(sed:*)", "Bash(awk:*)", "Bash(tail:*)", "Bash(head:*)"]
   }
 }
 ```
@@ -220,7 +222,7 @@ If you want to force the model to batch via supertool — typical for autonomous
 
 ```bash
 claude -p "..." --permission-mode bypassPermissions \
-  --disallowedTools "Grep,Glob,LS,Bash(find:*),Bash(cat:*),Bash(grep:*),Bash(ls:*),Bash(sed:*),Bash(awk:*),Bash(tail:*),Bash(head:*)"
+  --disallowedTools "Grep,Glob,LS,Edit,Write,MultiEdit,NotebookEdit,Bash(find:*),Bash(cat:*),Bash(grep:*),Bash(ls:*),Bash(sed:*),Bash(awk:*),Bash(tail:*),Bash(head:*)"
 ```
 
 `--allowedTools` is [ignored in bypass mode](https://github.com/anthropics/claude-code/issues/12232) — always use `--disallowedTools` when bypassing.
@@ -228,6 +230,8 @@ claude -p "..." --permission-mode bypassPermissions \
 ### The raw-command guard — an op blocks the raw command it replaces
 
 Installed with the plugin, on by default. A `PreToolUse` hook checks every `Bash` command against the op registry: if an op declares that it supersedes that invocation, the command is refused and the refusal quotes **the op's own description**.
+
+**It governs one route, and it says so.** The hook's matcher is `Bash|PowerShell`; the harness's own `Edit`/`Write` are not Bash and are never inspected. A refusal naming a path therefore means *this route is protected*, not *this file is protected* — so the refusal text and the SessionStart roster both state the scope, and closing the other door is the deny list above ([#1671](https://github.com/Digital-Process-Tools/claude-supertool/issues/1671)).
 
 ```
 $ gh pr view 1321 --json state

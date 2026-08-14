@@ -16383,7 +16383,17 @@ _ROSTER_LEGEND = (
     "outlives\nthe call. Look these up; never probe one.\n\n"
     "An op whose class is not declared is shown `!`, so a gap is never the "
     "quiet\nanswer. Full entry for one op: `help:OP` — more than the listing "
-    "row carries.\nEvery entry: `ops`."
+    "row carries.\nEvery entry: `ops`.\n\n"
+    # Not a complete account of how files get touched, and it read as one
+    # (#1671). The raw-command guard is a PreToolUse hook whose matcher is
+    # `Bash|PowerShell`, so `Edit`/`Write` never reach it: the same one-key
+    # change was denied through a heredoc and unremarkable through `Edit`,
+    # minutes apart. One line, ~150 bytes of a ~7KB session budget, because
+    # what it changes is what a reader believes about a boundary they are
+    # inside — and a listing of ops is exactly where that belief forms.
+    "Ops are one route to disk, not the only one: the raw-command guard "
+    "hooks Bash\nonly, so a harness `Edit`/`Write` writes with no op, no "
+    "validator and no\nrollback (#1671)."
 )
 
 
@@ -17824,11 +17834,27 @@ def guard_refusal(verdict: GuardVerdict) -> str:
           "acts on rather than reaching back to this one. If this command was "
           "to run outside such a project, there is no one-line replacement "
           "for it there.")
+    # The scope of the *hook*, which is not the general claim #1384 removed
+    # above (#1671). That one promised particular commands were safe, and a
+    # preset could falsify it by claiming one. This is `hooks/hooks.json`'s
+    # matcher — `Bash|PowerShell` — which no op, preset or config can widen
+    # or narrow, so it cannot go stale the way a per-op promise does.
+    #
+    # It is disclosed here rather than only in the docs because this is the
+    # one moment a reader is forming the belief: a denial naming a path reads
+    # as "this file is protected" when what is true is "this route is
+    # protected". Naming the open route in a refusal does tell a reader where
+    # the door is, and that is the trade taken deliberately — an agent that
+    # reaches for `Edit` after this loses the validator chain and the
+    # rollback, and knowing that is what makes the choice a choice.
     lines.append("Only invocations an op supersedes are declared under "
                  "`replaces`, so a raw call nothing maps runs untouched — "
                  "ask before running it with supertool 'guard:COMMAND'. This "
                  "gate is turned off with raw_command_guard: false in "
-                 ".supertool.json.")
+                 ".supertool.json. It hooks Bash only: a harness Edit/Write "
+                 "reaches this same path with no op, no validator and no "
+                 "rollback, so this refusal is about the route, not the "
+                 "path (#1671).")
     return "\n".join(lines)
 
 
