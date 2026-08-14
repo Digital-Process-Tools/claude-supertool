@@ -10296,9 +10296,91 @@ def op_edit(old: str, new: str, path: str) -> str:
     return "".join(out)
 
 
+_PASTE_BACKUP_KIND = "paste-backup"
+
+# A copy on every overwrite is a resource claim, so it is bounded — and the
+# bound is NOT the trigger #1650 argued about. It does not decide whether the
+# outgoing bytes are worth keeping; it decides how much disk supertool is
+# willing to spend keeping them. Which is exactly why crossing it is said out
+# loud in the receipt: it lands on the largest files, where the loss is worst,
+# and an unbacked overwrite that reads like a backed one is this repo's
+# recurring defect. 8 MB clears every text file this tool is aimed at —
+# `_supertool.py` is 1.2 MB and `CHANGELOG.md` 1.8 MB, the two largest files
+# in this tree.
+_PASTE_BACKUP_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _paste_snapshot(path: str, new_content: str) -> Tuple[str, str]:
+    """Copy `path`'s current bytes aside before `paste` replaces them (#1650).
+
+    Returns `(snapshot_path, why_not)` — three states, not two. `("/x", "")`
+    the bytes are kept and here is where; `("", "")` there was nothing to keep,
+    because the file already holds exactly what is about to be written; and
+    `("", why)` the copy could not be made, which the receipt has to say out
+    loud. A store that fails silently is this repo's recurring defect wearing a
+    backup's clothes.
+
+    Why a copy and not a refusal. `paste` over an existing file is documented,
+    ordinary and usually right, so a guard that stops it has to offer a `force`
+    token, and a `force` token that gets typed by reflex is the guard deleting
+    itself (the `misdirects` class). A copy refuses nothing, so there is no
+    case it was not written for: the write the caller asked for happens either
+    way, and the only cost of a false positive is one reaped cache file.
+
+    Why `paste` alone. Every other mutating op fails on a path that is not
+    there: `edit` and `replace` match a string, and `vim` and `replace_lines`
+    both return `file not found`. Only `paste` succeeds either way. That is the
+    whole of the claim — NOT that nothing else destroys bytes, because plenty
+    does: `vim` empties a file completely with `ggdG`, and `replace_lines`
+    clamps an end of `total + 1` rather than refusing it, so `1:total+1` takes
+    the file down to one block. What none of them can do is destroy a file the
+    caller believes is not there, and that belief is the #1642 mechanism: 8922
+    bytes overwritten by an agent creating what it thought was a new note.
+
+    Why no size threshold. #1650 proposes a shrink ratio or a byte-loss floor.
+    Both are blind to 8922 bytes replaced by 9000 different ones, which loses
+    just as much. `paste` replaces the entire file by definition, so the
+    trigger is the op's own semantics and there is no number to tune.
+    """
+    try:
+        with open(path, "rb") as fh:
+            old = fh.read()
+    except OSError as e:
+        return "", f"could not read the outgoing bytes ({type(e).__name__})"
+    if old == new_content.encode("utf-8", errors="surrogateescape"):
+        # Nothing is lost, so nothing is stored, and the receipt stays quiet.
+        return "", ""
+    if len(old) > _PASTE_BACKUP_MAX_BYTES:
+        return "", (
+            f"{len(old)} bytes is over the {_PASTE_BACKUP_MAX_BYTES}-byte "
+            f"copy limit"
+        )
+    store = _cache_root() / _PASTE_BACKUP_KIND
+    # Flat, and a regular file: `_gc_sweep_kind` is non-recursive and unlinks
+    # nothing else, so a snapshot in a subdirectory would be counted `skipped`
+    # forever — a reaped-looking store that only grows.
+    dest = store / "{}-{}.bak".format(
+        hashlib.sha1(
+            os.path.abspath(path).encode("utf-8", errors="surrogateescape")
+        ).hexdigest()[:16],
+        time.time_ns(),
+    )
+    try:
+        store.mkdir(parents=True, exist_ok=True)
+        with open(dest, "wb") as fh:
+            fh.write(old)
+    except OSError as e:
+        return "", f"{store} is not writable ({type(e).__name__})"
+    return str(dest), ""
+
+
 def op_paste(path: str, content: str) -> str:
     """Replace entire file with content. Atomic. Creates file (and parent dirs)
     if missing.
+
+    Overwriting an EXISTING file copies its outgoing bytes to
+    `~/.cache/supertool/paste-backup/` first and names the copy in the receipt
+    — see `_paste_snapshot` for why that is a copy and not a refusal (#1650).
 
     Use for full-file rewrites — no vim macro gymnastics, no `:r` insert-after
     off-by-one cuts (e.g. `<?php` eaten), no `:::` separator abuse. CONTENT
@@ -10325,6 +10407,17 @@ def op_paste(path: str, content: str) -> str:
         content += "\n"
     existed = os.path.isfile(path)
     old_size = os.path.getsize(path) if existed else 0
+    # Snapshot BEFORE the write, because the receipt cannot help after it
+    # (#1650). A create has no prior bytes, so it pays nothing.
+    snapshot_note = ""
+    if existed and old_size > 0:
+        snap, why = _paste_snapshot(path, content)
+        if snap:
+            snapshot_note = f"  ↳ previous contents kept at {snap}\n"
+        elif why:
+            snapshot_note = (
+                f"  ↳ no backup of the previous contents — {why}\n"
+            )
     try:
         _atomic_write(path, content)
     except OSError as e:
@@ -10334,6 +10427,7 @@ def op_paste(path: str, content: str) -> str:
     verb = "rewrote" if existed else "created"
     return (
         f"{verb} {path} ({new_lines} lines, {old_size} → {new_size} bytes)\n"
+        + snapshot_note
     )
 
 
@@ -17899,6 +17993,11 @@ _GC_DEFAULT_RETENTION_DAYS: Dict[str, float] = {
     # 1 day, not 7, because the population is per-session garbage the moment
     # the session ends.
     "read-elide": 1,
+    # `paste-backup` (#1650) holds the bytes a full-file rewrite displaced. 7
+    # days is the window in which somebody notices a note is gone; past that
+    # nobody is coming back for it, and an unreaped writer is how this cache
+    # reached 1.0 GB in the first place.
+    "paste-backup": 7,
     "vim-cursor": 7,
     "vim-undo": 7,
     "vi-cursor": 7,

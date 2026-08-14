@@ -107,8 +107,59 @@ That third state exists because a confidently wrong line number costs more than 
 | `replace` | `replace:::OLD:::NEW:::PATH` | Recursive find/replace across PATH. Use `:::` separator when content has `:`. |
 | `replace_dry` | `replace_dry:::OLD:::NEW:::PATH` | Preview of `replace` — shows what would change without writing. |
 | `replace_lines` | `replace_lines:::PATH:::START:::END:::CONTENT` | Swap lines `[START, END]` (1-indexed, inclusive) with CONTENT. `END < START` = pure insert before line START. Empty CONTENT = delete. Receipt shows new line numbers + ±2 context. |
-| `paste` | `paste:::PATH:::CONTENT` | **NARROW USE:** replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — `vim` is the default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars (`:`, quotes, braces, newlines). |
+| `paste` | `paste:::PATH:::CONTENT` | **NARROW USE:** replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — `vim` is the default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars (`:`, quotes, braces, newlines). Overwriting an existing file copies its outgoing bytes to `~/.cache/supertool/paste-backup/` first and the receipt names the copy — see below. |
 | `append` | `append:::PATH:::CONTENT` | Append CONTENT to the end of a file, creating it if missing. No `wc` round-trip, no inverted-range `replace_lines` trick. Adds a missing trailing newline first so the block starts on its own line. |
+
+### A `paste` over an existing file keeps the bytes it displaces
+
+Every other mutating op fails on a path that is not there: `edit` and `replace`
+match a string, and `vim` and `replace_lines` both return `file not found`.
+Only `paste` succeeds either way. That is the whole of the claim — not that
+nothing else destroys bytes, because plenty does: `vim` empties a file with
+`ggdG`, and `replace_lines` *clamps* an `END` of `total + 1` rather than
+refusing it. What none of them can do is destroy a file the caller believes is
+not there, which is how an agent creating what it believed was a new note
+replaced 8922 bytes it did not know existed
+([#1650](https://github.com/Digital-Process-Tools/claude-supertool/issues/1650)).
+The path was gitignored, so there was no git copy, and the receipt — honest and
+complete — printed one step after the only moment it could have helped.
+
+So the outgoing bytes are copied aside **before** the write, and the receipt
+says where:
+
+```
+rewrote notes/fix-1598-1584.md (24 lines, 8922 → 1990 bytes)
+  ↳ previous contents kept at ~/.cache/supertool/paste-backup/3f43a7b64beb777c-1786684186291800000.bak
+```
+
+**Nothing is refused, and that is the design.** A guard that blocked the
+overwrite would have to offer a `force` token, and a `force` token typed by
+reflex is the guard deleting itself. A copy has no case it was not written for:
+the write the caller asked for happens either way, and a false positive costs
+one cache file.
+
+**There is no size or shrink threshold.** A rewrite that *grows* the file loses
+the old bytes just as completely as one that shrinks it, so the trigger is the
+op's own semantics — `paste` replaces the whole file — and not a number.
+
+Three states, never silence:
+
+| Receipt | Meaning |
+|---------|---------|
+| `↳ previous contents kept at PATH` | the displaced bytes are at PATH |
+| *(no line)* | nothing was displaced — the file was created, or already held exactly what was written |
+| `↳ no backup of the previous contents — WHY` | the copy could not be made. The write still happened; WHY names the reason (unreadable file, unwritable cache, or over the 8 MB copy limit) |
+
+**A write that a validator rolls back still leaves a copy.** The snapshot is
+taken before the write, and whether the write survives validation is not known
+until after it — so a rolled-back `paste` prints `previous contents kept at
+PATH` above `[rolled back] … the file was NOT edited`. Both are true: the file
+on disk is the original, and PATH holds those same bytes. The copy is redundant
+rather than wrong, and `gc` reaps it with the rest.
+
+Copies are reaped with the rest of the cache: `gc:dry` previews, `gc:run`
+deletes, retention 7 days, overridable per kind under `gc.retention_days` in
+`.supertool.json`.
 
 ## Common patterns
 

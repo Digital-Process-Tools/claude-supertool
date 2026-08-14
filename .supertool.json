@@ -183,7 +183,7 @@
     },
     "paste": {
       "syntax": "paste:::PATH:::CONTENT",
-      "description": "NARROW USE: replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits \u2014 vim is default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon \u2192 holds any chars.",
+      "description": "NARROW USE: replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits \u2014 vim is default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon \u2192 holds any chars. Overwriting an EXISTING file copies its outgoing bytes to ~/.cache/supertool/paste-backup/ first and the receipt names the copy — nothing is refused, and no such line means nothing was displaced (#1650).",
       "example": "paste:::tests/new_test.php:::<?php\\ndeclare(strict_types=1);\\n...",
       "status": 1,
       "hint": true
