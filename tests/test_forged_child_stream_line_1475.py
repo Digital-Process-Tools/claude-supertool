@@ -277,7 +277,15 @@ UNRESOLVED = 106
 #: Calls whose result cannot be a string, so the taint stops there. A type
 #: argument, not an allowlist: `json.loads(r.stdout)` yields a dict, and every
 #: field read back off it is the *other* scanner's question (#965).
-NOT_TEXT = frozenset({"loads", "int", "float", "len", "bool"})
+#:
+#: `mentions_gitlab_token` is the one entry here that is not a builtin. It
+#: returns `bool` -- `_secrets.py` -- and the four `gl-*` `_format_error`
+#: classifiers hand it a lowercased `stderr` to decide one branch (#1645). The
+#: taint provably stops at the call, so counting four such sites in
+#: `UNRESOLVED` would pad a bound with sites that are not unresolved, which
+#: the note above that number says a bound may not be.
+NOT_TEXT = frozenset({"loads", "int", "float", "len", "bool",
+                      "mentions_gitlab_token"})
 
 _SCANNED = ("presets/github", "presets/gitlab", "presets/git")
 

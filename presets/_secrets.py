@@ -112,20 +112,28 @@ GITLAB_TOKEN_PREFIXES: tuple[str, ...] = (
 
 _GITLAB_PREFIX_ALT = "|".join(re.escape(p) for p in GITLAB_TOKEN_PREFIXES)
 
+#: One pattern, used both as the redaction rule below and as the classifiers'
+#: test. A credential is a prefix AND a body -- `gldt-`, `glft-`, `glwt-` and
+#: `glrt-` are five characters, and a bare substring test over them reads
+#: `gldt-staging.example.internal` and `projects/glft-report` as tokens. The
+#: caller that would do so routes a `glab` failure to "run glab auth login"
+#: and DISCARDS the remote's own message, so a loose test there does not fail
+#: safe: it trades one wrong hint for another and deletes the evidence.
+_GITLAB_TOKEN_RE = re.compile(
+    _prefixed(r"(?:" + _GITLAB_PREFIX_ALT + r")[A-Za-z0-9_\-]{16,}"))
+
 
 def mentions_gitlab_token(text: object) -> bool:
-    """Does this text name a GitLab token prefix?
+    """Does this text carry something shaped like a GitLab token?
 
-    Substring, not the redaction rule below: the caller is an error classifier
-    deciding whether a `glab` failure is an authentication one, and a message
-    that names the prefix without a full 16-character body still is. Being
-    looser than the redactor is the safe direction here -- it routes a hint,
-    it does not decide whether something is safe to print.
+    The same pattern the redaction rule uses, deliberately: the two questions
+    are one question, and a classifier that recognises a credential the
+    redactor does not is the pair disagreeing again, which is what #1645 was.
 
-    This is NOT a redactor and must never be used as one. `redact()` is.
+    This is NOT a redactor and must never be used as one -- it says only that
+    a match exists, never that anything was removed. `redact()` is.
     """
-    low = str(text or "").lower()
-    return any(p in low for p in GITLAB_TOKEN_PREFIXES)
+    return bool(_GITLAB_TOKEN_RE.search(str(text or "")))
 
 
 _RULES: list[tuple[str, re.Pattern[str]]] = [
@@ -144,8 +152,7 @@ _RULES: list[tuple[str, re.Pattern[str]]] = [
     # `glrtr-`, `gloas-`, `glft-`, `glimt-`, `glagent-`, `glwt-` and `glffct-`
     # are minted by GitLab and were unrecognised, so a transcript carrying one
     # was relayed whole.
-    ("gitlab-token", re.compile(
-        _prefixed(r"(?:" + _GITLAB_PREFIX_ALT + r")[A-Za-z0-9_\-]{16,}"))),
+    ("gitlab-token", _GITLAB_TOKEN_RE),
     ("aws-access-key-id", re.compile(_prefixed(r"(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}"))),
     ("slack-token", re.compile(_prefixed(r"xox[abprse]-[A-Za-z0-9\-]{10,}"))),
     ("google-api-key", re.compile(_prefixed(r"AIza[A-Za-z0-9_\-]{35}"))),

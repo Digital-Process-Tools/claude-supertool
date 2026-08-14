@@ -117,8 +117,9 @@ def test_the_underscore_spelling_is_not_a_gitlab_prefix() -> None:
     Without this the whole file passes against a build that matches any string
     at all, which is the property #1645 was filed about.
     """
-    assert not _secrets.mentions_gitlab_token("glab: token glpat_FAKEfake0123 bad")
-    assert _secrets.mentions_gitlab_token("glab: token glpat-FAKEfake0123 bad")
+    assert not _secrets.mentions_gitlab_token(
+        f"glab: token glpat_{_BODY} bad")
+    assert _secrets.mentions_gitlab_token(f"glab: token {_sample('glpat-')} bad")
 
 
 # ---------------------------------------------------------------------------
@@ -152,3 +153,41 @@ def test_an_ordinary_failure_still_gets_the_generic_relay(modname: str) -> None:
     mod = _MODULES[modname]
     result = mod._format_error("connection reset by peer", "resource", "7")
     assert "glab not authenticated" not in result, result
+
+# ---------------------------------------------------------------------------
+# and it does not swallow an ordinary error on the way
+# ---------------------------------------------------------------------------
+
+#: Real-shaped `glab` failures whose text happens to contain a short prefix as
+#: an ordinary hostname or path segment. `gldt-`, `glft-`, `glwt-` and `glrt-`
+#: are five characters; a bare substring test over them turns a 404 into "run
+#: glab auth login" and discards the message that would have helped. Found in
+#: review of the #1645 fix, before it shipped.
+NOT_CREDENTIALS = (
+    "GET /api/v4/projects/glft-report/pipelines: 404 Project Not Found",
+    "connection refused for host gldt-staging.example.internal",
+    "glwt-1 unreachable",
+    "no such runner: glrt-pool",
+)
+
+
+@pytest.mark.parametrize("modname", sorted(_MODULES))
+@pytest.mark.parametrize("stderr", NOT_CREDENTIALS)
+def test_a_prefix_shaped_hostname_is_not_an_authentication_failure(
+        modname: str, stderr: str) -> None:
+    """Trading the wrong hint for a different wrong hint is not a fix.
+
+    The authentication arm discards the remote's message entirely, so routing
+    an ordinary failure into it costs the reader the only text that named what
+    happened. A credential is a prefix AND a body; a hostname is not.
+    """
+    mod = _MODULES[modname]
+    result = mod._format_error(stderr, "resource", "7")
+    assert "glab not authenticated" not in result, (
+        f"{modname}: an ordinary failure was reported as an auth failure and "
+        f"its text dropped: {result!r}")
+
+
+@pytest.mark.parametrize("stderr", NOT_CREDENTIALS)
+def test_a_prefix_shaped_hostname_is_not_a_credential(stderr: str) -> None:
+    assert not _secrets.mentions_gitlab_token(stderr), stderr
