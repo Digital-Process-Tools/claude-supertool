@@ -96,12 +96,13 @@
     },
     "gh-run": {
       "safety": "read-only",
-      "cmd": "{python} {path}github/run.py {arg}",
-      "timeout": 15,
-      "description": "What passed, what failed? Workflow run jobs with statuses and failed step names. Targets another repo with a leading repo:OWNER/NAME op.",
-      "syntax": "gh-run:NUMBER",
+      "cmd": "{python} {path}github/run.py {args}",
+      "timeout": 35,
+      "description": "What passed, what failed? Workflow run jobs with statuses and failed step names. Targets another repo with a leading repo:OWNER/NAME op. Every table this op prints is ONE attempt's legs, and since #1715 it says which: an `Attempts: K of N` line under the URL, in three states — never re-run, latest of several with the earlier ones named as NOT in the table, or UNKNOWN when the payload carried no readable run_attempt (an unread field never settles whether a whole attempt is missing). `:attempt=K` renders a PRIOR attempt instead, which is the only route to the job ids a re-run buries: gh-branch collapses to the highest run_attempt by design and that is what makes the merge gate honest, so once a flake is re-run green the evidence for why it was red used to be reachable only through raw `gh api .../attempts/K/jobs` (#1709). The DEFAULT IS STILL LATEST and nothing about the collapse changed. A superseded attempt is labelled HISTORICAL in its own header and body — a stale red that does not announce itself as stale is read as the state of the run now — and it skips the `filter=all` leg reconciliation, whose count is the union across every attempt and would manufacture a shortfall against one. Costs a second call only when the attempt asked for is not the latest. Both values that reach the gh argv are digit-gated before anything is fetched and re-rendered from int(), and an attempt past the last one is refused by name off the count already read rather than bought as a 404.",
+      "syntax": "gh-run:NUMBER[:attempt=K]",
+      "example": "gh-run:31815095925:attempt=1",
       "replaces": [
-        { "argv": "gh run view", "unless_flag": ["--web", "-w"], "use": "gh-run:NUMBER" }
+        { "argv": "gh run view", "unless_flag": ["--web", "-w"], "use": "gh-run:NUMBER[:attempt=K]" }
       ],
       "repo_target": true
     },

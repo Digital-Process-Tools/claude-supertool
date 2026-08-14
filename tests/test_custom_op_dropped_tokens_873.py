@@ -271,7 +271,10 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
                if n not in multi and re.search(r"\{(file|dir|arg)\}", c)]
         none = [n for n, _f, _e, c in rows
                 if n not in multi and n not in one]
-        assert (len(multi), len(one), len(none)) == (61, 21, 4), (
+        # 61 → 62 / 21 → 20 in #1715: `gh-run` gained an `attempt=K` second
+        # token, which a `{arg}` template cannot reach, so its cmd moved to
+        # `{args}` — the same move this file's own class exists to require.
+        assert (len(multi), len(one), len(none)) == (62, 20, 4), (
             len(multi), len(one), len(none))
         # The 4 placeholder-free ops are outside this gate on purpose — see
         # `_unconsumed_arg_tokens`. Named so the exclusion is a list, not a

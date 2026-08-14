@@ -4,7 +4,7 @@
 is the measurement that says why.** Walked over every shipped preset manifest
 plus this repo's own `.supertool.json` on `b7e1227`::
 
-    ops whose cmd substitutes {arg}                          24  (21 since #873)
+    ops whose cmd substitutes {arg}       24  (21 since #873, 20 since #1715)
       of those, whose syntax names a PATH/FILE component      8
         of those 8, already demanded by _entry_names_a_path   8
         of those 8, already in _UNDECLARED_PATH_OPS           8
@@ -24,12 +24,13 @@ have it. So the shape the lint keys on is the one shape already covered, and
 the shape it was proposed for it cannot see. The residue is pinned below so the
 proposal is not re-derived from the issue text alone.
 
-The detector is deliberately not widened: 13 shipped ops pass a handle, a ref,
+The detector is deliberately not widened: 12 shipped ops pass a handle, a ref,
 a tag, an ID or a repo slug through `{arg}` and none takes a path. That trade
 was made with numbers in #1350; this file re-measures rather than repeats it —
-21 ops carry `{arg}`, 8 name a path in `syntax`, leaving those 13. It was 24
-and 16 until #873 moved three multi-token ops to `{args}`; the path-shaped 8
-did not move, so the shape of the argument is unchanged.
+20 ops carry `{arg}`, 8 name a path in `syntax`, leaving those 12. It was 24
+and 16 until #873 moved three multi-token ops to `{args}`, and 21 until #1715
+moved `gh-run`; the path-shaped 8 did not move at either, so the shape of the
+argument is unchanged.
 
 **2. `paths` is reserved.** It was exported to every declaring op's subprocess
 as `SUPERTOOL_PATHS`. Nothing reads it — a tree-wide grep for `SUPERTOOL_PATHS`
@@ -105,13 +106,15 @@ def test_the_counts_the_decision_rests_on():
     path_shaped = _path_shaped_arg_ops()
     # 24 → 21 in #873: `hashnode_list`, `devto_list` and `hashnode_search` each
     # documented a `[:N]` second token that a `{arg}` template cannot receive,
-    # so all three moved to `{args}`. The 8 path-shaped ops are unchanged — the
-    # three that moved pass a username or a query, not a path — so the trade
-    # this file measures (13 ops carrying a handle, ref, tag, ID or slug that a
-    # widened `{arg}` signal would refuse) is the same argument at a smaller N.
-    assert len(arg_ops) == 21, sorted(n for n, _f, _e in arg_ops)
+    # so all three moved to `{args}`. 21 → 20 in #1715, when `gh-run` gained an
+    # `attempt=K` second token for the same reason. The 8 path-shaped ops are
+    # unchanged through both — every op that moved passes a username, a query
+    # or a run id, not a path — so the trade this file measures (12 ops
+    # carrying a handle, ref, tag, ID or slug that a widened `{arg}` signal
+    # would refuse) is the same argument at a smaller N each time.
+    assert len(arg_ops) == 20, sorted(n for n, _f, _e in arg_ops)
     assert len(path_shaped) == 8, sorted(n for n, _f, _e in path_shaped)
-    assert len(arg_ops) - len(path_shaped) == 13
+    assert len(arg_ops) - len(path_shaped) == 12
 
 
 def test_a_new_arg_op_with_a_path_shaped_syntax_is_refused_not_linted():
@@ -130,8 +133,8 @@ def test_the_residue_the_lint_does_not_reach():
     Still ungated, deliberately, and **the proposed lint would not have moved
     this line** — it keys on a PATH-shaped `syntax`, which this entry does not
     have. Recorded rather than fixed: closing it means widening `{arg}` into a
-    path signal, which refuses 13 shipped ops that take no path (16 until #873
-    moved three multi-token ops to `{args}`).
+    path signal, which refuses 12 shipped ops that take no path (16 until #873
+    moved three multi-token ops to `{args}`, 13 until #1715 moved `gh-run`).
     """
     entry = {"cmd": "cat {arg}", "syntax": "probe:TARGET"}
     assert supertool._entry_names_a_path(entry) is None
