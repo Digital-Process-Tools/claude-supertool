@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from collections import Counter
@@ -39,6 +40,171 @@ _TERMINAL_RUN_STATUS = "completed"
 # established disclosure cap and its `+N more` spelling (#605), shared with
 # `_checks.named_disclosure` so the two never diverge.
 _STEP_CAP = _checks.NAMED_CAP
+
+
+#: Anchored with `\Z` and not `$`: Python's `$` also matches immediately before
+#: a final newline, so `^[0-9]+$` accepts `"5\n"` — through the one guard whose
+#: whole purpose is to refuse before anything is fetched (#1188). Both values it
+#: gates are built into a subprocess argv.
+_DIGITS = re.compile(r"^[0-9]+\Z")
+
+#: The attempt selector's token. `attempt=N` and not a bare second number:
+#: `gh-run:31815095925:1` says nothing at the call site about what the 1 is, and
+#: this op's neighbours already spell an option this way (`gh-labels:tally=`).
+ATTEMPT_PREFIX = "attempt="
+
+#: The fields this op reads. Named once because two call sites request them —
+#: the default read and the pinned-attempt read — and a set that drifted between
+#: the two would render an attempt missing fields the default render has.
+_RUN_JSON = ("databaseId,name,status,conclusion,event,headBranch,"
+             "createdAt,updatedAt,url,jobs,attempt")
+
+
+def refuse_run_id(run_id: str) -> str:
+    """Message refusing a run id that is not one. Empty string when it is.
+
+    `gh-job`'s guard (#1145), one op over, and for the same reason plus one:
+    GitHub's REST API coerces a numeric id with trailing text back to the
+    number and answers 200, so a mangled id used to render in the header as the
+    thing that was read. Since #1715 this value is also interpolated into a
+    `gh run view --attempt` argv, which makes the check a precondition of the
+    fetch rather than a courtesy about the header.
+
+    `str.isdigit()` is not the test — it accepts Arabic-Indic digits and
+    superscripts, neither of which is an id GitHub will answer for.
+    """
+    if _DIGITS.match(run_id):
+        return ""
+    stray = "".join(sorted({c for c in run_id if not _DIGITS.match(c)}))
+    digits = "".join(c for c in run_id if _DIGITS.match(c)) or "RUN_ID"
+    return (f"ERROR: gh-run takes a numeric run id and got {run_id!r} "
+            f"(not a digit: {stray!r}).\n"
+            f"Nothing was read. A non-numeric id is the tell that the op string "
+            f"was mangled before it arrived, and GitHub cannot be relied on to "
+            f"reject it — it coerces `actions/runs/123ep` back to 123 and "
+            f"answers 200.\n"
+            f"Re-run with the digits alone: gh-run:{digits}")
+
+
+def refuse_attempt(value: str) -> str:
+    """Message refusing an attempt token that is not a positive integer."""
+    return (f"ERROR: gh-run's attempt must be a whole number 1 or greater, and "
+            f"got {value!r}.\n"
+            f"Nothing was read. GitHub numbers attempts from 1, and this value "
+            f"is built into the argv of `gh run view --attempt`, so a token "
+            f"that is not an attempt is refused before anything is fetched "
+            f"rather than relayed to gh.\n"
+            f"Usage: gh-run:RUN_ID:attempt=1")
+
+
+def refuse_token(token: str) -> str:
+    """Message refusing a token this op has no reading for."""
+    return (f"ERROR: gh-run does not take a {token!r} token.\n"
+            f"Nothing was read. Core refused a token this op's cmd could not "
+            f"reach until that cmd widened to take every one of them "
+            f"(#873/#1715), so the refusal lives here now. Dropping it would "
+            f"render the LATEST attempt under a call that asked for something "
+            f"else, which is an answer to a question nobody put.\n"
+            f"The only token is attempt=N. Usage: gh-run:RUN_ID[:attempt=N]")
+
+
+def refuse_past_latest(run_id: str, attempt: int, latest: int) -> str:
+    """Message refusing an attempt number the run does not have.
+
+    Named rather than fetched. The run's own payload carries the count, so a
+    404 would spend a call to learn something already read — and `gh` renders
+    that 404 as `failed to get run`, which reads as *no such run* and is a
+    different, wrong answer.
+    """
+    plural = "" if latest == 1 else "s"
+    tail = f" | earliest: gh-run:{run_id}:attempt=1" if latest > 1 else ""
+    return (f"ERROR: run #{run_id} has {latest} attempt{plural}; attempt "
+            f"{attempt} does not exist.\n"
+            f"Nothing further was read — the count comes from the run payload "
+            f"this op already fetched, not from a 404.\n"
+            f"Latest: gh-run:{run_id}{tail}")
+
+
+def parse_argv(argv: Sequence[str]) -> tuple[str, int | None, str]:
+    """`(run_id, attempt, refusal)`. A non-empty refusal means fetch nothing.
+
+    Core splits the op string on every ':' and hands this op every token since
+    #1715, so the tokens core used to refuse on its behalf (#873) arrive here
+    and this is what refuses them. `attempt` comes back as an `int` — the
+    caller's text is matched, then re-rendered from the integer, so no string
+    the caller typed reaches the argv.
+    """
+    tokens = [str(t) for t in argv]
+    if not tokens or not tokens[0]:
+        return ("", None, "ERROR: usage: run.py RUN_ID [attempt=N]")
+
+    run_id = tokens[0]
+    bad = refuse_run_id(run_id)
+    if bad:
+        return ("", None, bad)
+
+    attempt: int | None = None
+    for token in tokens[1:]:
+        if not token:
+            continue
+        if not token.startswith(ATTEMPT_PREFIX):
+            return ("", None, refuse_token(token))
+        value = token[len(ATTEMPT_PREFIX):]
+        if not _DIGITS.match(value) or int(value) < 1:
+            return ("", None, refuse_attempt(value))
+        attempt = int(value)
+    return (run_id, attempt, "")
+
+
+def latest_attempt(field: object) -> int | None:
+    """The run's `run_attempt`, or None when the payload did not carry one.
+
+    None is not 1. A field nobody read must not settle whether this run was
+    re-run, because that answer decides whether a whole attempt's legs are
+    missing from the table below it.
+    """
+    try:
+        n = int(field)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 1 else None
+
+
+def attempts_line(run_id: str, latest: int | None, showing: int | None) -> str:
+    """Which attempt this table is, and which ones it is not (#1715).
+
+    Three states, not two (`docs/validators.md`, "Declining instead of
+    guessing"). The table below has only ever been **one attempt's** legs, and
+    until #1715 nothing said so: a re-run run rendered its latest attempt with
+    no hint that an earlier one existed, so the earlier legs' absence read as
+    an absence of legs — this repository's own defect inside a render nobody
+    suspected. Recovering the evidence that settled #1709 meant leaving
+    supertool for `gh api .../attempts/1/jobs`.
+
+    `showing` is the attempt the caller asked for, or None for the default.
+    **The default is and stays the latest**; nothing here changes what is
+    selected, it states what was. A superseded attempt is labelled HISTORICAL
+    because a stale red that does not announce itself as stale is read as the
+    state of the run now — and `gh-branch` and the merge gate read the latest,
+    which is what makes them honest.
+    """
+    if latest is None:
+        return ("Attempts: UNKNOWN — this payload carried no readable "
+                "run_attempt, so whether this run was re-run is unread. The "
+                "table below is one attempt's legs and which one is not "
+                "established.")
+    if latest == 1:
+        return ("Attempts: 1 of 1 — this run was never re-run, so no earlier "
+                "attempt exists and the table below is its whole history.")
+    if showing is not None and showing < latest:
+        return (f"Attempts: {showing} of {latest} — HISTORICAL. Attempt "
+                f"{latest} superseded this one and is what gh-branch and the "
+                f"merge gate read, so nothing below is a statement about this "
+                f"run now. Current: gh-run:{run_id}")
+    earlier = "attempt 1" if latest == 2 else f"attempts 1-{latest - 1}"
+    return (f"Attempts: {latest} of {latest} — the table below is attempt "
+            f"{latest} only; {earlier} ran and those legs are NOT in it. "
+            f"Read one: gh-run:{run_id}:attempt=1")
 
 
 def red_breakdown(states: list[str]) -> str:
@@ -334,45 +500,90 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
             f"{_untrusted.flat(stderr.strip())}")
 
 
-def main() -> int:
-    use_utf8_stdout()
-    if len(sys.argv) < 2:
-        print("ERROR: usage: run.py RUN_ID")
-        return 1
+def fetch_run(run_id: str, attempt: int | None) -> tuple[dict | None, str]:
+    """One `gh run view`, optionally pinned to an attempt — `(payload, error)`.
 
-    run_id = sys.argv[1]
+    `attempt` is an `int` by the time it arrives: `parse_argv` matched the
+    caller's text against `_DIGITS` and this re-renders the integer, so what
+    reaches the argv is the tool's own number and never the caller's string.
+    `run_id` is digit-gated by the same function for the same reason.
 
-    # Fetch run metadata
+    `--attempt` returns the pinned attempt's own payload — its `attempt`,
+    `status`, `conclusion`, `url` and **its** job list, in the same shape and
+    under the same field names as the default read. That is why this op hosts
+    the selector rather than a new one: the render below is unchanged, only the
+    payload that reaches it moves.
+    """
+    argv = ["gh", "run", "view", run_id, "--json", _RUN_JSON]
+    if attempt is not None:
+        argv += ["--attempt", str(attempt)]
+    argv += _repo_target.gh_args()
     try:
         result = subprocess.run(
-            ["gh", "run", "view", run_id, "--json",
-             "databaseId,name,status,conclusion,event,headBranch,"
-             "createdAt,updatedAt,url,jobs,attempt"] + _repo_target.gh_args(),
-            capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
+            argv, capture_output=True, text=True, timeout=15,
+            encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        print("ERROR: gh not found — install from https://cli.github.com")
-        return 1
+        return None, "ERROR: gh not found — install from https://cli.github.com"
     except subprocess.TimeoutExpired:
-        print("ERROR: gh timed out")
-        return 1
+        return None, "ERROR: gh timed out"
 
     if result.returncode != 0:
-        print(_format_error(result.stderr, "Workflow run", run_id))
-        return 1
+        return None, _format_error(result.stderr, "Workflow run", run_id)
 
     try:
-        d = json.loads(result.stdout)
+        return json.loads(result.stdout), ""
     except json.JSONDecodeError:
         # A block, not a field: an unparseable body keeps its lines, so it is
         # fenced rather than flattened (#1648). `scrub()` inside `fence()`
         # discloses every separator and neutralises the marker shape, so the
         # fence cannot be closed from inside it. Slice first, fence second —
         # the markers are the structure and have to be the outermost thing.
-        print("ERROR: invalid JSON from gh — its body, verbatim, below")
-        print(_untrusted.banner())
-        print(_untrusted.fence(result.stdout[:500]))
+        return None, "\n".join([
+            "ERROR: invalid JSON from gh — its body, verbatim, below",
+            _untrusted.banner(),
+            _untrusted.fence(result.stdout[:500]),
+        ])
+
+
+def main() -> int:
+    use_utf8_stdout()
+    run_id, attempt, refusal = parse_argv(sys.argv[1:])
+    if refusal:
+        print(refusal)
         return 1
+
+    # The default read happens first even when an attempt was asked for, and it
+    # is the read this op has always made. It is also the only one that knows
+    # how many attempts exist — `--attempt` answers for the attempt it was
+    # given and 404s past it — so the range check below is made against a
+    # number that was read rather than against an error bought from GitHub.
+    d, err = fetch_run(run_id, None)
+    if err:
+        print(err)
+        return 1
+
+    latest = latest_attempt(d.get("attempt"))
+
+    if attempt is not None:
+        if latest is not None and attempt > latest:
+            print(refuse_past_latest(run_id, attempt, latest))
+            return 1
+        if attempt != latest:
+            # `attempt == latest` needs no second call: the payload in hand
+            # already IS that attempt. A caller who names the current attempt
+            # explicitly gets the same render for the same one round trip.
+            pinned, err = fetch_run(run_id, attempt)
+            if err:
+                # Refused, never half-rendered. The payload still in `d` is the
+                # LATEST attempt, and printing it under a header naming the one
+                # that was asked for is the substitution this op exists to make
+                # impossible.
+                print(f"ERROR: attempt {attempt} of run #{run_id} was not "
+                      f"read, so nothing about it is rendered. What gh said:")
+                print(f"  {err}")
+                return 1
+            d = pinned
 
     name = d.get("name", "?")
     status = d.get("status", "?")
@@ -390,15 +601,31 @@ def main() -> int:
     # Reconciliation is bought only when there is a tally to reconcile. An
     # absent job list was not read at all, so a second count would answer a
     # question nobody can ask yet — and it would be a call spent on it.
+    #
+    # And not on a superseded attempt (#1715). `_declared_legs` counts distinct job
+    # names under `filter=all`, which is the union across EVERY attempt, and
+    # comparing one attempt's legs against that union manufactures a shortfall.
+    # A disclosure that fires when nothing is wrong is one nobody reads, which
+    # is the same reason `reconcilable()` already declines on attempt 1.
+    superseded = (attempt is not None and latest is not None
+                  and attempt < latest)
     declared: int | None = None
     marker, shortfall_lines = "", []
-    if states is not None:
+    if states is not None and not superseded:
         declared, missing = declared_legs(
             web_url, run_id, d.get("attempt"), found_names)
         marker, shortfall_lines = _checks.shortfall(
             len(states), declared, missing)
 
-    print(f"# Run #{run_id} — {_untrusted.flat(name)}")
+    # The attempt is in the H1 only when one was named, because a render gets
+    # quoted on its own into a report and `# Run #N` alone cannot say which
+    # attempt it was. The default render says it on the `Attempts:` line below
+    # instead, so its header is byte-identical to what it has always printed.
+    pinned_note = ""
+    if attempt is not None:
+        pinned_note = (f" (attempt {attempt} of "
+                       f"{latest if latest is not None else '?'})")
+    print(f"# Run #{run_id}{pinned_note} — {_untrusted.flat(name)}")
     line = status_line(status, conclusion, states, declared)
     print(f"Status: {line}{' ' + marker if marker else ''}")
     for text in shortfall_lines:
@@ -409,6 +636,7 @@ def main() -> int:
         print(local_check)
     if web_url:
         print(f"URL: {web_url}")
+    print(attempts_line(run_id, latest, attempt))
 
     # Jobs
     jobs = raw_jobs if isinstance(raw_jobs, list) else []
