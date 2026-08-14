@@ -43,6 +43,14 @@ So the ordering is now:
 
 Ask for a compact return — one line per finding, file:line, no preamble, no retrospective. You are paying for its output at output rates and you only need the decision.
 
+**State the output contract, or the review silently returns nothing.** Measured 2026-08-14 on #1683: two reviewer spawns ended with *"findings reported above"* and the author received **an empty result** — the parent sees only the subagent's final message, and anything the reviewer considered itself to have said earlier in its own run does not exist. A third spawn, briefed with an explicit contract, returned a real finding.
+
+That failure is this repo's own defect wearing the review layer's clothes: **a review that did not deliver is indistinguishable from a review that found nothing**, and the honest-looking sentence is what hides it. So the brief says, in these words:
+
+> Your final message IS the return value — nothing you write before it reaches me. Put every finding in it. If you found nothing, say `NO FINDINGS` and name what you checked.
+
+The `NO FINDINGS` half matters as much as the other: a zero that names the areas covered is evidence, and a zero from a reviewer that may simply have failed to speak is not. If a spawn comes back empty, treat it as **did not run** and spawn again — never report it as clean.
+
 **Spawn the reviewer as `Explore`, not `general-purpose` — a sentence in a brief is not a tool grant, and that was measured the hard way.** `Explore` has every tool except `Edit`, `Write` and `NotebookEdit`, so it can read, grep, and run the suite, and it cannot write your worktree. `general-purpose` can.
 
 Both #1347 agents on 2026-08-11 told their reviewer, in the brief, in those words, that it must not edit any file. **Both had files written under them anyway.** One reviewer added a test carrying an unimported symbol — a test that could not run — and it reached a commit because the author staged the whole file; the other rewrote ~90 lines of `_supertool.py` plus four tests, found only because a `git diff` showed changes its author had not made. Two independent runs, same instruction, same outcome: the instruction does not bind.
