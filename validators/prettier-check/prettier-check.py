@@ -54,6 +54,13 @@ TIMEOUT_S = 15
 # wall: the caller would get `NOT CHECKED (timed out)` naming nothing, where a
 # probe that runs out of clock declines and says which question went
 # unanswered (`docs/validators.md`, on html-check's deliberate headroom).
+#
+# That claim was false while the probe carried a `max(1.0, budget)` floor: at
+# 14.5s elapsed it still launched with a full second, for 15.5s against a
+# 15s registration — the exact overrun the paragraph promises not to have
+# (#1601 audit). A spent budget is now the third state below, not a borrowed
+# second, and the test asserts elapsed + probe timeout against TIMEOUT_S
+# rather than the probe alone, which the floor satisfied while overshooting.
 IGNORED_REASON = ("prettier declined to check this file — it matched an ignore "
                   "pattern (`.prettierignore`, or the `--ignore-path` file); "
                   "`prettier --file-info` on this path answers "
@@ -62,6 +69,10 @@ IGNORED_REASON = ("prettier declined to check this file — it matched an ignore
 UNATTRIBUTABLE_REASON = ("prettier exited 0 and `prettier --file-info` could "
                          "not say whether the file is ignored, so this run is "
                          "not a verdict about it")
+
+NO_BUDGET_REASON = (f"prettier exited 0 and the {TIMEOUT_S}s budget was spent "
+                    "before `prettier --file-info` could be asked whether the "
+                    "file is ignored, so this run is not a verdict about it")
 
 
 def emit(obj: dict) -> None:
@@ -75,11 +86,15 @@ def _is_ignored(file: str, prettier_bin: str, flags: list,
     `None` is not `False`. A probe that could not run leaves the zero exit
     unattributable, and publishing `ok` over it is the fabrication this arm
     exists to prevent — the caller gets the third state with the reason.
+
+    `budget` is whatever is left of `TIMEOUT_S` and is passed through
+    unclamped: the caller has already declined when it is not positive, and a
+    floor here would spend time the registration does not have.
     """
     try:
         r = subprocess.run([prettier_bin, "--file-info", file] + flags,
                            capture_output=True, text=True,
-                           timeout=max(1.0, budget),
+                           timeout=budget,
                            encoding="utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
         return None
@@ -160,8 +175,12 @@ def main() -> None:
     # afterwards: one that stops before the probe under-reports what the caller
     # waited for.
     if r.returncode == 0:
-        ignored = _is_ignored(file, prettier_bin, flags,
-                              TIMEOUT_S - (time.time() - start))
+        remaining = TIMEOUT_S - (time.time() - start)
+        if remaining <= 0:
+            emit(skipped(TOOL, file, NO_BUDGET_REASON,
+                         int((time.time() - start) * 1000)))
+            return
+        ignored = _is_ignored(file, prettier_bin, flags, remaining)
         if ignored is not False:
             emit(skipped(TOOL, file,
                          IGNORED_REASON if ignored else UNATTRIBUTABLE_REASON,

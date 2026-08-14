@@ -35,6 +35,15 @@ MD_HELP = (
     "MarkdownLint Command Line Interface\n"
 )
 
+#: Node writes this to **stderr**, at exit 0, over a run that linted the file
+#: perfectly well — it is about the runtime, not about the path (#1601 audit).
+MD_NODE_WARNING = (
+    "(node:47213) [DEP0040] DeprecationWarning: The `punycode` module is "
+    "deprecated. Please use a userland alternative instead.\n"
+    "(Use `node --trace-deprecation ...` to show where the warning was "
+    "created)\n"
+)
+
 #: stylelint's json formatter, one clean file and one with a warning.
 SL_CLEAN = json.dumps([{"source": "x.css", "deprecations": [],
                         "invalidOptionWarnings": [], "parseErrors": [],
@@ -211,6 +220,40 @@ def test_markdownlint_a_silent_zero_exit_is_a_clean_verdict(
     assert out["count"] == 0, out
 
 
+def test_markdownlint_runtime_chatter_on_stderr_is_still_a_clean_verdict(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path,
+) -> None:
+    """A Node deprecation warning is not markdownlint saying it linted nothing.
+
+    The scope tell is the usage banner, and markdownlint-cli prints it on
+    **stdout** — which is what this adapter's own comment and
+    `docs/validators.md` have said since #1601. Reading `stdout + stderr`
+    turned one DEP0040 warning from the Node runtime into a `skipped` that
+    states a determinate, false cause, and on this repo markdownlint fires on
+    every markdown edit, so that is markdown linting off repo-wide.
+    """
+    mod = _adapter("markdownlint", "markdownlint.py")
+    f = tmp_path / "clean.md"
+    f.write_text("# Title\n\nText.\n", encoding="utf-8")
+    out = _drive(mod, monkeypatch, capsys, f, _md_run("", stderr=MD_NODE_WARNING))
+    assert out["ok"] is True, out
+    assert out["count"] == 0, out
+    assert "skipped" not in out, out
+
+
+def test_markdownlint_the_banner_still_declines_when_stderr_chatters_too(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path,
+) -> None:
+    """Narrowing to stdout must not lose the scope tell to noise beside it."""
+    mod = _adapter("markdownlint", "markdownlint.py")
+    f = tmp_path / "ignored.md"
+    f.write_text("#bad\n", encoding="utf-8")
+    out = _drive(mod, monkeypatch, capsys, f,
+                 _md_run(MD_HELP, stderr=MD_NODE_WARNING))
+    _assert_skip(out, "no files")
+    assert "Usage: markdownlint" in out["skipped"], out
+
+
 # ---------------------------------------------------------------------------
 # stylelint — the report is on stderr, and empty was never a verdict
 # ---------------------------------------------------------------------------
@@ -374,10 +417,10 @@ class _Clock:
 
 
 @pytest.mark.parametrize(
-    "elapsed,expected", [(2.0, 13.0), (14.5, 1.0)],
+    "elapsed,expected", [(2.0, 13.0), (14.5, 0.5)],
     ids=["room-left", "budget-nearly-spent"],
 )
-def test_prettier_probe_is_bounded_by_what_is_left_of_the_budget(
+def test_prettier_check_and_probe_together_stay_inside_one_budget(
     prettier, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
     tmp_path: Path, elapsed: float, expected: float,
 ) -> None:
@@ -386,6 +429,11 @@ def test_prettier_probe_is_bounded_by_what_is_left_of_the_budget(
     The core kills an adapter at its own wall, and the caller then gets
     `NOT CHECKED (timed out)` naming no question. A probe out of clock declines
     and says which one went unanswered, so the budget is shared, not doubled.
+
+    The assertion is on the **sum**, because that is the quantity the
+    registration bounds. `probe["timeout"] <= TIMEOUT_S` is a proxy that is
+    true of the probe alone and silent about the pair: a `max(1.0, budget)`
+    floor satisfied it while spending 15.5s against a `"timeout": 15`.
     """
     f = tmp_path / "x.js"
     f.write_text("const a = 1;\n", encoding="utf-8")
@@ -394,7 +442,27 @@ def test_prettier_probe_is_bounded_by_what_is_left_of_the_budget(
     _drive(prettier, monkeypatch, capsys, f, stub)
     probe = [k for c, k in zip(stub.calls, stub.kwargs) if "--file-info" in c][0]
     assert probe["timeout"] == expected, probe
-    assert probe["timeout"] <= prettier.TIMEOUT_S, probe
+    assert elapsed + probe["timeout"] <= prettier.TIMEOUT_S, (elapsed, probe)
+
+
+def test_prettier_a_spent_budget_declines_instead_of_overrunning_it(
+    prettier, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """No clock left is the third state, not a free extra second.
+
+    The alternative shapes are both wrong: spawning anyway overruns the
+    registered budget and gets the whole adapter killed with `NOT CHECKED
+    (timed out)` naming no question, and publishing `ok` fabricates a verdict
+    over a question nobody asked.
+    """
+    f = tmp_path / "x.js"
+    f.write_text("const a = 1;\n", encoding="utf-8")
+    monkeypatch.setattr(prettier.time, "time", _Clock([0.0, 15.0]))
+    stub = _Prettier('{"ignored": false, "inferredParser": "babel"}')
+    out = _drive(prettier, monkeypatch, capsys, f, stub)
+    assert not [c for c in stub.calls if "--file-info" in c], stub.calls
+    _assert_skip(out, "budget")
 
 
 def test_pyright_no_output_does_not_escalate_as_an_absent_tool(
