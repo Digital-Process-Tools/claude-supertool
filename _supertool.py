@@ -3054,11 +3054,11 @@ _SYNTAX_TOKEN_RE = re.compile(r"[^A-Za-z0-9_]+")
 #: than a prose `syntax` string, and the one #1350 was filed about.
 #:
 #: `{arg}` is deliberately absent even though it substitutes the very same
-#: `parts[1]`. Twenty-one shipped ops carry `{arg}` (24 until #873 moved three
-#: multi-token ops to `{args}`); 8 of them name a path in `syntax` and are
-#: already held by `_syntax_names_a_path`, leaving 13 that pass a handle, a
-#: ref, a tag, an ID or a repo slug and take no path at all.
-#: Promoting `{arg}` would refuse those 13 and gate nothing. `{file}` and
+#: `parts[1]`. Twenty shipped ops carry `{arg}` (24 until #873 moved three
+#: multi-token ops to `{args}`, then `gh-run` for #1715); 8 of them name a path
+#: in `syntax` and are already held by `_syntax_names_a_path`, leaving 12 that
+#: pass a handle, a ref, a tag, an ID or a repo slug and take no path at all.
+#: Promoting `{arg}` would refuse those 12 and gate nothing. `{file}` and
 #: `{dir}` are the placeholders whose NAME is the claim; `{arg}` is the one
 #: that declines to make it. An op that means a path and writes `{arg}` is
 #: still ungated, and that is a naming problem in the op rather than a hole
