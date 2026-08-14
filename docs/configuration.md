@@ -83,7 +83,11 @@ Use this in session-start hooks or agent prompts to onboard LLMs to your project
 
 ## `builtin-ops`
 
-Entries document built-in operations (`syntax`, `description`, `example`). Set `"status": 0` to hide an entry from `./supertool 'ops'` output (works on `builtin-ops`, `ops`, and `aliases`). Besides documentation, `builtin-ops` entries can also override default behavior:
+Entries document built-in operations (`syntax`, `description`, `example`). Set `"status": 0` to hide an entry from `./supertool 'ops'` output (works on `builtin-ops`, `ops`, and `aliases`).
+
+**A key here is an op name unless it declares `"form": "<parent>"`.** This section is what a machine reads to learn what the dispatcher accepts, so a key that resolves to nothing is a name handed out that answers `unknown operation`. Two did: `read-grep` and `grep-count` document *forms* of `read` and `grep` — `read:PATH:::grep=PATTERN`, `grep:P:PATH:L:C:count` — and neither is dispatchable. They are kept, because both carry `"hint": true` and their example is what survives `ops-compact` into the SessionStart listing, and they are now declared: `form` names the op the entry is a spelling of, that op's `syntax` must begin with it, and enumerations of op names skip the entry. `tests/test_registry_matches_dispatcher_1245.py` holds both directions ([#1245](https://github.com/Digital-Process-Tools/claude-supertool/issues/1245)).
+
+Besides documentation, `builtin-ops` entries can also override default behavior:
 
 | Op     | Key           | Default          | Effect                                                                                   |
 | ------ | ------------- | ---------------- | ---------------------------------------------------------------------------------------- |
