@@ -8,7 +8,7 @@ so a U+2028 survives *inside* a relayed line and everything the reader anchors
 at column 0 becomes the writer's to choose.
 
 **The fix is at the seam, not at the sites.** Seven sites were named and the
-sweep below finds 171 sites in 38 files, which is what a per-site fix earns:
+sweep below finds 160 sites in 34 files, which is what a per-site fix earns:
 the same defect re-filed once per call. So
 
 * `_git_common._first_error_line` flattens what it returns. Every caller —
@@ -184,14 +184,14 @@ def test_a_tab_survives_the_commit_relay() -> None:
 # grows quietly — which is the failure mode of the thing it would be guarding".
 #
 # **So this is not a zero-assertion, and pretending otherwise is what would
-# make it useless.** Measured on this branch: 171 candidate sites in 38 files
+# make it useless.** Measured on this branch: 160 candidate sites in 34 files
 # across `presets/git`, `presets/github` and `presets/gitlab`. Not all are
 # defects — `push._local_head` returns `r.stdout.strip()`, and that is a SHA —
 # and closing them is four lanes of work this PR is not.
 #
 # What is enforceable today, with no exemption mechanism at all, is a **count
 # per file that may only go down**. It is not an allowlist: there is nothing to
-# add a site to. A new relay in any of these 38 files bumps its number and
+# add a site to. A new relay in any of these 34 files bumps its number and
 # fails; a fixed one lowers it and fails, with the message telling you to write
 # the smaller number down. Both directions are one visible line in a diff,
 # which is exactly what "grows quietly" was not.
@@ -199,7 +199,7 @@ def test_a_tab_survives_the_commit_relay() -> None:
 # What it does NOT catch, said plainly: a relay added to a file with no row
 # here is caught (its count goes 0 → 1), but a relay added to `push.py` in the
 # same commit that fixes another one nets to 33 and passes. That is the price
-# of shipping a ratchet instead of a gate, and the gate costs 171 fixes first.
+# of shipping a ratchet instead of a gate, and the gate costs 160 fixes first.
 #
 # What it also does not catch is every *shape* — see `SINK_SHAPES` below, and
 # `UNRESOLVED` for the size of what it cannot see at all (#1626, #1570).
@@ -298,19 +298,19 @@ CENSUS = {
     # one line up (`kind = _gh_error_kind(r.stderr)`, reaching a bool
     # comparison) took the fixed site's place in the count (#1626).
     "presets/github/check.py": 1,
-    "presets/github/find_starable.py": 1,  # +1, #1626: the `bad JSON` dump
-    "presets/github/following.py": 1,  # +1, #1626: the `bad JSON` dump
-    "presets/github/issue.py": 2,  # -1, #1606: the _format_error relay
-    "presets/github/issue_create.py": 1,  # -2, #1606: both arms of one relay
+    "presets/github/find_starable.py": 0,  # -1, #1648: the `bad JSON` dump
+    "presets/github/following.py": 0,  # -1, #1648: the `bad JSON` dump
+    "presets/github/issue.py": 1,  # -1, #1648: the invalid-JSON body dump
+    "presets/github/issue_create.py": 0,  # -1, #1648: the `url=` fallback arm
     "presets/github/issues.py": 0,  # -2, #1606: the lookup and list relays
     "presets/github/job.py": 4,  # -1, #1606: the _format_error relay
     "presets/github/labels.py": 1,  # -1, #1606: the _format_error relay
-    "presets/github/pr.py": 6,
-    "presets/github/pr_create.py": 3,  # -2, #1606: both arms of one relay
-    "presets/github/pr_merge.py": 5,
+    "presets/github/pr.py": 4,  # -2, #1648: both invalid-JSON body dumps
+    "presets/github/pr_create.py": 2,  # -1, #1648: `_gh_json`'s error selection
+    "presets/github/pr_merge.py": 3,  # -2, #1648: `_gh_json`'s error selection
     "presets/github/prs.py": 1,  # -1, #1606: the list-failure relay
-    "presets/github/run.py": 2,  # -1, #1606: the _format_error relay
-    "presets/github/starred.py": 1,  # +1, #1626: the `bad JSON` dump
+    "presets/github/run.py": 1,  # -1, #1648: the invalid-JSON body dump
+    "presets/github/starred.py": 0,  # -1, #1648: the `bad JSON` dump
     "presets/gitlab/api.py": 1,
     "presets/gitlab/issue.py": 3,  # +1, #1626: `f.write(result.stdout)`
     "presets/gitlab/issue_create.py": 2,

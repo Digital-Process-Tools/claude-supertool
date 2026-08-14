@@ -604,7 +604,11 @@ def main() -> int:
     try:
         d = json.loads(result.stdout)
     except json.JSONDecodeError:
-        print(f"ERROR: invalid JSON from gh\n{result.stdout[:500]}")
+        # Fenced, not flattened (#1648) — see `run.py` for why a body is a
+        # block. Slice first, fence second: the markers are the outermost thing.
+        print("ERROR: invalid JSON from gh — its body, verbatim, below")
+        print(_untrusted.banner())
+        print(_untrusted.fence(result.stdout[:500]))
         return 1
 
     # One-line fields are flattened rather than fenced (#694): two marker lines

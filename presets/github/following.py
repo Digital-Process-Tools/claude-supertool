@@ -32,7 +32,11 @@ def main(arg: str) -> int:
     try:
         users = json.loads(result.stdout)
     except json.JSONDecodeError:
-        sys.stderr.write(f"ERROR: bad JSON: {result.stdout[:200]}\n")
+        # A field inside a sentence, where a fence cannot go: flattened, then
+        # sliced — the order the relay above and the logins below already use
+        # (#970, #1648).
+        sys.stderr.write("ERROR: bad JSON: "
+                         f"{_untrusted.flat(result.stdout.strip())[:200]}\n")
         return 1
     if not users:
         print("(following 0 users)")
