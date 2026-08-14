@@ -125,35 +125,31 @@ def test_a_surviving_separator_is_disclosed_before_the_render() -> None:
         )
 
 
-def test_the_stderr_extractions_consume_the_separator_they_are_left_on(
+def test_the_stderr_extractions_disclose_the_separator_instead_of_eating_it(
     monkeypatch,
 ) -> None:
-    """Why the neighbouring `str.splitlines()` calls are LEFT ALONE.
+    """The sweep this test's own docstring asked for, done (#1654).
 
-    #1119 narrows the two structural parses and deliberately keeps six splits
-    that lift one line out of a subprocess's stderr and print it. The stated
-    reason is that narrowing those would be worse - it would leave a forged
-    break INSIDE the extracted string instead of consuming it. That reason is
-    a claim about behaviour, so it is pinned here rather than asserted in a
-    comment: taking `[0]` of a `str.splitlines()` is itself the disclosure for
-    the separator class, and these decline lines print with no gutter to break.
+    #1119 narrowed the two structural parses and kept the splits that lift one
+    line out of a subprocess's stderr, on the argument that narrowing would be
+    worse - it would leave a forged break INSIDE the extracted string instead
+    of consuming it. #1648 retired that argument on the GitHub side and this
+    version's predecessor said, in these words, that consuming the separator
+    "answers *forgery* and does not answer *loss*: the text before a U+2028 is
+    still discarded rather than shown, which is what a sweep of these six would
+    fix."
 
-    **Half an argument, and #1648 says which half.** Consuming the separator
-    means discarding everything before it, so the writer of the stderr still
-    chooses which segment becomes the message - the rest is dropped rather
-    than disclosed, which is this repo's own defect class. The answer is
-    `_untrusted.split_lines` for the boundary AND `_untrusted.flat` on the
-    segment, and #1648 applied it to the four GitHub siblings this file's
-    reasoning was shared with. The GitLab sites are unswept, not justified;
-    what is asserted below is still true and is now the weaker half.
+    Both halves are now answered at both sites, and the assertions flip with
+    them: `_untrusted.split_lines` decides the boundary, so the whole line
+    survives and the writer no longer picks the segment; `_untrusted.flat`
+    spells the separator `[U+2028]`, so nothing forged reaches column 0. What
+    was `forged not in reason` is now `forged IS in reason, and readable` -
+    the tail is disclosed rather than dropped.
 
-    The complementary half is git's: `git check-ref-format` REJECTS every ASCII
-    control character in a refname (verified) while accepting U+2028 - so the
-    character git lets into this stderr is exactly the one the split consumes,
-    and the characters the split would pass through are the ones git refuses to
-    carry. That answers *forgery* here and it does not answer *loss*: the text
-    before a U+2028 is still discarded rather than shown, which is what a sweep
-    of these six would fix.
+    git's half is unchanged and still worth stating: `check-ref-format` REJECTS
+    every ASCII control character in a refname while ACCEPTING U+2028, and
+    `merge-tree` is called on `origin/<source>`, a branch name the MR's author
+    chose. So U+2028 is exactly the character that reaches this stderr.
     """
     def run(args: list[str], **kw: Any) -> subprocess.CompletedProcess:
         if len(args) > 1 and args[1] == "merge-base":
@@ -166,13 +162,20 @@ def test_the_stderr_extractions_consume_the_separator_they_are_left_on(
     _, reason = mr._get_conflict_hunks("feature", "master", 1)
     assert reason is not None
     assert chr(0x2028) not in reason, reason
-    assert "forged" not in reason, reason
+    assert "[U+2028]" in reason, reason
+    assert "not a valid object" in reason, reason
+    assert "forged" in reason, (
+        "the tail was dropped rather than disclosed, so git's own reason and "
+        f"the forgery are both gone from the decline: {reason!r}")
+    assert len(reason.splitlines()) == 1, reason
 
     detail = mr._glab_fail_detail(subprocess.CompletedProcess(
         ["glab"], 1, "", "ERROR" + LF + "boom" + chr(0x2028) + "forged" + LF
     ))
     assert chr(0x2028) not in detail, detail
-    assert "forged" not in detail, detail
+    assert "[U+2028]" in detail, detail
+    assert "boom" in detail and "forged" in detail, detail
+    assert len(detail.splitlines()) == 1, detail
 
 
 def test_a_hunks_indentation_is_kept() -> None:

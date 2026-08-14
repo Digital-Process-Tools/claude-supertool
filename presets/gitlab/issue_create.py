@@ -196,8 +196,23 @@ def main() -> int:
     output = result.stdout.strip()
     url = ""
     iid = ""
-    for line in output.splitlines():
-        line = line.strip()
+    # The direct twin of `github/issue_create.py`, narrowed by #1648 and left
+    # here until #1654. Both arms put their value into the `gl-issue-create OK
+    # iid=... url=...` receipt at column 0, so both need the same two calls.
+    #
+    # `split_lines` decides the boundary: the fallback takes `[-1]`, and
+    # `str.splitlines()` cut on U+2028, so whoever wrote glab's stdout chose
+    # which segment became the whole `url=` and everything before it was
+    # dropped out of the receipt rather than disclosed.
+    #
+    # `flat` is not optional once that split is narrowed. Unlike the GitHub
+    # twin, whose matched arm is a regex whose character classes reject U+2028,
+    # this arm is a substring test and assigns the whole line - so narrowing
+    # alone would put a live separator into a line this tool owns. `iid` is
+    # derived from the flattened value on purpose: a forged tail then fails
+    # `isdigit()` and the links block declines, saying so.
+    for line in _untrusted.split_lines(output):
+        line = _untrusted.flat(line.strip())
         if "/-/issues/" in line or "/issues/" in line:
             url = line
             parts = line.rstrip("/").split("/")
@@ -206,7 +221,8 @@ def main() -> int:
             break
 
     if not url:
-        url = output.splitlines()[-1] if output else "?"
+        printed = _untrusted.split_lines(output)
+        url = _untrusted.flat(printed[-1]) if printed else "?"
         parts = url.rstrip("/").split("/")
         iid = parts[-1] if parts else "?"
 

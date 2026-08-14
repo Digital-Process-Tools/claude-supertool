@@ -152,7 +152,15 @@ def _print_related_mrs(iid: object, full: bool) -> None:
         return
 
     if mr_result.returncode != 0:
-        reason = (mr_result.stderr or "").strip().splitlines()
+        # `split_lines`, not `str.splitlines()` (#1654). Both cut the string;
+        # only one of them lets the writer choose which cut survives. A U+2028
+        # inside glab's one line of stderr makes `str.splitlines()` take `[0]`
+        # from before it and discard everything after — so a body reading
+        # `nothing wrong here<U+2028>403 forbidden, list INCOMPLETE` reaches
+        # the reader as `nothing wrong here`. `split_lines` cuts on LF/CR/CRLF
+        # only, so the line is the line, and `_related_mrs_unknown` already
+        # flattens it, which is what spells the separator as `[U+2028]`.
+        reason = _untrusted.split_lines((mr_result.stderr or "").strip())
         _related_mrs_unknown(reason[0] if reason else "glab api exited non-zero")
         return
 
