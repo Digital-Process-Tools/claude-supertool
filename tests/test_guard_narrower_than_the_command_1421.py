@@ -69,6 +69,8 @@ from typing import Any, Dict
 
 import pytest
 
+import _guard_wire
+
 import supertool
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -335,7 +337,7 @@ def _run_hook(command: str, cwd: Path, tool: str = "Bash") -> Dict[str, Any]:
         input=payload, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(cwd), env=env, timeout=60)
     assert proc.returncode == 0, proc.stderr
-    return json.loads(proc.stdout) if proc.stdout.strip() else {}
+    return _guard_wire.envelope(proc.stdout)
 
 
 def test_a_powershell_command_naming_a_replaced_binary_is_disclosed(tmp_path):
@@ -428,7 +430,7 @@ def test_a_tool_with_no_command_says_nothing(tmp_path):
         input=payload, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(tmp_path), env=env, timeout=60)
     assert proc.returncode == 0, proc.stderr
-    hook = json.loads(proc.stdout)["hookSpecificOutput"]
+    hook = _guard_wire.envelope(proc.stdout)["hookSpecificOutput"]
     assert "additionalContext" not in hook, hook
     assert "permissionDecision" not in hook, hook
 

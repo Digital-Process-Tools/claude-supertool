@@ -243,22 +243,74 @@ def _may_be_replaced(command: str, words) -> bool:
     return any(_names_word(command, word) for word in words)
 
 
-def _emit(payload: dict) -> None:
-    payload["hookEventName"] = "PreToolUse"
-    sys.stdout.write(json.dumps({"hookSpecificOutput": payload}))
+#: The first bytes of every answer this file writes, and the whole of what
+#: `hooks/pre-bash-guard.sh` uses to recognise one (#1625). It replaces the
+#: envelope prefix that served the same purpose for #1377: the identification
+#: property is unchanged — only this file writes this, so a candidate that
+#: produces it both is a Python 3 and ran — but the answer is no longer a
+#: document the wrapper can forward.
+WIRE_PREFIX = "supertool-guard-v1 "
+
+#: The whole vocabulary. Three words, and the wrapper knows all three by
+#: exact match; anything else is refused there rather than relayed.
+WIRE_VERBS = ("silent", "note", "deny")
+
+
+def _say(verb: str, text: str = "") -> None:
+    """Answer the wrapper: a verb line, then the text, and nothing structural.
+
+    **This file does not write the envelope any more** (#1625). It used to
+    write the whole `hookSpecificOutput` document and the wrapper forwarded it
+    verbatim, so an interpreter that printed a well-formed document and exited
+    0 had authored the harness's own `permissionDecision` — well-formed JSON,
+    nothing for #1613's escaper to catch, and no way for the wrapper to tell
+    that document from this one. The two were the same bytes.
+
+    Authenticating the channel cannot fix that: whatever secret would prove
+    "my rung wrote this" is handed to the rung, and the rung is the forger.
+    So the shape changes instead. The wrapper authors every structural byte,
+    `permissionDecision` is a literal it writes itself and `deny` is the only
+    value it can hold, and what crosses is a verb from `WIRE_VERBS` plus one
+    run of text that is data all the way to `_json_string`.
+
+    Not JSON on this channel on purpose. A JSON answer would need the wrapper
+    to parse it in order to re-serialise it, and the wrapper is bash — reached,
+    on the decline path, precisely when no interpreter is available to parse
+    anything.
+
+    **Bytes, not text, and both halves of that are Windows-only.** Graded
+    reasoned, not observed (the #627 convention): nobody here has a Windows
+    box. A text-mode `sys.stdout` translates a line feed into CR LF there,
+    which would put a carriage return on the end of every verb and leave the
+    wrapper reading `deny` plus a control character — a dialect it does not
+    know, so every deny on Windows would become a disclosed allow. A text-mode
+    write also encodes with the console code page, so a non-ASCII path inside
+    a refusal could raise `UnicodeEncodeError` on the one platform where
+    `$VIRTUAL_ENV` is most often the only rung there is. Neither was reachable
+    before: `json.dumps` escapes both a line feed and a non-ASCII character
+    into ASCII by construction, and that is exactly the property given up by
+    not writing JSON here.
+    """
+    payload = (WIRE_PREFIX + verb + "\n" + text).encode("utf-8", "replace")
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is None:  # a stdout with no byte layer - a test double, say
+        sys.stdout.write(payload.decode("utf-8", "replace"))
+        return
+    stream.write(payload)
+    stream.flush()
 
 
 def _nothing_to_say() -> None:
     """An answer that decides nothing — not the same bytes as no answer."""
-    _emit({})
+    _say("silent")
 
 
 def _undecided(reason: str) -> None:
-    _emit({"additionalContext":
-           "supertool raw-command guard did not run on this command: "
-           + reason
-           + ". The command was allowed - this is a statement about the "
-             "guard, not about the command."})
+    _say("note",
+         "supertool raw-command guard did not run on this command: "
+         + reason
+         + ". The command was allowed - this is a statement about the "
+           "guard, not about the command.")
 
 
 def main() -> int:
@@ -324,8 +376,7 @@ def main() -> int:
         return 0
 
     if verdict.state == "blocked":
-        _emit({"permissionDecision": "deny",
-               "permissionDecisionReason": _supertool.guard_refusal(verdict)})
+        _say("deny", _supertool.guard_refusal(verdict))
     elif verdict.state == "undecided":
         # Through supertool's bounded formatter, not a second join: this line
         # rendered 27,632 characters from 200 chained segments, on a path

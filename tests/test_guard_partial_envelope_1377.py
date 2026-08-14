@@ -64,7 +64,12 @@ _WRAPPER = _ROOT / "hooks" / "pre-bash-guard.sh"
 _LADDER = _ROOT / "hooks" / "python-ladder.sh"
 _NL = chr(10)
 
-_ENVELOPE_PREFIX = '{"hookSpecificOutput"'
+#: What identifies an answer to the wrapper. It was the envelope's own first
+#: bytes until #1625 stopped the rung writing an envelope at all; a shim still
+#: printing those would now be a rung the wrapper never recognises, so this
+#: file would be testing the ladder walking past it rather than the fragment
+#: it is about.
+_ENVELOPE_PREFIX = "supertool-guard-v1 "
 
 _OPS = {
     "ops": {

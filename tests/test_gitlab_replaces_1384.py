@@ -38,6 +38,8 @@ from typing import Any, Dict
 
 import pytest
 
+import _guard_wire
+
 import supertool
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -209,7 +211,7 @@ def _run_hook(command: str, cwd: Path) -> Dict[str, Any]:
         input=payload, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(cwd), env=env, timeout=60)
     assert proc.returncode == 0, proc.stderr
-    return json.loads(proc.stdout) if proc.stdout.strip() else {}
+    return _guard_wire.envelope(proc.stdout)
 
 
 def test_the_hook_denies_a_raw_glab_mr_view(tmp_path):

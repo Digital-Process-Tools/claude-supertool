@@ -48,8 +48,11 @@ _NL = chr(10)
 _BS = chr(92)
 _Q = chr(34)
 
-#: What every path through pre_bash_guard.py starts its stdout with.
-_ENVELOPE_PREFIX = "{" + _Q + "hookSpecificOutput" + _Q
+#: What every path through pre_bash_guard.py starts its stdout with. Since
+#: #1625 that is a verb line rather than an envelope: a shim still printing
+#: the old JSON prefix would be a rung the wrapper does not recognise, and the
+#: `_DYING` row below would silently become a different test.
+_ENVELOPE_PREFIX = "supertool-guard-v1 "
 
 #: A directory name that closes `additionalContext` and opens the field the
 #: caller reads as the guard's verdict.

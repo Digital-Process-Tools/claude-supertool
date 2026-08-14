@@ -31,6 +31,8 @@ from typing import Any, Dict
 
 import pytest
 
+import _guard_wire
+
 import supertool
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -100,7 +102,7 @@ class TestTheHookPrintsTheBoundedText:
             input=payload, capture_output=True, text=True, encoding="utf-8",
             errors="replace", cwd=str(cwd), env=env, timeout=60)
         assert proc.returncode == 0, proc.stderr
-        return json.loads(proc.stdout) if proc.stdout.strip() else {}
+        return _guard_wire.envelope(proc.stdout)
 
     def test_the_additional_context_is_bounded(self, tmp_path):
         (tmp_path / ".supertool.json").write_text(
