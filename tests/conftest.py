@@ -354,7 +354,16 @@ def pytest_configure(config):
     # path out of an attribute cannot prove it owns what it deletes, and
     # `test_directory_removal_ownership_1635.py` classified the rmtree UNOWNED
     # on the commit that added it. The object removes only the directory it
-    # made, by construction, so there is nothing left for a reader to prove.
+    # made, and nothing here composes a path at all, so the hazard is absent by
+    # construction rather than argued.
+    #
+    # **Stated because it is the shape this repo keeps mis-reading:** that
+    # register no longer *sees* this site. `.cleanup()` is not one of the
+    # removal verbs it matches, so the zero it now reports for this file is an
+    # absence of detection, not a proof. The safety here is the stdlib type's,
+    # not the guard's, and `OWNERS` in that file already counts
+    # `TemporaryDirectory` as an ownership source while its removal side has no
+    # matching verb -- an asymmetry worth its own issue rather than a rider.
     config._supertool_cache_home = tempfile.TemporaryDirectory(
         prefix="supertool-suite-cache-")
     os.environ["XDG_CACHE_HOME"] = config._supertool_cache_home.name
@@ -433,12 +442,14 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     `688 skipped` is a number. `N of 688 skipped, because this runner has no
     create-symlink privilege` is a fact somebody can act on -- it is the
     difference between an absence in the world and an absence the tooling
-    produced. Four reasons are broken out that way, each in its own helper
+    produced. Five reasons are broken out that way, each in its own helper
     below: the create-symlink privilege (#1143), the post-edit lint budget
-    (#1360), the live GitHub API (#1568) and a `git status` that would not
-    answer about a path's working-tree state (#705). This sentence said "two"
-    for as long as there were three -- the count is the thing that goes stale,
-    so it is derived nowhere and stated here once.
+    (#1360), an adapter that spent its whole internal budget without reaching
+    a verdict (#794/#1604), the live GitHub API (#1568) and a `git status` that
+    would not answer about a path's working-tree state (#705). This sentence
+    said "two" for as long as there were three, and "four" for as long as there
+    were five -- the count is the thing that goes stale, so it is derived
+    nowhere and stated here once.
 
     All of them print whether the count is zero or not -- silence would be
     indistinguishable from not having looked -- and each prints its denominator
