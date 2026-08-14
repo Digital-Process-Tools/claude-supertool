@@ -33,6 +33,8 @@ from pathlib import Path
 
 import pytest
 
+from _preset_loader import load_validator_module
+
 REPO = Path(__file__).resolve().parents[1]
 ADAPTER = REPO / "validators" / "jit-index" / "jit-index.py"
 
@@ -45,28 +47,17 @@ def adapter():
     Loaded under a unique module name and never cached, so a test that
     replaces `_awk_run` cannot leak that replacement into the next one.
 
-    **`sys.path` is snapshotted because importing an adapter mutates it.**
-    Every validator reaches its shared helpers with
+    **`sys.path` is restored, because importing an adapter mutates it.** Every
+    validator reaches its shared helpers with
     `sys.path.insert(0, .../validators/common)` at module scope
     (`jit-index.py:71`) — invisible in a subprocess, which is how adapters have
     always been exercised, and permanent for the rest of the worker once one is
-    imported in-process. That is a hazard of importing an adapter at all, not
-    of this test, so it is contained here rather than left for the next file to
-    inherit.
+    imported in-process. `load_validator_module` owns that restore, for the
+    reason `tests/_preset_loader.py` gives: the six hand-rolled versions of it
+    were #552/#555, and a seventh written here would be the seventh copy that
+    test refuses.
     """
-    import importlib.util
-
-    name = "jit_index_1714_{0}".format(len(sys.modules))
-    saved_path = list(sys.path)
-    spec = importlib.util.spec_from_file_location(name, ADAPTER)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    try:
-        yield module
-    finally:
-        sys.modules.pop(name, None)
-        sys.path[:] = saved_path
+    yield load_validator_module("jit-index")
 
 
 posix_only = pytest.mark.skipif(
