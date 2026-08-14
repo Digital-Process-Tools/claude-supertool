@@ -364,7 +364,14 @@ def main() -> int:
     try:
         d = json.loads(result.stdout)
     except json.JSONDecodeError:
-        print(f"ERROR: invalid JSON from gh\n{result.stdout[:500]}")
+        # A block, not a field: an unparseable body keeps its lines, so it is
+        # fenced rather than flattened (#1648). `scrub()` inside `fence()`
+        # discloses every separator and neutralises the marker shape, so the
+        # fence cannot be closed from inside it. Slice first, fence second —
+        # the markers are the structure and have to be the outermost thing.
+        print("ERROR: invalid JSON from gh — its body, verbatim, below")
+        print(_untrusted.banner())
+        print(_untrusted.fence(result.stdout[:500]))
         return 1
 
     name = d.get("name", "?")

@@ -193,8 +193,14 @@ def _gh_json(args: List[str], timeout: int = 30) -> tuple[object, str]:
     except OSError as e:
         return (None, f"gh could not be run: {e}")
     if r.returncode != 0:
-        tail = (r.stderr or r.stdout).strip().splitlines()
-        return (None, tail[-1] if tail else f"gh exited {r.returncode}")
+        # The same `_gh_json` as `pr_merge.py`, with the same defect and the
+        # same fix (#1648): `split_lines` decides the boundary so the server
+        # cannot pick the segment with a U+2028, `flat()` keeps it to one line.
+        # `read_err` reaches `checks_section` and is rendered above this op's
+        # own `[result] no PR created`.
+        tail = _untrusted.split_lines((r.stderr or r.stdout).strip())
+        return (None, _untrusted.flat(tail[-1]) if tail
+                else f"gh exited {r.returncode}")
     try:
         return (json.loads(r.stdout or "null"), "")
     except json.JSONDecodeError:

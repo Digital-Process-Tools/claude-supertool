@@ -138,11 +138,22 @@ def test_the_stderr_extractions_consume_the_separator_they_are_left_on(
     comment: taking `[0]` of a `str.splitlines()` is itself the disclosure for
     the separator class, and these decline lines print with no gutter to break.
 
-    The complementary half is git's, and it is why nothing further is needed
-    here: `git check-ref-format` REJECTS every ASCII control character in a
-    refname (verified) while accepting U+2028 - so the character git lets into
-    this stderr is exactly the one the split consumes, and the characters the
-    split would pass through are the ones git refuses to carry.
+    **Half an argument, and #1648 says which half.** Consuming the separator
+    means discarding everything before it, so the writer of the stderr still
+    chooses which segment becomes the message - the rest is dropped rather
+    than disclosed, which is this repo's own defect class. The answer is
+    `_untrusted.split_lines` for the boundary AND `_untrusted.flat` on the
+    segment, and #1648 applied it to the four GitHub siblings this file's
+    reasoning was shared with. The GitLab sites are unswept, not justified;
+    what is asserted below is still true and is now the weaker half.
+
+    The complementary half is git's: `git check-ref-format` REJECTS every ASCII
+    control character in a refname (verified) while accepting U+2028 - so the
+    character git lets into this stderr is exactly the one the split consumes,
+    and the characters the split would pass through are the ones git refuses to
+    carry. That answers *forgery* here and it does not answer *loss*: the text
+    before a U+2028 is still discarded rather than shown, which is what a sweep
+    of these six would fix.
     """
     def run(args: list[str], **kw: Any) -> subprocess.CompletedProcess:
         if len(args) > 1 and args[1] == "merge-base":

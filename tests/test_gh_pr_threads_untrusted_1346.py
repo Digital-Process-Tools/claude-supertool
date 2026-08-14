@@ -108,21 +108,25 @@ def test_a_comment_body_is_fenced_rather_than_flattened(monkeypatch, capsys):
 
 def test_the_stderr_extraction_consumes_the_separator_it_is_left_on(
         monkeypatch):
-    """Why the `str.splitlines()` in `_fetch_review_threads_detailed` STAYS.
+    """The separator cannot forge a line — and, since #1648, cannot hide one.
 
-    The #1119 register keeps this class deliberately — `pr_create.py::_gh_json`,
-    `pr_merge.py::_gh_json` and `issue.py::_print_linked_prs` are the same three
-    lines, and this one was copied from the second of them. The stated ground is
-    that narrowing it would be *worse*: a `str.splitlines()` **consumes** an
-    exotic separator, whereas `_untrusted.split_lines`, which breaks on
-    LF/CR/CRLF only, would leave a forged U+2028 sitting inside the extracted
-    string, which is then printed as a decline reason. That is a claim about
-    behaviour, so it is pinned rather than asserted in a comment.
+    This assertion outlived the reason it was written for. The #1119 register
+    kept `_fetch_review_threads_detailed` on `str.splitlines()` deliberately,
+    with `pr_create.py::_gh_json`, `pr_merge.py::_gh_json` and
+    `issue.py::_print_linked_prs`, on the ground that narrowing it would be
+    *worse*: `str.splitlines()` **consumes** an exotic separator, whereas
+    `_untrusted.split_lines` breaks on LF/CR/CRLF only and would leave a forged
+    U+2028 inside the extracted string.
 
-    What the extraction does NOT promise is that the surviving line is the one
-    gh meant — `[-1]` takes the tail, exactly as its three registered siblings
-    do. The text is gh's own stderr either way; the separator is the part that
-    could forge a line, and it is gone.
+    True, and not the whole argument. Consuming the separator means discarding
+    everything before it, so the server that wrote the body still chose which
+    segment became the decline reason — and the real error was dropped rather
+    than disclosed, which is this repo's own defect class. #1648 split the two
+    decisions apart at all four sites: `split_lines` decides the boundary,
+    `_untrusted.flat` spells the separator. So the old claim still holds — no
+    raw separator survives — and the assertion below it is now the weaker half.
+    `tests/test_gh_remote_body_relay_1648.py` pins the other half, that the
+    text before the separator is still there.
     """
     monkeypatch.setattr(
         m, "_gh",

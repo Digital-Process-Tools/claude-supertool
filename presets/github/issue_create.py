@@ -192,7 +192,14 @@ def main() -> int:
             url = match.group(0)
             number = match.group(1)
         else:
-            url = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else "?"
+            # The regex arm above cannot be forged — its `[^/\s]` classes
+            # reject U+2028, which Python's `\s` matches. This is the fallback,
+            # and it takes whatever `gh` last printed into an `OK` receipt at
+            # column 0: so the boundary is `split_lines`'s rather than
+            # `str.splitlines()`'s, and the segment it selects is flattened
+            # (#1648).
+            printed = _untrusted.split_lines(result.stdout.strip())
+            url = _untrusted.flat(printed[-1]) if printed else "?"
             number = url.rstrip("/").split("/")[-1] if "/" in url else "?"
 
         print(f"gh-issue-create OK number={number} url={url}")

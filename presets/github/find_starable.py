@@ -57,7 +57,10 @@ def main(arg: str) -> int:
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
-        sys.stderr.write(f"ERROR: bad JSON: {result.stdout[:200]}\n")
+        # A field inside a sentence, where a fence cannot go: flattened, then
+        # sliced — the same order as the relay ten lines above (#970, #1648).
+        sys.stderr.write("ERROR: bad JSON: "
+                         f"{_untrusted.flat(result.stdout.strip())[:200]}\n")
         return 1
     repos = data.get("items", []) if isinstance(data, dict) else []
     if not repos:

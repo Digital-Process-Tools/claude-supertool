@@ -492,9 +492,16 @@ def _gh_json(args: List[str], timeout: int = 30) -> tuple[object, str]:
     except OSError as e:
         return (None, f"gh could not be run: {e}")
     if r.returncode != 0:
-        return (None, (r.stderr or r.stdout).strip().splitlines()[-1:] and
-                (r.stderr or r.stdout).strip().splitlines()[-1] or
-                f"gh exited {r.returncode}")
+        # Two decisions, not one (#1648). The split decides *which* segment is
+        # the error, and `str.splitlines()` cuts on U+2028 — so a server that
+        # controls the body chose that segment, and the real error was dropped.
+        # `_untrusted.split_lines` cuts on LF/CR/CRLF only, so the last line is
+        # the last line; `flat()` then keeps the chosen segment on the one line
+        # it is rendered on, which for this helper is column 0 inside the merge
+        # gate's own receipt (`ERROR: PR #N could not be read ...: {err}`).
+        tail = _untrusted.split_lines((r.stderr or r.stdout).strip())
+        return (None, _untrusted.flat(tail[-1]) if tail
+                else f"gh exited {r.returncode}")
     try:
         return (json.loads(r.stdout or "null"), "")
     except json.JSONDecodeError:

@@ -121,6 +121,20 @@ The rule, in `presets/github/_candidates.py`, is two lines long:
 
 Neither outcome is silent. The receipt says how many lines carried an annotation before the first write happens, names each skipped line with its reason, and ends on `DONE: 3 starred, 0 failed, 2 skipped`. A run with any skipped line exits **2**, not 0: it covered fewer names than the reviewed list held, and a zero there would report a partial run as a complete one.
 
+## When `gh` fails, the GitHub API wrote the sentence
+
+`gh` echoes the API's own error body on stderr, so the writer of that text is the remote host — and until [#1606](https://github.com/Digital-Process-Tools/claude-supertool/issues/1606) fifteen `presets/github/` renders relayed it into a line at column 0 with nothing in front of it. `_untrusted.split_lines` cuts on LF/CR/CRLF alone by design, so a U+2028 survives inside what a render treats as one line and puts everything after it back at column 0 for any consumer that splits the way `str.splitlines()` does. Every one of those renders sits **above** the trailer the core appends, so a forged `[result]` sorts first.
+
+[#1648](https://github.com/Digital-Process-Tools/claude-supertool/issues/1648) closed the eight #1606 disclosed and left, and they are worth reading as three different questions rather than one:
+
+| What the site does | What it needs |
+| --- | --- |
+| **Selects** a segment — `_gh_json` in `gh-pr-merge` and `gh-pr-create`, `gh-pr`'s review-threads decline and `gh-issue`'s linked-PR decline all took a `str.splitlines()` line | `_untrusted.split_lines` to decide the boundary, *then* `_untrusted.flat` on the segment it picked. Neither call is sufficient alone: `str.splitlines()` **consumes** the separator by discarding everything before it, so the server chooses which segment is the error and the rest is dropped rather than disclosed |
+| **Prints a body** — the four `ERROR: invalid JSON from gh` dumps | `_untrusted.fence`, with `_untrusted.banner()` above it. A body is a block and keeps its lines; `scrub()` discloses the separators and neutralises the marker shape, so the fence cannot be closed from inside. Slice first, fence second — the markers are the outermost thing |
+| **Prints a field** — the three `ERROR: bad JSON: ...` writes, where a fence cannot go inline | `_untrusted.flat`, then the slice ([#970](https://github.com/Digital-Process-Tools/claude-supertool/issues/970)) |
+
+The operator still reads the remote's sentence in every case: the separator is spelled `[U+2028]` and a cursor command `␛`. Disclosed, not stripped — a render that dropped the text would hide the attempt as well as the payload.
+
 ## `:fail` on a job that did not fail
 
 `:fail` selects error blocks, which is the right question for a job that **failed** and close to the worst one for a job that was **cancelled**. A cancellation writes exactly one error line — `##[error]The operation was canceled.` — and puts everything diagnostic outside it.

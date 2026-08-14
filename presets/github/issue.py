@@ -342,7 +342,10 @@ def _linked_prs_unknown(reason_lines: list) -> None:
     Three states, not two — `docs/validators.md`, "Declining instead of
     guessing".
     """
-    reason = (reason_lines or [""])[0].strip() or "no detail from gh"
+    # Flattened at the seam rather than at the call sites: five of the six
+    # reasons are this file's own text, and the sixth is `gh`'s stderr, which
+    # lands inside a line this op writes at column 0 (#1648).
+    reason = _untrusted.flat((reason_lines or [""])[0].strip()) or "no detail from gh"
     print(f"{chr(10)}Linked PRs: unknown — could not query ({reason})")
 
 
@@ -528,8 +531,13 @@ def _print_linked_prs(iid: object, web_url: str = "") -> None:
     try:
         result = _gh(["api", "graphql", "-f", f"query={query}"], timeout=15)
         if result.returncode != 0:
+            # `split_lines`, not `str.splitlines()` (#1648): the latter would
+            # let a U+2028 in the body decide where the first line ends, so
+            # the server picks the decline reason. `_linked_prs_unknown`
+            # flattens what it is handed.
             _linked_prs_unknown(
-                result.stderr.strip().splitlines()[:1] or ["gh api graphql failed"]
+                _untrusted.split_lines(result.stderr.strip())[:1]
+                or ["gh api graphql failed"]
             )
             return
         payload = json.loads(result.stdout)
@@ -604,7 +612,11 @@ def main() -> int:
     try:
         d = json.loads(result.stdout)
     except json.JSONDecodeError:
-        print(f"ERROR: invalid JSON from gh\n{result.stdout[:500]}")
+        # Fenced, not flattened (#1648) — see `run.py` for why a body is a
+        # block. Slice first, fence second: the markers are the outermost thing.
+        print("ERROR: invalid JSON from gh — its body, verbatim, below")
+        print(_untrusted.banner())
+        print(_untrusted.fence(result.stdout[:500]))
         return 1
 
     # One-line fields are flattened rather than fenced (#694): two marker lines
