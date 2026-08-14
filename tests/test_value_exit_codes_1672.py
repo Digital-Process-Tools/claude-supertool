@@ -142,7 +142,11 @@ def test_the_batch_footer_does_not_call_value_answers_refusals(
     printed = capsys.readouterr().out
 
     assert "refused" not in printed, printed
-    assert code == 0, printed
+    # The footer is what this test is about, and it still does not say
+    # `refused`. The process exit is a separate channel and #1705 took it back:
+    # `1` is not a value `probe` declares clean, and `0` has to keep meaning
+    # nothing-to-worry-about. See tests/test_value_exit_clean_1705.py.
+    assert code == 1, printed
 
 
 def test_git_worktrees_declares_the_integers_its_own_note_documents() -> None:
@@ -150,7 +154,8 @@ def test_git_worktrees_declares_the_integers_its_own_note_documents() -> None:
     registry = json.loads((REPO_ROOT / "presets" / "git.json").read_text(encoding="utf-8"))
     entry = registry["ops"]["git-worktrees"]
 
-    assert entry.get("exitStatus") == {"values": [0, 1, 2]}, entry.get("exitStatus")
+    # `clean` is #1705's half of the same declaration, pinned in its own file.
+    assert entry.get("exitStatus", {}).get("values") == [0, 1, 2], entry.get("exitStatus")
 
 
 def test_change_is_documented() -> None:

@@ -1082,6 +1082,11 @@ RESET_GLOBALS = (
     # that bug with `SUPERTOOL_PARALLEL` set. The footer now reads the dispatch
     # frame; this tuple still guards the per-call list.
     "_VALIDATED_FILES",
+    # Same family (#1705): one entry per preset op that answered with a declared
+    # exit value it does not declare clear to proceed. `main` truncates it back
+    # to its entry length, and a leak across calls in one warm process would let
+    # one call's `occupied` set a later call's exit code.
+    "_UNCLEAN_VALUE_EXITS",
     "_REAPPLY_COUNT",
     "_ROLLBACK_COUNT",
     "_LEFT_ON_DISK_COUNT",

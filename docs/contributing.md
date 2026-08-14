@@ -279,11 +279,29 @@ line under the op's own `the op itself did not fail`
 ([#1672](https://github.com/Digital-Process-Tools/claude-supertool/issues/1672)).
 
 ```json
-"exitStatus": { "values": [0, 1, 2] }
+"exitStatus": { "values": [0, 1, 2], "clean": [0] }
 ```
 
-Every listed integer is read as an **answer**. A code outside the list is still
-a refusal, so a crash exiting 127 is still a crash.
+Every integer in `values` is read as an **answer**. A code outside the list is
+still a refusal, so a crash exiting 127 is still a crash.
+
+**`clean` names the answers a caller may proceed on**, and it is the half
+[#1705](https://github.com/Digital-Process-Tools/claude-supertool/issues/1705)
+added. Declaring the exit code a value spent the fail-safe as well as the
+verdict: `git-worktrees` answered `occupied` and supertool exited **0**, so
+`supertool 'git-worktrees:P' && rm -rf P` — the consumer shape
+[#1282](https://github.com/Digital-Process-Tools/claude-supertool/issues/1282)
+records — passed the guard on the one answer that exists to stop it. A declared
+value outside `clean` now makes supertool's own exit non-zero. `0` is always
+clean and listing it is documentation only (exit 0 is never read as a value
+exit), and a missing or malformed `clean` collapses to `[0]` — the loud
+direction, because the quiet one is a caller proceeding on `occupied`.
+
+**It is still not a refusal.** The receipt says `PASS`, the refusal count does
+not include it, and the batch footer does not call it one — that is #1672 and it
+stands. It reaches the exit code through its own per-call channel, beside the
+skipped write and the rolled-back edit that already get there without being
+refusals.
 
 **Declaring it spends a channel, so the op has to state a failure elsewhere.**
 For a listed non-zero code the verdict is taken from the two channels this repo
@@ -296,12 +314,16 @@ Two consequences worth knowing before you add one:
 
 - The verdict line discloses it — `PASS (0.31s) [exit 1 is this op's answer, not
   a verdict — its registry entry declares the exit code a value]` — so a reader
-  is never left reconciling `PASS` against the op's own exit note.
-- **The integer still does not reach the caller's shell.** `main` collapses a
-  batch to 0 or 1, and always did, so `supertool 'git-worktrees:PATH'` returned
-  1 for both `occupied` and `cannot tell` and never 2. What the declaration buys
-  is a truthful batch footer, not a new exit channel; a shell that needs the
-  integer has to run the preset's script directly.
+  is never left reconciling `PASS` against the op's own exit note. When the value
+  is **not** clean the same line also says why the process exit is non-zero — a
+  single-op call prints no batch footer, so that line is the only place a reader
+  gets it.
+- **The integer itself still does not reach the caller's shell.** `main`
+  collapses a batch to 0 or 1, and always did, so `supertool
+  'git-worktrees:PATH'` returns 1 for both `occupied` and `cannot tell` and never
+  2. What the declaration buys is a truthful batch footer and a one-bit
+  fail-safe, not a new exit channel; a shell that needs the integer has to run
+  the preset's script directly.
 
 Any key in an op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`, `restartMcp`, `replaces`, `paths`, `exitStatus`) is passed to the subprocess as a `SUPERTOOL_`-prefixed environment variable:
 
