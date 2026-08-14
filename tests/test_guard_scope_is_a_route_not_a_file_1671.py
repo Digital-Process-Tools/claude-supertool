@@ -171,6 +171,25 @@ def test_manifest_claims_no_tool_block_no_shipped_hook_delivers() -> None:
 
 # --- the README recipe covers the tools it claims to ------------------------
 
+def test_canonical_guard_doc_discloses_the_bash_only_scope() -> None:
+    """The section a reader consults first was the last to say it.
+
+    `docs/configuration.md` is where `raw_command_guard` is specified — what
+    turns it off, what it never blocked, how a repository wires it. It
+    reasoned carefully about *which commands* are covered and never once
+    about *which tools*, which is the axis #1671 is on.
+    """
+    doc = (_ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    start = doc.index("## `raw_command_guard`")
+    end = doc.index("\n## ", start + 4)
+    section = doc[start:end]
+    assert re.search(r"\bEdit\b", section), (
+        "the canonical guard section never names the harness write tools, "
+        "so the one surface a reader reaches first still implies the gate "
+        "covers every route to disk")
+    assert re.search(r"\bWrite\b", section)
+
+
 def test_readme_hard_block_recipe_names_the_write_tools() -> None:
     """The recipe is what an operator reaches for after reading the manifest.
 
