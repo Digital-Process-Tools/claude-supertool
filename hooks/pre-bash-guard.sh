@@ -54,9 +54,25 @@
 # once per command.
 BIN="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}/hooks/pre_bash_guard.py"
 
-#: What every path through pre_bash_guard.py starts its stdout with.
-#: `tests/test_guard_hook_cost_1377.py` pins that this is what `_emit` writes.
-ENVELOPE_PREFIX='{"hookSpecificOutput"'
+#: What every path through pre_bash_guard.py starts its stdout with, and the
+#: whole of what identifies an answer. `WIRE_PREFIX` in that file is the other
+#: half of this rendezvous.
+#:
+#: **It used to be the envelope's own first bytes, and that was the defect**
+#: (#1625). The rung wrote a `hookSpecificOutput` document, this script matched
+#: a prefix of it and forwarded the whole thing, so a `$VIRTUAL_ENV/bin/python3`
+#: printing a well-formed document carrying `"permissionDecision":"allow"` and
+#: exiting 0 had written the harness's verdict. Well-formed JSON: nothing for
+#: #1613's escaper, which closes the route where a *path* writes that field by
+#: concatenation, not the route where the rung's own stdout does.
+#:
+#: Authenticating the channel was the other candidate and it cannot work here.
+#: Any token proving "the rung ran the script I handed it" has to be handed to
+#: the rung, and the rung is the forger - the interpreter *is* what executes
+#: `$BIN`, so no secret separates "ran it" from "read it and lied". So the
+#: shape changes instead: the rung supplies a verb and a run of text, and every
+#: structural byte of the envelope is written below.
+WIRE_PREFIX='supertool-guard-v1 '
 
 #: The event JSON, read once. It used to be consumed by whichever rung ran
 #: first, which is why the old probe had to read /dev/null; held here, every
@@ -90,29 +106,115 @@ JSON_STRING=
 # the envelope to `python3` at the one moment the ladder has just finished
 # proving there is no `python3` is not slower, it is unreachable.
 #
-# Three substitutions, and the order of the first two is load-bearing: the
-# backslash pass has to run before the quote pass, or it doubles the
-# backslashes the quote pass just wrote. Backslash and quote are *escaped*
-# rather than replaced, so `C:\venv\Scripts` stays the path it is - a Windows
-# disclosure with its separators rewritten names a directory that does not
-# exist, which is #1378's complaint. Everything non-printable is replaced
-# instead: JSON forbids a raw control character inside a string, and a
-# `\u00XX` escape cannot be built by parameter expansion. Under a non-UTF-8
-# locale `[[:print:]]` is byte-wise, so a non-ASCII path degrades to one `?`
-# per byte - legible loss, and still a document that parses.
+# The order of the passes is load-bearing: the backslash pass has to run
+# before every other, or it doubles the backslashes those write. Backslash and
+# quote are *escaped* rather than replaced, so `C:\venv\Scripts` stays the path
+# it is - a Windows disclosure with its separators rewritten names a directory
+# that does not exist, which is #1378's complaint.
+#
+# **Newline, carriage return and tab are escaped rather than replaced** since
+# #1625, and that is not cosmetic: `guard_refusal` is a multi-line document and
+# it now reaches JSON through this function rather than through Python's
+# `json.dumps`. Replacing its line breaks with `?` would flatten the one
+# message a caller actually has to read into a single unreadable line - the
+# fix's own legibility regression, on the path that matters most.
+#
+# Everything else non-printable is still replaced: JSON forbids a raw control
+# character inside a string, and a `\u00XX` escape cannot be built by parameter
+# expansion. Under a non-UTF-8 locale `[[:print:]]` is byte-wise, so a
+# non-ASCII path degrades to one `?` per byte - legible loss, and still a
+# document that parses.
 _json_string() {
     JSON_STRING=${1//\\/\\\\}
     JSON_STRING=${JSON_STRING//\"/\\\"}
+    JSON_STRING=${JSON_STRING//$'\n'/\\n}
+    JSON_STRING=${JSON_STRING//$'\r'/\\r}
+    JSON_STRING=${JSON_STRING//$'\t'/\\t}
     JSON_STRING=${JSON_STRING//[![:print:]]/?}
 }
 
-# Every sink goes through here, present and future: escaping inside `decline`
-# rather than at its four call sites is what stops a fifth call site
-# reintroducing this.
-decline() {
-    _json_string "$1"
-    printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"supertool raw-command guard did not run: '"$JSON_STRING"'. The command was allowed - this is a statement about the guard, not about the command."}}'
+#: One newline, so the parameter expansions below can name it.
+NL='
+'
+
+#: One carriage return, for the reason `relay` gives.
+CR=$'\r'
+
+# The three envelopes this script may write, and the only three there are.
+#
+# **Nothing outside these functions prints a document** (#1625). That is the
+# whole property: `permissionDecision` appears once in this file, as a literal
+# next to the one value it may hold, and every field name is a byte written
+# here rather than relayed. A rung supplies text, never structure, and the text
+# goes through `_json_string` on its way in.
+#
+# The cost, stated rather than discovered later: a field Claude Code adds to
+# the PreToolUse protocol has to be added here as well as in
+# `hooks/pre_bash_guard.py`, and until it is, it cannot be emitted. That is
+# the trade re-serialising makes - an open channel into someone else's schema,
+# exchanged for a closed one this repository owns both ends of.
+# shellcheck disable=SC2329  # reached through `relay`, itself a callback
+_silent() {
+    printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse"}}'
     exit 0
+}
+
+_note() {
+    _json_string "$1"
+    printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"'"$JSON_STRING"'"}}'
+    exit 0
+}
+
+# shellcheck disable=SC2329  # reached through `relay`, itself a callback
+_deny() {
+    _json_string "$1"
+    printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"'"$JSON_STRING"'"}}'
+    exit 0
+}
+
+# Every sink goes through here, present and future: escaping inside `_note`
+# rather than at this function's five call sites is what stops a sixth call
+# site reintroducing #1613.
+decline() {
+    _note "supertool raw-command guard did not run: $1. The command was allowed - this is a statement about the guard, not about the command."
+}
+
+# relay ANSWER - the envelope this script writes for a rung's answer.
+#
+# The answer is a verb line and then, from the second line to the end, the
+# text. `$(...)` has already stripped the trailing newline, so an answer with
+# no newline at all is `silent` with nothing after it rather than a truncation.
+#
+# **A verb this script does not know is declined, not dropped and not
+# forwarded.** It cannot be forwarded - that is the defect. It must not be
+# dropped either: a wrapper and a `pre_bash_guard.py` from different installs
+# disagreeing about the vocabulary would otherwise turn every Bash call into a
+# gate that silently said nothing, which is the fail-open this file's header
+# opens by refusing. So it takes the same disclosed-allow the ladder's own
+# failures take, and names the dialect it could not read. The verb is
+# rung-controlled, so it is cut to a length and escaped like any other text.
+# shellcheck disable=SC2329  # reached from `attempt`, itself a callback
+relay() {
+    _verb=${1%%"$NL"*}
+    _verb=${_verb#"$WIRE_PREFIX"}
+    # A stray carriage return is a verb, not a dialect. `pre_bash_guard.py`
+    # writes bytes rather than text precisely so Windows cannot put one here,
+    # but this wrapper also runs under Git Bash against whatever `py -3`
+    # resolves to, and a `deny` silently demoted to a disclosed allow by a
+    # line ending is the worst failure available on this path. Stripping it
+    # reads the verb that was sent; it cannot turn an unknown dialect into a
+    # known one.
+    _verb=${_verb%"$CR"}
+    _text=${1#*"$NL"}
+    if [ "$_text" = "$1" ]; then
+        _text=
+    fi
+    case "$_verb" in
+        silent) _silent ;;
+        note)   _note "$_text" ;;
+        deny)   _deny "$_text" ;;
+    esac
+    decline "the interpreter answered '${_verb:0:60}', which is not a verdict this wrapper knows how to write, so its answer was refused rather than relayed"
 }
 
 # Resolved from this script's own directory, not from `CLAUDE_PLUGIN_ROOT`:
@@ -135,25 +237,25 @@ attempt() {
     out=$(printf '%s' "$EVENT" | "$@" "$BIN")
     rc=$?
     case "$out" in
-        "$ENVELOPE_PREFIX"*)
-            # An envelope identifies a Python 3 that ran — but a *prefix* of
-            # one is what an interpreter killed part-way through
+        "$WIRE_PREFIX"*)
+            # The prefix identifies a Python 3 that ran — but a *prefix* of an
+            # answer is what an interpreter killed part-way through
             # `sys.stdout.write` leaves behind, and the prefix test accepts
-            # it. Forwarding that fragment is unparseable to Claude Code, so
-            # there is no decision and no `additionalContext` at all: the
-            # silent fail-open this file's header exists to refuse.
+            # it. A fragment is a verb this wrapper cannot read, so relaying
+            # one would buy a disclosed allow about a rung that was answering
+            # correctly until it died — a worse diagnosis than the one below,
+            # which names the interpreter.
             #
             # Every path through `pre_bash_guard.py` returns 0, so a rung that
-            # wrote a whole envelope exited 0 by construction. Requiring that
+            # wrote a whole answer exited 0 by construction. Requiring that
             # is not the pre-#1377 shape returning: a rung that fails is still
             # only recorded, and the walk still continues to the next name. It
-            # costs the case of a whole envelope followed by a non-zero exit
+            # costs the case of a whole answer followed by a non-zero exit
             # for some unrelated reason, whose answer is dropped — bash cannot
             # tell that from a fragment, and dropping it buys a disclosed
             # decline where forwarding it buys silence.
             if [ "$rc" -eq 0 ]; then
-                printf '%s' "$out"
-                exit 0
+                relay "$out"
             fi
             # Sticky, and deliberately not folded into LAST_TRIED below. A
             # rung that began an answer and died is a specific, actionable

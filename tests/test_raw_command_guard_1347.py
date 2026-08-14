@@ -38,6 +38,8 @@ from typing import Any, Dict
 
 import pytest
 
+import _guard_wire
+
 import supertool
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -560,7 +562,11 @@ def _run_hook(command: str, cwd: Path) -> Dict[str, Any]:
         input=payload, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(cwd), env=env, timeout=60)
     assert proc.returncode == 0, proc.stderr
-    return json.loads(proc.stdout) if proc.stdout.strip() else {}
+    # The hook writes a verb line since #1625; the wrapper turns it into the
+    # envelope, and `_guard_wire` is that serialisation. The old `else {}` arm
+    # is gone with it: empty stdout is a hook that did not answer, and reading
+    # it as an empty envelope is this repo's house defect inside its own tests.
+    return _guard_wire.envelope(proc.stdout)
 
 
 def test_the_hook_denies_a_replaced_command(tmp_path):

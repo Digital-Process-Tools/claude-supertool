@@ -37,6 +37,8 @@ from pathlib import Path
 
 import pytest
 
+import _guard_wire
+
 import supertool
 
 NL = chr(10)
@@ -180,7 +182,7 @@ def test_the_file_on_disk_route_reaches_the_hook(tmp_path):
         input=payload, capture_output=True, text=True, encoding="utf-8",
         errors="replace", cwd=str(sub), env=env, timeout=60)
     assert proc.returncode == 0, proc.stderr
-    hook = json.loads(proc.stdout)["hookSpecificOutput"]
+    hook = _guard_wire.envelope(proc.stdout)["hookSpecificOutput"]
     assert hook["permissionDecision"] == "deny", proc.stdout
     for line in hook["permissionDecisionReason"].split(NL):
         assert line == "" or line.startswith(_TOOL_LINE_PREFIXES), (

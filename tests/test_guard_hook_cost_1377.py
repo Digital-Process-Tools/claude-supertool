@@ -43,6 +43,8 @@ from pathlib import Path
 
 import pytest
 
+import _guard_wire
+
 from test_guard_interpreter_ladder_1390 import _BASH, needs_wrapper
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -97,7 +99,7 @@ def test_a_replaced_command_still_imports_and_still_denies(project):
     proc = _hook_in_a_fresh_interpreter("git push", project)
     assert proc.returncode == 0, proc.stderr
     assert proc.stderr.endswith("IMPORTED"), proc.stderr[-400:]
-    hook = json.loads(proc.stdout)["hookSpecificOutput"]
+    hook = _guard_wire.envelope(proc.stdout)["hookSpecificOutput"]
     assert hook.get("permissionDecision") == "deny", proc.stdout
 
 
@@ -109,7 +111,7 @@ def test_a_command_naming_nothing_replaced_never_imports_supertool(project):
         "match: " + proc.stderr[-400:])
     # Byte-identical to what the slow path writes on a clean command, so the
     # saving is invisible to the caller rather than a second dialect.
-    assert json.loads(proc.stdout) == {
+    assert _guard_wire.envelope(proc.stdout) == {
         "hookSpecificOutput": {"hookEventName": "PreToolUse"}}, proc.stdout
 
 
@@ -128,7 +130,7 @@ def test_a_project_that_declares_replaces_turns_the_fast_path_off(tmp_path):
     proc = _hook_in_a_fresh_interpreter("hexdump -C /etc/hosts", tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert proc.stderr.endswith("IMPORTED"), proc.stderr[-400:]
-    hook = json.loads(proc.stdout)["hookSpecificOutput"]
+    hook = _guard_wire.envelope(proc.stdout)["hookSpecificOutput"]
     assert hook.get("permissionDecision") == "deny", proc.stdout
 
 
@@ -158,7 +160,7 @@ def test_a_user_level_preset_is_not_invisible_to_the_screen(tmp_path):
     proc = _hook_in_a_fresh_interpreter("hexdump -C /etc/hosts", project, home)
     assert proc.returncode == 0, proc.stderr
     assert proc.stderr.endswith("IMPORTED"), proc.stderr[-400:]
-    hook = json.loads(proc.stdout)["hookSpecificOutput"]
+    hook = _guard_wire.envelope(proc.stdout)["hookSpecificOutput"]
     assert hook.get("permissionDecision") == "deny", proc.stdout
 
 
