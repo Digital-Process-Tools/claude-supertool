@@ -77,8 +77,11 @@ class TestAHelpTokenInAValueSlotIsNotAHelpRequest:
         "git commit --message -h",
         # `--help` is no safer in a value slot than `-h` is.
         "git commit -m --help",
-        # `-o` is `git push --push-option`. This one pushes.
-        "git push origin -o -h main",
+        # `-o` is `git push --push-option`. This one pushes. Written without a
+        # refspec since #1684: `origin -o -h main` is un-claimed on arity
+        # before the help classifier is reached, so it would pass this row
+        # while saying nothing about a help token in a value slot.
+        "git push origin -o -h",
         # Behind a global option, so the normaliser has to run first (#1421).
         "git -C /tmp/x commit -m -h",
     ])
@@ -151,7 +154,8 @@ class TestAntiVacuity:
 
     @pytest.mark.parametrize("cmd", [
         "git commit -m x",
-        "git push origin main",
+        # `git push origin main` until #1684 — see the note above.
+        "git push origin",
         "gh issue list --state open",
         "git -C /tmp/x commit -m x",
     ])

@@ -131,7 +131,9 @@ class TestOverTheShippedPresets:
 
     @pytest.mark.parametrize("cmd", [
         "gh pr create -t x -b y -B master",
-        "git push origin HEAD",
+        # `git push origin HEAD` until #1684: a refspec un-claims the entry on
+        # arity, so it would no longer be an anti-vacuity control.
+        "git push origin",
         "gh issue list --state open",
     ])
     def test_a_real_invocation_is_still_refused(self, shipped_presets, cmd):

@@ -76,9 +76,22 @@ class TestEveryCommandCalledAWrongBlockIsBlocked:
         assert {name for name, _ in found} == set(_SOURCES), found
 
     @pytest.mark.parametrize("name,command", list(_claimed_wrong_blocks()))
-    def test_it_blocks(self, shipped_presets, name, command):
+    def test_it_is_never_silently_allowed(self, shipped_presets, name,
+                                          command):
+        """`blocked` or `uncovered` — never `clean` (#1684).
+
+        The property is that a text calling a command a wrong block is not
+        describing one the guard waves through in silence. Since #1684 there
+        is a third answer, and for `git push origin -o -h main` it is the one
+        that makes the wrong block stop being wrong: the refspec un-claims the
+        entry on arity before the help classifier decides anything, so the
+        command is allowed WITH a disclosure. `CHANGELOG.md` is a released
+        record and still carries the old spelling, which is why this asserts
+        the property rather than the verdict.
+        """
         verdict = supertool.guard_command(command)
-        assert verdict.state == "blocked", (name, command, verdict)
+        assert verdict.state in ("blocked", "uncovered"), (name, command,
+                                                           verdict)
 
 
 class TestTheOldExampleAndItsReplacement:
@@ -93,9 +106,25 @@ class TestTheOldExampleAndItsReplacement:
 
     def test_the_replacement_is_the_case_the_trade_off_is_about(
             self, shipped_presets):
-        verdict = supertool.guard_command("git push origin -o -h main")
+        verdict = supertool.guard_command("git push origin -o -h")
         assert verdict.state == "blocked", verdict
         assert any("value" in note for note in verdict.notes), verdict
+
+    def test_the_longer_spelling_is_no_longer_the_trade_off(
+            self, shipped_presets):
+        """`main` made it a refspec push, which #1684 un-claims on arity.
+
+        Pinned because CHANGELOG.md and this file's own docstring still quote
+        the longer command. The ambiguous-help-slot note does NOT ride along,
+        and that is right rather than an omission: it reads "was not read as
+        un-claiming the op named above", and in an `uncovered` verdict no op
+        is named above — the entry declined the invocation before the help
+        classifier had anything to decide.
+        """
+        verdict = supertool.guard_command("git push origin -o -h main")
+        assert verdict.state == "uncovered", verdict
+        assert not any("help flag" in note for note in verdict.notes), verdict
+        assert "git-push" in " ".join(verdict.uncovered), verdict
 
 
 class TestAProjectEntryWhoseDashHIsARealOption:

@@ -44,7 +44,7 @@ Four of these thirteen ops declare the raw invocation they supersede as `replace
 
 **A terminal option is `OK`, not blocked.** `git --version`, `--html-path`, `--man-path`, `--info-path` and a bare `--exec-path` answer and exit, so the subcommand written after one is never dispatched: `git --version status` prints `git version 2.46.2` and `status` never runs. Scoring it as `git status` was a wrong block on a command git does not execute ([#1437](https://github.com/Digital-Process-Tools/claude-supertool/issues/1437)). `OK` rather than `UNDECIDED` because `UNDECIDED` asserts the guard could not read what would run, and here it could — these tokens have one arity and it ends the command. `--exec-path=P` has the other arity and does run the subcommand, so it is in no list and stays `UNDECIDED`. The same applies to `gh --version pr view 1` and `glab --version mr view 1`, which their own binaries refuse outright.
 
-Two consequences for the table below. **`git -C W tag v1` still runs**, because `tag` is what the walk lands on and nothing maps it — a normaliser with a wrong option table is exactly what would swallow it, which is why the table is explicit rather than heuristic. And **`git -C W push origin v1.2.3` is blocked**, for the same reason `git push origin v1.2.3` already was: the bare `git push` entry cannot discriminate on a positional's value. Leaving the prefixed spelling clean would have made `-C` a documented bypass for the one op here that can destroy someone else's commits.
+Two consequences for the table below. **`git -C W tag v1` still runs**, because `tag` is what the walk lands on and nothing maps it — a normaliser with a wrong option table is exactly what would swallow it, which is why the table is explicit rather than heuristic. And **`git -C W push origin v1.2.3` reaches the same verdict as `git push origin v1.2.3`** — `NOT COVERED` since [#1684](https://github.com/Digital-Process-Tools/claude-supertool/issues/1684), `BLOCKED` before it. The consistency is the point either way. Leaving the prefixed spelling clean would have made `-C` a documented bypass for the one op here that can destroy someone else's commits.
 
 An option in none of the three lists — `git --exec-path=P status`, `git --zonk status`, or anything git adds after this was written — is `UNDECIDED`, never a guess. The command runs and the guard says it could not read it.
 
@@ -65,11 +65,22 @@ An option in none of the three lists — `git --exec-path=P status`, `git --zonk
 
 **A short flag in the left column covers its clustered spellings.** `-s` excludes `git status -sb`, which is how most people actually spell it — see [A clustered short flag is read as its letters](#a-clustered-short-flag-is-read-as-its-letters).
 
-### `git push origin <tagname>` is blocked, and that is the one wrong block here
+### `git push <remote> <ref>` is not blocked — it is `NOT COVERED`, and says so
 
-It is discriminated by the **value of a positional**. `origin master` and `origin v0.34.0` are the same argv shape, the same arity and the same token classes; telling them apart means asking the repository whether a ref is a tag, at guard time, before the command runs. No `unless_flag` keyed on tokens can express that, so the bare `git push` entry claims both and the refusal names `git-push`, which does not do tags.
+This section read "`git push origin <tagname>` is blocked, and that is the one wrong block here" until [#1684](https://github.com/Digital-Process-Tools/claude-supertool/issues/1684), which was filed by someone who hit it cutting a tag. It was worse than a wrong block. **`git-push` pushes the current branch**, so a caller who obeyed that refusal published a ref they never named — a no-op there, a force-with-lease on a stale branch elsewhere — the command reported success, and the tag still did not exist.
 
-It is disclosed rather than avoided because the alternative is worse in the direction that costs more. Declaring nothing leaves the entire family ungated — the status quo #1384 was filed about — and the routes past this one block are ordinary: `git push --tags` and `--follow-tags` are excluded above and work on any forge, and on GitHub the documented route is `gh api -X POST .../git/refs`. Pinned by `tests/test_git_replaces_1384.py`.
+The discrimination this section called impossible is not the one that was needed. `origin master` and `origin v0.34.0` genuinely cannot be told apart without asking the repository whether a ref is a tag; **neither has to be**, because both name an explicit refspec and `git-push` names none. Every `git push` entry now declares `"unless_args": 1` — a remote is still claimed, a refspec is not — and the arity is read off the argv with no question put to git.
+
+An un-claimed invocation is **disclosed, not silent**:
+
+```text
+NOT COVERED: `git push origin v0.2.0` carries `origin`, `v0.2.0` past the `git push`
+that `git-push` replaces, and that op takes none of them: no op covers this form, so
+raw `git` is correct here and nothing was blocked. `git-push` is the same invocation
+without them, if that is what you meant.
+```
+
+**What it costs.** `git push origin master` is no longer refused either — a missed block on a command the op does answer when you happen to be on `master`. That is the direction this guard is allowed to be wrong in: a wrong block has no per-command escape short of `raw_command_guard: false`, which disarms every mapping in the repository. Pinned by `tests/test_guard_positional_arity_1684.py` and `tests/test_git_replaces_1384.py`.
 
 ### A dry run is never answered by the op that does it
 
@@ -102,7 +113,7 @@ Each is a decision, and each is pinned as an absence in `tests/test_git_replaces
 | Op | Why its raw form is not claimed |
 |---|---|
 | `git-diff` | raw `git diff` spans revision ranges, machine formats and pathspecs `git-diff` has no spelling for, and a range carries no flag to exclude it by |
-| `git-checkout` | `git checkout <arg>` is two operations sharing one name and the op refuses the pathspec one ([#756](https://github.com/Digital-Process-Tools/claude-supertool/issues/756)) — the same positional-value discrimination as the tag push |
+| `git-checkout` | `git checkout <arg>` is two operations sharing one name and the op refuses the pathspec one ([#756](https://github.com/Digital-Process-Tools/claude-supertool/issues/756)). An entry is now expressible — `"unless_args": 1` declines `git checkout REF -- PATH`, the file restore, exactly as it declines a refspec push ([#1684](https://github.com/Digital-Process-Tools/claude-supertool/issues/1684)) — but none is declared, so nothing here is blocked |
 | `git-merge` | `git merge --abort` / `--continue` are what `git-conflicts` itself prints as its hint, and `--no-ff` / `--squash` / `-X` have no op spelling |
 | `git-trail` | its raw form is `git log -S`, and a clustered `-Spattern` is not the flag `-S`, so a mapping would fire on one spelling and not the other |
 | `git-blame` | the op needs a `LINE`; whole-file `git blame` has no replacement |
