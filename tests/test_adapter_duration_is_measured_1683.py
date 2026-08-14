@@ -7,8 +7,8 @@ wall arm. #1604 is that clause working: `ruby-check`'s `TimeoutExpired` escaped
 into a handler hardcoding `duration_ms: 0`, and a real 30-second wall was
 refused classification.
 
-**The clause is meaningful; the number is what made it unenforceable.** Twelve
-adapters wrote the budget itself into the timeout arm -- `30000`, `120000`,
+**The clause is meaningful; the number is what made it unenforceable.**
+Thirteen adapters wrote the budget itself into the timeout arm -- `30000`, `120000`,
 `TIMEOUT_S * 1000` -- so the value the classifier reads was a constant the same
 file wrote. That satisfies the floor by construction, and it satisfies it
 *whatever happened*: an adapter whose routing sent a 12ms failure down the
@@ -131,8 +131,13 @@ def _fabricated_durations(source: str):
 
 
 def _adapters():
+    """Every `validators/*/*.py` -- the 36 adapters and the 4 shared helpers
+    under `common/`. The helpers are swept rather than filtered out: one of
+    them, `refusal.py`, builds the `skipped` and `absent` payloads several
+    adapters emit, so a fabricated duration could be written there once and
+    reach all of them."""
     found = sorted(VALIDATORS.glob("*/*.py"))
-    assert found, "no adapters found -- the sweep below would pass vacuously"
+    assert found, "no files found -- the sweep below would pass vacuously"
     return found
 
 
