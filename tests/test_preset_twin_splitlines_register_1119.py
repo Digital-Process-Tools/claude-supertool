@@ -55,8 +55,13 @@ REGISTER: dict[str, str] = {
     # by the tool. split_lines decides the boundary, _untrusted.flat spells the
     # separator, and neither happens.
     "presets/github/pr_create.py::main":
-        "gh's stdout, scanned for a URL. The extracted value is printed, not "
-        "parsed.",
+        "gh's stdout, scanned for a URL. splitlines() consumes the separators, "
+        "so no line here can be forged and that half still holds. It does not "
+        "consume ESC — and 'printed, not parsed' answered only the forgery "
+        "question while the value went to column 0 six times (URL:, PR: and "
+        "the three ## Next commands via `number`, and this op's own [result]). "
+        "Narrowed by #1660: the split stays, the value is _untrusted.flat()ed "
+        "at the seam, pinned by test_gh_pr_create_url_control_chars_1660.py.",
     "presets/github/batch_follow.py::main":
         "a local file the caller passed in. A stray separator yields a "
         "username that 404s visibly rather than a forged record.",

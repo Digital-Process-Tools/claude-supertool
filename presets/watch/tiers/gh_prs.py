@@ -410,21 +410,7 @@ def scope_label(filters: dict[str, str], repo: str) -> str:
 
 def repo_name() -> str:
     """`owner/name` this board is about — the target, or the cwd's clone."""
-    target = _repo_target.target()
-    if target:
-        return str(target)
-    try:
-        r = subprocess.run(["gh", "repo", "view", "--json", "nameWithOwner"],
-                           capture_output=True, text=True, timeout=20,
-                           encoding="utf-8", errors="replace")
-    except (OSError, subprocess.SubprocessError):
-        return "?"
-    if r.returncode != 0:
-        return "?"
-    try:
-        return str(json.loads(r.stdout).get("nameWithOwner") or "?")
-    except (json.JSONDecodeError, AttributeError):
-        return "?"
+    return _repo_target.effective_slug(timeout=20) or "?"
 
 
 # ---------------------------------------------------------------------------

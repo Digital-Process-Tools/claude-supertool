@@ -58,6 +58,9 @@ import sys
 from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, Optional, Sequence, Tuple
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _repo_target  # noqa: E402  (the repo this call is about, when not cwd's)
+
 HOLDS = "holds"
 CONTRADICTED = "contradicted"
 UNCHECKED = "couldn't check"
@@ -652,19 +655,22 @@ def _memo(thunk: Callable[[], Optional[str]]) -> Callable[[], Optional[str]]:
 
 
 def _repo_slug(root: Path) -> Optional[str]:
-    env = os.environ.get("SUPERTOOL_REPO")
-    if env:
-        return env
-    try:
-        proc = _run(["gh", "repo", "view", "--json", "nameWithOwner"], timeout=15)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if proc.returncode != 0:
-        return None
-    try:
-        return str(json.loads(proc.stdout).get("nameWithOwner") or "") or None
-    except ValueError:
-        return None
+    """`OWNER/NAME` for the repo an issue citation should be looked up in.
+
+    `None`, not `""`, and that is preserved rather than defended: every
+    consumer here tests it with `if slug:`, so the two were already the same
+    answer at this site — which is why #1701's two-state
+    `_repo_target.effective_slug` loses nothing by arriving underneath it.
+
+    The hand-rolled version this replaced read `os.environ["SUPERTOOL_REPO"]`
+    directly and so skipped `target()`'s rule that a blank export is absence,
+    not an empty target. A whitespace-only value became the slug, reached
+    `gh issue view --repo "   "`, and every issue citation in the document
+    rendered "couldn't check" against gh's complaint — while the cwd, which
+    could have answered, was never asked. `root` is unused and kept: two test
+    files monkeypatch this as a one-argument callable.
+    """
+    return _repo_target.effective_slug(timeout=15) or None
 
 
 def _root() -> Path:

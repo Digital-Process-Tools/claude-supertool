@@ -365,7 +365,14 @@ def main() -> int:  # noqa: C901
     url = ""
     for line in (result.stdout or "").splitlines():
         if "/pull/" in line:
-            url = line.strip()
+            # Flattened at the seam, not at each print. `str.splitlines()`
+            # consumes every line SEPARATOR, so no line here can be forged and
+            # #1652's argument holds — but it does not consume ESC, and this
+            # value is written at column 0 six times: `URL:`, `PR:` and the
+            # three `## Next` commands via `number`, and this op's own
+            # `[result]` verdict. That last one is the line #851/#853 exist to
+            # protect, and `number` inherits whatever the URL carried (#1660).
+            url = _untrusted.flat(line.strip())
             break
     number = url.rstrip("/").split("/")[-1] if url else "?"
 

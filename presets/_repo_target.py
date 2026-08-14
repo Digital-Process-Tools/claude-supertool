@@ -125,10 +125,12 @@ def cwd_slug(timeout: int = 15) -> str:
 
     A subprocess in a module that had none: this is where the question "which
     repository is this call about" already lives, and the alternative was a
-    sixth hand-rolled copy of `gh repo view --json nameWithOwner`. There are
-    five today (`github/labels.py`, `github/branch.py`, `github/pr_merge.py`,
-    `watch/tiers/gh_prs.py`, `claims/check.py`), returning three different
-    absence sentinels between them.
+    sixth hand-rolled copy of `gh repo view --json nameWithOwner`.
+
+    **Not the function a caller printing a header wants** — see
+    :func:`effective_slug`, which #1701 added after re-deriving the five copies
+    this docstring used to list. Three of them were migrated there; the other
+    two ask for a second field in the same call and are not copies of this.
     """
     if target():
         # The target is the answer, and reading the cwd would not improve it.
@@ -150,6 +152,39 @@ def cwd_slug(timeout: int = 15) -> str:
     if not isinstance(data, dict):
         return ""
     return str(data.get("nameWithOwner") or "")
+
+
+def effective_slug(timeout: int = 15) -> str:
+    """``OWNER/NAME`` this call is *about* — the target, else the cwd's, else ``""``.
+
+    The target-first sibling of :func:`cwd_slug`, and the difference between
+    them is the whole of #1701. `cwd_slug` answers *which repository is this
+    directory*, and under a `repo:` target it deliberately answers ``""``: its
+    caller :func:`api_path_for_display` substitutes the target itself, so
+    reading the cwd there would put the wrong repository into a command printed
+    for a human to paste. A caller that wants a slug for a **header** wants the
+    opposite precedence, because the target is the repository the call was made
+    about. So #1701 could not be closed by adopting `cwd_slug` at the five
+    sites it named; it needed this.
+
+    Three sites use it — `github/labels.py`, `watch/tiers/gh_prs.py` and
+    `claims/check.py` — and all three had already spelled it by hand as
+    `target() or <gh repo view>`. The other two the issue counted are not this
+    question: `github/branch.py::_repo_identity` and
+    `github/pr_merge.py::_repo_identity` read `nameWithOwner,defaultBranchRef`
+    in one call and return a third element carrying the error their `main()`
+    aborts on, so they already tell *could not ask* from *asked, got nothing*.
+    Handing them a two-state slug would trade a three-state answer for a
+    two-state one, which is this repo's own defect class arriving through a
+    cleanup. They keep their own reader, and that is why the count is three.
+
+    Two states here, not three, on evidence rather than on brevity: **no caller
+    of this consumes a reason.** Each keeps its own absence sentinel at its own
+    boundary — ``""``, ``"?"``, ``None`` — which is what each rendered before
+    #1701 and after it. A third state nobody reads is a render decision made in
+    the wrong module.
+    """
+    return target() or cwd_slug(timeout)
 
 
 def api_path_printable(suffix: str, timeout: int = 15) -> str:

@@ -421,20 +421,7 @@ def repo_name() -> str:
     a header that does not say which repo it came from is the same trap one
     layer out, and the `repo:OWNER/NAME` form makes the cwd a bad default guess.
     """
-    target = _repo_target.target()
-    if target:
-        return target
-    try:
-        r = _gh(["gh", "repo", "view", "--json", "nameWithOwner"], timeout=15)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return ""
-    if r.returncode != 0:
-        return ""
-    try:
-        d = json.loads(r.stdout)
-    except json.JSONDecodeError:
-        return ""
-    return str(d.get("nameWithOwner") or "") if isinstance(d, dict) else ""
+    return _repo_target.effective_slug(timeout=15)
 
 
 def group_of(name: str) -> str:
