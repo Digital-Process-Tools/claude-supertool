@@ -630,9 +630,13 @@ def default_branch_report(ref: str | None, repo: str) -> tuple[list[str], bool]:
     if err or runs is None:
         return [f"radar: {ref} — {branch.UNKNOWN}: {err or 'run list unreadable'}"], False
 
-    selected = branch.latest_per_workflow(runs, sha)
+    selected = branch.runs_on_sha(runs, sha)
     _prev_sha, prev_names = branch.previous_head(runs, sha)
-    missing = sorted(prev_names - set(selected))
+    # `missing_workflows`, not `prev_names - set(selected)`: the selection is
+    # keyed per run since #1640, so a workflow with two runs on the head is in
+    # neither key verbatim and the subtraction reported it as absent — a NOT
+    # GREEN on every tick, invented out of a spelling.
+    missing = branch.missing_workflows(prev_names, selected)
 
     fetched: dict = {}
     if selected:

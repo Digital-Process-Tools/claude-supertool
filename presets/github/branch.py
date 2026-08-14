@@ -14,10 +14,19 @@ success`, while the `tests` matrix on the same SHA was still `queued`. The
 statement "master is green" was true that morning and its method could not have
 told anyone if it hadn't been.
 
-So this op selects runs by **workflow identity**, never by recency, and its
-summary is **conjunctive**: green only when every workflow that ran on the head
-commit concluded and every leg of every one of them passed. One workflow's
-conclusion is never allowed to stand in for the commit's.
+So this op selects **every run on the head commit**, never by recency, and its
+summary is **conjunctive**: green only when every run on the head commit
+concluded and every leg of every one of them passed. One run's conclusion is
+never allowed to stand in for the commit's.
+
+The unit of that conjunction is the **run**, not the workflow name (#1640).
+GitHub's default code-scanning setup emits two distinct runs per push that
+share a `workflow_id`, a `path` and the name `gh` renders — so a dedupe keyed
+on any of those three drops one of them. On `d1bb0837` it dropped the run
+carrying `Analyze (actions)`, a leg no other run on that commit performed, and
+reported 18 legs where 21 existed. Attempts are a different axis and still
+collapse: `gh run rerun` reuses the run id and bumps `run_attempt`, so a
+superseded attempt is not a second run and never was.
 
 Four states, because collapsing any pair of them is this repository's house
 defect (`docs/validators.md` §"Declining instead of guessing"):
@@ -99,34 +108,129 @@ _GRACE = _checks.CHECK_CREATION_GRACE_SECS
 
 
 # ---------------------------------------------------------------------------
-# selection — by workflow identity, never by recency
+# selection — every run on the head commit, never by recency
 # ---------------------------------------------------------------------------
 
-def latest_per_workflow(runs: object, sha: str) -> dict:
-    """The newest run of each workflow **on this SHA**, keyed by workflow name.
-
-    Two filters, and both are load-bearing.
+def runs_on_sha(runs: object, sha: str) -> dict:
+    """Every run **on this SHA**, keyed by a label unique to the run (#1640).
 
     *By SHA*, because "the branch is green" is a claim about a commit, and a
     run on the previous head is a true statement about a commit the reader has
-    already moved past.
+    already moved past. That filter is unchanged and load-bearing.
 
-    *By workflow*, because that is the axis `--limit 1` collapses. Keeping the
-    newest run per workflow — highest `databaseId`, which GitHub allocates
-    monotonically — means a re-run supersedes the run it replaces, while a
-    *different* workflow never supersedes anything.
+    What is gone is the second one. This used to keep the newest run *per
+    workflow name*, justified as "a re-run supersedes the run it replaces" —
+    and that justification was wrong about the mechanism it named. A re-run is
+    a further **attempt on the same run object**: `gh run rerun` reuses the id
+    and bumps `run_attempt`, which is why `run_id_note()` already tells the
+    reader the tally counts the latest attempt only. Attempts and runs are two
+    axes, and collapsing the second in the name of the first silently dropped
+    real coverage: GitHub's default code-scanning setup emits **two runs per
+    push** sharing one `workflow_id`, one `path` and one rendered name, and on
+    `d1bb0837` the dropped one held `Analyze (actions)`, which no other run on
+    that commit performed.
+
+    So the population is enumerated rather than deduped, and the only
+    collapsing left is the one the old docstring claimed: entries sharing a run
+    id are attempts of one run, and the highest `run_attempt` wins.
+
+    The key is a **label**, not the raw id, because it is what the verdict
+    sentence, the shortfall lines and the table all name the row by, and
+    `31749711130` is not an answer to "what failed". A name with one run keeps
+    its bare name — every render and every name-keyed consumer is unchanged on
+    the ordinary commit. A name with two gets `NAME (run ID)` on both, so the
+    second row is visible and the reader can check the verdict against it.
+    Callers wanting the workflow names go through `workflow_names()`, which
+    reads them off the run objects rather than parsing them back out.
+
+    A run whose `databaseId` cannot be read is kept as its own entry rather
+    than merged into another: two runs that cannot be told apart are counted
+    twice and the conjunction gets stricter, which is the recoverable
+    direction. An unreadable id is `?` in the label and disambiguated by a
+    trailing ` #N` only if that collides too — a label collision must never be
+    the thing that drops a run.
     """
     if not isinstance(runs, list) or not sha:
         return {}
-    out: dict = {}
-    for r in runs:
+    by_id: dict = {}
+    order: list = []
+    for i, r in enumerate(runs):
         if not isinstance(r, dict) or r.get("headSha") != sha:
             continue
-        name = str(r.get("workflowName") or "?")
-        prev = out.get(name)
-        if prev is None or _run_id(r) >= _run_id(prev):
-            out[name] = r
+        rid = _run_id(r)
+        # An unreadable id cannot stand for identity — `-1` would merge every
+        # such run into one. Position makes each its own entry.
+        key = rid if rid >= 0 else ("unreadable", i)
+        prev = by_id.get(key)
+        if prev is None:
+            by_id[key] = r
+            order.append(key)
+        elif _attempt(r) >= _attempt(prev):
+            by_id[key] = r
+
+    counts: dict = {}
+    for key in order:
+        name = _workflow_name(by_id[key])
+        counts[name] = counts.get(name, 0) + 1
+
+    out: dict = {}
+    for key in order:
+        run = by_id[key]
+        name = _workflow_name(run)
+        if counts[name] == 1:
+            label = name
+        else:
+            rid = _run_id(run)
+            label = f"{name} (run {rid if rid >= 0 else '?'})"
+        if label in out:
+            n = 2
+            while f"{label} #{n}" in out:
+                n += 1
+            label = f"{label} #{n}"
+        out[label] = run
     return out
+
+
+def _workflow_name(run: object) -> str:
+    if not isinstance(run, dict):
+        return "?"
+    return str(run.get("workflowName") or "?")
+
+
+def _attempt(run: object) -> int:
+    """`run_attempt`, or ``-1`` when it cannot be read.
+
+    ``-1`` rather than a defaulted ``1``: an unreadable attempt must lose to a
+    readable one, so the entry that survives is the one whose supersession can
+    be established.
+    """
+    try:
+        return int(run.get("attempt"))  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError):
+        return -1
+
+
+def workflow_names(selected: dict) -> set:
+    """The distinct workflow names behind a selection, read off the runs.
+
+    The selection is keyed per run since #1640, so its keys are labels and a
+    name with two runs appears in neither key verbatim. Everything asking the
+    *workflow* question — the declared-set check, the previous-head comparison
+    — asks it here instead, and gets an answer that does not depend on how a
+    label was spelled.
+    """
+    return {_workflow_name(r) for r in (selected or {}).values()}
+
+
+def missing_workflows(prev_names, selected: dict) -> list:
+    """Workflow names that ran on the previous head and produced no run here.
+
+    A seam rather than `set(prev_names) - set(selected)` at each call site,
+    because that subtraction was written against name keys in three places and
+    two of them are in other files. Against labels it would report every
+    two-run workflow as absent — a NOT GREEN invented out of a spelling.
+    """
+    return sorted(set(prev_names or ()) - workflow_names(selected))
 
 
 def _run_id(run: object) -> int:
@@ -510,13 +614,15 @@ def scope_for(repo: str, sha: str,
     owner, name = _declared_legs.owner_repo(repo)
     declared, why = _declared_workflows.declared_at(owner, name, sha)
     if declared is None:
+        n_wf = len(workflow_names(selected))
         return (
-            scope_clause([], why, len(selected)),
+            scope_clause([], why, n_wf),
             [f"Declared workflow set at {sha[:7]}: UNESTABLISHED — {why}. The "
-             f"verdict above covers the {len(selected)} workflow(s) that "
+             f"verdict above covers the {n_wf} workflow(s) that "
              f"produced a run and cannot say whether that is all of them."],
             f"the declared workflow set at {sha[:7]} is UNESTABLISHED")
-    undispatched = [w for w in declared if w.get("name") not in selected]
+    present = workflow_names(selected)
+    undispatched = [w for w in declared if w.get("name") not in present]
     loud = [w for w in undispatched
             if _declared_workflows.is_push_triggered(w.get("triggers"))
             is not False]
@@ -524,7 +630,11 @@ def scope_for(repo: str, sha: str,
     if loud:
         unresolved = (f"{len(loud)} declared workflow(s) a push should reach "
                       f"produced no run on {sha[:7]}")
-    return (scope_clause(undispatched, "", len(selected)),
+    # Counted in workflows, not in runs: this clause says "this covers the N
+    # workflows that produced a run" and is compared by the reader against a
+    # declared *workflow* set. `len(selected)` is a run count since #1640, and
+    # the two differ on exactly the commit that issue is about.
+    return (scope_clause(undispatched, "", len(present)),
             undispatched_lines(undispatched), unresolved)
 
 
@@ -650,7 +760,7 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
                            "still expected. Waiting is the correct action.")
 
     n_legs = sum(len(v or []) for v in legs.values())
-    n_wf = len(selected)
+    n_runs = len(selected)
     if unreconciled:
         return (UNKNOWN, f"{UNKNOWN} — every one of the {n_legs} legs read on "
                          f"{short} passed, but the tally could not be squared "
@@ -660,9 +770,13 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
     # `scope` rides on the green and only on the green (#846). Every branch
     # above is a finding, and a reader looking at a finding is not clearing
     # anything — the scope of a clearance is what was over-claimed.
-    return (GREEN, f"{GREEN} — every workflow on {short} concluded and every "
-                   f"leg passed ({n_legs} legs across {n_wf} "
-                   f"{_agrees(n_wf, 'workflow', 'workflows')}).{scope}")
+    # Runs, not workflow names (#1640). The count on this line is the size of
+    # the population the conjunction actually covered, and naming it in
+    # workflows was how a commit carrying three runs cleared as "2 workflows"
+    # with one of them never read.
+    return (GREEN, f"{GREEN} — every run on {short} concluded and every "
+                   f"leg passed ({n_legs} legs across {n_runs} "
+                   f"{_agrees(n_runs, 'run', 'runs')}).{scope}")
 
 
 def _run_conclusion(run: object) -> str:
@@ -1019,9 +1133,11 @@ def run_id_note() -> str:
     return ("Run ids: `gh-run:<id>` for one run's legs, `gh run rerun <id>` to "
             "retry it. `attempt N` is GitHub's `run_attempt` — N > 1 means the "
             "run was re-run and the tally beside it counts the latest attempt "
-            "only, so legs from an earlier attempt are NOT in it. Only the "
-            "newest run of each workflow on this commit is listed, so the row "
-            "count is workflows, never attempts.")
+            "only, so legs from an earlier attempt are NOT in it. EVERY run on "
+            "this commit is listed, so the row count is runs, never attempts — "
+            "one workflow can have two runs on one commit (GitHub's default "
+            "code scanning emits two per push), and both then carry `(run "
+            "<id>)` in the first column and both must pass (#1640).")
 
 
 def _row(name: str, run: dict, jobs) -> str:
@@ -1107,7 +1223,7 @@ def main() -> int:
         print(err)
         return 1
 
-    selected = latest_per_workflow(runs, sha)
+    selected = runs_on_sha(runs, sha)
     if mode == MODE_COMMIT:
         # `--commit` returns one commit's runs, so there is no second commit in
         # the list to be the previous head. Branch mode's "ran last time and
@@ -1117,7 +1233,7 @@ def main() -> int:
         prev_sha, prev_names = "", set()
     else:
         prev_sha, prev_names = previous_head(runs, sha)
-    missing = sorted(prev_names - set(selected))
+    missing = missing_workflows(prev_names, selected)
 
     legs: dict = {}
     named: list = []
