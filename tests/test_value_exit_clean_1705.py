@@ -102,23 +102,74 @@ def test_the_batch_tally_does_not_blame_a_skipped_write(
 
 def test_an_op_may_declare_a_non_zero_value_clean(
         tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
-    """The meaning of each value is the op's to state, not this layer's to guess."""
-    supertool._CONFIG = _occupied(tmp_path, {"values": [0, 1], "clean": [1]})
+    """The meaning of each value is the op's to state, not this layer's to guess.
 
-    code = supertool.main(["probe"])
-    printed = capsys.readouterr().out
+    Both halves, in one test on purpose: `clean` is only load-bearing if the
+    same declaration answers differently for a value inside it and one outside.
+    Asserting the clean half alone passes on code that never reads `clean`.
+    """
+    declared = {"values": [0, 1, 2], "clean": [1]}
+    supertool._CONFIG = _occupied(tmp_path, declared)
 
-    assert code == 0, printed
+    clean_code = supertool.main(["probe"])
+    clean_printed = capsys.readouterr().out
+
+    supertool._CONFIG = _op(
+        tmp_path,
+        "import sys" + chr(10) + "print('cannot tell')" + chr(10) + "sys.exit(2)",
+        declared)
+
+    other_code = supertool.main(["probe"])
+    other_printed = capsys.readouterr().out
+
+    assert clean_code == 0, clean_printed
+    assert other_code != 0, other_printed
 
 
 def test_zero_is_clean_without_being_declared(
         tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    """An entry with no `clean` key at all: `0` clean, every other value not.
+
+    The non-zero half is what makes this a test — `0` exited 0 before #1705 too.
+    """
     supertool._CONFIG = _op(tmp_path, "print('idle')", VALUES)
 
-    code = supertool.main(["probe"])
-    printed = capsys.readouterr().out
+    idle_code = supertool.main(["probe"])
+    idle_printed = capsys.readouterr().out
 
-    assert code == 0, printed
+    supertool._CONFIG = _occupied(tmp_path, VALUES)
+
+    occupied_code = supertool.main(["probe"])
+    occupied_printed = capsys.readouterr().out
+
+    assert idle_code == 0, idle_printed
+    assert occupied_code != 0, occupied_printed
+
+
+def test_two_causes_of_one_exit_code_do_not_read_as_one_list(
+        tmp_path: Path) -> None:
+    """`" and "` between an "A, B or C" phrase and a second cause is unparseable.
+
+    The footer already enumerated three possible counter causes as an `or` list.
+    Appending the value-exit cause with `and` produced `a skipped write, a
+    rolled-back edit or a validator that could not run and an answer its op does
+    not declare clear to proceed (probe exited 1)` — a reader cannot tell whether
+    the last clause is a fourth alternative inside the `or` or a separate cause.
+    """
+    both = supertool._other_causes_phrase(True, ["probe exited 1"])
+
+    assert " run and an answer" not in both, both
+    assert "; " in both, both
+
+
+def test_the_causes_phrase_names_only_what_happened(tmp_path: Path) -> None:
+    """Each cause is stated only when the call actually had it."""
+    counters_only = supertool._other_causes_phrase(True, [])
+    values_only = supertool._other_causes_phrase(False, ["probe exited 1"])
+
+    assert "clear to proceed" not in counters_only, counters_only
+    assert "a skipped write" not in values_only, values_only
+    assert "probe exited 1" in values_only, values_only
 
 
 def test_a_malformed_clean_declaration_leaves_only_zero_clean(

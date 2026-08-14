@@ -26420,20 +26420,7 @@ def _main(argv: List[str]) -> int:
     # Only on a multi-op call, and only when the exit code is about to be 1 —
     # with one op there is no sibling to have lost, and on a clean batch the
     # line is noise on every call forever.
-    _other_causes = []
-    if counter_failure:
-        _other_causes.append("a skipped write, a rolled-back edit or a "
-                             "validator that could not run")
-    if _unclean_values:
-        # Named, not enumerated as possibilities: this one the call knows.
-        # De-duplicated so three calls to one op read as one cause rather than
-        # three, while two different ops still both get named.
-        _seen_unclean = list(dict.fromkeys(_unclean_values))
-        _other_causes.append(
-            "an answer its op does not declare clear to proceed ("
-            + ", ".join(_seen_unclean) + ")")
-    _other = " and ".join(_other_causes) if _other_causes else (
-        "a skipped write, a rolled-back edit or a validator that could not run")
+    _other = _other_causes_phrase(counter_failure, _unclean_values)
     if len(bodies) > 1 and any_failure:
         if (counter_failure or _unclean_values) and refused:
             # Both kinds of failure at once, and this is the branch that has to
@@ -26509,6 +26496,39 @@ def _main(argv: List[str]) -> int:
 # hunk headers against 0.0013s (#1279) — because this reads at most the first
 # few characters however large the receipt grows.
 _OP_VERDICT_FAIL = re.compile(r"(FAIL\b|ERROR:\s)")
+
+
+def _other_causes_phrase(counter_failure: bool, unclean_values: List[str]) -> str:
+    """Why exit 1, for the batch footer, naming only what this call actually had.
+
+    Two causes reach the exit code without being a refusal: the counters
+    (`_SKIP_COUNT`, `_ROLLBACK_COUNT`, `_NOT_CHECKED`) and a value-exit answer
+    the op does not declare clear to proceed (#1705).
+
+    Joined with `; ` and not `and`. The counter cause is itself an `A, B or C`
+    list of possibilities, so `… a validator that could not run and an answer
+    its op does not declare clear to proceed (…)` leaves a reader unable to tell
+    whether the last clause is a fourth alternative inside the `or` or a second,
+    separate cause — on the one branch whose whole job is to say the least.
+
+    With no cause at all the counter enumeration is returned unchanged: the
+    caller only reads this when the exit code is already 1, and the three
+    possibilities are what that sentence has always offered.
+    """
+    causes = []
+    if counter_failure:
+        causes.append("a skipped write, a rolled-back edit or a validator that "
+                      "could not run")
+    if unclean_values:
+        # Named, not enumerated as possibilities: this one the call knows.
+        # De-duplicated so three calls to one op read as one cause rather than
+        # three, while two different ops still both get named.
+        causes.append("an answer its op does not declare clear to proceed ("
+                      + ", ".join(dict.fromkeys(unclean_values)) + ")")
+    if not causes:
+        return ("a skipped write, a rolled-back edit or a validator that could "
+                "not run")
+    return "; ".join(causes)
 
 
 def _op_body_failed(body: str) -> bool:
