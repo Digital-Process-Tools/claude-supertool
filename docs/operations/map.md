@@ -45,7 +45,7 @@ src/SiProject/SiProjectPermissions.class.php (120 lines)
 
 ## Backend chain
 
-Three tiers — supertool picks the best available at first `map` call (result cached for the session):
+Three tiers, applied **per file**:
 
 | Tier | Trigger | What you get |
 |------|---------|--------------|
@@ -55,6 +55,21 @@ Three tiers — supertool picks the best available at first `map` call (result c
 
 Fallback between tiers is automatic and needs no configuration. Falling off the
 end of the chain, however, is stated out loud — see "When no tier can look".
+
+**A file falls to the next tier when the one above cannot look at it, not when
+it looks and finds nothing.** tree-sitter is consulted for an extension it has
+a grammar for; if that grammar is missing or fails to load, the file drops to
+ctags, and then to regex. A file tree-sitter *parsed* and found no definitions
+in does not drop — the answer is already known, and re-reading it in a ctags
+subprocess would cost ~40ms per file to arrive at the same empty list. On this
+repository's own tree, 14 of 100 mapped files are that case and none of them
+is one ctags could help with, which is why the gate is on blindness rather
+than on emptiness ([#913](https://github.com/Digital-Process-Tools/claude-supertool/issues/913)).
+
+Until #913 tier 2 was skipped for the whole run whenever tree-sitter merely
+*imported*, so the chain was really tree-sitter XOR ctags, then regex — and
+installing universal-ctags to cover a language tree-sitter lacks did nothing
+at all on any machine with the language pack present.
 
 ### Installing for richer output
 
@@ -112,6 +127,17 @@ $ ./supertool 'map:notes.rst'
 notes.rst (240 lines)
   (no symbol parser for .rst - tree-sitter and the regex tier have no .rst grammar)
 ```
+
+With `ctags` on PATH that same call now reaches tier 2 first, and the note
+records that it ran rather than that it exists:
+
+```
+  (no symbol parser for .rst - tree-sitter and the regex tier have no .rst grammar; ctags found nothing)
+```
+
+`; ctags found nothing` means ctags was invoked on this file and returned no
+tags. Its absence means ctags was not asked — either no binary on PATH, or a
+tier above had a grammar and answered.
 
 The report line reads `tier: none` when nothing in the run was parseable —
 naming a tier that never had a pattern to try would repeat the same mistake one
