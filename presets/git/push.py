@@ -120,8 +120,15 @@ _KNOWN_FLAGS = ("force-with-lease", "no-verify", "watch",
 
 # Default budget for this op's whole pushing phase, and the ceiling a caller
 # may raise it to with `:budget=SECONDS`. Both must stay strictly below the
-# git-push op timeout in presets/git.json so this script — not supertool's
-# outer cap — owns the timeout and can verify the remote before reporting.
+# git-push op timeout **as merged for the repository being pushed from** — the
+# shipped `presets/git.json` value, or whatever that repo's `.supertool.json`
+# overrode it with (#1631, #1659). This file used to name `presets/git.json` as
+# the place the number lives, and stopped being right about that the moment the
+# key became settable. The relation is what matters: this script — not
+# supertool's outer cap — owns the timeout, so it is alive to verify the remote
+# before reporting. `_budget_ceiling_refusal` is where it is enforced, for the
+# flag and for `ops.git-push.budget` alike; `_PUSH_TIMEOUT_MAX` is separately a
+# ceiling on how long a caller is made to wait, which no project timeout moves.
 # Since #1615 that relation actually holds on the recovery path too: it is one
 # deadline for both pushes and the fetch and rebase between them, where it used
 # to be a fresh clock per `git push` summing to `2N + 240`.
@@ -267,8 +274,19 @@ def _recover_allowance():
     `__radd__` starts the clock inside `subprocess.run` — that is the only way
     to say "expire after git reaches its helper" (#828, #844), and it orders
     itself against an int for this comparison.
+
+    **0 below `_RECOVER_MIN`, which is a decline and not a clamp** (#1649). The
+    `min` alone meant a push that spent 295s of 300 and was then rejected
+    non-fast-forward launched the fetch on 5s; it timed out, and the receipt read
+    `fetch TIMED OUT (5s)` — true about the fetch, false about the cause, since
+    nothing was ever going to complete. The caller of that receipt raises a
+    number that never cut. 0 routes to `_report_budget_spent`, which says how
+    many seconds were left and what the minimum is.
     """
-    return min(_RECOVER_TIMEOUT, _budget_left())
+    left = _budget_left()
+    if left < _RECOVER_MIN:
+        return 0
+    return min(_RECOVER_TIMEOUT, left)
 
 
 def _repush_allowance() -> int:
@@ -276,8 +294,17 @@ def _repush_allowance() -> int:
 
     Recorded in `_BUDGET["allowed"]` on the way past, so `_report_push_timeout`
     names the clock that cut rather than the budget it was cut from.
+
+    Floored at `_RECOVER_MIN` like the fetch and the rebase (#1649). A re-push is
+    a network call to the same remote plus whatever the pre-push hook runs, so if
+    a fetch is not worth launching on the remainder then this certainly is not —
+    and this is the arm where the tree has already been rebased, which makes an
+    honest decline worth more than an attempt.
     """
     left = _budget_left()
+    if left < _RECOVER_MIN:
+        _BUDGET["allowed"] = 0
+        return 0
     _BUDGET["allowed"] = left
     return left
 
@@ -287,6 +314,26 @@ def _repush_allowance() -> int:
 # not evidence about the remote and must never cost the caller the verdict
 # (#675).
 _CHECK_TIMEOUT = 30
+
+# The smallest recovery allowance worth handing to git (#1649). Below it the
+# step is declined rather than launched.
+#
+# **Derived, not picked.** `_CHECK_TIMEOUT` is what `_live_remote_sha` gets for a
+# `git ls-remote` — one network round-trip to this same remote, ref
+# advertisement and nothing else. A recovery fetch is that round-trip plus
+# negotiation plus a packfile, and the recovery re-push is that plus a hook, so
+# neither can be worth less. Measured against github.com from a fast link on
+# 2026-08-14: an already-current `git fetch origin master` took 1.77-2.02s, and
+# one that actually transferred (`--depth 200` onto a `--depth 1` clone) 4.33s.
+# So the 5s a nearly-spent budget used to hand the fetch is inside the noise of
+# the GOOD case, and 30s is this file's own standing statement of what a bad one
+# is worth.
+#
+# Deliberately not a per-step number. The fetch is the measured one; the rebase
+# is local and cheaper, and a floor that over-declines it errs into the safe
+# state — nothing fetched, nothing rebased, tree where the caller left it — with
+# a receipt that says a retry gets a fresh budget.
+_RECOVER_MIN = _CHECK_TIMEOUT
 
 
 # How far this run got, and whether it has already spoken. The receipt-level
@@ -420,10 +467,14 @@ def _parse_budget(argv: list[str]) -> tuple[Optional[int], str]:
     the caller believes otherwise, and here the belief is "I have twenty
     minutes" against a clock that cuts in five.
 
-    The ceiling exists because `_PUSH_TIMEOUT_MAX` has to stay strictly under
-    `ops.git-push.timeout` in presets/git.json. Past that cap supertool kills
-    this process, and a killed process cannot ask the remote what landed — the
-    verdict the whole timeout receipt is built to produce (#399).
+    **Two ceilings, and the smaller one binds** (#1659). The rule lives once,
+    in `_budget_ceiling_refusal`, and serves this path and `ops.git-push.budget`
+    alike. It used to live twice: #1631 made `ops.git-push.timeout` a value a
+    repository sets and taught the config path to check against the merged
+    entry, and this path was left checking the module constant alone. A project
+    lowering its op timeout to 60s could still ask here for 1700s, and supertool
+    then killed the child at 60 — the #399 outcome the ceiling text below
+    already said it existed to prevent.
     """
     seen: list[tuple[str, int]] = []
     for tok in argv:
@@ -446,15 +497,9 @@ def _parse_budget(argv: list[str]) -> tuple[Optional[int], str]:
         if seconds <= 0:
             return None, (f"`{tok.strip()}` — the budget must be a positive "
                           "number of seconds")
-        if seconds > _PUSH_TIMEOUT_MAX:
-            return None, (
-                f"`{tok.strip()}` — the most this op can wait is "
-                f"{_PUSH_TIMEOUT_MAX}s. It is not clamped to that: the ceiling "
-                f"has to stay strictly under ops.git-push.timeout in "
-                f"presets/git.json, because past that cap supertool kills this "
-                f"process and a killed push can verify nothing (#399). If a "
-                f"push really needs longer than {_PUSH_TIMEOUT_MAX}s, raise "
-                f"both.")
+        breach = _budget_ceiling_refusal(seconds, f"`{tok.strip()}`")
+        if breach:
+            return None, breach
         seen.append((tok.strip(), seconds))
     if not seen:
         return None, ""
@@ -553,6 +598,60 @@ def _merged_op_entry() -> dict:
         directory = parent
 
 
+def _budget_ceiling_refusal(seconds: int, subject: str,
+                            entry: Optional[dict] = None) -> str:
+    """`""` if `seconds` clears every ceiling, else the refusal naming which.
+
+    ONE implementation for `:budget=SECONDS` and for `ops.git-push.budget`
+    (#1659). Two of them is what produced the asymmetry: the same question,
+    answered against different facts, with the weaker answer on the path a
+    caller reaches by typing.
+
+    **Both ceilings are real and neither is the other one weakened.**
+
+    * `ops.git-push.timeout` is where **supertool** kills this process. Past it
+      there is no receipt at all, so a budget at or above it buys a bare
+      `FAIL (timeout)` for a push that may have landed (#399) — and on the
+      recovery path, the loss of the one line that would have said the worktree
+      is paused mid-rebase (#1615). It is read from the merged entry, because a
+      ceiling from a different read is not the ceiling that will do the killing.
+    * `_PUSH_TIMEOUT_MAX` is the longest this op makes **the caller** wait. A
+      repository raising its own `timeout` has said something about the process
+      cap and nothing about that, so this one does not become dead when the
+      flag starts honouring the other. It is the reason the effective ceiling is
+      the smaller of the two rather than whichever the config happens to name.
+
+    `subject` is the caller's own words for the value, up to the dash — a token
+    for the flag, a config key for the file — so one message reads correctly on
+    both paths without either path restating the reasoning.
+    """
+    entry = _merged_op_entry() if entry is None else entry
+    cap_key = f"ops.{_OP_NAME}.timeout"
+    if seconds > _PUSH_TIMEOUT_MAX:
+        return (f"{subject} — the most this op can wait is "
+                f"{_PUSH_TIMEOUT_MAX}s. It is not clamped to that: a budget "
+                f"has to stay strictly under {cap_key}, because past that cap "
+                f"supertool kills this process and a killed push can verify "
+                f"nothing (#399) — and {_PUSH_TIMEOUT_MAX}s is separately the "
+                f"longest this op will make you wait, which raising {cap_key} "
+                f"does not change. Ask for less, or raise both.")
+    cap = entry.get("timeout")
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
+        return (f"{subject}, but {cap_key} did not read as a positive whole "
+                f"number of seconds ({_untrusted.flat(repr(cap))}), so the "
+                f"budget could not be checked against it. Refused rather than "
+                f"assumed safe: a budget that is not strictly under the op "
+                f"timeout is killed by supertool's outer cap, and a killed "
+                f"push can verify nothing (#399).")
+    if seconds >= cap:
+        return (f"{subject} and {cap_key} is {cap}s — the budget must be "
+                f"strictly UNDER the op timeout, because past that cap "
+                f"supertool kills this process and a killed push can verify "
+                f"nothing (#399). Raise {cap_key} above {seconds}s, or ask for "
+                f"less than {cap}s.")
+    return ""
+
+
 def _config_budget() -> tuple[Optional[int], str]:
     """`ops.git-push.budget` from the merged entry. `(seconds, refusal)`.
 
@@ -575,34 +674,15 @@ def _config_budget() -> tuple[Optional[int], str]:
     if raw is None:
         return None, ""
     key = f"ops.{_OP_NAME}.{_CONFIG_BUDGET_KEY}"
-    cap_key = f"ops.{_OP_NAME}.timeout"
     if isinstance(raw, bool) or not isinstance(raw, int):
         return None, (f"{key} is {_untrusted.flat(repr(raw))} — the budget must "
                       f"be a whole number of seconds, written as a JSON number.")
     if raw <= 0:
         return None, (f"{key} is {raw} — the budget must be a positive number "
                       f"of seconds.")
-    if raw > _PUSH_TIMEOUT_MAX:
-        return None, (f"{key} is {raw}s — the most this op can wait is "
-                      f"{_PUSH_TIMEOUT_MAX}s. It is not clamped to that: past "
-                      f"{cap_key} supertool kills this process, and a killed "
-                      f"push can verify nothing (#399). Raise both, or lower "
-                      f"this one.")
-    cap = entry.get("timeout")
-    if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
-        return None, (f"{key} is {raw}s, but {cap_key} did not read as a "
-                      f"positive whole number of seconds "
-                      f"({_untrusted.flat(repr(cap))}), so the budget could not "
-                      f"be checked against it. Refused rather than assumed "
-                      f"safe: a budget that is not strictly under the op "
-                      f"timeout is killed by supertool's outer cap, and a "
-                      f"killed push can verify nothing (#399).")
-    if raw >= cap:
-        return None, (f"{key} is {raw}s and {cap_key} is {cap}s — the budget "
-                      f"must be strictly UNDER the op timeout, because past "
-                      f"that cap supertool kills this process and a killed push "
-                      f"can verify nothing (#399). Raise {cap_key} above "
-                      f"{raw}s, or lower {key} below {cap}s.")
+    breach = _budget_ceiling_refusal(raw, f"{key} is {raw}s", entry)
+    if breach:
+        return None, breach
     return raw, ""
 
 
@@ -2095,9 +2175,24 @@ def _report_budget_spent(stage: str, branch: str, target: str,
     arm their branch has already been replayed onto the remote's tip — the same
     fact `_report_recovery_timeout` exists to state, arrived at by a clock
     rather than by a stall.
+
+    **Spent and nearly-spent are two sentences** (#1649). Since the allowance is
+    floored at `_RECOVER_MIN`, this is reached with seconds still on the clock —
+    and reporting those as "the budget was spent" would send the caller looking
+    for the 295s that went somewhere. It says the remainder and the minimum
+    instead, so the number they raise is the one that decides this.
     """
-    print(f"Status: NOT PUSHED ✗ — the {_push_budget()}s push budget was spent "
-          f"before {stage} could start")
+    left = _budget_left()
+    if left:
+        print(f"Status: NOT PUSHED ✗ — {left}s of the {_push_budget()}s push "
+              f"budget were left when {stage} was due to start, under the "
+              f"{_RECOVER_MIN}s minimum")
+        print(f"It was NOT attempted, and that is deliberate: nothing "
+              f"completes in {left}s, so launching it would have reported a "
+              f"timeout whose cause was this budget rather than the remote.")
+    else:
+        print(f"Status: NOT PUSHED ✗ — the {_push_budget()}s push budget was "
+              f"spent before {stage} could start")
     if rebased:
         print(f"Your branch is REBASED onto {target} — the rebase ran and was "
               "clean, and nothing was pushed. Your commits are replayed, not "
@@ -2108,14 +2203,16 @@ def _report_budget_spent(stage: str, branch: str, target: str,
         print("Your working tree is unchanged and your branch is where it "
               "was. Nothing was pushed.")
     print(_budget_advice())
+    remainder = (f"only {left}s of the {_push_budget()}s budget was left"
+                 if left else f"the {_push_budget()}s budget was gone")
     if rebased:
         _result(f"NOT PUSHED - BUDGET SPENT  {branch} -> {target} - rebased "
-                f"onto {target} cleanly, then the {_push_budget()}s budget was "
-                "gone before the re-push; retry `git-push`")
+                f"onto {target} cleanly, then {remainder} before the re-push; "
+                "retry `git-push`")
     else:
-        _result(f"NOT PUSHED - BUDGET SPENT  {branch} -> {target} - the "
-                f"{_push_budget()}s budget was gone before the recovery "
-                f"{stage}; working tree unchanged")
+        _result(f"NOT PUSHED - BUDGET SPENT  {branch} -> {target} - "
+                f"{remainder} before the recovery {stage}; working tree "
+                "unchanged")
     return 1
 
 
@@ -2528,8 +2625,6 @@ def _push_op() -> int:
             if "set-upstream" in flags:
                 retarget_from, upstream = upstream, ""
     has_upstream = bool(upstream)
-    remote_before, before_why = (_remote_sha(upstream) if has_upstream
-                                 else ("", ""))
     # Resolved before anything is printed, because a repo this op cannot pick a
     # remote for must not get as far as a push line (#656). `has_upstream` is
     # false both when the branch has no upstream and when the lookup did not
@@ -2561,6 +2656,16 @@ def _push_op() -> int:
     # reintroduce the hole by forgetting — and because `remote_name` also
     # reaches `ls-remote` and `_post_push_advisories` on the arm that does not
     # put it in the push argv at all.
+    #
+    # #1647: that sentence was false when it was written. `_remote_sha(upstream)`
+    # sat 33 lines ABOVE this call and handed the raw `@{upstream}` string to
+    # `git rev-parse --short`, so the first consumer of these values was already
+    # past the chokepoint. Harmless on `rev-parse`, which spawns no helper — but
+    # the property the comment states is exactly what makes it safe to add an arm
+    # without re-reading this function, so the guard moved above its first
+    # consumer rather than the sentence being edited down to match. Anything
+    # below this line may spend `remote_name`, `remote_ref` or `upstream`;
+    # nothing above it may.
     refuse = reject_fetch_option(remote_name, remote_ref)
     if refuse:
         print(f"Status: PUSH REJECTED ✗ — {refuse}")
@@ -2571,6 +2676,10 @@ def _push_op() -> int:
         _result(f"NOT PUSHED - REJECTED  {branch} -> {remote_name}/"
                 f"{remote_ref} - {refuse}")
         return 1
+    # Below the guard on purpose (#1647): `upstream` is the string these two
+    # were split out of, so a `rev-parse` on it is a consumer like any other.
+    remote_before, before_why = (_remote_sha(upstream) if has_upstream
+                                 else ("", ""))
     if has_upstream and remote_ref != branch and "to-upstream" not in flags:
         # @{upstream} resolved, but not to this branch's own name — a bare
         # push here is git's own ambiguity, not ours to guess through (#787).
