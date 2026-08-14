@@ -40,16 +40,24 @@ TAB = "\t"
 
 @pytest.fixture
 def adapter():
-    """A fresh import of the adapter per test.
+    """A fresh import of the adapter per test, and `sys.path` put back after.
 
     Loaded under a unique module name and never cached, so a test that
-    replaces `_awk_run` cannot leak that replacement into the next one — the
-    failure mode being a suite that passes because an earlier test left a stub
-    behind, which is this repo's defect wearing a fixture.
+    replaces `_awk_run` cannot leak that replacement into the next one.
+
+    **`sys.path` is snapshotted because importing an adapter mutates it.**
+    Every validator reaches its shared helpers with
+    `sys.path.insert(0, .../validators/common)` at module scope
+    (`jit-index.py:71`) — invisible in a subprocess, which is how adapters have
+    always been exercised, and permanent for the rest of the worker once one is
+    imported in-process. That is a hazard of importing an adapter at all, not
+    of this test, so it is contained here rather than left for the next file to
+    inherit.
     """
     import importlib.util
 
     name = "jit_index_1714_{0}".format(len(sys.modules))
+    saved_path = list(sys.path)
     spec = importlib.util.spec_from_file_location(name, ADAPTER)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -58,6 +66,7 @@ def adapter():
         yield module
     finally:
         sys.modules.pop(name, None)
+        sys.path[:] = saved_path
 
 
 posix_only = pytest.mark.skipif(
@@ -180,15 +189,19 @@ class TestOnAnyPlatform:
     any platform, with no subprocess at all.
     """
 
-    def test_a_timeout_before_anything_compiled_lists_every_pattern(self, adapter):
-        adapter._awk_run = lambda awk, patterns: (None, "awk did not answer within 10s")
+    def test_a_timeout_before_anything_compiled_lists_every_pattern(
+            self, adapter, monkeypatch):
+        monkeypatch.setattr(
+            adapter, "_awk_run",
+            lambda awk, patterns: (None, "awk did not answer within 10s"))
         rows = [(1, "alpha/", "paths"), (2, "beta/", "paths")]
         errors, unrun, unchecked = adapter._compile_findings("awk", rows)
         assert errors == []
         assert unrun == "awk did not answer within 10s"
         assert unchecked == [1, 2]
 
-    def test_a_stall_inside_the_second_pass_lists_only_what_is_left(self, adapter):
+    def test_a_stall_inside_the_second_pass_lists_only_what_is_left(
+            self, adapter, monkeypatch):
         calls = []
 
         def fake(awk, patterns):
@@ -199,8 +212,8 @@ class TestOnAnyPlatform:
                 return None, "awk could not be run: boom"
             return 2, "awk: syntax error"
 
-        adapter._awk_run = fake
-        adapter._awk_version = lambda awk: "fake awk"
+        monkeypatch.setattr(adapter, "_awk_run", fake)
+        monkeypatch.setattr(adapter, "_awk_version", lambda awk: "fake awk")
         rows = [(1, "alpha/", "paths"), (2, "beta/", "paths"), (3, "gamma/", "paths")]
         errors, unrun, unchecked = adapter._compile_findings("awk", rows)
 
@@ -208,16 +221,25 @@ class TestOnAnyPlatform:
         assert unrun == "awk could not be run: boom"
         assert unchecked == [2, 3], "the stalled pattern is unchecked too, not just the ones after it"
 
-    def test_a_clean_compile_reports_nothing_unchecked(self, adapter):
-        adapter._awk_run = lambda awk, patterns: (0, "")
+    def test_a_clean_compile_reports_nothing_unchecked(self, adapter, monkeypatch):
+        monkeypatch.setattr(adapter, "_awk_run", lambda awk, patterns: (0, ""))
         errors, unrun, unchecked = adapter._compile_findings("awk", [(1, "alpha/", "paths")])
         assert (errors, unrun, unchecked) == ([], None, [])
 
     def test_the_published_payload_carries_the_stall_beside_the_finding(
             self, adapter, tmp_path, capsys, monkeypatch):
         idx = _paths_index(tmp_path, r"presets/\w+/", "beta/")
-        adapter.shutil.which = lambda name: "awk"
-        adapter._awk_run = lambda awk, patterns: (None, "awk did not answer within 10s")
+        # `adapter.shutil` **is** `sys.modules["shutil"]`, not a per-module copy,
+        # so a plain assignment here replaces `shutil.which` for the whole
+        # worker and never puts it back. It did: every later test in the process
+        # got `which(<anything>) == "awk"`, `presets/git/_git_common.py:1139`
+        # read that as "glab is installed", and ten tests in
+        # tests/test_status_swallowed_705.py went red on 11 CI legs (#1718).
+        # monkeypatch restores it; a bare `=` on a module attribute cannot.
+        monkeypatch.setattr(adapter.shutil, "which", lambda name: "awk")
+        monkeypatch.setattr(
+            adapter, "_awk_run",
+            lambda awk, patterns: (None, "awk did not answer within 10s"))
         monkeypatch.setattr(sys, "argv", ["jit-index.py", str(idx)])
 
         adapter.main()
