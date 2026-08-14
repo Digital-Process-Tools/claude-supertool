@@ -8,7 +8,7 @@ so a U+2028 survives *inside* a relayed line and everything the reader anchors
 at column 0 becomes the writer's to choose.
 
 **The fix is at the seam, not at the sites.** Seven sites were named and the
-sweep below finds 160 sites in 34 files, which is what a per-site fix earns:
+sweep below finds 158 sites in 34 files, which is what a per-site fix earns:
 the same defect re-filed once per call. So
 
 * `_git_common._first_error_line` flattens what it returns. Every caller —
@@ -184,7 +184,7 @@ def test_a_tab_survives_the_commit_relay() -> None:
 # grows quietly — which is the failure mode of the thing it would be guarding".
 #
 # **So this is not a zero-assertion, and pretending otherwise is what would
-# make it useless.** Measured on this branch: 160 candidate sites in 34 files
+# make it useless.** Measured on this branch: 158 candidate sites in 34 files
 # across `presets/git`, `presets/github` and `presets/gitlab`. Not all are
 # defects — `push._local_head` returns `r.stdout.strip()`, and that is a SHA —
 # and closing them is four lanes of work this PR is not.
@@ -199,7 +199,7 @@ def test_a_tab_survives_the_commit_relay() -> None:
 # What it does NOT catch, said plainly: a relay added to a file with no row
 # here is caught (its count goes 0 → 1), but a relay added to `push.py` in the
 # same commit that fixes another one nets to 33 and passes. That is the price
-# of shipping a ratchet instead of a gate, and the gate costs 160 fixes first.
+# of shipping a ratchet instead of a gate, and the gate costs 158 fixes first.
 #
 # What it also does not catch is every *shape* — see `SINK_SHAPES` below, and
 # `UNRESOLVED` for the size of what it cannot see at all (#1626, #1570).
@@ -265,7 +265,14 @@ SINK_SHAPES = tuple(SHAPE_PROBES)
 #: `for line in _untrusted.split_lines(res.stdout)`: a loop over a child
 #: stream, already flattened, and unmodelled by this scan rather than
 #: unhandled by the product. Re-baselined after locating it, never before.
-UNRESOLVED = 105
+#:
+#: 105 -> 106 on 2026-08-14 (#1648). The added site is
+#: `presets/github/issue.py`'s `_print_linked_prs`, whose decline reason is now
+#: `_untrusted.split_lines(result.stderr.strip())[:1]` handed to
+#: `_linked_prs_unknown(...)` — a child stream inside a call's arguments, which
+#: `_accounted_for` deliberately does not model, and flattened at the seam it
+#: reaches. Located before the number moved, never after.
+UNRESOLVED = 106
 
 #: Calls whose result cannot be a string, so the taint stops there. A type
 #: argument, not an allowlist: `json.loads(r.stdout)` yields a dict, and every
@@ -305,7 +312,7 @@ CENSUS = {
     "presets/github/issues.py": 0,  # -2, #1606: the lookup and list relays
     "presets/github/job.py": 4,  # -1, #1606: the _format_error relay
     "presets/github/labels.py": 1,  # -1, #1606: the _format_error relay
-    "presets/github/pr.py": 4,  # -2, #1648: both invalid-JSON body dumps
+    "presets/github/pr.py": 2,  # -4, #1648: both body dumps, both threads relays
     "presets/github/pr_create.py": 2,  # -1, #1648: `_gh_json`'s error selection
     "presets/github/pr_merge.py": 3,  # -2, #1648: `_gh_json`'s error selection
     "presets/github/prs.py": 1,  # -1, #1606: the list-failure relay

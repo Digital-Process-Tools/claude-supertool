@@ -43,28 +43,20 @@ REGISTER: dict[str, str] = {
     "presets/github/check.py::_annotation_line":
         "a check annotation's message. A render, not a parse: no column-0 "
         "anchor, every part flat()ed, every emitted line carries the indent.",
-    "presets/github/issue.py::_print_linked_prs":
-        "gh's stderr, last line as an error message. Narrowing would be worse "
-        "- it would leave a forged break inside the extracted string instead "
-        "of consuming it.",
-    "presets/github/pr_create.py::_gh_json":
-        "gh's stderr, last line as an error message. Same as above.",
-    "presets/github/pr_merge.py::_gh_json":
-        "gh's stderr, last line as an error message. Same as above.",
-    "presets/github/pr.py::_fetch_review_threads_detailed":
-        "gh's stderr, last line as a decline reason - copied from "
-        "pr_merge.py::_gh_json above and the same kind (#1346). Narrowing it "
-        "to _untrusted.split_lines would be worse: that breaks on LF/CR/CRLF "
-        "only, so a forged U+2028 would survive INSIDE the extracted line and "
-        "be printed, while str.splitlines() consumes it. The reviewThread "
-        "BODIES this function returns are a different question and are fenced "
-        "at the render, never split here. Pinned by "
-        "test_the_stderr_extraction_consumes_the_separator_it_is_left_on.",
+    # Five error-message extractions used to sit here — issue.py::
+    # _print_linked_prs, both _gh_json twins, pr.py::
+    # _fetch_review_threads_detailed and issue_create.py::main — all registered
+    # on one argument: that str.splitlines() CONSUMES an exotic separator,
+    # where _untrusted.split_lines would leave a forged U+2028 inside the
+    # extracted string. #1648 retired all five, because that argument is only
+    # sound while the split is the whole fix. Consuming the separator means
+    # discarding everything before it, so the server still chose which segment
+    # became the message and the real error was dropped — an absence produced
+    # by the tool. split_lines decides the boundary, _untrusted.flat spells the
+    # separator, and neither happens.
     "presets/github/pr_create.py::main":
         "gh's stdout, scanned for a URL. The extracted value is printed, not "
         "parsed.",
-    "presets/github/issue_create.py::main":
-        "gh's stdout, scanned for a URL. Same as above.",
     "presets/github/batch_follow.py::main":
         "a local file the caller passed in. A stray separator yields a "
         "username that 404s visibly rather than a forged record.",

@@ -129,7 +129,7 @@ Neither outcome is silent. The receipt says how many lines carried an annotation
 
 | What the site does | What it needs |
 | --- | --- |
-| **Selects** a segment — `_gh_json` in `gh-pr-merge` and `gh-pr-create` took `str.splitlines()[-1]` | `_untrusted.split_lines` to decide the boundary, *then* `_untrusted.flat` on the segment it picked. A flatten alone leaves the server choosing which segment is the error |
+| **Selects** a segment — `_gh_json` in `gh-pr-merge` and `gh-pr-create`, `gh-pr`'s review-threads decline and `gh-issue`'s linked-PR decline all took a `str.splitlines()` line | `_untrusted.split_lines` to decide the boundary, *then* `_untrusted.flat` on the segment it picked. Neither call is sufficient alone: `str.splitlines()` **consumes** the separator by discarding everything before it, so the server chooses which segment is the error and the rest is dropped rather than disclosed |
 | **Prints a body** — the four `ERROR: invalid JSON from gh` dumps | `_untrusted.fence`, with `_untrusted.banner()` above it. A body is a block and keeps its lines; `scrub()` discloses the separators and neutralises the marker shape, so the fence cannot be closed from inside. Slice first, fence second — the markers are the outermost thing |
 | **Prints a field** — the three `ERROR: bad JSON: ...` writes, where a fence cannot go inline | `_untrusted.flat`, then the slice ([#970](https://github.com/Digital-Process-Tools/claude-supertool/issues/970)) |
 

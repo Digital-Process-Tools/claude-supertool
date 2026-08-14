@@ -454,9 +454,18 @@ def _fetch_review_threads_detailed(
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
         return (None, f"the GraphQL call did not complete: {exc}")
     if r.returncode != 0:
-        return (None, (r.stderr or r.stdout or "").strip().splitlines()[-1:]
-                and (r.stderr or r.stdout).strip().splitlines()[-1]
-                or f"gh exited {r.returncode}")
+        # Copied from `pr_merge.py::_gh_json` and fixed with it (#1648). The
+        # #1119 register argued this one should STAY on `str.splitlines()`,
+        # because that consumes an exotic separator where `split_lines` would
+        # leave a forged U+2028 inside the extracted string. That reasoning
+        # only holds if the split is the whole fix: consuming the separator
+        # means discarding everything before it, so the server still chose
+        # which segment became the decline reason and the real error was
+        # dropped. `split_lines` decides the boundary and `flat()` spells the
+        # separator — nothing forged, nothing lost.
+        tail = _untrusted.split_lines((r.stderr or r.stdout or "").strip())
+        return (None, _untrusted.flat(tail[-1]) if tail
+                else f"gh exited {r.returncode}")
     try:
         data = json.loads(r.stdout)
     except json.JSONDecodeError:
