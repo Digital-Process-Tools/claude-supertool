@@ -108,6 +108,16 @@ An op with no `safety` key, or an unrecognised value, renders `!`. The fallback 
 
 `syntax` reads like documentation because it's rendered in `ops` output — but for any op whose syntax uses `:::` (e.g. `git-commit:::MESSAGE[:::PATHS...]`), it is also parsed to derive that op's `@file`/`@payload` field registry: `MESSAGE[:::PATHS...]` becomes the fields `message`, `paths`. Edit it for readability — add a clarifying parenthetical, reword a field name into prose — and the parser can silently stop deriving clean field names, which silently deletes the op's whole payload route. No error, no warning: the op just stops accepting `op:@-`/`op:@payload`, while its docs (and the `ops` listing) still describe the route as if it existed. `tests/test_at_file_route.py::TestPayloadRoutePin` pins which real ops currently have a payload route specifically to catch this at test time — if you're touching a `:::`-bearing `syntax` string, expect that test to have an opinion. See [#770](https://github.com/Digital-Process-Tools/claude-supertool/issues/770).
 
+**`syntax` is invocation grammar, and nothing else** ([#1590](https://github.com/Digital-Process-Tools/claude-supertool/issues/1590)). Every consumer prints the field **whole** — the `ops` roster, `registry`, `help:OP`, and the synonym suggestion — so a sentence added to it is paid for on a line whose width [#1222](https://github.com/Digital-Process-Tools/claude-supertool/issues/1222) fought for, in the place a reader is scanning for the shape of a call. Provenance, rationale and "this is what X was before it was deleted" go in `description`.
+
+This is not a rule invented for one field. Measured across every shipped preset: 86 ops declare a `syntax`, min 7 / median 29 / p90 66 characters — and `gh-prs` was 243, the only one carrying a `  --  ` clause and the only one carrying an issue number, both from a single append. Three checks in `tests/test_syntax_is_grammar_not_prose_1590.py` hold the corpus to it:
+
+- no `syntax` contains `#NNNN` — an issue reference is provenance
+- no `syntax` contains a ` -- ` clause — a separator present in one field is not a convention, which is why the render was never taught to split on it
+- no `syntax` exceeds 200 characters — the longest pure grammar in the tree is `gl-mrs` at 165
+
+**A second invocation form goes after ` | `, and starts with the op's own name.** `gh-check:CHECK_RUN_ID | gh-check:pr:NUMBER` is the shape, shared by `bluesky_list`, `devto_list`, `hashnode_list` and (since #1590) `gh-prs`. A bare `|` inside a form is an alternation between *values* and means something different — 34 fields use it that way.
+
 ### `replaces` — the raw command this op supersedes
 
 If your op exists because a raw command was the wrong way to get the answer, say so **in the op**, and the shipped guard enforces it for every plugin user:

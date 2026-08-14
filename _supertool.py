@@ -2296,17 +2296,22 @@ def _synonym_invocation_note(op: str, named: List[str]) -> str:
     `write -> paste` and `vi -> vim` are unchanged and stay the whole answers
     the table argues they are.
 
-    **The `syntax` field is printed WHOLE, and for `gh-prs` that buries the
-    answer.** Its 243 characters open with the filter grammar and close with
-    `the release gate is gh-prs:merged-since=TAG,state=merged`, so the sentence
-    the caller needs starts around character 255 of the rendered line. The
-    obvious repair — split on the `  --  ` that separates the two halves — is
-    an inference from **one** field: measured over every shipped preset,
-    86 ops declare a `syntax`, exactly 1 contains that separator, and the
-    length distribution is min 7 / median 29 / p90 66 / max 243, with `gh-prs`
-    the max. So this is not a render that reads a convention badly; it is one
-    field carrying prose that belongs in `description`, and reshaping it moves
-    `ops`, `registry`, `help` and #1405's pinning test. Filed, not fixed here.
+    **The `syntax` field is printed WHOLE, so what is in it is what a reader
+    pays for.** For `gh-prs` that used to be 243 characters — the filter
+    grammar, then a sentence, so the invocation the caller needed began around
+    character 255 of the rendered line. The obvious repair was to split on the
+    `  --  ` separating the two halves, and it was refused as an inference from
+    **one** field: 86 ops declared a `syntax`, exactly 1 contained that
+    separator, and the distribution was min 7 / median 29 / p90 66 / max 243.
+
+    #1590 fixed the field instead of the render. The narration left for
+    `description`, which already carried it word for word; the invocation
+    stayed, as the second of two ` | `-separated forms — the shape 4 other
+    fields already use for an alternate invocation. So this function is
+    unchanged and its output is 63 characters shorter, and the convention it
+    relies on is pinned across the whole corpus by
+    `tests/test_syntax_is_grammar_not_prose_1590.py`: no `syntax` carries an
+    issue reference, a `  --  ` clause, or more than 200 characters.
     """
     target = _OP_SYNONYMS.get(op.strip().lower())
     if not target or target not in named:

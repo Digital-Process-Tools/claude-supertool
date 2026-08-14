@@ -55,12 +55,24 @@ decision:
   reports, and open counts alone leave the denominator hand-rolled — an op that
   does not answer the question it was filed for. So `frozen` is open+closed.
 
-The tally's numbers come from GitHub's **search** API, one query per cell,
-rather than from the enumeration above: `is:issue is:closed label:X` is exact
-and cheap, where enumerating every closed issue would hit a cap and render a
-*floor* as a denominator — which makes a burn-down look better than it is. The
-sum is only a sum when both sides were read: a cell that did not answer is `?`,
-and `?` poisons `frozen` rather than counting as zero.
+The two columns come from two different places, and that split is the whole of
+#1628. **`closed` is a search**, one query per label: `is:issue is:closed
+label:X` is exact and cheap, where enumerating every closed issue would hit a
+cap and render a *floor* as a denominator, which makes a burn-down look better
+than it is. **`open` is a client-side group-by over one issue listing** — the
+same call `multi_labelled` already made — because a search per label put the
+family's cost at `2N + 2` against an API allowing 30 a minute. On 2026-08-14, at
+16 cohorts, that plan returned 34 of 34 cells `?` while the same run still
+printed `all 74 open issues` from the listing it had in hand. The open column
+was never the expensive half; it was only ever being asked the expensive way.
+
+The costs of the split are stated rather than absorbed: an enumeration has a cap
+where a search does not, so an `open` cell is a **floor** (`>=N`) when the cap
+bit, and that floor carries into `frozen`. The sum is only a sum when both sides
+were read: a cell that did not answer is `?`, and `?` poisons `frozen` rather
+than counting as zero. The two halves fail independently and say so separately —
+a rate-limited search now costs the `closed` column and leaves `open` intact,
+which is the number the tick actually turns on.
 
 The prefix is a parameter and never assumed: `claude-remember` spells priority
 `priority:high` and has no `lane-*` family at all, so a family with no labels
@@ -103,18 +115,25 @@ MIN_GROUP = 2
 
 _UNKNOWN = "?"
 
-# Labels per family, not calls: a family costs `2N + 2` search calls and
-# GitHub's search API allows 30 a minute, so 14 labels is 30 calls and the
-# bound is arithmetic rather than taste. It was 30 for one commit, which is 62
-# calls — the op rate-limiting itself into a board whose second half reads `?`,
-# which is a partial read wearing the shape of a complete one and the exact
-# failure the refusal exists to prevent. Raise it knowing what it buys.
-DEFAULT_TALLY_MAX = 14
+# Labels per family, not calls. Since #1628 only the `closed` column is a
+# search, so a family costs `N + 1` rather than `2N + 2` — 25 calls at this
+# bound against an API allowing 30 a minute.
+#
+# Not 29, which is what `N + 1 <= 30` alone would give. The old bound WAS set
+# exactly on the limit (14 labels, 30 calls) and it did not hold: on 2026-08-13
+# a 32-call family dropped 2 cells and on 2026-08-14 a 34-call one dropped all
+# 34. A whole board lost to a two-call overrun only happens if the minute's
+# budget was already partly spent, which on a maintainer tick it always is —
+# this op is never the only search in its minute. So the headroom is the
+# measurement, not caution: five calls of it, and `GH_LABELS_TALLY_MAX` past
+# that for a caller who knows their minute is quiet.
+DEFAULT_TALLY_MAX = 24
 
 # What the bound is really about. Named so the refusal can show its working
-# instead of asserting a number.
-SEARCH_CALLS_PER_LABEL = 2
-NONE_BUCKET_CALLS = 2
+# instead of asserting a number. `open` is absent from both: it costs one
+# listing for the whole family, not a call per label.
+SEARCH_CALLS_PER_LABEL = 1
+NONE_BUCKET_CALLS = 1
 
 # Small on purpose, for the same limiter. The realistic family is three to
 # seven labels.
@@ -343,21 +362,55 @@ def multi_labelled(rows, members) -> list[tuple[int, list[str]]]:
     return sorted(out)
 
 
+def open_counts(rows: list[dict] | None, members) -> dict[str, int] | None:
+    """Per-label open counts plus the NONE bucket, from one issue listing.
+
+    `None` in, `None` out: an unreadable listing and a family nobody has used
+    are the same dict otherwise, and one of them is an argument that a cohort
+    is finished. The NONE bucket is keyed `""`, which no label can collide with
+    because a label name that is the empty string cannot exist.
+
+    This is the group-by a per-label search was paying `N` calls for. It counts
+    an issue once per family label it carries — the same thing the search does,
+    so the columns stay comparable — and `multi_labelled` names any issue for
+    which that means twice, because the rows then do not sum to the board.
+    """
+    if rows is None:
+        return None
+    family = set(members)
+    counts: dict[str, int] = {str(name): 0 for name in members}
+    counts[""] = 0
+    for row in rows:
+        got = {str(lab.get("name") or "") for lab in row.get("labels") or []
+               if isinstance(lab, dict)} & family
+        if not got:
+            counts[""] += 1
+        for name in got:
+            counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
 def cell(n: object) -> str:
     return _UNKNOWN if n is None else str(n)
 
 
-def frozen_cell(open_n: object, closed_n: object) -> str:
-    """open+closed, and `?` the moment either side is unread.
+def frozen_cell(open_n: object, closed_n: object, capped: bool = False) -> str:
+    """open+closed, `?` the moment either side is unread, `>=` when floored.
 
     The whole reason the tally exists is that `frozen` is the denominator a
     human is asked to trust over weeks. A sum that silently treats an unread
     cell as zero is a partial read rendering as a total — this repository's
     most-filed defect, arriving on the one number nobody would re-derive.
+
+    `capped` is the same defect one step along and arrived with #1628: `open`
+    now comes from an enumeration, which has a cap where a search did not, so a
+    floored open cell makes the sum a floor too. Rendering `48` from a `>=48`
+    would be an exact denominator built out of a bound.
     """
     if open_n is None or closed_n is None:
         return _UNKNOWN
-    return str(int(open_n) + int(closed_n))
+    total = int(open_n) + int(closed_n)
+    return f">={total}" if capped else str(total)
 
 
 def repo_name() -> str:
@@ -461,25 +514,35 @@ def tally_main(prefix: str, rows: list[dict], target: str) -> int:
         calls = len(members) * SEARCH_CALLS_PER_LABEL + NONE_BUCKET_CALLS
         print(f"ERROR: {len(members)} labels start with "
               f"`{_untrusted.flat(prefix)}`, past the {cap} this op will "
-              f"query. That family would cost {calls} search calls "
-              f"({SEARCH_CALLS_PER_LABEL} per label plus "
-              f"{NONE_BUCKET_CALLS} for the NONE bucket) against an API that "
-              f"allows 30 a minute, so the board's later cells would read `?` "
-              f"because the limiter cut in — a partial read in the shape of a "
-              f"complete one. Narrow the prefix, or raise "
+              f"query. The open column is free of this — it is one issue "
+              f"listing for the whole family — but `closed` is still "
+              f"{SEARCH_CALLS_PER_LABEL} search call per label plus "
+              f"{NONE_BUCKET_CALLS} for the NONE bucket, so this family costs "
+              f"{calls} search calls against an API that allows 30 a minute "
+              f"and shares them with everything else in the same minute. The "
+              f"board's later closed cells would read `?` because the limiter "
+              f"cut in — a partial read in the shape of a complete one. "
+              f"Narrow the prefix, or raise "
               f"GH_LABELS_TALLY_MAX={len(members)} accepting that cost.")
         return 1
 
+    # The listing first, and it answers the whole open column (#1628). It was
+    # already being fetched for the multi-label check, on the very runs where
+    # every per-label search cell came back `?` — the data was in hand and
+    # discarded, while the same numbers were bought again at 30-a-minute.
+    issue_cap = _env_int("GH_LABELS_ISSUE_CAP", DEFAULT_ISSUE_CAP)
+    open_rows, rows_capped = fetch_open_issue_rows(issue_cap)
+    opens = open_counts(open_rows, members)
+
     # Keyed by a `(label, state)` tuple rather than a joined string: a label
     # name is remote text and may contain whichever separator character one
-    # picks, so a join is a collision waiting for a label to be renamed.
-    jobs: list[tuple[tuple[str, str], str]] = []
-    for name in members:
-        jobs.append(((name, "open"),
-                     search_query(target, "open", within=[name])))
-        jobs.append(((name, "closed"),
-                     search_query(target, "closed", within=[name])))
-    jobs.append((("", "open"), search_query(target, "open", without=members)))
+    # picks, so a join is a collision waiting for a label to be renamed. The
+    # `state` half is invariably "closed" now and is kept because the key it
+    # replaced was not, and a bare-name key would silently alias the day
+    # anything else needs counting.
+    jobs: list[tuple[tuple[str, str], str]] = [
+        ((name, "closed"), search_query(target, "closed", within=[name]))
+        for name in members]
     jobs.append((("", "closed"),
                  search_query(target, "closed", without=members)))
 
@@ -488,9 +551,6 @@ def tally_main(prefix: str, rows: list[dict], target: str) -> int:
         counts = dict(zip([k for k, _ in jobs],
                           pool.map(search_count, [q for _, q in jobs])))
 
-    issue_cap = _env_int("GH_LABELS_ISSUE_CAP", DEFAULT_ISSUE_CAP)
-    open_rows, rows_capped = fetch_open_issue_rows(issue_cap)
-
     none_label = f"no {prefix} label"
     width = max([len(_untrusted.flat(n)) for n in members] + [len(none_label)])
 
@@ -498,27 +558,47 @@ def tally_main(prefix: str, rows: list[dict], target: str) -> int:
     print(f"Family: {len(members)} label(s) whose name starts with "
           f"`{_untrusted.flat(prefix)}`. The prefix is a repo convention "
           f"inferred from the names — GitHub has no prefix field.")
+    # The two columns are read two different ways and fail independently, so
+    # they are reported separately. One "Counts:" sentence covering both would
+    # have to describe the worse of the two states, which is how a lost closed
+    # column would take a perfectly good open column down with it.
+    if opens is None:
+        print("Open: UNKNOWN — the open-issue list could not be read, so no "
+              "row's open cell was filled. `?` is 'not looked at', never 0; "
+              "a 0 there reads as a cohort that is finished.")
+    elif rows_capped:
+        print(f"Open: a FLOOR (`>=N`), over the first {issue_cap} open issues "
+              f"read — the cap bit, so a row may hold more and the floor "
+              f"carries into `frozen`. Raise GH_LABELS_ISSUE_CAP=N for an "
+              f"exact column.")
+    else:
+        print(f"Open: exact, over all {len(open_rows)} open issues, tallied "
+              f"from one listing rather than a search per label (#1628). "
+              f"Issues only — pull requests are not in it.")
     if unread:
-        print(f"Counts: {unread} of {len(counts)} cells are UNKNOWN — that "
+        print(f"Closed: {unread} of {len(counts)} cells are UNKNOWN — that "
               f"many search queries did not answer. `?` is 'not looked at', "
               f"never 0, and it poisons the `frozen` sum on its row rather "
-              f"than being added as zero.")
+              f"than being added as zero. The open column above is unaffected: "
+              f"it did not come from the search API.")
     else:
-        print("Counts: GitHub's search API, one query per cell, `is:issue` — "
-              "pull requests are excluded from every number here. `frozen` is "
-              "open+closed.")
+        print("Closed: GitHub's search API, one query per label plus one for "
+              "the NONE bucket, `is:issue` — pull requests are excluded. "
+              "`frozen` is open+closed.")
     print()
     print(_untrusted.flat_note("label names"))
     print(f"  {'label':<{width}}  {'open':>6} {'closed':>7} {'frozen':>7}")
     for name in members:
-        o = counts.get((name, "open"))
+        o = None if opens is None else opens.get(name, 0)
         c = counts.get((name, "closed"))
-        print(f"  {_untrusted.flat(name):<{width}}  {cell(o):>6} "
-              f"{cell(c):>7} {frozen_cell(o, c):>7}")
-    o = counts.get(("", "open"))
+        print(f"  {_untrusted.flat(name):<{width}}  "
+              f"{count_text(opens, rows_capped, name):>6} "
+              f"{cell(c):>7} {frozen_cell(o, c, rows_capped):>7}")
+    o = None if opens is None else opens.get("", 0)
     c = counts.get(("", "closed"))
-    print(f"  {none_label:<{width}}  {cell(o):>6} {cell(c):>7} "
-          f"{frozen_cell(o, c):>7}")
+    print(f"  {none_label:<{width}}  "
+          f"{count_text(opens, rows_capped, ''):>6} {cell(c):>7} "
+          f"{frozen_cell(o, c, rows_capped):>7}")
     print()
     print(f"The `{none_label}` row is the one a per-label listing cannot show: "
           f"issues carrying no label of this family at all. Its closed cell "
