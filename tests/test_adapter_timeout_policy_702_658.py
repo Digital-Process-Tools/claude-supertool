@@ -506,10 +506,24 @@ def test_the_payload_a_real_adapter_emits_on_a_stall_is_the_one_that_declines() 
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
+    # The wall has to cost the adapter its budget on the adapter's own clock,
+    # which is driven rather than slept so the spawn still costs milliseconds.
+    #
+    # It was not driven at all until #1683, and it did not need to be: phplint
+    # wrote `30000` into its timeout arm whatever had happened, so this test
+    # passed against a spawn that raised instantly. The payload it calls "the
+    # one a real adapter emits on a stall" was a literal, and the fourth clause
+    # it checks -- `duration_ms >= inner_s * 1000` -- could not have failed
+    # here however broken the adapter's routing was.
+    now = [1000.0]
+
     def _always_times_out(*args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd=["php"], timeout=kwargs.get("timeout", 30))
+        budget_s = kwargs.get("timeout", 30)
+        now[0] += budget_s + 0.5
+        raise subprocess.TimeoutExpired(cmd=["php"], timeout=budget_s)
 
     with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mod.time, "time", lambda: now[0])
         mp.setattr(mod.subprocess, "run", _always_times_out)
         mp.setattr(mod.sys, "argv", [str(path), "subject.php"])
         emitted: list[str] = []
@@ -523,7 +537,12 @@ def test_the_payload_a_real_adapter_emits_on_a_stall_is_the_one_that_declines() 
         "declines on it — the two drifted, and the next loaded Windows runner "
         f"reddens a stranger's PR again (#794). Payload: {payload}"
     )
-    assert str(budget.inner_budget(path) * 1000) in reason
+    # The budget as the reason states it -- "30s internal budget" -- read out of
+    # phplint's own source. Until #1683 this was `str(inner * 1000) in reason`,
+    # which matched nothing but the duration, and matched that only because the
+    # timeout arm printed the budget as a literal. A measured stall reports 30500
+    # and the same assertion goes red on a payload that is entirely correct.
+    assert f"{budget.inner_budget(path)}s internal budget" in reason
 
 
 def test_the_stall_predicate_reads_the_adapters_real_wall_not_a_tabulated_one() -> None:

@@ -125,7 +125,7 @@ def main() -> None:
         emit({"tool": "terraform-check", "file": file, "ok": False, "count": 1,
               "errors": [{"line": None, "col": None, "severity": "error",
                           "code": "adapter", "msg": "timeout"}],
-              "duration_ms": 30000})
+              "duration_ms": int((time.time() - start) * 1000)})
         return
 
     dur = int((time.time() - start) * 1000)

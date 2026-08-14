@@ -195,6 +195,15 @@ def _block_outbound_network():
         yield
 
 
+#: The per-process cache directory `pytest_configure` redirects `XDG_CACHE_HOME`
+#: at (#1656), held here rather than on `config` so that the `.cleanup()` in
+#: `pytest_unconfigure` is a removal
+#: `tests/test_directory_removal_ownership_1635.py` can prove rather than one it
+#: cannot see. A list of one, because the walk resolves a `for` target back to
+#: what was appended and that is the shape it can follow (#1683).
+_CACHE_HOMES: list = []
+
+
 def pytest_configure(config):
     """Opt out of #146 cwd containment for the test suite.
 
@@ -357,16 +366,16 @@ def pytest_configure(config):
     # made, and nothing here composes a path at all, so the hazard is absent by
     # construction rather than argued.
     #
-    # **Stated because it is the shape this repo keeps mis-reading:** that
-    # register no longer *sees* this site. `.cleanup()` is not one of the
-    # removal verbs it matches, so the zero it now reports for this file is an
-    # absence of detection, not a proof. The safety here is the stdlib type's,
-    # not the guard's, and `OWNERS` in that file already counts
-    # `TemporaryDirectory` as an ownership source while its removal side has no
-    # matching verb -- an asymmetry worth its own issue rather than a rider.
-    config._supertool_cache_home = tempfile.TemporaryDirectory(
-        prefix="supertool-suite-cache-")
-    os.environ["XDG_CACHE_HOME"] = config._supertool_cache_home.name
+    # `.cleanup()` is one of that register's removal verbs since #1683, so this
+    # site is proved by it rather than invisible to it. What the proof needs is
+    # a chain the walk can follow: the object goes into the module list above
+    # and comes back out through the teardown's `for`, which resolves to the
+    # `TemporaryDirectory` call here. Stashed on `config` and fetched back with
+    # `getattr` -- the spelling this used until #1683 -- it reads UNOWNED, and
+    # correctly so: nothing in the file says what came off that attribute.
+    cache_home = tempfile.TemporaryDirectory(prefix="supertool-suite-cache-")
+    _CACHE_HOMES.append(cache_home)
+    os.environ["XDG_CACHE_HOME"] = cache_home.name
     # #416: the autouse fixture below cannot cover collection-time module
     # bodies or session helpers, which run before any fixture. Scrub once here
     # too, and remember what was leaked so it gets reported rather than hidden.
@@ -384,12 +393,12 @@ def pytest_unconfigure(config):
     either way, so the worst outcome is one the OS reaps rather than the
     operator's cache being written to.
     """
-    cache_home = getattr(config, "_supertool_cache_home", None)
-    if cache_home is not None:
+    for cache_home in _CACHE_HOMES:
         try:
             cache_home.cleanup()
         except OSError:
             pass
+    del _CACHE_HOMES[:]
 
 
 def pytest_report_header(config):

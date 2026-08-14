@@ -19,17 +19,18 @@ reads as an inventory and is not one. Only `ast.Call` nodes are sites here,
 which is also why the synthetic sources further down are invisible to the
 sweep: a call written inside a string literal is an `ast.Constant`, not a call.
 
-**The population, at the commit this was written.** 30 directory-removal sites
-across 28 files: 26 `shutil.rmtree`, 2 `subprocess.run(["rm", "-rf", ...])`, 2
-`git worktree remove`, and zero `os.rmdir` / `os.removedirs` / `Path.rmdir`.
-Only two are outside `tests/` -- `validators/gitleaks/gitleaks.py`, which
-removes the private directory it made for one scan, and
-`presets/github/pr_merge.py`, the only site in the tree whose path the caller
-never composed. Any total written in prose is a measurement of one commit; the
-tests below re-derive, and they are what a reader should believe when a number
-disagrees with them.
+**The population, re-derived at #1683.** 32 directory-removal sites across 30
+files: 27 `shutil.rmtree`, 2 `subprocess.run(["rm", "-rf", ...])`, 2 `git
+worktree remove`, 1 `TemporaryDirectory.cleanup()`, and zero `os.rmdir` /
+`os.removedirs` / `Path.rmdir`. Only two are outside `tests/` --
+`validators/gitleaks/gitleaks.py`, which removes the private directory it made
+for one scan, and `presets/github/pr_merge.py`, the only site in the tree whose
+path the caller never composed. Any total written in prose is a measurement of
+one commit; the tests below re-derive, and they are what a reader should
+believe when a number disagrees with them. This one had already drifted by two
+sites before anyone read it again.
 
-**The verdict, re-derived on every run.** Every one of the 29 sites that
+**The verdict, re-derived on every run.** Every one of the 31 sites that
 composes its own target resolves to a directory the same file created --
 `tempfile.mkdtemp`, a `TemporaryDirectory`, or pytest's `tmp_path`. Not one is
 built from the repository root, from the current working directory, or from an
@@ -344,6 +345,23 @@ def _removal_target(node, runners):
         if isinstance(func, ast.Attribute):
             return func.value, "call"
         return None, None
+    if name == "cleanup" and isinstance(func, ast.Attribute) and not node.args:
+        # `TemporaryDirectory(...).cleanup()`. The receiver is the target, the
+        # same shape `rmdir` already resolves above, so the ownership question
+        # asked of it is the one asked of every other site -- nothing here
+        # teaches the walk about receivers, and `OWNERS` has counted
+        # `TemporaryDirectory` as a source since the first cut. Until #1683 it
+        # counted it as a source with no matching verb, so `.cleanup()` on any
+        # receiver was a directory removal this register did not see: the
+        # #1656 site in `tests/conftest.py` read as an absence of removals
+        # rather than as a proof, and its own comment had to say so.
+        #
+        # Only the no-argument spelling. `TemporaryDirectory.cleanup` takes
+        # none, and a `cleanup` that takes some is another object's method --
+        # `presets/mcp/daemon.py`'s `_spawn.cleanup(sock, pid, dir_fd=...)`
+        # unlinks two files and removes no directory. Reading it would put a
+        # non-removal in the population and make the register argue about it.
+        return func.value, "call"
     # Only a call that *runs* an argv removes anything. A test asserting on
     # `["worktree", "remove", path]` is reading a receipt, and a register that
     # counted it would report removals nobody performs.
@@ -456,6 +474,12 @@ REGISTER = {
     # here at all -- git reported it -- and the arm ahead of it refuses on
     # three separate reads before it fires (#1280, #1290).
     'presets/github/pr_merge.py::_cleanup_worktree': GIT,
+
+    # The #1656 suite-wide cache redirect coming back down. Invisible to this
+    # register until #1683 taught it `.cleanup()`, and provable rather than
+    # merely safe only because `conftest.py` holds the object where the walk
+    # can follow it -- see the comment there.
+    'tests/conftest.py::pytest_unconfigure': OWNED,
 
     # An executed `git worktree remove`, and the site the first cut of this
     # register did not see: its helper takes the argv words as positional
@@ -656,6 +680,29 @@ def test_the_classifier_refuses_a_path_it_cannot_prove_ownership_of() -> None:
                 "    shutil.rmtree(box.tmp)") == OWNED, (
         "a receiver built by a visible constructor does carry its class's "
         "ownership, and tightening the rule above must not have cost that")
+
+    assert mech("import tempfile",
+                "def t():",
+                "    d = tempfile.TemporaryDirectory()",
+                "    d.cleanup()") == OWNED, (
+        "`TemporaryDirectory` was an ownership source with no matching removal "
+        "verb until #1683, so every `.cleanup()` in the tree was a directory "
+        "removal this register did not see")
+
+    assert mech("def t(handed):",
+                "    handed.cleanup()") == UNOWNED, (
+        "a `.cleanup()` on a receiver whose type cannot be read is not "
+        "certified by the verb -- receiver-typed ownership is not what was "
+        "added; the receiver is simply the target, as it already is for "
+        "`rmdir`")
+
+    assert not _sites_in_source(
+        "tests/synthetic.py",
+        nl.join(("def t(spawn, sock, pid):",
+                 "    spawn.cleanup(sock, pid, dir_fd=3)")) + nl), (
+        "a `cleanup` taking arguments is another object's method -- "
+        "`presets/mcp/daemon.py` unlinks two files with one -- and counting "
+        "it would put a non-removal in the population")
 
     assert mech("import subprocess",
                 "def _sh(*args, cwd):",

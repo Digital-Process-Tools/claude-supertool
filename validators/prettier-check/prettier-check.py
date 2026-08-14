@@ -163,7 +163,7 @@ def main() -> None:
                         "code": "adapter",
                         "msg": f"timeout — prettier did not return within "
                                f"{TIMEOUT_S}s; the file was NOT checked"}],
-            "duration_ms": TIMEOUT_S * 1000,
+            "duration_ms": int((time.time() - start) * 1000),
         })
         return
 

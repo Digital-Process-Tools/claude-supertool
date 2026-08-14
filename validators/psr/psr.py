@@ -85,7 +85,7 @@ def main() -> None:
             "tool": "psr", "file": file, "ok": False, "count": 1,
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": "timeout"}],
-            "duration_ms": 120000,
+            "duration_ms": int((time.time() - start) * 1000),
         })
         return
     dur = int((time.time() - start) * 1000)
