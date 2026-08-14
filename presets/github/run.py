@@ -125,6 +125,17 @@ def refuse_past_latest(run_id: str, attempt: int, latest: int) -> str:
             f"Latest: gh-run:{run_id}{tail}")
 
 
+def refuse_duplicate(first: str, second: str) -> str:
+    """Message refusing a second attempt token. One call answers for one attempt."""
+    return (f"ERROR: gh-run was given two attempt tokens, {first!r} then "
+            f"{second!r}.\n"
+            f"Nothing was read. Taking the last one silently discards the "
+            f"first, which is the same wrong answer as dropping an "
+            f"unreachable token (#873) with the token still visible in the op "
+            f"string.\n"
+            f"One attempt per call; two attempts is two ops in the same call.")
+
+
 def parse_argv(argv: Sequence[str]) -> tuple[str, int | None, str]:
     """`(run_id, attempt, refusal)`. A non-empty refusal means fetch nothing.
 
@@ -144,6 +155,7 @@ def parse_argv(argv: Sequence[str]) -> tuple[str, int | None, str]:
         return ("", None, bad)
 
     attempt: int | None = None
+    seen = ""
     for token in tokens[1:]:
         if not token:
             continue
@@ -152,6 +164,13 @@ def parse_argv(argv: Sequence[str]) -> tuple[str, int | None, str]:
         value = token[len(ATTEMPT_PREFIX):]
         if not _DIGITS.match(value) or int(value) < 1:
             return ("", None, refuse_attempt(value))
+        if attempt is not None:
+            # Last-wins is the #873 defect with the token kept rather than
+            # dropped: `attempt=1:attempt=2` would render attempt 2 under a
+            # call that also named attempt 1, and nothing in the output would
+            # say the first one was discarded. Two attempts is two calls.
+            return ("", None, refuse_duplicate(seen, token))
+        seen = token
         attempt = int(value)
     return (run_id, attempt, "")
 

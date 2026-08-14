@@ -206,9 +206,23 @@ def test_asking_for_the_latest_attempt_buys_no_second_call(
     """The payload in hand already IS attempt 2 — re-fetching it is a wasted call."""
     code, out, gh = _run(monkeypatch, capsys, [RUN_ID, "attempt=2"])
     assert code == 0, out
+    # The header, not just the `Attempts:` line: everything below it is what
+    # the DEFAULT render prints when latest is 2, so an assertion on those
+    # alone would also pass if the token had been silently dropped.
+    assert "(attempt 2 of 2)" in out.splitlines()[0], out.splitlines()[0]
     assert "Attempts: 2 of 2" in out, out
     assert "HISTORICAL" not in out, out
     assert [c for c in gh.calls if "--attempt" in c] == [], gh.calls
+
+
+def test_two_attempt_tokens_are_refused_rather_than_last_wins(
+        monkeypatch, capsys) -> None:
+    """Keeping the last silently discards the first — #873's defect, kept."""
+    code, out, gh = _run(monkeypatch, capsys,
+                         [RUN_ID, "attempt=1", "attempt=2"])
+    assert code == 1, out
+    assert gh.calls == [], gh.calls
+    assert "attempt=1" in out and "attempt=2" in out, out
 
 
 # ---------------------------------------------------------------------------

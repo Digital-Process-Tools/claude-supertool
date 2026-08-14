@@ -71,7 +71,12 @@ def _uses(command: str):
     ("gh issue view 1384 -c", "gh-issue:NUMBER:full"),
     ("gh issue create --title x --body y", "gh-issue-create:@FILE"),
     ("gh pr list --state open --limit 50", "gh-prs"),
-    ("gh run view 17123456", "gh-run:NUMBER"),
+    ("gh run view 17123456", "gh-run:NUMBER[:attempt=K]"),
+    # #1715: `--attempt` was already claimed by the bare entry — `unless_flag`
+    # names only `--web`/`-w` — but the op it named could not serve it, so the
+    # refusal was a dead end of exactly the kind the specificity rule exists to
+    # prevent. The op can now, and the `use` string says so.
+    ("gh run view 17123456 --attempt 1", "gh-run:NUMBER[:attempt=K]"),
     ("gh run view 17123456 --log", "gh-job:NUMBER:raw"),
     ("gh run view 17123456 --log-failed", "gh-job:NUMBER:fail"),
     ("gh run list --branch master --limit 1", "gh-branch:BRANCH"),
@@ -93,7 +98,7 @@ def test_the_log_flag_beats_the_bare_run_view_entry(shipped_github):
 
     Both entries match the same argv; the flagged one scores higher, so the
     refusal names one op rather than two. Without this the reader is sent to
-    `gh-run:NUMBER`, which lists jobs and never prints a log line.
+    `gh-run`, which lists jobs and never prints a log line.
     """
     verdict = supertool.guard_command("gh run view 17123456 --log")
     assert [m.op for m in verdict.matches] == ["gh-job"], verdict.matches
