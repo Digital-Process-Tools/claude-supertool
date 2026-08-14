@@ -7,6 +7,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-08-14
+
+### Added
+
+- **`gh-run:ID:attempt=K` reads a prior attempt, and every run render now says which attempt it is** ([#1715](https://github.com/Digital-Process-Tools/claude-supertool/issues/1715)). `gh-branch` collapses to the highest `run_attempt` by design, and that is what makes the merge gate honest — what matters there is whether the commit is green *now*. The cost is that once a flake is re-run green, the record of why it was red lives in an attempt no op could reach: recovering the evidence that diagnosed [#1709](https://github.com/Digital-Process-Tools/claude-supertool/issues/1709) meant leaving supertool for `gh api repos/O/R/actions/runs/31815095925/attempts/1/jobs` just to learn the job id `gh-job` was already able to read.
+
+  **The default is unchanged and stays the latest attempt.** Nothing about the collapse moved. What is new is that `gh-run` states it: an `Attempts: K of N` line under the URL, in three states rather than two — `1 of 1` when the run was never re-run, `N of N` naming the earlier attempts as **not** in the table with the call that reads one, and `UNKNOWN` when the payload carried no readable `run_attempt`, because a field nobody read must not settle whether a whole attempt's legs are missing. That absence was the defect: the table has only ever been one attempt's legs, and nothing said so.
+
+  A superseded attempt is labelled `HISTORICAL` in its own header and body — a stale red that does not announce itself as stale is read as the state of the run now — and it skips the `filter=all` leg reconciliation, whose count is the union across every attempt and would manufacture a shortfall against a single one. The second `gh` call is bought only when the attempt asked for is not the latest; naming the current one costs the same single round trip it always did.
+
+  Both values that reach the `gh` argv are gated before anything is fetched. The attempt must match a digits-only pattern and is re-rendered from `int()`, so the caller's string never reaches the subprocess; an attempt past the last one is refused by name off the count the first read already returned, rather than bought as a 404 that `gh` renders as `failed to get run` — a different, wrong answer. The run id is now digit-gated too, the guard `gh-job` has carried since [#1145](https://github.com/Digital-Process-Tools/claude-supertool/issues/1145), which was a courtesy about the header there and is a precondition of the fetch here.
+
+### Changed
+
+- Three hand-rolled copies of `gh repo view --json nameWithOwner` now share
+  `_repo_target.effective_slug()`, and the two that were counted as copies turn
+  out not to be
+  ([#1701](https://github.com/Digital-Process-Tools/claude-supertool/issues/1701)).
+  The issue named five sites and `cwd_slug()` (#1700) as the shared answer none
+  of them used. Re-derived, both halves were different. `cwd_slug()` answers
+  `""` under a `repo:` target on purpose — its caller substitutes the target
+  itself — while all five callers are target-*first*, so adopting it would have
+  printed the cwd's repository in a header for a call made about another one.
+  And `github/branch.py` and `github/pr_merge.py` read
+  `nameWithOwner,defaultBranchRef` in one call and return a third element
+  carrying the error their `main()` aborts on: they already tell *could not
+  ask* from *asked, got nothing*, and folding them in would have traded a
+  three-state answer for a two-state one. They keep their own reader.
+
+  `effective_slug()` is `target()` first, then the cwd's clone, then `""`. Two
+  states rather than three because no caller of it consumes a reason: each
+  keeps its own sentinel at its own boundary, so `gh-labels` still renders `""`
+  (`— repository UNKNOWN (gh could not name it)`), the `gh_prs` radar tier
+  still renders `"?"`, and `claims` still returns `None`. Nothing any of the
+  three prints on failure changed.
+
+  One site was actually wrong. `presets/claims/check.py` read
+  `os.environ["SUPERTOOL_REPO"]` directly instead of through `target()`, so it
+  skipped the rule that a blank export is absence rather than an empty target:
+  a whitespace-only value became the slug, reached `gh issue view --repo "   "`,
+  and every issue citation in the document rendered "couldn't check" against
+  gh's complaint — while the cwd, which could have answered, was never asked.
+
+  A sweep for the subcommand found seven calls across four distinct questions,
+  two of which the issue never counted (`--json owner,name` in `issues.py`,
+  `--json defaultBranchRef` in `pr_create.py`). The regression pin is keyed on
+  the exact single-field argv rather than on `gh repo view`, because a guard
+  that refused all four would be worked around rather than obeyed.
+
+### Fixed
+
+- A cursor-control sequence in `gh`'s stdout reached six lines of the receipt
+  `gh-pr-create` writes, including its own `[result]` verdict
+  ([#1660](https://github.com/Digital-Process-Tools/claude-supertool/issues/1660)).
+  `str.splitlines()` consumes every line *separator*, so the URL line selected
+  out of `gh pr create` cannot be forged — that half holds. It does not consume
+  ESC. The selected line was printed raw at column 0 as `URL:`, and `number` is
+  derived from it, so it also reached `PR:`, all three `## Next` commands and
+  the `[result]` line, two lines under a `title` that was already flattened.
+  The value is now `_untrusted.flat()`ed at the seam where it is extracted
+  rather than at each print, so the escape is disclosed as `␛` instead of
+  moving the cursor, and a clean URL is untouched. This is the ESC half of
+  [#851](https://github.com/Digital-Process-Tools/claude-supertool/issues/851)
+  arriving at a site that sweep did not cover.
+
+  The register entry in `tests/test_preset_twin_splitlines_register_1119.py`
+  read "the extracted value is printed, not parsed", which answers
+  forgery-by-separator and is silent on control characters — an entry that
+  answers one question reads as though it answered the other. Corrected to say
+  which question it answers and which it does not.
+
+- **`git-worktrees` answered `occupied` and supertool exited `0`** ([#1705](https://github.com/Digital-Process-Tools/claude-supertool/issues/1705)). Declaring an op's exit code a value (#1672) spent the fail-safe as well as the verdict: `supertool 'git-worktrees:PATH' && rm -rf PATH` had held because any non-zero child collapsed to a non-zero supertool exit, and afterwards `occupied` and `cannot tell` both passed the guard. [#1282](https://github.com/Digital-Process-Tools/claude-supertool/issues/1282) records a consumer of exactly that shape.
+- **`exitStatus` now takes a `clean` list** — `{ "values": [0, 1, 2], "clean": [0] }` — naming which of an op's answers a caller may proceed on. A declared value outside it makes supertool's own exit non-zero. `0` is always clean and listing it is documentation only; a missing or malformed `clean` collapses to `[0]`, the loud direction, because the quiet one is a caller proceeding on `occupied`.
+- **It is still not a refusal, which is #1672 and it stands.** The receipt says `PASS`, the refusal count does not include it, and the batch footer does not call it one. The answer reaches the exit code through its own per-call channel, beside the skipped write and the rolled-back edit that already got there without being refusals — and the batch footer names it rather than reciting the counters, so `Exit 1 is a skipped write, a rolled-back edit or a validator that could not run` is no longer printed for a cause the call knows precisely. A single-op call prints no footer at all, so the `PASS` line carries the same disclosure.
+- **The sweep this asked for:** `git-worktrees` is the only op in `presets/*.json` declaring `exitStatus`, and a test now fails if a future one declares `values` without `clean`, so the implicit `0` cannot be inherited again.
+
+- A stalled `node --check` on **one** of a page's `<script>` blocks was read as a
+  verdict about the whole file ([#1709](https://github.com/Digital-Process-Tools/claude-supertool/issues/1709)).
+  `html-check` spawns the tool once per block, so a two-block page can spend its
+  30s budget on the first block and get a real syntax finding on the second — and
+  the suite's stall gate required *every* reported error to be a wall before it
+  would decline. The mixture was classified as a complete verdict, and
+  `count == 1` — a claim about how many blocks got an answer, not about the file
+  — read `assert 2 == 1` on `pytest (windows-latest, 3.10)`.
+  `tests/_adapter_verdict.stalled_at_its_own_wall` now declines a **partial**
+  wall: at least one `adapter` error naming a timeout, and no `adapter` error
+  that is not one. A missing `node`, a crashed adapter and a wall reported faster
+  than the adapter's own budget all still redden the board, standing beside a
+  wall or not, and the decline is counted under the existing `adapter-wall`
+  register rather than being silent. The adapter itself is unchanged: its
+  per-block finding was correct.
+
+- **A `jit-index` run that stalled partway no longer reads as a complete one** ([#1714](https://github.com/Digital-Process-Tools/claude-supertool/issues/1714)). When awk could not be run — a timeout, or a spawn that failed — and the adapter already held a finding, the list of patterns it never compiled was discarded. A run that compiled 2 of 20 rows and stopped rendered as `2 err`, byte-identical to a complete run that found two things. The findings are now published beside an `adapter` row naming the rows nobody looked at. A stall with *no* finding still emits `skipped`, so a machine that hiccups cannot roll back a correct edit; the loud arm is reachable only once `ok: false` is already owed to a real finding.
+
+- **The `changelog.d/` note now teaches the fragment rule an author cannot infer** ([#1716](https://github.com/Digital-Process-Tools/claude-supertool/issues/1716)). The jit-context note injected before any write to that directory never mentioned that an entry must name its own issue (#1251), and the one worked example in it named none — copied verbatim it produced a fragment the write-time validator refuses. It now opens with a complete, correct fragment, and every markdown example in it is checked against the project's own fragment rules, so an example that would be refused is a red test rather than a lesson somebody pays for.
+
+- A validator that reported real findings *and* could not finish one of its rows reverted a correct edit. The `adapter` code is the schema's channel for "no verdict was obtained", and `validators/SCHEMA.md` promises per result that the core never subtracts it from a baseline in either direction — but the guard delivering that promise tested `all(code == "adapter")`, which is a per-payload test. A mixed payload failed it and fell through to arithmetic that counted the stall as a new finding, so on a `rollback_on_fail` validator the edit was written back to its pre-edit bytes. `cargo-check` ships exactly that shape: a crate diagnostic naming another file keeps its text and takes `code: "adapter"` beside the real findings. The guard stays as it is — an adapter that reported findings *has* measured the file, and rendering it `NOT CHECKED` would be the same defect pointing the other way — and the subtraction now drops the `adapter` rows on both sides instead (#1717).
+
 ## [0.43.0] - 2026-08-14
 
 ### Changed
@@ -6499,7 +6597,8 @@ All three adapters share the same shape: auto-spawn UDS daemon via `presets/mcp/
 
 Initial public changelog. See git history for prior versions.
 
-[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.43.0...HEAD
+[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.44.0...HEAD
+[0.44.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.44.0
 [0.43.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.43.0
 [0.42.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.42.0
 [0.41.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.41.0
