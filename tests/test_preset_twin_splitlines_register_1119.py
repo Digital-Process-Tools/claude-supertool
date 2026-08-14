@@ -64,11 +64,18 @@ REGISTER: dict[str, str] = {
         "a local file the caller passed in. Same as above.",
 
     # -- presets/gitlab, audited by #1119 -----------------------------------
+    # These two were registered on the same argument #1648 retired above, and
+    # the sentence used to point at the GitHub siblings that are now fixed.
+    # Left alone here on scope, not on reasoning: #1648 is scoped to
+    # presets/github/, and the GitLab half wants its own review the way #1485
+    # was the GitLab half of #1606. Say so rather than cite a retired reason.
     "presets/gitlab/issue.py::_print_related_mrs":
-        "glab's stderr, first line as a decline reason. Narrowing would be "
-        "worse, for the reason its GitHub siblings are left alone.",
+        "glab's stderr, first line as a decline reason. Consuming the "
+        "separator also discards everything before it, so this still lets "
+        "glab's writer choose the segment - unswept, not justified (#1648).",
     "presets/gitlab/mr.py::_glab_fail_detail":
-        "glab's stderr, first non-empty line as a decline detail. Same.",
+        "glab's stderr, first non-empty line as a decline detail. Same, and "
+        "unswept for the same reason: the GitLab half is its own review.",
     "presets/gitlab/issue_create.py::main":
         "glab's stdout, scanned for an issue URL, then its last line as a "
         "fallback. The extracted value is printed, not parsed.",
