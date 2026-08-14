@@ -252,6 +252,67 @@ def test_the_gate_names_the_rules_it_re_enables(repo: Path) -> None:
     assert "F401" in out and "F841" in out and "F541" in out, out
 
 
+# --- the number the finding arm reports (#1629) -----------------------------
+
+
+def test_the_finding_count_is_the_files_carrying_findings_not_the_files_checked(
+    repo: Path,
+) -> None:
+    """#1629: the arm reported `len(files)`, the set it *checked*.
+
+    Measured on a 46-file diff with one dirty path, it printed `46 file(s) ...
+    carry lint findings` above a single listed line. That sentence was read as
+    "one of 46 shown" and became a brief telling an agent to go looking for
+    findings the gate had truncated. Nothing was truncated; the number was
+    answering a different question from the one it was worded as.
+
+    The single-file diff is why it survived: when every checked file is dirty
+    the two counts coincide, and that is the shape that ships most often.
+    """
+    (repo / "dirty.py").write_text(DEAD_IMPORT, encoding="utf-8")
+    (repo / "clean.py").write_text(CLEAN, encoding="utf-8")
+    _commit(repo)
+    code, out = _gate(repo)
+    assert code == gate.EXIT_FINDING, out
+    # Anchored on the whole headline, not searched for inside it. `"2 file(s)
+    # this PR" not in out` is satisfied by the correct output and by the broken
+    # one alike, because the fixed sentence contains the broken one as a
+    # substring -- which is #1661's defect written into #1629's test.
+    headline = [line.strip() for line in out.splitlines()
+                if "carry lint findings" in line]
+    assert headline == ["1 of 2 file(s) this PR adds, copies or renames carry "
+                        "lint findings:"], out
+
+
+def test_a_finding_line_that_names_no_file_leaves_the_count_unstated(
+    repo: Path, monkeypatch,
+) -> None:
+    """A count the run cannot derive is not rounded down to the ones it can.
+
+    Every finding line ruff has ever emitted in `concise` carries `path:line:
+    col:`, so this arm should never fire -- which is exactly why it is pinned.
+    An output shape the parser cannot read would otherwise silently lower the
+    numerator, and a gate that under-counts its own findings is this repo's
+    house defect with a smaller number on it.
+    """
+    real = gate._run
+
+    def unreadable(argv, cwd):
+        if argv[1:2] == ["check"]:
+            return 1, "dirty.py:1:8: F401 unused" + chr(10) + "??? mystery" + chr(10), ""
+        return real(argv, cwd)
+
+    (repo / "dirty.py").write_text(DEAD_IMPORT, encoding="utf-8")
+    (repo / "clean.py").write_text(CLEAN, encoding="utf-8")
+    _commit(repo)
+    monkeypatch.setattr(gate, "_run", unreadable)
+    code, out = _gate(repo)
+    assert code == gate.EXIT_FINDING, out
+    assert "1 of 2" not in out, out
+    assert "name no file" in out, out
+    assert "mystery" in out, out
+
+
 # --- three states, and the third is the point -------------------------------
 
 

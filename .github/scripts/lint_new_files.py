@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -100,6 +101,41 @@ EXTRA_RULES = ("F401", "F841", "F541")
 #: enough that a hang is still bounded. Named so the decline can quote it: a
 #: reader who sees `timeout` cannot tell a hung linter from a busy machine.
 TIMEOUT_S = 120
+
+
+#: One ruff finding in `--output-format concise`: `path:line:col: CODE text`.
+#: Non-greedy up to the first `line:col` pair, so a Windows drive letter stays
+#: inside the path instead of ending it.
+_FINDING_LINE = re.compile(r"^(.+?):[0-9]+:[0-9]+:")
+
+
+def _files_with_findings(out: str) -> Tuple[List[str], List[str]]:
+    """`(the distinct paths ruff named, the lines that named none)`.
+
+    The finding arm used to report `len(files)` -- the set the gate *checked*
+    -- as the set carrying findings (#1629). Those are the same number only
+    when every checked file is dirty, which is the single-file diff that ships
+    most often, so the wrong one read correctly nearly every time. On a 46-file
+    diff with one dirty path it printed `46 file(s) ... carry lint findings`
+    above a single listed line, and that sentence became a brief telling an
+    agent to go looking for findings that did not exist.
+
+    Returns a pair rather than an int because a line this cannot attribute is
+    not zero files, it is an unknown -- and rounding it down would put a
+    smaller-than-true number under a `finding` heading, which is the same
+    defect one layer in.
+    """
+    seen = []  # type: List[str]
+    unattributed = []  # type: List[str]
+    for line in out.strip().splitlines():
+        if not line.strip():
+            continue
+        match = _FINDING_LINE.match(line)
+        if not match:
+            unattributed.append(line)
+        elif match.group(1) not in seen:
+            seen.append(match.group(1))
+    return seen, unattributed
 
 
 def _run(argv: Sequence[str], cwd: str) -> Tuple[Optional[int], str, str]:
@@ -237,6 +273,12 @@ def run(base: str, head: str = "HEAD", cwd: str = ".",
     # path at all, and ruff then exits 0 with an empty stdout -- which arrives
     # at the `all clean` arm below listing a file nothing opened. Measured with
     # ruff 0.16.1; the separator is what makes the count a count it earned.
+    # `--quiet` is load-bearing beyond terseness: without it ruff appends a
+    # `Found N error(s).` summary, which names no path, and the finding arm
+    # below would then decline to state its count on every run that has a
+    # finding at all. `test_the_finding_count_is_the_files_carrying_findings_
+    # not_the_files_checked` runs real ruff and asserts the headline verbatim,
+    # so dropping the flag reds that test rather than degrading in silence.
     argv = [binary, "check", "--no-cache", "--quiet",
             "--output-format", "concise",
             "--extend-select", ",".join(EXTRA_RULES), "--"] + files
@@ -262,10 +304,22 @@ def run(base: str, head: str = "HEAD", cwd: str = ".",
             "  The {0} file(s) below were NOT checked:".format(len(files)),
             *listing)[1]
     if rc == 1 or out.strip():
+        # Both numbers, always, and in that order: `N of M` is the only wording
+        # that cannot be read as either of the two questions it is not
+        # answering -- how many files were checked, and how many findings there
+        # are. A bare count was read as the wrong one of the three (#1629).
+        carrying, unattributed = _files_with_findings(out)
+        if unattributed:
+            headline = ("  {0} file(s) checked; {1} finding line(s) name no "
+                        "file, so the number of files carrying findings is "
+                        "not reported:".format(len(files), len(unattributed)))
+        else:
+            headline = ("  {0} of {1} file(s) this PR adds, copies or renames "
+                        "carry lint findings:".format(len(carrying),
+                                                      len(files)))
         return EXIT_FINDING, _report(
             STATE_FINDING,
-            "  {0} file(s) this PR adds, copies or renames carry lint "
-            "findings:".format(len(files)),
+            headline,
             *["    " + line for line in out.strip().splitlines()]
             + [rules])[1]
     return EXIT_OK, _report(
