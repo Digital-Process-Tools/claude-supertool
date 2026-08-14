@@ -19,6 +19,8 @@ the 1.0 GB cache the reaper in #474 was written for.
 `replace_lines` refuses a range past the file length. `paste` is the one op that
 writes a whole file having never looked at what is there.
 """
+import os
+import time
 from pathlib import Path
 
 import _supertool
@@ -176,13 +178,32 @@ def test_a_snapshot_that_cannot_be_taken_is_declared(
     assert target.read_bytes().startswith(b"prior agent note")
 
 
-def test_the_store_is_reaped(tmp_path: Path) -> None:
+def test_the_store_is_reaped(tmp_path: Path, monkeypatch) -> None:
     """#474: ~/.cache/supertool reached 1.0 GB because a writer shipped without
     a retention entry. A new writer that is not in the table is that bug again.
+
+    Asserted end to end -- write a real snapshot, age it past the window, sweep
+    -- rather than by reading the retention table. A registration check passes
+    against a store nothing ever writes to, and it passes against one written
+    into a subdirectory, which `_gc_sweep_kind` skips forever because it is
+    non-recursive. Both of those are the same unreaped store the table claims
+    is covered.
     """
-    assert "paste-backup" in _supertool._GC_DEFAULT_RETENTION_DAYS
-    out = supertool.dispatch("gc:dry")
+    store = _cache(tmp_path, monkeypatch)
+    target = tmp_path / "note.md"
+    target.write_bytes(_note(OLD_BYTES).encode("utf-8"))
+    _paste(tmp_path, target, _note(NEW_BYTES))
+
+    snaps = list(store.glob("*"))
+    assert len(snaps) == 1, [str(s) for s in snaps]
+    stale = time.time() - 8 * 86400
+    os.utime(snaps[0], (stale, stale))
+
+    out = supertool.dispatch("gc:run:paste-backup")
+
+    assert not snaps[0].exists(), out
     assert "paste-backup" in out, out
+    assert "1 removed" in out, out
 
 
 def test_the_snapshot_store_is_flat(tmp_path: Path, monkeypatch) -> None:

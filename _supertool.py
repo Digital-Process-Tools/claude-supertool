@@ -10305,7 +10305,8 @@ _PASTE_BACKUP_KIND = "paste-backup"
 # loud in the receipt: it lands on the largest files, where the loss is worst,
 # and an unbacked overwrite that reads like a backed one is this repo's
 # recurring defect. 8 MB clears every text file this tool is aimed at —
-# `_supertool.py` itself is 1.2 MB, the largest single file in the tree.
+# `_supertool.py` is 1.2 MB and `CHANGELOG.md` 1.8 MB, the two largest files
+# in this tree.
 _PASTE_BACKUP_MAX_BYTES = 8 * 1024 * 1024
 
 
@@ -10326,12 +10327,14 @@ def _paste_snapshot(path: str, new_content: str) -> Tuple[str, str]:
     case it was not written for: the write the caller asked for happens either
     way, and the only cost of a false positive is one reaped cache file.
 
-    Why `paste` alone. `edit` and `replace` match a string first;
-    `replace_lines` refuses an end past the file length; `vim` errors on a path
-    that does not exist and echoes the removed text back as a diff. `vim` can
-    still empty a file completely (`ggdG`), so this is not a claim that nothing
-    else destroys bytes — it is that nothing else can do it to a file the
-    caller believes is not there. That belief is the #1642 mechanism: 8922
+    Why `paste` alone. Every other mutating op fails on a path that is not
+    there: `edit` and `replace` match a string, and `vim` and `replace_lines`
+    both return `file not found`. Only `paste` succeeds either way. That is the
+    whole of the claim — NOT that nothing else destroys bytes, because plenty
+    does: `vim` empties a file completely with `ggdG`, and `replace_lines`
+    clamps an end of `total + 1` rather than refusing it, so `1:total+1` takes
+    the file down to one block. What none of them can do is destroy a file the
+    caller believes is not there, and that belief is the #1642 mechanism: 8922
     bytes overwritten by an agent creating what it thought was a new note.
 
     Why no size threshold. #1650 proposes a shrink ratio or a byte-loss floor.
@@ -10374,6 +10377,10 @@ def _paste_snapshot(path: str, new_content: str) -> Tuple[str, str]:
 def op_paste(path: str, content: str) -> str:
     """Replace entire file with content. Atomic. Creates file (and parent dirs)
     if missing.
+
+    Overwriting an EXISTING file copies its outgoing bytes to
+    `~/.cache/supertool/paste-backup/` first and names the copy in the receipt
+    — see `_paste_snapshot` for why that is a copy and not a refusal (#1650).
 
     Use for full-file rewrites — no vim macro gymnastics, no `:r` insert-after
     off-by-one cuts (e.g. `<?php` eaten), no `:::` separator abuse. CONTENT

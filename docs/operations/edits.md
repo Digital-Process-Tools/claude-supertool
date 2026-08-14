@@ -112,11 +112,14 @@ That third state exists because a confidently wrong line number costs more than 
 
 ### A `paste` over an existing file keeps the bytes it displaces
 
-`paste` is the only op that writes a whole file without first establishing what
-is there. `edit` and `replace` match a string; `replace_lines` refuses an `END`
-past the file length; `vim` errors on a path that does not exist. `paste`
-succeeds either way, which is how an agent creating what it believed was a new
-note replaced 8922 bytes it did not know existed
+Every other mutating op fails on a path that is not there: `edit` and `replace`
+match a string, and `vim` and `replace_lines` both return `file not found`.
+Only `paste` succeeds either way. That is the whole of the claim — not that
+nothing else destroys bytes, because plenty does: `vim` empties a file with
+`ggdG`, and `replace_lines` *clamps* an `END` of `total + 1` rather than
+refusing it. What none of them can do is destroy a file the caller believes is
+not there, which is how an agent creating what it believed was a new note
+replaced 8922 bytes it did not know existed
 ([#1650](https://github.com/Digital-Process-Tools/claude-supertool/issues/1650)).
 The path was gitignored, so there was no git copy, and the receipt — honest and
 complete — printed one step after the only moment it could have helped.
@@ -146,6 +149,13 @@ Three states, never silence:
 | `↳ previous contents kept at PATH` | the displaced bytes are at PATH |
 | *(no line)* | nothing was displaced — the file was created, or already held exactly what was written |
 | `↳ no backup of the previous contents — WHY` | the copy could not be made. The write still happened; WHY names the reason (unreadable file, unwritable cache, or over the 8 MB copy limit) |
+
+**A write that a validator rolls back still leaves a copy.** The snapshot is
+taken before the write, and whether the write survives validation is not known
+until after it — so a rolled-back `paste` prints `previous contents kept at
+PATH` above `[rolled back] … the file was NOT edited`. Both are true: the file
+on disk is the original, and PATH holds those same bytes. The copy is redundant
+rather than wrong, and `gc` reaps it with the rest.
 
 Copies are reaped with the rest of the cache: `gc:dry` previews, `gc:run`
 deletes, retention 7 days, overridable per kind under `gc.retention_days` in
