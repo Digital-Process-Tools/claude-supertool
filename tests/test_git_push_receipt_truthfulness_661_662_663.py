@@ -399,10 +399,14 @@ def test_an_unreadable_outcome_declines_loudly_and_carries_to_the_verdict(capsys
     `[result]` line or a caller reading only the verdict still walks away with
     the reassuring reading.
     """
-    moved, note = push._report_first_seen_remote("abc1234", "", "feature",
-                                                 "origin/feature")
+    # Three values since #1669: the body is RETURNED, not printed, because the
+    # `Status:` headline it sits under is derived from `moved` and so cannot be
+    # emitted before this call has made the decision.
+    moved, note, lines = push._report_first_seen_remote("abc1234", "",
+                                                        "feature",
+                                                        "origin/feature")
 
-    out = capsys.readouterr().out
+    out = capsys.readouterr().out + chr(10).join(lines)
     assert moved is True
     assert "UNKNOWN" in out, f"the decline is not loud:{chr(10)}{out}"
     assert "branch created" not in out

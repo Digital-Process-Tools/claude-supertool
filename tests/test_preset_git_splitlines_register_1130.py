@@ -1,10 +1,17 @@
 """#1130 - the `presets/git/` audit table, as a build gate instead of a paragraph.
 
 Third and largest of the forged-boundary audits: #1105 read `presets/github`,
-#1119 read `presets/gitlab`, and this one reads `presets/git` - 27
-`str.splitlines()` call sites across 24 enclosing functions in 9 files.
+#1119 read `presets/gitlab`, and this one reads `presets/git` - 23
+`str.splitlines()` call sites across 23 enclosing functions in 8 files.
 
-Those numbers were 38 / 27 / 11 until #1681, which narrowed the eleven sites in
+Those numbers were 27 / 24 / 9 until #1693, which narrowed the four sites in
+`investigate.py::main` and so emptied the file: the log render and the two diff
+renders are #1681's shape one function further on, and the fourth is the blame
+parse this register carried as its only open finding. That one did not take
+`_untrusted.split_lines` — see the entry that used to be here, and
+`test_the_narrowed_readers_did_not_quietly_revert`, which now names it.
+
+They were 38 / 27 / 11 until #1681, which narrowed the eleven sites in
 six functions that render EVERY line of a log stream, counted. That is a
 different question from the one this register asks, and the register could not
 have answered it: the deciding rule below asks whether a forged row is
@@ -59,9 +66,20 @@ entry that names none:
   fail-closed, or inflates a count that is loud in the direction it inflates,
   or the text's author is the local operator rather than a stranger.
   Seventeen entries.
-* ``NOT QUOTED, open`` - quoting does not reach it and the harm is real. One:
-  `investigate.py`'s blame parse. Named here rather than left implied, and
-  carried in `.claude/jit-context/paths/00-manual/presets-git.md`.
+* ``NOT QUOTED, open`` - quoting does not reach it and the harm is real.
+  **Zero since #1693**, and the ground is kept rather than deleted because a
+  register whose only unsafe classification has no spelling is one that cannot
+  record the next one. Its single entry was `investigate.py`'s blame parse:
+  `blame --line-porcelain` interleaves porcelain headers with the blamed file's
+  OWN lines, so a source line spelling `<U+2028>author X<U+2028><TAB>text`
+  added a row to `## Blame hotspots` carrying an author, a date and a line
+  number no commit had. `split_lines` was not the fix there and is why that
+  site left this register entirely: the repair is git's own separator, LF,
+  which a file line cannot contain by definition - AND a second reader nobody
+  had counted, `_git_common._git`, which runs `subprocess.run(text=True)` and
+  so rewrote a lone CR into LF before any splitter could decline to honour it.
+  A bare CR in a source file forged the same row over plain ASCII, and no
+  choice of splitter closes that. `_git_verbatim` does.
 
 **What #1652 retired, and what this register must no longer say.** Five
 `presets/github/` entries used to be justified by "`str.splitlines()` CONSUMES
@@ -101,7 +119,7 @@ GROUNDS = ("QUOTED PATH - ", "NOT QUOTED, harmless - ", "NOT QUOTED, open - ")
 #: diff rather than a re-derivation. Asserted exact in both directions.
 GROUND_TALLY = {"QUOTED PATH - ": 6,
                 "NOT QUOTED, harmless - ": 17,
-                "NOT QUOTED, open - ": 1}
+                "NOT QUOTED, open - ": 0}
 
 #: Phrases that state the argument #1652 retired. An entry may describe it in
 #: the past tense; the check is on the register's reasons, not on this file.
@@ -113,6 +131,15 @@ RETIRED = ("the extraction kind", "consumes the separator",
 #: they are not `str.splitlines()` calls.
 REGISTER: dict[str, str] = {
     # -- _git_common.py -----------------------------------------------------
+    # This entry is also the ground for `resolve.py`'s five `✓`/`⊘`/`✗` receipt
+    # rows, which interpolate `path` with no `_untrusted.flat` (#1693). Every
+    # such `path` is a member of THIS function's result: `resolve.py::main`
+    # takes `targets` from `_list_conflicts()` directly, or from a
+    # comma-separated argv list it first refuses unless every element is
+    # already in that set. So argv is a FILTER over the quoted set, not a
+    # second source — which is a stronger ground than "argv is the caller's
+    # own", and it is the one that would be lost if that refusal were relaxed.
+    # `tests/test_git_investigate_and_resolve_relay_grounds_1693.py` pins it.
     "presets/git/_git_common.py::_list_conflicts":
         "QUOTED PATH - `git diff --name-only --diff-filter=U`, and a pathname "
         "is exactly what core.quotePath octal-quotes, so a byte above 0x7F "
@@ -162,15 +189,14 @@ REGISTER: dict[str, str] = {
         "a pathname, and `len(shown)` is printed next to the rows.",
 
     # -- investigate.py -----------------------------------------------------
-    "presets/git/investigate.py::main":
-        "NOT QUOTED, open - four sites: log lines, two diffs counted for +/- "
-        "totals, and `blame --line-porcelain` parsed on a 40-hex header / "
-        "`author ` / leading-tab content. None of the four is a pathname read, "
-        "and the blame parse is the open one in this tree: file CONTENT is in "
-        "that stream and reaches the split raw, so a crafted line can "
-        "misattribute an author or a date. Left alone because git-investigate "
-        "gates nothing, writes nothing, and the hotspot list is advisory - but "
-        "this is the site to revisit first if that ever stops being true.",
+    # `main` was here and was this register's only `NOT QUOTED, open`. Its four
+    # sites are all narrowed since #1693, so the file is out of the register
+    # entirely: the log render and the two diff renders take `split_lines` +
+    # `visible()` (#1681's shape), and the blame parse takes git's own LF,
+    # which `split_lines` is too wide for. The old entry said the site was
+    # "left alone because git-investigate gates nothing, writes nothing, and
+    # the hotspot list is advisory" — true, and beside the point once the
+    # question is who the reader believes wrote a line.
 
     # -- merge.py -----------------------------------------------------------
     # `_fresh_merge_ref` was here, on "the extraction kind", citing
@@ -381,6 +407,17 @@ def test_the_narrowed_readers_did_not_quietly_revert() -> None:
          "the pickaxe render hands `c.split()[0]` to `git show` as argv, so a "
          "forged line put an option there - `git show --output=<file>` writes "
          "that file (#1681)"),
+        ("presets/git/investigate.py::main",
+         "`blame --line-porcelain` interleaves porcelain headers with the "
+         "blamed file's OWN lines, so a source line spelling "
+         "`<U+2028>author X<U+2028><TAB>text` added a blame row carrying an "
+         "author, a date and a line number no commit had. `split_lines` is NOT "
+         "the fix and would not close it: `_git` runs "
+         "`subprocess.run(text=True)`, which rewrites a lone CR into LF before "
+         "any splitter sees it, so a bare CR in a source file forged the same "
+         "row over plain ASCII. The reader is `_git_verbatim` plus a split on "
+         "git's own LF, which a file line cannot contain by definition "
+         "(#1693)"),
     ):
         assert gone not in sites, f"{gone} is on str.splitlines() again: {why}"
 
