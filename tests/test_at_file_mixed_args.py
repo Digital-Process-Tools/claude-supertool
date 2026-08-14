@@ -18,10 +18,21 @@ REPO = Path(__file__).parent.parent
 SUPERTOOL = REPO / "supertool.py"
 
 
-def _run(args: list[str], stdin: str = "") -> tuple[int, str, str]:
+def _run(args: list[str], stdin: str = "", *, cwd: Path) -> tuple[int, str, str]:
+    """Spawn supertool from `cwd`, which must be a directory the test owns.
+
+    `cwd` is required rather than defaulted (#1656). The bug under test creates
+    a file named `@-` relative to the process working directory, so where that
+    directory is *is* the subject: these tests used to run in the live checkout
+    root and create and unlink `REPO/'@-'` there — a path two concurrent runs
+    in one checkout race on, in a tree that is typically symlinked as the
+    operator's `supertool` binary. Spawning from `tmp_path` asserts exactly the
+    same thing about a directory nothing else is using.
+    """
     proc = subprocess.run(
         [sys.executable, str(SUPERTOOL), *args],
-        input=stdin, capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
+        input=stdin, capture_output=True, text=True, timeout=10,
+        cwd=str(cwd), encoding="utf-8", errors="replace",
     )
     return proc.returncode, proc.stdout, proc.stderr
 
@@ -33,19 +44,19 @@ def test_paste_at_dash_with_trailing_colon_args_does_not_create_at_dash_file(
     out_path = tmp_path / "real_target.txt"
     # Stdin payload includes the path field that should be used.
     payload = json.dumps({"path": str(out_path), "content": "hello\n"})
+    spawn_dir = tmp_path / "cwd"
+    spawn_dir.mkdir()
     code, stdout, stderr = _run(
-        [f"paste:@-:::{out_path}"], stdin=payload,
+        [f"paste:@-:::{out_path}"], stdin=payload, cwd=spawn_dir,
     )
-    at_dash = REPO / "@-"
-    try:
-        # The bug created REPO/@-; the fix must NOT create that file.
-        assert not at_dash.exists(), (
-            f"Bug regression: a file literally named '@-' was created at "
-            f"{at_dash}. Stdout: {stdout}. Stderr: {stderr}"
-        )
-    finally:
-        if at_dash.exists():
-            at_dash.unlink()
+    # The bug created `@-` in the process working directory; the fix must NOT
+    # create that file. Asserted against the spawn directory rather than the
+    # checkout root, which is not scratch space (#1656).
+    at_dash = spawn_dir / "@-"
+    assert not at_dash.exists(), (
+        f"Bug regression: a file literally named '@-' was created at "
+        f"{at_dash}. Stdout: {stdout}. Stderr: {stderr}"
+    )
 
 
 def test_paste_at_file_with_trailing_args_either_errors_or_uses_payload(
@@ -54,8 +65,10 @@ def test_paste_at_file_with_trailing_args_either_errors_or_uses_payload(
     """`paste:@-:::path` should either error clearly or honor the @file payload."""
     out_path = tmp_path / "target.txt"
     payload = json.dumps({"path": str(out_path), "content": "X\n"})
+    spawn_dir = tmp_path / "cwd"
+    spawn_dir.mkdir()
     code, stdout, stderr = _run(
-        [f"paste:@-:::{out_path}"], stdin=payload,
+        [f"paste:@-:::{out_path}"], stdin=payload, cwd=spawn_dir,
     )
     combined = stdout + stderr
     # Acceptable outcomes:
@@ -65,9 +78,8 @@ def test_paste_at_file_with_trailing_args_either_errors_or_uses_payload(
         "ERROR" in combined
         or (out_path.exists() and out_path.read_text(encoding="utf-8") == "X\n")
     )
-    at_dash = REPO / "@-"
-    if at_dash.exists():
-        at_dash.unlink()
+    assert not (spawn_dir / "@-").exists(), (
+        f"a file literally named '@-' was created at {spawn_dir / '@-'}")
     assert accepted, (
         f"Expected error or successful paste into the real path. "
         f"Got: {combined!r}"

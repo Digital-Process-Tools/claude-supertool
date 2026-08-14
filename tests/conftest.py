@@ -317,10 +317,50 @@ def pytest_configure(config):
         os.pathsep.join(_tmp_roots),
     )
     os.environ.setdefault("SUPERTOOL_NO_PUBLISH_CONFIRM", "1")
+    # #1656: every cache supertool writes goes through `_supertool._cache_root()`,
+    # which is the one place `~/.cache/supertool` is spelled and reads
+    # XDG_CACHE_HOME per call. Point it at a directory this process owns, so the
+    # suite stops writing into the operator's real cache — measured at 52 files
+    # / 288 KB per full run, all of it the #1650 `paste-backup` store, on a
+    # machine where that cache is also the thing under test.
+    #
+    # Set, not `setdefault`. The three switches above are `setdefault` because a
+    # real environment should be able to win; here the operator's environment is
+    # exactly what must not be written to, so an exported XDG_CACHE_HOME is the
+    # case this exists for rather than an override of it.
+    #
+    # This subsumes rather than replaces `SUPERTOOL_READ_NO_ELIDE`,
+    # `SUPERTOOL_GC_DISABLE` and `SUPERTOOL_VIM_NO_PERSIST` above: those three
+    # turn individual stores off, and a store added tomorrow gets no line. This
+    # is the floor under all of them, including the ones that do not exist yet.
+    # Its blast radius is those same three stores plus paste-backup — the
+    # alternative repairs (a `SUPERTOOL_PASTE_NO_BACKUP` product knob disabling
+    # a data-loss net, or a test-only cache root that is an env var by another
+    # name) both add product surface this does not, and both fix one instance.
+    #
+    # Per process, so xdist workers do not share one and two concurrent suites
+    # in one checkout cannot race. Removed in `pytest_unconfigure`.
+    config._supertool_cache_home = tempfile.mkdtemp(prefix="supertool-suite-cache-")
+    os.environ["XDG_CACHE_HOME"] = config._supertool_cache_home
     # #416: the autouse fixture below cannot cover collection-time module
     # bodies or session helpers, which run before any fixture. Scrub once here
     # too, and remember what was leaked so it gets reported rather than hidden.
     config._supertool_leaked_git_env = scrub_git_env()
+
+
+def pytest_unconfigure(config):
+    """Take the #1656 cache redirect's directory back down.
+
+    Best effort and deliberately silent: a suite that cannot remove its own
+    temp directory has still run correctly, and raising here would turn a
+    cleanup failure into a red on work that passed. The directory is under
+    `tempfile.gettempdir()` either way, so the worst outcome is one the OS
+    reaps rather than the operator's cache being written to.
+    """
+    import shutil
+    cache_home = getattr(config, "_supertool_cache_home", None)
+    if cache_home:
+        shutil.rmtree(cache_home, ignore_errors=True)
 
 
 def pytest_report_header(config):
