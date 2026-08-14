@@ -235,6 +235,61 @@ def cannot_be_a_git_subcommand_test(text: str) -> bool:
 #: loop later in the same literal is a second span rather than one long one.
 _LOOP_BODY = re.compile(r"(?:^|[\s;&|(])(?:while|until|for)\b.*?\bdone\b", re.S)
 
+#: `shift` run as a command, not `shift` occurring as a word. The shell only
+#: consumes an argument when the word sits where a command can start: at the
+#: beginning of the literal, after a separator, or after a keyword that opens a
+#: body. `echo "cannot shift here"` puts the letters in an operand and shifts
+#: nothing -- which is #1661, where a substring test read that as a dispatcher
+#: and exempted every `$1` decision in the loop. The negative lookahead because
+#: `shift=1` assigns to a variable that happens to be called `shift`, and the
+#: word boundary because `shiftcount` is not the builtin either.
+_SHIFT_COMMAND = re.compile(
+    r"(?:^|[\n;&|(){}`]|\b(?:do|then|else|elif)\b)[ \t]*shift\b(?!=)"
+)
+
+#: The two characters `_outside_quotes` opens a quoted span on.
+_QUOTES = '"' + "'"
+
+
+def _outside_quotes(text: str) -> str:
+    """TEXT with every quoted span and comment blanked, offsets preserved.
+
+    The counterpart to `_unquoted`, and needed because that one deletes the
+    quote characters rather than what they enclose: `echo "run: shift; go"`
+    comes out of it as `echo run: shift; go`, where the `;` the string was
+    carrying now reads as a separator and the word after it as a command. Same
+    length in as out, so an offset here still indexes into TEXT.
+
+    Not a shell parser. It tracks one level of quoting and a `#` comment, which
+    is what the shim literals in this suite are made of. Anything it cannot
+    read stays visible rather than being blanked, so the exemption below fails
+    *closed* -- an unreadable literal is reported, never exempted.
+    """
+    out = list(text)
+    quote = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote is None:
+            if ch in _QUOTES:
+                quote = ch
+                out[i] = " "
+            elif ch == "#" and (i == 0 or text[i - 1] in " ;&|(" + chr(9) + chr(10)):
+                while i < len(text) and text[i] != chr(10):
+                    out[i] = " "
+                    i += 1
+                continue
+        else:
+            out[i] = " "
+            if ch == quote:
+                quote = None
+            elif ch == chr(92) and quote == '"' and i + 1 < len(text):
+                out[i + 1] = " "
+                i += 1
+        i += 1
+    return "".join(out)
+
+
 #: Every construct `_looks_like_the_class` counts as testing `$1`. Kept as one
 #: tuple so the span check below cannot drift from the detection above it.
 _TESTS_DOLLAR_ONE = (
@@ -255,14 +310,32 @@ def _shifts_through_argv(text: str) -> bool:
     and would bless every shim that file ever acquires; naming the *shape*
     exempts the construct wherever anybody writes it.
 
-    Deliberately narrow in three ways, each pinned by a test below. A loop with
-    no `shift` consumes nothing, so `$1` is still the first word. A `$1` test
-    outside the loop is not covered by a dispatcher that happens to sit above
-    it. And an empty set of tests is not "all of them inside a loop" -- there
-    is nothing here to exempt, and `_looks_like_the_class` has already decided
-    that case.
+    Takes the literal with its quotes still on, because the quoting is the only
+    thing that separates a `shift` from the word `shift` (#1661).
+
+    Deliberately narrow in four ways, each pinned by a test below. A loop with
+    no `shift` consumes nothing, so `$1` is still the first word. A loop that
+    merely *mentions* the word -- in an `echo`, a comment, a variable name --
+    consumes nothing either, and believing the letters is how this exemption
+    silenced the whole gate the morning it shipped. A `$1` test outside the
+    loop is not covered by a dispatcher that happens to sit above it. And an
+    empty set of tests is not "all of them inside a loop" -- there is nothing
+    here to exempt, and `_looks_like_the_class` has already decided that case.
+
+    Every arm returns False when it cannot establish the exemption, which is
+    the direction that costs a false report rather than a silent gate: an
+    exemption that cannot be established is not an exemption.
     """
-    spans = [m.span() for m in _LOOP_BODY.finditer(text) if "shift" in m.group(0)]
+    # Two readings of the same literal, and a `shift` has to survive both. The
+    # unquoted one carries the offsets the span check below is stated in; the
+    # blanked one is the only one that knows a `;` inside an `echo` argument is
+    # not a separator, and it cannot supply offsets because `_unquoted` deletes
+    # characters. So it is used as a whole-literal veto rather than per span.
+    if not _SHIFT_COMMAND.search(_outside_quotes(text)):
+        return False
+    text = _unquoted(text)
+    spans = [m.span() for m in _LOOP_BODY.finditer(text)
+             if _SHIFT_COMMAND.search(m.group(0))]
     if not spans:
         return False
     positions = [m.start() for rx in _TESTS_DOLLAR_ONE for m in rx.finditer(text)]
@@ -279,10 +352,14 @@ def _looks_like_the_class(text: str) -> bool:
     never for what it would find tomorrow -- and the shims it has caught are
     all written in the style it reads, so every historical hit corroborates it.
     """
-    text = _unquoted(text)
-    tested = _CASE_ON_DOLLAR_ONE.search(text) or _operands_compared_with_dollar_one(text)
+    unquoted = _unquoted(text)
+    tested = (_CASE_ON_DOLLAR_ONE.search(unquoted)
+              or _operands_compared_with_dollar_one(unquoted))
     if not tested:
         return False
+    # Both exemptions are handed the literal as written. They unquote what they
+    # need to: dropping the quotes before either of them can look is what let a
+    # quoted word stand in for a builtin (#1661).
     return not (
         cannot_be_a_git_subcommand_test(text) or _shifts_through_argv(text)
     )
@@ -576,3 +653,50 @@ def test_the_dispatcher_exemption_does_not_bless_a_first_argument_decision(
     shim: str,
 ) -> None:
     assert _looks_like_the_class(shim), shim
+
+
+@pytest.mark.parametrize("shim", [
+    # #1661: the letters in an operand. `echo` runs; `shift` is a word it
+    # prints. This exact literal is the reproduction filed on the issue.
+    'while true; do echo "cannot shift here"; '
+    'if [ "$1" = "status" ]; then exit 128; fi; break; done',
+    # The letters in a comment, which the shell never executes at all.
+    'while true; do  # shift past the flags one day' + chr(10)
+    + 'if [ "$1" = "status" ]; then exit 128; fi; break; done',
+    # The letters inside a quoted string that also carries a separator. This
+    # is the one that survives `_unquoted`, and it is why the exemption reads
+    # the literal with its quotes on as well as with them off.
+    'while true; do echo "run: shift; then look"; '
+    'if [ "$1" = "status" ]; then exit 128; fi; break; done',
+    # A variable whose name merely begins with the word.
+    'while true; do shiftcount=1; '
+    'if [ "$1" = "status" ]; then exit 128; fi; break; done',
+    # An assignment to a variable *named* `shift` is not the builtin either.
+    'while true; do shift=1; '
+    'if [ "$1" = "status" ]; then exit 128; fi; break; done',
+])
+def test_the_word_shift_in_a_loop_is_not_a_shift(shim: str) -> None:
+    """#1661: the exemption tested for the letters, so an `echo` silenced it.
+
+    The gate's live population was zero at the time, in the file whose whole
+    subject is a detector whose zero meant "I did not look" -- so a shim could
+    opt itself out of the class by mentioning the word in a message.
+    """
+    assert _looks_like_the_class(shim), shim
+
+
+@pytest.mark.parametrize("shim", [
+    # `shift` after `;` -- the ordinary spelling.
+    'while [ $# -gt 0 ]; do case "$1" in status) exit 128 ;; esac; shift; done',
+    # `shift` opening a line, and `until` rather than `while`.
+    'until [ $# -eq 0 ]; do' + chr(10)
+    + '  if [ "$1" = "status" ]; then exit 128; fi' + chr(10)
+    + '  shift' + chr(10)
+    + 'done',
+    # `shift` with a count, reached through `then` rather than a separator.
+    'while [ $# -gt 0 ]; do if [ "$1" = "status" ]; then shift 2; fi; done',
+])
+def test_a_shift_that_actually_runs_still_exempts_the_loop(shim: str) -> None:
+    """The #1598 exemption has to survive #1661's narrowing, or the fix for a
+    silenced gate is a gate that reports its one correct implementation."""
+    assert not _looks_like_the_class(shim), shim
