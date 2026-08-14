@@ -54,7 +54,7 @@ def _entries(name: str) -> Dict[str, dict]:
 
 @pytest.mark.parametrize("config", CONFIGS)
 def test_every_env_name_in_prose_is_one_the_runner_sets(config: str) -> None:
-    wrong = []  # type: List[str]
+    wrong: List[str] = []
     for op, entry in _entries(config).items():
         prose = " ".join(v for k, v in entry.items() if isinstance(v, str))
         for named in sorted(set(_ENV.findall(prose))):
