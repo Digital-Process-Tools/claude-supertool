@@ -7140,7 +7140,7 @@ MAX_MAP_FILES = 100  # Cap to prevent overwhelming output
 _NO_PARSER_MARKER = "no symbol parser for "
 
 
-def _map_no_parser_reason(ext: str, use_ts: bool, use_ctags: bool) -> str:
+def _map_no_parser_reason(ext: str, use_ts: bool, ctags_ran: bool) -> str:
     """Why no tier could look at EXT, or "" when at least one could (#887).
 
     `map` had two renders for three facts: symbols, none found, and no parser
@@ -7152,9 +7152,15 @@ def _map_no_parser_reason(ext: str, use_ts: bool, use_ctags: bool) -> str:
 
     A tier counts as able to look when it has patterns or a grammar for EXT,
     not merely when it is installed. ctags is deliberately not treated as a
-    parser here: `op_map` only consults it when tree-sitter is absent, and the
-    build on PATH may be BSD ctags, which cannot be queried for its language
-    list — so a note is appended rather than a capability claimed.
+    parser here: the build on PATH may be BSD ctags, which cannot be queried
+    for its language list — so a note is appended rather than a capability
+    claimed.
+
+    `ctags_ran` is whether ctags was actually invoked on THIS file, not
+    whether a binary exists (#913). The note used to be appended from
+    availability, which meant it could claim ctags "found nothing" on a run
+    where ctags was never asked — the absence-produced-by-the-tool shape this
+    repository keeps re-filing.
     """
     ts_lang = _TS_LANG_MAP.get(ext) if use_ts else None
     if ts_lang and ts_lang not in _TS_GRAMMAR_FAILED:
@@ -7169,17 +7175,43 @@ def _map_no_parser_reason(ext: str, use_ts: bool, use_ctags: bool) -> str:
     else:
         detail = (f"tree-sitter is not installed and the regex tier has no "
                   f"{ext} patterns")
-    if use_ctags:
+    if ctags_ran:
         detail += "; ctags found nothing"
     return f"{_NO_PARSER_MARKER}{ext} - {detail}"
+
+
+def _ts_tier_is_blind(ext: str, use_ts: bool) -> bool:
+    """True when the tree-sitter tier cannot look at EXT at all (#913).
+
+    Distinguishes "tier 1 has no grammar for this file" — where dropping to
+    ctags is the documented cascade and the only way an installed ctags ever
+    earns its keep — from "tier 1 parsed the file and it has no definitions",
+    where ctags would re-read the same file in a subprocess to reach the same
+    answer.
+
+    That distinction is the whole cost argument. Measured on this repo at
+    100 mapped files, 14 produced no tree-sitter symbols and all 14 were the
+    second kind (changelog fragments, an empty `__init__.py`); a ctags call
+    costs ~41ms each on macOS, of which ~33ms is bare process spawn. Falling
+    back on emptiness would buy nothing and put a per-file subprocess on a hot
+    path — the shape that has reddened Windows legs four times here (#1296,
+    #1360, #1461, #1501).
+    """
+    if not use_ts:
+        return True
+    lang_name = _TS_LANG_MAP.get(ext)
+    return not lang_name or lang_name in _TS_GRAMMAR_FAILED
 
 
 def op_map(path: str, no_exclude: bool = False) -> str:
     """Generate a symbol map of a file or directory.
 
-    Three-tier extraction:
-      1. tree-sitter (if tree_sitter_languages is installed)
-      2. ctags (if universal-ctags is on PATH)
+    Three tiers, per file:
+      1. tree-sitter (if a tree-sitter language package is installed)
+      2. ctags (if `ctags` is on PATH) — consulted only for a file tier 1
+         cannot parse: no grammar for the extension, or a grammar that failed
+         to load. A file tier 1 read and found nothing in does not fall
+         through; see `_ts_tier_is_blind` for why (#913).
       3. regex fallback (always available for supported extensions)
 
     Output: indented tree of classes/functions/methods per file.
@@ -7198,9 +7230,11 @@ def op_map(path: str, no_exclude: bool = False) -> str:
     truncated = len(files) > MAX_MAP_FILES
     files = files[:MAX_MAP_FILES]
 
-    # Detect available tier
+    # Detect available tier. ctags is probed per file rather than once here:
+    # it is reachable whenever tier 1 is blind to a file, which `use_ctags =
+    # not use_ts and _has_ctags()` made impossible for the entire run as soon
+    # as tree-sitter imported (#913).
     use_ts = _has_tree_sitter()
-    use_ctags = not use_ts and _has_ctags()
 
     # tier label is computed after extraction to reflect what actually produced symbols
     actual_tier: str = "regex"
@@ -7223,7 +7257,10 @@ def op_map(path: str, no_exclude: bool = False) -> str:
                     symbols_found = True
                     actual_tier = "tree-sitter"
 
-        if not symbols_found and use_ctags:
+        ctags_ran = False
+        if (not symbols_found and _ts_tier_is_blind(ext, use_ts)
+                and _has_ctags()):
+            ctags_ran = True
             symbols_ct = _ctags_extract(fpath)
             if symbols_ct:
                 out_files.append(_format_ctags_symbols(
@@ -7239,7 +7276,7 @@ def op_map(path: str, no_exclude: bool = False) -> str:
                 symbols_found = True
 
         if not symbols_found:
-            no_parser = _map_no_parser_reason(ext, use_ts, use_ctags)
+            no_parser = _map_no_parser_reason(ext, use_ts, ctags_ran)
             ts_lang = _TS_LANG_MAP.get(ext) if use_ts else None
             if no_parser:
                 # No tier has a grammar or a pattern set for this extension.
