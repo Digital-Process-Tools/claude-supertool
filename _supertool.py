@@ -8797,6 +8797,30 @@ def _write_target(path: str) -> str:
     return os.path.realpath(path) if os.path.islink(path) else path
 
 
+def _process_umask() -> int:
+    """The process umask, read once at import.
+
+    CPython offers no getter: the mask has to be set and put back, and the two
+    syscalls are a window in which another thread would create a file under the
+    wrong mask. Read at import, before this module can have started a thread,
+    so the window is never open while one exists.
+    """
+    cur = os.umask(0o022)
+    os.umask(cur)
+    return cur
+
+
+#: What a file `paste`/`append` brings into existence is created at (#1275).
+#: `0666 & ~umask` is what `open`, `>`, `tee`, `cp` and every editor produce;
+#: the `0600` that reached disk before was `tempfile.mkstemp`'s, an artefact of
+#: the temp file rather than a default anybody chose, and it was never a
+#: guarantee either -- an overwrite has always kept the target's own mode
+#: (#259), so the tight bit applied only to files that were not there before.
+#: A caller wanting owner-only files sets `umask 077`, which is what the mask
+#: is for, and the receipt states the mode so the widening is not silent.
+_NEW_FILE_MODE = 0o666 & ~_process_umask()
+
+
 def _atomic_write(path: str, content: str) -> None:
     """Write content to path atomically — temp file + os.replace.
 
@@ -8840,10 +8864,22 @@ def _atomic_write(path: str, content: str) -> None:
     # Preserve the original file's mode (#259). mkstemp creates the temp file
     # with 0600; os.replace would then clobber the target's mode, silently
     # dropping the executable bit on scripts/git hooks. Capture the existing
-    # mode and re-apply it to the temp file before the rename. A brand-new
-    # file keeps mkstemp's default — no spurious +x.
+    # mode and re-apply it to the temp file before the rename.
+    #
+    # A brand-new file used to keep mkstemp's 0600 (#1275). That is not a
+    # default anybody chose — it is the temp file's own mode leaking through a
+    # rename — and it made supertool the only file-creating tool on the box
+    # that ignores the umask. It gets `_NEW_FILE_MODE` instead, which never
+    # carries an executable bit, so #259's "no spurious +x" still holds.
+    # Three states, not two. `FileNotFoundError` is "there is no file here",
+    # which is the create. Any other OSError means the mode could not be read
+    # from a file that may well exist, and applying a create's default there
+    # would rewrite a mode nobody asked about — mkstemp's own is left alone
+    # instead, which is what happened before #1275 in every case.
     try:
         orig_mode = stat.S_IMODE(os.stat(real_path).st_mode)
+    except FileNotFoundError:
+        orig_mode = _NEW_FILE_MODE
     except OSError:
         orig_mode = None
     fd, tmp_path = tempfile.mkstemp(
@@ -10374,6 +10410,46 @@ def _paste_snapshot(path: str, new_content: str) -> Tuple[str, str]:
     return str(dest), ""
 
 
+def _created_mode_note(path: str, content: str) -> str:
+    """What `paste` says about the mode of a file it has just created (#1275).
+
+    It states the mode and stops there. `paste` does NOT infer the executable
+    bit — not from the shebang, not from the modes of the file's neighbours,
+    not from an `+x` flag — because each of those is a guess whose wrong answer
+    is silent in one direction and destructive in the other: an inferred `+x`
+    on a payload-written file is a permission nobody asked for, and a missing
+    one is a script that does not run. Disclosure has no wrong answer, and the
+    caller already knows which of the two they wrote.
+
+    What it does add, for the case that produced the issue, is the fact and the
+    one command: content beginning `#!` is a script, and a script without an
+    executable bit is a broken artefact whose first symptom arrives after the
+    merge. Naming `chmod +x` is not inference — the mode on disk is unchanged
+    either way.
+
+    **Nothing is printed on Windows.** There is no executable bit there and
+    `os.chmod` honours only the read-only flag, so `st_mode` reads back 0o666
+    whatever was asked for. A mode line would be noise at best and a false
+    statement about the file's access at worst.
+    """
+    if os.name == "nt":
+        return ""
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        # The write succeeded and the stat did not, so the mode is unknown.
+        # Saying nothing is right here: this note exists to disclose a fact,
+        # and there is no fact to disclose.
+        return ""
+    note = "  ↳ mode {0:04o}, from the process umask\n".format(mode)
+    if content.startswith("#!") and not (mode & 0o111):
+        note += (
+            "  ↳ starts with `#!` but is not executable — "
+            "`chmod +x {0}` to run it\n".format(path)
+        )
+    return note
+
+
 def op_paste(path: str, content: str) -> str:
     """Replace entire file with content. Atomic. Creates file (and parent dirs)
     if missing.
@@ -10428,6 +10504,7 @@ def op_paste(path: str, content: str) -> str:
     return (
         f"{verb} {path} ({new_lines} lines, {old_size} → {new_size} bytes)\n"
         + snapshot_note
+        + ("" if existed else _created_mode_note(path, content))
     )
 
 
