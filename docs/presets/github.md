@@ -1455,11 +1455,15 @@ CodeQL (run 31749711175)         31749711175 attempt 1      concluded      succe
 tests                            31749711508 attempt 2      concluded      success        16 total: 16 passed, …
 ```
 
-**A name with two runs is visible, and a name with one is untouched.** The
-selection is keyed by a label: the bare workflow name when it has one run on the
-commit — every ordinary render is byte-identical to before — and `NAME (run ID)`
-on each when it has more, because a reader who cannot see the second row cannot
-check the verdict. The workflow names themselves are read off the run objects
+**A name with two runs is visible, and an ordinary name with one is untouched.**
+The selection is keyed by a label: the bare workflow name when it has one run on
+the commit, and `NAME (run ID)` on each when it has more, because a reader who
+cannot see the second row cannot check the verdict. Since
+[#1687](https://github.com/Digital-Process-Tools/claude-supertool/issues/1687)
+the one-run label is not quite the raw name — it goes through the same
+neutralisation described below — but that is a no-op unless the name itself
+contains supertool's `(run <id>)` shape, so an ordinary render is still
+byte-identical to before. The workflow names themselves are read off the run objects
 (`workflow_names()`), never parsed back out of a label, so the declared-set
 comparison and the previous-head comparison keep asking the workflow question
 while the verdict asks the run question.

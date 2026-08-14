@@ -140,8 +140,10 @@ def runs_on_sha(runs: object, sha: str) -> dict:
     The key is a **label**, not the raw id, because it is what the verdict
     sentence, the shortfall lines and the table all name the row by, and
     `31749711130` is not an answer to "what failed". A name with one run keeps
-    its bare name — every render and every name-keyed consumer is unchanged on
-    the ordinary commit. A name with two gets `NAME (run ID)` on both, so the
+    its bare name — every ordinary render and every name-keyed consumer is
+    unchanged on the ordinary commit, the one exception being a name that
+    itself contains this module's `(run <id>)` shape (see
+    `_neutralise_run_tag`). A name with two gets `NAME (run ID)` on both, so the
     second row is visible and the reader can check the verdict against it.
     Callers wanting the workflow names go through `workflow_names()`, which
     reads them off the run objects rather than parsing them back out.
@@ -828,7 +830,8 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
     read cannot contribute to a green, so it decides the whole answer.
 
     A label rather than a workflow name since #1640 — the bare name where that
-    name has one run on the commit, `NAME (run ID)` where it has two. The keys
+    name has one run on the commit (neutralised where the name forges this
+    module's own tag, #1687), `NAME (run ID)` where it has two. The keys
     are used here only as the subject of a sentence, so this function is
     unchanged by that; what changed is that two runs of one workflow are now two
     keys and both have to pass.
