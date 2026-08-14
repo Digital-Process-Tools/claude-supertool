@@ -293,9 +293,11 @@ def test_the_tally_is_not_the_vocabulary(monkeypatch, capsys) -> None:
         "under it is the render the caller did not ask for")
 
 def test_a_family_too_large_to_query_refuses(monkeypatch, capsys) -> None:
-    """Two search calls per label, and the search API is rate limited. Past a
-    bound the honest answer is a refusal naming the knob, not a board where
-    half the cells are `?` because the limiter cut in halfway down."""
+    """One search call per label since #1628 — `closed` only — and the search
+    API is still rate limited. Past a bound the honest answer is a refusal
+    naming the knob, not a board where half the cells are `?` because the
+    limiter cut in halfway down. The bound moved 14 -> 24; 40 labels is past
+    both, so this test says the same thing it always did."""
     rows = [{"name": f"cohort-{i}", "description": ""} for i in range(40)]
     gh = _Gh(label_rows=rows)
     out = _render(monkeypatch, capsys, ["tally=cohort-"], gh)
