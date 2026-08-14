@@ -21,6 +21,7 @@ from _git_common import (  # noqa: E402
     _git, _list_conflicts, reject_fetch_option, use_utf8_stdout,
 )
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
+import _untrusted  # noqa: E402  (a remote writes onto fetch's stderr — #1654)
 
 DEFAULT_PREVIEW_LINES = 12
 
@@ -116,7 +117,14 @@ def _fresh_merge_ref(ref: str) -> tuple[str, str | None]:
         return ref, f"WARN: {refuse} — merging local {ref}, not fetching {upstream}"
     fetch = _git(["fetch", remote, rbranch], timeout=45)
     if fetch.returncode != 0:
-        msg = fetch.stderr.strip().splitlines()[-1] if fetch.stderr.strip() else "unknown error"
+        # `core.quotePath` does not reach this: it quotes PATHS, and this is
+        # stderr, carrying `remote:` lines the far end wrote (#1654). The
+        # selection is `[-1]`, so a U+2028 ahead of a reassuring tail made
+        # `str.splitlines()` hand back the tail alone and drop git's own
+        # `fatal:` off the front of a WARN the caller acts on. `split_lines`
+        # keeps the whole line; `flat` keeps it to the one line it prints on.
+        said = _untrusted.split_lines(fetch.stderr.strip())
+        msg = _untrusted.flat(said[-1]) if said else "unknown error"
         return ref, f"WARN: fetch {upstream} failed ({msg}) — merging local {ref}, may be stale"
 
     if ref == upstream:

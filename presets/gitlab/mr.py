@@ -92,7 +92,11 @@ def _glab_fail_detail(r: subprocess.CompletedProcess[str]) -> str:
     `glab` writes its error to stderr in a boxed multi-line form and leaves
     stdout empty, so the reason is there to be had — it was simply never read.
     """
-    for line in (r.stderr or "").splitlines():
+    # `split_lines` decides the boundary, `flat` below spells what is inside
+    # it (#1654). `str.splitlines()` cut on a U+2028 too, and the first
+    # non-empty segment was then whatever the writer put before it — the
+    # remainder, `403 forbidden` and all, never reached the decline.
+    for line in _untrusted.split_lines(r.stderr or ""):
         line = _untrusted.flat(line.strip())
         if line and line != "ERROR":
             return f"glab exit {r.returncode}: {line[:120]}"
@@ -680,7 +684,12 @@ def _get_conflict_hunks(
     except OSError as exc:
         return {}, f"could not run git: {exc}"
     if result.returncode != 0 and not result.stdout:
-        detail = (result.stderr or "").strip().splitlines()
+        # The third of this file's stderr relays, swept with the two #1654
+        # named. `flat` was already here and answers forgery; `split_lines`
+        # answers loss. A U+2028 in git's one line made `str.splitlines()`
+        # keep only what sat before it, and `merge-tree`'s arguments are
+        # `origin/<source>` — a branch name the MR's author chose.
+        detail = _untrusted.split_lines((result.stderr or "").strip())
         suffix = f": {_untrusted.flat(detail[0])}" if detail else ""
         return {}, f"git merge-tree failed (exit {result.returncode}){suffix}"
     if not result.stdout:

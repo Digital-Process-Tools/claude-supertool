@@ -8,7 +8,7 @@ so a U+2028 survives *inside* a relayed line and everything the reader anchors
 at column 0 becomes the writer's to choose.
 
 **The fix is at the seam, not at the sites.** Seven sites were named and the
-sweep below finds 158 sites in 34 files, which is what a per-site fix earns:
+sweep below finds 156 sites in 34 files, which is what a per-site fix earns:
 the same defect re-filed once per call. So
 
 * `_git_common._first_error_line` flattens what it returns. Every caller —
@@ -184,7 +184,7 @@ def test_a_tab_survives_the_commit_relay() -> None:
 # grows quietly — which is the failure mode of the thing it would be guarding".
 #
 # **So this is not a zero-assertion, and pretending otherwise is what would
-# make it useless.** Measured on this branch: 158 candidate sites in 34 files
+# make it useless.** Measured on this branch: 156 candidate sites in 34 files
 # across `presets/git`, `presets/github` and `presets/gitlab`. Not all are
 # defects — `push._local_head` returns `r.stdout.strip()`, and that is a SHA —
 # and closing them is four lanes of work this PR is not.
@@ -272,7 +272,17 @@ SINK_SHAPES = tuple(SHAPE_PROBES)
 #: `_linked_prs_unknown(...)` — a child stream inside a call's arguments, which
 #: `_accounted_for` deliberately does not model, and flattened at the seam it
 #: reaches. Located before the number moved, never after.
-UNRESOLVED = 106
+#: 106 -> 108 on 2026-08-14 (#1654). Two added sites, both the same shape as
+#: the one #1636 located: `for line in _untrusted.split_lines(<stream>)` — a
+#: child stream inside a call's arguments, in a `for` iterable rather than an
+#: assignment, so no name carries the taint onward and `_accounted_for` does
+#: not model it. They are `presets/gitlab/mr.py`'s `_glab_fail_detail` and
+#: `presets/git/worktrees.py`'s `remote_branch_names`. The branch's four other
+#: narrowings (`gitlab/issue.py`, `gitlab/mr.py::_get_conflict_hunks`,
+#: `git/merge.py`, and `worktrees.py`'s stderr decline) bind the result to a
+#: name and did not move the number. Located by differencing the per-file tally
+#: against the merge-base, before the number moved — never after.
+UNRESOLVED = 108
 
 #: Calls whose result cannot be a string, so the taint stops there. A type
 #: argument, not an allowlist: `json.loads(r.stdout)` yields a dict, and every
@@ -299,12 +309,12 @@ CENSUS = {
     "presets/git/diff.py": 2,  # -2, #1569: both `Repo:` renders -> repo_label()
     "presets/git/diverge.py": 3,
     "presets/git/investigate.py": 4,
-    "presets/git/merge.py": 10,
+    "presets/git/merge.py": 9,  # -1, #1654: `_fresh_merge_ref`'s fetch stderr
     "presets/git/push.py": 33,  # +1, #1626: a `.write` sink
     "presets/git/resolve.py": 6,  # +4, #1626: two `failed.append` relays, two keys
     "presets/git/status.py": 18,  # +3, #1626: three `.append` sinks
     "presets/git/trail.py": 4,
-    "presets/git/worktrees.py": 6,
+    "presets/git/worktrees.py": 5,  # -1, #1654: the third `for-each-ref` decline
     "presets/github/_release_gate.py": 2,
     "presets/github/batch_follow.py": 1,
     "presets/github/batch_star.py": 1,

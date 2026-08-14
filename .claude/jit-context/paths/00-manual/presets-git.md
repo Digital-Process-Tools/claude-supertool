@@ -5,20 +5,33 @@ match: "presets/git/"
 
 **Register test — first gate a new site hits.** A new `x.splitlines()` under
 `presets/git/` is RED until judged — `tests/test_preset_git_splitlines_register_1130.py`,
-keyed `path::enclosing function`, 29 entries / 41 call sites. Add a site via
-`REGISTER["presets/git/foo.py::func"] = "reason"` (>40 chars), or use
-`_untrusted.split_lines` instead (absent from register by construction).
-Current: 41 sites / 11 files, AST-verified (grep also hits docstring mentions
-of `splitlines()` as text — don't trust it here). Pre-#1130-fix: 44 / 12
-files; `diff.py` dropped to 0 native calls.
+keyed `path::enclosing function`, 27 entries / 38 call sites in 11 files,
+AST-verified (grep also hits docstring mentions of `splitlines()` as text —
+don't trust it here). Add a site via
+`REGISTER["presets/git/foo.py::func"] = "GROUND - reason"` (>40 chars), or use
+`_untrusted.split_lines` instead (absent from the register by construction).
 
-**Deciding rule for a new site: does the reader disable quoting?**
-`core.quotePath` defaults ON — git octal-quotes bytes above 0x7F (incl.
-U+2028) before a split sees them, quoting absorbs the separator for free.
-**Only `git-diff` runs `-c core.quotepath=false`** (`diff.py:203,233`); every
-other reader here leaves quoting on. Test: does the site's `_git([...])` call
-pass `core.quotepath=false`? Yes → narrow to `_untrusted.split_lines`. No →
-quoting already does the job, leave `.splitlines()` alone.
+**The deciding rule is NOT "does the reader disable quoting". That rule was
+published here for a year and answered for 3 of 27 entries (#1654).**
+`core.quotePath` quotes **pathnames** and nothing else. Measured on git 2.46.2:
+`ls-files` octal-quotes a non-ASCII name, while `log --format=%s`,
+`for-each-ref`, `branch -vv`, `show` content and `blame --line-porcelain` all
+emit a U+2028 raw — and stderr is never a pathname at all. Only `git-diff`
+turns quoting off (`diff.py:203,233`), which is true and is not the question.
+
+Ask three, in order, and open the register entry with the ground you land on:
+
+1. **Does the site read a pathname, and only a pathname?** → `QUOTED PATH -`.
+   Three entries qualify: `_git_common::_list_conflicts`,
+   `push::_uncommitted_leftovers`, `push::_recover_by_rebase`.
+2. **Otherwise, name what makes the harm survivable** → `NOT QUOTED, harmless -`.
+   Fail-safe (a forged row can only refuse), fail-closed, inflates a count in
+   its loud direction, or the writer is the local operator. 23 entries.
+3. **Neither?** → narrow to `_untrusted.split_lines`, and `_untrusted.flat` the
+   segment if a selection (`[0]`, `[-1]`, first-non-empty) renders it. Splitting
+   alone answers forgery and not loss: consuming the separator discards the
+   other half, so the writer still picks the segment (#1652 retired the
+   opposite claim; `test_no_entry_rests_on_the_retired_reasoning` keeps it out).
 
 **`resolve.py` — 9 sites, deliberately unchanged.** Conflict-marker state
 machines split file content, key on `<<<<<<<` at column 0. A forged separator
@@ -26,12 +39,11 @@ grants nothing a plain newline doesn't already grant. `_scan_markers`/
 `_count_blocks` can only over-report (fail-safe, just refuses a stage);
 `_union_attr_paths` is fail-closed.
 
-**Registered risks, not yet fixed:**
-- `investigate.py::main` (~103) — blame `--line-porcelain` parse keys on file
-  CONTENT → a crafted line can misattribute author/date.
-- `worktrees.py::remote_branch_names` (~647) — `for-each-ref` into a
-  pushed/unpushed set; `check-ref-format` ACCEPTS U+2028 (#1119) → a hostile
-  remote ref can spell your branch name in its tail, unpushed reads as pushed.
+**Registered risk, not yet fixed:** `investigate.py::main` (~103) — blame
+`--line-porcelain` parse keys on file CONTENT → a crafted line can misattribute
+author/date. The only `NOT QUOTED, open` entry. `worktrees.py::remote_branch_names`
+was the second and is CLOSED (#1654): `check-ref-format` accepts U+2028, so one
+published ref became two records and an unpushed branch read as pushed.
 
 **Dead code:** `status.py:459-464` assigns `current_branch`/`tracking` from
 `branch -vv` — never read; render uses `rev-parse --abbrev-ref HEAD` at `:467`.

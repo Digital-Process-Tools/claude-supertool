@@ -64,18 +64,17 @@ REGISTER: dict[str, str] = {
         "a local file the caller passed in. Same as above.",
 
     # -- presets/gitlab, audited by #1119 -----------------------------------
-    # These two were registered on the same argument #1648 retired above, and
-    # the sentence used to point at the GitHub siblings that are now fixed.
-    # Left alone here on scope, not on reasoning: #1648 is scoped to
-    # presets/github/, and the GitLab half wants its own review the way #1485
-    # was the GitLab half of #1606. Say so rather than cite a retired reason.
-    "presets/gitlab/issue.py::_print_related_mrs":
-        "glab's stderr, first line as a decline reason. Consuming the "
-        "separator also discards everything before it, so this still lets "
-        "glab's writer choose the segment - unswept, not justified (#1648).",
-    "presets/gitlab/mr.py::_glab_fail_detail":
-        "glab's stderr, first non-empty line as a decline detail. Same, and "
-        "unswept for the same reason: the GitLab half is its own review.",
+    # Three entries stood here on the argument #1648 retired above, left alone
+    # on scope rather than on reasoning while #1648 was confined to
+    # presets/github/. #1654 is that review — the GitLab half, the way #1485
+    # was the GitLab half of #1606 — and all three are narrowed:
+    # issue.py::_print_related_mrs, mr.py::_glab_fail_detail and the stderr
+    # decline inside mr.py::_get_conflict_hunks. Each took one line of a
+    # subprocess's stderr as a decline; each now decides the boundary with
+    # `_untrusted.split_lines` so the writer cannot pick the segment, and
+    # flattens the result so the separator prints as `[U+2028]` instead of
+    # reaching column 0. Pinned by tests/test_forged_relay_segment_1654.py and
+    # test_gl_mr_forged_hunk_boundary_1119.py.
     "presets/gitlab/issue_create.py::main":
         "glab's stdout, scanned for an issue URL, then its last line as a "
         "fallback. The extracted value is printed, not parsed.",
@@ -85,13 +84,6 @@ REGISTER: dict[str, str] = {
         "non-ASCII byte in a path it prints, so a filename cannot carry a "
         "separator into this split. Its sibling in the same file reads blob "
         "content, which is not quoted, and that one was narrowed.",
-    "presets/gitlab/mr.py::_get_conflict_hunks":
-        "git's stderr, first line as a decline detail. The hunk-content split "
-        "in this same function was narrowed by #1119; this one is the "
-        "stderr-extraction kind and stays - and taking [0] of the split is "
-        "itself the disclosure, since git check-ref-format rejects every "
-        "ASCII control character in a refname while accepting U+2028. Pinned "
-        "by test_the_stderr_extractions_consume_the_separator_they_are_left_on.",
 }
 
 
@@ -156,6 +148,26 @@ def test_the_narrowed_readers_did_not_quietly_revert() -> None:
         assert gone not in sites, (
             f"{gone} is splitting a CI log with str.splitlines() again "
             "(#1105 / #1119)"
+        )
+
+
+def test_the_gitlab_error_relays_did_not_revert() -> None:
+    """The three #1654 swept, named so a revert is a red build and not a diff.
+
+    All three read one line of a subprocess's stderr as a decline reason.
+    `str.splitlines()` cuts on U+2028, which is the character git and glab both
+    carry into that stream — so the writer chose which segment became the whole
+    message and the other half was dropped rather than disclosed.
+    """
+    live = _call_sites()
+    for gone in (
+        "presets/gitlab/issue.py::_print_related_mrs",
+        "presets/gitlab/mr.py::_glab_fail_detail",
+        "presets/gitlab/mr.py::_get_conflict_hunks",
+    ):
+        assert gone not in live, (
+            f"{gone} is selecting a stderr line with str.splitlines() again, "
+            "so the writer picks the segment and the rest is discarded (#1654)"
         )
 
 

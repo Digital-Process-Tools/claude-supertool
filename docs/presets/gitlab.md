@@ -660,7 +660,22 @@ call that lists the _conflicted paths_ is deliberately left on `str.splitlines()
 git octal-quotes every non-ASCII byte in a path it prints, so a filename cannot
 carry a separator into that split.
 
-The sixteen remaining `str.splitlines()` calls across the two twin presets are each
+`gl-mr`'s own decline detail off that same `merge-tree` call was not, until
+[#1654](https://github.com/Digital-Process-Tools/claude-supertool/issues/1654) — nor
+were `gl-issue`'s related-MR decline and `_glab_fail_detail`. All three lifted **one
+line** of a subprocess's stderr and printed it as the reason, on the argument that
+`str.splitlines()` *consumes* an exotic separator where `_untrusted.split_lines`
+would leave it inside the extracted string. Half an argument, retired for
+`presets/github/` by
+[#1648](https://github.com/Digital-Process-Tools/claude-supertool/issues/1648):
+consuming the separator also discards everything on the other side of it, so the
+writer still chose which segment became the whole message. On
+`glab: nothing wrong here` + U+2028 + `403 forbidden, the list is INCOMPLETE`, the
+reader was told `glab: nothing wrong here` and the 403 was dropped rather than
+disclosed. All three now split with `_untrusted.split_lines` and flatten the segment,
+so the whole line survives on one line with the separator spelled `[U+2028]`.
+
+The eight remaining `str.splitlines()` calls across the two twin presets are each
 registered with the reason they are safe, in
 `tests/test_preset_twin_splitlines_register_1119.py`. A new one in either twin is a
 red build until someone writes down which kind it is — which is as close as a test
