@@ -120,8 +120,15 @@ _KNOWN_FLAGS = ("force-with-lease", "no-verify", "watch",
 
 # Default budget for this op's whole pushing phase, and the ceiling a caller
 # may raise it to with `:budget=SECONDS`. Both must stay strictly below the
-# git-push op timeout in presets/git.json so this script — not supertool's
-# outer cap — owns the timeout and can verify the remote before reporting.
+# git-push op timeout **as merged for the repository being pushed from** — the
+# shipped `presets/git.json` value, or whatever that repo's `.supertool.json`
+# overrode it with (#1631, #1659). This file used to name `presets/git.json` as
+# the place the number lives, and stopped being right about that the moment the
+# key became settable. The relation is what matters: this script — not
+# supertool's outer cap — owns the timeout, so it is alive to verify the remote
+# before reporting. `_budget_ceiling_refusal` is where it is enforced, for the
+# flag and for `ops.git-push.budget` alike; `_PUSH_TIMEOUT_MAX` is separately a
+# ceiling on how long a caller is made to wait, which no project timeout moves.
 # Since #1615 that relation actually holds on the recovery path too: it is one
 # deadline for both pushes and the fetch and rebase between them, where it used
 # to be a fresh clock per `git push` summing to `2N + 240`.

@@ -241,7 +241,13 @@ def test_both_paths_refuse_the_same_number_for_the_same_reason(entry) -> None:
 
 
 def test_a_flag_under_the_project_op_timeout_is_still_taken(entry) -> None:
-    """The guard must not cost the ordinary raise, which is what it is for."""
+    """The guard must not cost the ordinary raise, which is what it is for.
+
+    Green before the fix as well as after, deliberately: it pins the `>=`
+    boundary from the side the fix could overshoot. A ceiling that started
+    refusing 599s under a 600s timeout would be this issue's own defect
+    reflected.
+    """
     entry(timeout=600)
 
     assert push._parse_budget(["budget=599"]) == (599, "")
@@ -255,6 +261,10 @@ def test_the_module_ceiling_survives_a_project_that_raises_the_op_timeout(
     the flag starts honouring that cap. It is the longest this op makes a
     caller wait, and a repository raising its own `timeout` has said nothing
     about that.
+
+    Green before the fix too, and that is the assertion: this is the ceiling
+    the fix could plausibly have deleted as redundant, so what it pins is an
+    absence of change.
     """
     entry(timeout=7200)
     over = push._PUSH_TIMEOUT_MAX + 1
