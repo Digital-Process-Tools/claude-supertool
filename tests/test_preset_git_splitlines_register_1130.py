@@ -1,41 +1,68 @@
 """#1130 - the `presets/git/` audit table, as a build gate instead of a paragraph.
 
-Third and largest of the forged-boundary audits: #1105 read `presets/github`
-(12 sites, 2 narrowed), #1119 read `presets/gitlab` (9 sites, 3 narrowed), and
-this one reads `presets/git` - 44 `str.splitlines()` call sites across 12 files,
-2 narrowed. The issue's estimate of ~60 was high; the count is stated here so
-the next reader does not re-derive it.
+Third and largest of the forged-boundary audits: #1105 read `presets/github`,
+#1119 read `presets/gitlab`, and this one reads `presets/git` - 38
+`str.splitlines()` call sites across 27 enclosing functions in 11 files.
 
 Same construction as `test_preset_twin_splitlines_register_1119.py`, and the
 same reason: a table in a changelog fragment is a statement about the day it was
 written, so adding a `str.splitlines()` to this tree is a red build until
 someone writes down which kind it is.
 
-**What the audit actually found, because the ratio is the interesting part.**
-2 of 44 is lower than either prior sweep, and not because this tree was read
-less carefully. `presets/git/` divides almost cleanly in three:
+**This register published one deciding rule, and #1654 measured it.** The rule
+was: `core.quotePath` defaults ON, git octal-quotes every byte above 0x7F
+before a split sees it, only `git-diff` turns quoting off, therefore every
+other reader here is safe for free. The premise is true and its scope is
+narrower than the conclusion. `core.quotePath` quotes **pathnames**. On git
+2.46.2, in one repository holding a file whose name carries an e-acute, one
+branch and one commit subject each carrying a U+2028:
 
-* **Extraction sites** - `stderr.splitlines()[0]` or `[-1]` as a decline
-  reason. Narrowing these makes them WORSE (#1105's central finding, confirmed
-  empirically by #1119): taking one element of the split CONSUMES the
-  separator, so the split is itself the disclosure. Left alone, every time.
-* **Readers that leave git's quoting ON.** `core.quotePath` defaults to true,
-  and git then octal-quotes every byte above 0x7F in a path it prints - so a
-  path carrying U+2028 arrives as three octal escapes and cannot reach the
-  split as a separator at all. This is evidence, not reasoning, and it is the
-  same argument #1119 used to leave `mr.py::_get_conflicting_files` alone.
-* **`presets/git/diff.py`, which turns that quoting OFF** - deliberately and
-  correctly, so an accented filename reaches the receipt as itself. Both of its
-  readers were narrowed. The two facts are the same fact: `git-diff` is the one
-  op in this tree that asks git not to protect it, so it is the one op that has
-  to protect itself.
+* `ls-files` -> the name comes back double-quoted with one octal escape per
+  byte above 0x7F. Quoted, as advertised.
+* `log --format=%s` -> the U+2028, raw.
+* `for-each-ref --format=%(refname)` -> raw.
+* `branch -vv` -> raw, in both the refname and the subject.
+* `show` content lines -> raw.
+* `blame --line-porcelain` -> raw, in `summary` and in the content line.
+* stderr -> never a pathname, so never in scope at all.
 
-A fourth group exists and is named rather than hidden: `resolve.py`'s conflict
-state machines split file content and key on `<<<<<<<` at column 0. They are
-left alone on the strongest reason in the file - a forged separator grants an
-attacker nothing a plain newline does not already grant them, because a
-contributor can simply put a marker-shaped line at column 0 in their own file.
-Narrowing there would be motion, not defence.
+So the rule answered for **3 of the 27 entries below**, and was quoted at all
+27. Those three are the readers that read a path and nothing else. The rest are
+not defects - most are safe on grounds that are just as good and are not this
+one - but "safe by quoting" was the wrong sentence in twenty-four places, and a
+wrong reason is what a later reader extends to the next call site.
+
+**So every entry now opens with the ground it actually rests on**, one of
+three, and `test_every_register_entry_names_the_ground_it_rests_on` refuses an
+entry that names none:
+
+* ``QUOTED PATH`` - the reader reads a pathname and git quoted it first. The
+  rule as published, applied where it holds. Three entries.
+* ``NOT QUOTED, harmless`` - quoting does not reach this stream, and the entry
+  says what does: the harm is fail-safe (a forged row can only refuse), or
+  fail-closed, or inflates a count that is loud in the direction it inflates,
+  or the text's author is the local operator rather than a stranger.
+  Twenty-three entries.
+* ``NOT QUOTED, open`` - quoting does not reach it and the harm is real. One:
+  `investigate.py`'s blame parse. Named here rather than left implied, and
+  carried in `.claude/jit-context/paths/00-manual/presets-git.md`.
+
+**What #1652 retired, and what this register must no longer say.** Five
+`presets/github/` entries used to be justified by "`str.splitlines()` CONSUMES
+an exotic separator, so narrowing would leave a forged U+2028 inside the
+extracted string". Half an argument: consuming the separator also discards
+everything on the other side of it, so the writer still chose which segment
+became the message. Four entries here leaned on it under the name "the
+extraction kind"; #1654 narrowed the two whose stream a stranger writes
+(`merge.py::_fresh_merge_ref`, `worktrees.py::remote_branch_names`) and
+restated the two whose stream this tool's own child writes.
+`test_no_entry_rests_on_the_retired_reasoning` keeps it retired.
+
+A fourth group is named rather than hidden: `resolve.py`'s conflict state
+machines split file content and key on `<<<<<<<` at column 0. A forged
+separator grants an attacker nothing a plain newline does not already grant
+them, because a contributor can simply put a marker-shaped line at column 0 in
+their own file. Narrowing there would be motion, not defence.
 
 Keyed on `path::enclosing function`, not on line numbers, because a register
 that goes stale on every unrelated edit teaches people to regenerate it without
@@ -49,178 +76,222 @@ from pathlib import Path
 REPO = Path(__file__).parent.parent
 TREE = "presets/git"
 
+#: The three grounds an entry may rest on. An entry opening with none of them
+#: is one nobody partitioned - which is the state this register was in before
+#: #1654, when one sentence stood in for all three.
+GROUNDS = ("QUOTED PATH - ", "NOT QUOTED, harmless - ", "NOT QUOTED, open - ")
+
+#: How many entries rest on each, published so a drift is one visible line in a
+#: diff rather than a re-derivation. Asserted exact in both directions.
+GROUND_TALLY = {"QUOTED PATH - ": 3,
+                "NOT QUOTED, harmless - ": 23,
+                "NOT QUOTED, open - ": 1}
+
+#: Phrases that state the argument #1652 retired. An entry may describe it in
+#: the past tense; the check is on the register's reasons, not on this file.
+RETIRED = ("the extraction kind", "consumes the separator",
+           "CONSUMES the separator")
+
 #: Every `str.splitlines()` in `presets/git/`, with the judgment recorded when
 #: it was audited. `_untrusted.split_lines` sites are absent by construction -
 #: they are not `str.splitlines()` calls.
 REGISTER: dict[str, str] = {
     # -- _git_common.py -----------------------------------------------------
     "presets/git/_git_common.py::_list_conflicts":
-        "`git diff --name-only --diff-filter=U` - PATHS, and this reader leaves "
-        "core.quotePath at its default, so a byte above 0x7F is octal-quoted "
-        "before the split sees it. A forged row could only ADD a conflict, "
-        "whose effect is to refuse to proceed.",
+        "QUOTED PATH - `git diff --name-only --diff-filter=U`, and a pathname "
+        "is exactly what core.quotePath octal-quotes, so a byte above 0x7F "
+        "never reaches this split as a separator. A forged row could only ADD "
+        "a conflict, whose effect is to refuse to proceed.",
     # `_first_error_line` was here, and its entry argued that narrowing the
     # split "would leave a forged break INSIDE the reported string instead of
     # consuming it". That was a choice between two bad options because neither
     # end was flattened. #1475 flattened the return, so the break inside is now
-    # disclosed as `[U+2028]` rather than left live — and narrowing became
+    # disclosed as `[U+2028]` rather than left live - and narrowing became
     # strictly better, since consuming it dropped the hidden tail out of the
     # receipt entirely. The site now uses `_untrusted.split_lines`.
     "presets/git/_git_common.py::_remotes_could_host_a_request":
-        "`git remote -v`. A URL carrying a separator could forge a row and flip "
-        "'every remote is a local path' to 'one names a host', silencing the "
-        "#948 disclosure - but the author of that value is whoever ran `git "
-        "remote add` in this clone, not the remote and not a contributor.",
+        "NOT QUOTED, harmless - `git remote -v` prints URLs, not pathnames, so "
+        "quoting was never in this. A URL carrying a separator could forge a "
+        "row and flip 'every remote is a local path' to 'one names a host', "
+        "silencing the #948 disclosure - but the author of that value is "
+        "whoever ran `git remote add` in this clone, not the remote and not a "
+        "contributor.",
 
     # -- checkout.py --------------------------------------------------------
     "presets/git/checkout.py::main":
-        "`status --porcelain=v1` counted into staged/unstaged/untracked, and "
-        "`log -3` subjects rendered. Default quoting is left on for the "
-        "porcelain read, and a forged row can only inflate a count.",
+        "NOT QUOTED, harmless - two sites, and only one is a path read. "
+        "`status --porcelain=v1` is quoted and is counted into "
+        "staged/unstaged/untracked, where a forged row can only inflate a "
+        "count. `log -3 --format=%h %ad %an | %s` is NOT quoted - a subject "
+        "carries U+2028 raw - and is rendered as three indented lines, parsed "
+        "for nothing.",
 
     # -- commit.py ----------------------------------------------------------
     "presets/git/commit.py::_with_coauthor":
-        "the commit message the CALLER typed, scanned for an existing "
-        "Co-Authored-By trailer. A forged break suppresses the auto-trailer in "
-        "a message its own author wrote - self-inflicted, and git's trailer "
-        "parser would disagree about the line either way.",
+        "NOT QUOTED, harmless - not git output at all: the commit message the "
+        "CALLER typed, scanned for an existing Co-Authored-By trailer. A "
+        "forged break suppresses the auto-trailer in a message its own author "
+        "wrote - self-inflicted, and git's trailer parser would disagree about "
+        "the line either way.",
     "presets/git/commit.py::main":
-        "`show --shortstat` last line. Git's own generated summary; it carries "
-        "no path and no author-controlled text.",
+        "NOT QUOTED, harmless - `show --shortstat` last line. Not a path, so "
+        "quoting does not apply; safe because it is git's own generated "
+        "summary, which carries no pathname and no author-controlled text.",
 
     # -- diverge.py ---------------------------------------------------------
     "presets/git/diverge.py::main":
-        "log subjects and `--name-status` rows, both rendered as a capped list "
-        "with a count beside it. Default quoting on, nothing parsed out of "
-        "either, and a forged split can only inflate the count it prints.",
+        "NOT QUOTED, harmless - two sites, one of each. Log subjects are not "
+        "quoted and `diff --name-status` rows are; both are rendered as a "
+        "capped list with a count beside it, nothing is parsed out of either, "
+        "and a forged split can only inflate the count it prints.",
 
     # -- investigate.py -----------------------------------------------------
     "presets/git/investigate.py::main":
-        "log lines, two diffs counted for +/- totals, and `blame "
-        "--line-porcelain` parsed on a 40-hex header / `author ` / leading-tab "
-        "content. The blame parse is the closest call in this tree: file "
-        "CONTENT is in that stream, so a crafted line can misattribute an "
-        "author or a date. Left alone because git-investigate gates nothing, "
-        "writes nothing, and the hotspot list is advisory - but this is the "
-        "site to revisit first if that ever stops being true.",
+        "NOT QUOTED, open - four sites: log lines, two diffs counted for +/- "
+        "totals, and `blame --line-porcelain` parsed on a 40-hex header / "
+        "`author ` / leading-tab content. None of the four is a pathname read, "
+        "and the blame parse is the open one in this tree: file CONTENT is in "
+        "that stream and reaches the split raw, so a crafted line can "
+        "misattribute an author or a date. Left alone because git-investigate "
+        "gates nothing, writes nothing, and the hotspot list is advisory - but "
+        "this is the site to revisit first if that ever stops being true.",
 
     # -- merge.py -----------------------------------------------------------
-    "presets/git/merge.py::_fresh_merge_ref":
-        "fetch's stderr, last line as a WARN detail. The extraction kind - same "
-        "as `_first_error_line`, same reason for leaving it.",
+    # `_fresh_merge_ref` was here, on "the extraction kind", citing
+    # `_first_error_line` - which #1475 had already narrowed. It read a fetch's
+    # stderr, which a remote writes `remote:` lines onto, took the LAST line,
+    # and put the result unflattened into a WARN the caller acts on. #1654
+    # narrowed it.
 
     # -- push.py ------------------------------------------------------------
     "presets/git/push.py::_remote_names":
-        "`git remote` names. Git refuses to create a remote whose name carries "
-        "a control character, and a forged extra name only produces a lookup "
-        "that misses.",
+        "NOT QUOTED, harmless - `git remote` names are not pathnames. Git "
+        "refuses to create a remote whose name carries an ASCII control "
+        "character, U+2028 is not one, and a forged extra name only produces a "
+        "lookup that misses.",
     "presets/git/push.py::_ref_line":
-        "git's per-ref PORCELAIN push status, three TAB-separated fields. A "
-        "refname cannot carry a TAB - check-ref-format rejects every ASCII "
-        "control character - so a forged fragment can never present three "
-        "fields, is dropped by the `len(parts) != 3` test, and the caller gets "
-        "the ('', '') that #641/#661 already render as 'git reported no line', "
-        "never as a no.",
+        "NOT QUOTED, harmless - git's per-ref PORCELAIN push status, three "
+        "TAB-separated fields, and a refname is not quoted. A refname cannot "
+        "carry a TAB - check-ref-format rejects every ASCII control character "
+        "- so a forged fragment can never present three fields, is dropped by "
+        "the `len(parts) != 3` test, and the caller gets the ('', '') that "
+        "#641/#661 already render as 'git reported no line', never as a no.",
     "presets/git/push.py::_spawn_watch":
-        "the watch child's first non-empty output line, as a decline detail. "
-        "The extraction kind.",
+        "NOT QUOTED, harmless - not git output: the watch child's own first "
+        "non-empty line, as a decline detail. The loss half of #1652 applies "
+        "and the writer is this tool's own subprocess, so there is no stranger "
+        "to choose the segment.",
     "presets/git/push.py::_uncommitted_leftovers":
-        "`status --porcelain`, printed as a 'you forgot to commit this' list "
-        "rather than parsed. Default quoting on; a forged row only adds to a "
-        "warning that exists to be noticed.",
+        "QUOTED PATH - `status --porcelain`, printed as a 'you forgot to "
+        "commit this' list rather than parsed. Quoting applies and is on; a "
+        "forged row only adds to a warning that exists to be noticed.",
     "presets/git/push.py::_discarded_by_force":
-        "`log %h %an: %s` over the commits a force-push discarded. An author or "
-        "subject carrying a separator INFLATES that list - the loud direction, "
-        "on the one check here whose failure must never read as reassurance.",
+        "NOT QUOTED, harmless - `log %h %an: %s` over the commits a force-push "
+        "discarded. Neither an author nor a subject is quoted, so a separator "
+        "in one does reach the split - and it INFLATES that list, the loud "
+        "direction, on the one check here whose failure must never read as "
+        "reassurance.",
     "presets/git/push.py::_incoming_commits":
-        "the same log shape for commits the remote added. `behind` is the "
-        "length of this list and drives a warning plus a cap line; a forged "
-        "split can inflate it and cannot hide a commit.",
+        "NOT QUOTED, harmless - the same unquoted log shape for commits the "
+        "remote added. `behind` is the length of this list and drives a "
+        "warning plus a cap line; a forged split can inflate it and cannot "
+        "hide a commit.",
     "presets/git/push.py::_recover_by_rebase":
-        "`diff --name-only --diff-filter=U` after a failed rebase. A non-empty "
-        "list selects the conservative arm - leave the rebase paused - so a "
-        "forged row cannot produce the destructive outcome.",
+        "QUOTED PATH - `diff --name-only --diff-filter=U` after a failed "
+        "rebase. A non-empty list selects the conservative arm - leave the "
+        "rebase paused - so even a forged row cannot produce the destructive "
+        "outcome.",
 
     # -- resolve.py ---------------------------------------------------------
     "presets/git/resolve.py::_union_lines":
-        "conflicted file content, keyed on `<<<<<<<` at column 0, computing the "
-        "union the markdown heading guard reads. A forged separator grants "
-        "nothing a plain newline does not: a contributor can already put a "
-        "marker-shaped line at column 0. It must also stay byte-identical to "
-        "`_union_file`'s parse, or the guard stops describing the union it "
-        "guards - so narrowing one alone would be a new defect.",
+        "NOT QUOTED, harmless - conflicted file CONTENT, which git never "
+        "quotes, keyed on `<<<<<<<` at column 0 and computing the union the "
+        "markdown heading guard reads. A forged separator grants nothing a "
+        "plain newline does not: a contributor can already put a marker-shaped "
+        "line at column 0. It must also stay byte-identical to `_union_file`'s "
+        "parse, or the guard stops describing the union it guards - so "
+        "narrowing one alone would be a new defect.",
     "presets/git/resolve.py::_union_file":
-        "the same state machine, writing the result back. Same reason, and "
-        "`keepends=True` means a split with no forged marker after it "
-        "reassembles byte-identically.",
+        "NOT QUOTED, harmless - the same state machine over the same unquoted "
+        "content, writing the result back. Same reason, and `keepends=True` "
+        "means a split with no forged marker after it reassembles "
+        "byte-identically.",
     "presets/git/resolve.py::_resolve_blocks":
-        "the per-block variant of the same machine. Same reason; the "
-        "`_scan_markers` hard gate refuses to stage whatever it produces.",
+        "NOT QUOTED, harmless - the per-block variant of the same machine over "
+        "the same content. Same reason; the `_scan_markers` hard gate refuses "
+        "to stage whatever it produces.",
     "presets/git/resolve.py::_count_blocks":
-        "counts `<<<<<<<` lines. Self-consistent with `_resolve_blocks`, which "
-        "splits identically, and a real marker at a real column 0 survives any "
-        "splitting - so this can over-count and never under-count.",
+        "NOT QUOTED, harmless - counts `<<<<<<<` lines in file content. "
+        "Self-consistent with `_resolve_blocks`, which splits identically, and "
+        "a real marker at a real column 0 survives any splitting - so this can "
+        "over-count and never under-count.",
     "presets/git/resolve.py::_scan_markers":
-        "the hard gate before staging. Over-reporting refuses a stage; "
-        "under-reporting is what would be dangerous, and is impossible here for "
-        "the reason above.",
+        "NOT QUOTED, harmless - the hard gate before staging, over the same "
+        "content. Over-reporting refuses a stage; under-reporting is what "
+        "would be dangerous, and is impossible here for the reason above.",
     "presets/git/resolve.py::_union_attr_paths":
-        "`check-attr merge -- PATHS`, matched on a `: merge: union` suffix. "
-        "Fail-closed by construction: the result is SUBTRACTED from the "
-        "candidate set, so a forged fragment is not a candidate and removes "
-        "nothing. A split can only fail to whitelist, never wrongly whitelist.",
+        "NOT QUOTED, harmless - `check-attr merge -- PATHS` prints the path "
+        "back, and this matches on a `: merge: union` suffix. Fail-closed by "
+        "construction: the result is SUBTRACTED from the candidate set, so a "
+        "forged fragment is not a candidate and removes nothing. A split can "
+        "only fail to whitelist, never wrongly whitelist.",
     "presets/git/resolve.py::_digest_block":
-        "one file's validator rows. `_RESULT_ROW` and `_SKIPPED_ROW` both anchor "
-        "at `^`, so a fragment can add a row but never destroy the head of a "
-        "real one - a genuine `1 err` row keeps matching, and a forged `ok` "
-        "cannot turn the digest from warn back into ok.",
+        "NOT QUOTED, harmless - one file's validator rows, written by this "
+        "tool's own child. `_RESULT_ROW` and `_SKIPPED_ROW` both anchor at "
+        "`^`, so a fragment can add a row but never destroy the head of a real "
+        "one - a genuine `1 err` row keeps matching, and a forged `ok` cannot "
+        "turn the digest from warn back into ok.",
     "presets/git/resolve.py::_child_failed":
-        "the validate child's stderr, first non-empty line. The extraction "
-        "kind, and the value is already `_untrusted.flat`-ed on the way out.",
+        "NOT QUOTED, harmless - the validate child's stderr, first non-empty "
+        "line, and the value is already `_untrusted.flat`-ed on the way out. "
+        "The loss half of #1652 does apply: a U+2028 in that first line "
+        "discards its tail. Kept because the writer is this tool's own "
+        "validator over the caller's own files, and the digest is warn-only.",
     "presets/git/resolve.py::_validate_paths":
-        "splits the child's combined output on `validate: ` headers. A forged "
-        "header can only ADD a block, and `len(blocks) != len(files)` then "
-        "declines for the whole batch. #886 reached exactly this with a "
-        "filename separated by U+2028, and that guard is why it was a denial "
-        "rather than a second forged clean bill.",
+        "NOT QUOTED, harmless - splits the child's combined output on "
+        "`validate: ` headers. A forged header can only ADD a block, and "
+        "`len(blocks) != len(files)` then declines for the whole batch. #886 "
+        "reached exactly this with a filename separated by U+2028, and that "
+        "guard is why it was a denial rather than a second forged clean bill.",
 
     # -- status.py ----------------------------------------------------------
     "presets/git/status.py::main":
-        "five sites: `branch -vv` (DEAD - its only assignment, `current_branch`, "
-        "is never read; the render uses `rev-parse`), `for-each-ref` "
-        "refname-TAB-track (a refname cannot carry a TAB, so a fragment has no "
-        "track field and the `'ahead' in track` test drops it), log subjects "
-        "rendered, `status --porcelain=v1` with default quoting left ON - "
-        "unlike diff.py - and `stash list` rendered with a count.",
+        "NOT QUOTED, harmless - five sites, one of which is a path read. "
+        "`branch -vv` is DEAD (its only assignment, `current_branch`, is never "
+        "read; the render uses `rev-parse`); `for-each-ref` refname-TAB-track "
+        "is unquoted, but a refname cannot carry a TAB, so a fragment has no "
+        "track field and the `'ahead' in track` test drops it; log subjects "
+        "and `stash list` are unquoted and rendered with a count; only "
+        "`status --porcelain=v1` is a quoted path read.",
 
     # -- trail.py -----------------------------------------------------------
     "presets/git/trail.py::main":
-        "two pickaxe log reads, rendered and counted, plus a `git show` hunk "
-        "extractor keyed on `diff --git` / `@@`. The extractor is the same "
-        "shape as diff.py's and is left alone for the opposite reason: default "
-        "quoting is on here, and its output is a search render, not a review "
-        "gate - the worst a forged `@@` does is drop context lines from a "
-        "display the reader is already reading.",
+        "NOT QUOTED, harmless - two pickaxe log reads, rendered and counted, "
+        "plus a `git show` hunk extractor keyed on `diff --git` / `@@`. Only "
+        "the `diff --git` header carries a quoted path; subjects and hunk "
+        "content do not. Left alone because its output is a search render, not "
+        "a review gate - the worst a forged `@@` does is drop context lines "
+        "from a display the reader is already reading.",
 
     # -- worktrees.py -------------------------------------------------------
     "presets/git/worktrees.py::parse_worktree_list":
-        "`worktree list --porcelain`, which does not quote paths (that is what "
-        "its `-z` form is for). A worktree path carrying a separator forges an "
-        "entry - but that path is the local user's own choice, the op is "
-        "inspection-only, and a fabricated tree can only add a row to an "
+        "NOT QUOTED, harmless - `worktree list --porcelain` does not quote "
+        "paths (that is what its `-z` form is for), so this is a path read "
+        "with quoting genuinely absent. A worktree path carrying a separator "
+        "forges an entry - but that path is the local user's own choice, the "
+        "op is inspection-only, and a fabricated tree can only add a row to an "
         "inventory that never removes anything.",
     "presets/git/worktrees.py::_read_cwd_table_uncached":
-        "`lsof -F pn` records. A forged row makes a process appear to hold a "
-        "tree, which pushes the verdict toward `occupied` - the conservative "
-        "direction this op is built on, where `idle` has to be earned.",
-    "presets/git/worktrees.py::remote_branch_names":
-        "stderr's first line as a decline reason (extraction kind), and "
-        "`for-each-ref refname:strip=3` into a set answering 'has this branch "
-        "been pushed'. check-ref-format ACCEPTS U+2028 (#1119), so a hostile "
-        "remote could publish a ref whose tail spells your branch name and make "
-        "an unpushed branch read as pushed. Left alone: it is one word in an "
-        "inspection-only column and nothing acts on it - the second site to "
-        "revisit, after investigate.py's blame parse.",
+        "NOT QUOTED, harmless - `lsof -F pn` records, not git output at all. A "
+        "forged row makes a process appear to hold a tree, which pushes the "
+        "verdict toward `occupied` - the conservative direction this op is "
+        "built on, where `idle` has to be earned.",
+    # `remote_branch_names` was here with two sites and both are gone (#1654).
+    # Its stderr decline took the FIRST line of an unquoted, unmarked stream;
+    # its `for-each-ref` read let ONE published ref become TWO records, which
+    # is the pushed/unpushed forgery this entry itself registered as open and
+    # nobody had closed. `check-ref-format` exits 0 on a refname whose middle
+    # component ends in U+2028 followed by a second `refs/remotes/origin/...`.
 }
 
 
@@ -275,19 +346,66 @@ def test_the_register_names_no_site_that_is_gone() -> None:
 
 
 def test_the_narrowed_readers_did_not_quietly_revert() -> None:
-    """The two the audit narrowed. Both are in the one op that disables quoting."""
+    """Everything this tree has narrowed, named. Two audits, four readers."""
     sites = _call_sites()
-    for gone in (
-        "presets/git/diff.py::_changed_files",
-        "presets/git/diff.py::_scan_red_flags",
+    for gone, why in (
+        ("presets/git/diff.py::_changed_files",
+         "it runs with core.quotepath=false, so nothing upstream is quoting "
+         "the separator for it (#1130)"),
+        ("presets/git/diff.py::_scan_red_flags",
+         "it runs with core.quotepath=false, so nothing upstream is quoting "
+         "the separator for it (#1130)"),
+        ("presets/git/merge.py::_fresh_merge_ref",
+         "a fetch's stderr is written partly by the remote and is not a "
+         "pathname, so quoting reaches none of it (#1654)"),
+        ("presets/git/worktrees.py::remote_branch_names",
+         "a refname is not a pathname and check-ref-format accepts U+2028, so "
+         "one published ref could become two records (#1654)"),
     ):
-        assert gone not in sites, (
-            f"{gone} is parsing a diff with str.splitlines() again, and it runs "
-            "with core.quotepath=false, so nothing upstream is quoting the "
-            "separator for it (#1130)"
-        )
+        assert gone not in sites, f"{gone} is on str.splitlines() again: {why}"
 
 
 def test_every_register_entry_states_a_reason() -> None:
     for key, reason in REGISTER.items():
         assert len(reason) > 40, (key, reason)
+
+
+def test_every_register_entry_names_the_ground_it_rests_on() -> None:
+    """The partition #1654 asked for, as a gate rather than a paragraph.
+
+    One deciding rule was published for this whole register and held for three
+    of its entries. An entry that names no ground is one nobody partitioned.
+    """
+    unpartitioned = sorted(k for k, r in REGISTER.items()
+                           if not r.startswith(GROUNDS))
+    assert not unpartitioned, (
+        "REGISTER entries that name no ground. Open the reason with one of "
+        f"{GROUNDS}: {unpartitioned}"
+    )
+
+
+def test_the_published_partition_is_the_one_in_the_register() -> None:
+    """Exact in both directions, so a reclassification is a visible line."""
+    got = {g: sum(1 for r in REGISTER.values() if r.startswith(g))
+           for g in GROUNDS}
+    assert got == GROUND_TALLY, (
+        "the partition moved. Write the new counts down in GROUND_TALLY, and "
+        f"say in the docstring why: {GROUND_TALLY} -> {got}"
+    )
+    assert sum(got.values()) == len(REGISTER), "an entry counted twice"
+
+
+def test_no_entry_rests_on_the_retired_reasoning() -> None:
+    """#1652 retired 'splitlines consumes the separator, so it is safer'.
+
+    It is half true: consuming the separator also discards what is on the
+    other side of it, so the writer still chose which segment survived. Four
+    entries here rested on it under the name 'the extraction kind'.
+    """
+    for key, reason in REGISTER.items():
+        for phrase in RETIRED:
+            assert phrase not in reason, (
+                f"{key} rests on the argument #1652 retired ({phrase!r}). "
+                "Consuming the separator discards the other half; say what "
+                "the site is actually safe by, or narrow it."
+            )

@@ -666,11 +666,27 @@ def remote_branch_names():
     """
     res = _git(["for-each-ref", "--format=%(refname)", "refs/remotes/"])
     if res.returncode != 0:
-        why = (res.stderr or "").strip().splitlines()
-        return None, (why[0] if why else f"git for-each-ref exited {res.returncode}")
+        # The third of this file's three `for-each-ref`/`rev-list` declines,
+        # and the one that was left on `str.splitlines()` with nothing marking
+        # it at all (#1654). `[0]` took whatever sat before a U+2028 and threw
+        # the rest away, and an ESC in this stream reached the board raw — a
+        # `[2K[1A` erases the row above the one it is rendered into, which no
+        # splitter of any kind removes (#851). Same two calls as its siblings
+        # at `upstream_refs` and `unpushed_for`.
+        why = _untrusted.split_lines((res.stderr or "").strip())
+        return None, _untrusted.flat(why[0] if why else
+                                     f"git for-each-ref exited {res.returncode}")
     names = {}
     all_refs = []
-    for line in res.stdout.splitlines():
+    # `split_lines`, matching `upstream_refs` below, and it closes the risk the
+    # #1130 register registered against this very line (#1654). A refname may
+    # carry U+2028 — `check-ref-format` exits 0 on
+    # `refs/remotes/origin/decoy<U+2028>refs/remotes/origin/mybranch`, verified
+    # — so `str.splitlines()` read ONE published ref back as TWO records and a
+    # hostile remote could spell your branch name in the tail, making an
+    # unpushed branch read as pushed. One record now: its fourth component is
+    # the whole forged tail and matches nothing.
+    for line in _untrusted.split_lines(res.stdout):
         ref = line.strip()
         # `refs/remotes/<remote>/<name>` — the same three components
         # `%(refname:strip=3)` used to drop, kept here so the ref survives.
