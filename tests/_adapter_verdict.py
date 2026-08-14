@@ -45,9 +45,37 @@ __all__ = [
     "verdict", "describe", "assert_ok", "assert_declined", "assert_adapter_ok",
     "stalled_at_its_own_wall", "skip_if_stalled",
     "assert_adapter_ok_or_skip_if_stalled",
+    "ADAPTER_WALL_TOKEN", "ADAPTER_WALL_POPULATION", "adapter_wall_line",
     "CORE_TIMEOUT_KEY", "core_timed_out", "skip_if_core_timed_out",
     "run_one_or_skip",
 ]
+
+#: Grep handle, and the difference between the two shapes #1604 put on the
+#: table. Normalising a wall away erases it; declining without counting hides it
+#: one layer up, because `N skipped` on a Windows leg cannot then be resolved to
+#: `N tests did not get an adapter verdict`. #794 shipped the decline with no
+#: token for four instances (#1296, #1360, #1461, #1501) before #1604 was the
+#: fifth. Every other decline register here carries one.
+ADAPTER_WALL_TOKEN = "adapter-wall(#794,#1604)"
+
+#: Printed under the count, never without it (#1274): a bare N reads as a total.
+ADAPTER_WALL_POPULATION = (
+    "  ^ counts skips carrying that token only, not every test that spawns an "
+    "adapter: the majority of adapter-spawning test files are NOT gated yet and "
+    "still publish a wall as a verdict, so a zero here is a statement about the "
+    "gated sites and not about the suite. The gated ones are the callers of "
+    "`skip_if_stalled` / `assert_adapter_ok_or_skip_if_stalled` in "
+    "tests/_adapter_verdict.py; an adapter that declined for any reason other "
+    "than its own wall is deliberately not counted and stays red.")
+
+
+def adapter_wall_line(n: int, total: int) -> str:
+    """``N of M skipped``, never a bare ``N`` (#1274)."""
+    return (
+        "{0}: {1} of {2} skipped tests did NOT get an adapter verdict -- the "
+        "adapter spent its whole internal budget without reaching one (expect "
+        "0; a non-zero count is a runner too loaded to produce a verdict, not "
+        "a finding about any file)".format(ADAPTER_WALL_TOKEN, n, total))
 
 MAX_ERRORS_SHOWN = 3
 MAX_FIELD_CHARS = 200
@@ -278,9 +306,9 @@ def stalled_at_its_own_wall(payload: Any, *, inner_s: int) -> str | None:
             return None
 
         return (
-            f"adapter spent its whole {inner_s}s internal budget without "
-            f"reaching a verdict, so there is nothing here to assert on — "
-            f"{describe(payload)}"
+            f"{ADAPTER_WALL_TOKEN}: adapter spent its whole {inner_s}s internal "
+            f"budget without reaching a verdict, so there is nothing here to "
+            f"assert on — {describe(payload)}"
         )
     except Exception:  # pragma: no cover - classification must never be the failure
         return None

@@ -67,6 +67,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
+import conftest  # noqa: E402
+import _adapter_verdict as verdicts  # noqa: E402
 from _adapter_budget import inner_budget  # noqa: E402
 from _adapter_verdict import stalled_at_its_own_wall  # noqa: E402
 
@@ -295,3 +297,47 @@ def test_the_named_call_sites_decline_a_wall_instead_of_asserting_on_it(
     with pytest.raises(pytest.skip.Exception) as excinfo:
         module._run("subject")
     assert "internal budget" in str(excinfo.value), excinfo.value
+
+# ---------------------------------------------------------------------------
+# the counting half — a skip nobody counts is the same absence one layer up
+# ---------------------------------------------------------------------------
+
+def test_a_stall_decline_carries_a_grep_token() -> None:
+    """#1604 asks for a *counted* skip, and #794's had no token at all.
+
+    That is the difference between the two shapes the issue puts on the table.
+    Normalising a wall away erases it; declining without counting hides it one
+    layer up, because `N skipped` in a Windows leg cannot be resolved to `N
+    tests did not get an adapter verdict`. Every other decline register in this
+    suite carries a handle — `lint-budget(#1360)`, `core-timeout(#1501)`,
+    `git-status-decline(#705)` — and this one is the register the four closed
+    instances of this class were all filed against.
+    """
+    payload = {"tool": "ruby-check", "ok": False, "count": 1,
+               "duration_ms": 30000,
+               "errors": [{"code": "adapter", "msg": "timed out after 30s"}]}
+    reason = stalled_at_its_own_wall(payload, inner_s=30)
+    assert reason is not None
+    assert verdicts.ADAPTER_WALL_TOKEN in reason, reason
+
+
+def test_the_terminal_summary_states_the_stall_count_even_when_it_is_zero() -> None:
+    """A line that appears only on trouble is indistinguishable from one that
+    was never evaluated — which is the defect this whole family is about."""
+    written: list = []
+
+    class _Reporter:
+        config = None
+
+        def write_line(self, line):
+            written.append(line)
+
+    conftest._adapter_wall_summary(_Reporter(), [])
+    assert written, "no line was printed for a zero stall count"
+    assert verdicts.ADAPTER_WALL_TOKEN in written[0], written
+    assert "0 of 0" in written[0], written
+    assert len(written) > 1 and "skip_if_stalled" in written[1], (
+        "the count was printed without the population it is a fraction of "
+        "(#1274), so a non-zero number reads as a total — and the population "
+        "here is specifically the gated call sites, most of the suite's "
+        "adapter spawns not being gated yet")

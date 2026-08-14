@@ -33,10 +33,12 @@ and it reads the variable per call.
   the suite. Both add product surface the redirect does not.
 - **The redirect's blast radius is smaller than it looks, and that is measured
   rather than asserted.** It moves three stores, and `conftest.py` already
-  disables all three for this same reason: `read-elide` (`SUPERTOOL_READ_NO_ELIDE`,
-  line 252), the opportunistic GC (`SUPERTOOL_GC_DISABLE`, 257) and the vim
-  cursor/undo store (`SUPERTOOL_VIM_NO_PERSIST`, 245). What the redirect adds is
-  a floor under those three switches instead of a fourth one beside them.
+  disables all three for this same reason — `SUPERTOOL_READ_NO_ELIDE` (#1329),
+  `SUPERTOOL_GC_DISABLE` (#474) and `SUPERTOOL_VIM_NO_PERSIST`, each a
+  `setdefault` in `pytest_configure`. What the redirect adds is a floor under
+  those three switches instead of a fourth one beside them. (Named rather than
+  cited by line: a line number into a live file decays on every edit above it,
+  silently, and `conftest.py` is edited often.)
 
 **Instance 3 had to be fixed first, and that is the ordering, not a detail.**
 Those two sites `os.environ.pop("XDG_CACHE_HOME", None)` in their teardown. A pop
