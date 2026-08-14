@@ -63,8 +63,8 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _adapter_budget import adapter_budget  # noqa: E402
-from _adapter_verdict import describe, verdict  # noqa: E402
+from _adapter_budget import adapter_budget, inner_budget  # noqa: E402
+from _adapter_verdict import describe, skip_if_stalled, verdict  # noqa: E402
 
 VALIDATORS = Path(__file__).parent.parent / "validators"
 ADAPTER = VALIDATORS / "cargo-check" / "cargo-check.py"
@@ -320,11 +320,27 @@ def _crate(root: Path, *, sibling_broken: bool, main_broken: bool) -> Path:
 
 
 def _run(target: Path) -> dict:
+    """The spawn, with the adapter's own 120s wall as a decline (#1604).
+
+    On a loaded `windows-latest` runner `cargo check` blows that wall, the
+    adapter correctly reports a timeout, and every assertion below then reads
+    that timeout string as a verdict about `sibling.rs`:
+
+        assert 'sibling.rs' in 'timeout (cargo check exceeded 120s)'
+
+    Nothing else moves. `skip_if_stalled` hands back any payload that IS a
+    verdict about the file, so a real cargo finding still fails here; only a
+    payload that spent the adapter's whole internal budget without reaching one
+    declines, carrying the rendered verdict into the skip reason. A blown
+    *outer* budget still raises `TimeoutExpired` and still fails, because that
+    one means the adapter ignored its own timeout (see `_adapter_budget`).
+    """
     r = subprocess.run([sys.executable, str(ADAPTER), str(target)],
                        capture_output=True, text=True,
                        timeout=adapter_budget(ADAPTER),
                        encoding="utf-8", errors="replace")
-    return verdict(r, adapter="cargo-check")
+    return skip_if_stalled(verdict(r, adapter="cargo-check"),
+                           inner_s=inner_budget(ADAPTER))
 
 
 @needs_cargo
