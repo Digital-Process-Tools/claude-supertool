@@ -41,7 +41,11 @@ when it is not.
 Three states, per `docs/validators.md` §"Declining instead of guessing":
 
 - `ok` — every regex column in the index survives both checks
-- a finding — a pattern that will silently never match, or that aborts the hook
+- a finding — a pattern that will silently never match, or that aborts the hook.
+  A finding-carrying result may also hold one `code: "adapter"` row naming the
+  patterns awk never reached, so a partial run is not published as a complete
+  one (#1714). See the caveat on that arm in `main`: `count` is what
+  `_validator_regressed` subtracts, and this adapter has `rollback_on_fail`.
 - `skipped` — the file is not a jit-context index, or awk is absent and the
   structural half found nothing. **A structural pass alone is not a clean
   result**, because half the check did not run; reporting `ok` there would be
@@ -423,16 +427,28 @@ def main():
         # found two things, which is this repo's house defect: an absence
         # produced by the tool, read as an absence in the world.
         #
-        # Loud here and quiet in the `absent()` arm below is not an
-        # inconsistency, it is the same cost calculation reaching two answers.
-        # This adapter carries `rollback_on_fail`, so the reason that arm must
-        # not raise an error is that a stalled machine would then revert a
-        # correct edit. Here `ok: false` and the rollback are already owed to
-        # the real findings, so saying one more true thing costs nothing that
-        # was not already spent. What it does cost is a +1 on anything counting
-        # errors, and a delta that moves when a machine hiccups rather than
-        # when the file changes; that is the price, and it is smaller than a
-        # payload that lies about its own coverage.
+        # Loud here and quiet in the `absent()` arm below is the same cost
+        # calculation reaching two answers. This adapter carries
+        # `rollback_on_fail`, so the reason that arm must not raise an error is
+        # that a stalled machine would otherwise revert a correct edit.
+        #
+        # **The equivalent claim about THIS arm is not yet true, and the gap is
+        # in the core, not here.** `validators/SCHEMA.md` §`adapter` states the
+        # guarantee unconditionally — "the result never triggers rollback,
+        # whatever `rollback_on_fail` says ... the core never subtracts it from
+        # a baseline in either direction". `_supertool.py:_validator_regressed`
+        # honours that only when **every** error is `adapter`
+        # (`_validator_not_checked`), so in a mixed payload this row is
+        # subtracted like a finding. Measured against the core's own function:
+        #
+        #     before 1 finding, after 1 finding            -> regressed False
+        #     before 1 finding, after 1 finding + this row -> regressed True
+        #
+        # So a pre-existing finding plus a transient stall reverts a correct
+        # edit. `cargo-check` already emits mixed payloads (`_parse_errors`,
+        # #754) and is exposed the same way, which makes this a core gap this
+        # arm joins rather than one it invents — but it is a gap, and the fix
+        # is for `_validator_regressed` to subtract only non-`adapter` rows.
         errors.append(_unrun_error(unrun, unchecked, len(patterns)))
 
     # A finding already in hand is published whatever happened to the other
