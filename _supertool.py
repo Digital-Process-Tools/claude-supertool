@@ -3809,6 +3809,40 @@ def _declared_value_exits(entry: object) -> FrozenSet[int]:
                      if isinstance(v, int) and not isinstance(v, bool))
 
 
+def _declared_clean_exits(entry: object) -> frozenset:
+    """Which of an op's declared value exits mean "nothing to worry about" (#1705).
+
+    A value-exit scheme spends the exit integer on an answer, and #1672 spent
+    it without saying what `0` still had to mean. It kept meaning "the op did
+    not fail" and stopped meaning "clear to proceed": `git-worktrees` answered
+    `occupied` and supertool exited 0, so `supertool 'git-worktrees:P' && rm -rf
+    P` — the consumer shape #1282 records — passed the guard on the one answer
+    that exists to stop it.
+
+    So the meaning of each value is the op's to state. `"clean": [0]` beside
+    `"values"` names the ones a caller may proceed on; every other declared
+    value is an answer supertool will not certify, and it reaches the process
+    exit through `_UNCLEAN_VALUE_EXITS` without becoming a refusal.
+
+    `0` is always clean and cannot be declared away here: exit 0 is never read
+    as a value exit in the first place (`_resolve_custom_op` gates on non-zero),
+    so listing it is documentation and omitting it changes nothing. A malformed
+    or missing declaration therefore collapses to `{0}` — tolerant like
+    `_declared_value_exits` above, and wrong in the loud direction, since the
+    failure mode of guessing here is a caller proceeding on `occupied`.
+    """
+    if not isinstance(entry, dict):
+        return frozenset({0})
+    decl = entry.get("exitStatus")
+    if not isinstance(decl, dict):
+        return frozenset({0})
+    clean = decl.get("clean")
+    if not isinstance(clean, list):
+        return frozenset({0})
+    return frozenset({0}) | frozenset(
+        v for v in clean if isinstance(v, int) and not isinstance(v, bool))
+
+
 def _preset_declares_error(body: str) -> bool:
     """Did an op that gave up its exit integer state a failure in its body?
 
@@ -3990,6 +4024,17 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
         if _value_exit:
             _failed = bool(result.stderr.strip()) or _preset_declares_error(output)
         _CUSTOM_OP_OK[0] = not _failed
+        # #1705 — the answer is not a refusal (that is #1672, and it stands),
+        # but an answer the op does not declare clear-to-proceed must not leave
+        # the process exiting 0. It travels the same road as a skipped write and
+        # a rolled-back edit: a per-call list `_main` reads as a delta, never
+        # `_mark_op_failure`, so the receipt keeps saying PASS and the batch
+        # footer keeps not saying `refused`.
+        _unclean_value = (
+            _value_exit and not _failed
+            and result.returncode not in _declared_clean_exits(entry))
+        if _unclean_value:
+            _UNCLEAN_VALUE_EXITS.append(f"{op} exited {result.returncode}")
         if _failed:
             if result.stderr:
                 output += result.stderr
@@ -4003,6 +4048,16 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
         _value_note = (f" [exit {result.returncode} is this op's answer, not a "
                        f"verdict — its registry entry declares the exit code a "
                        f"value]") if _value_exit else ""
+        # And when that value is not one the op declares clear to proceed, the
+        # same line has to carry why supertool itself exits non-zero — a single
+        # op prints no batch tally, so this is the only place a reader gets it.
+        if _unclean_value:
+            _value_note = (f" [exit {result.returncode} is this op's answer, not "
+                           f"a verdict — its registry entry declares the exit "
+                           f"code a value, and not one it declares clear to "
+                           f"proceed. The op did not fail; supertool exits "
+                           f"non-zero so a `&&` guard does not read this answer "
+                           f"as permission]")
         return (f"PASS ({elapsed:.2f}s){_stamp}{_value_note}\n"
                 f"{output}{_maybe_restart_mcp(entry)}")
     except subprocess.TimeoutExpired as e:
@@ -9892,6 +9947,14 @@ _ARG_SEP: List[str] = [":"]
 # subprocess rather than parsed back out of its receipt, for the same reason
 # `_result_line`'s counts are.
 _CUSTOM_OP_OK: List[Optional[bool]] = [None]
+
+# One entry per preset op that answered with a declared exit value it does not
+# declare clear to proceed (#1705), as "op exited N". Read by `_main` as a
+# per-call delta, for the same warm-daemon reason as `_SKIP_COUNT` beside it.
+# A plain list rather than a dispatch-frame accumulator: custom ops are outside
+# `_PARALLEL_SAFE_OPS`, and the reader is the call's exit code rather than any
+# one op's footer, so nothing here has to stay attributable to a single op.
+_UNCLEAN_VALUE_EXITS: List[str] = []
 
 # Bumped by _atomic_write. Lets dispatch ask 'did this op actually write?'
 # instead of sniffing the receipt for an ERROR prefix — receipts are prose
@@ -26232,6 +26295,7 @@ def _main(argv: List[str]) -> int:
     _rollbacks_at_entry = _ROLLBACK_COUNT[0]
     _not_checked_at_entry = len(_NOT_CHECKED)
     _validated_at_entry = len(_VALIDATED_FILES)
+    _unclean_at_entry = len(_UNCLEAN_VALUE_EXITS)
 
     # Optional parallel execution — opt-in, only when every op is read-only.
     # Custom ops are excluded (could mutate via shell). Mixed batches stay
@@ -26334,6 +26398,16 @@ def _main(argv: List[str]) -> int:
     # one (#990). Truncated for the same warm-daemon reason as the list above.
     del _VALIDATED_FILES[_validated_at_entry:]
 
+    # A value-exit answer that is not clear-to-proceed (#1705). Not a refusal —
+    # the op rendered, `refused` does not count it and the receipt says PASS —
+    # but `0` has to keep meaning "nothing to worry about" or the exit channel
+    # carries no fail-safe at all, and `supertool 'git-worktrees:P' && rm -rf P`
+    # was a consumer of exactly that (#1282).
+    _unclean_values = _UNCLEAN_VALUE_EXITS[_unclean_at_entry:]
+    del _UNCLEAN_VALUE_EXITS[_unclean_at_entry:]
+    if _unclean_values:
+        any_failure = True
+
     # The exit code is one bit for a call that ran N ops, and from the caller's
     # seat that bit is indistinguishable from "the batch did not run" (#1234).
     # It was filed as a refusal *suppressing* its siblings; reproduced at
@@ -26346,10 +26420,9 @@ def _main(argv: List[str]) -> int:
     # Only on a multi-op call, and only when the exit code is about to be 1 —
     # with one op there is no sibling to have lost, and on a clean batch the
     # line is noise on every call forever.
-    _other = ("a skipped write, a rolled-back edit or a validator that could "
-              "not run")
+    _other = _other_causes_phrase(counter_failure, _unclean_values)
     if len(bodies) > 1 and any_failure:
-        if counter_failure and refused:
+        if (counter_failure or _unclean_values) and refused:
             # Both kinds of failure at once, and this is the branch that has to
             # say the least. `refused` counts ops that returned a refusal;
             # the counters catch the failures that render as ordinary prose —
@@ -26382,7 +26455,8 @@ def _main(argv: List[str]) -> int:
             # would send the reader hunting for an op that did not fail.
             tally = (
                 f"[batch] {len(bodies)} ops ran — all {len(bodies)} rendered an "
-                f"answer. Exit 1 is {_other} (above), not an op." + chr(10)
+                f"answer. Exit 1 is {_other} (above), not an op refusing."
+                + chr(10)
             )
         sys.stdout.write(tally)
         total_out_bytes += len(tally.encode("utf-8"))
@@ -26422,6 +26496,39 @@ def _main(argv: List[str]) -> int:
 # hunk headers against 0.0013s (#1279) — because this reads at most the first
 # few characters however large the receipt grows.
 _OP_VERDICT_FAIL = re.compile(r"(FAIL\b|ERROR:\s)")
+
+
+def _other_causes_phrase(counter_failure: bool, unclean_values: List[str]) -> str:
+    """Why exit 1, for the batch footer, naming only what this call actually had.
+
+    Two causes reach the exit code without being a refusal: the counters
+    (`_SKIP_COUNT`, `_ROLLBACK_COUNT`, `_NOT_CHECKED`) and a value-exit answer
+    the op does not declare clear to proceed (#1705).
+
+    Joined with `; ` and not `and`. The counter cause is itself an `A, B or C`
+    list of possibilities, so `… a validator that could not run and an answer
+    its op does not declare clear to proceed (…)` leaves a reader unable to tell
+    whether the last clause is a fourth alternative inside the `or` or a second,
+    separate cause — on the one branch whose whole job is to say the least.
+
+    With no cause at all the counter enumeration is returned unchanged: the
+    caller only reads this when the exit code is already 1, and the three
+    possibilities are what that sentence has always offered.
+    """
+    causes = []
+    if counter_failure:
+        causes.append("a skipped write, a rolled-back edit or a validator that "
+                      "could not run")
+    if unclean_values:
+        # Named, not enumerated as possibilities: this one the call knows.
+        # De-duplicated so three calls to one op read as one cause rather than
+        # three, while two different ops still both get named.
+        causes.append("an answer its op does not declare clear to proceed ("
+                      + ", ".join(dict.fromkeys(unclean_values)) + ")")
+    if not causes:
+        return ("a skipped write, a rolled-back edit or a validator that could "
+                "not run")
+    return "; ".join(causes)
 
 
 def _op_body_failed(body: str) -> bool:
