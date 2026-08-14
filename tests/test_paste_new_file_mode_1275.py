@@ -158,5 +158,33 @@ def test_a_created_file_without_a_shebang_gets_no_chmod_advice(
     assert "chmod +x" not in out, out
 
 
+def test_append_creates_at_the_umask_default_and_says_so(tmp_path: Path) -> None:
+    """`append` creates too, through the same chokepoint (reviewer, #1275).
+
+    The widening applies to any op that brings a file into existence, and
+    `append` is the other one. Left undisclosed it would be exactly the silent
+    case this change exists to remove.
+    """
+    require_posix_modes()
+    want = 0o666 & ~_umask()
+    f = tmp_path / "log.sh"
+    out = supertool.op_append(str(f), "#!/bin/sh\necho hi\n")
+    assert "ERROR" not in out, out
+    if want != 0o600:
+        assert _mode(f) == want, (
+            "created at {0}, expected {1}".format(oct(_mode(f)), oct(want)))
+    assert "mode {0:04o}".format(_mode(f)) in out, out
+    assert "chmod +x" in out, out
+
+
+def test_append_to_an_existing_file_does_not_state_a_mode(
+        tmp_path: Path) -> None:
+    f = tmp_path / "log.txt"
+    f.write_text("one\n", encoding="utf-8")
+    out = supertool.op_append(str(f), "two\n")
+    assert "ERROR" not in out, out
+    assert "mode 0" not in out, out
+
+
 def test_a_changelog_fragment_exists() -> None:
     assert_change_is_findable(1275)

@@ -108,7 +108,7 @@ That third state exists because a confidently wrong line number costs more than 
 | `replace_dry` | `replace_dry:::OLD:::NEW:::PATH` | Preview of `replace` — shows what would change without writing. |
 | `replace_lines` | `replace_lines:::PATH:::START:::END:::CONTENT` | Swap lines `[START, END]` (1-indexed, inclusive) with CONTENT. `END < START` = pure insert before line START. Empty CONTENT = delete. Receipt shows new line numbers + ±2 context. |
 | `paste` | `paste:::PATH:::CONTENT` | **NARROW USE:** replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — `vim` is the default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars (`:`, quotes, braces, newlines). Overwriting an existing file copies its outgoing bytes to `~/.cache/supertool/paste-backup/` first and the receipt names the copy; a *created* file lands at `0666 & ~umask` and the receipt states the mode — both below. |
-| `append` | `append:::PATH:::CONTENT` | Append CONTENT to the end of a file, creating it if missing. No `wc` round-trip, no inverted-range `replace_lines` trick. Adds a missing trailing newline first so the block starts on its own line. |
+| `append` | `append:::PATH:::CONTENT` | Append CONTENT to the end of a file, creating it if missing — a file it creates lands at `0666 & ~umask` and the receipt states the mode, same as `paste` below. No `wc` round-trip, no inverted-range `replace_lines` trick. Adds a missing trailing newline first so the block starts on its own line. |
 
 ### A `paste` over an existing file keeps the bytes it displaces
 
@@ -157,7 +157,7 @@ PATH` above `[rolled back] … the file was NOT edited`. Both are true: the file
 on disk is the original, and PATH holds those same bytes. The copy is redundant
 rather than wrong, and `gc` reaps it with the rest.
 
-### A file `paste` creates lands at the umask, and the receipt states the mode
+### A file `paste` or `append` creates lands at the umask, and the receipt states the mode
 
 A created file gets `0666 & ~umask` — `0644` under the common `umask 022` —
 the same mode `>`, `tee`, `cp` and every editor produce. It used to get `0600`,

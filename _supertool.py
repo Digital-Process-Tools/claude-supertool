@@ -10585,6 +10585,12 @@ def op_append(path: str, content: str) -> str:
         f"{verb} {path}: {added} lines at {start_line}-{len(all_lines)} "
         f"({old_size} → {new_size} bytes){newline_hint}\n"
     ]
+    if not existed:
+        # `append` is the other op that brings a file into existence, so the
+        # umask default of #1275 reaches it through the same chokepoint — and
+        # a widening nobody is told about is the exact shape that fix removes.
+        # Disclosed here rather than only in `paste`.
+        out.append(_created_mode_note(path, new_content))
     # Receipt shows 2 lines of preceding context so the caller can see what the
     # block landed after, then the block itself — capped, because append is the
     # op you reach for with a long changelog entry and echoing it back in full
