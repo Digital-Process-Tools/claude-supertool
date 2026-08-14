@@ -1198,14 +1198,16 @@ def test_undo_then_redo():
         os.unlink(p)
 
 
-def test_undo_cross_call():
+def test_undo_cross_call(monkeypatch):
     """Cross-call undo: insert FOO in call 1, then u in call 2 restores empty."""
     p = _tmp("")
-    # Use a test-specific cache dir so we don't pollute the real cache
+    # A test-specific cache dir so we don't pollute the real cache, set through
+    # monkeypatch so the session-wide redirect is restored rather than popped
+    # out from under every test that runs after this one (#1656).
     import tempfile
     cache_dir = tempfile.mkdtemp()
-    os.environ["XDG_CACHE_HOME"] = cache_dir
-    os.environ.pop("SUPERTOOL_VIM_NO_PERSIST", None)
+    monkeypatch.setenv("XDG_CACHE_HOME", cache_dir)
+    monkeypatch.delenv("SUPERTOOL_VIM_NO_PERSIST", raising=False)
     try:
         # Call 1: insert FOO
         r1 = st.op_vim(p, "iFOO")
@@ -1216,7 +1218,6 @@ def test_undo_cross_call():
         assert content == "", f"expected empty after cross-call undo, got: {content!r}"
         assert "cross-call undo" in r2, f"expected cross-call undo note in receipt, got: {r2}"
     finally:
-        os.environ.pop("XDG_CACHE_HOME", None)
         os.unlink(p)
         import shutil
         shutil.rmtree(cache_dir, ignore_errors=True)
@@ -1285,12 +1286,19 @@ def test_macro_replay_last_with_atat():
 # `.` — repeat last change
 # ---------------------------------------------------------------------------
 
-def _tmp_persist(content: str):
-    """Return (path, cache_dir) with persistence enabled via XDG_CACHE_HOME."""
-    import tempfile, shutil
+def _tmp_persist(monkeypatch, content: str):
+    """Return (path, cache_dir) with persistence enabled via XDG_CACHE_HOME.
+
+    Through `monkeypatch`, not `os.environ[...] = ` with a `pop` in the
+    teardown (#1656). A pop is not a restore: `conftest.py` now points
+    XDG_CACHE_HOME at a directory the session owns, and the first test here to
+    pop it would leave every test after it in this worker writing into the
+    operator's real `~/.cache` — silently, and reading as a pass.
+    """
+    import tempfile
     cache_dir = tempfile.mkdtemp()
-    os.environ["XDG_CACHE_HOME"] = cache_dir
-    os.environ.pop("SUPERTOOL_VIM_NO_PERSIST", None)
+    monkeypatch.setenv("XDG_CACHE_HOME", cache_dir)
+    monkeypatch.delenv("SUPERTOOL_VIM_NO_PERSIST", raising=False)
     f = tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False)
     f.write(content)
     f.close()
@@ -1298,8 +1306,8 @@ def _tmp_persist(content: str):
 
 
 def _cleanup_persist(p: str, cache_dir: str) -> None:
+    """The file and the directory only — `monkeypatch` owns the environment."""
     import shutil
-    os.environ.pop("XDG_CACHE_HOME", None)
     try:
         os.unlink(p)
     except OSError:
@@ -1307,9 +1315,9 @@ def _cleanup_persist(p: str, cache_dir: str) -> None:
     shutil.rmtree(cache_dir, ignore_errors=True)
 
 
-def test_dot_repeat_insert_same_call():
+def test_dot_repeat_insert_same_call(monkeypatch):
     """iFOO\\e. — insert FOO, then repeat in same call at new cursor."""
-    p, cache_dir = _tmp_persist("")
+    p, cache_dir = _tmp_persist(monkeypatch, "")
     try:
         r = st.op_vim(p, "iFOO\\e.")
         result = open(p, encoding="utf-8").read()
@@ -1319,9 +1327,9 @@ def test_dot_repeat_insert_same_call():
         _cleanup_persist(p, cache_dir)
 
 
-def test_dot_repeat_insert_cross_call():
+def test_dot_repeat_insert_cross_call(monkeypatch):
     """First call `iFOO\\e`, second call `G.` — repeat at end of file."""
-    p, cache_dir = _tmp_persist("line1\n")
+    p, cache_dir = _tmp_persist(monkeypatch, "line1\n")
     try:
         r1 = st.op_vim(p, "iFOO\\e")
         assert "ERROR" not in r1, f"call1 failed: {r1}"
@@ -1333,9 +1341,9 @@ def test_dot_repeat_insert_cross_call():
         _cleanup_persist(p, cache_dir)
 
 
-def test_dot_repeat_dd_same_call():
+def test_dot_repeat_dd_same_call(monkeypatch):
     """dd then move then . — delete two lines."""
-    p, cache_dir = _tmp_persist("alpha\nbeta\ngamma\n")
+    p, cache_dir = _tmp_persist(monkeypatch, "alpha\nbeta\ngamma\n")
     try:
         r = st.op_vim(p, "gg\u241e""dd\u241e""j.")
         result = open(p, encoding="utf-8").read()
@@ -1348,9 +1356,9 @@ def test_dot_repeat_dd_same_call():
         _cleanup_persist(p, cache_dir)
 
 
-def test_dot_repeat_nothing_to_repeat():
+def test_dot_repeat_nothing_to_repeat(monkeypatch):
     """. with no prior change — should produce a log note, not an error."""
-    p, cache_dir = _tmp_persist("hello\n")
+    p, cache_dir = _tmp_persist(monkeypatch, "hello\n")
     try:
         os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
         r = st.op_vim(p, ".")
@@ -1361,9 +1369,9 @@ def test_dot_repeat_nothing_to_repeat():
         _cleanup_persist(p, cache_dir)
 
 
-def test_dot_repeat_x_deletes_char():
+def test_dot_repeat_x_deletes_char(monkeypatch):
     """x then . — delete two chars at same position."""
-    p, cache_dir = _tmp_persist("abcde\n")
+    p, cache_dir = _tmp_persist(monkeypatch, "abcde\n")
     try:
         r = st.op_vim(p, "gg\u241e""x.")
         result = open(p, encoding="utf-8").read()
@@ -1373,9 +1381,9 @@ def test_dot_repeat_x_deletes_char():
         _cleanup_persist(p, cache_dir)
 
 
-def test_dot_repeat_ciw_replaces_word():
+def test_dot_repeat_ciw_replaces_word(monkeypatch):
     """ciw<NEW>\\e then w. — change word, move, repeat on next word."""
-    p, cache_dir = _tmp_persist("foo bar\n")
+    p, cache_dir = _tmp_persist(monkeypatch, "foo bar\n")
     try:
         r = st.op_vim(p, "gg\u241e""ciwNEW\\e\u241e""w.")
         result = open(p, encoding="utf-8").read()
@@ -1389,9 +1397,9 @@ def test_dot_repeat_ciw_replaces_word():
 # M2 / M3 — :!cmd integration: . repeat and u undo
 # ---------------------------------------------------------------------------
 
-def test_shell_filter_sort_and_dot_repeat():
+def test_shell_filter_sort_and_dot_repeat(monkeypatch):
     """`:%!sort` sorts the buffer; `.` replays it (idempotent — no error)."""
-    p, cache_dir = _tmp_persist("b\na\n")
+    p, cache_dir = _tmp_persist(monkeypatch, "b\na\n")
     try:
         r = st.op_vim(p, ":%!sort")
         result = open(p, encoding="utf-8").read()
@@ -1406,9 +1414,9 @@ def test_shell_filter_sort_and_dot_repeat():
         _cleanup_persist(p, cache_dir)
 
 
-def test_shell_filter_sort_undo():
+def test_shell_filter_sort_undo(monkeypatch):
     """`:%!sort` then `u` restores original content."""
-    p, cache_dir = _tmp_persist("b\na\n")
+    p, cache_dir = _tmp_persist(monkeypatch, "b\na\n")
     try:
         r = st.op_vim(p, ":%!sort␞u")
         result = open(p, encoding="utf-8").read()
@@ -1418,9 +1426,9 @@ def test_shell_filter_sort_undo():
         _cleanup_persist(p, cache_dir)
 
 
-def test_shell_insert_echo_undo():
+def test_shell_insert_echo_undo(monkeypatch):
     """`u` after `:!echo hi` removes the inserted line."""
-    p, cache_dir = _tmp_persist("")
+    p, cache_dir = _tmp_persist(monkeypatch, "")
     try:
         r = st.op_vim(p, ":!echo hi␞u")
         result = open(p, encoding="utf-8").read()

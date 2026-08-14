@@ -38,6 +38,14 @@ try:
 except ImportError:  # pragma: no cover - only in the synthetic-repo suites
     _lint_budget = None
 
+# Same tolerance, same reason (#1604): the synthetic-repo suites copy this file
+# alone, so `_adapter_verdict.py` is not there either. Reported in words rather
+# than omitted, for the same reason as above.
+try:
+    import _adapter_verdict  # noqa: E402
+except ImportError:  # pragma: no cover - only in the synthetic-repo suites
+    _adapter_verdict = None
+
 # Same tolerance, same reason (#1568): the live-GitHub reachability guard and
 # its countable skip. Reported in words rather than omitted, as above.
 try:
@@ -317,10 +325,71 @@ def pytest_configure(config):
         os.pathsep.join(_tmp_roots),
     )
     os.environ.setdefault("SUPERTOOL_NO_PUBLISH_CONFIRM", "1")
+    # #1656: every cache supertool writes goes through `_supertool._cache_root()`,
+    # which is the one place `~/.cache/supertool` is spelled and reads
+    # XDG_CACHE_HOME per call. Point it at a directory this process owns, so the
+    # suite stops writing into the operator's real cache — measured at 52 files
+    # / 288 KB per full run, all of it the #1650 `paste-backup` store, on a
+    # machine where that cache is also the thing under test.
+    #
+    # Set, not `setdefault`. The three switches above are `setdefault` because a
+    # real environment should be able to win; here the operator's environment is
+    # exactly what must not be written to, so an exported XDG_CACHE_HOME is the
+    # case this exists for rather than an override of it.
+    #
+    # This subsumes rather than replaces `SUPERTOOL_READ_NO_ELIDE`,
+    # `SUPERTOOL_GC_DISABLE` and `SUPERTOOL_VIM_NO_PERSIST` above: those three
+    # turn individual stores off, and a store added tomorrow gets no line. This
+    # is the floor under all of them, including the ones that do not exist yet.
+    # Its blast radius is those same three stores plus paste-backup — the
+    # alternative repairs (a `SUPERTOOL_PASTE_NO_BACKUP` product knob disabling
+    # a data-loss net, or a test-only cache root that is an env var by another
+    # name) both add product surface this does not, and both fix one instance.
+    #
+    # Per process, so xdist workers do not share one and two concurrent suites
+    # in one checkout cannot race. Taken down in `pytest_unconfigure`.
+    #
+    # `TemporaryDirectory` rather than `mkdtemp` + `shutil.rmtree`, and that is
+    # the #1635 register talking rather than taste: a teardown that composes a
+    # path out of an attribute cannot prove it owns what it deletes, and
+    # `test_directory_removal_ownership_1635.py` classified the rmtree UNOWNED
+    # on the commit that added it. The object removes only the directory it
+    # made, and nothing here composes a path at all, so the hazard is absent by
+    # construction rather than argued.
+    #
+    # **Stated because it is the shape this repo keeps mis-reading:** that
+    # register no longer *sees* this site. `.cleanup()` is not one of the
+    # removal verbs it matches, so the zero it now reports for this file is an
+    # absence of detection, not a proof. The safety here is the stdlib type's,
+    # not the guard's, and `OWNERS` in that file already counts
+    # `TemporaryDirectory` as an ownership source while its removal side has no
+    # matching verb -- an asymmetry worth its own issue rather than a rider.
+    config._supertool_cache_home = tempfile.TemporaryDirectory(
+        prefix="supertool-suite-cache-")
+    os.environ["XDG_CACHE_HOME"] = config._supertool_cache_home.name
     # #416: the autouse fixture below cannot cover collection-time module
     # bodies or session helpers, which run before any fixture. Scrub once here
     # too, and remember what was leaked so it gets reported rather than hidden.
     config._supertool_leaked_git_env = scrub_git_env()
+
+
+def pytest_unconfigure(config):
+    """Take the #1656 cache redirect's directory back down.
+
+    Best effort and deliberately silent: a suite that cannot remove its own
+    temp directory has still run correctly, and raising here would turn a
+    cleanup failure into a red on work that passed. Windows in particular
+    raises when a file under it is still open, and `ignore_cleanup_errors` is
+    3.10+ while CI runs 3.9. The directory is under `tempfile.gettempdir()`
+    either way, so the worst outcome is one the OS reaps rather than the
+    operator's cache being written to.
+    """
+    cache_home = getattr(config, "_supertool_cache_home", None)
+    if cache_home is not None:
+        try:
+            cache_home.cleanup()
+        except OSError:
+            pass
 
 
 def pytest_report_header(config):
@@ -373,12 +442,14 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     `688 skipped` is a number. `N of 688 skipped, because this runner has no
     create-symlink privilege` is a fact somebody can act on -- it is the
     difference between an absence in the world and an absence the tooling
-    produced. Four reasons are broken out that way, each in its own helper
+    produced. Five reasons are broken out that way, each in its own helper
     below: the create-symlink privilege (#1143), the post-edit lint budget
-    (#1360), the live GitHub API (#1568) and a `git status` that would not
-    answer about a path's working-tree state (#705). This sentence said "two"
-    for as long as there were three -- the count is the thing that goes stale,
-    so it is derived nowhere and stated here once.
+    (#1360), an adapter that spent its whole internal budget without reaching
+    a verdict (#794/#1604), the live GitHub API (#1568) and a `git status` that
+    would not answer about a path's working-tree state (#705). This sentence
+    said "two" for as long as there were three, and "four" for as long as there
+    were five -- the count is the thing that goes stale, so it is derived
+    nowhere and stated here once.
 
     All of them print whether the count is zero or not -- silence would be
     indistinguishable from not having looked -- and each prints its denominator
@@ -390,6 +461,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     skipped = terminalreporter.stats.get("skipped", []) or []
     _symlink_summary(terminalreporter, skipped)
     _lint_budget_summary(terminalreporter, skipped)
+    _adapter_wall_summary(terminalreporter, skipped)
     _live_gh_summary(terminalreporter, skipped)
     _git_decline_summary(terminalreporter, skipped)
 
@@ -483,6 +555,30 @@ def _git_decline_summary(terminalreporter, skipped):
     n = _token_skips(skipped, _git_decline.TOKEN)
     terminalreporter.write_line(_git_decline.verdict_line(n, len(skipped)))
     terminalreporter.write_line(_git_decline.POPULATION)
+
+
+def _adapter_wall_summary(terminalreporter, skipped):
+    """Count the adapter-wall skips apart from the rest (#1604).
+
+    The counting half of the shape #1604 chose over normalising the wall away.
+    #794 has declined a stalled adapter since #1296 and the decline carried no
+    token, so four instances of this class were each filed as a fresh mystery:
+    `N skipped` on a loaded Windows leg said nothing about how many tests had
+    failed to obtain an adapter verdict.
+
+    Printed at zero too. A line that appears only on trouble is
+    indistinguishable from one that was never evaluated, which is the defect
+    this entire family is about.
+    """
+    if _adapter_verdict is None:
+        terminalreporter.write_line(
+            "adapter wall: NOT CHECKED -- tests/_adapter_verdict.py is not in "
+            "this tree")
+        return
+    n = _token_skips(skipped, _adapter_verdict.ADAPTER_WALL_TOKEN)
+    terminalreporter.write_line(
+        _adapter_verdict.adapter_wall_line(n, len(skipped)))
+    terminalreporter.write_line(_adapter_verdict.ADAPTER_WALL_POPULATION)
 
 
 def _lint_budget_summary(terminalreporter, skipped):

@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from _adapter_budget import adapter_budget
+from _adapter_budget import adapter_budget, inner_budget
 from _winenv import empty_path_env
-from _adapter_verdict import assert_declined, assert_ok, verdict
+from _adapter_verdict import assert_declined, assert_ok, skip_if_stalled, verdict
 
 ADAPTER = Path(__file__).parent.parent / "validators" / "ruby-check" / "ruby-check.py"
 
@@ -26,9 +26,18 @@ _spec.loader.exec_module(ruby_check)
 
 
 def _run(file_path: str) -> dict:
-    # Windows runners occasionally yield empty stdout from the freshly-spawned
-    # adapter (cold subprocess start); retry once, then fail with diagnostics
-    # instead of a cryptic JSONDecodeError.
+    """The spawn, with `ruby -c`'s own 30s wall as a decline (#1604).
+
+    A `windows-latest 3.9` leg reported `test_valid_ruby` as a finding about a
+    Ruby file with nothing wrong with it, because the adapter had spent its
+    whole spawn budget and said so. That is not a verdict, so there is nothing
+    here to assert on; `skip_if_stalled` returns every payload that IS one
+    untouched, so a real syntax error still fails.
+
+    Windows runners occasionally yield empty stdout from the freshly-spawned
+    adapter (cold subprocess start); retry once, then fail with diagnostics
+    instead of a cryptic JSONDecodeError.
+    """
     for _attempt in range(2):
         result = subprocess.run(
             [sys.executable, str(ADAPTER), file_path],
@@ -37,7 +46,8 @@ def _run(file_path: str) -> dict:
             timeout=adapter_budget(ADAPTER), encoding="utf-8", errors="replace",
         )
         if result.stdout.strip():
-            return verdict(result, adapter="ruby-check")
+            return skip_if_stalled(verdict(result, adapter="ruby-check"),
+                                   inner_s=inner_budget(ADAPTER))
     raise AssertionError(
         f"ruby-check adapter produced empty stdout (rc={result.returncode}); "
         f"stderr={result.stderr!r}"

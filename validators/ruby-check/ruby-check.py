@@ -28,6 +28,11 @@ from linebreaks import split_lines
 TOOL = "ruby-check"
 INSTALL_HINT = "ruby not found on PATH — this file was NOT syntax-checked"
 
+# Hoisted out of the `subprocess.run` call so the decline below can name the
+# number, and so `tests/_adapter_budget.inner_budget` reads one value rather
+# than two spellings of it.
+TIMEOUT_S = 30
+
 
 # `file:line: message`. Extracted so the rule can be driven in process on every
 # platform — the fake-binary fixture is POSIX-only (see
@@ -81,7 +86,7 @@ def main() -> None:
             ["ruby", "-c", file],
             capture_output=True,
             text=True,
-            timeout=30, encoding="utf-8", errors="replace",
+            timeout=TIMEOUT_S, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
         # `which` said yes and exec said no — a PATH entry that vanished
@@ -90,6 +95,22 @@ def main() -> None:
         emit(absent(TOOL, file, "ruby on PATH but could not be executed — "
                                 "this file was NOT syntax-checked",
                     int((time.time() - start) * 1000)))
+        return
+    except subprocess.TimeoutExpired:
+        # Until #1604 this arm did not exist and the `TimeoutExpired` escaped
+        # `main()` into the module-level `except Exception` below, whose payload
+        # hardcodes `duration_ms: 0`. The code was right and the number was a
+        # lie, and the number is what the suite reads: a stall is only
+        # distinguishable from an adapter with broken error routing by whether
+        # the elapsed time reaches the budget, so `after 0ms` beside "timed out
+        # after 30 seconds" made a real wall unclassifiable and published it as
+        # a verdict about the file (tests/_adapter_verdict.py,
+        # `stalled_at_its_own_wall`, fourth clause).
+        emit({"tool": TOOL, "file": file, "ok": False, "count": 1,
+              "errors": [{"line": None, "col": None, "severity": "error",
+                          "code": "adapter",
+                          "msg": f"timed out (ruby -c exceeded {TIMEOUT_S}s)"}],
+              "duration_ms": int((time.time() - start) * 1000)})
         return
 
     duration = int((time.time() - start) * 1000)
