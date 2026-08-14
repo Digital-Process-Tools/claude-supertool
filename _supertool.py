@@ -10633,29 +10633,51 @@ def _paste_snapshot(path: str, new_content: str) -> Tuple[str, str]:
     # class one level up and is deliberately not fixed here (#1685 item 2).
     if store.is_symlink():
         return "", f"{store} is a symlink, not a directory"
+    # That check alone is check-then-act, so it is the message and not the
+    # guarantee: where the platform has them, the store is then *opened* with
+    # O_DIRECTORY | O_NOFOLLOW and the leaf is created relative to that
+    # descriptor, which refuses a symlink swapped in after the check rather
+    # than resolving through it. Windows has neither, and no POSIX mode bits
+    # to disclose either, so it keeps the path-based open.
+    use_dir_fd = hasattr(os, "O_DIRECTORY") and os.open in os.supports_dir_fd
+    dir_fd = None
     try:
         store.mkdir(parents=True, exist_ok=True)
+        if use_dir_fd:
+            dir_fd = os.open(
+                str(store), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
         # os.open, not open(): the mode has to be on the file from the moment
-        # it exists, not chmod-ed onto it a syscall later, or the bytes are
-        # world-readable for that window. O_EXCL so an existing leaf is never
-        # written through, O_NOFOLLOW so a symlink at the leaf is not either,
-        # and O_BINARY because on Windows a text-mode fd would rewrite every
-        # LF in the backup — a copy that does not match what it copied.
+        # it exists rather than chmod-ed onto it a syscall later, or the bytes
+        # are world-readable for that window. O_EXCL so an existing leaf is
+        # never written through, O_NOFOLLOW so a symlink at the leaf is not
+        # either, and O_BINARY because on Windows a text-mode fd would rewrite
+        # every LF in the backup — a copy that does not match what it copied.
         flags = (
             os.O_WRONLY | os.O_CREAT | os.O_EXCL
             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
         )
-        fd = os.open(dest, flags, snap_mode)
+        fd = os.open(
+            dest.name if dir_fd is not None else str(dest),
+            flags,
+            snap_mode,
+            dir_fd=dir_fd,
+        )
         with os.fdopen(fd, "wb") as fh:
+            # The umask subtracts from the mode passed to os.open, so a 0640
+            # source under a 0022 umask would land at 0620 — narrower, but a
+            # different fact from the one the receipt states. On the open
+            # descriptor and before the bytes, never `os.chmod(dest, ...)`
+            # after the handle is closed: a chmod by path re-resolves the name
+            # and would hand back the symlink window O_NOFOLLOW just shut.
+            if hasattr(os, "fchmod"):
+                os.fchmod(fh.fileno(), snap_mode)
             fh.write(old)
-        # The umask subtracts from the mode passed to os.open, so a 0640 source
-        # under a 0022 umask would have landed at 0620 — narrower, but a
-        # different fact from the one the receipt states. Applied after the
-        # bytes are written, on a file that has never been wider.
-        if os.name != "nt":
-            os.chmod(dest, snap_mode)
     except OSError as e:
         return "", f"{store} is not writable ({type(e).__name__})"
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
     return str(dest), ""
 
 

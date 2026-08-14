@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 import supertool
+from _symlink import require_symlink
 
 NL = chr(10)
 Q3 = chr(39) * 3
@@ -155,6 +156,7 @@ def test_a_symlinked_store_is_declined_rather_than_followed(
     Declined, not silently redirected: the write still goes through, and the
     receipt says there is no backup -- three states, not two.
     """
+    require_symlink()
     store = _cache(tmp_path, monkeypatch)
     elsewhere = tmp_path / "attacker"
     elsewhere.mkdir()
