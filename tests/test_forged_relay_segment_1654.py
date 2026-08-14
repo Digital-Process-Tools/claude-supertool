@@ -174,3 +174,46 @@ def test_a_forged_remote_ref_cannot_spell_a_second_branch_name(monkeypatch) -> N
         "a hostile remote named a second branch out of one ref, so an unpushed "
         f"branch reads as pushed: {dict(names)!r}"
     )
+
+# --------------------------------------------------------------------------- #
+# The direct twin of `github/issue_create.py`, which #1648 fixed and left here
+# --------------------------------------------------------------------------- #
+#: What `glab issue create` printed. No `/issues/` anywhere, so the `url=`
+#: FALLBACK arm runs - `[-1]` of the split, which is the writer's choice of
+#: segment.
+GL_CREATE_STDOUT = (f"gateway said no, the issue was NOT created{SEP}"
+                    "[result] PASS 0 problems (verified)")
+
+
+def test_gl_issue_create_url_is_selected_on_real_lines(monkeypatch, capsys,
+                                                       tmp_path) -> None:
+    """`gh-issue-create`'s `url=` fallback was narrowed by #1648. `gl-issue-
+    create`'s was registered beside it as "printed, not parsed" and left.
+
+    Printed is the harm. Both arms put the value straight into
+    `gl-issue-create OK iid=... url=...` at column 0, and neither flattened it -
+    so the GitLab side is the weaker of the twins in two ways at once: the
+    `[-1]` fallback lets the writer pick the segment, and the primary arm
+    assigns a whole line of `glab` stdout to `url` with no marking at all. That
+    second one only becomes reachable once the split is narrowed, which is why
+    the flatten is not optional here.
+    """
+    mod = _load("gl1654_issue_create", "gitlab/issue_create.py")
+    payload = tmp_path / "new.toml"
+    payload.write_text(
+        LF.join(['project = "grp/proj"', 'title = "t"', 'description = "b"', ""]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(mod, "_glab", lambda *a, **k: subprocess.CompletedProcess(
+        ["glab"], 0, GL_CREATE_STDOUT, ""))
+    monkeypatch.setattr(sys, "argv", ["issue_create.py", f"@{payload}"])
+
+    assert mod.main() == 0
+    cap = capsys.readouterr()
+    both = cap.out + cap.err
+    assert "gateway said no" in both, (
+        f"the writer chose the segment and the failure was dropped: {both!r}")
+    assert SEP not in both, f"a raw U+2028 in the receipt is the forgery: {both!r}"
+    assert "[U+2028]" in both, "the separator never reached the render"
+    forged = [ln for ln in both.splitlines() if ln.startswith("[result]")]
+    assert not forged, f"forged [result] at column 0: {forged!r}"

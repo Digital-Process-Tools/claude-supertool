@@ -75,9 +75,13 @@ REGISTER: dict[str, str] = {
     # flattens the result so the separator prints as `[U+2028]` instead of
     # reaching column 0. Pinned by tests/test_forged_relay_segment_1654.py and
     # test_gl_mr_forged_hunk_boundary_1119.py.
-    "presets/gitlab/issue_create.py::main":
-        "glab's stdout, scanned for an issue URL, then its last line as a "
-        "fallback. The extracted value is printed, not parsed.",
+    # `issue_create.py::main` stood here on "the extracted value is printed,
+    # not parsed" — and printed at column 0 IS the harm. It is the direct twin
+    # of the `url=` fallback #1648 narrowed on the GitHub side, and it was the
+    # weaker of the two: the fallback let the writer of glab's stdout pick the
+    # segment with a `[-1]`, and the matched arm assigned a whole line to
+    # `url` with nothing marking it, so `gl-issue-create OK iid=... url=...`
+    # rendered whatever came back. Narrowed and flattened by #1654.
     "presets/gitlab/mr.py::_get_conflicting_files":
         "git merge-tree --name-only stdout - PATHS, not content. Left alone "
         "on evidence rather than on reasoning: git octal-quotes every "

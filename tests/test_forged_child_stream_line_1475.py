@@ -8,7 +8,7 @@ so a U+2028 survives *inside* a relayed line and everything the reader anchors
 at column 0 becomes the writer's to choose.
 
 **The fix is at the seam, not at the sites.** Seven sites were named and the
-sweep below finds 156 sites in 34 files, which is what a per-site fix earns:
+sweep below finds 154 sites in 33 files, which is what a per-site fix earns:
 the same defect re-filed once per call. So
 
 * `_git_common._first_error_line` flattens what it returns. Every caller —
@@ -184,7 +184,7 @@ def test_a_tab_survives_the_commit_relay() -> None:
 # grows quietly — which is the failure mode of the thing it would be guarding".
 #
 # **So this is not a zero-assertion, and pretending otherwise is what would
-# make it useless.** Measured on this branch: 156 candidate sites in 34 files
+# make it useless.** Measured on this branch: 154 candidate sites in 33 files
 # across `presets/git`, `presets/github` and `presets/gitlab`. Not all are
 # defects — `push._local_head` returns `r.stdout.strip()`, and that is a SHA —
 # and closing them is four lanes of work this PR is not.
@@ -338,7 +338,11 @@ CENSUS = {
     "presets/github/starred.py": 0,  # -1, #1648: the `bad JSON` dump
     "presets/gitlab/api.py": 1,
     "presets/gitlab/issue.py": 3,  # +1, #1626: `f.write(result.stdout)`
-    "presets/gitlab/issue_create.py": 2,
+    # `presets/gitlab/issue_create.py` was 2 and is 0 (#1654) — both arms of
+    # the `url=` receipt. Its row is gone rather than zeroed, which is what
+    # drops the file count from 34 to 33; `presets/github/issue_create.py`
+    # keeps a `: 0` row from #1648 and the asymmetry is only that one file
+    # still has a scanned site the model resolves and the other does not.
     "presets/gitlab/job.py": 1,
     "presets/gitlab/mr.py": 3,
     "presets/gitlab/pipeline.py": 4,

@@ -675,8 +675,23 @@ reader was told `glab: nothing wrong here` and the 403 was dropped rather than
 disclosed. All three now split with `_untrusted.split_lines` and flatten the segment,
 so the whole line survives on one line with the separator spelled `[U+2028]`.
 
-The eight remaining `str.splitlines()` calls across the two twin presets are each
-registered with the reason they are safe, in
+`gl-issue-create` was the fourth, and the direct twin of the `url=` fallback
+[#1648](https://github.com/Digital-Process-Tools/claude-supertool/issues/1648)
+narrowed on the GitHub side. It was registered as "the extracted value is
+printed, not parsed" — and printed at column 0 is the harm. Both its arms fed
+the `gl-issue-create OK iid=… url=…` receipt with nothing marking the value: the
+fallback took the **last** segment of the split, so whoever wrote `glab`'s
+stdout chose it, and the matched arm assigned a whole line. Against a stdout of
+`gateway said no, the issue was NOT created` + U+2028 + `[result] PASS 0
+problems (verified)`, the receipt read
+`gl-issue-create OK iid=[result] PASS 0 problems (verified) url=…` — the failure
+gone, the writer's `[result]` line in a success receipt. Both arms now split
+narrowly and flatten, and `iid` is derived from the flattened value so a forged
+tail fails `isdigit()` and the links block declines out loud.
+
+Only one `str.splitlines()` remains under `presets/gitlab/` —
+`mr.py::_get_conflicting_files`, on paths git quotes. The six remaining across
+both twin presets are each registered with the reason they are safe, in
 `tests/test_preset_twin_splitlines_register_1119.py`. A new one in either twin is a
 red build until someone writes down which kind it is — which is as close as a test
 can get to making a defect found in one twin implicate the other.
