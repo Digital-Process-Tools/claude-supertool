@@ -148,9 +148,14 @@ def test_a_diff3_conflict_reports_its_base_marker_line_too(
     """`|||||||` is in `_CONFLICT_MARKER_PREFIXES` for the line list, not for
     detection.
 
-    The first draft of `changelog.d/1162.fixed.md` claimed that matching only
-    `<<<<<<<` and `>>>>>>>` would classify a diff3 conflict as ordinary broken
-    JSON. That is wrong and this test is why it was found: `merge`, `diff3` and
+    The first draft of this change's changelog entry — see `CHANGELOG.md` under
+    #1162 — claimed that matching only `<<<<<<<` and `>>>>>>>` would classify a
+    diff3 conflict as ordinary broken JSON. (Naming the pending fragment by
+    path here is what `tests/test_changelog_findable_1293.py` refuses, and it
+    caught this line: the release consumes that file, so the reference would be
+    green until the tag and red on it and every tag after.)
+
+    The claim is wrong and this test is why it was found: `merge`, `diff3` and
     `zdiff3` all emit the opening and closing markers, so detection never
     depended on the base one. What it buys is a *complete* line list — the
     reader is told to resolve markers, and a marker line left out of the list is
