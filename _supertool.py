@@ -3777,6 +3777,60 @@ def _git_env_notice(removed: List[str]) -> str:
     )
 
 
+def _declared_value_exits(entry: object) -> FrozenSet[int]:
+    """Exit codes this op declares are ANSWERS, not verdicts about the op (#1672).
+
+    `git-worktrees` compresses its occupancy verdict into the process exit
+    status — `0 = idle, 1 = occupied, 2 = cannot tell` — and says so in the line
+    immediately above the batch footer. The dispatcher read every non-zero child
+    exit as a refusal, so three correct answers each rendered `FAIL` and the
+    footer said `all 3 refused`, one line under the op's own `the op itself did
+    not fail`.
+
+    Not #1291, and not fixable where #1297 fixed that one: dispatch is right that
+    the exit was non-zero, and cannot know that for this op non-zero is not
+    failure. That is a property of the op, so it is declared where the op's other
+    properties are — beside `paths` and `safety` in the registry.
+
+    Tolerant like `_preset_path_decl`: a malformed declaration yields no codes,
+    which is the behaviour that predates this and counts every non-zero as a
+    refusal. Wrong in the loud direction rather than the quiet one.
+    """
+    if not isinstance(entry, dict):
+        return frozenset()
+    decl = entry.get("exitStatus")
+    if not isinstance(decl, dict):
+        return frozenset()
+    values = decl.get("values")
+    if not isinstance(values, list):
+        return frozenset()
+    # `bool` is an `int` in Python and `true` is legal JSON in that slot.
+    return frozenset(v for v in values
+                     if isinstance(v, int) and not isinstance(v, bool))
+
+
+def _preset_declares_error(body: str) -> bool:
+    """Did an op that gave up its exit integer state a failure in its body?
+
+    The other half of the `exitStatus` bargain (#1672). Declaring the exit code
+    a value spends the channel a refusal was travelling on, so the failure has to
+    arrive somewhere else — and both replacements are conventions this repo
+    already runs on: a line at column 0 beginning `ERROR: ` (the refusal form
+    `_op_body_failed` reads at the head of every builtin's return), and anything
+    on stderr, which is where a traceback lands when a crash exits with a code
+    that happens to be declared.
+
+    Any line, not just the first: a preset prints its board before it can know
+    that a probe inside it went silent, and `git-worktrees` puts a foreign-copy
+    note above its own `ERROR:` arm. Reading the op's own lines rather than the
+    rendered receipt is what keeps this out of #1291's territory — and the ops
+    that can declare `exitStatus` are ours, so "nothing a stranger named reaches
+    column 0" is a guarantee the op makes (`git-worktrees` flattens every
+    untrusted field for exactly this reason) rather than one assumed of it.
+    """
+    return any(line.startswith("ERROR: ") for line in body.splitlines())
+
+
 def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     """Try to run op as a custom command from config["ops"].
 
@@ -3880,7 +3934,10 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     # zero. Reserved rather than left exported with a note, because "our own
     # config, so harmless" is a judgement that has to be re-made by every
     # future reader instead of once, here.
-    _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status", "restartMcp", "replaces", "paths"}
+    # `exitStatus` joins them for the same reason as `paths` (#1672): it is a
+    # declaration the dispatcher acts on around the subprocess, so exporting it
+    # into that subprocess is the wrong direction for the information to travel.
+    _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status", "restartMcp", "replaces", "paths", "exitStatus"}
     # No scrub here any more (#714). #692 put one on this line because every
     # PRESET op is launched from it — true, and the reasoning holds, but this
     # is the launcher for half the op table. Built-ins never reach it, and core
@@ -3923,15 +3980,31 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
         )
         elapsed = _elapsed_since(t0)
         output = result.stdout
-        _CUSTOM_OP_OK[0] = result.returncode == 0
-        if result.returncode != 0:
+        # A declared value exit is an answer, so the verdict comes from the two
+        # channels the declaration leaves the op (#1672). Only for a NON-ZERO
+        # code: exit 0 has always been a pass here whatever it printed, and
+        # widening that is a different change with a different blast radius.
+        _value_exit = (result.returncode != 0
+                       and result.returncode in _declared_value_exits(entry))
+        _failed = result.returncode != 0
+        if _value_exit:
+            _failed = bool(result.stderr.strip()) or _preset_declares_error(output)
+        _CUSTOM_OP_OK[0] = not _failed
+        if _failed:
             if result.stderr:
                 output += result.stderr
             return f"FAIL ({elapsed:.2f}s)\n{output}"
         # A deliberate mix still never prints a bare PASS — the verdict line
         # carries which two trees produced it (#678).
         _stamp = f" [{_mixed_tree_note(_mixed)}]" if _mixed is not None else ""
-        return f"PASS ({elapsed:.2f}s){_stamp}\n{output}{_maybe_restart_mcp(entry)}"
+        # PASS beside a non-zero child exit has to say why it is one, on the
+        # verdict line, or the reader is left to reconcile it against the op's
+        # own exit note further down (#1496's rule, #1672's case).
+        _value_note = (f" [exit {result.returncode} is this op's answer, not a "
+                       f"verdict — its registry entry declares the exit code a "
+                       f"value]") if _value_exit else ""
+        return (f"PASS ({elapsed:.2f}s){_stamp}{_value_note}\n"
+                f"{output}{_maybe_restart_mcp(entry)}")
     except subprocess.TimeoutExpired as e:
         # Not `_elapsed_since`: the freeze it applies zeroes the one number
         # this line exists to report (#727).
@@ -4637,6 +4710,7 @@ def _abstract_map(path: str, lang: str, size_bytes: int) -> Tuple[str, str]:
     body = op_map(path)
     if (body.startswith("ERROR:") or "(no symbols)" in body
             or _NO_PARSER_MARKER in body
+            or _UNREADABLE_MARKER in body
             or "no supported files" in body):
         reason = f"no symbols found in {path} ({lang})"
         if not _has_tree_sitter():
@@ -7298,6 +7372,40 @@ MAX_MAP_FILES = 100  # Cap to prevent overwhelming output
 # re-deriving which extensions have parsers.
 _NO_PARSER_MARKER = "no symbol parser for "
 
+# The fourth state (#1680). Same reason as the marker above: a caller keying
+# off map's output has to be able to tell "no tier could look" from "no tier
+# COULD BE RUN, because the bytes never arrived".
+_UNREADABLE_MARKER = "could not read"
+
+
+def _map_unreadable_reason(path: str) -> str:
+    """Why no tier can look at PATH at all, or "" when they can (#1680).
+
+    Established once, ahead of `_count_lines`, `_ts_extract` and
+    `_regex_extract` — all three swallow this same `OSError` independently and
+    each returns the shape of an empty answer, so `map` rendered `tier: regex`
+    for a tier that read no bytes, `(0 lines)`, and `(no symbols)` for a file
+    it had never opened.
+
+    Composing the verdict out of the three instead was the other candidate and
+    is not available: `_count_lines`'s `on_error` sentinel is contracted to
+    differ per caller (#388), so a `0` arriving here cannot be told from a
+    genuinely empty file, and the distinction is destroyed one layer down
+    rather than merely unreported.
+
+    One byte through `open`, not `os.access` or a `stat`: the question is
+    whether this process can obtain the contents, and every other probe answers
+    a neighbouring one. A mode that denies read, an ACL, a dangling symlink and
+    a file removed between the walk and this call all arrive as `OSError` —
+    which is why the reason is reported rather than classified.
+    """
+    try:
+        with open(path, "rb") as fh:
+            fh.read(1)
+    except OSError as exc:
+        return exc.strerror or str(exc)
+    return ""
+
 
 def _map_no_parser_reason(ext: str, use_ts: bool, ctags_ran: bool) -> str:
     """Why no tier could look at EXT, or "" when at least one could (#887).
@@ -7398,11 +7506,24 @@ def op_map(path: str, no_exclude: bool = False) -> str:
     # tier label is computed after extraction to reflect what actually produced symbols
     actual_tier: str = "regex"
     unparsed = 0
+    unreadable = 0
 
     out_files: List[str] = []
 
     for fpath in files:
         ext = os.path.splitext(fpath)[1].lower()
+        # Readability is established before anything reports on this file, so
+        # a line count and a tier name are only ever printed for a file whose
+        # bytes were actually available (#1680).
+        unreadable_why = _map_unreadable_reason(fpath)
+        if unreadable_why:
+            out_files.append(
+                f"{_fwd(fpath)} (unreadable)\n"
+                f"  ({_UNREADABLE_MARKER}: {unreadable_why} — no tier looked "
+                f"at this file, so nothing here is a claim about its "
+                f"contents)\n")
+            unreadable += 1
+            continue
         line_count = _count_lines(fpath)
 
         symbols_found = False
@@ -7457,9 +7578,10 @@ def op_map(path: str, no_exclude: bool = False) -> str:
                 # File exists but no symbols extracted — show it as empty
                 out_files.append(f"{_fwd(fpath)} ({line_count} lines)\n  (no symbols)\n")
 
-    if unparsed == len(files):
+    if unparsed + unreadable == len(files):
         # Naming a tier that never had a pattern to try is the report line
-        # telling the same lie the body used to (#887).
+        # telling the same lie the body used to (#887) — and a tier that never
+        # received a byte is the same line telling it again (#1680).
         actual_tier = "none"
     out = [f"({len(files)} files{_hidden_suffix(len(hidden_files))}, tier: {actual_tier})\n"] + out_files
     # A map of the entry-point shim is the module's surface to whoever reads

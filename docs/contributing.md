@@ -93,6 +93,7 @@ Shorthand string ops (`"lint": "ruff check {file}"`) work with a 60s default tim
 | `safety` | yes, in shipped presets | `"read-only"`, `"writes"` or `"acts"`. Rendered as the class marker in `ops:roster`. |
 | `paths` | yes, if any argument is a filesystem path | `{"args": [1], "root": "cwd"}` — which argument positions are paths, and the boundary they must stay inside. See below. |
 | `replaces` | no | Raw shell invocations this op supersedes. The shipped `PreToolUse` hook refuses them. See below. |
+| `exitStatus` | no | `{"values": [0, 1, 2]}` — exit codes that are this op's **answer** rather than a verdict on it. See below. |
 
 **`safety` decides whether someone may learn your op by calling it.** The `ops:roster` listing is names plus one marker, because that is what fits the ~7KB SessionStart cap — and a bare name is only actionable for an op you can probe. Most ops teach their own signature on contact: `between:FILE:747:820` answers *"'820' was read as the path"* and names the op that does take a range. An op that reaches outside the tree cannot be learned that way — `gh-pr-merge` merges, `git-push` publishes, `watch` spawns a poller.
 
@@ -265,7 +266,41 @@ the suggested repair, pasted, committed bytes the caller never wrote (#946).
 The three states are the point — a payload's fields were never split, and an
 error that says they were is a claim about a parse that did not run.
 
-Any key in an op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`, `restartMcp`, `replaces`, `paths`) is passed to the subprocess as a `SUPERTOOL_`-prefixed environment variable:
+### `exitStatus` — when the exit code is the answer, not the verdict
+
+Some ops compress their answer into the process exit status so a shell can
+branch on it. `git-worktrees` does: `0 = idle, 1 = occupied, 2 = cannot tell`.
+The dispatcher reads a non-zero child exit as a refusal, so three correct
+answers each rendered `FAIL` and the batch footer said `all 3 refused` — one
+line under the op's own `the op itself did not fail`
+([#1672](https://github.com/Digital-Process-Tools/claude-supertool/issues/1672)).
+
+```json
+"exitStatus": { "values": [0, 1, 2] }
+```
+
+Every listed integer is read as an **answer**. A code outside the list is still
+a refusal, so a crash exiting 127 is still a crash.
+
+**Declaring it spends a channel, so the op has to state a failure elsewhere.**
+For a listed non-zero code the verdict is taken from the two channels this repo
+already runs on: a line at column 0 beginning `ERROR: ` anywhere in the op's
+output, or anything on stderr — which is where a traceback lands when a crash
+exits with a code that happens to be listed. Exit 0 is unchanged: it has always
+been a pass whatever the op printed.
+
+Two consequences worth knowing before you add one:
+
+- The verdict line discloses it — `PASS (0.31s) [exit 1 is this op's answer, not
+  a verdict — its registry entry declares the exit code a value]` — so a reader
+  is never left reconciling `PASS` against the op's own exit note.
+- **The integer still does not reach the caller's shell.** `main` collapses a
+  batch to 0 or 1, and always did, so `supertool 'git-worktrees:PATH'` returned
+  1 for both `occupied` and `cannot tell` and never 2. What the declaration buys
+  is a truthful batch footer, not a new exit channel; a shell that needs the
+  integer has to run the preset's script directly.
+
+Any key in an op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`, `restartMcp`, `replaces`, `paths`, `exitStatus`) is passed to the subprocess as a `SUPERTOOL_`-prefixed environment variable:
 
 ```json
 {
