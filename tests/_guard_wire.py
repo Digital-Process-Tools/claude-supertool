@@ -11,6 +11,15 @@ mirror, and a mirror can drift**, so
 `tests/test_guard_reserialised_envelope_1625.py` runs the real wrapper for
 every verb and asserts this function agrees with it. Without that row, a wrong
 mirror would make every caller here agree with itself.
+
+**Where it deliberately does not agree**: `_json_string` replaces every
+remaining non-printable byte with `?`, so a control character in a reason
+reaches the caller as `?` through the wrapper and unchanged through here. No
+path in `pre_bash_guard.py` writes one - the text is registry prose and this
+repo's own sentences - so no caller can tell, and reproducing the byte-wise
+`[[:print:]]` of an unknown locale in Python would be a second guess rather
+than a mirror. Measured through the real wrapper: `alpha\x01beta` in a note
+arrives as `alpha?beta`.
 """
 
 from __future__ import annotations
