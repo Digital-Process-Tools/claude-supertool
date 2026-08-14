@@ -88,3 +88,37 @@ def load_preset_module(preset: str, name: str, prefix: str = "") -> ModuleType:
     finally:
         sys.path[:] = saved_path
     return mod
+
+
+def load_validator_module(validator: str, name: str = "", prefix: str = "") -> ModuleType:
+    """Execute ``validators/<validator>/<name>.py`` in isolation and return it.
+
+    Same restore, different reason. A validator adapter is normally spawned as
+    a subprocess, so its module-scope
+    ``sys.path.insert(0, .../validators/common)`` costs nothing and nobody sees
+    it. Imported in-process by a test — which is how a platform-neutral case
+    reaches an adapter on Windows — that insert is permanent for the rest of
+    the worker, and the guard against it lives here rather than in each test
+    file for the reason #555 gives above.
+
+    ``name`` defaults to ``validator``: every adapter is
+    ``validators/<x>/<x>.py``.
+
+    Unlike ``load_preset_module`` this strips nothing and evicts no shim. The
+    preset loader does both because two presets ship same-named siblings, and a
+    cached ``_auth`` from another preset is a real collision. Every validator
+    reaches one shared ``validators/common``, so there is no rival copy to
+    shadow — adding the eviction anyway would be machinery with no defect
+    behind it, which is how a helper stops being readable.
+    """
+    directory = REPO_ROOT / "validators" / validator
+    saved_path = sys.path[:]
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"{prefix}{name or validator}", directory / f"{name or validator}.py")
+        assert spec is not None and spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path[:] = saved_path
+    return mod

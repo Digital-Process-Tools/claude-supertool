@@ -41,7 +41,11 @@ when it is not.
 Three states, per `docs/validators.md` §"Declining instead of guessing":
 
 - `ok` — every regex column in the index survives both checks
-- a finding — a pattern that will silently never match, or that aborts the hook
+- a finding — a pattern that will silently never match, or that aborts the hook.
+  A finding-carrying result may also hold one `code: "adapter"` row naming the
+  patterns awk never reached, so a partial run is not published as a complete
+  one (#1714). See the caveat on that arm in `main`: `count` is what
+  `_validator_regressed` subtracts, and this adapter has `rollback_on_fail`.
 - `skipped` — the file is not a jit-context index, or awk is absent and the
   structural half found nothing. **A structural pass alone is not a clean
   result**, because half the check did not run; reporting `ok` there would be
@@ -299,25 +303,31 @@ def _awk_run(awk, patterns):
 
 
 def _compile_findings(awk, patterns):
-    """(errors, could_not_run_reason).
+    """(errors, could_not_run_reason, lines_never_compiled).
 
     The whole set goes through one process first: if every pattern compiles,
     awk exits 0 and there is nothing more to do. Only a non-zero exit buys a
     second pass, one process per pattern — awk aborts at the *first* bad regex,
     so the batch run knows that something is wrong and cannot say which row.
+
+    The third element is the half that was missing (#1714). A stall is not a
+    property of the run as a whole: the batch call losing awk means *nothing*
+    was compiled, while the loop losing it at index `i` means everything from
+    `i` on was not. Returning the reason alone let the caller say "something
+    stalled" and never "and these are the rows nobody looked at".
     """
     code, stderr = _awk_run(awk, [p for _line, p, _family in patterns])
     if code is None:
-        return [], stderr
+        return [], stderr, [line for line, _p, _f in patterns]
     if code == 0:
-        return [], None
+        return [], None, []
 
     version = _awk_version(awk)
     out = []
-    for line, pattern, _family in patterns:
+    for at, (line, pattern, _family) in enumerate(patterns):
         one_code, one_stderr = _awk_run(awk, [pattern])
         if one_code is None:
-            return out, one_stderr
+            return out, one_stderr, [l for l, _p, _f in patterns[at:]]
         if one_code == 0:
             continue
         detail = one_stderr.splitlines()
@@ -336,7 +346,37 @@ def _compile_findings(awk, patterns):
             "the offending row cannot be named: {1}".format(
                 version, stderr or "no diagnostic"),
             "compile"))
-    return out, None
+    return out, None, []
+
+
+def _unrun_error(reason, unchecked, total):
+    """The `adapter` row that says which patterns were never compiled (#1714).
+
+    `code: "adapter"` is SCHEMA.md's channel for the adapter talking about
+    itself rather than about the file, and it is the right one here even though
+    real findings sit beside it: `_supertool.py:_validator_not_checked` asks
+    whether **every** error is `adapter` before it declares a file unmeasured,
+    so a mixed payload keeps rendering as the finding count it is. That test is
+    documented in the core as deliberate, and this is the shape it was written
+    for.
+
+    `line: None` because the row is about a set of lines, not one of them, and
+    the caller's sort puts it last — after the findings that do have a location.
+    """
+    where = ", ".join(str(line) for line in unchecked)
+    return _err(
+        None,
+        "{0}, so {1} of {2} pattern{3} in this index {4} never compiled "
+        "(line{5} {6}). The findings above are the complete answer for the "
+        "other rows and say NOTHING about {7} — this run is not a clean bill "
+        "for {7}.".format(
+            reason, len(unchecked), total,
+            "" if total == 1 else "s",
+            "was" if len(unchecked) == 1 else "were",
+            "" if len(unchecked) == 1 else "s",
+            where,
+            "it" if len(unchecked) == 1 else "them"),
+        "adapter")
 
 
 def main():
@@ -375,9 +415,41 @@ def main():
 
     awk = shutil.which("awk")
     unrun = None
+    unchecked = []
     if awk and patterns:
-        compile_errors, unrun = _compile_findings(awk, patterns)
+        compile_errors, unrun, unchecked = _compile_findings(awk, patterns)
         errors.extend(compile_errors)
+
+    if errors and unrun:
+        # The stall has to travel WITH the findings, not instead of them
+        # (#1714). Publishing the findings alone made a run that compiled 2 of
+        # 20 patterns render as `2 err` — byte-identical to a complete run that
+        # found two things, which is this repo's house defect: an absence
+        # produced by the tool, read as an absence in the world.
+        #
+        # Loud here and quiet in the `absent()` arm below is the same cost
+        # calculation reaching two answers. This adapter carries
+        # `rollback_on_fail`, so the reason that arm must not raise an error is
+        # that a stalled machine would otherwise revert a correct edit.
+        #
+        # **The equivalent claim about THIS arm is not yet true, and the gap is
+        # in the core, not here.** `validators/SCHEMA.md` §`adapter` states the
+        # guarantee unconditionally — "the result never triggers rollback,
+        # whatever `rollback_on_fail` says ... the core never subtracts it from
+        # a baseline in either direction". `_supertool.py:_validator_regressed`
+        # honours that only when **every** error is `adapter`
+        # (`_validator_not_checked`), so in a mixed payload this row is
+        # subtracted like a finding. Measured against the core's own function:
+        #
+        #     before 1 finding, after 1 finding            -> regressed False
+        #     before 1 finding, after 1 finding + this row -> regressed True
+        #
+        # So a pre-existing finding plus a transient stall reverts a correct
+        # edit. `cargo-check` already emits mixed payloads (`_parse_errors`,
+        # #754) and is exposed the same way, which makes this a core gap this
+        # arm joins rather than one it invents — but it is a gap, and the fix
+        # is for `_validator_regressed` to subtract only non-`adapter` rows.
+        errors.append(_unrun_error(unrun, unchecked, len(patterns)))
 
     # A finding already in hand is published whatever happened to the other
     # half. Declining to answer must never suppress an answer.

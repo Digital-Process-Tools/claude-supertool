@@ -11,6 +11,19 @@ match: "changelog.d/"
 added | changed | deprecated | removed | fixed | security
 ```
 
+# A whole correct fragment, to copy
+
+```md
+- **Summary in bold** ([#906](https://github.com/Digital-Process-Tools/claude-supertool/issues/906)). What changed, and why the shape it replaces was wrong.
+```
+
+`- ` bullets at column 0, and **the entry must name its own issue** — `(#906)`
+anywhere in the body, or a link whose URL ends in the number. The filename is
+the only structural place the number lives and the release *deletes* the file,
+so an entry that never says it ships unfindable: 8 of 20 entries in v0.32.0 and
+6 of 28 in v0.33.0 named every issue but their own (#1251). Refused by both
+`--check` and the write-time validator.
+
 # Never edit CHANGELOG.md in a PR
 
 Add a fragment under `changelog.d/` instead. Rule: `docs/contributing.md`,
@@ -46,7 +59,7 @@ There is deliberately no text-scanning fallback. `skipped` ≠ validated — don
 Fence it at the **bullet's own indent (2 columns)**, not 4 — CommonMark's 4-column code threshold is relative to the containing block, not the file.
 
 ```md
-- Summary line.
+- Summary line ([#923](https://github.com/Digital-Process-Tools/claude-supertool/issues/923)).
 
   ```
   ## Quoted Heading
