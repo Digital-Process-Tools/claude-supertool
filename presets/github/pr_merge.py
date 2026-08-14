@@ -1386,7 +1386,11 @@ def main() -> int:
         return 0 if (m_state == MERGED and
                      issue_overall in (ALL_CLOSED, NONE_DECLARED)) else 1
 
-    print("## Cleanup — not run by this op")
+    # "by this invocation", not "by this op": the op does clean up, and the
+    # pointer saying so sat 69 lines below a header a reader stops at (#1670).
+    # The three refusal arms below each say that `|cleanup` refuses on the same
+    # ground, so this offer is never left standing where it would not be taken.
+    print("## Cleanup — not run by this invocation (add `|cleanup`)")
     if m_state != MERGED or not head:
         print("  Skipped — the merge is not confirmed, so nothing about this "
               "branch is safe to delete.")
@@ -1404,8 +1408,8 @@ def main() -> int:
         print("  No delete command is printed for it: the name contains "
               "characters a shell acts on or a terminal breaks a line at, and "
               "a command that is safe to paste would no longer name this "
-              "branch. Delete it from the PR page, or by hand after reading "
-              "the name above.")
+              "branch, and `|cleanup` refuses it on the same ground. Delete it "
+              "from the PR page, or by hand after reading the name above.")
     elif x_repo is not False or not default_branch or head == default_branch:
         # The same establishment #1281 put in front of `cleanup`, in front of
         # the printed commands — because these are the *default* path and a
@@ -1441,13 +1445,19 @@ def main() -> int:
             why = (f"it is this repository's default branch, so a delete "
                    f"command naming it would be aimed at `{default_branch}` "
                    f"here")
-        print(f"  No delete command is printed for it: {why}. Delete the "
-              f"branch from the PR page, which knows which repository it is "
-              f"in.")
+        print(f"  No delete command is printed for it: {why}, and `|cleanup` "
+              f"refuses it on the same ground. Delete the branch from the PR "
+              f"page, which knows which repository it is in.")
     else:
         safe_head = _refname.shell_ref(head)
+        # `api_path_for_display`, not `api_path`: this string is pasted by a
+        # reader, and gh's `{owner}`/`{repo}` are resolved from whatever cwd it
+        # is pasted into. The concrete slug is already on screen twice above
+        # (#1670). Every *executed* path in this file still goes through
+        # `api_path`, which a repo target must keep replacing rather than
+        # accompanying (#1281).
         ref_path = _refname.shell_ref(
-            _repo_target.api_path("git/refs/heads/" + head))
+            _repo_target.api_path_for_display("git/refs/heads/" + head, repo))
         print(f"  Head branch `{safe_head}` still exists. "
               f"Delete it when you are done: gh api -X DELETE {ref_path}")
         print(f"  Local worktree, if any: git worktree remove <path> && "
