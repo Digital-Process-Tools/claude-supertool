@@ -275,11 +275,14 @@ Costs ~20 tokens instead of reading every file. Use it before deciding which fil
 
 ## tree-sitter integration
 
-When [`tree-sitter-language-pack`](https://pypi.org/project/tree-sitter-language-pack/) (Python 3.10+) or [`tree-sitter-languages`](https://pypi.org/project/tree-sitter-languages/) (Python 3.8–3.12) is installed, `map` uses tree-sitter for AST-based symbol extraction instead of ctags or regex.
+When [`tree-sitter-language-pack`](https://pypi.org/project/tree-sitter-language-pack/) (Python 3.10+) or [`tree-sitter-languages`](https://pypi.org/project/tree-sitter-languages/) (Python 3.8–3.12) is installed, `map` uses tree-sitter for AST-based symbol extraction on every file it has a grammar for.
 
 - Detects installed package at first `map` call (cached for session)
 - Prefers `tree-sitter-language-pack` over `tree-sitter-languages` when both are present
-- Falls back to ctags → regex when neither is installed
+- Installing it does not switch the lower tiers off. A file it has no grammar
+  for, or one whose grammar fails to load, still falls to ctags and then to
+  regex — see [Backend chain](#backend-chain) for why an *empty* parse is not
+  a fall-through
 - No configuration needed — pure detection
 
 tree-sitter is optional. The `map` op works without it — tree-sitter just gives more accurate nesting and signature details.
