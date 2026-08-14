@@ -119,7 +119,14 @@ def test_two_real_findings_are_still_a_verdict() -> None:
 def test_a_wall_beside_an_absent_node_is_still_red() -> None:
     """`node not on PATH` is instant, actionable and not a statement about
     the machine's load. A gate that let it through would hide an unconfigured
-    runner behind a skip."""
+    runner behind a skip.
+
+    This is the pin on the new clause's second half specifically: drop "and no
+    error is an `adapter` fault that is not a wall" and the payload has one
+    wall in it, so it would decline and this test goes red. The old predicate
+    also refused it, for the older reason, which is why the assertion is
+    unchanged and the guarantee is not.
+    """
     payload = _payload([_wall_error(),
                         _wall_error("node not on PATH -- inline <script> "
                                     "blocks were NOT checked")])
@@ -127,9 +134,21 @@ def test_a_wall_beside_an_absent_node_is_still_red() -> None:
 
 
 def test_a_partial_wall_reported_impossibly_fast_is_still_red() -> None:
-    """Clause four, unchanged: 12ms is not 30 seconds."""
-    payload = _payload([_wall_error(), _syntax_error()], duration_ms=12)
-    assert stalled_at_its_own_wall(payload, inner_s=INNER_S) is None, payload
+    """Clause four, unchanged: 12ms is not 30 seconds.
+
+    Both directions on one payload, because the guard alone cannot say WHY it
+    stayed red -- a partial mixture was refused by the old second clause too,
+    for an unrelated reason, so `is None` here is equally true of the predicate
+    this change replaced. Asserting that the same errors DO decline once the
+    duration reaches the budget is what makes the duration the discriminator
+    rather than a coincidence.
+    """
+    errors = [_wall_error(), _syntax_error()]
+    fast = _payload(errors, duration_ms=12)
+    assert stalled_at_its_own_wall(fast, inner_s=INNER_S) is None, fast
+
+    spent = _payload(errors, duration_ms=INNER_S * 1000)
+    assert stalled_at_its_own_wall(spent, inner_s=INNER_S) is not None, spent
 
 
 def test_a_real_two_block_verdict_still_reaches_its_assertion(
