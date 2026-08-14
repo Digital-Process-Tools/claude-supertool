@@ -158,7 +158,16 @@ def test_main_non_ff_rebase_clean_pushes(capsys) -> None:
     assert "Remote added 1 commit(s) you lack; replaying 1 of yours" in out
     assert "cj.adams: fix wallet rounding" in out
     assert "Rebase clean" in out
-    assert "pushed ✓ (rebased onto remote)" in out
+    # `(rebased onto remote)` is now a clause on the receipt's single `Status:`
+    # line rather than a second one above it (#1669). This fixture's own remote
+    # SHA never moves, so its `[result]` reads `NOT PUSHED - already up to
+    # date` — and the assertion here used to be `pushed ✓`, i.e. this test
+    # asserted the contradiction #1669 was filed about and nobody read it.
+    assert "(rebased onto remote)" in out
+    status = [ln for ln in out.split(chr(10)) if ln.startswith("Status:")]
+    assert len(status) == 1, status
+    assert ("NOT PUSHED" in out) == ("nothing to push" in status[0]), (
+        status[0], [ln for ln in out.split(chr(10)) if ln.startswith("[result]")])
     assert "REJECTED" not in out
 
 

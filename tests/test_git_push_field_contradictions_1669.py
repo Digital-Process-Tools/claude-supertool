@@ -246,6 +246,56 @@ def test_a_no_op_push_does_not_say_it_pushed(capsys) -> None:
     assert "Already up to date" in out
 
 
+def test_the_rebase_recovery_prints_exactly_one_Status_line(capsys) -> None:
+    """The caller #1669's first cut did not reach, found by the review of it.
+
+    `_recover_by_rebase` printed its own `Status: pushed ✓ (rebased onto
+    remote)` and then called `_success_receipt`, which prints one too since the
+    fix — so this path emitted two `Status:` lines, and on a rebase that turned
+    out to change nothing they would have said opposite things. That is the
+    defect this issue is about, reintroduced on the one arm not touched.
+
+    The `(rebased onto remote)` disclosure is why the line was there (#1490) and
+    is not dropped: it rides on the one status line as a suffix.
+    """
+    porc_reject = ("To origin" + LF
+                   + "!" + TAB + "refs/heads/feat:refs/heads/feat" + TAB
+                   + "[rejected] (fetch first)" + LF)
+    porc_ok = ("To origin" + LF
+               + "=" + TAB + "refs/heads/feat:refs/heads/feat" + TAB
+               + "[up to date]" + LF)
+    pushes = iter([_proc(porc_reject, 1, ""), _proc(porc_ok, 0, "")])
+
+    def fake_git(args, timeout=30):
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return _proc(".git" + LF, 0)
+        if args[:2] == ["rev-parse", "--abbrev-ref"] and "@{upstream}" not in args:
+            return _proc("feat" + LF, 0)
+        if args[0] == "rev-parse" and "@{upstream}" in args:
+            return _proc("origin/feat" + LF, 0)
+        if args[0] == "rev-parse" and args[1] == "--short":
+            return _proc("aaa1111" + LF, 0)  # unchanged: the rebase was a no-op
+        if args[0] == "push":
+            return next(pushes)
+        if args[:2] == ["rev-list", "--left-right"]:
+            return _proc("0" + TAB + "0" + LF, 0)
+        return _proc("", 0)
+
+    with mock.patch.object(push, "_git", side_effect=fake_git), \
+         mock.patch.object(push, "_live_remote_sha", return_value=("", "no")), \
+         mock.patch.object(push, "_mr_lookup", return_value=push.MrLookup(None)):
+        rc = push.main()
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    status = [ln for ln in out.split(LF) if ln.startswith("Status:")]
+    assert len(status) == 1, ("two Status: lines on one receipt: " + repr(status))
+    assert "rebased onto remote" in status[0], status[0]
+    assert "nothing to push" in status[0], (
+        "the rebase changed nothing and the status line still claimed a push: "
+        + status[0])
+    assert "NOT PUSHED" in out
+
+
 def test_a_push_that_moved_the_remote_still_says_pushed(capsys) -> None:
     """The other side, so the fix is not 'never claim a push'."""
     shas = iter(["aaa1111", "bbb2222"])

@@ -1982,7 +1982,8 @@ def _pushed_commit_count(before: str, after: str) -> tuple[str, str]:
 
 def _success_receipt(branch: str, remote_before: str, upstream: str,
                      flags: set[str], fallback_remote: str,
-                     force_note: str = "", push_stdout: str = "") -> None:
+                     force_note: str = "", push_stdout: str = "",
+                     status_suffix: str = "") -> None:
     """Shared 'what landed' tail — remote diff, ahead/behind, MR line, advisories.
 
     `force_note` rides all the way to the `[result]` line on purpose. The force
@@ -1998,6 +1999,14 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
     `fallback_remote` is the remote the caller resolved for a branch with no
     upstream (#656) — required rather than defaulted, so this receipt cannot
     quietly name `origin` in a repo that has no such remote.
+
+    `status_suffix` is how a caller says something about *how* the push got
+    here without printing a second `Status:` line of its own (#1669). The
+    rebase-recovery route did exactly that — its own `Status: pushed ✓ (rebased
+    onto remote)` above this function's — and on a rebase that turned out to
+    change nothing the two disagreed, which is the defect this issue is about
+    reintroduced one caller over. There is one `Status:` line and one state
+    behind it; what the caller may add is a clause on it.
     """
     body: list[str] = []
     if not upstream:
@@ -2050,8 +2059,9 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
     # narrows to exactly because this receipt is long. git exiting 0 is not the
     # same claim as the ref having moved, and only one of them is what
     # `Status:` was read as saying.
-    print("Status: pushed ✓" if moved
-          else "Status: nothing to push ✓ — the remote ref already matched")
+    print(("Status: pushed ✓" if moved
+           else "Status: nothing to push ✓ — the remote ref already matched")
+          + status_suffix)
     for ln in body:
         print(ln)
 
@@ -2540,10 +2550,15 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
     # until #1490 — and a push that lands after a rebase is precisely a push
     # whose hook just ran, so it was the receipt most in need of one.
     _report_prepush_hook(result.stdout or "", result.stderr or "", flags)
-    print("Status: pushed ✓ (rebased onto remote)")
+    # The `(rebased onto remote)` disclosure rides on `_success_receipt`'s own
+    # status line rather than on a second one above it (#1669): this route used
+    # to print `Status: pushed ✓ (rebased onto remote)` here and then let the
+    # receipt print its own, so a rebase that turned out to move nothing
+    # produced two column-0 `Status:` lines saying opposite things.
     _note_landed(branch, remote_name, remote_ref)
     _success_receipt(branch, remote_before, upstream, flags, remote_name,
-                     push_stdout=result.stdout or "")
+                     push_stdout=result.stdout or "",
+                     status_suffix=" (rebased onto remote)")
     return 0
 
 
