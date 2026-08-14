@@ -33,6 +33,17 @@ INSTALL_HINT = "ruby not found on PATH — this file was NOT syntax-checked"
 # than two spellings of it.
 TIMEOUT_S = 30
 
+#: `main`'s own `start`, published for the module-level crash handler at the
+#: foot of this file. `start` is a local and was never in that handler's scope,
+#: so every crash reported `0ms` however long it had run -- including one five
+#: seconds in (#1683).
+#:
+#: The same read every other arm reports against, not a second `time.time()`
+#: at import: a separate clock would make the crash arm's number disagree with
+#: its siblings', and it would consume a tick the driven-clock fixtures in
+#: `tests/test_adapter_wall_is_not_a_verdict_1604.py` hand to `start`.
+_STARTED: list = []
+
 
 # `file:line: message`. Extracted so the rule can be driven in process on every
 # platform — the fake-binary fixture is POSIX-only (see
@@ -75,6 +86,7 @@ def main() -> None:
 
     file = sys.argv[1]
     start = time.time()
+    _STARTED[:] = [start]
 
     if not shutil.which("ruby"):
         emit(absent(TOOL, file, INSTALL_HINT,
@@ -98,8 +110,9 @@ def main() -> None:
         return
     except subprocess.TimeoutExpired:
         # Until #1604 this arm did not exist and the `TimeoutExpired` escaped
-        # `main()` into the module-level `except Exception` below, whose payload
-        # hardcodes `duration_ms: 0`. The code was right and the number was a
+        # `main()` into the module-level `except Exception` below, which
+        # hardcoded `duration_ms: 0` until #1683 gave it `_STARTED` to measure
+        # against. The code was right and the number was a
         # lie, and the number is what the suite reads: a stall is only
         # distinguishable from an adapter with broken error routing by whether
         # the elapsed time reaches the budget, so `after 0ms` beside "timed out
@@ -159,4 +172,8 @@ if __name__ == "__main__":
         emit({"tool": "ruby-check", "file": file, "ok": False, "count": 1,
               "errors": [{"line": None, "col": None, "severity": "error",
                           "code": "adapter", "msg": str(exc)[:300]}],
-              "duration_ms": 0})
+              # Empty only if `main` raised before it set the clock -- an argv
+              # it could not read, an import that failed. Nothing had begun
+              # then, so `0` is the elapsed rather than a stand-in for one.
+              "duration_ms": (int((time.time() - _STARTED[0]) * 1000)
+                              if _STARTED else 0)})

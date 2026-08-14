@@ -24,7 +24,7 @@ Universal JSON. Every adapter emits this shape. Validator core never parses tool
 | `ok`          | bool             | yes*     | Pass/fail. Validator rolls back on `false` if op marked rollback. *Absent on a `skipped` result. |
 | `count`       | int              | yes*     | Issue count. Used for before/after diff arithmetic. *Absent on a `skipped` result. |
 | `errors`      | array of objects | yes*     | `[]` when ok. Each: `{line, col, severity, code, msg}`. *Absent on a `skipped` result. |
-| `duration_ms` | int              | yes      | Wall time. For perf tuning.                                           |
+| `duration_ms` | int              | yes      | Wall time, **measured** — never the budget written back. On a decline it is evidence: `tests/_adapter_verdict.stalled_at_its_own_wall` reads it as a floor to tell a real wall from broken error routing, and a literal satisfies that floor whatever happened (#1604, #1683). |
 | `metrics`     | object           | no       | Tool-specific counters (`tests_total`, `tests_passed`, etc.). Numeric values. Used by renderer for before/after diff on metric keys even when `count` is unchanged. |
 | `diff`        | string           | no       | Unified diff produced by the tool (e.g. rector). Rendered as a fenced block below all errors in verbose mode. Ignored in default mode. |
 | `skipped`     | string           | no       | Reason the validator declined to analyse the file (scope allowlist, tool absent, ...). Its presence — not its value — marks the result as a third state. |
