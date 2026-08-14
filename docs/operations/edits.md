@@ -107,8 +107,8 @@ That third state exists because a confidently wrong line number costs more than 
 | `replace` | `replace:::OLD:::NEW:::PATH` | Recursive find/replace across PATH. Use `:::` separator when content has `:`. |
 | `replace_dry` | `replace_dry:::OLD:::NEW:::PATH` | Preview of `replace` — shows what would change without writing. |
 | `replace_lines` | `replace_lines:::PATH:::START:::END:::CONTENT` | Swap lines `[START, END]` (1-indexed, inclusive) with CONTENT. `END < START` = pure insert before line START. Empty CONTENT = delete. Receipt shows new line numbers + ±2 context. |
-| `paste` | `paste:::PATH:::CONTENT` | **NARROW USE:** replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — `vim` is the default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars (`:`, quotes, braces, newlines). Overwriting an existing file copies its outgoing bytes to `~/.cache/supertool/paste-backup/` first and the receipt names the copy — see below. |
-| `append` | `append:::PATH:::CONTENT` | Append CONTENT to the end of a file, creating it if missing. No `wc` round-trip, no inverted-range `replace_lines` trick. Adds a missing trailing newline first so the block starts on its own line. |
+| `paste` | `paste:::PATH:::CONTENT` | **NARROW USE:** replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — `vim` is the default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars (`:`, quotes, braces, newlines). Overwriting an existing file copies its outgoing bytes to `~/.cache/supertool/paste-backup/` first and the receipt names the copy; a *created* file lands at `0666 & ~umask` and the receipt states the mode — both below. |
+| `append` | `append:::PATH:::CONTENT` | Append CONTENT to the end of a file, creating it if missing — a file it creates lands at `0666 & ~umask` and the receipt states the mode, same as `paste` below. No `wc` round-trip, no inverted-range `replace_lines` trick. Adds a missing trailing newline first so the block starts on its own line. |
 
 ### A `paste` over an existing file keeps the bytes it displaces
 
@@ -156,6 +156,40 @@ until after it — so a rolled-back `paste` prints `previous contents kept at
 PATH` above `[rolled back] … the file was NOT edited`. Both are true: the file
 on disk is the original, and PATH holds those same bytes. The copy is redundant
 rather than wrong, and `gc` reaps it with the rest.
+
+### A file `paste` or `append` creates lands at the umask, and the receipt states the mode
+
+A created file gets `0666 & ~umask` — `0644` under the common `umask 022` —
+the same mode `>`, `tee`, `cp` and every editor produce. It used to get `0600`,
+which was never a chosen default: `_atomic_write` renames a `mkstemp` temp file
+over the target and mkstemp creates at `0600`
+([#1275](https://github.com/Digital-Process-Tools/claude-supertool/issues/1275)).
+An **overwrite** is unchanged and still keeps the target's own mode
+([#259](https://github.com/Digital-Process-Tools/claude-supertool/issues/259)),
+so a file that is already `0600` stays `0600` through any number of pastes.
+For owner-only creates, set `umask 077` — the mask is now honoured rather than
+overridden.
+
+The mode is stated on every create, because a mode nobody is told about is a
+fact the reader has no reason to check:
+
+```
+created scripts/deploy.sh (12 lines, 0 → 240 bytes)
+  ↳ mode 0644, from the process umask
+  ↳ starts with `#!` but is not executable — `chmod +x scripts/deploy.sh` to run it
+```
+
+**`paste` never infers the executable bit** — not from the shebang, not from
+the modes of the file's neighbours, not from a flag. The second line above is a
+statement about what is on disk, not a decision about it: the mode is identical
+whether or not the content starts with `#!`, so a wrong reading costs one line
+of prose instead of a permission nobody asked for. Matching the neighbours is
+the most likely to be right and the most surprising when it is wrong, which is
+why it is disclosure and a `chmod` command rather than a guess.
+
+**On Windows neither line is printed.** There is no executable bit there and
+`os.chmod` honours only the read-only flag, so `st_mode` reads back `0o666`
+whatever was asked for and a mode line would be a false statement about access.
 
 Copies are reaped with the rest of the cache: `gc:dry` previews, `gc:run`
 deletes, retention 7 days, overridable per kind under `gc.retention_days` in
