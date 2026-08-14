@@ -467,6 +467,7 @@ REGISTER = {
     'tests/test_git_checkout_recovery_649.py::remote_factory': OWNED,
     'tests/test_git_mr_lookup_948.py::test_a_git_that_cannot_be_spawned_is_an_unknown_not_a_traceback': OWNED,
     'tests/test_git_push_budget_1530.py::_Sandbox.close': OWNED,
+    'tests/test_git_push_budget_ceilings_1659_1647_1649.py::_Sandbox.close': OWNED,
     'tests/test_git_push_budget_deadline_1615_1617.py::_Sandbox.close': OWNED,
     'tests/test_git_push_budget_from_config_1631.py::_Sandbox.close': OWNED,
     'tests/test_git_push_first_upstream_354.py::FirstUpstreamRebaseTest.tearDown': OWNED,
