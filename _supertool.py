@@ -10592,6 +10592,24 @@ def _paste_snapshot(path: str, new_content: str) -> Tuple[str, str]:
             f"{len(old)} bytes is over the {_PASTE_BACKUP_MAX_BYTES}-byte "
             f"copy limit"
         )
+    # The mode the copy has to land at, decided BEFORE the store is touched
+    # (#1685). A bare `open(dest, "wb")` writes at `0666 & ~umask` — 0644 on a
+    # stock box — whatever the source was, so a `paste` over a 0600 `.env`,
+    # `id_rsa` or `.netrc` left the secret group- and world-readable under
+    # `~/.cache/supertool` for the whole seven-day retention window. The copy
+    # is not redacted, correctly, because it is a backup; what has to hold is
+    # that reading the copy is no easier than reading the original.
+    #
+    # Three states, not two. A mode that could not be read is not a mode of
+    # 0644: the fallback is owner-only, which is never wider than whatever the
+    # source turns out to have been. The opposite trade — declining to snapshot
+    # a mode-restricted file — would close the disclosure by deleting the
+    # data-loss net #1650 exists to be, which is choosing a different failure
+    # rather than removing one.
+    try:
+        snap_mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        snap_mode = 0o600
     store = _cache_root() / _PASTE_BACKUP_KIND
     # Flat, and a regular file: `_gc_sweep_kind` is non-recursive and unlinks
     # nothing else, so a snapshot in a subdirectory would be counted `skipped`
@@ -10602,13 +10620,71 @@ def _paste_snapshot(path: str, new_content: str) -> Tuple[str, str]:
         ).hexdigest()[:16],
         time.time_ns(),
     )
+    # `mkdir(exist_ok=True)` succeeds on a symlink that points at a directory,
+    # and the write that follows lands wherever it points. The `time_ns()` leaf
+    # is unpredictable, so nobody can name the file in advance — but the
+    # directory is a fixed name under a shared cache root, so one planted
+    # symlink redirects every later snapshot. Refused out loud rather than
+    # followed, which keeps it a declared `why_not` instead of a copy the
+    # receipt claims is somewhere it is not.
+    #
+    # This defends the leaf only. A symlink at `_cache_root()` itself, or the
+    # `XDG_CACHE_HOME` read that chooses it with no shape check, is the same
+    # class one level up and is deliberately not fixed here (#1685 item 2).
+    if store.is_symlink():
+        return "", f"{store} is a symlink, not a directory"
     try:
         store.mkdir(parents=True, exist_ok=True)
-        with open(dest, "wb") as fh:
+        # os.open, not open(): the mode has to be on the file from the moment
+        # it exists, not chmod-ed onto it a syscall later, or the bytes are
+        # world-readable for that window. O_EXCL so an existing leaf is never
+        # written through, O_NOFOLLOW so a symlink at the leaf is not either,
+        # and O_BINARY because on Windows a text-mode fd would rewrite every
+        # LF in the backup — a copy that does not match what it copied.
+        flags = (
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        )
+        fd = os.open(dest, flags, snap_mode)
+        with os.fdopen(fd, "wb") as fh:
             fh.write(old)
+        # The umask subtracts from the mode passed to os.open, so a 0640 source
+        # under a 0022 umask would have landed at 0620 — narrower, but a
+        # different fact from the one the receipt states. Applied after the
+        # bytes are written, on a file that has never been wider.
+        if os.name != "nt":
+            os.chmod(dest, snap_mode)
     except OSError as e:
         return "", f"{store} is not writable ({type(e).__name__})"
     return str(dest), ""
+
+
+def _snapshot_mode_suffix(snapshot: str) -> str:
+    """What the receipt says about the mode of a `paste` snapshot (#1685).
+
+    `_created_mode_note` states the mode of a file `paste` has just created,
+    because that is a new fact about a new file. This is the other half and it
+    is a weaker claim: the snapshot is a copy of bytes the caller already owns,
+    so the mode is not news — what is news is that a second copy of those bytes
+    now exists somewhere else, and whether reading it is any easier than
+    reading the original. So it rides on the line that already names the copy
+    rather than taking one of its own.
+
+    Read back off disk, never from the mode that was requested: `os.open`'s
+    mode argument is subtracted by the umask, and a receipt that quoted the
+    request would be stating a permission the file may not have. If the stat
+    fails the suffix is empty — the copy exists and its mode is unknown, and
+    there is no fact to disclose. Nothing is printed on Windows, for the same
+    reason `_created_mode_note` prints nothing there: `st_mode` reads back
+    0o666 whatever was asked for.
+    """
+    if os.name == "nt":
+        return ""
+    try:
+        mode = stat.S_IMODE(os.stat(snapshot).st_mode)
+    except OSError:
+        return ""
+    return " (mode {0:04o}, the file's own)".format(mode)
 
 
 def _created_mode_note(path: str, content: str) -> str:
@@ -10658,6 +10734,9 @@ def op_paste(path: str, content: str) -> str:
     Overwriting an EXISTING file copies its outgoing bytes to
     `~/.cache/supertool/paste-backup/` first and names the copy in the receipt
     — see `_paste_snapshot` for why that is a copy and not a refusal (#1650).
+    The copy carries the source's own mode, so a 0600 file does not get a
+    world-readable backup, and the receipt states the mode it landed at
+    (#1685).
 
     Use for full-file rewrites — no vim macro gymnastics, no `:r` insert-after
     off-by-one cuts (e.g. `<?php` eaten), no `:::` separator abuse. CONTENT
@@ -10690,7 +10769,11 @@ def op_paste(path: str, content: str) -> str:
     if existed and old_size > 0:
         snap, why = _paste_snapshot(path, content)
         if snap:
-            snapshot_note = f"  ↳ previous contents kept at {snap}\n"
+            snapshot_note = (
+                f"  ↳ previous contents kept at {snap}"
+                + _snapshot_mode_suffix(snap)
+                + "\n"
+            )
         elif why:
             snapshot_note = (
                 f"  ↳ no backup of the previous contents — {why}\n"
