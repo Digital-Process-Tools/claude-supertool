@@ -189,7 +189,7 @@ _CODEQL_FIRST_JOBS = {
 
 
 # ---------------------------------------------------------------------------
-# the centrepiece: workflow identity, not recency
+# the centrepiece: every run on the commit, not the most recent one
 # ---------------------------------------------------------------------------
 
 def test_codeql_green_while_tests_queued_is_not_green(monkeypatch, capsys) -> None:
@@ -441,21 +441,42 @@ def test_the_same_absence_past_the_window_is_a_note_not_a_verdict(
 # run selection
 # ---------------------------------------------------------------------------
 
-def test_latest_per_workflow_keeps_one_run_per_workflow_on_the_sha() -> None:
+def test_runs_on_sha_keeps_every_run_on_the_sha() -> None:
+    """Two runs of one workflow name are two runs (#1640).
+
+    This test used to assert the opposite — that run 20 superseded run 10 —
+    on the grounds that "a re-run supersedes the run it replaces". Both runs
+    here have their own `databaseId`, so neither is a re-run of the other:
+    `gh run rerun` reuses the id and bumps `attempt`. The old reading is what
+    let a *failing* run (10) be dropped by a passing one (20) and the commit
+    clear GREEN, which is #1640 in four lines.
+    """
     runs = [_run("tests", _HEAD, "completed", "failure", 10),
             _run("tests", _HEAD, "completed", "success", 20),
             _run("CodeQL", _HEAD, "completed", "success", 15),
             _run("tests", _PREV, "completed", "success", 30)]
-    selected = branch.latest_per_workflow(runs, _HEAD)
+    selected = branch.runs_on_sha(runs, _HEAD)
 
-    assert set(selected) == {"tests", "CodeQL"}
-    assert selected["tests"]["databaseId"] == 20, (
-        "a re-run did not supersede the run it replaced")
+    assert sorted(branch._run_id(r) for r in selected.values()) == [10, 15, 20]
+    assert branch.workflow_names(selected) == {"tests", "CodeQL"}
+    # The two `tests` rows are told apart in the render, or a reader cannot
+    # check a verdict that now depends on both of them.
+    assert set(selected) == {"CodeQL", "tests (run 10)", "tests (run 20)"}
 
 
-def test_latest_per_workflow_ignores_other_shas() -> None:
+def test_runs_on_sha_collapses_attempts_of_one_run() -> None:
+    """The supersession the old docstring named, keyed on what performs it."""
+    runs = [_run("tests", _HEAD, "completed", "failure", 20, attempt=1),
+            _run("tests", _HEAD, "completed", "success", 20, attempt=2)]
+    selected = branch.runs_on_sha(runs, _HEAD)
+
+    assert list(selected) == ["tests"]
+    assert selected["tests"]["attempt"] == 2
+
+
+def test_runs_on_sha_ignores_other_shas() -> None:
     runs = [_run("tests", _PREV, "completed", "success", 30)]
-    assert branch.latest_per_workflow(runs, _HEAD) == {}
+    assert branch.runs_on_sha(runs, _HEAD) == {}
 
 
 def test_run_phase_distinguishes_concluded_from_moving() -> None:

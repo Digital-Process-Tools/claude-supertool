@@ -668,7 +668,7 @@ def collect_local(default_branch: str) -> Section:
 def collect_default(repo: str, default_branch: str) -> Section:
     """`gh-branch`'s conjunctive verdict, reused rather than re-derived.
 
-    Every piece of judgement here — selection by workflow identity, the four
+    Every piece of judgement here — selection of every run on the head, the four
     states kept apart, the leg reconciliation — is `gh-branch`'s. This function
     only sequences its calls and keeps one line.
     """
@@ -683,7 +683,7 @@ def collect_default(repo: str, default_branch: str) -> Section:
     if err:
         return Section("default", error=err)
 
-    selected = _gh_branch.latest_per_workflow(runs, sha)
+    selected = _gh_branch.runs_on_sha(runs, sha)
     if not selected:
         state, sentence = _gh_branch.no_run_verdict(sha, age)
         return Section("default", [f"{default_branch} {sha[:7]}", sentence])
@@ -695,7 +695,10 @@ def collect_default(repo: str, default_branch: str) -> Section:
             for wf, jobs in fetched.items()}
     marker, detail = _gh_branch._reconcile(repo, selected, fetched)
     _prev_sha, prev_names = _gh_branch.previous_head(runs, sha)
-    missing = sorted(prev_names - set(selected)) if prev_names else []
+    # `missing_workflows`, not `prev_names - set(selected)`: the selection is
+    # keyed per run since #1640, so a workflow with two runs on the head is in
+    # neither key verbatim and the subtraction reported it as absent.
+    missing = _gh_branch.missing_workflows(prev_names, selected)
     # #846: the scope of the green, not only the green. This section is the
     # board a human reads immediately before tagging a release, and it was
     # printing "every workflow on X concluded and every leg passed" over a
