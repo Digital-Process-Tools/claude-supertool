@@ -198,12 +198,20 @@ def test_the_receipt_states_the_mode_on_a_create_and_only_on_posix(
 
 
 def test_a_rewrite_does_not_repeat_the_mode(tmp_path: Path) -> None:
-    """The caller chose an existing file's mode; only a create is news."""
+    """The caller chose an existing file's mode; only a create is news.
+
+    Asserted on `_created_mode_note`'s own wording rather than on the substring
+    `mode 0`, because a rewrite's receipt does now carry a mode -- the SNAPSHOT's
+    (#1685), on the line naming the copy of the displaced bytes. That is a
+    different fact about a different file: the copy lives in a cache directory
+    the caller never chose, so whether reading it is as hard as reading the
+    original is news, while the target's own mode is not.
+    """
     f = tmp_path / "data.txt"
     f.write_text("old\n", encoding="utf-8")
     out = supertool.op_paste(str(f), "new\n")
     assert "ERROR" not in out, out
-    assert "mode 0" not in out, out
+    assert "from the process umask" not in out, out
 
 
 def test_a_created_shebang_file_does_not_gain_an_executable_bit(

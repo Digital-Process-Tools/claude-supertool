@@ -107,7 +107,7 @@ That third state exists because a confidently wrong line number costs more than 
 | `replace` | `replace:::OLD:::NEW:::PATH` | Recursive find/replace across PATH. Use `:::` separator when content has `:`. |
 | `replace_dry` | `replace_dry:::OLD:::NEW:::PATH` | Preview of `replace` — shows what would change without writing. |
 | `replace_lines` | `replace_lines:::PATH:::START:::END:::CONTENT` | Swap lines `[START, END]` (1-indexed, inclusive) with CONTENT. `END < START` = pure insert before line START. Empty CONTENT = delete. Receipt shows new line numbers + ±2 context. |
-| `paste` | `paste:::PATH:::CONTENT` | **NARROW USE:** replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — `vim` is the default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars (`:`, quotes, braces, newlines). Overwriting an existing file copies its outgoing bytes to `~/.cache/supertool/paste-backup/` first and the receipt names the copy; a *created* file lands at `0666 & ~umask` and the receipt states the mode — both below. |
+| `paste` | `paste:::PATH:::CONTENT` | **NARROW USE:** replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — `vim` is the default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars (`:`, quotes, braces, newlines). Overwriting an existing file copies its outgoing bytes to `~/.cache/supertool/paste-backup/` first and the receipt names the copy and its mode, which is the overwritten file's own; a *created* file lands at `0666 & ~umask` and the receipt states the mode — both below. |
 | `append` | `append:::PATH:::CONTENT` | Append CONTENT to the end of a file, creating it if missing — a file it creates lands at `0666 & ~umask` and the receipt states the mode, same as `paste` below. No `wc` round-trip, no inverted-range `replace_lines` trick. Adds a missing trailing newline first so the block starts on its own line. |
 
 ### A `paste` over an existing file keeps the bytes it displaces
@@ -129,8 +129,24 @@ says where:
 
 ```
 rewrote notes/fix-1598-1584.md (24 lines, 8922 → 1990 bytes)
-  ↳ previous contents kept at ~/.cache/supertool/paste-backup/3f43a7b64beb777c-1786684186291800000.bak
+  ↳ previous contents kept at ~/.cache/supertool/paste-backup/3f43a7b64beb777c-1786684186291800000.bak (mode 0644, the file's own)
 ```
+
+**The copy inherits the overwritten file's mode**
+([#1685](https://github.com/Digital-Process-Tools/claude-supertool/issues/1685)).
+It used to be written at `0666 & ~umask` whatever the source was, so a `paste`
+over a `0600` `.env`, `id_rsa` or `.netrc` left the secret group- and
+world-readable under `~/.cache/supertool` for the seven-day retention window.
+The snapshot is not redacted — it is a backup, and a redacted backup is not one
+— so what has to hold instead is that reading the copy is never easier than
+reading the original. A mode that cannot be read falls back to `0600`, never to
+the umask default. Nothing is refused on account of the mode: declining to
+snapshot a mode-restricted file would close the disclosure by deleting the
+data-loss net this whole section is about.
+
+Not stated on Windows, where `os.chmod` honours only the read-only flag and
+`st_mode` reads back `0o666` whatever was asked for — a mode line there would
+be a claim about access that does not hold.
 
 **Nothing is refused, and that is the design.** A guard that blocked the
 overwrite would have to offer a `force` token, and a `force` token typed by
@@ -146,9 +162,9 @@ Three states, never silence:
 
 | Receipt | Meaning |
 |---------|---------|
-| `↳ previous contents kept at PATH` | the displaced bytes are at PATH |
+| `↳ previous contents kept at PATH (mode NNNN, the file's own)` | the displaced bytes are at PATH, readable by no more people than the file was |
 | *(no line)* | nothing was displaced — the file was created, or already held exactly what was written |
-| `↳ no backup of the previous contents — WHY` | the copy could not be made. The write still happened; WHY names the reason (unreadable file, unwritable cache, or over the 8 MB copy limit) |
+| `↳ no backup of the previous contents — WHY` | the copy could not be made. The write still happened; WHY names the reason (unreadable file, unwritable cache, a `paste-backup` that is a symlink rather than a directory, or over the 8 MB copy limit) |
 
 **A write that a validator rolls back still leaves a copy.** The snapshot is
 taken before the write, and whether the write survives validation is not known
