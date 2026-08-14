@@ -140,8 +140,10 @@ def runs_on_sha(runs: object, sha: str) -> dict:
     The key is a **label**, not the raw id, because it is what the verdict
     sentence, the shortfall lines and the table all name the row by, and
     `31749711130` is not an answer to "what failed". A name with one run keeps
-    its bare name — every render and every name-keyed consumer is unchanged on
-    the ordinary commit. A name with two gets `NAME (run ID)` on both, so the
+    its bare name — every ordinary render and every name-keyed consumer is
+    unchanged on the ordinary commit, the one exception being a name that
+    itself contains this module's `(run <id>)` shape (see
+    `_neutralise_run_tag`). A name with two gets `NAME (run ID)` on both, so the
     second row is visible and the reader can check the verdict against it.
     Callers wanting the workflow names go through `workflow_names()`, which
     reads them off the run objects rather than parsing them back out.
@@ -152,6 +154,11 @@ def runs_on_sha(runs: object, sha: str) -> dict:
     direction. An unreadable id is `?` in the label and disambiguated by a
     trailing ` #N` only if that collides too — a label collision must never be
     the thing that drops a run.
+
+    The name half of every label goes through `_neutralise_run_tag` first, so
+    the ` (run ID)` this function appends is the only one in it (#1687). The
+    key stops being the workflow name verbatim in that case; `workflow_names()`
+    is where the *name* question is asked, and it reads the run object.
     """
     if not isinstance(runs, list) or not sha:
         return {}
@@ -180,11 +187,12 @@ def runs_on_sha(runs: object, sha: str) -> dict:
     for key in order:
         run = by_id[key]
         name = _workflow_name(run)
+        shown = _neutralise_run_tag(name)
         if counts[name] == 1:
-            label = name
+            label = shown
         else:
             rid = _run_id(run)
-            label = f"{name} (run {rid if rid >= 0 else '?'})"
+            label = f"{shown} (run {rid if rid >= 0 else '?'})"
         if label in out:
             n = 2
             while f"{label} #{n}" in out:
@@ -198,6 +206,44 @@ def _workflow_name(run: object) -> str:
     if not isinstance(run, dict):
         return "?"
     return str(run.get("workflowName") or "?")
+
+
+#: Supertool's own annotation, as a pattern — what `runs_on_sha` appends to a
+#: name with two runs on the commit, and `?` for an id it could not read.
+_RUN_TAG = re.compile(r"\(run (?:[0-9]+|\?)\)")
+
+#: What that shape becomes when it arrives *inside* a workflow name. ASCII on
+#: purpose: this lands in a fixed-width table printed on every console this repo
+#: supports, and `_untrusted`'s own glyphs do not encode in cp1252 (#863). It
+#: cannot match `_RUN_TAG` itself, so the substitution is idempotent.
+RUN_TAG_NEUTRALISED = "(run-tag in name, neutralised)"
+
+
+def _neutralise_run_tag(name: str) -> str:
+    """A workflow name that cannot forge this module's `(run ID)` (#1687).
+
+    `workflowName` is remote text — whoever controls the repo's
+    `.github/workflows` chooses it — and a workflow literally named
+    `Analyze (run 12345)` used to render byte for byte as this module's
+    annotation of a workflow named `Analyze`, in the first column of the table
+    the merge gate and the release gate are read off. `_untrusted.flat` does
+    not reach it: every character is printable, and what was missing is a
+    *boundary*, not a control-character strip.
+
+    So the tool's structural shape is neutralised where it appears in content,
+    which is what `_untrusted.scrub` already does for the fence markers. After
+    this, the only `(run <digits>)` in a label is the one this module wrote.
+
+    Declined, not censored: the rest of the name survives, so the reader still
+    learns what the workflow is called. Applied to a name with *one* run too —
+    a bare row that looks annotated is the same forgery with a shorter reach.
+
+    **The label only.** `workflow_names()` reads the name off the run object,
+    so the declared-set check and the previous-head comparison still see the
+    real name; rewriting it there would invent a missing workflow out of a
+    spelling, which is the trap `missing_workflows` exists to avoid.
+    """
+    return _RUN_TAG.sub(RUN_TAG_NEUTRALISED, name)
 
 
 def _attempt(run: object) -> int:
@@ -784,7 +830,8 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
     read cannot contribute to a green, so it decides the whole answer.
 
     A label rather than a workflow name since #1640 — the bare name where that
-    name has one run on the commit, `NAME (run ID)` where it has two. The keys
+    name has one run on the commit (neutralised where the name forges this
+    module's own tag, #1687), `NAME (run ID)` where it has two. The keys
     are used here only as the subject of a sentence, so this function is
     unchanged by that; what changed is that two runs of one workflow are now two
     keys and both have to pass.
@@ -1227,7 +1274,11 @@ def run_id_note() -> str:
             "this commit is listed, so the row count is runs, never attempts — "
             "one workflow can have two runs on one commit (GitHub's default "
             "code scanning emits two per push), and both then carry `(run "
-            "<id>)` in the first column and both must pass (#1640).")
+            "<id>)` in the first column and both must pass (#1640). That "
+            "`(run <id>)` is supertool's, not the workflow's: a workflow name "
+            f"containing the same shape reads `{RUN_TAG_NEUTRALISED}` instead, "
+            "so a name chosen by whoever writes the workflow files cannot "
+            "arrive as this annotation (#1687).")
 
 
 def _row(name: str, run: dict, jobs) -> str:

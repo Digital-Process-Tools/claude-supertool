@@ -38,6 +38,17 @@ def _api_repo_path(suffix: str) -> str:
     return _repo_target.api_path(suffix)
 
 
+def _printable_api_repo_path(suffix: str) -> str:
+    """The same path, **printed for a reader to paste** (#1679).
+
+    Two different consumers of one string, which is the distinction #1670 drew
+    in `pr_merge`: gh resolves `{owner}`/`{repo}` from whatever cwd the line is
+    pasted into, so the printed command silently names a different repository
+    in every checkout. Under a `repo:` target this is `_api_repo_path` exactly.
+    """
+    return _repo_target.api_path_printable(suffix)
+
+
 def _local_branch_check(source: str) -> str:
     """Return a one-line local-branch-vs-source check for output.
 
@@ -276,7 +287,7 @@ def _missing_log_message(
             # the checks namespace (#827), so the question is never put twice.
             return _absent_job_message(
                 job_id, probe if probe is not None else _probe_check_run(job_id))
-        state_path = _api_repo_path("actions/jobs/" + str(job_id))
+        state_path = _printable_api_repo_path("actions/jobs/" + str(job_id))
         return (
             f"ERROR: Job #{job_id} has no log (HTTP 404), and supertool "
             f"could not tell why — the job endpoint did not answer: "
@@ -1060,7 +1071,8 @@ def main() -> int:
         print(f"This is not a missing log: gh returned one, and it has no "
               f"content. Job state: status `{job_status}`, conclusion "
               f"`{job_conclusion}`.")
-        logs_path = _api_repo_path("actions/jobs/" + str(job_id) + "/logs")
+        logs_path = _printable_api_repo_path(
+            "actions/jobs/" + str(job_id) + "/logs")
         print(f"Cross-check the raw bytes with: gh api {logs_path}")
         return 0
 

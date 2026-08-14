@@ -141,7 +141,15 @@ class _Harness:
             return ({"nameWithOwner": REPO,
                      "defaultBranchRef": ({"name": self.default_branch}
                                           if self.default_branch else {})}, "")
-        if args[:2] == ["pr", "view"] and "statusCheckRollup" in args[-1]:
+        # Over every argument, not `args[-1]` (#1679). `_repo_target.gh_args()`
+        # appends `--repo OWNER/NAME` *after* the `--json` field list, so under
+        # a `repo:` target the last argument is the slug and this branch never
+        # matched: the PR read fell through to the read-back below, returned
+        # the post-merge object, and `main()` refused a PR it had never read.
+        # A harness rendering its own blindness as a product verdict — this
+        # repo's defect class, inside the thing meant to detect it.
+        if args[:2] == ["pr", "view"] and any("statusCheckRollup" in a
+                                              for a in args):
             if "pr" in self.fail_json:
                 return (None, "PR not found")
             return (self.pr, "")
@@ -764,3 +772,50 @@ def test_an_ordinary_head_branch_still_gets_its_commands(monkeypatch, capsys):
     assert "gh api -X DELETE" in cleanup, cleanup
     assert "'fix/924'" not in cleanup, cleanup
     assert "No delete command is printed" not in cleanup, cleanup
+
+
+# ===========================================================================
+# The harness has to be able to *see* a `repo:`-targeted run (#1679)
+# ===========================================================================
+
+TARGET = "other/thing"
+
+
+def test_the_pr_read_is_routed_under_a_repo_target(monkeypatch):
+    """`gh_args()` appends `--repo OWNER/NAME` after the `--json` field list.
+
+    The rollup branch used to dispatch on `args[-1]`, which under a target is
+    the slug and never the fields — so the PR read fell through to the
+    read-back branch, returned the post-merge object and produced a refusal.
+    Asserted on the routing itself rather than through `main()`, because the
+    thing that broke is which branch of the harness a call lands in.
+    """
+    h = _Harness(_pr())
+    args = ["pr", "view", "944", "--json", "number,statusCheckRollup",
+            "--repo", TARGET]
+    data, err = h.gh_json(args)
+    assert err == "", err
+    assert data is h.pr, data
+    assert h.readback_count == 0, "the PR read was counted as a read-back"
+
+
+def test_a_targeted_main_run_reaches_the_merge(monkeypatch, capsys):
+    """A green PR under `repo:` merges, and does not refuse.
+
+    No test in this file exercised a targeted `main()` before #1679: every one
+    of them ran with no target, so the harness's blindness to `--repo` was
+    invisible. Under a target the op used to read the *post-merge* object as
+    though it were the PR, see `MERGED`, and refuse — a harness rendering its
+    own blindness as a product verdict.
+    """
+    monkeypatch.setenv("SUPERTOOL_REPO", TARGET)
+    h = _Harness(_pr())
+    _install(monkeypatch, h, argv=["944"])
+    rc = m.main()
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert h.merge_calls, out
+    assert "## Gate — passed" in out, out
+    assert "ERROR" not in out, out
+    # The read-back is a second `pr view`; the gate read is not one of them.
+    assert h.readback_count == 1, out

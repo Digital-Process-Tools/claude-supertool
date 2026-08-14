@@ -40,6 +40,11 @@ _spec.loader.exec_module(job)
 
 _REAL_RUN = subprocess.run
 
+# What `gh repo view --json nameWithOwner` answers for this checkout. The op
+# reads it on the paths that print a `gh api …` command for a reader to paste,
+# so those name a repository rather than gh's cwd placeholders (#1679).
+CWD_SLUG = "Digital-Process-Tools/claude-supertool"
+
 # The exact bytes gh emits for a job that exists but whose log blob does not.
 BLOB_NOT_FOUND_STDOUT = (
     '﻿<?xml version="1.0" encoding="utf-8"?><Error><Code>BlobNotFound</Code>'
@@ -85,6 +90,13 @@ def _dispatching_run(
                             "pullRequests": []}),
                 "",
             )
+        if cmd == "repo" and url == "view":
+            # #1679: both blocks below print a `gh api …` command for the
+            # reader to paste, and a pasted `repos/{owner}/{repo}/…` names
+            # whatever repository the paster is standing in. The slug is read
+            # back so the printed line names one.
+            return subprocess.CompletedProcess(
+                args, 0, json.dumps({"nameWithOwner": CWD_SLUG}), "")
         raise AssertionError(f"unstubbed gh call: {args!r}")
 
     return fake_run
@@ -243,3 +255,7 @@ def test_an_empty_log_is_reported_as_empty_not_as_absent(
     assert "empty" in out.lower()
     assert "not found" not in out.lower()
     assert "cancelled" not in out
+    # #1679: the cross-check command is pasted by a reader, so it names a
+    # repository rather than gh's cwd-resolved placeholders.
+    assert f"gh api repos/{CWD_SLUG}/actions/jobs/" in out, out
+    assert "repos/{owner}/{repo}/" not in out, out

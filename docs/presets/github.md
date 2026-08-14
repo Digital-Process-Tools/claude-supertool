@@ -455,6 +455,22 @@ repo: op — so there is one place the target comes from. Set it there and drop 
 
 Both fail before any op runs. A target that quietly applied to part of a call is the shape of the bug this fixed, so it is not the fix's behaviour either. Ops opt in via `"repo_target": true` in the preset manifest (`"payload"` for those routing it through their own payload, or `"payload:KEY"` when that key is not called `repo` — `gl-issue-create` reads `project`), which is also what makes the refusal able to name *which* of the two problems you have, and which field to set.
 
+### A command printed for a reader names a repository
+
+`gh api repos/{owner}/{repo}/…` is a **correct** path for a call this process makes: `gh` expands both placeholders from the cwd's remote, and a `repo:` target replaces them rather than accompanying them (there is no `--repo` on `gh api`). It is the wrong string for a line handed to a reader to paste, because the same command names a different repository in every checkout and says nothing about having changed meaning. [#1670](https://github.com/Digital-Process-Tools/claude-supertool/issues/1670) drew that line in `gh-pr-merge`; [#1679](https://github.com/Digital-Process-Tools/claude-supertool/issues/1679) applied it to the four remaining sites — `gh-check`'s two 404 messages, and `gh-job`'s missing-log and empty-log blocks.
+
+Those go through `_repo_target.api_path_printable`, which answers in three states and never in two:
+
+| | What is printed |
+|---|---|
+| A `repo:` target is set | The target, substituted — exactly what the executed path carries, so the printed line and the executed one cannot disagree. No lookup is made |
+| No target, `gh repo view` answered | The cwd's own `OWNER/NAME`, filled in |
+| No target, the slug did not come back or was not `owner/name` | Gh's placeholders, declined to rather than half-built — still a correct command in the reader's own checkout |
+
+Every path this process **executes** still goes through `api_path`, unchanged.
+
+**The claim in #1679 that these four named the wrong repository under a target was wrong**, and is recorded here because a stale claim about a capability is the shape that suppresses the call which would disprove it: all four already routed through `api_path`. Only the untargeted case was ever the defect.
+
 ### The error names the door, not just the wall
 
 `ERROR: cwd is not a GitHub repo` was complete and honest while cwd was the only way to name a repo. With a second route it describes a wall that now has a door, so it names both — and when a target *was* given it is not used at all, because the cwd had no part in that lookup:
@@ -1439,11 +1455,15 @@ CodeQL (run 31749711175)         31749711175 attempt 1      concluded      succe
 tests                            31749711508 attempt 2      concluded      success        16 total: 16 passed, …
 ```
 
-**A name with two runs is visible, and a name with one is untouched.** The
-selection is keyed by a label: the bare workflow name when it has one run on the
-commit — every ordinary render is byte-identical to before — and `NAME (run ID)`
-on each when it has more, because a reader who cannot see the second row cannot
-check the verdict. The workflow names themselves are read off the run objects
+**A name with two runs is visible, and an ordinary name with one is untouched.**
+The selection is keyed by a label: the bare workflow name when it has one run on
+the commit, and `NAME (run ID)` on each when it has more, because a reader who
+cannot see the second row cannot check the verdict. Since
+[#1687](https://github.com/Digital-Process-Tools/claude-supertool/issues/1687)
+the one-run label is not quite the raw name — it goes through the same
+neutralisation described below — but that is a no-op unless the name itself
+contains supertool's `(run <id>)` shape, so an ordinary render is still
+byte-identical to before. The workflow names themselves are read off the run objects
 (`workflow_names()`), never parsed back out of a label, so the declared-set
 comparison and the previous-head comparison keep asking the workflow question
 while the verdict asks the run question.
@@ -1453,6 +1473,19 @@ its own entry rather than merged into another: two runs that cannot be told
 apart are counted twice and the conjunction gets stricter. A gate that
 over-reports pending is recoverable; this issue is what the other direction
 costs.
+
+**The `(run ID)` is supertool's, and a name cannot forge it** ([#1687](https://github.com/Digital-Process-Tools/claude-supertool/issues/1687)).
+`workflowName` is remote text — whoever controls the repo's `.github/workflows`
+chooses it — so a workflow literally named `Analyze (run 12345)` used to render
+byte for byte as the annotation of a workflow named `Analyze`, in the column the
+merge gate and the release gate are read off. `_untrusted.flat` does not reach
+it: every character is printable, and what was missing is a boundary rather than
+a control-character strip. The shape is now neutralised where it appears inside
+a name — `Analyze (run-tag in name, neutralised)`, ASCII so it survives every
+console this repo supports — which is what `_untrusted.scrub` already does for
+the fence markers. Only the label changes: `workflow_names()` still reads the
+real name off the run object, and both rows of a two-run workflow are still
+listed and still both have to pass.
 
 ## The tally counts a family, not a label
 

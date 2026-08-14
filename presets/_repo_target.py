@@ -18,8 +18,10 @@ the empty/None form and the caller behaves exactly as it did before.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
+import subprocess
 import urllib.parse
 
 ENV_VAR = "SUPERTOOL_REPO"
@@ -104,6 +106,68 @@ def api_path_for_display(suffix: str, slug: str) -> str:
     if owner_repo() is not None or not _SLUG.fullmatch(slug or ""):
         return api_path(suffix)
     return f"repos/{slug}/{suffix}"
+
+
+def cwd_slug(timeout: int = 15) -> str:
+    """``OWNER/NAME`` for the repository the cwd is standing in, ``""`` if unknown.
+
+    The other half of :func:`api_path_for_display`, which #1670 shipped without
+    (#1679): it takes a slug the caller "has already read", and outside
+    `pr_merge` no caller had one. `gh-check` and `gh-job` print four `gh api`
+    commands for a reader to paste and had no way to name a repository in them.
+
+    Empty on every failure — gh missing, not logged in, not a repository, a
+    timeout, unparseable JSON. That is not a swallowed error: the *caller* is
+    `api_path_for_display`, whose documented answer to a slug it cannot use is
+    to print gh's own placeholders, which are a correct command. There is no
+    third thing to report here, and an exception out of a helper that exists to
+    decorate an error message would replace the message the reader needed.
+
+    A subprocess in a module that had none: this is where the question "which
+    repository is this call about" already lives, and the alternative was a
+    sixth hand-rolled copy of `gh repo view --json nameWithOwner`. There are
+    five today (`github/labels.py`, `github/branch.py`, `github/pr_merge.py`,
+    `watch/tiers/gh_prs.py`, `claims/check.py`), returning three different
+    absence sentinels between them.
+    """
+    if target():
+        # The target is the answer, and reading the cwd would not improve it.
+        return ""
+    try:
+        r = subprocess.run(
+            ["gh", "repo", "view", "--json", "nameWithOwner"],
+            capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return ""
+    if r.returncode != 0:
+        return ""
+    try:
+        data = json.loads(r.stdout)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("nameWithOwner") or "")
+
+
+def api_path_printable(suffix: str, timeout: int = 15) -> str:
+    """:func:`api_path_for_display` with the slug read back here.
+
+    The one call for a `gh api` path that is **printed for a human to paste**.
+    Under a `repo:` target no call is made and the target is substituted, so
+    the printed line and the executed one cannot disagree; with no target the
+    cwd's own slug is read and filled in; and when that read does not answer,
+    :func:`api_path_for_display` declines to gh's placeholders.
+
+    The read is not cached. Every call site is a terminal error path that runs
+    at most once per invocation, and a cache keyed on nothing would have to be
+    invalidated by a `chdir` this module cannot observe.
+    """
+    if owner_repo() is not None:
+        return api_path(suffix)
+    return api_path_for_display(suffix, cwd_slug(timeout))
 
 
 def no_repo_error(cli_example: str) -> str:
