@@ -31,7 +31,7 @@ superseded attempt is not a second run and never was.
 Four states, because collapsing any pair of them is this repository's house
 defect (`docs/validators.md` §"Declining instead of guessing"):
 
-* ``GREEN`` — every workflow on the head SHA concluded, every leg ``SUCCESS``.
+* ``GREEN`` — every *run* on the head SHA concluded, every leg ``SUCCESS``.
 * ``NOT GREEN`` — a finding. Something failed, or something has not finished.
   Both are findings and they are worded differently, because "a leg failed" and
   "a leg has not started" are opposite next actions.
@@ -46,9 +46,10 @@ The leg arithmetic is `presets/_checks.summarize`, the same module `gh-pr` and
 `gh-run` render through — deliberately, because #615's own argument for the op
 existing is that reusing one renderer keeps one place where a `CANCELLED` can be
 mis-tallied. What is *not* reused is the render: `gh-pr` is handed a flat rollup
-on one commit, and this is a set of runs grouped by workflow with a conjunction
-over them, which is a different shape and would have arrived as a second data
-model inside one function.
+on one commit, and this is the set of runs on one commit with a conjunction over
+them, which is a different shape and would have arrived as a second data model
+inside one function. Grouped by workflow until #1640, which is the axis two runs
+of one workflow collapse on.
 """
 from __future__ import annotations
 
@@ -99,9 +100,11 @@ _TERMINAL_RUN_STATUS = "completed"
 # head is read.
 RUN_LIST_LIMIT = 60
 
-# Job lists are fetched one call per workflow, in parallel. Small on purpose:
-# the realistic workflow count per SHA is two or three, and a wide pool would
-# only buy latency on a repo that does not exist yet.
+# Job lists are fetched one call per *run*, in parallel — per workflow until
+# #1640, and the two differ by one on any repo with GitHub's default code
+# scanning turned on. Small on purpose: the realistic run count per SHA is three
+# or four, and a wide pool would only buy latency on a repo that does not exist
+# yet.
 JOB_WORKERS = 4
 
 _GRACE = _checks.CHECK_CREATION_GRACE_SECS
@@ -372,7 +375,11 @@ def orphaned_legs(run: object, states) -> int:
 
 
 def orphan_lines(selected: dict, fetched: dict) -> list:
-    """One sentence per workflow whose run closed without one of its legs.
+    """One sentence per run that closed without one of its legs.
+
+    Per *run*, not per workflow (#1640): a workflow with two runs on the commit
+    is two entries here, and the sentence names the row label — `NAME (run ID)`
+    in that case — so the reader can tell which of the two it is about.
 
     A bare marker in the `Outcome` cell would say only that something is odd,
     which is a second lookup rather than an answer. These lines say which two
@@ -695,9 +702,15 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
     reminder; a required argument is a mechanism. Pass `scope_for(...)[0]`, or
     `""` if you have decided the scope does not apply here — but decide it.
 
-    `legs` maps a workflow name to its leg states, or to ``None`` when the job
-    list did not come back. ``None`` is not zero: a workflow whose legs were
-    never read cannot contribute to a green, so it decides the whole answer.
+    `legs` maps a **run label** to its leg states, or to ``None`` when the job
+    list did not come back. ``None`` is not zero: a run whose legs were never
+    read cannot contribute to a green, so it decides the whole answer.
+
+    A label rather than a workflow name since #1640 — the bare name where that
+    name has one run on the commit, `NAME (run ID)` where it has two. The keys
+    are used here only as the subject of a sentence, so this function is
+    unchanged by that; what changed is that two runs of one workflow are now two
+    keys and both have to pass.
 
     The order the findings are tested in is the order a reader acts on them —
     unread beats failed beats unfinished beats not-yet-created — and every
