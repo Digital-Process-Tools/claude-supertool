@@ -530,7 +530,7 @@ The line above the relay has three states, and it is a claim about configuration
 
 `ran` with nothing after it gets its own sentence — *it printed nothing, so this receipt cannot say which arm it took* — because a silent hook and an absent one otherwise render identically.
 
-One arm carries no relay and says so. A push that outlasts `_PUSH_TIMEOUT` is killed and its captured output dies with it, so the timeout receipt states that the hook's words were never captured rather than leaving a blank that reads as a hook with nothing to say.
+One arm carries no relay and says so. A push that outlasts its push budget — `_PUSH_TIMEOUT`, `ops.git-push.budget` or `:budget=SECONDS`, whichever was in force — is killed and its captured output dies with it, so the timeout receipt states that the hook's words were never captured rather than leaving a blank that reads as a hook with nothing to say.
 
 **The rebase-recovery route carries all of it too, and carried none of it until [#1490](https://github.com/Digital-Process-Tools/claude-supertool/issues/1490).** A non-fast-forward hands the push to `_recover_by_rebase`, which runs its **own** `git push` and prints its own receipts — and neither the disclosure above nor the head/tail bound followed it there. So `Status: pushed ✓ (rebased onto remote)` was the one landed-push receipt in this op that said nothing about the hook at all, which is #1448's premise turned back on it: a push that lands after a rebase is precisely a push whose hook has just run. Both of that route's `--- git output ---` dumps are bounded now as well, on the same 5/30 as the straight route, and the rejected-after-rebase arm is where the transcript is largest for exactly the same reason. The `rebase could not start` arm prints no hook line, deliberately: no push of that route's own has run yet, so there is nothing it could say about a hook that would be about the failure it is reporting.
 
@@ -695,12 +695,36 @@ Three calls name their own budget instead, because they are the ones that legiti
 
 | call | budget | why |
 |---|---|---|
-| `git push` (`git-push`) | 300s, or `:budget=SECONDS` up to 1800 | The op owns its own timeout so it can verify the remote before reporting; supertool's outer cap must not fire first |
+| `git push` (`git-push`) | 300s, or `ops.git-push.budget`, or `:budget=SECONDS` — up to 1800 | The op owns its own timeout so it can verify the remote before reporting; supertool's outer cap must not fire first |
 | `git fetch` / `git rebase` on `git-push`'s recovery path | 120s, or what is left of the push budget | Can land on a worktree git has already paused ([#640](https://github.com/Digital-Process-Tools/claude-supertool/issues/640)) |
 | `git commit` (`git-commit`) | 30s | Runs whatever the pre-commit hook chain is |
 | `git merge` (`git-merge`) | 30s | Runs merge drivers, potentially over the whole tree |
 
 **An explicit budget wins; the environment sets the default** ([#704](https://github.com/Digital-Process-Tools/claude-supertool/issues/704)). Setting `SUPERTOOL_GIT_TIMEOUT=5` to tighten `git-status` does not cap `git-push`'s 300s and report a push still in flight as failed.
+
+#### `ops.git-push.budget` — the default your repository chooses
+
+`:budget=SECONDS` is per *invocation* — see the deadline section below for what it means within one — and there are repositories where it is the right answer on **every** invocation: a pre-push hook that runs the suite on a push to `master` cannot finish inside 300s, so the flag has to be retyped every session or the push times out having sent nothing. Set the default once instead ([#1631](https://github.com/Digital-Process-Tools/claude-supertool/issues/1631)):
+
+```json
+{
+  "ops": {
+    "git-push": { "budget": 1500 }
+  }
+}
+```
+
+Precedence is **`:budget=SECONDS` > `ops.git-push.budget` > 300**, and 300 is still the answer when neither is set. The key merges over the shipped preset entry key-by-key, so writing `budget` alone keeps the op's `cmd`, `timeout` and everything else; `registry:git-push` renders the merged result with the source of each key.
+
+**It is refused, never clamped, and never silently ignored.** The budget has to stay *strictly* under `ops.git-push.timeout` from the same merged entry — past that cap supertool kills the process, and a killed push cannot ask the remote what landed, which is the verdict this op exists to produce ([#399](https://github.com/Digital-Process-Tools/claude-supertool/issues/399)). A configured value that is not a whole positive number of seconds, is above 1800, is at or above the op timeout, or that could not be checked against the op timeout at all, refuses the push before anything is sent and names both numbers. A push that never happened is recoverable by fixing one line of config; a push under a clock nobody chose is discovered when it cannot be verified.
+
+A budget the flag overrode is not consulted, so a broken key cannot refuse a push whose clock it does not set. When the config value is the one in force, the receipt says so by name:
+
+```
+Push budget: 1500s (ops.git-push.budget — default is 300s)
+```
+
+**Why this is not just a bigger default.** The suite behind this repository's own pre-push hook takes 309.86s against the 300s default — ten seconds, which is well inside normal variance. A raised constant would move a repo like this from *always fails* to *sometimes fails*, from the same command; and a repo with no pre-push hook wants a **shorter** budget, because there the only thing a long one buys is a longer wait before an honest failure. The number is per-repo in both directions.
 
 **`git-push`'s budget is a deadline on its pushing, not a per-call timeout** ([#1615](https://github.com/Digital-Process-Tools/claude-supertool/issues/1615)). `:budget=N` means *this op stops pushing within N seconds of starting*, and the clock covers the initial push, the recovery fetch, the rebase and the re-push between them. It used to mean *each `git push` gets N*, which on the non-fast-forward path spent `2N + 240` — so `:budget=1800` asked for 3840s inside an op capped at 1920, and past that cap supertool kills the process, on the one path where the receipt is the only thing that would say the worktree is paused mid-rebase.
 

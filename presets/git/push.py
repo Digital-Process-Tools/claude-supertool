@@ -31,6 +31,11 @@ Flags (colon-appended: `git-push:force-with-lease:no-verify`):
     push to a protected branch. Refused rather than clamped if it is
     unreadable, non-positive, contradicted by a second `budget=`, or above
     `_PUSH_TIMEOUT_MAX`.
+    The *default* it replaces is itself settable per repository, as
+    `ops.git-push.budget` in `.supertool.json` (#1631) — precedence is
+    flag > config > 300 — because whether a pre-push hook runs a suite is a
+    property of the repo, and a repo without one wants a shorter budget for
+    the same reason. See `_config_budget`, which refuses on the same terms.
     It is a **deadline, not a per-call timeout** (#1615): the clock opens at
     the first `git push` and the non-fast-forward recovery's fetch, rebase
     and re-push all draw from what is left of it. See `_open_push_deadline`
@@ -64,6 +69,7 @@ left acting on a bare `FAIL (timeout …)` for a push that landed (#399).
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -127,6 +133,13 @@ _KNOWN_FLAGS = ("force-with-lease", "no-verify", "watch",
 # finish inside the budget, ever, and the only flag that helped was
 # `:no-verify` — which skips the gate the hook exists to be.
 #
+# Since #1631 the number is also a *repository's*, through `ops.git-push.budget`
+# in its own `.supertool.json` — see `_config_budget`. That is not a retreat
+# from the paragraph above: what a repo knows is whether its own pre-push hook
+# runs a suite, which is a fact about the repo and not an inference the op is
+# making. What the op still refuses to do is guess. This constant remains the
+# answer when nobody has stated one.
+#
 # The number stays a caller's, not the op's. `_prepush_hook_state` can see that
 # a hook would run and this op knows the destination ref, so it could size
 # itself from "protected branch + a hook exists" — but it cannot see what any
@@ -157,8 +170,12 @@ _PUSH_TIMEOUT_MAX = 1800
 # opened at the first `git push`; `allowed` is the clock the most recent push
 # was actually launched with, which the timeout receipt has to name rather than
 # the budget it was cut from.
+# `source` is #1631: with three places a budget can come from, a receipt that
+# names the wrong one sends the caller to raise a number that did not cut. It
+# is module state for the same reason `seconds` is — `_budget_advice` is called
+# from three receipts, none of which has the parse site in scope.
 _BUDGET: dict[str, object] = {"seconds": None, "deadline": None,
-                              "allowed": None}
+                              "allowed": None, "source": ""}
 
 
 def _push_budget() -> int:
@@ -449,6 +466,144 @@ def _parse_budget(argv: list[str]) -> tuple[Optional[int], str]:
                       "choosing for you would be the guess this op refuses "
                       "everywhere else.")
     return seen[0][1], ""
+
+
+# The op entry this run was dispatched from, read back off disk (#1631).
+#
+# `_PUSH_TIMEOUT`'s own comment says what decides the right number "is not
+# visible from here", and it is right about the caller's machine. What it misses
+# is that a REPOSITORY knows something the tool cannot: whether its own pre-push
+# hook runs a suite, and roughly how long that takes. Here it is 309.86s against
+# a 300s default, so every master push times out on a healthy machine with a
+# green suite. Ten seconds is well inside variance, which is also why raising
+# the constant is the wrong fix — it would move this repo from "always fails" to
+# "sometimes fails" — and a repo with no pre-push hook wants a SHORTER budget,
+# because there a long one only delays an honest failure. Per-repo in both
+# directions is what makes it configuration rather than a better constant.
+#
+# Two keys are needed and they must come from ONE read. Core exports every
+# non-reserved op key to the subprocess as `SUPERTOOL_<KEY>`, so `budget` would
+# arrive in the environment for free — but `timeout` is in core's
+# `_RESERVED_KEYS` and deliberately does not (tests/test_custom_ops.py pins its
+# absence). A budget out of the environment validated against a timeout off disk
+# is two answers to one question checked against each other, so both come from
+# the same merged entry instead.
+#
+# `git.json` is located from this file rather than searched for: core resolved
+# the preset through `_find_preset_file` and substituted its directory into
+# `{path}`, so the script now running came out of the directory the winning
+# `git.json` sits in — whichever of the three candidates that was.
+_OP_NAME = "git-push"
+_CONFIG_BUDGET_KEY = "budget"
+_PRESET_JSON = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "git.json")
+
+#: "this file did not answer", which is not "this file answered with nothing".
+_UNREADABLE = object()
+
+
+def _read_json(path: str) -> object:
+    """Parsed JSON from `path`, or `_UNREADABLE`.
+
+    The distinction is load-bearing one caller down. A file that is absent,
+    unreadable or not JSON never answered; a file holding `[]` answered with a
+    document that carries no ops. `_load_config` stops walking at the second and
+    keeps walking past the first, and collapsing them here would resolve a
+    budget out of a parent config core never read.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return _UNREADABLE
+
+
+def _ops_entry(data: object) -> dict:
+    """`ops["git-push"]` out of one parsed config document, or `{}`."""
+    if not isinstance(data, dict):
+        return {}
+    ops = data.get("ops")
+    if not isinstance(ops, dict):
+        return {}
+    entry = ops.get(_OP_NAME)
+    return dict(entry) if isinstance(entry, dict) else {}
+
+
+def _merged_op_entry() -> dict:
+    """`ops.git-push` as core merged it — the preset entry, then the project's.
+
+    Mirrors `_merge_presets` / `_merge_op_def` for this one op: dict over dict
+    merges key-by-key, so a project supplying `budget` alone keeps the preset's
+    `timeout` rather than replacing the entry with a stub (#1356). The walk
+    stops at the first `.supertool.json` that PARSES, which is what
+    `_load_config` does; one that does not parse is skipped and the walk goes on.
+    """
+    entry = _ops_entry(_read_json(_PRESET_JSON))
+    directory = os.path.abspath(os.getcwd())
+    while True:
+        candidate = os.path.join(directory, ".supertool.json")
+        if os.path.isfile(candidate):
+            data = _read_json(candidate)
+            if data is not _UNREADABLE:
+                entry.update(_ops_entry(data))
+                return entry
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return entry
+        directory = parent
+
+
+def _config_budget() -> tuple[Optional[int], str]:
+    """`ops.git-push.budget` from the merged entry. `(seconds, refusal)`.
+
+    The same three states as `_parse_budget`, and the same refusal discipline:
+    absent, a number, or unusable and named. **Never clamped** — the caller
+    wrote a number in a file, and a different one quietly taking effect is
+    discovered at the moment a push cannot be verified.
+
+    This value is not an op argument. It comes out of a project config file, so
+    nothing in `_safe_path` and nothing in the op's `paths` declaration stands in
+    front of it, and it ends up as `timeout=` on a `subprocess` call. Every shape
+    it could arrive in is therefore checked here: present, a JSON number, a whole
+    one (`bool` is an `int` in Python and is not one), positive, at most
+    `_PUSH_TIMEOUT_MAX`, and strictly under this op's own `timeout` — read from
+    the same merged entry, because a ceiling from a different read is not the
+    ceiling that will kill this process.
+    """
+    entry = _merged_op_entry()
+    raw = entry.get(_CONFIG_BUDGET_KEY)
+    if raw is None:
+        return None, ""
+    key = f"ops.{_OP_NAME}.{_CONFIG_BUDGET_KEY}"
+    cap_key = f"ops.{_OP_NAME}.timeout"
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None, (f"{key} is {_untrusted.flat(repr(raw))} — the budget must "
+                      f"be a whole number of seconds, written as a JSON number.")
+    if raw <= 0:
+        return None, (f"{key} is {raw} — the budget must be a positive number "
+                      f"of seconds.")
+    if raw > _PUSH_TIMEOUT_MAX:
+        return None, (f"{key} is {raw}s — the most this op can wait is "
+                      f"{_PUSH_TIMEOUT_MAX}s. It is not clamped to that: past "
+                      f"{cap_key} supertool kills this process, and a killed "
+                      f"push can verify nothing (#399). Raise both, or lower "
+                      f"this one.")
+    cap = entry.get("timeout")
+    if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
+        return None, (f"{key} is {raw}s, but {cap_key} did not read as a "
+                      f"positive whole number of seconds "
+                      f"({_untrusted.flat(repr(cap))}), so the budget could not "
+                      f"be checked against it. Refused rather than assumed "
+                      f"safe: a budget that is not strictly under the op "
+                      f"timeout is killed by supertool's outer cap, and a "
+                      f"killed push can verify nothing (#399).")
+    if raw >= cap:
+        return None, (f"{key} is {raw}s and {cap_key} is {cap}s — the budget "
+                      f"must be strictly UNDER the op timeout, because past "
+                      f"that cap supertool kills this process and a killed push "
+                      f"can verify nothing (#399). Raise {cap_key} above "
+                      f"{raw}s, or lower {key} below {cap}s.")
+    return raw, ""
 
 
 def _st_hint(arg: str) -> str:
@@ -1785,10 +1940,28 @@ def _budget_advice() -> str:
     which left `:no-verify` — skipping the gate — as the one flag that helped a
     push that could not fit. `.githooks/pre-push` runs the full suite when the
     destination is master/main, and that suite has measured 530.71s.
+
+    #1631 is why it names the source that was actually in force. There are now
+    three, and a receipt that pointed at `_PUSH_TIMEOUT` while a configured
+    `ops.git-push.budget` was the clock would send the caller to edit a number
+    that did not cut — which is #1530's own defect one indirection further in.
     """
+    source = _BUDGET["source"]
+    if source == f"ops.{_OP_NAME}.{_CONFIG_BUDGET_KEY}":
+        where = (f"That budget is `ops.{_OP_NAME}.{_CONFIG_BUDGET_KEY}` in "
+                 f"this repository's .supertool.json — raise it there, or "
+                 f"override this one call with `git-push:budget=SECONDS`")
+    elif source == ":budget":
+        where = ("That budget is the `git-push:budget=SECONDS` this call "
+                 "passed — pass a bigger one")
+    else:
+        where = (f"That budget is _PUSH_TIMEOUT in presets/git/push.py — ask "
+                 f"for more of it with `git-push:budget=SECONDS`, or state "
+                 f"this repository's own default once as "
+                 f"`ops.{_OP_NAME}.{_CONFIG_BUDGET_KEY}` in .supertool.json "
+                 f"(#1631), which the flag still overrides")
     return (
-        f"That budget is _PUSH_TIMEOUT in presets/git/push.py — ask for more "
-        f"of it with `git-push:budget=SECONDS` (up to {_PUSH_TIMEOUT_MAX}s), "
+        f"{where} (up to {_PUSH_TIMEOUT_MAX}s), "
         f"which is the right lever when a pre-push hook runs a suite. It is "
         f"NOT ops.git-push.timeout: that op-level cap bounds the whole "
         f"process, raising it alone will not move this one, and this budget "
@@ -2266,7 +2439,8 @@ def main() -> int:
     use_utf8_stdout()
     _RUN.update({"phase": "not-attempted", "branch": "", "remote": "",
                  "ref": "", "target": "", "verdict": False})
-    _BUDGET.update({"seconds": None, "deadline": None, "allowed": None})
+    _BUDGET.update({"seconds": None, "deadline": None, "allowed": None,
+                    "source": ""})
     try:
         return _push_op()
     except Exception as exc:  # noqa: BLE001 — deliberate; see _crash_receipt
@@ -2314,6 +2488,23 @@ def _push_op() -> int:
         _result(f"NOT PUSHED - no push attempted (unusable :budget — "
                 f"{budget_why})")
         return 2
+    _BUDGET["source"] = ":budget"
+    if budget is None:
+        # Precedence is flag > config > `_PUSH_TIMEOUT` (#1631). The config is
+        # not consulted at all when the flag decided — that is what precedence
+        # means, and it keeps a broken key from refusing a push whose clock it
+        # does not set.
+        budget, config_why = _config_budget()
+        if config_why:
+            print(f"ERROR: unusable push budget in .supertool.json — "
+                  f"{config_why}")
+            print(f"Default is {_PUSH_TIMEOUT}s; the most this op can wait is "
+                  f"{_PUSH_TIMEOUT_MAX}s. Nothing was pushed.")
+            _result(f"NOT PUSHED - no push attempted (unusable "
+                    f"ops.{_OP_NAME}.{_CONFIG_BUDGET_KEY} — {config_why})")
+            return 2
+        _BUDGET["source"] = ("" if budget is None
+                             else f"ops.{_OP_NAME}.{_CONFIG_BUDGET_KEY}")
     _BUDGET["seconds"] = budget
 
     upstream, upstream_why = _upstream_ref()
@@ -2423,8 +2614,8 @@ def _push_op() -> int:
         # was dropped read identically from the receipt (#647). The default is
         # not printed: it is documented, and every receipt carrying a line
         # about a number nobody chose is a line nobody reads.
-        print(f"Push budget: {_push_budget()}s (:budget — default is "
-              f"{_PUSH_TIMEOUT}s)")
+        print(f"Push budget: {_push_budget()}s ({_BUDGET['source']} — default "
+              f"is {_PUSH_TIMEOUT}s)")
 
     # --porcelain is what makes the non-fast-forward decision trustworthy: it
     # moves git's per-ref status onto stdout in a machine-readable grammar,

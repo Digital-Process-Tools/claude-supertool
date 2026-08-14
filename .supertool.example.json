@@ -340,6 +340,10 @@
         }
       }
     },
+    "git-push": {
+      "budget": 1500,
+      "_doc": "The DEFAULT push budget for this repository, in seconds — what `:budget=SECONDS` sets per call, stated once. Reach for it when a pre-push hook runs a test suite: this repo's runs the full suite on a push to master (309.86s measured), against a 300s default, so every such push timed out having sent nothing (#1631). Precedence is :budget=SECONDS > ops.git-push.budget > 300. It must be a whole positive number of seconds, at most 1800, and STRICTLY under ops.git-push.timeout on the same merged entry — a value that is not is REFUSED naming both numbers, before anything is pushed, never clamped: past the op timeout supertool kills the process and a killed push can verify nothing (#399)."
+    },
     "git-commit": {
       "coauthor": "Max <noreply>",
       "_doc": "Overrides the git preset's git-commit op. 'coauthor' passes through as SUPERTOOL_COAUTHOR — the Co-Authored-By trailer auto-appended when the commit message lacks one (default 'Max <noreply>'). Set to '' / 'none' / 'off' / 'false' to disable."

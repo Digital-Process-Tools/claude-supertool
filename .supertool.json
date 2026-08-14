@@ -266,6 +266,9 @@
     }
   },
   "ops": {
+    "git-push": {
+      "budget": 1500
+    },
     "dashboard": {
       "lane_prefix": "lane-"
     },
