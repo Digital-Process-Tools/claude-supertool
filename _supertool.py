@@ -735,6 +735,124 @@ def _presets_not_loaded_here() -> List[str]:
             if p not in enabled]
 
 
+#: Line prefixes git writes into a file it could not merge. `|||||||` is the
+#: diff3/zdiff3 style's base section and is here for the *line list*, not for
+#: detection: every style emits `<<<<<<<` and `>>>>>>>`, so the conflict is
+#: found either way. What it buys is that the list of lines to go and fix is
+#: complete — one missing entry sends the reader back to the file.
+_CONFLICT_MARKER_PREFIXES = ("<<<<<<<", "|||||||", "=======", ">>>>>>>")
+
+
+def _skipped_config() -> Optional[Tuple[str, str]]:
+    """(path, why) for a `.supertool.json` that is present and was not used.
+
+    `_load_config` walks up from the cwd and *skips* any config it cannot
+    parse, so when nothing above parses either, `_CONFIG_PATH` stays None. Both
+    renders below then said "No .supertool.json was found" — one line under a
+    stderr warning naming the file the same run had just skipped. Two lines of
+    one render disagreeing about whether the config exists, and a reader who
+    sees only the ERROR goes looking for a missing file that is present
+    (#1162).
+
+    The conflicted case is called out by name because it is circular: git
+    writes markers into the file, the file stops parsing, and the ops that
+    disappear are `git-conflicts`, `git-resolve` and `git-status` — precisely
+    the ones for the situation that removed them. Naming the marker lines is
+    the one fact `git-conflicts` would have supplied, from the code that can
+    still supply it.
+
+    Re-derived from disk rather than parsed back out of `_CONFIG_WARNINGS`:
+    the warning is a formatted sentence, not a record, and this way the note
+    describes the file as it is at message time and adds no module state.
+
+    Returns None when there genuinely is no config — inventing a presence is
+    the same defect mirrored.
+
+    **Uncached, and repeated per unresolved op.** `_load_config` is guarded by
+    `_CONFIG_CHECKED` and this is not, so `dispatch` calling
+    `_unknown_op_message` once per unresolved op — and `batch` recursing per
+    sub-op — means N walks for N unresolvable shipped-preset names in one call,
+    where before there was a static string. That is a deliberate trade, not an
+    oversight:
+
+    * The walk cannot start unless `_CONFIG_PATH` is falsy, so every call from
+      inside a project returns above on a cached `_load_config`. The cost is
+      confined to an already-erroring path in a tree with no usable config, and
+      `test_no_walk_happens_when_a_config_actually_loaded` is what keeps it
+      there.
+    * Caching it would need invalidating on `cwd:`, which retargets the working
+      directory mid-call and has no hook to hang that on. A cached answer read
+      after a chdir is a claim about the wrong tree — #678's shape, and a worse
+      defect than the walk it saves.
+    * The walk is bounded by the parent-chain depth (an `isfile` per level) and
+      reads one file at most, at the moment the process is about to print an
+      error and stop.
+
+    If the repetition ever matters, the fix is to make `_unknown_op_message`
+    take the note as an argument and have `dispatch` derive it once — not to
+    cache this.
+
+    The load is forced here rather than assumed of the caller. `_CONFIG_PATH`
+    is None both when no config loaded *and* when none has been attempted yet,
+    and `_unknown_op_message` reads it without triggering one — in a dispatch
+    the config is always loaded first, by `_resolve_custom_op`, but a direct
+    call is not a dispatch. Without this, a perfectly good `.supertool.json`
+    was reported as "found and could not be loaded": the absence-produced-by-
+    the-tool defect, inside the fix for it.
+    """
+    _load_config()
+    if _CONFIG_PATH:
+        return None
+    d = os.path.abspath(os.getcwd())
+    while True:
+        candidate = os.path.join(d, ".supertool.json")
+        if not os.path.isfile(candidate):
+            # The name exists and is not a regular file. `_load_config` gates
+            # on `isfile` too, so it walks straight past — the right behaviour
+            # for a loader and the wrong sentence for a reader: "no
+            # .supertool.json was found" about a name sitting in the cwd is
+            # this issue's own defect, one `stat` over. `lexists` rather than
+            # `exists`, so a dangling symlink is reported instead of resolving
+            # to nothing and reading as absent.
+            if os.path.isdir(candidate):
+                return (candidate, "is a directory, not a file")
+            if os.path.lexists(candidate):
+                return (candidate, "is not a regular file")
+        else:
+            try:
+                # errors="replace" on purpose: a config that is not UTF-8 is
+                # one more way to be unusable, and raising here would take
+                # down the message written to explain the failure.
+                with open(candidate, encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except OSError as exc:
+                return (candidate,
+                        f"could not be read ({exc.__class__.__name__})")
+            marked = [n for n, line in enumerate(text.splitlines(), 1)
+                      if line.startswith(_CONFLICT_MARKER_PREFIXES)]
+            if marked:
+                where = ", ".join(str(n) for n in marked[:8])
+                more = "" if len(marked) <= 8 else f", +{len(marked) - 8} more"
+                return (candidate,
+                        f"holds git conflict markers (lines {where}{more}), "
+                        f"so it does not parse")
+            try:
+                json.loads(text)
+            except ValueError as exc:
+                return (candidate, f"does not parse ({exc})")
+            # Parsed on a second look, and the reason is deliberately NOT
+            # named. Two different histories land here: the loader failed
+            # downstream of the parse (a preset file, the mcp block), or its
+            # strict-UTF-8 read raised `UnicodeDecodeError` on bytes this
+            # re-read replaced. Naming either one would be a guess, and the
+            # displayed string is the only claim that holds for both.
+            return (candidate, "was found and could not be loaded")
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
 def _preset_disclosure() -> str:
     """One line naming the presets that are not loaded here — never their ops.
 
@@ -756,6 +874,15 @@ def _preset_disclosure() -> str:
                 f"loaded here: {_CONFIG_PATH} does not list them under "
                 f'"presets". Add one there, or make the first op '
                 f"'cwd:<project-path>'.")
+    skipped = _skipped_config()
+    if skipped:
+        # Found and unusable is not absent (#1162). Naming `cwd:` here would
+        # be worse than saying nothing: the config that is broken is the one
+        # in the tree the caller is standing in.
+        path, why = skipped
+        return (f"> Built-in ops only. {path} {why}, so {len(missing)} shipped "
+                f"presets ({names}) — {n_ops} ops — are not loaded here. Repair "
+                f"that file and they come back.")
     return (f"> Built-in ops only. No .supertool.json was found from {os.getcwd()}, "
             f"so {len(missing)} shipped presets ({names}) — {n_ops} ops — are not "
             f"loaded here. Run from a project that enables them, or make the first "
@@ -2342,6 +2469,12 @@ def _unknown_op_message(op: str) -> str:
     """
     preset = _shipped_preset_ops().get(op)
     if preset is not None:
+        # Every branch below reads `_CONFIG_PATH`, which is None both when no
+        # config loaded and when none has been attempted. A dispatch always
+        # loads one first (`_resolve_custom_op`); a direct call to this
+        # function does not, and the difference decided which sentence a
+        # caller got about a config that was sitting there and fine (#1162).
+        _load_config()
         if _CONFIG_PATH:
             return (
                 f"ERROR: op '{op}' is unavailable here, not unknown — it is provided "
@@ -2351,6 +2484,32 @@ def _unknown_op_message(op: str) -> str:
                 f"this call's first op 'cwd:<project-path>' pointing at a project "
                 f"that already enables it.\n"
                 + _cwd_retargets_note(op)
+                + f"       'ops' lists what is loaded here.\n"
+            )
+        skipped = _skipped_config()
+        if skipped:
+            # A config that is present and unusable is not a config that is
+            # absent (#1162), and the remedies for absence are both dead here.
+            # `cwd:<other-project>` retargets the working directory, so a git
+            # op would report *that* repo's conflicts — #678's shape arriving
+            # through the remedy line — and there is no other root to move to:
+            # the broken file is in the tree the caller is standing in.
+            path, why = skipped
+            conflicted = "conflict markers" in why
+            fix = (f"       Fix: resolve the markers in {path}, then re-run. "
+                   f"The ops that would have helped are the ones it removed, "
+                   f"so until then this is a raw-git repair.\n"
+                   if conflicted else
+                   f"       Fix: repair {path}, or make this call's first op "
+                   f"'cwd:<project-path>' pointing at a project that enables "
+                   f"'{preset}'.\n")
+            return (
+                f"ERROR: op '{op}' is unavailable here, not unknown — it is "
+                f"provided by the shipped preset '{preset}'.\n"
+                f"       {path} {why}, so no preset ops and no project ops are "
+                f"loaded — only the built-ins.\n"
+                + fix
+                + ("" if conflicted else _cwd_retargets_note(op))
                 + f"       'ops' lists what is loaded here.\n"
             )
         return (
@@ -15987,6 +16146,11 @@ _HOOK_OUTPUT_CAP_BYTES = 7168
 def _configured_op_names(config: Dict[str, Any]) -> set:
     """Op names this config has an opinion about — including the ones it hides.
 
+    An entry declaring `form` is skipped: it documents a *spelling* of another
+    op (`read-grep` for `read:PATH:::grep=`) and is not a name the dispatcher
+    accepts, so counting it here would put a phantom in the one set that
+    answers "which op names does this config know about" (#1245).
+
     ``status: 0`` is a project deliberately suppressing an op from its listing,
     and the disclosure that calls it back out would undo that choice. Same line
     the preset disclosure already draws: the tool names what *it* hid, never
@@ -15999,7 +16163,7 @@ def _configured_op_names(config: Dict[str, Any]) -> set:
         if not isinstance(entries, dict):
             continue
         for name, info in entries.items():
-            if isinstance(info, dict):
+            if isinstance(info, dict) and not info.get("form"):
                 names.add(name)
     return names
 
@@ -16179,7 +16343,10 @@ def _roster_classes() -> Dict[str, str]:
     hiding an op from ``ops`` meant it, and the roster is not a way around it.
     Built-in *documentation* keys are not a name source — ``.supertool.json``
     carries ``grep-count`` and ``read-grep``, which document forms of ``grep``
-    and ``read`` and dispatch as neither.
+    and ``read`` and dispatch as neither. This walk excludes them structurally,
+    by iterating ``_valid_op_names()``; since #1245 they also say so, with a
+    ``"form"`` key, so an enumeration that cannot do it structurally has
+    something to read.
     """
     config = _load_config()
     builtin_entries = config.get("builtin-ops")
@@ -22949,6 +23116,11 @@ def _build_at_file_registry() -> None:
     for section in ("builtin-ops", "ops"):
         for op_name, info in config.get(section, {}).items():
             if not isinstance(info, dict):
+                continue
+            if info.get("form"):
+                # A documented *form* of another op, not an op (#1245). Its
+                # syntax is the parent's, so a route keyed on this entry's own
+                # name — `read-grep:@-` — is one the dispatcher would refuse.
                 continue
             syntax = info.get("syntax", "")
             if not syntax:

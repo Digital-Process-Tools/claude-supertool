@@ -76,6 +76,7 @@
       "elide_window_seconds": 900
     },
     "read-grep": {
+      "form": "read",
       "syntax": "read:PATH:::grep=PATTERN",
       "description": "Inline filter \u2014 matching lines, line nums kept",
       "example": "read:src/app/Module.py:::grep=class"
@@ -89,11 +90,13 @@
       "extensions": []
     },
     "grep-no-exclude": {
+      "form": "grep",
       "syntax": "grep:PATTERN:PATH:LIMIT:::no-exclude",
       "description": "Search inside normally-excluded dirs (vendor/, .git/, etc.)",
       "example": "grep:somePattern:vendor/:10:::no-exclude"
     },
     "grep-count": {
+      "form": "grep",
       "syntax": "grep:PATTERN:PATH:LIMIT:CONTEXT:count",
       "description": "Count mode \u2014 match counts/file, no content",
       "example": "grep:TODO:src/:100:0:count"

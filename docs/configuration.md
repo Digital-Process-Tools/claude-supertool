@@ -17,6 +17,7 @@ Create a `.supertool.json` in your project root. Supertool walks up from cwd to 
       "example": "read:src/app/Module.py:1:50"
     },
     "read-grep": {
+      "form": "read",
       "syntax": "read:PATH:::grep=PATTERN",
       "description": "Inline filter — matching lines, line nums kept",
       "example": "read:src/app/Module.py:::grep=class"
@@ -83,7 +84,11 @@ Use this in session-start hooks or agent prompts to onboard LLMs to your project
 
 ## `builtin-ops`
 
-Entries document built-in operations (`syntax`, `description`, `example`). Set `"status": 0` to hide an entry from `./supertool 'ops'` output (works on `builtin-ops`, `ops`, and `aliases`). Besides documentation, `builtin-ops` entries can also override default behavior:
+Entries document built-in operations (`syntax`, `description`, `example`). Set `"status": 0` to hide an entry from `./supertool 'ops'` output (works on `builtin-ops`, `ops`, and `aliases`).
+
+**A key here is an op name unless it declares `"form": "<parent>"`.** This section is what a machine reads to learn what the dispatcher accepts, so a key that resolves to nothing is a name handed out that answers `unknown operation`. Three did across the two configs this repo ships: `read-grep`, `grep-count` and `grep-no-exclude` document *forms* of `read` and `grep` — `read:PATH:::grep=PATTERN`, `grep:P:PATH:L:C:count`, `grep:P:PATH:L:::no-exclude` — and none is dispatchable. They are kept, because each carries `"hint": true` and its example is what survives `ops-compact` into the SessionStart listing, and they are now declared: `form` names the op the entry is a spelling of, that op's `syntax` must begin with it, and enumerations of op names skip the entry. `tests/test_registry_matches_dispatcher_1245.py` holds both directions ([#1245](https://github.com/Digital-Process-Tools/claude-supertool/issues/1245)).
+
+Besides documentation, `builtin-ops` entries can also override default behavior:
 
 | Op     | Key           | Default          | Effect                                                                                   |
 | ------ | ------------- | ---------------- | ---------------------------------------------------------------------------------------- |

@@ -38,6 +38,7 @@
       "example": "read:supertool.py:1:50"
     },
     "read-grep": {
+      "form": "read",
       "syntax": "read:PATH:::grep=PATTERN",
       "description": "Inline filter \u2014 only matching lines, line nums kept",
       "example": "read:supertool.py:::grep=def op_",
@@ -49,6 +50,7 @@
       "example": "grep:dispatch:supertool.py:10:2"
     },
     "grep-count": {
+      "form": "grep",
       "syntax": "grep:PATTERN:PATH:LIMIT:CONTEXT:count",
       "description": "Count mode \u2014 match counts/file, no content. Renders 'PATH: N matches', never a bare 'PATH:N' \u2014 that reads as a line number (#988)",
       "example": "grep:def:supertool.py:100:0:count",

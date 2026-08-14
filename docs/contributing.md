@@ -89,7 +89,7 @@ Shorthand string ops (`"lint": "ruff check {file}"`) work with a 60s default tim
 | `description` | no | One-line description shown in `ops` listing. |
 | `syntax` | no | Usage pattern shown in help, e.g. `mypy:FILE`. **Parsed, not just displayed** — see the note below. |
 | `example` | no | Concrete example, e.g. `mypy:src/app/module.py`. |
-| `status` | no | `"experimental"` or `"stable"`. Informational only. |
+| `status` | no | A **truthy gate**, not a label. Any falsy value — `0`, `false`, `""` — hides the op from `ops`, `ops-compact` and `ops:roster` while it still dispatches; the conventional `"experimental"` / `"stable"` are non-empty strings and so change nothing. This row used to say "informational only", which was wrong about the type *and* about the effect, and the effect is an op that ships, dispatches, and cannot be found ([#1245](https://github.com/Digital-Process-Tools/claude-supertool/issues/1245)). `docs/configuration.md` had it right. |
 | `safety` | yes, in shipped presets | `"read-only"`, `"writes"` or `"acts"`. Rendered as the class marker in `ops:roster`. |
 | `paths` | yes, if any argument is a filesystem path | `{"args": [1], "root": "cwd"}` — which argument positions are paths, and the boundary they must stay inside. See below. |
 | `replaces` | no | Raw shell invocations this op supersedes. The shipped `PreToolUse` hook refuses them. See below. |
