@@ -412,7 +412,7 @@ def test_every_shipped_entry_uses_only_known_keys():
     # the schema check passes against nothing. Proved red-first — it was the
     # one test of these that passed with no product code at all.
     assert shipped, "no shipped op declares `replaces`, so nothing was checked"
-    allowed = {"argv", "flag", "value", "use", "unless_flag"}
+    allowed = {"argv", "flag", "value", "use", "unless_flag", "unless_args"}
     for name, definition in shipped.items():
         for entry in definition["replaces"]:
             assert set(entry) <= allowed, (name, entry)

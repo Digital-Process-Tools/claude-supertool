@@ -17078,11 +17078,24 @@ class GuardVerdict(NamedTuple):
                   the registry could not be fully enumerated. It is **not**
                   ``clean``: a gate that did not run must not render as a
                   command that complied, which is the defect #1347 opens with.
+    ``uncovered`` an op claims the verb and not **this invocation** of it
+                  (#1684). The command runs, and the guard says so rather than
+                  naming an op that would do something else — `git push origin
+                  v0.2.0` was blocked with `git-push`, which pushes the current
+                  branch, so obeying the refusal published a ref the caller
+                  never named and left the tag uncreated. Distinct from
+                  ``undecided`` on purpose: the guard read this command
+                  completely and knows the answer, and rendering a decided
+                  "no op covers this" as "the guard did not run" is the same
+                  misdirection one layer down.
     ``off``       the project turned the guard off in `.supertool.json`.
     """
     state: str
     matches: Tuple[GuardMatch, ...]
     notes: Tuple[str, ...]
+    #: Why an entry that claims this verb does not claim this invocation. One
+    #: line per (op, segment), rendered by `guard_uncovered_note`.
+    uncovered: Tuple[str, ...] = ()
 
 
 class _Replacement(NamedTuple):
@@ -17096,6 +17109,10 @@ class _Replacement(NamedTuple):
     #: Flag spellings whose presence means this entry does **not** claim the
     #: argv — see `_guard_exclusion_state`. `*` is any flag at all.
     unless_flag: Tuple[str, ...] = ()
+    #: How many positional arguments past `argv` the op can express. More than
+    #: this un-claims the entry and is disclosed — see
+    #: `_guard_positional_excess`. None means the entry makes no such claim.
+    unless_args: Optional[int] = None
 
 
 def _guard_strip_heredocs(command: str) -> str:
@@ -17246,13 +17263,68 @@ def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
     return "".join(out), unread
 
 
+def _guard_drop_io_numbers(text: str) -> str:
+    """Remove a redirection's file descriptor, which is not an argument (#1684).
+
+    `shlex` splits `2>&1` into `2`, `>&`, `1`. The operator ends the segment
+    and the `2` stayed on the end of the argv, so the refusal for
+    `git push origin v0.2.0 2>&1` quoted `git push origin v0.2.0 2` - a
+    command nobody typed, inside a system-authored denial. Since #1684 the
+    same token also counts toward `unless_args`, so a stray one no longer only
+    misprints: it moves an arity.
+
+    POSIX's own rule, not an approximation of it: an IO_NUMBER is a run of
+    digits that **begins a word** and is **immediately followed** by `<` or
+    `>`. So `git push origin 2 >&1` keeps its `2` (that one really is an
+    argument), and `echo foo2>bar` keeps `foo2` (the digits do not begin the
+    word). Quote state is tracked because a `2>` inside an argument is text.
+    """
+    out: List[str] = []
+    quote = ""
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if quote:
+            out.append(ch)
+            if ch == chr(92) and quote == chr(34) and i + 1 < n:
+                i += 1
+                out.append(text[i])
+            elif ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in ("'", chr(34)):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == chr(92) and i + 1 < n:
+            out.append(ch)
+            out.append(text[i + 1])
+            i += 2
+            continue
+        if ch in "0123456789" and (not out or out[-1].isspace()
+                                   or out[-1] in _GUARD_PUNCTUATION):
+            j = i
+            while j < n and text[j] in "0123456789":
+                j += 1
+            if j < n and text[j] in "<>":
+                i = j
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
     """Tokenise into simple commands plus what it could not read, or raise ValueError.
 
-    What it models: POSIX quoting, `;` `&&` `||` `|` `&` and redirections as
-    separators, leading `VAR=value` assignments, a short list of wrapper words,
-    heredoc bodies, and backtick / `$(...)` substitution wherever the shell
-    would have split it.
+    What it models: POSIX quoting, `;` `&&` `||` `|` `&` as separators,
+    redirections as **removals** rather than separators (#1684 — the words on
+    both sides of one belong to the same command), leading `VAR=value`
+    assignments, a short list of wrapper words, heredoc bodies, and backtick /
+    `$(...)` substitution wherever the shell would have split it.
 
     What it cannot model is returned as the second element rather than silently
     dropped: a substitution whose delimiters are inside quotes, and a word that
@@ -17262,7 +17334,7 @@ def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
     invisible and are named here so the limit is on the record.
     """
     prepared, unread = _guard_open_substitutions(
-        _guard_strip_heredocs(command))
+        _guard_drop_io_numbers(_guard_strip_heredocs(command)))
     lexer = shlex.shlex(prepared, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     # Comments were already removed, line by line, with quote state (#1389).
@@ -17275,10 +17347,28 @@ def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
 
     segments: List[List[str]] = []
     current: List[str] = []
+    drop_next = False
     for token in tokens:
         if token and all(ch in _GUARD_PUNCTUATION for ch in token):
+            if "<" in token or ">" in token:
+                # A redirection is NOT a command separator, and treating it as
+                # one put its target where a command word is read: `2>&1` left
+                # a segment `['1']`, and `git status > gh` one whose head was
+                # `gh` (#1684). The words on both sides of it belong to the
+                # same command — `gh pr view 1 > out.txt --json state` runs
+                # `gh pr view 1 --json state` — so the operator and its target
+                # are dropped and the segment continues. Dropping the target
+                # while still splitting would have been worse than the bug:
+                # `gh pr view 1 > f gh issue list` would then read `gh issue
+                # list` as a command nobody runs, and a wrong block has no
+                # per-command escape.
+                drop_next = True
+                continue
             segments.append(current)
             current = []
+            drop_next = False
+        elif drop_next:
+            drop_next = False
         else:
             current.append(token)
     segments.append(current)
@@ -17392,12 +17482,15 @@ def _guard_help_state(argv: Sequence[str]) -> str:
     option's value from a request needs per-subcommand arity this guard does
     not carry and will not grow (`_GUARD_GLOBAL_OPTIONS` says why case work per
     utility goes stale one utility at a time). So the ambiguous case is scored
-    and blocked, with a note: a wrong block on `git push origin -o -h main` is
+    and blocked, with a note: a wrong block on `git push origin -o -h` is
     legible and one flag away from a working `git push -h`, while the other
     direction is a silent `git push`. (Not `git push --force -h`, which this
     docstring cited until #1452: `--force` is an `unless_flag` of every
     `git push` entry, so that argv is un-claimed before the classifier runs and
-    the illustration never blocked at all.) Only the guard's *positive* claim
+    the illustration never blocked at all. And `main` dropped off the end of it
+    in #1684: a refspec un-claims every `git push` entry on arity, before the
+    classifier is reached, so the longer spelling illustrates nothing about a
+    help token any more.) Only the guard's *positive* claim
     can be wrong here
     — `clean` asserting nothing is replaced about a command that pushes is the
     absence-read-as-presence defect this repository keeps filing.
@@ -17765,6 +17858,20 @@ def _guard_replacements(config: Optional[Dict[str, Any]] = None
                              f'"unless_flag" is not a flag or a list of '
                              f"flags, so the entry was dropped")
                 continue
+            raw_args = item.get("unless_args")
+            if raw_args is None:
+                unless_args: Optional[int] = None
+            elif (isinstance(raw_args, int) and not isinstance(raw_args, bool)
+                  and raw_args >= 0):
+                unless_args = raw_args
+            else:
+                # Dropped rather than read as "no arity claim", for #1394's
+                # reason: an unreadable exclusion treated as an absent one
+                # turns one typo into the over-broad block the key prevents.
+                notes.append(f'op "{entry.name}" has a "replaces" entry whose '
+                             f'"unless_args" is not a non-negative integer, '
+                             f"so the entry was dropped")
+                continue
             out.append(_Replacement(
                 op=entry.name,
                 argv=argv,
@@ -17774,8 +17881,54 @@ def _guard_replacements(config: Optional[Dict[str, Any]] = None
                 description=description,
                 project=bool(entry.project),
                 unless_flag=unless,
+                unless_args=unless_args,
             ))
     return out, notes
+
+
+def _guard_positionals(replacement: _Replacement, argv: Sequence[str]
+                       ) -> List[str]:
+    """The positional arguments this argv carries past the declared prefix.
+
+    Everything from a bare `--` onward is positional, `--` included: that
+    separator is what makes `git checkout REF -- PATH` a file restore rather
+    than the branch switch `git-checkout` performs, and dropping it would
+    count one argument where the caller wrote a different operation.
+
+    A flag's **value** is counted as a positional, because this guard carries
+    no per-flag arity (`_GUARD_GLOBAL_OPTIONS` says why it will not grow one).
+    That over-counts, so it un-claims entries it strictly need not: the
+    missed-block direction `_guard_is_exclusion` argues for at length, and the
+    only one where being wrong still leaves a way past.
+    """
+    out: List[str] = []
+    separated = False
+    for token in argv[len(replacement.argv):]:
+        if token == "--":
+            separated = True
+        if separated or not _guard_is_flag(token):
+            out.append(token)
+    return out
+
+
+def _guard_positional_excess(replacement: _Replacement, argv: Sequence[str]
+                             ) -> List[str]:
+    """The positionals that put this argv past what the entry claims (#1684).
+
+    The discrimination #1384 called impossible is not the one needed.
+    `git push origin master` and `git push origin v0.34.0` cannot be told
+    apart without asking the repository whether a ref is a tag — and neither
+    has to be, because **both** name an explicit refspec and `git-push` names
+    none. Arity is decidable from the argv alone, and it separates every
+    invocation the op performs from every invocation it does not.
+
+    Empty when the entry declares no arity, so an entry without the key is
+    matched exactly as before.
+    """
+    if replacement.unless_args is None:
+        return []
+    found = _guard_positionals(replacement, argv)
+    return found if len(found) > replacement.unless_args else []
 
 
 def _guard_argv_matches(replacement: _Replacement, argv: Sequence[str]
@@ -17813,6 +17966,11 @@ def _guard_score(replacement: _Replacement, argv: Sequence[str]
         # repository's own `.supertool.json` un-block a command a shipped op
         # legitimately claims. An exclusion loses to nothing.
         return None
+    if _guard_positional_excess(replacement, argv):
+        # Same reading, one dimension over: the entry does not claim an
+        # invocation carrying arguments its op has no spelling for (#1684).
+        # `guard_command` turns that into a disclosure rather than silence.
+        return None
     if replacement.flag is None:
         return 0
     values = _guard_flag_values(argv, replacement.flag)
@@ -17832,9 +17990,13 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
     that lives in the repo, shows up in a diff and is reviewable. The clean
     hatch for a legitimate raw call — `git tag`, `gh release create`,
     `gh api -X DELETE` — is that no op declares it under `replaces`. Named as
-    commands rather than as operations on purpose: `git push origin <tagname>`
-    is a tag operation and IS blocked, because `presets/git.json` claims a
-    bare `git push` and no entry can discriminate on a positional's value.
+    commands rather than as operations on purpose: an entry claims a command
+    word and a subcommand, and what it can add to that is a flag, an arity
+    (`unless_args`) and an exclusion - never the meaning of a positional's
+    text. `git push origin <tagname>` used to be blocked with `git-push`
+    named, which pushes the current branch; it is now `uncovered`, decided on
+    the arity of the invocation rather than on the value of `<tagname>`
+    (#1684).
     """
     if config is None:
         config = _load_config()
@@ -17858,6 +18020,7 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
                       if len(replacement.argv) > 1)
 
     matches: List[GuardMatch] = []
+    uncovered: List[str] = []
     seen = set()
     for argv in segments:
         scoring, note = _guard_normalise(argv, heads)
@@ -17905,6 +18068,35 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
                 if ambiguity not in notes:
                     notes.append(ambiguity)
         if not scored:
+            # Nothing claims this segment. If something claims the *verb* and
+            # declined on arity, say so: falling through silently is the
+            # absence-read-as-absence this repo keeps filing, and naming the
+            # op anyway is what made a tag push prescribe a branch push
+            # (#1684). Asked only when no entry blocks — an invocation another
+            # entry genuinely replaces is a refusal, not a disclosure.
+            if _guard_help_state(scoring) != "help":
+                for replacement in replacements:
+                    if not _guard_argv_matches(replacement, scoring):
+                        continue
+                    if _guard_exclusion_state(replacement, scoring) != "none":
+                        continue
+                    extra = _guard_positional_excess(replacement, scoring)
+                    if not extra:
+                        continue
+                    op = _flat_field(replacement.op)
+                    line = (
+                        "`" + _flat_field(" ".join(scoring)) + "` carries "
+                        + ", ".join("`" + _flat_field(token) + "`"
+                                    for token in extra)
+                        + " past the `" + _flat_field(" ".join(
+                            replacement.argv)) + "` that `" + op
+                        + "` replaces, and that op takes none of them: no op "
+                        "covers this form, so raw `"
+                        + _flat_field(scoring[0]) + "` is correct here and "
+                        "nothing was blocked. `" + op + "` is the same "
+                        "invocation without them, if that is what you meant")
+                    if line not in uncovered:
+                        uncovered.append(line)
             continue
         # Asked once per segment rather than per entry: a help flag un-claims
         # every mapping or none of them, and asking it after scoring keeps both
@@ -17944,7 +18136,19 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
         # A positive match is authoritative even when the population is short:
         # an op that IS in the registry and DOES declare this invocation is a
         # fact, and a missing preset cannot unmake it.
-        return GuardVerdict("blocked", tuple(matches), tuple(notes))
+        #
+        # An arity decline on ANOTHER segment rides along in `notes` rather
+        # than being dropped: `git status && git push origin v1.0` renders one
+        # refusal, and without this the only thing said about the push is
+        # nothing (#1684, found in review).
+        return GuardVerdict("blocked", tuple(matches),
+                            tuple(notes) + tuple(uncovered), tuple(uncovered))
+    if uncovered:
+        # Ahead of `undecided`, and the order is the point: a decided "no op
+        # covers this form" rendered as "the guard could not answer" would be
+        # a second misdirection, this time about the guard itself. Any note
+        # rides along, so nothing the matcher could not read is dropped.
+        return GuardVerdict("uncovered", (), tuple(notes), tuple(uncovered))
     if notes:
         return GuardVerdict("undecided", (), tuple(notes))
     return GuardVerdict("clean", (), ())
@@ -18146,6 +18350,19 @@ def guard_undecided_note(verdict: GuardVerdict) -> str:
               "guard, not about the command.")
 
 
+def guard_uncovered_note(verdict: GuardVerdict) -> str:
+    """What the hook says when an op claims the verb and not the invocation.
+
+    Deliberately not `guard_undecided_note`'s sentence. That one says the
+    guard did not run, which here would be false — and a false statement
+    about the guard is how the caller decides whether to trust the next one.
+    """
+    return ("supertool's raw-command guard read this command and found no op "
+            "that covers it: "
+            + guard_notes_text(tuple(verdict.uncovered) + tuple(verdict.notes))
+            + ". The command was allowed and nothing was replaced.")
+
+
 def op_guard(command: str) -> str:
     """Ask the registry what, if anything, replaces a raw shell command."""
     if not command.strip():
@@ -18157,6 +18374,8 @@ def op_guard(command: str) -> str:
                 + "\n")
     if verdict.state == "blocked":
         body = "BLOCKED\n\n" + guard_refusal(verdict)
+    elif verdict.state == "uncovered":
+        body = "NOT COVERED: " + guard_uncovered_note(verdict)
     elif verdict.state == "undecided":
         body = "UNDECIDED: " + guard_undecided_note(verdict)
     else:

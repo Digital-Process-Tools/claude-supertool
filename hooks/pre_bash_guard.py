@@ -377,6 +377,13 @@ def main() -> int:
 
     if verdict.state == "blocked":
         _say("deny", _supertool.guard_refusal(verdict))
+    elif verdict.state == "uncovered":
+        # An op claims the verb and not this invocation of it (#1684). Not
+        # `_undecided`: that sentence says the guard did not run, and here it
+        # ran and answered. Saying nothing was the other option, and it is
+        # what left `git push origin <tag>` prescribing a branch push for as
+        # long as the alternative to a wrong remedy was silence.
+        _say("note", _supertool.guard_uncovered_note(verdict))
     elif verdict.state == "undecided":
         # Through supertool's bounded formatter, not a second join: this line
         # rendered 27,632 characters from 200 chained segments, on a path

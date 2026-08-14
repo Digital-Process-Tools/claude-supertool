@@ -203,14 +203,21 @@ def test_the_ordinary_path_gains_no_note(shipped):
 def test_a_prefixed_push_agrees_with_its_own_unprefixed_spelling(shipped):
     """CONSISTENCY, not an absolute — see the module docstring.
 
-    `git push origin v1.2.3` is BLOCKED on `042c6a9`, by design: no matcher can
-    separate a tag push from a branch push on a positional's value. Under `-C`
-    it must reach the same verdict, or `-C` is a bypass for `git push`.
+    `git push origin v1.2.3` was BLOCKED on `042c6a9`, and is `uncovered`
+    since #1684 — the entry declines an invocation carrying a refspec its op
+    cannot express, rather than blocking it and naming an op that pushes a
+    different ref. Under `-C` it must reach the same verdict either way, or
+    `-C` is a bypass for `git push`; the consistency is what this test is
+    about, and it survived the change of verdict.
     """
     bare = supertool.guard_command("git push origin v1.2.3")
     prefixed = supertool.guard_command("git -C /tmp/x push origin v1.2.3")
-    assert bare.state == "blocked", "the premise of this test moved"
+    assert bare.state == "uncovered", "the premise of this test moved"
     assert prefixed.state == bare.state
+    # And a still-blocked spelling, so the row cannot pass by both sides
+    # falling through to nothing.
+    assert supertool.guard_command("git push").state == "blocked"
+    assert supertool.guard_command("git -C /tmp/x push").state == "blocked"
 
 
 # --------------------------------------------------------------------------

@@ -169,7 +169,10 @@ class TestAntiVacuity:
 
     @pytest.mark.parametrize("cmd", [
         "gh pr create -t x -b y",
-        "git push origin main",
+        # `git push origin main` until #1684 — a named refspec is now
+        # `uncovered` on arity, which would make this row pass for a reason
+        # that has nothing to do with an exclusion.
+        "git push origin",
         "git commit -m x",
         "gh pr checks",
     ])

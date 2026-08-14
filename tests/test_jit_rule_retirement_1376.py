@@ -180,9 +180,18 @@ _RETIRED = {
         ("gh pr list --state open", "gh-prs"),
     ],
     "git-push-has-an-op.md": [
-        ("git push origin master", "git-push"),
+        ("git push", "git-push"),
         ("git push --force-with-lease", "git-push"),
-        ("git push origin v0.35.0", "git-push"),
+        # #1684 moved these two from `blocked` to `uncovered`: a named refspec
+        # un-claims every `git push` entry on arity, because `git-push` pushes
+        # the branch you are on and takes no ref. The retirement gate is
+        # weakened, deliberately and on the record — the rule stopped the
+        # command AND named the op, and the guard now only names the op, on
+        # every such call, in the transcript. What was traded for it is the
+        # refusal that told a caller pushing a TAG to run an op that pushes a
+        # branch: it succeeded, and published a ref nobody had typed.
+        ("git push origin master", "git-push", "uncovered"),
+        ("git push origin v0.35.0", "git-push", "uncovered"),
     ],
 }
 
@@ -194,11 +203,11 @@ def test_a_retired_rule_is_gone_from_both_the_index_and_the_disk(rule):
     assert not (MANUAL / rule).exists(), rule
 
 
-@pytest.mark.parametrize("rule,command,op", [
-    (rule, command, op)
-    for rule, cases in sorted(_RETIRED.items()) for command, op in cases])
+@pytest.mark.parametrize("rule,command,op,state", [
+    (rule, case[0], case[1], case[2] if len(case) > 2 else "blocked")
+    for rule, cases in sorted(_RETIRED.items()) for case in cases])
 def test_the_guard_covers_what_each_retired_rule_forbade(
-        shipped_registry, rule, command, op):
+        shipped_registry, rule, command, op, state):
     """The gate itself: `guard:`, on the rule's own command.
 
     Reading the registry is not this check. `git-C-has-cwd.md` would look
@@ -206,9 +215,14 @@ def test_the_guard_covers_what_each_retired_rule_forbade(
     and the command it exists for returns `clean`.
     """
     verdict = supertool.guard_command(command)
-    assert verdict.state == "blocked", (rule, command, verdict)
-    assert op in {m.op for m in verdict.matches}, (rule, command,
-                                                   verdict.matches)
+    assert verdict.state == state, (rule, command, verdict)
+    if state == "blocked":
+        assert op in {m.op for m in verdict.matches}, (rule, command,
+                                                       verdict.matches)
+    else:
+        # `uncovered` still has to NAME the op, or the retired rule's whole
+        # payload is gone rather than moved (#1684).
+        assert op in " ".join(verdict.uncovered), (rule, command, verdict)
 
 
 # --------------------------------------------------------------------------

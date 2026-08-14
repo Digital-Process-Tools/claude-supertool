@@ -83,14 +83,16 @@ def _uses(command: str):
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("command,use", [
-    # Two of the three lines #1384 measured as "allowed, silent". The third,
-    # `git -C /tmp/x status`, is not reachable from a `replaces` argv at all
-    # and is asserted among the absences below.
-    ("git push origin master", "git-push"),
+    # One of the three lines #1384 measured as "allowed, silent". Of the other
+    # two, `git -C /tmp/x status` is not reachable from a `replaces` argv at
+    # all and is asserted among the absences below, and
+    # `git push origin master` names a refspec `git-push` does not take, so
+    # since #1684 it is `uncovered` rather than blocked — see
+    # `test_a_push_that_names_a_ref_is_uncovered`.
     ("git commit -m x", _COMMIT_USE),
     ("git status", "git-status"),
     ("git push", "git-push"),
-    ("git push origin HEAD:master", "git-push"),
+    ("git push origin", "git-push"),
     ("git status --branch", "git-status"),
     ("git status -uall", "git-status"),
     ("git commit", _COMMIT_USE),
@@ -104,36 +106,59 @@ def test_a_raw_git_call_names_the_op_that_answers_it(shipped_git, command, use):
 @pytest.mark.parametrize("command,use", [
     # A flag selects WHICH spelling of git-push is named, the discrimination
     # #1347 built and `gh pr view --json state` is the worked example of.
+    # Each carries at most the remote positionally: a refspec un-claims every
+    # one of these entries on arity (#1684), whatever flag it also carries.
     ("git push --force-with-lease", "git-push:force-with-lease"),
-    ("git push --force-with-lease origin master", "git-push:force-with-lease"),
+    ("git push --force-with-lease origin", "git-push:force-with-lease"),
     ("git push --no-verify", "git-push:no-verify"),
-    ("git push -u origin HEAD", "git-push:set-upstream"),
-    ("git push --set-upstream origin HEAD", "git-push:set-upstream"),
+    ("git push -u origin", "git-push:set-upstream"),
+    ("git push --set-upstream origin", "git-push:set-upstream"),
 ])
 def test_a_flag_selects_the_git_push_spelling(shipped_git, command, use):
     assert _uses(command) == [use], command
 
 
-def test_git_push_origin_a_tag_is_blocked_and_that_is_disclosed(shipped_git):
-    """The one shape this mapping gets wrong, pinned so it stays a decision.
+@pytest.mark.parametrize("command", [
+    "git push origin v0.34.0",
+    "git push origin master",
+    "git push origin HEAD:master",
+    "git push --force-with-lease origin master",
+    "git push -u origin HEAD",
+])
+def test_a_push_that_names_a_ref_is_uncovered(shipped_git, command):
+    """The shape this mapping used to get wrong, and how it stopped (#1684).
 
-    `git push origin v0.34.0` is the same argv shape as
-    `git push origin master`; telling them apart means asking the repository
-    whether a ref is a tag, at guard time, before the command runs. So the
-    bare entry claims it and the refusal names `git-push`, which does not do
-    tags.
+    `git push origin v0.34.0` was BLOCKED with `git-push` named, and `git-push`
+    pushes the **current branch**: obeying that refusal published a ref the
+    caller never typed while the tag stayed uncreated, and the command reported
+    success. The discrimination this test used to call impossible — asking the
+    repository whether a ref is a tag — is not the one needed. `master` and
+    `v0.34.0` are both explicit refspecs, `git-push` takes neither, and arity
+    says so from the argv alone.
 
-    It is not a dead end, which is why the bare entry is declared at all:
-    `--tags` and `--follow-tags` are excluded below and push tags on any
-    forge, and on GitHub the documented route is `gh api -X POST .../git/refs`
-    (`.claude/skills/opensource-manager/SKILL.md`, which records raw
-    `git push origin <tag>` dying on the rtk wrapper with SIGPIPE anyway).
+    The cost is stated rather than hidden: `git push origin master` is no
+    longer refused, which is a missed block on a command an op does answer
+    when you happen to be on `master`. That is the direction this guard is
+    allowed to be wrong in — a wrong block has no per-command escape.
     """
-    assert _uses("git push origin v0.34.0") == ["git-push"]
+    verdict = supertool.guard_command(command)
+    assert verdict.state == "uncovered", (command, verdict)
+    assert verdict.matches == (), command
+    line = " ".join(verdict.uncovered)
+    assert "no op covers this form" in line, line
+    # It still names the op, as an alternative rather than as a substitute.
+    assert "git-push" in line, line
+
+
+def test_the_tag_push_route_is_the_command_itself(shipped_git):
+    """Anti-vacuity: `uncovered` has to be an ALLOW, not a quieter refusal."""
+    verdict = supertool.guard_command("git push origin v0.34.0")
+    assert verdict.state != "blocked", verdict
+    assert supertool.op_guard("git push origin v0.34.0").count("BLOCKED") == 0
 
 
 def test_the_refusal_carries_the_git_op_own_words(shipped_git):
-    verdict = supertool.guard_command("git push origin master")
+    verdict = supertool.guard_command("git push")
     text = supertool.guard_refusal(verdict)
     assert "git-push" in text
     # Read off the registry at match time, so it cannot describe a flag the op
@@ -154,7 +179,10 @@ def test_the_refusal_footer_does_not_promise_tagging_is_never_blocked(
     which *commands* no op maps, and a preset can falsify it, so the footer no
     longer makes it and points at the op that answers per command instead.
     """
-    verdict = supertool.guard_command("git push origin v0.34.0")
+    # `git push origin v0.34.0` until #1684, which stopped blocking it at all;
+    # the footer claim is a property of every refusal, so the bare push is the
+    # same test with one that still is one.
+    verdict = supertool.guard_command("git push")
     # `guard_refusal` renders its footer for any verdict handed to it, so
     # without this the whole test passes with `git-push`'s mapping deleted:
     # nothing would be blocked, no match would render, and an absent claim
@@ -299,7 +327,7 @@ def _run_hook(command: str, cwd: Path) -> Dict[str, Any]:
 def test_the_hook_denies_the_commands_1384_measured(tmp_path):
     (tmp_path / ".supertool.json").write_text(
         json.dumps({"ops": _GIT_OPS}), encoding="utf-8")
-    for command, op in (("git push origin master", "git-push"),
+    for command, op in (("git push", "git-push"),
                         ("git commit -m x", "git-commit")):
         hook = _run_hook(command, tmp_path)["hookSpecificOutput"]
         assert hook["hookEventName"] == "PreToolUse"
@@ -337,9 +365,15 @@ def test_the_mapping_arrives_through_the_preset_not_only_through_ops(tmp_path):
     """
     (tmp_path / ".supertool.json").write_text(
         json.dumps({"presets": ["git"]}), encoding="utf-8")
-    hook = _run_hook("git push origin master", tmp_path)["hookSpecificOutput"]
+    hook = _run_hook("git push", tmp_path)["hookSpecificOutput"]
     assert hook["permissionDecision"] == "deny", hook
     assert "git-push" in hook["permissionDecisionReason"]
+
+    # And the #1684 shape travels the same route: allowed, with the reason in
+    # `additionalContext` rather than a decision.
+    hook = _run_hook("git push origin v1.2.3", tmp_path)["hookSpecificOutput"]
+    assert "permissionDecision" not in hook, hook
+    assert "no op covers this form" in hook["additionalContext"], hook
 
     out = _run_hook("git push --tags", tmp_path)
     assert out.get("hookSpecificOutput", {}).get(

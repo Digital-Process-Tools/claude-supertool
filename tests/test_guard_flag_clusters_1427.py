@@ -154,7 +154,9 @@ def test_a_clustered_short_flag_is_read_as_its_letters(
     ("git status -uall", "git-status"),
     ("git status -b", "git-status"),
     ("git commit -am x", "COMMIT"),
-    ("git push origin master", "git-push"),
+    # `git push origin master` until #1684: a refspec un-claims every push
+    # entry on arity now, which has nothing to do with clustering.
+    ("git push origin", "git-push"),
 ])
 # CONTROL: catches a letter matched against a long-flag entry's initial, which
 # would send `git commit -am x` clean past `--amend`.
@@ -209,6 +211,6 @@ def test_the_positive_flag_matcher_is_not_widened(shipped_git):
     about an op that sets upstream when missing anyway.
     """
     assert [m.use for m in supertool.guard_command(
-        "git push -u origin HEAD").matches] == ["git-push:set-upstream"]
+        "git push -u origin").matches] == ["git-push:set-upstream"]
     assert [m.use for m in supertool.guard_command(
-        "git push -uq origin HEAD").matches] == ["git-push"]
+        "git push -uq origin").matches] == ["git-push"]
