@@ -30,6 +30,13 @@ def _run(file_path: str) -> dict:
     happened twice on `windows-latest, 3.11` on 2026-08-11 and reached
     `test_broken_inline_script_is_a_finding` as a pinned-line failure (#1296).
 
+    A page with more than one <script> block can stall on one and answer on
+    the next, and that mixture used to slip the gate: every error had to be a
+    wall for the payload to be declined, so a wall beside a real finding was
+    asserted on as a verdict and `test_two_script_blocks_...` read
+    `assert 2 == 1` on `windows-latest, 3.10` (#1709). A partial verdict is
+    not a verdict, and the predicate now says so.
+
     So a stall declines here, once, rather than at every call site. Nothing
     else moves: `skip_if_stalled` returns any other payload untouched, so a
     clean verdict on a broken page, a finding on the wrong line, an absent

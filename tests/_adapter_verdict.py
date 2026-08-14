@@ -261,9 +261,26 @@ def stalled_at_its_own_wall(payload: Any, *, inner_s: int) -> str | None:
     bug this exists to remove if it is dropped:
 
     - ``ok is False`` — a pass is a pass.
-    - every error carries ``code: "adapter"`` — a `parse` finding beside a
-      stall is still a broken file, and one unmeasurable error does not buy
-      amnesty for a measured one.
+    - at least one error is an ``adapter`` error naming a wall, and **no**
+      error is an ``adapter`` error that is not one. The second half is
+      #1604's: an absent `node`, an adapter that crashed, an unreadable argv
+      are all real faults someone has to fix, and a decline that swallows one
+      is the loud bug traded for the quiet one.
+
+      The first half used to read "*every* error is an adapter wall", and
+      #1709 is what that cost. `html-check` spawns `node --check` once per
+      `<script>` block, so a two-block page can stall on one block and get a
+      real `syntax` finding on the other. That mixture is a **partial**
+      verdict, and the clause classified it as a whole one: the finding was
+      true, but `count`, the ordering of `errors` and `errors[0]` are all
+      claims about how many units answered, not about the file. The test
+      asserting `count == 1` read `assert 2 == 1` on a Windows leg where
+      four sibling tests in the same file declined at the same wall.
+
+      Its old rationale — "one unmeasurable error does not buy amnesty for a
+      measured one" — is right about the *file* and was never the question a
+      count answers. A skip is not amnesty either: it carries
+      ``ADAPTER_WALL_TOKEN`` and the register expects zero of them.
     - the message names a timeout, in any of ``WALL_PHRASES`` —
       `validators/SCHEMA.md` is explicit that an `adapter` error "stays a real
       error ... because the process ran and something is broken that someone
@@ -289,15 +306,23 @@ def stalled_at_its_own_wall(payload: Any, *, inner_s: int) -> str | None:
         if not isinstance(errors, list) or not errors:
             return None
 
+        walls = 0
         for entry in errors:
-            if not isinstance(entry, dict) or entry.get("code") != ADAPTER_CODE:
+            if not isinstance(entry, dict):
                 return None
+            if entry.get("code") != ADAPTER_CODE:
+                # A finding about the file. It sits beside a wall or it does
+                # not; either way it is not the thing that decides this.
+                continue
             msg = entry.get("msg")
             if not isinstance(msg, str):
                 return None
             lowered = msg.lower()
             if not any(phrase in lowered for phrase in WALL_PHRASES):
                 return None
+            walls += 1
+        if not walls:
+            return None
 
         duration = payload.get("duration_ms")
         if not isinstance(duration, int) or isinstance(duration, bool):
@@ -305,10 +330,21 @@ def stalled_at_its_own_wall(payload: Any, *, inner_s: int) -> str | None:
         if duration < inner_s * 1000:
             return None
 
+        partial = ""
+        if walls < len(errors):
+            # Say which of the two it is. "the adapter got nothing" and "the
+            # adapter got some of it" send the reader to different places, and
+            # a decline that renders them identically is the absence this file
+            # exists to stop being read as a presence.
+            partial = (
+                f" {walls} of its {len(errors)} reported errors are that wall, "
+                f"so the rest are findings about units it DID reach — a partial "
+                f"verdict, and `count`/`errors[0]` are claims about how many "
+                f"units answered rather than about the file")
         return (
             f"{ADAPTER_WALL_TOKEN}: adapter spent its whole {inner_s}s internal "
             f"budget without reaching a verdict, so there is nothing here to "
-            f"assert on — {describe(payload)}"
+            f"assert on —{partial} {describe(payload)}"
         )
     except Exception:  # pragma: no cover - classification must never be the failure
         return None
