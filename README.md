@@ -305,6 +305,8 @@ Three ways to pass arguments. Full reference: [docs/input-forms.md](docs/input-f
   ```
 - **`batch:@file`** — mixed reads + writes in one round-trip: `batch:@.max/ops.json` (bare array or `{continue_on_error, ops}` wrapper).
 
+**`paste` over an existing file keeps the bytes it displaces.** It is the only op that writes a whole file without first establishing what is there — `edit` and `replace` match a string, `replace_lines` refuses an `END` past the file length, `vim` errors on a path that does not exist — so it is the only one that can overwrite a file the caller believes is not there. The outgoing bytes are copied to `~/.cache/supertool/paste-backup/` **before** the write and the receipt names the copy; nothing is refused, because a guard that blocked the overwrite would have to offer a `force` token and a reflex `force` is the guard deleting itself. No line means nothing was displaced; a `no backup of the previous contents — WHY` line means the copy failed and the write happened anyway. Reaped by `gc` at 7 days. See [docs/operations/edits.md](docs/operations/edits.md).
+
 ---
 
 ## Validators — squiggle-on-save for the LLM
