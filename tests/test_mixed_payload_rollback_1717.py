@@ -223,3 +223,71 @@ def test_an_all_adapter_payload_is_still_a_non_verdict() -> None:
 def test_a_mixed_payload_is_still_a_verdict() -> None:
     """And so is its other half: the `all()` stays, per #1717's design note."""
     assert supertool._validator_not_checked(json.loads(MIXED)) is None
+
+# ---------------------------------------------------------------------------
+# Review findings (Sonnet reviewer against a52ca4a5)
+# ---------------------------------------------------------------------------
+
+def test_the_subtraction_never_falls_below_the_findings_it_can_see() -> None:
+    """`count` and `errors` have independent sources, so subtracting is a guess.
+
+    `count` is `len(errors)` in twenty adapters and cargo-check is one of them,
+    which is why subtracting the stall rows from it is right there. It is NOT
+    universal: `phpstan` takes `count` from `totals.file_errors` while building
+    `errors` from a different key of the same document. An adapter whose `count`
+    already excludes its own stall rows would be subtracted from twice, and the
+    result collapses to zero on both sides — equal counts, equal `ok`, no
+    regression, and the rollback gate goes inert over a real new finding. That
+    is the louder half of this defect, so the floor is the findings actually
+    visible in `errors`: the subtraction may correct a count, never contradict
+    the rows under it.
+    """
+    # `count` excludes the stall row; `errors` carries it.
+    understated = {"tool": "fake", "ok": False, "count": 1, "errors": [
+        _finding(), _stall()]}
+    assert supertool._validator_measured_count(understated) == 1
+    assert supertool._validator_regressed(
+        json.loads(CLEAN), understated) is True
+    # And a real new finding across two such payloads still regresses.
+    after = {"tool": "fake", "ok": False, "count": 2, "errors": [
+        _finding(), _finding(2, "missing comma"), _stall()]}
+    assert supertool._validator_regressed(understated, after) is True
+
+
+def test_a_capped_error_list_is_not_read_as_a_smaller_count() -> None:
+    """The divergence pointing the other way: `errors` sampled, `count` whole.
+
+    Recomputing the count from `errors` instead of subtracting from `count`
+    would read a fifty-error file as a five-error one — the same inert gate,
+    reached from the opposite assumption.
+    """
+    capped = {"tool": "fake", "ok": False, "count": 50,
+              "errors": [_finding(n) for n in range(1, 6)]}
+    assert supertool._validator_measured_count(capped) == 50
+    capped_with_stall = {"tool": "fake", "ok": False, "count": 50,
+                         "errors": [_finding(1), _stall()]}
+    assert supertool._validator_measured_count(capped_with_stall) == 49
+
+
+def test_a_stall_row_is_not_bulleted_as_introduced_by_this_edit(
+        tmp_path: Path, capsys) -> None:
+    """The `+` prefix means "introduced by this op", and a stall row was not.
+
+    A row present only in the after payload is `new` by message comparison, so
+    the checker failing to finish printed under a `+` beside a delta that does
+    not count it — the row contradicting itself. The stall is still listed; it
+    is only no longer claimed as this edit's doing.
+
+    A clean baseline, so the counts differ and the render takes the arrow
+    branch: the equal-counts branch prints no bullets at all and would pass
+    this without exercising anything.
+    """
+    _configure(_two_pass_adapter(tmp_path, CLEAN, MIXED))
+    _rc, out, _text = _edit(tmp_path, capsys)
+    stall = [ln for ln in out.splitlines()
+             if "cargo check reported src/other.rs" in ln]
+    assert stall, out
+    assert not stall[0].lstrip().startswith("+"), (
+        f"a row nothing measured is printed as introduced by this edit: {stall[0]}")
+    real = [ln for ln in out.splitlines() if "unterminated object" in ln]
+    assert real, out

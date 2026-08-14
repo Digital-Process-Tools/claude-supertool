@@ -20025,15 +20025,30 @@ def _validator_measured_count(data: Optional[Dict[str, Any]]) -> int:
     A `count` that is not a number is not a measurement either; it reads as 0
     rather than raising in the middle of an edit. Nothing is excused by that:
     an `ok: false` result against a clean baseline still regresses on `ok`.
+
+    **The subtraction may correct a count and may never contradict the rows
+    under it**, so the floor is the number of non-`adapter` rows visible in
+    `errors`. `count` and `errors` have independent sources — twenty adapters
+    write `count = len(errors)` and cargo-check is one of them, but `phpstan`
+    takes `count` from `totals.file_errors` while building `errors` from a
+    different key of the same document. An adapter whose `count` already
+    excludes its own stall rows would be subtracted from twice, collapse to
+    zero on both sides, and the gate would go inert over a real new finding —
+    the louder half of this defect, and the one a fix aimed only at the quieter
+    half walks straight into. Recomputing from `errors` instead of subtracting
+    from `count` fails the other way: an adapter that caps its `errors` list
+    would have fifty findings read as five.
     """
     if not isinstance(data, dict):
         return 0
     count = data.get("count", 0)
     if isinstance(count, bool) or not isinstance(count, (int, float)):
         return 0
-    absences = sum(1 for e in (data.get("errors") or [])
-                   if isinstance(e, dict) and (e.get("code") or "") == "adapter")
-    return max(count - absences, 0)
+    rows = [e for e in (data.get("errors") or []) if isinstance(e, dict)]
+    absences = sum(1 for e in rows if (e.get("code") or "") == "adapter")
+    if not absences:
+        return count
+    return max(count - absences, len(rows) - absences, 0)
 
 
 def _validator_baseline(before: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -20367,12 +20382,19 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
         # The `+` prefix means "introduced by this op". With no baseline,
         # `before_msgs` is empty and every finding qualifies — the third place
         # on this line where the absence is read as a measurement.
+        #
+        # And a fourth, per row (#1717): a stall row present only in the after
+        # payload is `new` by message comparison, so a checker that could not
+        # finish printed as something this edit did, beside a delta that
+        # deliberately does not count it. It is still listed — hiding it is the
+        # thing this whole mechanism refuses — it is just no longer claimed.
         bullet = " " if b_unknown else "+"
         for e in new[:5]:
             line_n = f"L{e['line']}" if e.get("line") else "  "
             code = e.get("code") or ""
             msg = _flat_cell(e.get("msg") or "", 120)
-            out.append(f"  {bullet} {line_n} {code}  {msg}")
+            out.append(f"  {' ' if code == 'adapter' else bullet} "
+                       f"{line_n} {code}  {msg}")
         if len(new) > 5:
             out.append(f"  {bullet} ... +{len(new) - 5} more"
                        f"{'' if b_unknown else ' new'}")
