@@ -311,14 +311,25 @@ _SCANNED = ("presets/github", "presets/gitlab", "presets/git")
 
 #: file -> how many child-stream relays reach a sink unmarked. May only shrink.
 CENSUS = {
-    "presets/git/_git_common.py": 5,
+    # +2, #1693: `_git_verbatim`'s two `done.std*.decode(...)`. This ratchet is
+    # allowed to rise only with a reason in the diff, and the reason is that
+    # these two are not renders — they are the TRANSPORT, the same expression
+    # `_git` gets for free because `text=True` does its decoding inside
+    # `subprocess`. Flattening either would corrupt every stream every caller
+    # in this package reads. The sweep matches a shape (`return <expr>` carrying
+    # a child stream) and cannot tell a decode from a print, which is exactly
+    # the disclosure the count exists to make rather than hide.
+    "presets/git/_git_common.py": 7,
     "presets/git/blame.py": 2,
     "presets/git/checkout.py": 13,  # +3, #1626: three `.write` / `.append` sinks
     "presets/git/commit.py": 11,  # +2, #1626: `_failure_receipt`'s appends (#1570)
     "presets/git/conflicts.py": 2,
     "presets/git/diff.py": 2,  # -2, #1569: both `Repo:` renders -> repo_label()
     "presets/git/diverge.py": 3,
-    "presets/git/investigate.py": 4,
+    # -2, #1693: the blame render's `author` and `content` now go through
+    # `visible()` — one is git's relay of a commit's author field, the other is
+    # the blamed file's own line, and both land in a table.
+    "presets/git/investigate.py": 2,
     "presets/git/merge.py": 9,  # -1, #1654: `_fresh_merge_ref`'s fetch stderr
     "presets/git/push.py": 32,  # -1, #1681: `_discarded_by_force`'s log relay
     # 0, not 3: the two `failed.append` relays and the direct print #1638 named

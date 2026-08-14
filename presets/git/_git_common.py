@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -120,6 +121,45 @@ def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedPro
             args=cmd, returncode=TIMEOUT_RC, stdout="",
             stderr=f"timed out after {budget}s",
         )
+
+
+def _git_verbatim(args: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+    """`_git`, with Python's universal-newline translation OFF (#1693).
+
+    Same budget, same `TIMEOUT_RC` contract, same decode. The one difference is
+    that `_git` runs `subprocess.run(text=True)`, and text mode rewrites **a
+    lone CR and a CRLF into LF** on the way in — so by the time any preset here
+    receives a stream, a carriage return the child actually wrote is already
+    indistinguishable from a line break the child actually wrote.
+
+    That is invisible almost everywhere and decisive in one place. `git blame
+    --line-porcelain` interleaves its own headers with the blamed file's OWN
+    lines, and a source file may hold a bare CR: measured on git 2.46.2, a file
+    containing `x = 1<CR>author Mallory<CR><TAB>I did this` reached
+    `investigate.py` as three lines, two of which read as git's. No splitter
+    downstream can undo that — `str.splitlines()`, `_untrusted.split_lines` and
+    a bare LF split are equally forged, because the bytes that told them apart
+    are gone. So the reader that must not be forged reads the bytes.
+
+    Not the default, and deliberately so: every other caller here is parsing a
+    stream where the translation is a convenience and CRLF from a Windows child
+    is noise. This is the escape for a stream that carries somebody else's file
+    content, and a new caller should have that reason.
+    """
+    budget = git_timeout() if timeout is None else timeout
+    cmd = ["git"] + args
+    try:
+        done = subprocess.run(cmd, capture_output=True, timeout=budget)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=TIMEOUT_RC, stdout="",
+            stderr=f"timed out after {budget}s",
+        )
+    return subprocess.CompletedProcess(
+        args=cmd, returncode=done.returncode,
+        stdout=done.stdout.decode("utf-8", "replace"),
+        stderr=done.stderr.decode("utf-8", "replace"),
+    )
 
 
 def reject_fetch_option(remote: str, ref: str) -> str:
@@ -439,11 +479,35 @@ def _looks_like_success(line: str) -> bool:
     return not has_error
 
 
+#: The keywords that make a line an error line, as WORDS (#1669).
+#:
+#: `"error" in low` was the selector, and on 2026-08-14 it promoted a pre-push
+#: hook's own SUCCESS disclosure to `First error:` on a push that died in
+#: transport — the substring it matched was the one inside the identifier
+#: `OSError`, in a footnote explaining a skip counter. Measured, because the
+#: issue asked which of three candidates it was: not proximity (the line sat
+#: ~200 lines earlier in a passing summary), not the head/tail elision (this
+#: scan runs over the whole stream), a bare substring.
+#:
+#: `errors?` rather than `error`, so `3 errors found` still selects; the plural
+#: is the only inflection any of these five take in git's or a test runner's
+#: output, and a stem match is what put the defect here.
+_ERROR_WORD_RE = re.compile(
+    r"\b(errors?|fatal|rejected|aborted|failed)\b", re.IGNORECASE)
+
+
 def _first_error_line(text: str) -> str:
     """First line mentioning an error/rejection, else last non-empty line.
 
     Skips success lines (green ✅, '0 errors', 'pushed successfully') so a
     hook's success banner is never misreported as the failure cause.
+
+    **The keywords are words, not substrings (#1669).** `"error" in low` read
+    `OSError` as an error and promoted a footnote out of a passing suite's
+    disclosure block to `git-push`'s `First error:` on a push that died in
+    transport. `_ERROR_WORD_RE` above is where the narrowing lives, and
+    `push._push_error_line` is the other half: which process wrote the line
+    decides more than which words are in it.
 
     **Flattened here, not at the callers (#1475).** `text` is a child's stream
     — a commit hook's, a remote's, `gh`'s — and every caller prints what comes
@@ -464,10 +528,7 @@ def _first_error_line(text: str) -> str:
         s = line.strip()
         if not s or _looks_like_success(s):
             continue
-        low = s.lower()
-        if ("error" in low or "fatal" in low or "rejected" in low
-                or "aborted" in low or "failed" in low
-                or "! [" in s or "❌" in s):
+        if _ERROR_WORD_RE.search(s) or "! [" in s or "❌" in s:
             return _untrusted.flat(s)
     for line in reversed(lines):
         s = line.strip()

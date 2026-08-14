@@ -5,7 +5,7 @@ match: "presets/git/"
 
 **Register test — first gate a new site hits.** A new `x.splitlines()` under
 `presets/git/` is RED until judged — `tests/test_preset_git_splitlines_register_1130.py`,
-keyed `path::enclosing function`, 24 entries / 27 call sites in 9 files,
+keyed `path::enclosing function`, 23 entries / 23 call sites in 8 files,
 AST-verified (grep also hits docstring mentions of `splitlines()` as text —
 don't trust it here). Add a site via
 `REGISTER["presets/git/foo.py::func"] = "GROUND - reason"` (>40 chars), or use
@@ -50,11 +50,32 @@ grants nothing a plain newline doesn't already grant. `_scan_markers`/
 `_count_blocks` can only over-report (fail-safe, just refuses a stage);
 `_union_attr_paths` is fail-closed.
 
-**Registered risk, not yet fixed:** `investigate.py::main` (~103) — blame
-`--line-porcelain` parse keys on file CONTENT → a crafted line can misattribute
-author/date. The only `NOT QUOTED, open` entry. `worktrees.py::remote_branch_names`
-was the second and is CLOSED (#1654): `check-ref-format` accepts U+2028, so one
-published ref became two records and an unpushed branch read as pushed.
+**No `NOT QUOTED, open` entry is left, and the ground is kept with a count of
+0** so the next one has a spelling. Both are closed:
+`worktrees.py::remote_branch_names` (#1654 — `check-ref-format` accepts U+2028,
+so one published ref became two records and an unpushed branch read as pushed)
+and `investigate.py::main` (#1693). The second is the one to copy from when a
+stream carries somebody's file CONTENT.
+
+**`_git` is a line reader too, and nobody had counted it.** It runs
+`subprocess.run(text=True)`, so Python rewrites a lone CR **and** a CRLF to LF
+before any preset sees the stream — measured against real git 2.46.2, a file
+holding `x = 1<CR>author Mallory<CR><TAB>I did this` reached
+`blame --line-porcelain`'s parser as three lines, two of them reading as git's.
+No splitter downstream undoes that: `str.splitlines()`, `_untrusted.split_lines`
+and a bare LF split are equally forged. `_git_common._git_verbatim` is `_git`
+with the translation off, and it is the escape for any stream carrying somebody
+else's file content. With the bytes intact, `stdout.split(chr(10))` is then
+exact, because a file line cannot contain LF by definition.
+
+That site is absent from the register by construction and its reason lives in
+`test_the_narrowed_readers_did_not_quietly_revert`.
+
+**`resolve.py` renders `path` raw at five `✓`/`⊘`/`✗` rows, and that is
+deliberate (#1693).** `targets` holds only `_list_conflicts()` output; a
+comma-separated argv PATH list is a *filter* over that set, refused unless every
+element is already conflicted. Quoting therefore reaches all five. Relax that
+refusal and they need `_untrusted.flat` the same day.
 
 **Op traps:** `git-push` refuses an ambiguous upstream rather than guessing —
 use `git-push:set-upstream`. `git-resolve` leaves a branch conflicted on

@@ -915,6 +915,20 @@ def main() -> int:
         print("No conflicted files. Nothing to resolve.")
         return 0
 
+    # This block is the ground under every `path` rendered below, and #1693 was
+    # filed because that ground was written down nowhere. The `✓` / `⊘` / `✗`
+    # rows in this function and in `_resolve_partial` interpolate `path` with no
+    # `_untrusted.flat`, and they are sound because `targets` can only ever hold
+    # strings `_list_conflicts()` produced — `git diff --name-only
+    # --diff-filter=U`, which `core.quotePath` octal-quotes, so no byte above
+    # 0x7F and no line separator survives in one.
+    #
+    # argv is NOT a second source. A comma-separated PATH list is a **filter**
+    # over that set: anything not already conflicted is refused three lines
+    # down, before a single row is printed. Relax that refusal and the five
+    # interpolations need flattening the same day.
+    # `tests/test_git_investigate_and_resolve_relay_grounds_1693.py` pins it,
+    # and the register carries it on `_git_common.py::_list_conflicts`.
     if target == "all":
         targets = all_conflicts
     else:

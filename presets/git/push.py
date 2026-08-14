@@ -1358,6 +1358,59 @@ def _split_hook_stdout(push_stdout: str) -> tuple[list[str], bool]:
     return lines, False
 
 
+#: git's fixed epilogue on any failed push. It names the URL and nothing else,
+#: so it is never the answer to "why" while any other line is available (#1669).
+#: Measured on git 2.46.2: a pre-push hook that exits non-zero produces exactly
+#: this on stderr and nothing more, which is why "read stderr instead" would
+#: have replaced a failing assertion with a line naming nobody.
+_PUSH_EPILOGUE_RE = re.compile(r"^error:\s*failed to push some refs\b",
+                               re.IGNORECASE)
+
+
+def _push_error_line(push_stdout: str, push_stderr: str) -> str:
+    """The line that explains a failed push — git's own channel first (#1669).
+
+    `_first_error_line` over the merged stream is the wrong reader here, and
+    the receipt on #1669 is what it costs: a push that died in transport was
+    explained by a footnote from the pre-push hook's SUCCESS disclosure, while
+    `Connection to github.com closed by remote host.` sat last and unselected.
+    The selector was a bare `"error" in low` matching inside `OSError`; that is
+    narrowed at the seam (`_git_common._ERROR_WORD_RE`), but narrowing a
+    keyword list only moves which hook line gets picked. What decides this is
+    **which process wrote the line**.
+
+    So the stream is partitioned the way `_split_hook_stdout` already
+    partitions it — on git's own `To <url>` header, which git prints only after
+    the hook has exited — and git's side is asked first:
+
+    * git's side: stderr, plus everything at and below the `To` header. This is
+      where a transport failure, a `[remote rejected]` per-ref line and a
+      server-side hook's `remote:` advice all land.
+    * the hook's side: stdout above that header. With no header at all (a push
+      a hook blocked, or one that never reached the remote) that is the whole
+      of stdout, which is the conservative reading — it is asked second, never
+      dropped.
+
+    Three tiers rather than two, because git's epilogue is contentless: a
+    hook-blocked push puts `E assert 1 == 2` on the hook's side and only
+    `error: failed to push some refs to '<url>'` on git's, and preserving the
+    failing assertion as `First error:` is the constraint #1669 names. The
+    epilogue is still returned when it is the only line either side has —
+    declining to name a cause we do have would be the absence-for-absence
+    trade this file exists to avoid.
+    """
+    hook_lines, _delimited = _split_hook_stdout(push_stdout or "")
+    all_stdout = _untrusted.split_lines(push_stdout or "")
+    git_lines = (all_stdout[len(hook_lines):]
+                 + _untrusted.split_lines(push_stderr or ""))
+    lf = chr(10)
+    specific = lf.join(ln for ln in git_lines
+                       if not _PUSH_EPILOGUE_RE.match(ln.strip()))
+    return (_first_error_line(specific)
+            or _first_error_line(lf.join(hook_lines))
+            or _first_error_line(lf.join(git_lines)))
+
+
 def _bounded_hook_lines(lines: list[str], head: int = _HOOK_HEAD_LINES,
                         tail: int = _HOOK_TAIL_LINES) -> list[str]:
     """`_git_common.bounded_lines` at the *hook relay's* narrower bound.
@@ -1822,10 +1875,13 @@ def _post_push_advisories(lookup: MrLookup, flags: set[str],
 
 
 def _report_first_seen_remote(remote_after: str, push_stdout: str, ref: str,
-                              target: str) -> tuple[bool, str]:
+                              target: str) -> tuple[bool, str, list[str]]:
     """The remote resolves now and the op had no pre-push SHA — what happened?
 
-    Returns `(moved, verdict_note)`.
+    Returns `(moved, verdict_note, lines)`. The lines are returned rather than
+    printed since #1669: `moved` is the state the `Status:` headline is derived
+    from and that headline sits ABOVE this block, so the body cannot go out
+    before the decision it belongs under has been made.
 
     This used to be one `elif` printing `(branch created)`, and it inferred the
     creation from `remote_before` being empty. `remote_before` is empty
@@ -1846,27 +1902,26 @@ def _report_first_seen_remote(remote_after: str, push_stdout: str, ref: str,
     """
     kind, old, why = _push_outcome(push_stdout, ref)
     if kind == "created":
-        print(f"Remote now at {remote_after} (branch created)")
-        return True, ""
+        return True, "", [f"Remote now at {remote_after} (branch created)"]
     if kind == "uptodate":
-        print(f"Remote at {remote_after} — already up to date, ref unchanged")
-        return False, ""
+        return False, "", [f"Remote at {remote_after} — already up to date, "
+                           "ref unchanged"]
     if kind == "forced":
-        print(f"Remote {old} → {remote_after} (force-updated — the branch "
-              "already existed on the remote and was overwritten)")
-        return True, ""
+        return True, "", [f"Remote {old} → {remote_after} (force-updated — the "
+                          "branch already existed on the remote and was "
+                          "overwritten)"]
     if kind == "updated":
-        print(f"Remote {old} → {remote_after} (the branch already existed on "
-              "the remote)")
-        return True, ""
-    print(f"⚠ Remote now at {remote_after} — what it pointed at BEFORE this "
-          "push is UNKNOWN")
-    print(f"  No pre-push SHA was recorded (@{{upstream}} did not resolve) and "
-          f"{why}. That is not evidence of a branch creation: the branch may "
-          "have already existed and been overwritten.")
-    print(f"  Settle it: git reflog show {target}")
+        return True, "", [f"Remote {old} → {remote_after} (the branch already "
+                          "existed on the remote)"]
     return True, (" - PRE-PUSH REMOTE STATE UNKNOWN: whether this push created "
-                  f"{target} or overwrote it is not established")
+                  f"{target} or overwrote it is not established"), [
+        f"⚠ Remote now at {remote_after} — what it pointed at BEFORE this "
+        "push is UNKNOWN",
+        f"  No pre-push SHA was recorded (@{{upstream}} did not resolve) and "
+        f"{why}. That is not evidence of a branch creation: the branch may "
+        "have already existed and been overwritten.",
+        f"  Settle it: git reflog show {target}",
+    ]
 
 
 def _ahead_behind_line() -> None:
@@ -1927,7 +1982,8 @@ def _pushed_commit_count(before: str, after: str) -> tuple[str, str]:
 
 def _success_receipt(branch: str, remote_before: str, upstream: str,
                      flags: set[str], fallback_remote: str,
-                     force_note: str = "", push_stdout: str = "") -> None:
+                     force_note: str = "", push_stdout: str = "",
+                     status_suffix: str = "") -> None:
     """Shared 'what landed' tail — remote diff, ahead/behind, MR line, advisories.
 
     `force_note` rides all the way to the `[result]` line on purpose. The force
@@ -1943,15 +1999,25 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
     `fallback_remote` is the remote the caller resolved for a branch with no
     upstream (#656) — required rather than defaulted, so this receipt cannot
     quietly name `origin` in a repo that has no such remote.
+
+    `status_suffix` is how a caller says something about *how* the push got
+    here without printing a second `Status:` line of its own (#1669). The
+    rebase-recovery route did exactly that — its own `Status: pushed ✓ (rebased
+    onto remote)` above this function's — and on a rebase that turned out to
+    change nothing the two disagreed, which is the defect this issue is about
+    reintroduced one caller over. There is one `Status:` line and one state
+    behind it; what the caller may add is a clause on it.
     """
+    body: list[str] = []
     if not upstream:
         upstream, up_why = _upstream_ref()
         if up_why:
-            print(f"⚠ UPSTREAM LOOKUP DID NOT RUN — {up_why}")
-            print(f"  The remote named below falls back to "
-                  f"{fallback_remote}/{branch} and may not be this branch's "
-                  "real upstream (#642), so the stale-base check and the "
-                  "verified SHA below may be about the wrong ref.")
+            body.append(f"⚠ UPSTREAM LOOKUP DID NOT RUN — {up_why}")
+            body.append(f"  The remote named below falls back to "
+                        f"{fallback_remote}/{branch} and may not be this "
+                        "branch's real upstream (#642), so the stale-base "
+                        "check and the verified SHA below may be about the "
+                        "wrong ref.")
     remote_name, remote_ref = _split_upstream(upstream, branch,
                                               fallback_remote)
     remote_after, after_why = _remote_sha(upstream)
@@ -1963,23 +2029,41 @@ def _success_receipt(branch: str, remote_before: str, upstream: str,
             # commits moved is a decoration on a line that already carries both
             # SHAs, and a verdict that grows a clause per soft check stops
             # being readable (#623/#674).
-            print(f"Remote {remote_before} → {remote_after} — how many "
-                  f"commit(s) that is: UNKNOWN ({cnt_why})")
+            body.append(f"Remote {remote_before} → {remote_after} — how many "
+                        f"commit(s) that is: UNKNOWN ({cnt_why})")
         else:
-            print(f"Remote {remote_before} → {remote_after} ({ncommits} commit(s))")
+            body.append(f"Remote {remote_before} → {remote_after} "
+                        f"({ncommits} commit(s))")
     elif not remote_before and remote_after:
-        moved, unknown_note = _report_first_seen_remote(
+        moved, unknown_note, lines = _report_first_seen_remote(
             remote_after, push_stdout, remote_ref,
             f"{remote_name}/{remote_ref}")
+        body += lines
     elif remote_before and remote_after and remote_before == remote_after:
         moved = False
-        print("Already up to date — nothing to push")
+        body.append("Already up to date — nothing to push")
     else:
         # Push succeeded but the remote-tracking SHA isn't locally resolvable
         # (shallow clone, odd remote layout). Don't claim up-to-date.
         remote_after = ""
-        print("Pushed — remote ref not locally resolvable for a before/after "
-              "diff" + (f" ({after_why})" if after_why else ""))
+        body.append("Pushed — remote ref not locally resolvable for a "
+                    "before/after diff"
+                    + (f" ({after_why})" if after_why else ""))
+
+    # #1669: the headline is the same `moved` the `[result]` line below is
+    # rendered from, which is why it is printed HERE and not by the caller.
+    # `Status: pushed ✓` was a constant, and on a no-op push it sat three lines
+    # above `[result] NOT PUSHED - already up to date` — two flatly
+    # contradictory column-0 fields, with the sentence that reconciles them
+    # (`Already up to date`) between them and outside a `grep` window a reader
+    # narrows to exactly because this receipt is long. git exiting 0 is not the
+    # same claim as the ref having moved, and only one of them is what
+    # `Status:` was read as saying.
+    print(("Status: pushed ✓" if moved
+           else "Status: nothing to push ✓ — the remote ref already matched")
+          + status_suffix)
+    for ln in body:
+        print(ln)
 
     _ahead_behind_line()
 
@@ -2466,10 +2550,15 @@ def _recover_by_rebase(branch: str, remote_before: str, upstream: str,
     # until #1490 — and a push that lands after a rebase is precisely a push
     # whose hook just ran, so it was the receipt most in need of one.
     _report_prepush_hook(result.stdout or "", result.stderr or "", flags)
-    print("Status: pushed ✓ (rebased onto remote)")
+    # The `(rebased onto remote)` disclosure rides on `_success_receipt`'s own
+    # status line rather than on a second one above it (#1669): this route used
+    # to print `Status: pushed ✓ (rebased onto remote)` here and then let the
+    # receipt print its own, so a rebase that turned out to move nothing
+    # produced two column-0 `Status:` lines saying opposite things.
     _note_landed(branch, remote_name, remote_ref)
     _success_receipt(branch, remote_before, upstream, flags, remote_name,
-                     push_stdout=result.stdout or "")
+                     push_stdout=result.stdout or "",
+                     status_suffix=" (rebased onto remote)")
     return 0
 
 
@@ -2794,15 +2883,25 @@ def _push_op() -> int:
                 return _report_recovery_timeout(
                     "rebase recovery", branch, f"{remote_name}/{remote_ref}")
 
-        print("Status: PUSH REJECTED ✗")
-        err = _untrusted.flat(_first_error_line(combined))
-        if err:
-            print(f"First error: {err}")
-        # Every hint below reads git's own ref status, not the merged stream —
+        # Every line below reads git's own ref status, not the merged stream —
         # same channel discipline as the non-fast-forward decision (#641). A
         # hook's advice used to pick which hint the caller was shown.
         status = _ref_status(result.stdout or "", remote_ref)
         low = status.lower()
+        # #1669: the headline, the hint and the `[result]` verdict word are one
+        # state, so they cannot disagree. An empty `status` means git reported
+        # no per-ref line at all — the push never reached the remote, which is
+        # what the hint below has said correctly all along. `REJECTED` there
+        # reads as the remote refusing the ref, and a reader acting on the
+        # verdict line alone rebases against a divergence that does not exist.
+        reached_remote = bool(status)
+        verdict = "REJECTED" if reached_remote else "STOPPED BEFORE THE REMOTE"
+        print("Status: PUSH REJECTED ✗" if reached_remote
+              else "Status: PUSH STOPPED BEFORE THE REMOTE ✗")
+        err = _untrusted.flat(_push_error_line(result.stdout or "",
+                                               result.stderr or ""))
+        if err:
+            print(f"First error: {err}")
         if "stale info" in low:
             # The lease check failed — the remote moved since you fetched.
             # NOT a server-side rule; a rebase isn't the fix either.
@@ -2840,14 +2939,16 @@ def _push_op() -> int:
         print("")
         for ln in relayed_block(combined):
             print(ln)
-        _result(f"NOT PUSHED - REJECTED  {branch} -> {remote_name}/{remote_ref}"
+        _result(f"NOT PUSHED - {verdict}  {branch} -> {remote_name}/{remote_ref}"
                 + (f" - {err}" if err else ""))
         return result.returncode
 
     # Above the status line, not below it: the hook ran before the push, and a
     # receipt is read from the bottom (#623) — the verdict stays last.
     _report_prepush_hook(result.stdout or "", result.stderr or "", flags)
-    print("Status: pushed ✓")
+    # The `Status:` line is `_success_receipt`'s since #1669: it is derived from
+    # the same `moved` state as the `[result]` verdict, and that state is not
+    # known until the remote has been read back.
     _note_landed(branch, remote_name, remote_ref)
     force_note = ""
     if "force-with-lease" in flags:

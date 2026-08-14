@@ -333,7 +333,12 @@ def test_a_blocked_push_does_not_dump_the_whole_suite_transcript(box) -> None:
     rc, out = box.drive_push()
     assert box.hook_ran
     assert rc != 0, out
-    assert "NOT PUSHED - REJECTED" in out
+    # `STOPPED BEFORE THE REMOTE`, not `REJECTED`, since #1669: git emitted no
+    # per-ref status line for a push its own local hook refused, and the
+    # `Hint:` under this verdict has always said so. This test's own scenario is
+    # the second instance on that issue — a local gate reported in the word a
+    # reader takes to mean the remote refused the ref.
+    assert "NOT PUSHED - STOPPED BEFORE THE REMOTE" in out
     assert "running full test suite" in out, "the arm it took must survive"
     assert "Tests failed. Push aborted." in out, "the refusal must survive"
     assert "dot line 200" not in out, "the middle must be elided"
