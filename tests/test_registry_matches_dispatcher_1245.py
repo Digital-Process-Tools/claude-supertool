@@ -180,6 +180,33 @@ def test_a_form_entry_gets_no_at_file_route_of_its_own(
     assert "read" in supertool._READ_OP_AT_FIELDS
 
 
+def test_the_form_key_is_honoured_on_a_config_this_repo_does_not_ship(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The two `SHIPPED_CONFIGS` assertions pin *data* — they read the JSON and
+    would pass with both guard functions reverted. That is their job (anti-rot
+    on two files nothing else checks), but it leaves the *behaviour* pinned only
+    by the shipped data happening to contain a form entry.
+
+    So: a synthetic config, no relation to this repo's, exercising both guards
+    at once. `phantom` here is what `read-grep` was — a documented spelling of
+    another op, carrying `:::` so it reaches the payload-route branch.
+    """
+    monkeypatch.setattr(supertool, "_CONFIG", {"builtin-ops": {
+        "read": {"syntax": "read:PATH"},
+        "made-up-form": {"form": "read", "syntax": "read:PATH:::grep=PATTERN"},
+    }})
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+    monkeypatch.setattr(supertool, "_AT_FILE_REGISTRY_BUILT", False)
+    monkeypatch.setattr(supertool, "_AT_FILE_REGISTRY", {})
+
+    assert "made-up-form" not in supertool._configured_op_names(supertool._CONFIG)
+    assert "read" in supertool._configured_op_names(supertool._CONFIG)
+
+    supertool._build_at_file_registry()
+    assert supertool._at_file_specs("made-up-form") == []
+    assert "made-up-form" not in dict(supertool._at_file_dropped_routes())
+
+
 # --- `status` is a gate, not a label ---------------------------------------
 
 def _op_listing(monkeypatch: pytest.MonkeyPatch, status: object) -> str:

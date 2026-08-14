@@ -736,9 +736,10 @@ def _presets_not_loaded_here() -> List[str]:
 
 
 #: Line prefixes git writes into a file it could not merge. `|||||||` is the
-#: diff3/zdiff3 style's base section, absent from the default `merge` style —
-#: matching only the two obvious ones would classify a diff3 conflict as
-#: ordinary broken JSON, which is the quieter half of the same wrong answer.
+#: diff3/zdiff3 style's base section and is here for the *line list*, not for
+#: detection: every style emits `<<<<<<<` and `>>>>>>>`, so the conflict is
+#: found either way. What it buys is that the list of lines to go and fix is
+#: complete — one missing entry sends the reader back to the file.
 _CONFLICT_MARKER_PREFIXES = ("<<<<<<<", "|||||||", "=======", ">>>>>>>")
 
 
@@ -767,6 +768,30 @@ def _skipped_config() -> Optional[Tuple[str, str]]:
     Returns None when there genuinely is no config — inventing a presence is
     the same defect mirrored.
 
+    **Uncached, and repeated per unresolved op.** `_load_config` is guarded by
+    `_CONFIG_CHECKED` and this is not, so `dispatch` calling
+    `_unknown_op_message` once per unresolved op — and `batch` recursing per
+    sub-op — means N walks for N unresolvable shipped-preset names in one call,
+    where before there was a static string. That is a deliberate trade, not an
+    oversight:
+
+    * The walk cannot start unless `_CONFIG_PATH` is falsy, so every call from
+      inside a project returns above on a cached `_load_config`. The cost is
+      confined to an already-erroring path in a tree with no usable config, and
+      `test_no_walk_happens_when_a_config_actually_loaded` is what keeps it
+      there.
+    * Caching it would need invalidating on `cwd:`, which retargets the working
+      directory mid-call and has no hook to hang that on. A cached answer read
+      after a chdir is a claim about the wrong tree — #678's shape, and a worse
+      defect than the walk it saves.
+    * The walk is bounded by the parent-chain depth (an `isfile` per level) and
+      reads one file at most, at the moment the process is about to print an
+      error and stop.
+
+    If the repetition ever matters, the fix is to make `_unknown_op_message`
+    take the note as an argument and have `dispatch` derive it once — not to
+    cache this.
+
     The load is forced here rather than assumed of the caller. `_CONFIG_PATH`
     is None both when no config loaded *and* when none has been attempted yet,
     and `_unknown_op_message` reads it without triggering one — in a dispatch
@@ -781,7 +806,19 @@ def _skipped_config() -> Optional[Tuple[str, str]]:
     d = os.path.abspath(os.getcwd())
     while True:
         candidate = os.path.join(d, ".supertool.json")
-        if os.path.isfile(candidate):
+        if not os.path.isfile(candidate):
+            # The name exists and is not a regular file. `_load_config` gates
+            # on `isfile` too, so it walks straight past — the right behaviour
+            # for a loader and the wrong sentence for a reader: "no
+            # .supertool.json was found" about a name sitting in the cwd is
+            # this issue's own defect, one `stat` over. `lexists` rather than
+            # `exists`, so a dangling symlink is reported instead of resolving
+            # to nothing and reading as absent.
+            if os.path.isdir(candidate):
+                return (candidate, "is a directory, not a file")
+            if os.path.lexists(candidate):
+                return (candidate, "is not a regular file")
+        else:
             try:
                 # errors="replace" on purpose: a config that is not UTF-8 is
                 # one more way to be unusable, and raising here would take
@@ -803,9 +840,12 @@ def _skipped_config() -> Optional[Tuple[str, str]]:
                 json.loads(text)
             except ValueError as exc:
                 return (candidate, f"does not parse ({exc})")
-            # Parsed on a second look. The loader still rejected it, so the
-            # failure was downstream of the parse — a preset file or the mcp
-            # block — and claiming a syntax error here would be a guess.
+            # Parsed on a second look, and the reason is deliberately NOT
+            # named. Two different histories land here: the loader failed
+            # downstream of the parse (a preset file, the mcp block), or its
+            # strict-UTF-8 read raised `UnicodeDecodeError` on bytes this
+            # re-read replaced. Naming either one would be a guess, and the
+            # displayed string is the only claim that holds for both.
             return (candidate, "was found and could not be loaded")
         parent = os.path.dirname(d)
         if parent == d:
