@@ -17320,10 +17320,11 @@ def _guard_drop_io_numbers(text: str) -> str:
 def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
     """Tokenise into simple commands plus what it could not read, or raise ValueError.
 
-    What it models: POSIX quoting, `;` `&&` `||` `|` `&` and redirections as
-    separators, leading `VAR=value` assignments, a short list of wrapper words,
-    heredoc bodies, and backtick / `$(...)` substitution wherever the shell
-    would have split it.
+    What it models: POSIX quoting, `;` `&&` `||` `|` `&` as separators,
+    redirections as **removals** rather than separators (#1684 — the words on
+    both sides of one belong to the same command), leading `VAR=value`
+    assignments, a short list of wrapper words, heredoc bodies, and backtick /
+    `$(...)` substitution wherever the shell would have split it.
 
     What it cannot model is returned as the second element rather than silently
     dropped: a substitution whose delimiters are inside quotes, and a word that
@@ -17346,19 +17347,28 @@ def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
 
     segments: List[List[str]] = []
     current: List[str] = []
-    redirected = False
+    drop_next = False
     for token in tokens:
         if token and all(ch in _GUARD_PUNCTUATION for ch in token):
+            if "<" in token or ">" in token:
+                # A redirection is NOT a command separator, and treating it as
+                # one put its target where a command word is read: `2>&1` left
+                # a segment `['1']`, and `git status > gh` one whose head was
+                # `gh` (#1684). The words on both sides of it belong to the
+                # same command — `gh pr view 1 > out.txt --json state` runs
+                # `gh pr view 1 --json state` — so the operator and its target
+                # are dropped and the segment continues. Dropping the target
+                # while still splitting would have been worse than the bug:
+                # `gh pr view 1 > f gh issue list` would then read `gh issue
+                # list` as a command nobody runs, and a wrong block has no
+                # per-command escape.
+                drop_next = True
+                continue
             segments.append(current)
             current = []
-            # The word after a redirection operator is its target, not a
-            # command: `git status 2>&1` left a segment `['1']` and
-            # `git status > gh` one that reads `gh` as a command word (#1684).
-            # Nothing shipped declares a single-token argv, so this was a
-            # latent wrong block rather than a live one.
-            redirected = "<" in token or ">" in token
-        elif redirected:
-            redirected = False
+            drop_next = False
+        elif drop_next:
+            drop_next = False
         else:
             current.append(token)
     segments.append(current)
@@ -18126,7 +18136,13 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
         # A positive match is authoritative even when the population is short:
         # an op that IS in the registry and DOES declare this invocation is a
         # fact, and a missing preset cannot unmake it.
-        return GuardVerdict("blocked", tuple(matches), tuple(notes))
+        #
+        # An arity decline on ANOTHER segment rides along in `notes` rather
+        # than being dropped: `git status && git push origin v1.0` renders one
+        # refusal, and without this the only thing said about the push is
+        # nothing (#1684, found in review).
+        return GuardVerdict("blocked", tuple(matches),
+                            tuple(notes) + tuple(uncovered), tuple(uncovered))
     if uncovered:
         # Ahead of `undecided`, and the order is the point: a decided "no op
         # covers this form" rendered as "the guard could not answer" would be

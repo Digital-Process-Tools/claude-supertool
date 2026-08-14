@@ -194,6 +194,39 @@ def test_a_redirection_target_is_not_a_command(shipped_git):
     assert [s for s in segments if s] == [["git", "status"]], segments
 
 
+def test_a_redirection_does_not_split_the_command_it_sits_in(shipped_git):
+    """Found in review: dropping the target while still splitting is worse.
+
+    `gh pr view 1 > f --json state` runs `gh pr view 1 --json state`. Split at
+    the operator, the words after the target become a segment of their own and
+    the guard scores a command nobody typed — a WRONG block, and those have no
+    per-command escape.
+    """
+    segments, _unread = supertool._guard_segments(
+        "gh pr view 1 > f gh issue list")
+    assert [s for s in segments if s] == [
+        ["gh", "pr", "view", "1", "gh", "issue", "list"]], segments
+    for command in ("git status > f && git push origin",
+                    "cat < in.txt | git push origin"):
+        segments, _unread = supertool._guard_segments(command)
+        assert len([s for s in segments if s]) == 2, (command, segments)
+
+
+def test_an_arity_decline_survives_a_refusal_in_the_same_command(shipped_git):
+    """Found in review: `uncovered` was dropped when another segment blocked.
+
+    Nothing runs either way, so the refusal is the right verdict — but the
+    push was the half the caller most needed a sentence about, and it got
+    none.
+    """
+    verdict = supertool.guard_command("git status && git push origin v1.0")
+    assert verdict.state == "blocked", verdict
+    assert any("no op covers this form" in note for note in verdict.notes), (
+        verdict)
+    text = supertool.guard_refusal(verdict)
+    assert "no op covers this form" in text, text
+
+
 def test_the_refusal_quotes_what_was_typed(shipped_git):
     verdict = supertool.guard_command("git status 2>&1")
     assert verdict.state == "blocked", verdict
