@@ -51,6 +51,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -176,6 +177,36 @@ def _no_tracker(monkeypatch: pytest.MonkeyPatch):
     passes on a disclosure line it did not mean to assert about.
     """
     monkeypatch.setattr(push, "_mr_lookup", lambda branch: push.MrLookup(None))
+
+
+_BUDGET_FIGURES = (
+    re.compile(r"exceeded its (\d+)s budget"),
+    re.compile(r"TIMED OUT \((\d+)s\)"),
+    re.compile(r"needs more than (\d+)s to "),
+)
+
+
+def _budget_figures(out: str) -> list:
+    """Every clock `_report_recovery_timeout` quoted as the one that cut.
+
+    #1691: the unattributed test below asserted `str(push._RECOVER_TIMEOUT) not
+    in out` — the three characters `120` absent from the whole receipt. The
+    receipt carries the upstream line, so it reddened whenever the fixture sha
+    contained them; observed on `feature @ 120cb6a`, roughly one run in a few
+    hundred, on a suite this repo runs across a 12-leg matrix per PR. Worse, it
+    reads as a real regression in the budget wording the test names.
+
+    It could never have meant "no budget figure anywhere" in any case: the
+    receipt's own header prints `Push budget: 600s (:budget — default is 300s)`
+    on every single run. What the arm actually promises is narrower — these
+    three sentences are the only places it attributes the stall to a numbered
+    clock, and the unattributed arm has to render all three without one.
+
+    Matching the receipt's own wording rather than a digit string also widens
+    the assertion instead of merely de-flaking it: *any* number fails it now,
+    not just whatever `_RECOVER_TIMEOUT` happens to be this release.
+    """
+    return [m.group(1) for rx in _BUDGET_FIGURES for m in rx.finditer(out)]
 
 
 def _verdict(out: str) -> str:
@@ -383,10 +414,19 @@ def test_the_unattributed_recovery_stall_names_no_budget_at_all(
     assert rc != 0, out
     verdict = _verdict(out)
     assert "TIMED OUT" in verdict, verdict
-    assert str(push._RECOVER_TIMEOUT) not in out, (
-        "the receipt named " + str(push._RECOVER_TIMEOUT) + "s as the clock "
+    # Must-fire half: the unattributed arm has to have been reached at all.
+    # Without this, every assertion below is satisfied by a receipt that said
+    # nothing — which is the failure mode #1691 is an instance of.
+    assert "exceeded its budget while recovering" in out, (
+        "the unattributed arm was never reached, so its silence about a clock "
+        "is evidence of nothing:" + os.linesep + out)
+    assert _budget_figures(out) == [], (
+        "the receipt named " + repr(_budget_figures(out)) + " as the clock "
         "that cut, and this arm does not know which call stalled or what it "
         "was launched with:" + os.linesep + out)
+    assert "more than to " not in out, (
+        "dropping the figure left the retry sentence dangling — `needs more "
+        "than to rebase recovery`:" + os.linesep + out)
 
 
 def test_the_stage_that_knows_its_clock_still_reports_it(
@@ -404,6 +444,16 @@ def test_the_stage_that_knows_its_clock_still_reports_it(
     out = buf.getvalue()
     assert "45s" in out, out
     assert "(45s)" in _verdict(out), _verdict(out)
+    # The must-fire pair for `_budget_figures(out) == []` above (#1691). A
+    # negative assertion over a helper passes for free the moment the helper
+    # stops matching, and a regex over receipt wording is exactly the kind that
+    # rots when the wording is reworded. All three quoting sites must be seen
+    # here, so the empty list over there means "none quoted" and not "none
+    # looked for".
+    assert _budget_figures(out) == ["45", "45", "45"], (
+        "one of the three places the receipt quotes its clock is no longer "
+        "matched by `_BUDGET_FIGURES`, which silently disarms the unattributed "
+        "test: " + repr(_budget_figures(out)) + os.linesep + out)
 
 
 def test_the_deadline_is_cleared_between_runs(box) -> None:
@@ -546,3 +596,4 @@ def test_the_option_shaped_remote_really_executes(box) -> None:
 def test_documented() -> None:
     assert_change_is_findable(1615)
     assert_change_is_findable(1617)
+    assert_change_is_findable(1691)
