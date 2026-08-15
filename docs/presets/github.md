@@ -22,6 +22,7 @@ A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting anothe
 | `gh-job` | `gh-job:NUMBER[:raw[:-N\|:START[:END]]\|:grep:PATTERN]` | Job failure detail: PR context + error pattern search + log tail. A `Suite:` line carries the pytest terminal summary read out of the log — `6 failed, 7760 passed, 677 skipped` — when the log states one, because that is the only number in the render that counts **tests** rather than legs ([#1050](https://github.com/Digital-Process-Tools/claude-supertool/issues/1050)); no summary in the log prints no line, never a zero. The line says it is the **log's** claim, not a count supertool made — the log is written by the code the job ran, which on a PR is the PR's own — and is cross-checked against the conclusion the Actions API reports, which the log does not write; the two disagreeing is printed ([#1076](https://github.com/Digital-Process-Tools/claude-supertool/issues/1076)). Gaps between error blocks are marked `... (N lines elided by this op — no error pattern matched them; the log itself is intact)` rather than a bare `...`, which is indistinguishable from an ellipsis the log wrote. **Takes either id namespace** — hand it a check-run id (CodeQL, Dependabot, an external app) and it renders the check run instead, under `# Check run #N` with a `Routed:` line naming the switch and the log mode it could not apply; the checks API is consulted only after the Actions endpoint 404s, so this costs nothing on any working call ([#827](https://github.com/Digital-Process-Tools/claude-supertool/issues/827), see [Two id namespaces](#two-id-namespaces-actions-jobs-and-check-runs)). `:raw` dumps the full trace; `:raw:START:END` slices lines (1-indexed, inclusive); `:raw:-N` returns the **last N lines**, and a START past the end returns the tail of the width requested with a line saying so rather than declining — see [Reading a range](gitlab.md#reading-a-range) ([#487](https://github.com/Digital-Process-Tools/claude-supertool/issues/487)); `:grep:PATTERN` runs an ad-hoc regex over the log (literal fallback on bad regex, ±context, names the pattern + tail on no-match — never silent-empty). Optional per-job `job_patterns` table in `.supertool.json` (see gitlab preset doc) maps job names to tighter patterns + a `resolution` op. Zero matches on a job GitHub calls `failure` prints `## FAILED — supertool could not classify this job` — patterns tried + a log tail, never silence. That header read `## FAILED — no error pattern matched` until [#1106](https://github.com/Digital-Process-Tools/claude-supertool/issues/1106), which is word-for-word what the gap marker says about lines it elided *inside a successful classification*; `gl-job` refuses in the same words and a test pins the two renders disjoint. `## No error patterns matched` survives only for jobs that did not fail. **On a job whose conclusion is not `failure`** — `cancelled`, `timed_out`, `skipped`, or still running — the header drops its completeness claim and a `> NOTE:` block says error-block selection is a poor fit here and names `:raw:-80` / `:grep:orphan` ([#916](https://github.com/Digital-Process-Tools/claude-supertool/issues/916), see [`:fail` on a job that did not fail](#fail-on-a-job-that-did-not-fail)) |
 | `gh-check` | `gh-check:CHECK_RUN_ID` \| `gh-check:pr:NUMBER` | The **other** id namespace. A check run's status, output title/summary and its annotations — `path:line`, title, message, which for a scanning check (CodeQL, Dependabot, an external app) is the whole finding. Annotations are capped at `GH_CHECK_ANNOTATION_CAP` (default 5) with `+N more` in header **and** footer; a full `per_page=100` page is disclosed as a floor, not a total. Zero annotations on a non-passing check is never rendered as an all-clear, and a failed annotations fetch is never rendered as zero. `gh-check:pr:N` lists the check runs on PR N's head commit **with their ids**, passing ones included. Since [#827](https://github.com/Digital-Process-Tools/claude-supertool/issues/827) this op is the *explicit* form rather than the only route — `gh-job:ID` answers for a check run too, and `gh-pr` names a non-Actions leg as `CodeQL (check #ID)` — so nobody has to learn it. Does not read the code-scanning API ([#793](https://github.com/Digital-Process-Tools/claude-supertool/issues/793), see [Two id namespaces](#two-id-namespaces-actions-jobs-and-check-runs)) |
 | `gh-pr-create` | `gh-pr-create:@FILE` | Open a PR from a JSON/TOML payload. **`base` is required and never defaulted** — `master` and a release branch are equally plausible from one cwd, and a wrong base silently retargets the merge; `head` defaults to the current branch and `repo` to the origin remote, each printed with the source it came from. The receipt names the number and URL, base/head as resolved, **whether any check actually started** (zero renders as "nothing has been created", never as pending), and the issues the body links, parsed with the same closing-reference reader `gh-pr` uses so a malformed `Closes` line is caught at creation rather than after the merge. See [The base is never guessed](#the-base-is-never-guessed) |
+| `gh-pr-edit` | `gh-pr-edit:NUMBER:@FILE[:unlink]` | **Update a published PR's body — with the closing-reference check a hand-replaced body bypasses.** Takes the same payload `gh-pr-create` takes, because the file the author already handed back is the file the correction is in. `gh pr edit` is not a fallback here: it fetches the PR through GraphQL first and the field set includes `projectCards`, which GitHub has sunset, so on a repository with Projects classic it fails outright before writing anything. Before the write it re-parses the published body with the same `_checks.closing_issue_refs` reader in three states — carried through, `DROPPED`, or the published body could not be read — and the last two **refuse**, because a correction that silently unlinks its issue is the failure the create-time check exists to prevent arriving by another door. `unlink` is the one token that permits it. After the write it compares the body in the PATCH response against the bytes it sent: `EXACT`, line endings `NORMALISED` by the server, `MISMATCH` naming both lengths and the first differing line, or `UNKNOWN` — and only the first two exit 0. See [Correcting a published body](#correcting-a-published-body) |
 | `gh-pr-merge` | `gh-pr-merge:NUMBER[:squash\\|:merge\\|:rebase][\\|force][\\|cleanup]` | **Merge a PR and prove it landed.** The only op here that writes. Refuses everything it cannot verify, reads the merge back off the remote rather than trusting an exit code, checks every linked issue individually, and reports the default branch after the squash. The preview opens with how far the base branch has moved since the commit the checks ran on — three states, disclosure only, never a block ([#1257](https://github.com/Digital-Process-Tools/claude-supertool/issues/1257), see [A green tally is a statement about a merge-base](#a-green-tally-is-a-statement-about-a-merge-base)). Without `\\|force` it prints the gate and merges nothing. See [gh-pr-merge refuses more than it merges](#gh-pr-merge-refuses-more-than-it-merges) |
 | `gh-since-tag` | *deleted — use `gh-prs:merged-since=TAG,state=merged`* | **DELETED in [#1405](https://github.com/Digital-Process-Tools/claude-supertool/issues/1405)**, folded into `gh-prs` as a filter value. The name is not a hole: `_OP_SYNONYMS` maps it to `gh-prs`, so typing it answers `Did you mean: gh-prs (preset 'github')` above the roster instead of a bare unknown-op error, **followed by `gh-prs`'s own registry `syntax` line**, which names the release-gate invocation at its end. That second line is [#1524](https://github.com/Digital-Process-Tools/claude-supertool/issues/1524) and it is what makes the pointer an answer: a synonym carries a name, and bare `gh-prs` is every open PR on the repo — a different board from `gh-prs:merged-since=TAG,state=merged`. This row and the code comment both used to assert the message already printed the target's description. It never did; `_near_miss_ops` pairs a candidate with a provenance label and nothing else. The suggestion also fired only when the target preset was **loaded**, so from a directory with no `.supertool.json` above it the deleted name produced no suggestion at all — the hole #1405 went to some lengths to avoid, reopened by an `in`. The row is kept because the boundary logic below still exists — it lives in `presets/github/_release_gate.py` now. **Should a release fire?** The two numbers the auto-release gate is defined in terms of, from one call: merged PRs since the last tag — number, title, merge instant, in merge order — and unreleased `changelog.d/` fragments by section. Both were hand-rolled every tick until [#1209](https://github.com/Digital-Process-Tools/claude-supertool/issues/1209), when the hand-rolled version printed a confident `0` beside 7 fragments; `gh` returns `2026-08-09T16:07:45Z` and `git show -s --format=%cI` returns `2026-08-09T17:13:43+02:00`, the two were compared as **strings**, and `"16" > "17"` is False at the second character. Every timestamp here is parsed to an instant first, and the two numbers print together because their contradiction is what caught it — a measured zero beside a non-zero fragment count renders as `CONTRADICTION`, not as two numbers to notice. The boundary has three states and the count has four; see [What "the last tag" is](#what-the-last-tag-is-and-when-it-has-no-clean-answer) |
 | `repo:` prefix | `repo:OWNER/NAME` (leading op) | Points `gh-pr`, `gh-prs`, `gh-issue`, `gh-issues`, `gh-run`, `gh-job`, `gh-check` at a repo other than the cwd's — see [Targeting another repo](#targeting-another-repo) |
@@ -36,7 +37,7 @@ A GitHub-cloned cwd, **or** a `repo:OWNER/NAME` target — see [Targeting anothe
 
 ## What a raw `gh` call is refused for
 
-Eleven of these twenty-one ops declare the raw invocation they supersede as `replaces` in `presets/github.json`, and the shipped `PreToolUse` hook refuses that invocation with the op's own description ([#1347](https://github.com/Digital-Process-Tools/claude-supertool/issues/1347), [#1384](https://github.com/Digital-Process-Tools/claude-supertool/issues/1384)). v0.34.0 shipped four of them — `gh-pr`, `gh-pr-merge`, `gh-pr-create`, `gh-issues` — while the rest of the family, including six ops whose GitLab twins were already mapped, went unclaimed.
+Twelve of these twenty-two ops declare the raw invocation they supersede as `replaces` in `presets/github.json`, and the shipped `PreToolUse` hook refuses that invocation with the op's own description ([#1347](https://github.com/Digital-Process-Tools/claude-supertool/issues/1347), [#1384](https://github.com/Digital-Process-Tools/claude-supertool/issues/1384)). v0.34.0 shipped four of them — `gh-pr`, `gh-pr-merge`, `gh-pr-create`, `gh-issues` — while the rest of the family, including six ops whose GitLab twins were already mapped, went unclaimed.
 
 | Raw command | Refused in favour of |
 |---|---|
@@ -51,6 +52,7 @@ Eleven of these twenty-one ops declare the raw invocation they supersede as `rep
 | `gh pr checks` | `gh-pr:NUMBER:status` |
 | `gh pr list` | `gh-prs` |
 | `gh pr create` | `gh-pr-create:@FILE` |
+| `gh pr edit --body` / `--body-file` / `--title` (and `-b` / `-t`) | `gh-pr-edit:NUMBER:@FILE` |
 | `gh pr merge` | `gh-pr-merge:NUMBER:squash\|force` |
 | `gh run view` | `gh-run:NUMBER[:attempt=K]` |
 | `gh run view --log` | `gh-job:NUMBER:raw` |
@@ -1643,6 +1645,67 @@ never exist is what cost a PR its first life.
 **The closing references are parsed and echoed back** with the same reader
 `gh-pr` uses, so a malformed `Closes` line is caught here rather than discovered
 after the merge.
+
+## Correcting a published body
+
+`gh-pr-create` writes a body once. Nothing updated one until
+[#1739](https://github.com/Digital-Process-Tools/claude-supertool/issues/1739),
+which is the wrong gap to have: the loop asks authors to correct their own
+record, and the #1727 agent did exactly that — it found a claim in its own PR
+body wrong, retracted it, and rewrote the payload file — with no op to publish
+the correction.
+
+**The documented raw fallback does not work on this repository.** `gh pr edit`
+fetches the pull request through GraphQL before it writes anything, and the
+field set it asks for includes `projectCards`:
+
+```
+$ gh pr edit 1746 --repo Digital-Process-Tools/claude-supertool --body-file <path>
+GraphQL: Projects (classic) is being deprecated in favor of the new Projects
+experience ... (repository.pullRequest.projectCards)
+```
+
+Exit 1, nothing written — re-derived 2026-08-15. `gh-pr-edit` goes through
+`PATCH /repos/{owner}/{repo}/pulls/{n}` instead, which does not touch projects.
+
+**The payload is the one `gh-pr-create` takes.** That is the point of the shape:
+the correction lives in the file the author already wrote, so publishing it is
+one call and not a `python3 -c` that lifts `body` out of a payload because
+`--body-file` wants raw markdown. `base`, `head`, `draft`, `labels`,
+`assignees`, `reviewers` and `milestone` have no meaning for a body update and
+are **named** under `## Not applied` rather than dropped in silence.
+
+**A correction is when a `Closes` line goes missing**, because the new text is
+usually pasted from somewhere else. `gh-pr-create` parses closing references at
+creation; a body replaced by hand bypasses that check entirely, which is the
+create-time failure arriving by another door. So the gate runs again here, on
+the *difference* between the published body and the new one, in three states:
+
+| State | What it means | What the op does |
+| --- | --- | --- |
+| carried through | every reference the published body had is in the new one | writes |
+| `DROPPED` | the new body loses one | **refuses**, names the reference, writes nothing |
+| `UNKNOWN` | the published body could not be read | **refuses** — a check that could not look is not a check that found nothing |
+
+`unlink` is the only way past either refusal, and it is a whole token rather
+than a flag on a payload field, so a deliberate re-scope is visible in the call
+and in the `[result]` line. A reference that moved into a code fence counts as
+dropped: GitHub does not honour one there, so neither does the gate.
+
+**The receipt answers what the raw route cannot.** `gh api -X PATCH` printed
+`2026-08-15T13:11:48Z` and nothing else — that says a write happened, not which
+bytes are on the server. The PATCH response carries the stored body, so the
+comparison is available in the same call and this op makes it:
+
+| Verdict | Meaning | Exit |
+| --- | --- | --- |
+| `EXACT` | byte-identical to what was sent | 0 |
+| `NORMALISED` | identical apart from line endings the server rewrote | 0 |
+| `MISMATCH` | not what was sent — both lengths and the first differing line | 1 |
+| `UNKNOWN` | the response carried no `body` field | 1 |
+
+`UNKNOWN` exits 1 for the same reason the whole family does: a write whose
+result was never read back must not render as a verified one.
 
 ## An unrecognised mode is refused, and `:threads` answers the header's own question
 

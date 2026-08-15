@@ -19,9 +19,9 @@ checkout's own `allow_outside_cwd` (#1353) cannot colour the result::
     syntax detector on empty: False
 
 **The detector is now either signal, never one superseding the other.** Walked
-over the whole registry: of the 24 shipped ops whose `syntax` names a path,
+over the whole registry: of the 25 shipped ops whose `syntax` names a path,
 **zero** carry `{file}` or `{dir}` in their `cmd`. So a `cmd`-supersedes-`syntax`
-detector would have disarmed the gate for all 24 — the reason this file pins the
+detector would have disarmed the gate for all 25 — the reason this file pins the
 `syntax`-only shape as loudly as the `cmd`-only one.
 
 **`{arg}` and `{args}` are deliberately not signals**, though `{arg}` substitutes
@@ -143,8 +143,14 @@ class TestTheCmdTemplateIsADetectorSignal:
 
     def test_a_path_naming_syntax_still_fires_with_no_cmd_placeholder(
             self) -> None:
-        """`cmd` must ADD a signal, never replace one. All 24 currently-gated
-        shipped ops are this shape, so a supersede would disarm every one."""
+        """`cmd` must ADD a signal, never replace one. All 25 currently-gated
+        shipped ops are this shape, so a supersede would disarm every one.
+
+        That 25 is the `syntax` detector's population and the assertion below
+        counts `_entry_names_a_path`, the OR of syntax and cmd. They agree only
+        because the cmd detector currently matches zero of the 87 shipped ops;
+        the first op shipped with `{file}` in its `cmd` makes them diverge and
+        only the assertion moves. Do not collapse the two."""
         entry = {"cmd": "{python} x.py {args}", "syntax": "probe:PATH"}
         assert supertool._entry_names_a_path(entry) is not None
         verdict = supertool._preset_path_containment(
@@ -227,18 +233,27 @@ class TestTheShippedRegistryIsFullyDetected:
         named = [n for n, e in presets.items()
                  if supertool._entry_names_a_path(e) is not None]
         declared = [n for n in named if "paths" in presets[n]]
-        assert len(named) == 24, sorted(named)
+        # #1739 added `gh-pr-edit`, which DECLARES a boundary, so the named
+        # and declared counts each moved by one and the register did not. The
+        # register's own header comment in `_supertool.py` still reads "24
+        # shipped PRESET ops name a path, 5 declare a boundary, these 19 do
+        # not" and must read 25 / 6 / 19 — that file was held by another
+        # branch when this landed, so the comment is a sequenced follow-up
+        # rather than an oversight. These four numbers are the only thing
+        # under it.
+        assert len(named) == 25, sorted(named)
         assert sorted(declared) == [
-            "claims", "gl-api", "xml", "xml_attr", "xml_count"], sorted(declared)
+            "claims", "gh-pr-edit", "gl-api", "xml", "xml_attr",
+            "xml_count"], sorted(declared)
         assert len(supertool._UNDECLARED_PATH_OPS) == 19
 
         whole = _registry()
         named_all = [n for n, e in whole.items()
                      if supertool._entry_names_a_path(e) is not None]
         declared_all = [n for n in named_all if "paths" in whole[n]]
-        assert len(named_all) == 24, sorted(named_all)
+        assert len(named_all) == 25, sorted(named_all)
         assert sorted(declared_all) == [
-            "claims", "gl-api", "xml", "xml_attr",
+            "claims", "gh-pr-edit", "gl-api", "xml", "xml_attr",
             "xml_count"], sorted(declared_all)
 
     def test_this_repo_ships_no_project_only_path_naming_op(self) -> None:
