@@ -57,8 +57,6 @@ sys.path.insert(0, str(ROOT / "presets"))
 
 DAEMON_NAME = "phpstan-warm-1743"
 
-# The real Popen, captured before any test replaces it.
-_REAL_POPEN = subprocess.Popen
 
 #: (adapter dir, env prefix). All four share one spawn path; all four ignored it.
 ADAPTERS = [
