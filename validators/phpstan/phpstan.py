@@ -27,6 +27,18 @@ from linebreaks import split_lines
 # Extra refusal substrings (comma-separated), opt-in per repo.
 SKIP_PATTERNS_ENV = "PHPSTAN_SKIP_PATTERNS"
 
+#: How this adapter's `count` relates to `errors` (validators/SCHEMA.md, #1728).
+#:
+#: `measured`: the verdict emit takes `count` from `totals.file_errors` and
+#: builds `errors` from `files[*].messages` — two keys of the same document, so
+#: `count` counts phpstan's findings and has never counted an `adapter` row.
+#: The core must not subtract from it. Every `adapter` row this file writes is
+#: in an exclusive emit that carries no findings, so the two never mix; the
+#: declaration is what makes that a statement rather than a coincidence.
+#:
+#: `errors_truncated: False`: the loop above the emit copies every message.
+COUNT_CONTRACT = {"count_basis": "measured", "errors_truncated": False}
+
 
 def first_line(text: str) -> str:
     """The tool's own words, so the reader can fix the config that caused it."""
@@ -242,6 +254,7 @@ def main() -> None:
         "count": count,
         "errors": errors,
         "duration_ms": dur,
+        **COUNT_CONTRACT,
     })
 
 

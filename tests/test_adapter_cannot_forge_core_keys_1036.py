@@ -62,7 +62,7 @@ AFTER = '{"b": 1}\n'
 # The keys SCHEMA.md declares an adapter may emit.
 SCHEMA_ADAPTER_KEYS = frozenset({
     "tool", "file", "ok", "count", "errors", "duration_ms", "metrics", "diff",
-    "skipped",
+    "skipped", "count_basis", "errors_truncated",
 })
 
 # The contract this file owns: keys the core stamps on a result and an adapter
@@ -82,6 +82,19 @@ CORE_ONLY_KEYS = frozenset({"no_verdict", "timeout", "elapsed_s", "resolved_to"}
 # documentation edit pre-authorised the next key a decision started reading.
 DECISION_READABLE_KEYS = frozenset({
     "tool", "ok", "count", "errors", "skipped",
+    # #1728. The adapter's statement about how its own `count` relates to its
+    # own `errors`, which only the adapter can know — `count` is `len(errors)`
+    # in twenty of them and `totals.file_errors` in phpstan. Widening this list
+    # is a containment question, so: the pair grants no power a payload did not
+    # already have. `total` makes the core subtract the stall rows it can see
+    # and `measured` makes it not, a difference bounded by the number of
+    # `adapter` rows in the payload; the loud direction (a larger measured
+    # count, so a regression) is the reachable one, and an adapter wanting a
+    # quiet result can already write `ok: true`. What the keys buy is the
+    # opposite of a bypass: a declaration that contradicts its own rows becomes
+    # an `adapter` fault, so a payload that would have been measured wrongly is
+    # not measured at all.
+    "count_basis", "errors_truncated",
 })
 
 
@@ -100,7 +113,8 @@ def _core_only() -> frozenset:
 #: the set of functions an adapter payload can steer.
 DECISIONS = ("_validator_no_verdict", "_validator_regressed",
              "_validator_baseline", "_validator_gate_did_not_run",
-             "_validator_not_checked", "_validator_measured_count")
+             "_validator_not_checked", "_validator_measured_count",
+             "_validator_count_contract_fault")
 
 
 def _keys_read_by_decisions() -> frozenset:
