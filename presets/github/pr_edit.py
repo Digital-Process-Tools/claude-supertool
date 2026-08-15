@@ -465,11 +465,21 @@ def main() -> int:  # noqa: C901
     old_title = ""
     state_line = "state: UNKNOWN — the published pull request could not be read"
     if isinstance(current, dict):
-        old_body = current.get("body") or ""
         old_title = str(current.get("title") or "")
         published_state = "merged" if current.get("merged") else str(
             current.get("state") or "?")
         state_line = f"state: {_untrusted.flat(published_state)}"
+        # `body` PRESENT and null is a pull request with no body — there is
+        # nothing to lose and the gate should pass. `body` ABSENT is a response
+        # that is not the object this op asked for, and reading that as an
+        # empty body would turn "could not look" into "looked and found
+        # nothing" one call before a publish. Keyed on the key, not on
+        # truthiness (audit of the first commits).
+        if "body" in current:
+            old_body = current.get("body") or ""
+        else:
+            read_err = ("the pull request came back without a body field, so "
+                        "there is nothing to compare against")
     elif not read_err:
         read_err = "gh returned no pull request object"
 

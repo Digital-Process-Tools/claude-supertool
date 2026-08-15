@@ -169,6 +169,16 @@ def test_an_old_body_that_could_not_be_read_is_unknown_and_never_ok():
     assert "gh timed out" in msg
 
 
+def test_a_published_body_that_is_null_is_a_body_with_nothing_to_lose():
+    """A pull request opened with no body at all. `None` reaches the gate as
+    `""` from `main`, and there is genuinely nothing to drop — this is the
+    positive control for the `UNKNOWN` case above, which must not render the
+    same way."""
+    state, lost, _msg = m.closing_ref_verdict("", "Closes #1739.", "")
+    assert state == m.REF_OK
+    assert lost == []
+
+
 def test_an_old_body_that_had_no_reference_to_lose_is_ok_not_dropped():
     state, lost, _msg = m.closing_ref_verdict("no reference here", "still none", "")
     assert state == m.REF_OK
