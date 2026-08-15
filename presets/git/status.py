@@ -52,6 +52,25 @@ STAGED_ABSENT_MARKER = "STAGED CONTENT NOT IN THIS TREE"
 #: `git diff` that did not answer is not a clean answer.
 STAGED_PROVENANCE_UNKNOWN = "Staged provenance UNKNOWN"
 
+#: A write newer than this reads as "something touched this tree recently".
+#:
+#: The same number and the same environment variable as `git-worktrees`
+#: (`presets/git/worktrees.py`), on purpose: a reader comparing the two ops'
+#: renders of one tree must not be comparing two different windows, and a
+#: second knob would drift silently. `SUPERTOOL_WORKTREE_ACTIVE_WINDOW` keeps
+#: its `WORKTREE` spelling here for exactly that reason — it is one knob, read
+#: from two places, not a knob this op invented.
+#: `tests/test_git_status_untracked_mtime_1724.py` pins the pair.
+ACTIVE_WINDOW_DEFAULT = 900
+
+#: The third state for an untracked path's write time (#1724).
+#:
+#: A row that silently carries no time, sitting under rows that do, reads as
+#: "this one is ordinary, so it is yours" — which is the exact conclusion the
+#: field exists to stop the reader drawing. An mtime that could not be read
+#: therefore says so, in the column where the time would have been.
+MTIME_UNREADABLE_MARKER = "mtime UNREADABLE"
+
 # Every call that could not answer this invocation, as (command, why).
 # Module-level because the calls are scattered through `main()` and the note
 # can only be written once the last of them has had its chance.
@@ -215,6 +234,105 @@ def _staged_path(line: str) -> str:
         elif " -> " in rest:
             rest = rest.split(" -> ", 1)[1]
     return _unquote_path(rest)
+
+
+def _age(seconds: float) -> str:
+    """Seconds as one short human token — the spelling `git-worktrees` uses.
+
+    Byte-identical to `worktrees.py::_age` and duplicated rather than imported:
+    that module is 1200 lines with a process-table scanner in it, and importing
+    it to format a number would put that cost on every `git-status` run. The
+    duplication is deliberate and small; what must not drift is the *window*,
+    which is why that one is pinned by a test across both modules.
+    """
+    seconds = max(0.0, float(seconds))
+    if seconds < 90:
+        return f"{int(seconds)}s"
+    if seconds < 5400:
+        return f"{int(seconds // 60)}m"
+    if seconds < 172800:
+        return f"{int(seconds // 3600)}h"
+    return f"{int(seconds // 86400)}d"
+
+
+def _worktree_root() -> str | None:
+    """Absolute path of this working tree, **to open** — not to print.
+
+    `git status --porcelain` names every path relative to the top level, never
+    to the cwd, so a `git-status` run from a subdirectory would stat the wrong
+    place without this. The value is joined onto a path and handed to
+    `os.stat`; it is never rendered, so it is deliberately NOT put through
+    `repo_label()`, whose flattening makes a display string that no longer
+    opens (#1557).
+
+    In a copied worktree `--show-toplevel` names the copy (#1536) — which here
+    is right rather than wrong: the untracked files being timed are the ones on
+    disk in this directory.
+
+    `None` when git did not answer, which becomes `MTIME_UNREADABLE_MARKER` on
+    every row rather than a silently missing column.
+    """
+    top = _git(["rev-parse", "--show-toplevel"])
+    if top.returncode == 0 and top.stdout.strip():
+        return top.stdout.strip()
+    return None
+
+
+def _untracked_age(root: str | None, porcelain_path: str, now: float):
+    """`(age_seconds, None)` for one `??` entry, or `(None, why)`.
+
+    `porcelain_path` arrives in git's *printed* form, which may be quoted; the
+    bytes it names are what `os.stat` needs, so it goes through
+    `_unquote_path` — the same reader `_staged_path` uses, for the same reason.
+    That unquoted form is used to OPEN and never to print: the printed row
+    stays byte-identical to what git wrote, which is what keeps this section on
+    the quoting ground the splitlines register records for `status.py::main`.
+
+    `follow_symlinks=False`, so a symlink is timed as itself rather than
+    reported unreadable because its target is gone.
+
+    The reason is `strerror` — libc's own sentence, which carries no filename —
+    rather than `str(exc)`, which interpolates the path and would put untracked
+    text into the render. It is flattened anyway, because being wrong about
+    that costs a forged line at column 0 in the section a reader consults to
+    decide whether a file is theirs.
+    """
+    if root is None:
+        return None, "this tree's top level could not be resolved"
+    raw = _unquote_path(porcelain_path).rstrip("/")
+    try:
+        st = os.stat(os.path.join(root, raw), follow_symlinks=False)
+    except (OSError, ValueError, NotImplementedError) as exc:
+        # `NotImplementedError` is not an `OSError` and is the one that would
+        # have escaped as a traceback: `follow_symlinks=False` on `os.stat` is
+        # supported on Windows only from 3.8 (bpo-37834), and this repo's floor
+        # is 3.9 — so on every supported interpreter it should not fire. It is
+        # caught anyway, because the cost of being wrong is the whole report
+        # dying at the courtesy column, and the cost of being right is a
+        # `mtime UNREADABLE` row that says what happened. `ValueError` is
+        # `os.stat`'s answer to an embedded NUL, which `_unquote_path` can in
+        # principle produce from an octal escape git would never emit.
+        said = getattr(exc, "strerror", None) or type(exc).__name__
+        return None, _untrusted.flat(str(said))
+    return now - st.st_mtime, None
+
+
+def _untracked_row(line: str, age, why: str, window: int) -> str:
+    """One untracked row, with the field #1724 is about.
+
+    Three states, and the third is the point. What this never says is *who*
+    wrote the file: nothing on disk records that, and a marker that implied it
+    would be a worse defect than the one it replaced. The window tag is a fact
+    about the clock — `git-worktrees`' own sentence — and the reader supplies
+    the half only they have, which is what they were doing at the time.
+    """
+    shown = line[3:]
+    if age is None:
+        return f"  {shown}  ({MTIME_UNREADABLE_MARKER}: {why})"
+    if age <= window:
+        return (f"  {shown}  (written {_age(age)} ago — inside the "
+                f"{_age(window)} activity window)")
+    return f"  {shown}  (written {_age(age)} ago)"
 
 
 def _reason(returncode: int, stderr: str) -> str:
@@ -662,11 +780,52 @@ def main() -> int:
                 if not full and len(unstaged) > 20:
                     print(f"  ... ({len(unstaged) - 20} more)")
             if untracked:
+                # #1724: until this, an untracked path another process dropped
+                # in the tree rendered identically to one you made and forgot,
+                # and the discriminator — the write time — was on disk and not
+                # in the report. A reviewer agent's `conftest_patch.py` reddened
+                # its author's suite and cost a round to establish it was not
+                # the author's own file.
+                #
+                # A time, not an attribution. Nothing on disk records which
+                # process wrote a file, so this op does not say; and no window
+                # here is a verdict about ownership either. Both reference
+                # points the issue offered fail on its own incident: the stray
+                # file was FRESH, so "older than the window" would not have
+                # flagged it, and the author was editing tracked files
+                # continuously, so "newer than the newest tracked write" would
+                # not have either. What survives is the field itself, next to
+                # the reader's own knowledge of what they were doing.
+                #
+                # One extra git call (`rev-parse --show-toplevel`) and one
+                # `os.stat` per entry. Porcelain collapses an untracked
+                # directory to a single `dir/` row, so the stat count is the
+                # row count, not the file count.
+                now = time.time()
+                window = env_int("SUPERTOOL_WORKTREE_ACTIVE_WINDOW",
+                                 ACTIVE_WINDOW_DEFAULT, minimum=1)
+                root = _worktree_root()
+                timed = [_untracked_age(root, l[3:], now) for l in untracked]
                 print(f"\n### Untracked ({len(untracked)})")
-                for l in (untracked if full else untracked[:10]):
-                    print(f"  {l[3:]}")
+                print(f"  (write time per path — nothing on disk records who "
+                      f"wrote a file, so this is a time and not a verdict; "
+                      f"#1724)")
+                for l, (age, why) in zip(untracked if full else untracked[:10],
+                                         timed):
+                    print(_untracked_row(l, age, why, window))
                 if not full and len(untracked) > 10:
-                    print(f"  ... ({len(untracked) - 10} more)")
+                    # The cap must not hide the row the field was added to
+                    # surface: git's order is alphabetical, so a stray file can
+                    # sort past it. Everything was stat'd, including what is
+                    # cut, so the newest hidden write is free to report — and
+                    # it is the one fact that would otherwise cost a second
+                    # call to `git-status:full`. Silent when no hidden row had
+                    # a readable time, rather than reporting the newest of the
+                    # ones that happened to answer.
+                    hidden = [a for a, _w in timed[10:] if a is not None]
+                    extra = (f", newest of them written {_age(min(hidden))} ago"
+                             if hidden else "")
+                    print(f"  ... ({len(untracked) - 10} more{extra})")
 
     # 4. Stash
     stash_cmd = ["stash", "list"]

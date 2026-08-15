@@ -828,6 +828,28 @@ porcelain quotes a space because its own format is space-separated; `--name-only
 
 One state is silence rather than a third state, deliberately: a repository with **no commits yet** has no HEAD for the index to be a revert of, so the question is meaningless rather than unanswered, and `git init && git add .` gains nothing to skim past. It is established rather than inferred — `git rev-parse --verify --quiet HEAD` answers "no such ref" as exit 1 with an empty stderr, spawned only where the diff has already failed. A probe that timed out, or failed with something to say, has not established anything and the `UNKNOWN` line prints.
 
+### Every untracked path carries its write time
+
+`git-status` used to list untracked paths with nothing separating *I made this and forgot it* from *something else wrote this while I worked*. A reviewer agent left a `conftest_patch.py` at the repository root of the tree its author was working in; it reddened one of the author's tests, and the author spent a round establishing by hand that the file was not its own before it could read its own suite figures ([#1724](https://github.com/Digital-Process-Tools/claude-supertool/issues/1724)). The discriminator was on disk and not in the render:
+
+```
+### Untracked (3)
+  (write time per path — nothing on disk records who wrote a file, so this is a time and not a verdict; #1724)
+  conftest_patch.py  (written 2m ago — inside the 15m activity window)
+  notes/scratch.md  (written 3h ago)
+  half_written  (mtime UNREADABLE: No such file or directory)
+```
+
+**A time, not an attribution.** Nothing on disk records which process wrote a file, so nothing here claims to know. The window tag is a fact about the clock — the same 15 minutes and the same `SUPERTOOL_WORKTREE_ACTIVE_WINDOW` knob `git-worktrees` uses, deliberately one knob read from two places rather than two that drift — and the reader supplies the half only they have, which is what *they* were doing at that time. An author who has not created a file in forty minutes reads a two-minute-old row and knows.
+
+**Three states, and the third is the point.** A row whose mtime could not be read says `mtime UNREADABLE` with libc's own reason. Silence there would have been the worse defect: a row with no time on it, under rows that have one, reads as *this one is ordinary, so it is yours* — which is the conclusion the field exists to stop. The unreadable case is not hypothetical; `git status` lists a path and the stat happens afterwards, so a file removed in between is exactly the "another process is writing in your tree" situation this whole field is for.
+
+**The cap does not hide the row the column was added for.** git lists untracked paths alphabetically, so a stray file can sort past the default view's ten. Every row is stat'd, including the cut ones, so the truncation marker carries the newest write among them — `... (5 more, newest of them written 12s ago)` — rather than costing a second call to `git-status:full`. It stays silent when no hidden row had a readable time, rather than reporting the newest of the ones that happened to answer.
+
+Two reference points were considered and rejected, both because they misclassify the incident that produced the issue. *Older than the activity window* would not have flagged the stray file, which was **fresh**. *Newer than the newest tracked-file write* would not have either, since the author was editing tracked files continuously — and it flags every scratch file you just made yourself. The printed time is the field that survives both.
+
+Cost: one `git rev-parse --show-toplevel` (porcelain names paths relative to the top level, not to your cwd) and one `os.stat` per row. Porcelain collapses an untracked directory into a single `dir/` row, so that is a stat per row and not per file.
+
 ### `ahead N, behind M` after a rebase is not lost work
 
 Straight after a successful `git rebase origin/master`, `git-status` printed `ahead 5, behind 1` and nothing else ([#1028](https://github.com/Digital-Process-Tools/claude-supertool/issues/1028)). That count is arithmetically true and its ordinary meaning is the opposite of what happened: `ahead N, behind M` is the render for two histories that have genuinely diverged, while here nothing was lost and the remote merely holds the pre-rebase originals of commits the branch already carries. Two agents stopped mid-task on separate lanes the same night to work out which of the two they were in.
@@ -935,7 +957,7 @@ The same function also parses with `_untrusted.split_lines` instead of `str.spli
 
 `git-commit`'s refused-commit render moved into `_failure_receipt`, a function returning lines rather than five `print`s inside `main`, so it can be driven with a hostile stream and no repository. It relays the hook transcript the way `git-push` relays its own: `split_lines`, then `visible(keep=tab)` per line. Tabs survive — a transcript is not parsed by column — and separators are shown rather than dropped.
 
-**The detector is a ratchet, and that is a decision rather than a shortcut.** An AST scan for "a child stream reaches a render with no marker between" reports **144 sites in 32 files** across `presets/git`, `presets/github` and `presets/gitlab`. Not all are defects: `push._local_head` returns `r.stdout.strip()` and that is a SHA. So `tests/test_forged_child_stream_line_1475.py` records a count per file that may only fall.
+**The detector is a ratchet, and that is a decision rather than a shortcut.** An AST scan for "a child stream reaches a render with no marker between" reports **146 sites in 32 files** across `presets/git`, `presets/github` and `presets/gitlab`. Not all are defects: `push._local_head` returns `r.stdout.strip()` and that is a SHA. So `tests/test_forged_child_stream_line_1475.py` records a count per file that may only fall.
 
 **What "a render" means is written down, because the scan pattern-matches shapes rather than deriving them.** `SINK_SHAPES` names the five it recognises — `print(...)`, `return <expr>`, `<obj>.write(...)`, `<obj>.append(...)`, `<obj>.extend(...)` — and a test probes each one, so a shape listed but no longer matched fails rather than reading as a shape with no instances. Until [#1626](https://github.com/Digital-Process-Tools/claude-supertool/issues/1626) the set was `print` and `return` alone, and it cost exactly what an undisclosed population costs: of the fifteen `presets/github/` relays [#1606](https://github.com/Digital-Process-Tools/claude-supertool/issues/1606) fixed, four went through `sys.stderr.write` and scored 0 both before and after the fix.
 
