@@ -11,6 +11,7 @@
     "README.md"
   ],
   "changelog_dir": "changelog.d",
+  "changelog_untagged": ["0.19.0", "0.18.0", "0.17.0", "0.16.0", "0.15.0", "0.14.0", "0.11.0"],
   "docs_targets": [
     "README.md"
   ],
@@ -39,11 +40,11 @@
     "v0.43.0",
     "v0.44.0"
   ],
-  "ci": {
-    "required_checks": 23
-  },
   "release": {
     "tag_pattern": "v{version}",
+    "create_release": true,
+    "draft": false,
+    "latest": true,
     "merge_method": "squash",
     "commit_subject": null,
     "triggers": {
