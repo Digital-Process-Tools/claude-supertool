@@ -34,6 +34,8 @@ This file loads on every session here, so it holds only what is true regardless 
 | How the repo is maintained — triage, merge gates, releases | `/oss:manager`, and `/oss:tick` for one tick |
 | What an op does                 | `supertool 'ops'`, then `docs/presets/<name>.md` |
 
+Three of those rows point outside this repository, at the `oss` plugin (`Digital-Process-Tools/claude-oss`), which owns the maintainer loop for every repo it manages rather than one copy per repo. **They resolve only where that plugin is installed** — `/oss:doctor` says whether it is, and an agent name that does not resolve is a spawn that errors, not a spawn that quietly does nothing. Nothing about *contributing* depends on it; the first row does not leave this tree.
+
 ## Three things that cost real time before you have written a line
 
 **This checkout may be someone's live binary.** `supertool.py` here is typically symlinked as `~/.local/bin/supertool`. Leaving this clone on a feature branch means every supertool call — yours and everyone else's, from every directory — runs unmerged code. Work in a worktree.
