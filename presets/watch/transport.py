@@ -993,7 +993,7 @@ def channel_disclosure() -> list[str]:
     the reason `delivery_of` and `DELIVERY_LABELS` live here too. `[]` when there
     is nothing to say.
     """
-    return naming.disclosure_lines(RESOLVED)
+    return naming.disclosure_lines(RESOLVED, naming.declared_names())
 
 
 def list_active_pids() -> list[dict[str, Any]]:

@@ -319,9 +319,14 @@ class TestThisRepoIsTheInstance:
     300s default, so every such push timed out having sent nothing. This entry
     is also the live instance of the key-by-key merge, since it supplies
     `budget` alone and the op's `timeout` has to survive it or the budget is
-    validated against nothing. Update the list with the reason; never relax the
-    assertion, because a shadowing entry that nobody registered is exactly the
-    stub-replacing-a-definition defect this file exists for.
+    validated against nothing. `watch` and `unwatch` joined on 2026-08-15 with
+    the same `watch_name` as their three siblings (#1732): a key in an op's block
+    reaches only *that* op's subprocess, and those two are the ops that spawn and
+    kill pollers, so declaring it on the three reading surfaces alone put this
+    repo's board on a private channel and its pollers on the default one. Update
+    the list with the reason; never relax the assertion, because a shadowing
+    entry that nobody registered is exactly the stub-replacing-a-definition
+    defect this file exists for.
     """
 
     def test_the_shadowed_ops_are_still_the_registered_set(self) -> None:
@@ -337,7 +342,8 @@ class TestThisRepoIsTheInstance:
         shadowed = sorted(n for n, e in config["ops"].items()
                           if isinstance(e, dict) and n in preset_ops)
         assert shadowed == [
-            "channel", "dashboard", "git-diff", "git-push", "radar", "watches",
+            "channel", "dashboard", "git-diff", "git-push", "radar", "unwatch",
+            "watch", "watches",
         ], shadowed
 
     def test_a_naive_walk_loses_git_diff_from_the_path_naming_set(self) -> None:

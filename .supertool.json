@@ -286,6 +286,12 @@
     "channel": {
       "watch_name": "oss-supertool"
     },
+    "watch": {
+      "watch_name": "oss-supertool"
+    },
+    "unwatch": {
+      "watch_name": "oss-supertool"
+    },
     "git-diff": {
       "red_flags_extra": [
         { "pattern": "\\bbreakpoint\\s*\\(", "ext": ".py", "label": "breakpoint()" },

@@ -156,10 +156,21 @@ It is an ordinary environment variable, so a non-reserved key in an op's
 ```json
 { "ops": { "radar": { "watch_name": "oss" },
            "watches": { "watch_name": "oss" },
-           "channel": { "watch_name": "oss" } } }
+           "channel": { "watch_name": "oss" },
+           "watch": { "watch_name": "oss" },
+           "unwatch": { "watch_name": "oss" } } }
 ```
 
-**That configures three of the four surfaces, and the fourth is the one that
+**Declare it on all five, and `watch` and `unwatch` are the two people forget.**
+A key in an op's block reaches only *that* op's subprocess, and those two are
+the ops that spawn and kill pollers — declaring the name on `watches` alone
+gives you a private board over a default-channel fleet, which is #1309's
+half-configured state arriving through the config door instead of the
+environment one. This repository shipped exactly that shape until #1732. Every
+render now names the watch ops that declare nothing, so the gap is visible
+rather than inferred.
+
+**That configures four of the five surfaces, and the fifth is the one that
 matters.** `claude-channel` is spawned by the harness from `.mcp.json`, never by
 supertool, so no config key reaches it. Two routes do:
 
@@ -190,6 +201,38 @@ states: they agree; they disagree, with both paths named; the file declares no
 channel variable at all, so the consumer inherits an environment this op cannot
 read and that is said as unknown; or the file could not be read. Only the first
 is ever silent.
+
+**Every board also says which project the name belongs to (#1732).** One name
+means one socket and one poller-slot directory, so two projects under the same
+name are one fleet — events from one project's pollers arrive on the other's
+channel, and each board reports a population that is not its own. Until #1732
+that rendered identically to a correct private fleet, and it was found in the
+field: four repositories sharing one hand-copied
+`"SUPERTOOL_WATCH_NAME": "oss-supertool"` in one machine's
+`.claude/settings.local.json`.
+
+On a **named** channel — the default paths are shared by construction and have
+no owner to dispute — `watches`, `radar` and `channel:health` now read the
+`.supertool.json` at or above the cwd and say what it claims, in **four states**
+rather than two:
+
+| the look found | what the board says |
+| --- | --- |
+| a declaration matching the name in force | `name oss is declared by <path> (ops: …) — this project's own channel` |
+| a declaration of some *other* name | the name in force `is … not this project's channel`, both named |
+| the project's own op blocks disagreeing | every declared name, and which one is in force |
+| a config declaring no `watch_name` at all | the name `came from the environment` and the fleet may be another project's |
+| no `.supertool.json` above the cwd | nothing here claims the name |
+| a config that could not be parsed | **unknown, not unclaimed** — the read failed, so ownership was never established |
+
+The last two are deliberately different answers. An absence produced by a failed
+read is not an absence in the world, which is the rule `docs/validators.md`
+§"Declining instead of guessing" states and the defect this preset has filed
+most often.
+
+**This changes nothing about what is in force.** The environment stays
+authoritative, for the reason in the next paragraph; the attribution is a render,
+and a render must never move a live fleet's paths.
 
 **Precedence: an explicit `SUPERTOOL_WATCH_SOCK` or `SUPERTOOL_WATCH_STATE_DIR`
 overrides the name, and the report says so.** Not because an export is more
