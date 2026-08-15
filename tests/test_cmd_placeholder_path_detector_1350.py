@@ -437,8 +437,13 @@ class TestTheArgSplitInThisDocstringIsPinnedToTheLiveCount:
     def test_the_docstring_carries_exactly_one_split_and_it_is_current(
             self) -> None:
         total, path_shaped, rest = self._live()
+        live = "%d/%d/%d" % (total, path_shaped, rest)
         found = sorted(set(re.findall(r"\b\d+/\d+/\d+\b", _MODULE_DOC)))
-        assert found == ["%d/%d/%d" % (total, path_shaped, rest)], found
+        assert found == [live], (
+            "this module's docstring quotes %s; the live split computed from "
+            "the shipped manifests is %s. Exactly one triple is allowed here, "
+            "so a superseded figure belongs in the history the paragraph "
+            "points at, not above it (#1761)." % (found or "no split", live))
 
     def test_every_figure_in_the_sentence_is_the_live_one(self) -> None:
         """The triple is not the only place the numbers are spelled out.
@@ -452,7 +457,11 @@ class TestTheArgSplitInThisDocstringIsPinnedToTheLiveCount:
                 "%d of those name a path" % path_shaped,
                 "leaving %d that use it" % rest,
                 "refuse those %d and gate nothing" % rest):
-            assert phrase in _MODULE_DOC_FLAT, phrase
+            assert phrase in _MODULE_DOC_FLAT, (
+                "this module's docstring no longer contains %r. If you "
+                "reworded the sentence, update this pin; if the figure moved, "
+                "the docstring is stale and the number here is the live one "
+                "(#1761)." % phrase)
 
     def test_the_contributing_doc_quotes_the_same_live_figures(self) -> None:
         """The third copy, and it had drifted to a third value.
