@@ -101,11 +101,24 @@ def ensure_daemon(cwd: str) -> str:
         # for the full argument (#544).
         resolve_bin(cwd)
         raise _refusal.DaemonUnavailable(no_transport)
-    return _spawn.ensure_daemon(
-        cwd, DAEMON_NAME,
-        preflight=lambda: resolve_bin(cwd),
-        spawn_timeout=SPAWN_TIMEOUT_SEC,
-    )
+    try:
+        return _spawn.ensure_daemon(
+            cwd, DAEMON_NAME,
+            preflight=lambda: resolve_bin(cwd),
+            spawn_timeout=SPAWN_TIMEOUT_SEC,
+        )
+    except _spawn.AutospawnSuppressed:
+        # The binary lookup runs here for the same reason it runs in the
+        # no-transport arm above: both outcomes are skips, and "install it" is
+        # the more actionable of the two. `_spawn` declines before its own
+        # `preflight` deliberately -- a caller that may not spawn should spend
+        # nothing on the spawn path -- so without this the lookup never happens
+        # and the receipt advises warming a daemon for a binary that is not on
+        # the machine. That is the normal case for any `cwd:` pointed at a git
+        # worktree where `composer install` never ran, and it is the row
+        # docs/validators.md #531 documents (#1743).
+        resolve_bin(cwd)
+        raise
 
 
 def ndjson_call(sock_path: str, test_file: str) -> dict:

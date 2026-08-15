@@ -422,14 +422,26 @@ def ensure_daemon(
     # suppression removes creation, never use — a warm daemon is the whole
     # point of running an MCP validator at all.
     #
-    # It sits *before* the lock and before `preflight` for two reasons. A
-    # suppressed caller has to fail fast, and the measured cost of not doing so
-    # was rector-mcp burning its full 30s spawn budget with the flag explicitly
-    # at `0`, then publishing the timeout as an adapter error about the file
-    # (30194 ms, #1743). And `preflight` resolves the analyser binary to
-    # produce a better message on the spawn path — there is no spawn path here,
-    # and "install rector" on a machine where rector is installed and merely
-    # cold is the wrong sentence delivered confidently.
+    # It sits *before* the lock and before `preflight`, because a suppressed
+    # caller has to fail fast: the measured cost of not doing so was rector-mcp
+    # burning its full 30s spawn budget with the flag explicitly at `0`, then
+    # publishing the timeout as an adapter error about the file (30194 ms).
+    #
+    # That placement has two costs, both deliberate and neither free. A caller
+    # arriving inside another's startup window no longer blocks on the flock
+    # for the winner's socket — the wait is up to 60s and waiting is precisely
+    # what the flag forbids. And the reap below no longer runs for a validator,
+    # so a daemon whose fingerprint has gone stale squats until its
+    # `idle_timeout`, an interactive call or `mcp_stop`; it is never asked for
+    # an answer, since `usable()` demands a fingerprint match, so the cost is
+    # residency rather than a wrong answer. Whether a caller forbidden to
+    # create may still destroy is a real question, and not one to settle on the
+    # way past.
+    #
+    # Skipping `preflight` costs the install hint, which is the more actionable
+    # sentence on the machine `cwd:` usually names. Each adapter therefore
+    # resolves its own binary in the handler for this exception, so a suppressed
+    # run on a machine with nothing installed still says "install it" (#531).
     if not autospawn_allowed():
         # ASCII only, deliberately. This string is a skip reason on the happy
         # path, but an unhandled raise renders it to stderr through the

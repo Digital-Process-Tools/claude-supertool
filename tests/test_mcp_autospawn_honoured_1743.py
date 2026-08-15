@@ -172,7 +172,7 @@ class TestSpawnPathHonoursTheFlag:
         monkeypatch.setenv("SUPERTOOL_MCP_AUTOSPAWN", "0")
         sp = _spawn_module()
 
-        with pytest.raises(RuntimeError) as exc:
+        with pytest.raises(sp.AutospawnSuppressed) as exc:
             sp.ensure_daemon(str(project), DAEMON_NAME, spawn_timeout=0.2)
 
         assert spawns == [], (
@@ -197,7 +197,7 @@ class TestSpawnPathHonoursTheFlag:
         sp = _spawn_module()
 
         t0 = time.monotonic()
-        with pytest.raises(RuntimeError):
+        with pytest.raises(sp.AutospawnSuppressed):
             sp.ensure_daemon(str(project), DAEMON_NAME, spawn_timeout=30.0)
         elapsed = time.monotonic() - t0
 
@@ -215,7 +215,10 @@ class TestSpawnPathHonoursTheFlag:
         disagree about `off` are worse than one reader."""
         monkeypatch.setenv("SUPERTOOL_MCP_AUTOSPAWN", value)
         sp = _spawn_module()
-        with pytest.raises(RuntimeError):
+        # The concrete type, not RuntimeError: the spawn timeout is also a
+        # RuntimeError, so the looser spelling could not tell "declined" from
+        # "tried and failed" — which is the distinction under test.
+        with pytest.raises(sp.AutospawnSuppressed):
             sp.ensure_daemon(str(project), DAEMON_NAME, spawn_timeout=0.2)
         assert spawns == [], f"spawned with SUPERTOOL_MCP_AUTOSPAWN={value!r}"
 
@@ -356,6 +359,44 @@ class TestAdapterReceipts:
             f"{name}: the receipt must say a spawn was suppressed and name the "
             f"knob that did it — a run that reports nothing about having been "
             f"told is the misreport this issue is filed under. "
+            f"got: {payload['skipped']!r}"
+        )
+
+    def test_a_missing_binary_still_says_install_it(
+        self, name, prefix, runtime, project, spawns, monkeypatch, capsys, tmp_path
+    ):
+        """The suppressed arm must not swallow the more actionable sentence.
+
+        `_spawn` declines before its own `preflight`, so the binary lookup that
+        produces the install hint does not happen there. On the machine `cwd:`
+        usually points at — a git worktree where `composer install` never ran —
+        the binary is absent AND the daemon is cold, and the useful sentence
+        names the package, not the daemon. `docs/validators.md` §#531 documents
+        that row, and without the adapter's own lookup this fix made it
+        unreachable on the default path.
+
+        It also pins the placement claim the rest of the file cannot: a decline
+        that ran `preflight` first, or one placed after the reap, passes every
+        `no-Popen` assertion here and fails this one.
+        """
+        monkeypatch.setenv("SUPERTOOL_MCP_AUTOSPAWN", "0")
+        monkeypatch.delenv("SUPERTOOL_REQUIRE_VALIDATORS", raising=False)
+        mod = _adapter(name, prefix, project, monkeypatch)
+        # A bare name absent from $PATH, which is the shape `resolve_bin`
+        # actually verifies: an *absolute* MCP_*_BIN is returned unchecked, so
+        # a nonexistent absolute path would prove nothing about this arm.
+        mod.DAEMON_PROC = "mcp-warm-definitely-not-installed-1743"
+        target = tmp_path / "x.php"
+        target.write_text("<?php", encoding="utf-8")
+
+        _drive(mod, name, target)
+        payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+        assert spawns == [], f"#1743: {name} spawned under suppression"
+        assert "skipped" in payload, f"{name}: owes the third state: {payload!r}"
+        assert "install via" in payload["skipped"], (
+            f"{name}: the binary is absent, so the receipt owes the install "
+            f"sentence rather than advice to warm a daemon that cannot boot. "
             f"got: {payload['skipped']!r}"
         )
 

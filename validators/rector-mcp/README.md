@@ -59,7 +59,7 @@ That puts `mcp-rector-warm` on `$PATH`.
 
 1. Adapter receives a file path from supertool.
 2. Connects to UDS socket `/tmp/supertool-mcp-<hash>.sock` (hash = `sha1(cwd::daemon-name)[:12]`).
-3. If socket missing → spawns `presets/mcp/daemon.py rector-warm --detach`, which spawns `mcp-rector-warm` and bridges its stdio over the socket.
+3. If socket missing → **skips**, unless allowed to spawn. Supertool stamps `SUPERTOOL_MCP_AUTOSPAWN=0` into every validator adapter's environment, so the default is use-a-warm-daemon-or-say-nothing and the receipt names the flag (#475, honoured by the adapters since #1743). Set `"mcp_autospawn": true` on the validator, or warm it once with `supertool 'mcp_daemon:rector-warm --detach'`, and this step spawns `presets/mcp/daemon.py rector-warm --detach`, which spawns `mcp-rector-warm` and bridges its stdio over the socket.
 4. Sends MCP `initialize` + `tools/call rector_process` over NDJSON.
 5. Returns SCHEMA.md-compliant validator JSON on stdout.
 

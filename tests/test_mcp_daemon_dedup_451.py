@@ -113,6 +113,12 @@ def runtime(monkeypatch):
     """Short runtime dir — AF_UNIX paths cap at ~104 bytes, pytest's tmp_path
     on macOS (`/private/var/folders/...`) blows straight past it."""
     d = tempfile.mkdtemp(prefix="st451-", dir=tempfile.gettempdir())
+    # Every case below spawns on purpose, and since #1743 `ensure_daemon`
+    # declines outright when this is falsey in the ambient environment —
+    # something docs/mcp-integration.md explicitly invites a developer to
+    # export. Without this the dedup suite fails for a reason that has nothing
+    # to do with dedup, on that developer's machine only.
+    monkeypatch.delenv("SUPERTOOL_MCP_AUTOSPAWN", raising=False)
     monkeypatch.setenv("SUPERTOOL_RUNTIME_DIR", d)
     yield Path(d)
     shutil.rmtree(d, ignore_errors=True)
