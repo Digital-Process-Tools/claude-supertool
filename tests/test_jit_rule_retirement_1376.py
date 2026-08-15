@@ -125,21 +125,29 @@ def test_this_repo_wires_its_own_shipped_bash_guard():
     assert (REPO / GUARD).is_file()
 
 
-def test_the_guard_is_a_third_entry_and_shadows_neither_jit_hook():
-    """Two PreToolUse hooks on Bash have to compose, not replace each other.
+def test_the_guard_is_its_own_entry_and_shares_its_command_list_with_nothing():
+    """Two PreToolUse hooks on the same tool have to compose, not replace.
 
     Claude Code runs every matching PreToolUse hook; a `deny` from any one of
-    them stops the call. So the guard is added as its own entry rather than
-    appended to the jit-context ones -- an entry whose command list grew a
-    second member would make one script's failure the other's silence.
+    them stops the call. So the guard is registered as its own entry rather
+    than appended to another -- an entry whose command list grew a second
+    member would make one script's failure the other's silence.
+
+    This asserted, until #1726, that the `pre-tool-hook.sh` and
+    `pre-path-hook.sh` registrations sat beside it in this file. They no longer
+    do, and the two assertions were dropped rather than the property weakened:
+    those hooks are registered by the `claude-jit-context` plugin's own
+    `hooks.json` through `${CLAUDE_PLUGIN_ROOT}`, and the copies here reached
+    into `$HOME/Documents/claude-jit-context`, so they were dead in every clone
+    but one and a duplicate in that one. What this test is actually about --
+    one entry, one command, no shadowing -- is unchanged and still checked
+    against every entry in the file, including any the plugin does not own.
     """
     settings = json.loads(SETTINGS.read_text(encoding="utf-8"))
     entries = settings["hooks"]["PreToolUse"]
     for entry in entries:
         assert len(entry["hooks"]) == 1, entry
     commands = [h["command"] for entry in entries for h in entry["hooks"]]
-    assert any("pre-tool-hook.sh" in c for c in commands), commands
-    assert any("pre-path-hook.sh" in c for c in commands), commands
     assert any(GUARD in c for c in commands), commands
 
 
