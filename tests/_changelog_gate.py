@@ -81,11 +81,14 @@ def touch_core(repo: Path) -> None:
         'VERSION = "0.44.0"\n# changed\n', encoding="utf-8")
 
 
-def gh_stub(tmp_path: Path, *, labels=None, exit_code: int = 0) -> Path:
+def gh_stub(tmp_path: Path, *, labels=None, exit_code: int = 0,
+            sleep_seconds: float = 0) -> Path:
     """A directory holding a fake `gh` that answers the label read.
 
     `labels=None, exit_code=1` is the failure arm -- an outage, a missing
-    binary, a token without the scope. The stub appends its argv to
+    binary, a token without the scope. `sleep_seconds` is the *other* failure
+    arm, and it is not the same one: an API that is slow rather than down
+    never returns an error to fall back on. The stub appends its argv to
     `<dir>/calls.txt`, so a test can tell "the gate asked and got an answer"
     apart from "the gate never asked", which are the two shapes that otherwise
     render identically.
@@ -93,6 +96,8 @@ def gh_stub(tmp_path: Path, *, labels=None, exit_code: int = 0) -> Path:
     bindir = tmp_path / "stub-bin"
     bindir.mkdir(exist_ok=True)
     body = ["#!/bin/sh", 'echo "$*" >> "$(dirname "$0")/calls.txt"']
+    if sleep_seconds:
+        body.append("sleep %s" % sleep_seconds)
     for label in (labels or []):
         body.append("echo " + shlex.quote(str(label)))
     body.append("exit %d" % exit_code)
@@ -110,8 +115,8 @@ def gh_calls(bindir: Path) -> list[str]:
 
 
 def run_gate(repo: Path, labels: str = "", *, pr_number: str = "",
-             gh_repo: str = "", stub_bin: Path | None = None
-             ) -> "subprocess.CompletedProcess[str]":
+             gh_repo: str = "", stub_bin: Path | None = None,
+             read_timeout: str = "") -> "subprocess.CompletedProcess[str]":
     """Run the gate. `stub_bin` is prepended to PATH so `gh` resolves to it."""
     path = os.environ["PATH"]
     if stub_bin is not None:
@@ -121,6 +126,8 @@ def run_gate(repo: Path, labels: str = "", *, pr_number: str = "",
         env["PR_NUMBER"] = pr_number
     if gh_repo:
         env["GH_REPO"] = gh_repo
+    if read_timeout:
+        env["LABEL_READ_TIMEOUT"] = read_timeout
     return subprocess.run(
         ["bash", "-c", gate_script()],
         cwd=repo, capture_output=True, text=True,

@@ -88,11 +88,39 @@ jobs:
           # reproducible from the run's own payload, and a label REMOVED after
           # the run started now reddens it — which it must, or the escape hatch
           # outlives the decision to use it.
-          labels="$LABELS"
+          # One label per line, never a joined string. A GitHub label name may
+          # contain a comma, and `,${LABELS},` matched against `*,no-changelog,*`
+          # cannot tell the label `wontfix,no-changelog` from the two labels
+          # `wontfix` and `no-changelog` — so a single label nobody granted the
+          # escape hatch to forged it. That ambiguity is unrecoverable on the
+          # payload (Actions joins with a comma before the shell sees it) and
+          # simply absent on the live read, which is one more reason to prefer
+          # it. Applying a label needs write access, so this was never a fork-PR
+          # hole; it was a hole for everyone with triage rights.
+          labels="$(printf '%s' "$LABELS" | tr ',' '\n')"
           label_source=payload
           if [ -n "${PR_NUMBER:-}" ] && [ -n "${GH_REPO:-}" ]; then
-            if live=$(gh api "repos/${GH_REPO}/issues/${PR_NUMBER}/labels" --jq '.[].name' 2>/dev/null); then
-              labels="$(printf '%s' "$live" | tr '\n' ',')"
+            # The `pulls` endpoint and not `issues/{n}/labels`: a pull request
+            # is an issue, but the scope that covers `/issues/*` for a
+            # GITHUB_TOKEN is `issues: read`, and this job asks for
+            # `pull-requests: read`. A permission mismatch here would 403 on
+            # every run forever and land silently on the fallback arm — the
+            # fix looking installed and never once working.
+            #
+            # Budgeted, because slow and down are different failures and only
+            # one of them returns an error to fall back on. Before #1722 this
+            # step made no network call at all; a degraded api.github.com would
+            # otherwise sit here until `timeout-minutes: 5` cancelled the job —
+            # red, receiptless, on every open PR at once. `timeout(1)` is GNU
+            # coreutils: present on ubuntu-latest, absent from a stock macOS,
+            # so it is used when present rather than assumed.
+            if command -v timeout >/dev/null 2>&1; then
+              read_cmd="timeout ${LABEL_READ_TIMEOUT:-30} gh"
+            else
+              read_cmd=gh
+            fi
+            if live=$($read_cmd api "repos/${GH_REPO}/pulls/${PR_NUMBER}" --jq '.labels[].name' 2>/dev/null); then
+              labels="$live"
               label_source=live
             else
               # The one arm allowed to degrade, and it degrades to exactly the
@@ -105,11 +133,19 @@ jobs:
               echo "changelog   : note        (live label read failed - using this run's event payload; a label applied after this run started is invisible to it)"
             fi
           fi
-          case ",${labels}," in
-            *,no-changelog,*)
-              echo "changelog   : skipped     (label 'no-changelog' set on this PR - labels read ${label_source})"
-              exit 0 ;;
-          esac
+          # Whole-line comparison, and a `while read` rather than
+          # `grep -Fxq`: under `pipefail`, `grep -q` exits the moment it
+          # matches, `printf` takes SIGPIPE, and the pipeline's status is 141 —
+          # so the match reads as a miss precisely when it succeeds. A herestring
+          # runs in this shell and has no pipeline to mis-status.
+          has_label=0
+          while IFS= read -r name; do
+            if [ "$name" = no-changelog ]; then has_label=1; fi
+          done <<< "$labels"
+          if [ "$has_label" = 1 ]; then
+            echo "changelog   : skipped     (label 'no-changelog' set on this PR - labels read ${label_source})"
+            exit 0
+          fi
           # `--name-only` alone lists a DELETION identically to an addition, so
           # until #925 a PR that *removed* somebody else's pending fragment
           # satisfied this gate: it announced nothing, dropped an

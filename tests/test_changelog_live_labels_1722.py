@@ -32,7 +32,9 @@ negative assertion in the file.
 """
 from __future__ import annotations
 
+import shutil
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -44,10 +46,26 @@ from _changelog_gate import (  # noqa: E402
     workflow_jobs,
 )
 
-pytestmark = pytest.mark.skipif(
+#: Marks the cases that *execute* the gate. Deliberately per-test rather than a
+#: module-level `pytestmark`: the three structural tests at the bottom read the
+#: workflow file and parse it, spawn nothing, and a module-level skip would take
+#: them out on all four Windows legs -- leaving the only assertions that
+#: `pull-requests: read` is declared and that `PR_NUMBER`/`GH_REPO`/`GH_TOKEN`
+#: are wired unrun on a quarter of the matrix, invisibly. A skip that removes
+#: coverage nobody asked it to remove is this repo's own defect class.
+bash_only = pytest.mark.skipif(
     sys.platform == "win32",
     reason="the gate is a bash `run:` block on ubuntu-latest; there is no "
            "Windows leg of it to be honest about",
+)
+
+#: `timeout(1)` is GNU coreutils. It is on `ubuntu-latest` and is NOT part of a
+#: stock macOS, so the budget is opt-in in the gate and this test SKIPS rather
+#: than passing where it cannot be exercised.
+needs_timeout = pytest.mark.skipif(
+    shutil.which("timeout") is None,
+    reason="no timeout(1) on this box, so the budgeted read cannot be driven "
+           "here -- the gate falls back to an unbudgeted call by design",
 )
 
 REPO_SLUG = "Digital-Process-Tools/claude-supertool"
@@ -65,6 +83,7 @@ def unannounced_pr(tmp_path) -> Path:
 # The label the run could not see
 # ---------------------------------------------------------------------------
 
+@bash_only
 def test_a_label_applied_after_the_run_started_clears_the_gate(tmp_path) -> None:
     """The #1722 case: payload has no label, the PR does. A re-run must pass."""
     repo = unannounced_pr(tmp_path)
@@ -79,6 +98,7 @@ def test_a_label_applied_after_the_run_started_clears_the_gate(tmp_path) -> None
     assert "skipped" in res.stdout, res.stdout + res.stderr
 
 
+@bash_only
 def test_the_gate_still_fires_when_the_live_read_shows_no_such_label(tmp_path) -> None:
     """The must-fire half. Same fixture, same stub, an empty label set."""
     repo = unannounced_pr(tmp_path)
@@ -93,6 +113,7 @@ def test_the_gate_still_fires_when_the_live_read_shows_no_such_label(tmp_path) -
     assert "finding" in res.stdout, res.stdout + res.stderr
 
 
+@bash_only
 def test_the_live_read_names_the_pr_and_the_repository(tmp_path) -> None:
     """A gate that never asks looks identical to one that asked and was told no."""
     repo = unannounced_pr(tmp_path)
@@ -102,10 +123,34 @@ def test_the_live_read_names_the_pr_and_the_repository(tmp_path) -> None:
 
     calls = gh_calls(bindir)
     assert calls, "the gate never called `gh` -- it is still reading the payload"
-    assert any("repos/" + REPO_SLUG + "/issues/1721/labels" in call for call in calls), (
+    assert any("repos/" + REPO_SLUG + "/pulls/1721" in call for call in calls), (
         "the live read did not ask for this PR's labels: " + repr(calls))
 
 
+@bash_only
+def test_a_label_name_carrying_the_delimiter_cannot_forge_the_escape_hatch(tmp_path) -> None:
+    """A GitHub label name may contain a comma. One label, not two.
+
+    The payload arrives as `join(labels.*.name, ',')` and cannot be
+    disambiguated after the fact -- that ambiguity is GitHub's and predates
+    this change. The live read does not have it: labels arrive one per line
+    and are matched whole, so `wontfix,no-changelog` is a label nobody
+    granted the escape hatch to. Applying a label needs write access, so this
+    is not a fork-PR hole; it is a hole for everyone with triage rights.
+    """
+    repo = unannounced_pr(tmp_path)
+    bindir = gh_stub(tmp_path, labels=["wontfix,no-changelog"])
+
+    res = run_gate(repo, labels="", pr_number="1721", gh_repo=REPO_SLUG,
+                   stub_bin=bindir)
+
+    assert res.returncode != 0, (
+        "a label merely *containing* the escape hatch's name waved an "
+        "unannounced core change through:\n" + res.stdout + res.stderr)
+    assert "finding" in res.stdout, res.stdout + res.stderr
+
+
+@bash_only
 def test_a_label_removed_after_the_run_started_reddens_the_gate(tmp_path) -> None:
     """The stated cost of a live read, asserted rather than described.
 
@@ -128,6 +173,7 @@ def test_a_label_removed_after_the_run_started_reddens_the_gate(tmp_path) -> Non
 # The arm that will bite: the live read fails
 # ---------------------------------------------------------------------------
 
+@bash_only
 def test_a_failed_live_read_falls_back_to_the_payload_and_still_skips(tmp_path) -> None:
     """Fail-open to *yesterday's* behaviour, not to a pass."""
     repo = unannounced_pr(tmp_path)
@@ -142,6 +188,7 @@ def test_a_failed_live_read_falls_back_to_the_payload_and_still_skips(tmp_path) 
     assert "skipped" in res.stdout, res.stdout + res.stderr
 
 
+@bash_only
 def test_a_failed_live_read_does_not_wave_a_missing_fragment_through(tmp_path) -> None:
     """The must-fire half of the failure arm: degraded is not permissive."""
     repo = unannounced_pr(tmp_path)
@@ -156,6 +203,7 @@ def test_a_failed_live_read_does_not_wave_a_missing_fragment_through(tmp_path) -
     assert "finding" in res.stdout, res.stdout + res.stderr
 
 
+@bash_only
 def test_a_failed_live_read_says_it_could_not_read_live(tmp_path) -> None:
     """A degraded read that renders identically to a clean one is the whole class."""
     repo = unannounced_pr(tmp_path)
@@ -170,6 +218,7 @@ def test_a_failed_live_read_says_it_could_not_read_live(tmp_path) -> None:
     assert "event payload" in out, out
 
 
+@bash_only
 def test_a_gate_that_read_the_payload_does_not_promise_a_re_run(tmp_path) -> None:
     """The remedy has to describe the mechanism actually in use.
 
@@ -191,6 +240,7 @@ def test_a_gate_that_read_the_payload_does_not_promise_a_re_run(tmp_path) -> Non
         "it promised a re-run it cannot honour:\n" + out)
 
 
+@bash_only
 def test_a_gate_that_read_live_promises_a_re_run(tmp_path) -> None:
     repo = unannounced_pr(tmp_path)
     bindir = gh_stub(tmp_path, labels=[])
@@ -207,10 +257,58 @@ def test_a_gate_that_read_live_promises_a_re_run(tmp_path) -> None:
     assert "push a commit" not in out, out
 
 
+@bash_only
+@needs_timeout
+def test_a_hanging_live_read_falls_back_instead_of_burning_the_job_budget(tmp_path) -> None:
+    """Slow is not down, and only one of the two returns an error to catch.
+
+    Before #1722 this step made no network call at all. A degraded-but-not-down
+    api.github.com would otherwise sit here until the job's blunt
+    `timeout-minutes: 5` fired -- a cancelled job, red, with no receipt --
+    simultaneously on every open PR. The budget turns that back into the arm
+    that was designed for it: the note, the payload, and a remedy that says
+    push.
+    """
+    repo = unannounced_pr(tmp_path)
+    bindir = gh_stub(tmp_path, labels=["no-changelog"], sleep_seconds=30)
+
+    started = time.monotonic()
+    res = run_gate(repo, labels="", pr_number="1721", gh_repo=REPO_SLUG,
+                   stub_bin=bindir, read_timeout="1")
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 20, (
+        "the gate waited on the label read rather than budgeting it: "
+        "%.1fs" % elapsed)
+    assert "live label read failed" in res.stdout, (
+        "a budgeted-out read must land on the same stated arm as a failed "
+        "one, not on silence:\n" + res.stdout + res.stderr)
+    assert res.returncode != 0 and "push a commit" in res.stdout, (
+        res.stdout + res.stderr)
+
+
+@bash_only
+@needs_timeout
+def test_the_budget_does_not_cut_a_read_that_answers(tmp_path) -> None:
+    """The must-fire pair: a budget that always fires is a disabled read."""
+    repo = unannounced_pr(tmp_path)
+    bindir = gh_stub(tmp_path, labels=["no-changelog"])
+
+    res = run_gate(repo, labels="", pr_number="1721", gh_repo=REPO_SLUG,
+                   stub_bin=bindir, read_timeout="30")
+
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "live label read failed" not in res.stdout, (
+        "a read that answered well inside its budget was reported as "
+        "failed:\n" + res.stdout)
+    assert "labels read live" in res.stdout, res.stdout
+
+
 # ---------------------------------------------------------------------------
 # No PR context at all
 # ---------------------------------------------------------------------------
 
+@bash_only
 def test_without_a_pr_number_the_payload_still_works(tmp_path) -> None:
     repo = unannounced_pr(tmp_path)
     bindir = gh_stub(tmp_path, labels=[])
@@ -224,6 +322,7 @@ def test_without_a_pr_number_the_payload_still_works(tmp_path) -> None:
         + repr(gh_calls(bindir)))
 
 
+@bash_only
 def test_without_a_pr_number_the_gate_still_fires(tmp_path) -> None:
     repo = unannounced_pr(tmp_path)
     bindir = gh_stub(tmp_path, labels=["no-changelog"])
@@ -238,11 +337,18 @@ def test_without_a_pr_number_the_gate_still_fires(tmp_path) -> None:
 # Nothing above may have cost the gate its day job
 # ---------------------------------------------------------------------------
 
+@bash_only
 def test_a_pr_with_a_fragment_is_still_ok(tmp_path) -> None:
     repo = base_repo(tmp_path)
     touch_core(repo)
-    (repo / "changelog.d" / "1722.fixed.md").write_text(
-        "- **Mine** ([#1722](x)). Body.\n", encoding="utf-8")
+    # Deliberately NOT this PR's own issue number: its fragment is pending in
+    # this checkout, and #1293 refuses any tracked file that names a pending
+    # fragment by path -- in a comment as readily as in an assert, which is
+    # how the first draft of this line reddened it. The release that consumes
+    # the fragment would delete the file the reference points at. `925` was
+    # consumed long ago and is safe to name.
+    (repo / "changelog.d" / "925.fixed.md").write_text(
+        "- **Mine** ([#925](x)). Body.\n", encoding="utf-8")
     git(repo, "add", "-A")
     git(repo, "commit", "-m", "core change with a fragment")
     bindir = gh_stub(tmp_path, labels=[])
@@ -251,9 +357,10 @@ def test_a_pr_with_a_fragment_is_still_ok(tmp_path) -> None:
                    stub_bin=bindir)
 
     assert res.returncode == 0, res.stdout + res.stderr
-    assert "ok" in res.stdout and "1722.fixed.md" in res.stdout, res.stdout
+    assert "ok" in res.stdout and "925.fixed.md" in res.stdout, res.stdout
 
 
+@bash_only
 def test_a_docs_only_pr_is_still_skipped(tmp_path) -> None:
     repo = base_repo(tmp_path)
     (repo / "README.md").write_text("hi\n", encoding="utf-8")
