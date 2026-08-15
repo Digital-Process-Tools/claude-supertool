@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
 import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
+from _env import env_int  # noqa: E402  (the one numeric-knob reader — #654)
 
 
 def parse_args(arg: str) -> tuple[str, int]:
@@ -36,9 +37,15 @@ def parse_args(arg: str) -> tuple[str, int]:
         sys.exit(2)
     # ASCII digits, not `str.isdigit()`: the latter is True for `²`, where
     # `int()` raises and this line died before the search ran (#1727).
+    #
+    # The default goes through `env_int` and not a bare `int(os.environ.get())`.
+    # That spelling is #654's own defect and it was still here, because the
+    # register that forbids it matched one line at a time and this call used to
+    # be wrapped across two — so `SUPERTOOL_DEFAULT_LIMIT=abc` ended the op in a
+    # ValueError traceback inside a boundary that claimed to have swept it.
     n = (int(parts[1])
          if len(parts) > 1 and _digits.is_ascii_int(parts[1].strip())
-         else int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT", "30")))
+         else env_int("SUPERTOOL_DEFAULT_LIMIT", 30, minimum=1))
     return topic, min(n, 100)
 
 
