@@ -264,7 +264,9 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
 
     def test_the_population_is_what_it_was_measured_to_be(self) -> None:
         rows = self._entries()
-        assert len(rows) == 86, len(rows)
+        # 86 → 87 in #1739: `gh-pr-edit` takes NUMBER, the payload and an
+        # optional `unlink`, so its cmd is `{args}` from the first line.
+        assert len(rows) == 87, len(rows)
         multi = [n for n, _f, _e, c in rows
                  if "{args}" in c or "{argjoin}" in c]
         one = [n for n, _f, _e, c in rows
@@ -274,7 +276,7 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # 61 → 62 / 21 → 20 in #1715: `gh-run` gained an `attempt=K` second
         # token, which a `{arg}` template cannot reach, so its cmd moved to
         # `{args}` — the same move this file's own class exists to require.
-        assert (len(multi), len(one), len(none)) == (62, 20, 4), (
+        assert (len(multi), len(one), len(none)) == (63, 20, 4), (
             len(multi), len(one), len(none))
         # The 4 placeholder-free ops are outside this gate on purpose — see
         # `_unconsumed_arg_tokens`. Named so the exclusion is a list, not a
