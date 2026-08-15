@@ -56,6 +56,31 @@ _SOURCE_EXTS = frozenset({
 })
 
 
+def _shown(path: str) -> str:
+    """One conflicted path, safe at column 0 of a receipt row (#1708).
+
+    `_list_conflicts` reads `-z` since #1708, so a path arrives as its real
+    bytes instead of git's octal-escaped spelling. That is what makes it
+    openable and what makes `git add -- <path>` find it — under the old
+    line-separated read, no name holding a byte >= 0x80 could be resolved at
+    all — and it is also what lets a filename carry LF, CR or U+2028 into a row
+    this tool owns. Every render of a path goes through here; the paths
+    themselves are used unflattened, because the filesystem wants the name.
+
+    `flat` discloses the separator rather than dropping the tail (#1652), so
+    the name stays readable and nothing is censored.
+
+    **`disclose_newline=True` is the path spelling of it (#1557)**, and not
+    optional here. The default renders a newline as a space, which is right for
+    a title — no tracker lets one hold a newline — and a lie for a path, which
+    POSIX does. Without it a file named `a<LF>b.txt` and a file named `a b.txt`
+    produce the identical row, so the reader cannot tell which of two real
+    files the receipt is about. That is the whole thing `-z` went to the
+    trouble of preserving.
+    """
+    return _untrusted.flat(path, disclose_newline=True)
+
+
 def _is_source_path(path: str) -> bool:
     """True when PATH's extension is program text a union would corrupt."""
     return os.path.splitext(path)[1].lower() in _SOURCE_EXTS
@@ -811,10 +836,10 @@ def _resolve_partial(path: str, side: str, selected: set[int], force: bool = Fal
     remaining work, honoring the marker hard-gate rather than fighting it.
     """
     blocks_label = ", ".join(str(b) for b in sorted(selected))
-    print(f"# git-resolve: {side} block(s) {blocks_label} in {path}")
+    print(f"# git-resolve: {side} block(s) {blocks_label} in {_shown(path)}")
 
     if _guarded_paths([path], side, force):
-        print(f"  ⊘ {path}: {_REFUSAL}")
+        print(f"  ⊘ {_shown(path)}: {_REFUSAL}")
         print("\nResolved blocks: 0 | Refused: 1 | Not staged (still conflicted).")
         _print_refusal_help()
         return 1
@@ -822,14 +847,14 @@ def _resolve_partial(path: str, side: str, selected: set[int], force: bool = Fal
     # Same guard as the whole-file path, scoped to the blocks actually selected.
     dups = _duplicated_headings(path, selected) if side == "both" and not force else []
     if dups:
-        print(f"  ⊘ {path}: {_heading_refusal(dups)}")
+        print(f"  ⊘ {_shown(path)}: {_heading_refusal(dups)}")
         print("\nResolved blocks: 0 | Refused: 1 | Not staged (still conflicted).")
         _print_refusal_help()
         return 1
 
     ok, err, resolved, total = _resolve_blocks(path, side, selected)
     if not ok:
-        print(f"  ✗ {path}: {err}")
+        print(f"  ✗ {_shown(path)}: {err}")
         return 1
 
     remaining_blocks = total - resolved
@@ -839,7 +864,8 @@ def _resolve_partial(path: str, side: str, selected: set[int], force: bool = Fal
     # report a full resolve. Otherwise the markers stay and we never stage.
     marker_lines = _scan_markers(path)
     if marker_lines:
-        print(f"  ~ {path}: {resolved} of {total} block(s) resolved, file still conflicted")
+        print(f"  ~ {_shown(path)}: {resolved} of {total} block(s) resolved, "
+              f"file still conflicted")
         digest = _validate_paths([path]).get(path)
         if digest:
             print(f"      {digest}")
@@ -851,11 +877,12 @@ def _resolve_partial(path: str, side: str, selected: set[int], force: bool = Fal
     add = _git(["add", "--", path])
     if add.returncode != 0:
         # Same relay, printed directly rather than collected (#1638).
-        print(f"  ✗ {path}: "
+        print(f"  ✗ {_shown(path)}: "
               f"{_untrusted.flat(add.stderr.strip() or add.stdout.strip())}")
         return 1
     digest = _validate_paths([path]).get(path)
-    print(f"  ✓ {path}: {resolved} of {total} block(s) resolved — all blocks clean, staged")
+    print(f"  ✓ {_shown(path)}: {resolved} of {total} block(s) resolved — "
+          f"all blocks clean, staged")
     print(f"      markers: clean | {digest}" if digest else "      markers: clean")
     print(f"\nResolved blocks: {resolved} | Remaining blocks: {remaining_blocks}")
     return 0
@@ -916,19 +943,27 @@ def main() -> int:
         return 0
 
     # This block is the ground under every `path` rendered below, and #1693 was
-    # filed because that ground was written down nowhere. The `✓` / `⊘` / `✗`
-    # rows in this function and in `_resolve_partial` interpolate `path` with no
-    # `_untrusted.flat`, and they are sound because `targets` can only ever hold
-    # strings `_list_conflicts()` produced — `git diff --name-only
-    # --diff-filter=U`, which `core.quotePath` octal-quotes, so no byte above
-    # 0x7F and no line separator survives in one.
+    # filed because that ground was written down nowhere. It has since MOVED,
+    # and the old wording is kept here in one line so the change is legible:
+    # the `✓` / `⊘` / `✗` rows used to interpolate `path` raw, sound only
+    # because `core.quotePath` octal-quoted `git diff --name-only
+    # --diff-filter=U` — a config DEFAULT, which #1708 asked to pin.
     #
-    # argv is NOT a second source. A comma-separated PATH list is a **filter**
-    # over that set: anything not already conflicted is refused three lines
-    # down, before a single row is printed. Relax that refusal and the five
-    # interpolations need flattening the same day.
-    # `tests/test_git_investigate_and_resolve_relay_grounds_1693.py` pins it,
-    # and the register carries it on `_git_common.py::_list_conflicts`.
+    # Pinning it was the wrong end. `quotePath=true` returns the octal-escaped
+    # SPELLING of an accented name, which is not a path, so `git-resolve` could
+    # never resolve one (`did not match any file(s) known to git`); pinning
+    # would have frozen exactly that. `_list_conflicts` reads `-z` now, so the
+    # paths are real and the split is NUL-separated and unforgeable — and every
+    # rendered path goes through `_shown()`, because a real path CAN carry a
+    # separator. The renders no longer rest on a setting at all.
+    #
+    # argv is still NOT a second source. A comma-separated PATH list is a
+    # **filter** over that set: anything not already conflicted is refused three
+    # lines down, before a single row is printed. That refusal is now belt to
+    # `_shown()`'s braces rather than the only thing holding the rows up.
+    # `tests/test_git_investigate_and_resolve_relay_grounds_1693.py` pins the
+    # filter; `tests/test_list_conflicts_quotepath_1708.py` pins both halves of
+    # the `-z` trade.
     if target == "all":
         targets = all_conflicts
     else:
@@ -936,8 +971,10 @@ def main() -> int:
         requested = [p.strip() for p in target.split(",") if p.strip()]
         unknown = [p for p in requested if p not in all_conflicts]
         if unknown:
-            print(f"ERROR: not conflicted: {', '.join(repr(p) for p in unknown)}")
-            print(f"Conflicts: {', '.join(all_conflicts) or '(none)'}")
+            print(f"ERROR: not conflicted: "
+                  f"{', '.join(repr(_shown(p)) for p in unknown)}")
+            print(f"Conflicts: "
+                  f"{', '.join(_shown(p) for p in all_conflicts) or '(none)'}")
             return 1
         targets = requested
 
@@ -1014,7 +1051,7 @@ def main() -> int:
         digests = _validate_paths(resolved)
 
     for path in resolved:
-        print(f"  ✓ {path}")
+        print(f"  ✓ {_shown(path)}")
         digest = digests.get(path)
         line = f"      markers: clean | {digest}" if digest else "      markers: clean"
         if path in forced_source:
@@ -1023,9 +1060,9 @@ def main() -> int:
             line += " | ⚠ duplicated heading(s) — verify section structure"
         print(line)
     for path, reason in refused:
-        print(f"  ⊘ {path}: {reason}")
+        print(f"  ⊘ {_shown(path)}: {reason}")
     for path, err in failed:
-        print(f"  ✗ {path}: {err}")
+        print(f"  ✗ {_shown(path)}: {err}")
 
     # A forced union is reported as such — the syntax digest above says
     # `validate: ok` about a file whose statements now run twice, or whose
@@ -1055,7 +1092,7 @@ def main() -> int:
     if remaining:
         print("Still conflicted:")
         for p in remaining:
-            print(f"  {p}")
+            print(f"  {_shown(p)}")
         print("Next: ./supertool 'git-conflicts' to inspect, or rerun git-resolve.")
     elif resolved:
         # Detect state to give the right continue command

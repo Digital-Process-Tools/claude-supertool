@@ -24,6 +24,25 @@ def _patch_git(monkeypatch, fn) -> None:
     """Intercept git for the preset *and* for the shared helper it calls."""
     monkeypatch.setattr(resolve, "_git", fn)
     monkeypatch.setattr(_common, "_git", fn)
+    # `_list_conflicts` reads through `_git_verbatim` since #1708 — text mode
+    # rewrites a bare CR inside a NUL record — so a double that stops at `_git`
+    # leaves the conflict listing running real git against the temp tree, and
+    # every receipt comes back "No conflicted files." (the same trap #704 left
+    # when the helper moved out of the preset).
+    monkeypatch.setattr(_common, "_git_verbatim", fn)
+
+
+def _z(*paths: str) -> str:
+    """git's `-z` shape for a conflicted-path list: NUL AFTER every record.
+
+    `_list_conflicts` reads `diff --name-only --diff-filter=U -z` since #1708,
+    so a fixture that joins on LF hands the whole list back as ONE path and
+    every receipt below reads `not conflicted`. Spelled as a helper rather than
+    inline so the next fixture copies the terminator and not a separator - git
+    terminates, it does not join, and the trailing empty record is what
+    `_list_conflicts` drops.
+    """
+    return "".join(str(p) + chr(0) for p in paths)
 
 
 def test_missing_args_prints_usage(monkeypatch, capsys) -> None:
@@ -74,7 +93,7 @@ def test_comma_separated_paths(monkeypatch, capsys) -> None:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
         if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
             # First call lists conflicts; subsequent (after resolves) returns empty
-            stdout = "a.php\nb.php\nc.php\n" if len([c for c in calls if c[:3] == ["diff", "--name-only", "--diff-filter=U"]]) == 1 else ""
+            stdout = _z("a.php", "b.php", "c.php") if len([c for c in calls if c[:3] == ["diff", "--name-only", "--diff-filter=U"]]) == 1 else ""
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
         # checkout / add — succeed silently
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
@@ -106,7 +125,7 @@ def test_comma_separated_unknown_path_rejected(monkeypatch, capsys) -> None:
         if args[:2] == ["rev-parse", "--git-dir"]:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
         if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout="a.php\nb.php\n", stderr="")
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=_z("a.php", "b.php"), stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     _patch_git(monkeypatch, fake_git)
@@ -207,7 +226,7 @@ def test_both_end_to_end(monkeypatch, capsys, tmp_path) -> None:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
         if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
             n = len([c for c in calls if c[:3] == ["diff", "--name-only", "--diff-filter=U"]])
-            stdout = f"{f}\n" if n == 1 else ""
+            stdout = _z(f) if n == 1 else ""
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
@@ -267,7 +286,7 @@ def test_marker_leftover_blocks_staging(monkeypatch, capsys, tmp_path) -> None:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
         if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
             n = len([c for c in calls if c[:3] == ["diff", "--name-only", "--diff-filter=U"]])
-            stdout = f"{f}\n" if n == 1 else f"{f}\n"  # still conflicted (never staged)
+            stdout = _z(f)  # still conflicted (never staged), whichever call
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
@@ -295,7 +314,7 @@ def test_validate_digest_in_receipt(monkeypatch, capsys, tmp_path) -> None:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
         if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
             n = len([c for c in calls if c[:3] == ["diff", "--name-only", "--diff-filter=U"]])
-            stdout = f"{f}\n" if n == 1 else ""
+            stdout = _z(f) if n == 1 else ""
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
@@ -327,7 +346,7 @@ def test_resolve_renders_a_check_that_could_not_run(monkeypatch, tmp_path, capsy
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
         if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
             n = len([c for c in calls if c[:3] == ["diff", "--name-only", "--diff-filter=U"]])
-            stdout = f"{f}\n" if n == 1 else ""
+            stdout = _z(f) if n == 1 else ""
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
@@ -569,7 +588,7 @@ def _fake_git_single(f, calls):
         if args[:2] == ["rev-parse", "--git-dir"]:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
         if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout=f"{f}\n", stderr="")
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=_z(f), stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     return fake_git
@@ -644,7 +663,7 @@ def test_blocks_require_single_file(monkeypatch, capsys) -> None:
         if args[:2] == ["rev-parse", "--git-dir"]:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
         if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout="a.py\nb.py\n", stderr="")
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=_z("a.py", "b.py"), stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     _patch_git(monkeypatch, fake_git)
@@ -663,7 +682,7 @@ def test_blocks_require_single_file_not_all(monkeypatch, capsys) -> None:
         if args[:2] == ["rev-parse", "--git-dir"]:
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
         if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout="a.py\nb.py\n", stderr="")
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout=_z("a.py", "b.py"), stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
     _patch_git(monkeypatch, fake_git)
@@ -687,7 +706,7 @@ def test_no_blocks_is_whole_file_backcompat(monkeypatch, capsys, tmp_path) -> No
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=".git\n", stderr="")
         if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
             n = len([c for c in calls if c[:3] == ["diff", "--name-only", "--diff-filter=U"]])
-            stdout = f"{f}\n" if n == 1 else ""
+            stdout = _z(f) if n == 1 else ""
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=stdout, stderr="")
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 

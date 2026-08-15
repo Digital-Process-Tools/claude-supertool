@@ -57,10 +57,16 @@ three, and `test_every_register_entry_names_the_ground_it_rests_on` refuses an
 entry that names none:
 
 * ``QUOTED PATH`` - the reader reads a pathname and git quoted it first. The
-  rule as published, applied where it holds. Six entries: three, plus the three
+  rule as published, applied where it holds. Five entries: two, plus the three
   functions #1681 emptied of everything else (`checkout.py::main`,
   `diverge.py::main`, `status.py::main` are each down to their one
-  `--porcelain` / `--name-status` read).
+  `--porcelain` / `--name-status` read). It was six until #1708 retired
+  `_git_common.py::_list_conflicts` to `-z`, on the discovery that this ground
+  can be true and still be the wrong one to rest on: quoting keeps the SPLIT
+  exact by turning the path into a spelling of itself, which no `open()` and no
+  pathspec will match. A `QUOTED PATH` entry answers "can a filename forge a
+  record"; it does not answer "is the record still a filename", and the four
+  that remain are all counters or warnings that never feed a path back to git.
 * ``NOT QUOTED, harmless`` - quoting does not reach this stream, and the entry
   says what does: the harm is fail-safe (a forged row can only refuse), or
   fail-closed, or inflates a count that is loud in the direction it inflates,
@@ -117,7 +123,7 @@ GROUNDS = ("QUOTED PATH - ", "NOT QUOTED, harmless - ", "NOT QUOTED, open - ")
 
 #: How many entries rest on each, published so a drift is one visible line in a
 #: diff rather than a re-derivation. Asserted exact in both directions.
-GROUND_TALLY = {"QUOTED PATH - ": 6,
+GROUND_TALLY = {"QUOTED PATH - ": 5,
                 "NOT QUOTED, harmless - ": 17,
                 "NOT QUOTED, open - ": 0}
 
@@ -131,20 +137,15 @@ RETIRED = ("the extraction kind", "consumes the separator",
 #: they are not `str.splitlines()` calls.
 REGISTER: dict[str, str] = {
     # -- _git_common.py -----------------------------------------------------
-    # This entry is also the ground for `resolve.py`'s five `✓`/`⊘`/`✗` receipt
-    # rows, which interpolate `path` with no `_untrusted.flat` (#1693). Every
-    # such `path` is a member of THIS function's result: `resolve.py::main`
-    # takes `targets` from `_list_conflicts()` directly, or from a
-    # comma-separated argv list it first refuses unless every element is
-    # already in that set. So argv is a FILTER over the quoted set, not a
-    # second source — which is a stronger ground than "argv is the caller's
-    # own", and it is the one that would be lost if that refusal were relaxed.
-    # `tests/test_git_investigate_and_resolve_relay_grounds_1693.py` pins it.
-    "presets/git/_git_common.py::_list_conflicts":
-        "QUOTED PATH - `git diff --name-only --diff-filter=U`, and a pathname "
-        "is exactly what core.quotePath octal-quotes, so a byte above 0x7F "
-        "never reaches this split as a separator. A forged row could only ADD "
-        "a conflict, whose effect is to refuse to proceed.",
+    # `_list_conflicts` WAS here, as the sixth `QUOTED PATH` entry and as the
+    # ground for `resolve.py`'s five `✓`/`⊘`/`✗` receipt rows (#1693). It is
+    # gone because the site is gone, and the reason is in
+    # `test_the_narrowed_readers_did_not_quietly_revert` below: #1708 found
+    # that `QUOTED PATH` was load-bearing in the wrong direction there. The
+    # quoted spelling of an accented name is not a path, so the very quoting
+    # that made the split safe made every rendered path unusable — and the
+    # proposed fix, pinning `core.quotePath=true`, would have frozen that.
+    # `-z` answers both halves and leaves no `str.splitlines()` behind.
     # `_first_error_line` was here, and its entry argued that narrowing the
     # split "would leave a forged break INSIDE the reported string instead of
     # consuming it". That was a choice between two bad options because neither
@@ -415,6 +416,18 @@ def test_the_narrowed_readers_did_not_quietly_revert() -> None:
          "the pickaxe render hands `c.split()[0]` to `git show` as argv, so a "
          "forged line put an option there - `git show --output=<file>` writes "
          "that file (#1681)"),
+        ("presets/git/_git_common.py::_list_conflicts",
+         "the entry here was a correct `QUOTED PATH` that was still the wrong "
+         "ground: core.quotePath keeps the SPLIT exact by handing back the "
+         "octal-escaped SPELLING of a path, and #1708 measured that "
+         "`git-resolve` then fed that spelling back as a pathspec and could "
+         "resolve NO conflicted file whose name held a byte >= 0x80. The "
+         "issue's own proposal, `-c core.quotePath=true`, would have frozen "
+         "that and removed the one setting under which it worked - while "
+         "`false`, the other half of the same two-state answer, split one "
+         "conflicted file into two records on a U+2028 in its name. `-z` has "
+         "neither failure: NUL cannot appear in a pathname, so the records are "
+         "exact AND real, and the renders flatten instead (#1708)"),
         ("presets/git/investigate.py::main",
          "`blame --line-porcelain` interleaves porcelain headers with the "
          "blamed file's OWN lines, so a source line spelling "

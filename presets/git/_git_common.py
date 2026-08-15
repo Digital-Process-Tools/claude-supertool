@@ -208,11 +208,60 @@ def _list_conflicts() -> tuple[list[str], str]:
     `Remaining: 0` line is followed by `Next: git-commit ...` — and `merge.py`
     was the lowest-stakes of the three. One function now, so the next fix does
     not have to find all three.
+
+    **`-z`, and `core.quotePath` is deliberately not pinned (#1708).** The read
+    was `diff --name-only --diff-filter=U`, line-separated, and five `resolve.py`
+    receipt rows were written down as resting on `core.quotePath` octal-quoting
+    every byte >= 0x80 out of it. That is a config default, not a git guarantee,
+    and #1708 asked for `-c core.quotePath=true` to make the ground true by
+    construction. Driving it showed the setting has no correct value, measured
+    on git 2.46.2 against a real conflicted merge:
+
+    * `quotePath=true` (the default, and what that pin would have frozen) hands
+      back the octal-escaped *spelling* of an accented name, double quotes and
+      all. That is not a filename. `git-resolve` fed it straight back as a
+      pathspec and printed `did not match any file(s) known to git`, so **no
+      conflicted path holding a byte >= 0x80 could be resolved at all** — and
+      pinning the setting would have removed the one config under which it
+      worked.
+    * `quotePath=false` hands the name back raw, which is usable, but
+      `str.splitlines()` folds on U+2028 / U+0085 / VT / FF, so one conflicted
+      file named `sep<U+2028>two.txt` came back as **two** records, neither of
+      them a file. C0 is quoted whatever this is set to, so LF and CR were never
+      the exposure here; the separators Python invents are.
+
+    `-z` removes the question instead of answering it. Paths come back raw and
+    usable, and the records are NUL-separated — the one byte a pathname cannot
+    contain on any platform, so a filename cannot forge the split rather than
+    merely being unlikely to. `commit.py` reached the same conclusion at
+    `diff --cached --name-only -z` (#1003, the same accented filename) and says
+    at line 639 that it leaves `core.quotePath` alone on purpose: pinning it
+    beside `-z` advertises a dependency the read does not have.
+
+    **And it reads through `_git_verbatim`, because `-z` is only exact if
+    nothing rewrites the bytes on the way back.** `_git` runs
+    `subprocess.run(text=True)`, and Python's universal-newline translation
+    turns a bare CR — and a CRLF — into LF *inside* a NUL record, before any
+    split sees it. A POSIX filename may hold a CR (every byte but NUL and '/'
+    is legal), so with text mode on, the name handed back was not the name on
+    disk and the `git add -- <path>` that follows was aimed at a file that is
+    not there. #1693 built `_git_verbatim` for exactly this shape.
+
+    What `-z` costs is paid by the callers, not here. A raw path can carry a
+    separator into a receipt row, so `resolve.py`, `conflicts.py` and `merge.py`
+    put every rendered path through `_untrusted.flat(..., disclose_newline=True)`
+    — the path spelling of #1557: the default renders a newline as a space,
+    which turns "this file's name has a newline in it" into a plausible name
+    that is not on disk, and makes two different real files render identically.
     """
-    res = _git(["diff", "--name-only", "--diff-filter=U"])
+    res = _git_verbatim(["diff", "--name-only", "--diff-filter=U", "-z"])
     if res.returncode != 0:
         return [], (res.stderr.strip() or f"git exited {res.returncode}")
-    return [l for l in res.stdout.splitlines() if l.strip()], ""
+    # NUL, not `splitlines()`: the record separator is the one character a
+    # pathname cannot hold. Only genuinely empty records are dropped (git
+    # terminates the last one, so the tail is always empty) — the old
+    # `.strip()` test would also have dropped a name made of spaces.
+    return [p for p in res.stdout.split(chr(0)) if p], ""
 
 
 #: Said out loud wherever a `Repo:` line or a status header is printed, and the

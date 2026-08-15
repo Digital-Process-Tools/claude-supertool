@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
 
 from _git_common import _git, _list_conflicts, st_hint, use_utf8_stdout  # noqa: E402
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
+import _untrusted  # noqa: E402  (a conflicted PATH is a real name now — #1708)
 
 DEFAULT_PREVIEW_LINES = 12
 
@@ -189,7 +190,13 @@ def main() -> int:
         print("Abort: git cherry-pick --abort")
 
     for path in conflicts:
-        print(f"\n## {path}")
+        # `_list_conflicts` reads `-z` since #1708, so `path` is the real name
+        # rather than git's octal-escaped spelling of it. That is what lets the
+        # reads below open the file; it also means the name can hold LF, CR or
+        # U+2028, so the heading it goes into is flattened. `_all_conflict_blocks`
+        # and `_incoming_info` get the unflattened path, because they need the
+        # one the filesystem has.
+        print(f"\n## {_untrusted.flat(path, disclose_newline=True)}")
         for line in _incoming_info(path, state):
             print(line)
         print(_all_conflict_blocks(path, preview))

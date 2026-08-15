@@ -54,7 +54,7 @@ def _fake_git(conflicted: list[str], staged: list[str]):
         if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
             return subprocess.CompletedProcess(
                 args=args, returncode=0,
-                stdout="".join(f"{p}\n" for p in conflicted), stderr="")
+                stdout="".join(p + chr(0) for p in conflicted), stderr="")
         if args[:3] == ["check-attr", "merge", "--"]:
             rows = "".join(f"{p}: merge: unspecified\n" for p in args[3:])
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=rows, stderr="")
@@ -78,6 +78,8 @@ def repo(tmp_path, monkeypatch):
     fake = _fake_git(conflicted, staged)
     monkeypatch.setattr(resolve, "_git", fake)
     monkeypatch.setattr(_common, "_git", fake)
+    # #1708: the conflicted-path read is `_git_verbatim`, not `_git`.
+    monkeypatch.setattr(_common, "_git_verbatim", fake)
     return target
 
 
