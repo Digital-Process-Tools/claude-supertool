@@ -3684,6 +3684,16 @@ def _expand_env(s: str, env: Dict[str, str]) -> str:
     dispatch sites (custom ops, validators, formatters, resolve) so users
     can keep cmd templates that rely on env-var expansion without invoking
     a shell.
+
+    **Only ever hand this a SHIELDED string** — the output of
+    `_shield_substitute`, never `_substitute_placeholders`. Its subject is the
+    template a project wrote, not the argument a caller passed, and it has no
+    way to tell them apart once they are one string. Passing it an assembled
+    command is #1734: `git-commit:::chore: about $HOME:::f.txt` committed a
+    real home directory, and a `$FAKE_TOKEN` in a subject put the token in the
+    commit object. A sixth call site that skips the shield reintroduces that
+    silently, because the substitution is invisible unless the variable
+    happens to be defined on the machine that runs it.
     """
     return re.sub(
         r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)',
@@ -3719,27 +3729,65 @@ def _shield_substitute(
     resolves as it always did, and an env value that happens to read `{args}`
     is still never re-substituted. Reordering the two would have changed both.
 
-    Tokens are `[A-Za-z0-9]` only, which buys three properties the restore
-    depends on: `shlex.quote` leaves them bare, so the requote inside
-    `_extract_env_prefix` round-trips; `_expand_env` cannot match them, having
-    no `$`; and `_extract_env_prefix`'s `KEY=VAL` test cannot match one,
-    having no `=`. The nonce is per call, so no caller value can collide.
+    Tokens are alphanumerics **bracketed by a dot**, which buys four properties
+    the restore depends on. `shlex.quote` leaves `.` and `[A-Za-z0-9]` bare, so
+    the requote inside `_extract_env_prefix` round-trips; `_expand_env` cannot
+    match a token, having no `$`; `_extract_env_prefix`'s `KEY=VAL` test cannot
+    match one, having no `=`; and the leading dot TERMINATES a variable name,
+    which the bare-alphanumeric first version did not. `[A-Za-z0-9]` is a legal
+    continuation of `[A-Za-z_][A-Za-z0-9_]*`, so `cmd $PREFIX{file}` expanded a
+    name that ran into the token, found it undefined, and left `$PREFIX`
+    literal — a silent regression, because leaving an unknown literal is the
+    documented behaviour and nothing distinguishes the two cases. The nonce is
+    per call, so no caller value can collide.
     """
     nonce = "STPH" + os.urandom(8).hex()
     tokens: Dict[str, str] = {}
     shield: Dict[str, str] = {}
     for i, name in enumerate(sorted(values)):
-        token = f"{nonce}x{i}x"
+        token = f".{nonce}x{i}x."
         tokens[name] = token
         shield[token] = values[name]
     return _substitute_placeholders(template, tokens), shield
 
 
 def _unshield(s: str, shield: Dict[str, str]) -> str:
-    """Put the real placeholder values back after `_expand_env` has run."""
+    """Put the real placeholder values back into a COMMAND STRING.
+
+    Called after `_expand_env` at every site. The values went in
+    `shlex.quote`d and come back out that way, which is what the command
+    string wants — `_unshield_env_value` is the variant for the other
+    destination.
+    """
     for token, value in shield.items():
         s = s.replace(token, value)
     return s
+
+
+def _unshield_env_value(s: str, shield: Dict[str, str]) -> str:
+    """Put the real values back into an ENV VALUE lifted by `_extract_env_prefix`.
+
+    A command string keeps the `shlex.quote`ing; an environment value must not.
+    `_extract_env_prefix` tokenises through `shlex.split`, so before shielding
+    it stripped the quotes as it lifted `KEY={dir}` — the child got
+    ``MYDIR=my dir``. Restoring the quoted form into the value handed it
+    ``MYDIR='my dir'``, apostrophes included, for any value `shlex.quote`
+    actually quotes. That is invisible for a value needing no quoting, which
+    is why the first `{dir}` test round-tripped by accident (#1734 review).
+
+    Re-tokenising the restored value reproduces the pre-shield bytes exactly,
+    since the whole assignment was one shlex token by construction. A value
+    that will not tokenise is returned as-is rather than dropped: a mangled
+    env var is recoverable, a missing one is a silent behaviour change.
+    """
+    restored = _unshield(s, shield)
+    if restored == s:
+        return restored  # held no token; never went through shlex.quote
+    try:
+        parts = shlex.split(restored)
+    except ValueError:
+        return restored
+    return parts[0] if len(parts) == 1 else restored
 
 
 # Git's repo pointers. Any of these, set anywhere in the parent environment,
@@ -3920,7 +3968,10 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
 
     Runs argv-form (shell=False) — shell metachars in the cmd template are
     literal tokens, not shell operators. `$VAR` / `${VAR}` expansion from
-    the op's env is performed by supertool (see _expand_env below), no shell.
+    the op's env is performed by supertool (see _expand_env below), no shell,
+    and it reaches THE TEMPLATE ONLY: an argument interpolated through
+    `{file}`/`{dir}`/`{arg}`/`{args}`/`{argjoin}` is caller data and is
+    shielded from it (#1734).
 
     Returns formatted output string on match, None if op is not a custom op.
     """
@@ -4052,7 +4103,7 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     _prefix_env, cmd = _extract_env_prefix(cmd)
     # Unshield the prefix VALUES too: `KEY={dir} cmd` puts caller data in one,
     # and it has to reach the child's environment as the real path (#1734).
-    _prefix_env = {k: _unshield(v, _shield) for k, v in _prefix_env.items()}
+    _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
     env.update(_prefix_env)
     cmd = _unshield(_expand_env(cmd, env), _shield)
 
@@ -19184,16 +19235,16 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
     # shlex.split. {supertool_dir} is a known constant.
     # Shielded (#1734): `{file}` is a path the CALLER named, so a segment
     # reading `$HOME` or `$USER` was expanded here too — and an expansion
-    # carrying a space or a quote shatters the `shlex.quote` above, handing
-    # `shlex.split` extra argv tokens and resolving against a path nobody
-    # named. Same fix, same reasoning, as the preset dispatch site.
+    # carrying a space or a quote shatters the `shlex.quote` applied to it
+    # below, handing `shlex.split` extra argv tokens and resolving against a
+    # path nobody named. Same fix, same reasoning, as the preset dispatch site.
     cmd, _shield = _shield_substitute(spec["resolve"], {
         "supertool_dir": _INSTALL_DIR,
         "python": _python_token(),
         "file": shlex.quote(file),
     })
     _prefix_env, cmd = _extract_env_prefix(cmd)
-    _prefix_env = {k: _unshield(v, _shield) for k, v in _prefix_env.items()}
+    _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
     _merged_env = {**os.environ, **_prefix_env}
     cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
     # Pass merged env to child so prefix vars actually reach the subprocess.
@@ -19756,7 +19807,7 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     # Lift leading `KEY=VAL` shell env-prefix into env dict (shipped cmd
     # templates use this to set MCP_*_WORKING_DIR before the python invocation).
     _prefix_env, cmd = _extract_env_prefix(cmd)
-    _prefix_env = {k: _unshield(v, _shield) for k, v in _prefix_env.items()}
+    _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
     # $VAR / ${VAR} expansion + child env both need spec.env + prefix env.
     _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
     _merged_env = {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}}
@@ -20691,7 +20742,7 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
         "file": shlex.quote(file),
     })
     _prefix_env, cmd = _extract_env_prefix(cmd)
-    _prefix_env = {k: _unshield(v, _shield) for k, v in _prefix_env.items()}
+    _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
     _spec_env_dict = {**_prefix_env, **(spec.get("env") or {})}
     _merged_env = {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}}
     cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
@@ -20915,7 +20966,7 @@ def _advice_resolve(resolve_cmd: str, path: str) -> Optional[str]:
         "file": shlex.quote(path),
     })
     _prefix_env, cmd = _extract_env_prefix(cmd)
-    _prefix_env = {k: _unshield(v, _shield) for k, v in _prefix_env.items()}
+    _prefix_env = {k: _unshield_env_value(v, _shield) for k, v in _prefix_env.items()}
     _merged_env = {**os.environ, **_prefix_env}
     cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
     try:

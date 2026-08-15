@@ -35,6 +35,8 @@ from typing import Dict, List, Optional
 
 import pytest
 
+from _adapter_verdict import run_one_or_skip
+
 _ROOT = Path(__file__).resolve().parent.parent
 
 #: Set in the child environment for every run below. The name is what a
@@ -107,7 +109,9 @@ def _argv(proc: subprocess.CompletedProcess) -> List[str]:
     "chore: about $HOME and $CLAUDE_PLUGIN_ROOT",
     "token was $" + _SECRET_NAME,
     "braced ${" + _SECRET_NAME + "} form",
-    "a bare $ and $1 and $_ stay put",
+    # `$` and `$1` match no variable under any version, so this case would be
+    # vacuous on its own — a defined name rides along to give it teeth.
+    "a bare $ and $1 stay put beside $" + _SECRET_NAME,
 ])
 def test_a_dollar_var_in_an_argument_reaches_the_op_verbatim(tmp_path, text):
     """The argument the caller typed is the argument the op receives."""
@@ -190,8 +194,53 @@ def test_an_env_prefix_value_holding_a_placeholder_still_resolves(tmp_path):
     assert argv == ["sub"], argv
 
 
+def test_an_env_prefix_value_needing_quotes_reaches_the_child_unquoted(tmp_path):
+    """A `KEY={dir} cmd` prefix whose value contains a SPACE.
+
+    The review case my first `{dir}` control could not see: it used `sub`,
+    which `shlex.quote` leaves bare, so the shield round-tripped by accident.
+    `_extract_env_prefix` strips the quoting when it lifts the assignment, and
+    the restore has to hand the child the same bytes — not `'my dir'` with the
+    apostrophes still on it.
+    """
+    probe = ("import os, json; "
+             "print(json.dumps([os.environ.get('SUPERTOOL_1734_DIR', '')]))")
+    proj = _project(
+        tmp_path,
+        "SUPERTOOL_1734_DIR={dir} {python} -c " + json.dumps(probe),
+        paths={"args": [1], "root": "cwd"})
+    (tmp_path / "my dir").mkdir()
+    (tmp_path / "my dir" / "f.txt").write_text("x", encoding="utf-8")
+    argv = _argv(_run(proj, "probe:my dir/f.txt"))
+    assert argv == ["my dir"], argv
+
+
+def test_a_template_var_immediately_followed_by_a_placeholder_expands(tmp_path):
+    """`$VAR{file}` — no separator between the variable and the placeholder.
+
+    The shield token has to TERMINATE the variable name. A token made only of
+    `[A-Za-z0-9]` is a legal continuation of `[A-Za-z_][A-Za-z0-9_]*`, so the
+    greedy match swallowed it, produced an undefined name, and left `$VAR`
+    literal — silently, because leaving an unknown literal is the documented
+    behaviour and nothing distinguishes the two.
+    """
+    proj = _project(
+        tmp_path,
+        "{python} -c " + json.dumps(_PROBE) + " $" + _TPL_NAME + "{args}")
+    assert _argv(_run(proj, "probe:::-tail")) == [_TPL_VALUE + "-tail"]
+
+
 def test_an_undefined_var_in_the_template_is_still_left_literal(tmp_path):
-    """Documented behaviour, and the half that distinguishes this from a shell."""
+    """Documented behaviour, and the half that distinguishes this from a shell.
+
+    **Not a control.** Flagged in review as one that would pass with the
+    expansion deleted outright — correct, and it is kept anyway because it
+    pins a different contract: unknown names are left literal rather than
+    emptied, which is what makes this expander not a shell. The controls that
+    do fail against a deleted expansion are the three above it and the
+    formatter control at the end of the file; this one is not counted among
+    them.
+    """
     proj = _project(
         tmp_path,
         "{python} -c " + json.dumps(_PROBE) + " $SUPERTOOL_1734_DEFINITELY_UNSET")
@@ -335,3 +384,104 @@ def test_a_formatter_template_can_still_use_a_dollar_var(tmp_path):
     supertool._formatter_run_one("probe", spec, str(target))
     assert record.exists(), "formatter never ran — nothing was observed"
     assert json.loads(record.read_text(encoding="utf-8")) == [_TPL_VALUE]
+
+def test_a_dollar_in_a_target_path_is_not_expanded_by_a_validator(tmp_path):
+    """`_validator_run_one` — the third of five sites."""
+    import supertool
+
+    target = _dollar_named_file(tmp_path)
+    if target is None:
+        pytest.skip("filesystem will not hold a '$' in a filename here")
+    record = tmp_path / "seen-validator.json"
+    spec = {"cmd": "{python} -c " + json.dumps(_RECORDER) + " "
+                   + json.dumps(str(record)) + " {file}",
+            "cache": False}
+    os.environ[_SECRET_NAME] = _SECRET_VALUE
+    try:
+        run_one_or_skip("probe", spec, str(target))
+    finally:
+        os.environ.pop(_SECRET_NAME, None)
+    assert record.exists(), "validator never ran — nothing was observed"
+    seen = json.loads(record.read_text(encoding="utf-8"))
+    assert seen == [str(target)], seen
+
+
+def test_a_validator_template_can_still_use_a_dollar_var(tmp_path):
+    """Control for the case above."""
+    import supertool
+
+    target = tmp_path / "plain-validator.txt"
+    target.write_text("x\n", encoding="utf-8")
+    record = tmp_path / "seen-validator-ctl.json"
+    spec = {"cmd": "{python} -c " + json.dumps(_RECORDER) + " "
+                   + json.dumps(str(record)) + " $" + _TPL_NAME,
+            "env": {_TPL_NAME: _TPL_VALUE},
+            "cache": False}
+    run_one_or_skip("probe", spec, str(target))
+    assert record.exists(), "validator never ran — nothing was observed"
+    assert json.loads(record.read_text(encoding="utf-8")) == [_TPL_VALUE]
+
+
+def test_a_dollar_in_a_target_path_is_not_expanded_by_validator_resolve(tmp_path):
+    """`_validator_resolve` — the fourth of five sites."""
+    import supertool
+
+    target = _dollar_named_file(tmp_path)
+    if target is None:
+        pytest.skip("filesystem will not hold a '$' in a filename here")
+    echo = "import sys; print(sys.argv[1])"
+    spec = {"resolve": "{python} -c " + json.dumps(echo) + " {file}"}
+    os.environ[_SECRET_NAME] = _SECRET_VALUE
+    try:
+        resolved = supertool._validator_resolve(spec, str(target))
+    finally:
+        os.environ.pop(_SECRET_NAME, None)
+    assert resolved, "resolve returned nothing — assertion would be vacuous"
+    assert resolved == str(target), resolved
+
+
+def test_a_validator_resolve_template_can_still_use_a_dollar_var(tmp_path):
+    """Control for the case above."""
+    import supertool
+
+    target = tmp_path / "plain-resolve.txt"
+    target.write_text("x\n", encoding="utf-8")
+    echo = "import sys; print(sys.argv[1])"
+    spec = {"resolve": "SUPERTOOL_1734_RESOLVE=resolved-via-template {python} -c "
+                       + json.dumps(echo) + " $SUPERTOOL_1734_RESOLVE"}
+    assert supertool._validator_resolve(
+        spec, str(target)) == "resolved-via-template"
+
+
+def test_a_dollar_in_a_target_path_is_not_expanded_by_advice_resolve(tmp_path):
+    """`_advice_resolve` — the fifth of five sites.
+
+    It signals "advice applies" with exit 3 and the target on stderr, so the
+    probe has to do both or the assertion never sees a value.
+    """
+    import supertool
+
+    target = _dollar_named_file(tmp_path)
+    if target is None:
+        pytest.skip("filesystem will not hold a '$' in a filename here")
+    probe = "import sys; print(sys.argv[1], file=sys.stderr); sys.exit(3)"
+    cmd = "{python} -c " + json.dumps(probe) + " {file}"
+    os.environ[_SECRET_NAME] = _SECRET_VALUE
+    try:
+        got = supertool._advice_resolve(cmd, str(target))
+    finally:
+        os.environ.pop(_SECRET_NAME, None)
+    assert got, "advice resolver returned nothing — assertion would be vacuous"
+    assert got == str(target), got
+
+
+def test_an_advice_resolve_template_can_still_use_a_dollar_var(tmp_path):
+    """Control for the case above."""
+    import supertool
+
+    target = tmp_path / "plain-advice.txt"
+    target.write_text("x\n", encoding="utf-8")
+    probe = "import sys; print(sys.argv[1], file=sys.stderr); sys.exit(3)"
+    cmd = ("SUPERTOOL_1734_ADVICE=advice-via-template {python} -c "
+           + json.dumps(probe) + " $SUPERTOOL_1734_ADVICE")
+    assert supertool._advice_resolve(cmd, str(target)) == "advice-via-template"
