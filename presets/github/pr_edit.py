@@ -78,6 +78,13 @@ LANDED_NORMALISED = "normalised"
 LANDED_MISMATCH = "mismatch"
 LANDED_UNKNOWN = "unknown"
 
+# The title, verified separately from the body. A title that did not land is
+# not a body that did not land: conflating them made the `[result]` line say
+# "body on the server is NOT what was sent" about a body that was byte-perfect.
+TITLE_NOT_SENT = "not sent"
+TITLE_EXACT = "exact"
+TITLE_MISMATCH = "mismatch"
+
 UNLINK = "unlink"
 
 # Fields a `gh-pr-create` payload legitimately carries that a body update has no
@@ -238,8 +245,16 @@ def _newlines_only(text: str) -> str:
 
 
 def _first_difference(sent: str, stored: str) -> str:
-    sent_lines = sent.splitlines()
-    stored_lines = stored.splitlines()
+    """Which line first disagrees — split on LF/CR/CRLF, never `splitlines()`.
+
+    `str.splitlines()` breaks on eight more separators, so a U+2028 the server
+    stored inside a line would end that line here and the reported difference
+    would be a fragment the *body* chose the boundary of. `split_lines` decides
+    the boundary and `flat()` spells whatever exotic character is inside it —
+    the pair #1648 settled on, and neither half is sufficient alone.
+    """
+    sent_lines = _untrusted.split_lines(sent)
+    stored_lines = _untrusted.split_lines(stored)
     for i in range(max(len(sent_lines), len(stored_lines))):
         a = sent_lines[i] if i < len(sent_lines) else "(end of body)"
         b = stored_lines[i] if i < len(stored_lines) else "(end of body)"
@@ -275,8 +290,24 @@ def landed_verdict(sent: str, stored: object) -> Tuple[str, str]:
         f"stored. {_first_difference(sent, stored)}"))
 
 
+def title_verdict(sent_title: object, stored_title: object) -> Tuple[str, str]:
+    """`(state, message)` for the title, on its own axis.
+
+    `TITLE_NOT_SENT` is not a pass and not a failure — it is the state where no
+    title was submitted, which is the ordinary case and must not be reported as
+    a verification that happened.
+    """
+    if sent_title is None:
+        return (TITLE_NOT_SENT, "")
+    if isinstance(stored_title, str) and stored_title == sent_title:
+        return (TITLE_EXACT, "  title verified on the server")
+    return (TITLE_MISMATCH, (
+        f"  title on the server is NOT what was sent: "
+        f"{_untrusted.flat(str(stored_title))!r}"))
+
+
 def result_line(number: str, ref_state: str, landed_state: str,
-                note: str) -> str:
+                note: str, title_state: str = TITLE_NOT_SENT) -> str:
     """One line, no newline, that survives `| tail -1`."""
     if landed_state == LANDED_EXACT:
         landed = "body verified byte-identical on the server"
@@ -293,6 +324,10 @@ def result_line(number: str, ref_state: str, landed_state: str,
         tail = f" — closing-reference check UNVERIFIED, {UNLINK} given"
     elif note:
         tail = f" — {note}"
+    if title_state == TITLE_MISMATCH:
+        landed += "; the TITLE on the server is not what was sent"
+    elif title_state == TITLE_EXACT:
+        landed += "; title verified"
     return f"[result] PR #{number} body updated; {landed}{tail}"
 
 
@@ -479,14 +514,10 @@ def main() -> int:  # noqa: C901
     print(f"  {landed_msg}")
     for line in title_lines:
         print(line)
-    if title_fields:
-        stored_title = str(response.get("title") or "")
-        if stored_title == title_fields["title"]:
-            print("  title verified on the server")
-        else:
-            print(f"  title on the server is NOT what was sent: "
-                  f"{_untrusted.flat(stored_title)!r}")
-            landed_state = LANDED_MISMATCH
+    title_state, title_msg = title_verdict(
+        title_fields.get("title"), response.get("title"))
+    if title_msg:
+        print(title_msg)
     url = _untrusted.flat(str(response.get("html_url") or ""))
     print(f"  URL: {url or '(not returned by gh)'}")
 
@@ -501,8 +532,9 @@ def main() -> int:  # noqa: C901
     print(f"  Read it back: `gh-pr:{number}:full`")
     print(f"  Merge:        `gh-pr-merge:{number}` (previews the gate)")
     print()
-    print(result_line(number, ref_state, landed_state, ""))
-    return 0 if landed_state in (LANDED_EXACT, LANDED_NORMALISED) else 1
+    print(result_line(number, ref_state, landed_state, "", title_state))
+    return 0 if (landed_state in (LANDED_EXACT, LANDED_NORMALISED)
+                 and title_state != TITLE_MISMATCH) else 1
 
 
 if __name__ == "__main__":

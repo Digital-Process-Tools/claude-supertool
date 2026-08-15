@@ -275,6 +275,50 @@ def test_a_changed_title_is_sent_and_both_sides_are_shown():
     assert "old" in body and "new" in body
 
 
+# ---------------------------------------------------------------------------
+# the title is verified on its own axis, because a title that did not land is
+# not a body that did not land (found by the review of the first commit)
+# ---------------------------------------------------------------------------
+
+def test_no_title_sent_is_its_own_state_and_is_not_a_verification():
+    state, msg = m.title_verdict(None, "whatever is published")
+    assert state == m.TITLE_NOT_SENT
+    assert msg == ""
+
+
+def test_a_title_that_came_back_as_sent_is_verified():
+    state, msg = m.title_verdict("new", "new")
+    assert state == m.TITLE_EXACT
+    assert "verified" in msg.lower()
+
+
+def test_a_title_the_server_did_not_store_is_a_mismatch():
+    state, msg = m.title_verdict("new", "something else")
+    assert state == m.TITLE_MISMATCH
+    assert "something else" in msg
+
+
+def test_a_response_with_no_title_field_is_a_mismatch_not_a_pass():
+    state, _msg = m.title_verdict("new", None)
+    assert state == m.TITLE_MISMATCH
+
+
+def test_a_failed_title_never_renders_as_a_failed_body():
+    """The receipt has two axes and the result line must not merge them: a
+    byte-perfect body under a title that did not land used to print `body on
+    the server is NOT what was sent`, which is false about the body."""
+    line = m.result_line("1737", m.REF_OK, m.LANDED_EXACT, "", m.TITLE_MISMATCH)
+    assert "TITLE" in line, line
+    assert "body verified byte-identical" in line, line
+
+
+def test_a_verified_title_is_said_and_an_unsent_one_is_not_claimed():
+    sent = m.result_line("1737", m.REF_OK, m.LANDED_EXACT, "", m.TITLE_EXACT)
+    assert "title verified" in sent
+    quiet = m.result_line("1737", m.REF_OK, m.LANDED_EXACT, "", m.TITLE_NOT_SENT)
+    assert "title" not in quiet.lower(), quiet
+
+
 def test_a_payload_with_no_title_leaves_the_published_one_alone():
     fields, lines = m.title_change({}, "old")
     assert fields == {}
