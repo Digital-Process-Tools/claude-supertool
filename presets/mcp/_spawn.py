@@ -74,6 +74,50 @@ LOCK_POLL_SEC = 0.05
 REAP_GRACE_SEC = 3.0
 SPAWN_TIMEOUT_SEC = 60.0
 
+# --------------------------------------------------------------------------
+# Who is allowed to create a daemon (#475, honoured here since #1743)
+# --------------------------------------------------------------------------
+
+#: The core stamps this into every validator adapter's environment -- `0` by
+#: default, `1` for a validator that declared `"mcp_autospawn": true`
+#: (_supertool.py, `_validator_run_one`). Ordinary inheritance carries it to
+#: the adapter's own children, which is how `lsp-diag.py` -> `supertool diag:`
+#: is covered without either side being taught about the other.
+AUTOSPAWN_ENV = "SUPERTOOL_MCP_AUTOSPAWN"
+
+#: Kept identical to the core's `_MCP_AUTOSPAWN_FALSEY` and pinned equal by
+#: tests/test_mcp_autospawn_honoured_1743.py. Two readers of one variable that
+#: disagree about `off` is this same bug at one spelling per release.
+AUTOSPAWN_FALSEY = frozenset({"0", "false", "no", "off"})
+
+
+class AutospawnSuppressed(RuntimeError):
+    """No warm daemon, and this caller was told it may not create one.
+
+    A distinct type, not a message substring: the two ways `ensure_daemon` can
+    decline look identical from the outside -- a daemon that failed to come up
+    is a fault worth reporting, and a daemon that was never allowed to start is
+    the caller getting exactly what it asked for. Only the raise site knows
+    which, so only the raise site can say (the argument is refusal.py's, made
+    there for `DaemonUnavailable`).
+
+    Subclasses RuntimeError so an existing caller that handled only the spawn
+    timeout does not start leaking an unhandled exception.
+    """
+
+
+def autospawn_allowed() -> bool:
+    """False when the caller declared it cannot wait for a cold daemon (#475).
+
+    Read at call time, never at import: an adapter is a short-lived process,
+    but these helpers are also imported by long-lived ones and by tests that
+    set the variable per case.
+    """
+    raw = os.environ.get(AUTOSPAWN_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in AUTOSPAWN_FALSEY
+
 
 # --------------------------------------------------------------------------
 # Paths
@@ -372,6 +416,46 @@ def ensure_daemon(
     # storm — this is every call after the first.
     if usable(sock_path, pid_path, fingerprint):
         return sock_path
+
+    # #1743. Everything below this line creates a daemon, and the flag says
+    # this caller may not. It sits *after* the fast path deliberately:
+    # suppression removes creation, never use — a warm daemon is the whole
+    # point of running an MCP validator at all.
+    #
+    # It sits *before* the lock and before `preflight`, because a suppressed
+    # caller has to fail fast: the measured cost of not doing so was rector-mcp
+    # burning its full 30s spawn budget with the flag explicitly at `0`, then
+    # publishing the timeout as an adapter error about the file (30194 ms).
+    #
+    # That placement has two costs, both deliberate and neither free. A caller
+    # arriving inside another's startup window no longer blocks on the flock
+    # for the winner's socket — the wait is up to 60s and waiting is precisely
+    # what the flag forbids. And the reap below no longer runs for a validator,
+    # so a daemon whose fingerprint has gone stale squats until its
+    # `idle_timeout`, an interactive call or `mcp_stop`; it is never asked for
+    # an answer, since `usable()` demands a fingerprint match, so the cost is
+    # residency rather than a wrong answer. Whether a caller forbidden to
+    # create may still destroy is a real question, and not one to settle on the
+    # way past.
+    #
+    # Skipping `preflight` costs the install hint, which is the more actionable
+    # sentence on the machine `cwd:` usually names. Each adapter therefore
+    # resolves its own binary in the handler for this exception, so a suppressed
+    # run on a machine with nothing installed still says "install it" (#531).
+    if not autospawn_allowed():
+        # ASCII only, deliberately. This string is a skip reason on the happy
+        # path, but an unhandled raise renders it to stderr through the
+        # console's own codepage -- cp1252 on a Windows runner, where an em
+        # dash raises UnicodeEncodeError and kills the process at the print,
+        # after the work that print was reporting already happened.
+        raise AutospawnSuppressed(
+            f"no warm '{name}' daemon, and {AUTOSPAWN_ENV}="
+            f"{os.environ.get(AUTOSPAWN_ENV)!r} forbids starting one, so none "
+            f"was started. Warm it from a caller that can wait -- "
+            f"supertool 'mcp_daemon:{name} --detach' -- or set "
+            f"'mcp_autospawn': true on this validator if its timeout covers a "
+            f"cold start (#475)."
+        )
 
     with spawn_lock(lock_path(sock_path), timeout=lock_timeout):
         # Re-check under the lock. This is the whole fix for the startup

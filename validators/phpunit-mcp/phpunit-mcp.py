@@ -101,11 +101,24 @@ def ensure_daemon(cwd: str) -> str:
         # for the full argument (#544).
         resolve_bin(cwd)
         raise _refusal.DaemonUnavailable(no_transport)
-    return _spawn.ensure_daemon(
-        cwd, DAEMON_NAME,
-        preflight=lambda: resolve_bin(cwd),
-        spawn_timeout=SPAWN_TIMEOUT_SEC,
-    )
+    try:
+        return _spawn.ensure_daemon(
+            cwd, DAEMON_NAME,
+            preflight=lambda: resolve_bin(cwd),
+            spawn_timeout=SPAWN_TIMEOUT_SEC,
+        )
+    except _spawn.AutospawnSuppressed:
+        # The binary lookup runs here for the same reason it runs in the
+        # no-transport arm above: both outcomes are skips, and "install it" is
+        # the more actionable of the two. `_spawn` declines before its own
+        # `preflight` deliberately -- a caller that may not spawn should spend
+        # nothing on the spawn path -- so without this the lookup never happens
+        # and the receipt advises warming a daemon for a binary that is not on
+        # the machine. That is the normal case for any `cwd:` pointed at a git
+        # worktree where `composer install` never ran, and it is the row
+        # docs/validators.md #531 documents (#1743).
+        resolve_bin(cwd)
+        raise
 
 
 def ndjson_call(sock_path: str, test_file: str) -> dict:
@@ -234,12 +247,19 @@ def main(argv: list[str]) -> int:
     try:
         sock = ensure_daemon(WORKING_DIR)
         resp = ndjson_call(sock, os.path.abspath(file_path))
-    except _refusal.DaemonUnavailable as e:
-        # Not installed for this working directory — every `cwd:` into a git
-        # worktree lands here. Nothing was analysed, so nothing is reported —
-        # unless this validator is named in `$SUPERTOOL_REQUIRE_VALIDATORS`, in
-        # which case an absent analyser is the gate not running and says so
-        # loudly (#1202). `absent`, not `skipped`, is what makes that reachable.
+    except (_refusal.DaemonUnavailable, _spawn.AutospawnSuppressed) as e:
+        # Two ways to have nothing to say, one receipt. Either the analyser is
+        # not installed for this working directory — every `cwd:` into a git
+        # worktree lands here — or there is no warm daemon and
+        # `$SUPERTOOL_MCP_AUTOSPAWN` forbids raising a cold one (#1743). The
+        # second used to be neither: the flag was stamped into this process's
+        # environment and read by nothing here, so the adapter spent its whole
+        # spawn budget disobeying it and the receipt never mentioned it.
+        #
+        # Nothing was analysed in either case, so nothing is reported — unless
+        # this validator is named in `$SUPERTOOL_REQUIRE_VALIDATORS`, in which
+        # case a gate that did not run says so loudly (#1202). `absent`, not
+        # `skipped`, is what makes that reachable.
         print(json.dumps(_refusal.absent(
             "phpunit-mcp", file_path, str(e),
             int((time.monotonic() - t0) * 1000))))

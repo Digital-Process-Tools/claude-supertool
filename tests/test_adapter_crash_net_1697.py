@@ -255,10 +255,15 @@ def test_an_exception_escaping_main_still_publishes_a_verdict(adapter) -> None:
             name, blob))
 
     # Three states, not two. The injected failure is the usual one, but an
-    # adapter can genuinely fall over first -- `rector-mcp` raises
-    # `RuntimeError: daemon 'rector-warm' did not publish a usable socket` on
-    # any machine with no warm rector, before it reaches a `json.dumps` for the
-    # probe to take. That case is NOT skipped and NOT waved through: it is the
+    # adapter can genuinely fall over first. The instance this was written for
+    # was `rector-mcp` raising `RuntimeError: daemon 'rector-warm' did not
+    # publish a usable socket` on any machine with no warm rector, before it
+    # reaches a `json.dumps` for the probe to take -- historical since #1743,
+    # because `_drive` sets SUPERTOOL_MCP_AUTOSPAWN=0 and the four MCP adapters
+    # now read it, decline in milliseconds and reach the `json.dumps` in their
+    # own skip arm. The branch stays: it is about any adapter that dies before
+    # the marker, not about that one. That case is NOT skipped and NOT waved
+    # through: it is the
     # same contract met by a real crash instead of a synthetic one, so it still
     # had to publish a class-named payload, which is what the assertions above
     # and below require of it. The only claim it cannot also make is the

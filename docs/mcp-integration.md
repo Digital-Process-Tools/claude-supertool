@@ -188,6 +188,18 @@ warm and skips cleanly when one is not. Warm the daemon from an op that can
 afford to wait — `./supertool 'mcp_daemon:NAME --detach'`, or any interactive
 `diag:` / `refs:` / `resolve:` call.
 
+**Two readers, one variable.** The core's client reads it in
+`_mcp_autospawn_allowed`; the four MCP validator adapters reach a daemon
+through `presets/mcp/_spawn.ensure_daemon`, which reads it in
+`autospawn_allowed` and raises `AutospawnSuppressed` rather than spawning. The
+adapter publishes that as a `skipped` whose reason quotes the flag and its
+value, so a suppressed run is legible on the receipt rather than being an
+absence you have to infer — and, where the validator is named in
+`$SUPERTOOL_REQUIRE_VALIDATORS`, as the loud arm of `refusal.absent()`, because
+a gate that was not allowed to run did not pass. The two readers are pinned to
+the same falsey vocabulary by `tests/test_mcp_autospawn_honoured_1743.py`; the
+adapters read nothing at all until #1743.
+
 When `MCPClient` can't connect, it spawns the daemon detached via:
 
 ```python

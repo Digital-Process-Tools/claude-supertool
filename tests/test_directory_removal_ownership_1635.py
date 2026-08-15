@@ -509,6 +509,7 @@ REGISTER = {
     'tests/test_git_worktrees_unpushed_1496.py::_Sandbox.close': OWNED,
     'tests/test_git_worktrees_upstream_remote_1525.py::_Sandbox.close': OWNED,
     'tests/test_kevin_2026_05_17.py::test_paste_op_creates_missing_file_and_parent': OWNED,
+    'tests/test_mcp_autospawn_honoured_1743.py::runtime': OWNED,
     'tests/test_mcp_daemon_dedup_451.py::runtime': OWNED,
     'tests/test_notifiers_claude_channel_550.py::sock_dir': OWNED,
     'tests/test_notifiers_claude_channel_554.py::Channel.close': OWNED,

@@ -20,7 +20,9 @@ Each adapter:
 
 1. Reads `MCP_<TOOL>_BIN`, `MCP_<TOOL>_WORKING_DIR`, `MCP_<TOOL>_CONFIG` env vars
 2. Computes UDS socket path (sha1 of `cwd::daemon-name`)
-3. Connects, or auto-spawns daemon via `presets/mcp/_spawn.py` → `presets/mcp/daemon.py`
+3. Connects; auto-spawns via `presets/mcp/_spawn.py` → `presets/mcp/daemon.py` only
+   when `SUPERTOOL_MCP_AUTOSPAWN` allows it, which as a validator it does not by
+   default — see "Only a caller that can wait may create a daemon" below
 4. Sends MCP `initialize` + `tools/call`
 5. Formats response as SCHEMA.md validator JSON
 
@@ -51,13 +53,23 @@ all named `supertool-mcp-<sha1[:12]>`:
 - **Spawning is serialised** by an exclusive `flock` on `.lock`, with the usability
   check re-run *after* the lock is taken. Concurrent callers arriving inside the
   startup window — the seconds between `Popen` and the socket being bound — wait
-  for the winner instead of each starting their own (#451).
+  for the winner instead of each starting their own (#451). **A suppressed caller
+  does not wait**, because the lock wait is up to 60s and waiting is the thing the
+  flag forbids: a validator arriving mid-startup skips rather than joining the
+  queue. So "use, never create" is exact about a daemon that is *published*, and a
+  daemon that is merely in flight is not used either.
 - **`daemon.py` claims the pidfile before any side effect.** A daemon that finds
   the slot taken exits without unlinking the socket and without spawning its MCP
   server child, so losing the race costs one short-lived Python process.
 - **A live daemon whose fingerprint no longer matches is reaped (`SIGTERM`, then
   `SIGKILL`) and respawned.** `SIGTERM` is what lets it tear down its own MCP
-  server child; skipping it orphans a heavy PHP process.
+  server child; skipping it orphans a heavy PHP process. The reap runs under the
+  spawn lock, below the suppression check, so **a validator no longer retires a
+  stale daemon on anyone's behalf**: after a config or server-binary change the
+  elder squats until its `idle_timeout`, an interactive call, or `mcp_stop`. It
+  is never *asked* for an answer — `usable()` requires a fingerprint match — so
+  the cost is residency, not a wrong answer. Whether a caller forbidden to create
+  should still be allowed to destroy is a live question and not settled here.
 - **Only a caller that can wait may create a daemon.** Nothing reaps a daemon
   whose client died — the double-fork severs the link, and `idle_timeout` counts
   from the last bridged byte, not from the caller's liveness. A validator killed
@@ -67,6 +79,16 @@ all named `supertool-mcp-<sha1[:12]>`:
   the adapter's children inherit: use a warm daemon, never start one, and fail
   fast on a miss instead of polling. Opt a validator back in with
   `"mcp_autospawn": true` when its timeout genuinely covers a cold start (#475).
+  `ensure_daemon` reads the flag *after* the warm-daemon fast path and *before*
+  the spawn lock, so suppression removes creation and never use of a daemon that
+  is already published (see the two bullets above for what it does cost). It
+  declines by raising `_spawn.AutospawnSuppressed`; each adapter then resolves
+  its analyser binary — so an absent one still gets the install sentence rather
+  than advice to warm a daemon that cannot boot (#531) — and turns the refusal
+  into a `skipped` receipt whose reason names the flag. Until #1743 nothing
+  under `validators/` or `presets/mcp/` read the variable at all, and
+  `rector-mcp` with it set to `0` spent its full 30s spawn budget raising the
+  daemon it had been told not to create.
 - **Fingerprint = content, not mtime**: the resolved mcp spec (json, key-sorted)
   plus sha256 of every existing file named in its `cmd`/`args`/`env` — the config
   file, and the `mcp-*-warm` binary when the spec names it by path (absolute or
