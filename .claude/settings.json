@@ -1,43 +1,6 @@
 {
   "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "S=\"$HOME\"/Documents/claude-jit-context/scripts/session-start-hook.sh; [ -f \"$S\" ] && bash \"$S\" || true"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "S=\"$HOME\"/Documents/claude-jit-context/scripts/pre-prompt-hook.sh; [ -f \"$S\" ] && bash \"$S\" || true"
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "S=\"$HOME\"/Documents/claude-jit-context/scripts/pre-tool-hook.sh; [ -f \"$S\" ] && bash \"$S\" || true"
-          }
-        ]
-      },
-      {
-        "matcher": "Read|Edit|Write|Glob|Grep|Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "S=\"$HOME\"/Documents/claude-jit-context/scripts/pre-path-hook.sh; [ -f \"$S\" ] && bash \"$S\" || true"
-          }
-        ]
-      },
       {
         "matcher": "Bash|PowerShell",
         "hooks": [
