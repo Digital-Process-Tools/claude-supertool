@@ -8,8 +8,13 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
+# `pull-requests: read` is the scope the live label read needs (#1722). It is
+# named here rather than left to the repository default, so that widening or
+# narrowing it is a change to this file. A `pull_request` from a fork gets a
+# read-only token, which is all this job asks for.
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   fragment:
@@ -50,7 +55,13 @@ jobs:
       - name: A user-visible change carries a fragment
         env:
           BASE: ${{ github.base_ref }}
+          # The payload label set. Kept as the fallback the live read below
+          # degrades to, and for that only — it is the set as it stood when the
+          # run was CREATED, which is the whole of #1722.
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           changed=$(git diff --name-only "origin/${BASE}...HEAD")
@@ -58,11 +69,83 @@ jobs:
             echo "changelog   : skipped     (no files changed against origin/${BASE})"
             exit 0
           fi
-          case ",${LABELS}," in
-            *,no-changelog,*)
-              echo "changelog   : skipped     (label 'no-changelog' set on this PR)"
-              exit 0 ;;
-          esac
+          # Labels are read LIVE, not off the event payload (#1722). This job
+          # prints `no-changelog` as its own escape hatch, and taking that
+          # branch could not clear the PR: applying the label starts a fresh
+          # run which passes, nothing removes the run that failed before the
+          # label existed, and the merge gate is conjunctive over every run on
+          # the head sha (#1640) — correctly so. Re-running did not help
+          # either, because a re-run replays the payload the run was created
+          # with. The only route out was pushing a commit, i.e. the documented
+          # remedy could not clear the run printing it. Measured on #1721.
+          #
+          # The failing run was not wrong about anything it could see; it was
+          # answering a question about a label set that no longer existed, and
+          # rendering that as a `finding` is this repo's own defect class.
+          # Reading live removes the stale input rather than reporting it.
+          #
+          # The cost, stated because it is real: the verdict is no longer
+          # reproducible from the run's own payload, and a label REMOVED after
+          # the run started now reddens it — which it must, or the escape hatch
+          # outlives the decision to use it.
+          # One label per line, never a joined string. A GitHub label name may
+          # contain a comma, and `,${LABELS},` matched against `*,no-changelog,*`
+          # cannot tell the label `wontfix,no-changelog` from the two labels
+          # `wontfix` and `no-changelog` — so a single label nobody granted the
+          # escape hatch to forged it. That ambiguity is unrecoverable on the
+          # payload (Actions joins with a comma before the shell sees it) and
+          # simply absent on the live read, which is one more reason to prefer
+          # it. Applying a label needs write access, so this was never a fork-PR
+          # hole; it was a hole for everyone with triage rights.
+          labels="$(printf '%s' "$LABELS" | tr ',' '\n')"
+          label_source=payload
+          if [ -n "${PR_NUMBER:-}" ] && [ -n "${GH_REPO:-}" ]; then
+            # The `pulls` endpoint and not `issues/{n}/labels`: a pull request
+            # is an issue, but the scope that covers `/issues/*` for a
+            # GITHUB_TOKEN is `issues: read`, and this job asks for
+            # `pull-requests: read`. A permission mismatch here would 403 on
+            # every run forever and land silently on the fallback arm — the
+            # fix looking installed and never once working.
+            #
+            # Budgeted, because slow and down are different failures and only
+            # one of them returns an error to fall back on. Before #1722 this
+            # step made no network call at all; a degraded api.github.com would
+            # otherwise sit here until `timeout-minutes: 5` cancelled the job —
+            # red, receiptless, on every open PR at once. `timeout(1)` is GNU
+            # coreutils: present on ubuntu-latest, absent from a stock macOS,
+            # so it is used when present rather than assumed.
+            if command -v timeout >/dev/null 2>&1; then
+              read_cmd="timeout ${LABEL_READ_TIMEOUT:-30} gh"
+            else
+              read_cmd=gh
+            fi
+            if live=$($read_cmd api "repos/${GH_REPO}/pulls/${PR_NUMBER}" --jq '.labels[].name' 2>/dev/null); then
+              labels="$live"
+              label_source=live
+            else
+              # The one arm allowed to degrade, and it degrades to exactly the
+              # behaviour this job had before #1722: the payload. So it can
+              # turn a finding into a skip and never the reverse — an outage,
+              # a missing `gh`, or a token without the scope cannot redden a
+              # board that was green yesterday. It says so rather than
+              # answering as though it had read something, and the remedy it
+              # prints below switches to the one that still works.
+              echo "changelog   : note        (live label read failed - using this run's event payload; a label applied after this run started is invisible to it)"
+            fi
+          fi
+          # Whole-line comparison, and a `while read` rather than
+          # `grep -Fxq`: under `pipefail`, `grep -q` exits the moment it
+          # matches, `printf` takes SIGPIPE, and the pipeline's status is 141 —
+          # so the match reads as a miss precisely when it succeeds. A herestring
+          # runs in this shell and has no pipeline to mis-status.
+          has_label=0
+          while IFS= read -r name; do
+            if [ "$name" = no-changelog ]; then has_label=1; fi
+          done <<< "$labels"
+          if [ "$has_label" = 1 ]; then
+            echo "changelog   : skipped     (label 'no-changelog' set on this PR - labels read ${label_source})"
+            exit 0
+          fi
           # `--name-only` alone lists a DELETION identically to an addition, so
           # until #925 a PR that *removed* somebody else's pending fragment
           # satisfied this gate: it announced nothing, dropped an
@@ -118,6 +201,16 @@ jobs:
             echo "  changed   $(printf '%s\n' "$shipped" | head -5 | tr '\n' ' ')"
             echo "  fix       add changelog.d/<issue>.<section>.md — see docs/contributing.md"
             echo "  or        label the PR 'no-changelog' if it genuinely announces nothing"
+            # The remedy names the mechanism THIS run actually used, because
+            # the two mechanisms need different second steps and printing the
+            # wrong one is #1722 itself. Labelling always starts a fresh run;
+            # what the reader needs to know is how to clear the run in front
+            # of them, which is the one that stays red on the head sha.
+            if [ "$label_source" = live ]; then
+              echo "  then      re-run this check - it reads the PR's labels live, so the re-run sees the new label"
+            else
+              echo "  then      push a commit - this run read its labels from the event payload, so a re-run replays the old set"
+            fi
             exit 1
           fi
           echo "changelog   : ok          ($(printf '%s\n' "$added" | wc -l | tr -d ' ') fragment(s))"
