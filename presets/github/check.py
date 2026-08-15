@@ -49,6 +49,7 @@ from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -
 import _checks  # noqa: E402  (NAMED_CAP — the repo's disclosure cap, #605/#619)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _untrusted  # noqa: E402  (every field below is written by the check's App — #851)
+import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 # One page of annotations. GitHub's default is 30; asking for the maximum makes
@@ -491,13 +492,16 @@ def main() -> int:
     if not args or not args[0].strip():
         return _usage()
     first = args[0].strip()
+    # ASCII digits, not `str.isdigit()` (#1727). Both ids below are
+    # interpolated into a `gh api` path, and both come straight off the op
+    # string the caller typed.
     if first.lower() == "pr":
         pr = args[1].strip() if len(args) > 1 else ""
-        if not pr.isdigit():
+        if not _digits.is_ascii_int(pr):
             print("ERROR: usage: gh-check:pr:NUMBER (a PR number)")
             return 1
         return _list_pr(pr)
-    if not first.isdigit():
+    if not _digits.is_ascii_int(first):
         print(f"ERROR: {first!r} is not a check-run id. "
               f"Usage: gh-check:CHECK_RUN_ID | gh-check:pr:NUMBER")
         return 1

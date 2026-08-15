@@ -22,6 +22,7 @@ is the regression lock on that.
 """
 from __future__ import annotations
 
+import ast
 import re
 import subprocess
 import sys
@@ -667,18 +668,59 @@ def test_good_knob_still_reaches_the_preset(history_repo):
 #:
 #: #654 asks that a bounded sweep not render as complete coverage, so the
 #: boundary lives here — where it fails a build when it moves — rather than only
-#: in a PR body. The sweep reached every site, so it is empty; that is a claim
-#: this test keeps honest rather than a formality, because the next preset to
-#: add a bare parse fails here instead of shipping.
+#: in a PR body. It is empty, and what that is worth depends entirely on the
+#: scan below being able to see one.
 #:
-#: It covers the *syntactic* pattern only. Two knobs in `supertool.py` are
-#: numeric but not spelled this way and were swept by hand:
-#: `_parallel_workers` (`SUPERTOOL_PARALLEL`, which also accepts true/false) and
-#: `_get_op_int` (the `SUPERTOOL_<OP>_<KEY>` family). `SUPERTOOL_DEBUG` is read
-#: for truthiness only and is not a numeric knob.
+#: **It could not, until #1727.** The scan was a regex run against one line at a
+#: time, and a Python call expression is not a line:
+#: `presets/github/find_starable.py` and `find_followable.py` each held
+#: `int(\n    os.environ.get(...))` wrapped across two, so the pattern never
+#: matched and this empty set read as "the sweep reached every site" for two
+#: files it had never looked at. Both crashed on
+#: `SUPERTOOL_DEFAULT_LIMIT=abc` — #654's own reproduction, inside #654's own
+#: boundary. It surfaced only because an unrelated change reflowed the
+#: expression onto one line. The scan is parsed now, which is the same move
+#: `non_ascii_print_literals` in `tests/test_encoding_seam.py` made for the same
+#: reason, and `test_the_bare_parse_scan_sees_a_call_wrapped_across_lines` is
+#: the positive control this guard should have carried from the start.
+#:
+#: Two knobs in `supertool.py` are numeric but not spelled as a call at all, and
+#: were swept by hand: `_parallel_workers` (`SUPERTOOL_PARALLEL`, which also
+#: accepts true/false) and `_get_op_int` (the `SUPERTOOL_<OP>_<KEY>` family).
+#: `SUPERTOOL_DEBUG` is read for truthiness only and is not a numeric knob.
 BARE_PARSE_ALLOWLIST: set[str] = set()
 
-_BARE_PARSE = re.compile(r"(?:int|float)\(\s*os\.(?:environ\.get|getenv)\(")
+
+def _is_env_read(node: ast.AST) -> bool:
+    """`os.environ.get(...)` or `os.getenv(...)`, as an expression."""
+    if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+        return False
+    func = node.func
+    if func.attr == "getenv":
+        return isinstance(func.value, ast.Name) and func.value.id == "os"
+    if func.attr == "get":
+        inner = func.value
+        return (isinstance(inner, ast.Attribute) and inner.attr == "environ"
+                and isinstance(inner.value, ast.Name) and inner.value.id == "os")
+    return False
+
+
+def bare_parse_lines(source: str) -> list[int]:
+    """Lines holding `int(os.environ.get(...))` or `float(os.getenv(...))`.
+
+    Parsed rather than grepped, because where the author broke the line is not
+    a property of the code and was deciding the answer. Raises `SyntaxError`
+    for source it cannot read — the third state, so a file this cannot parse is
+    never counted as a file with nothing in it.
+    """
+    hits: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id in ("int", "float")):
+            continue
+        if any(_is_env_read(arg) for arg in node.args):
+            hits.append(node.lineno)
+    return sorted(hits)
 
 
 def _scan_bare_parses():
@@ -686,8 +728,13 @@ def _scan_bare_parses():
     for path in (sorted(REPO_ROOT.glob("presets/**/*.py"))
                  + [REPO_ROOT / "supertool.py", REPO_ROOT / "_supertool.py"]):
         rel = path.relative_to(REPO_ROOT).as_posix()
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        found = [i + 1 for i, ln in enumerate(lines) if _BARE_PARSE.search(ln)]
+        source = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            found = bare_parse_lines(source)
+        except SyntaxError as exc:
+            raise AssertionError(
+                f"{rel} does not parse, so this scan cannot answer for it. "
+                f"Declining rather than counting it clean: {exc}") from exc
         if found:
             hits[rel] = found
     return hits
@@ -711,3 +758,125 @@ def test_allowlist_is_not_stale():
     hits = _scan_bare_parses()
     stale = sorted(BARE_PARSE_ALLOWLIST - set(hits))
     assert not stale, f"allowlist names files with no bare parse left: {stale}"
+
+# --------------------------------------------------------------------------
+# The scan's own blind spot. Found by #1727, owned here.
+# --------------------------------------------------------------------------
+#
+# `_scan_bare_parses` matched a regex against one line at a time, and a Python
+# call expression is not a line. `presets/github/find_starable.py` and
+# `find_followable.py` both held a bare parse the whole time #654's boundary
+# claimed to be empty, hidden by nothing more than where the line broke:
+#
+#     n = int(parts[1]) if len(parts) > 1 and parts[1].strip().isdigit() else int(
+#         os.environ.get("SUPERTOOL_DEFAULT_LIMIT", "30"))
+#
+# The `int(` and the `os.environ.get(` are on different lines, so the pattern
+# could never match, and `BARE_PARSE_ALLOWLIST == set()` read as "the sweep
+# reached every site" for two files it had never seen. #1727 reflowed those two
+# expressions for an unrelated reason, the call landed on one line, and the
+# register went red -- which is the only reason anybody found out.
+#
+# That is this repository's standing defect class pointed at one of its own
+# guards: an absence produced by the tool, read as an absence in the world. The
+# scan is parsed now rather than grepped, the same move
+# `non_ascii_print_literals` in tests/test_encoding_seam.py already made for the
+# same reason.
+
+_WRAPPED_SOURCE = (
+    "import os\n"
+    "def f():\n"
+    "    return int(\n"
+    "        os.environ.get('SUPERTOOL_DEFAULT_LIMIT', '30'))\n"
+)
+
+_ONE_LINE_SOURCE = (
+    "import os\n"
+    "def f():\n"
+    "    return int(os.environ.get('SUPERTOOL_DEFAULT_LIMIT', '30'))\n"
+)
+
+_INNOCENT_SOURCE = (
+    "import os\n"
+    "def f(parts):\n"
+    "    n = int(parts[1])\n"
+    "    room = os.environ.get('SUPERTOOL_DEFAULT_LIMIT')\n"
+    "    return n, room\n"
+)
+
+
+def test_the_bare_parse_scan_sees_a_call_wrapped_across_lines():
+    """The guard's own positive control, and the one it did not have.
+
+    Without the wrapped case this scan reports zero for a file that has one,
+    and a zero that means "my pattern could not reach it" is indistinguishable
+    from a zero that means "there is nothing there". Both other cases are here
+    so a fix cannot buy the wrapped case by flagging everything.
+    """
+    assert bare_parse_lines(_ONE_LINE_SOURCE) == [3]
+    assert bare_parse_lines(_WRAPPED_SOURCE) == [3], (
+        "a bare parse split across two lines is invisible to the scan, so the "
+        "empty allowlist above is a claim about the pattern rather than about "
+        "the tree")
+    assert bare_parse_lines(_INNOCENT_SOURCE) == [], (
+        "int() on something that is not an env read, and an env read that is "
+        "not parsed, are both fine and must stay fine")
+
+
+def test_the_bare_parse_scan_declines_rather_than_guessing():
+    """A file it cannot parse is reported, never silently counted as clean."""
+    with pytest.raises(SyntaxError):
+        bare_parse_lines("def f(:\n")
+
+
+# --------------------------------------------------------------------------
+# The two sites the blind spot was hiding.
+# --------------------------------------------------------------------------
+
+def _reset_notices():
+    """`_env` says each distinct message once per process; tests need each."""
+    mod = sys.modules.get("_env")
+    if mod is not None:
+        mod._ANNOUNCED.clear()
+
+
+@pytest.mark.parametrize("preset,subject,default", [
+    ("find_starable", "python", 30),
+    ("find_followable", "o/r", 100),
+])
+def test_find_ops_decline_a_junk_default_limit_instead_of_raising(
+        preset, subject, default, monkeypatch, capsys):
+    """`SUPERTOOL_DEFAULT_LIMIT=abc python3 presets/github/find_starable.py x`
+    ended in a `ValueError` traceback out of `int()` -- #654's own reproduction,
+    in a file #654's boundary said it had swept.
+    """
+    mod = load_preset_module("github", preset)
+    monkeypatch.setenv("SUPERTOOL_DEFAULT_LIMIT", "abc")
+    _reset_notices()
+
+    _subject, n = mod.parse_args(subject)
+
+    assert n == default, "the fallback must be the value actually in force"
+    out = capsys.readouterr().out
+    assert "SUPERTOOL_DEFAULT_LIMIT" in out, "the variable is not named"
+    assert "'abc'" in out or "abc" in out, "the offending value is not quoted back"
+    assert str(default) in out, "the fallback actually in force is not stated"
+
+
+@pytest.mark.parametrize("preset,subject", [
+    ("find_starable", "python"),
+    ("find_followable", "o/r"),
+])
+def test_find_ops_still_honour_a_good_default_limit(
+        preset, subject, monkeypatch, capsys):
+    """The positive control. Every assertion above would hold on a helper that
+    ignored the environment and returned the default every time."""
+    mod = load_preset_module("github", preset)
+    monkeypatch.setenv("SUPERTOOL_DEFAULT_LIMIT", "7")
+    _reset_notices()
+
+    _subject, n = mod.parse_args(subject)
+
+    assert n == 7, "a good value must reach the op"
+    assert "note: SUPERTOOL_" not in capsys.readouterr().out, (
+        "a good value must not be reported as a problem")

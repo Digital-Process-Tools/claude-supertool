@@ -47,6 +47,7 @@ import _checks  # noqa: E402
 import _remote_default as _rd  # noqa: E402
 import _repo_target  # noqa: E402
 import _untrusted  # noqa: E402
+import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
 
 # GitHub's own run-creation latency, measured in #585 and reused by `gh-branch`
 # rather than re-guessed. Inside it, zero runs means "still coming"; past it,
@@ -386,7 +387,11 @@ def main() -> int:  # noqa: C901
     # ---- did anything actually start? -----------------------------------
     checks_state = CHECKS_UNKNOWN
     check_lines: List[str] = []
-    if number.isdigit():
+    # ASCII digits, the same test `run.py`'s `refuse_run_id` applies to a run id
+    # (#1727). `number` is parsed out of `gh`'s own stdout, so a non-ASCII digit
+    # here means `gh` printed one and the blast radius is low — but the loose
+    # spelling sitting next to the strict one is what gets copied, and it was.
+    if _digits.is_ascii_int(number):
         data, read_err = _gh_json(
             ["pr", "view", number, "--repo", repo, "--json",
              "statusCheckRollup,headRefOid,createdAt"], timeout=30)

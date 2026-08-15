@@ -20,6 +20,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
+import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
+from _env import env_int  # noqa: E402  (the one numeric-knob reader — #654)
 
 
 def fetch(endpoint: str) -> list[dict]:
@@ -60,8 +62,15 @@ def parse_args(arg: str) -> tuple[str, int]:
     if "/" not in repo:
         sys.stderr.write(f"ERROR: expected OWNER/REPO, got {repo!r}\n")
         sys.exit(2)
-    n = int(parts[1]) if len(parts) > 1 and parts[1].strip().isdigit() else int(
-        os.environ.get("SUPERTOOL_DEFAULT_LIMIT", "100"))
+    # ASCII digits, not `str.isdigit()`: the latter is True for `²`, where
+    # `int()` raises and this line died before anything was fetched (#1727).
+    #
+    # `env_int` rather than a bare `int(os.environ.get())` — see the twin of
+    # this line in `find_starable.py`. Both were invisible to #654's register
+    # because it matched a regex per line and the call was wrapped across two.
+    n = (int(parts[1])
+         if len(parts) > 1 and _digits.is_ascii_int(parts[1].strip())
+         else env_int("SUPERTOOL_DEFAULT_LIMIT", 100, minimum=1))
     return repo, min(n, 300)
 
 

@@ -24,15 +24,14 @@ substituting `{args}`, so alternation reaches the preset intact and always did.
 """
 from __future__ import annotations
 
-import re
+import _digits  # (the one ASCII-digit test, shared since #1727)
 
 # `raw` is here too, though its own START/END parsing lives in each preset.
 MODES = ("fail", "errors", "raw", "grep")
 
-#: `\Z` and not `$`: Python's `$` also matches immediately before a final
-#: newline, so `^[0-9]+$` accepted `"5\n"` — through the one guard whose whole
-#: purpose is to refuse before anything is fetched (#1188).
-_DIGITS = re.compile(r"^[0-9]+\Z")
+#: Shared rather than retyped (#1727). `presets/_digits.py` carries the `\Z`
+#: anchor (#1188) and both character classes `str.isdigit()` wrongly admits.
+_DIGITS = _digits.DIGITS
 
 
 def refuse_job_id(op: str, forge: str, job_id: str) -> str:
