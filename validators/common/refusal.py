@@ -268,9 +268,16 @@ def absent(tool: str, file_path: str, reason: str, dur_ms: int) -> dict:
     `html-check` runs `node`; escalating on the binary name would ignore the
     only spelling anyone can configure.
 
-    Reserve this for an *absent* tool. A tool that ran and fell over is
-    `tool_fault()`, a scope refusal is `skipped()` directly, and neither
-    becomes louder because someone asked for the gate to be installed.
+    Reserve this for a tool that could not be *reached*. Absent is the usual
+    reason; the four MCP adapters also land here when there is no warm daemon
+    and `$SUPERTOOL_MCP_AUTOSPAWN` forbids raising a cold one (#1743), which is
+    the same sentence — this file was not checked, and the repo that named the
+    validator in `$SUPERTOOL_REQUIRE_VALIDATORS` is owed the loud version.
+
+    A tool that ran and fell over is `tool_fault()`, and a scope refusal is
+    `skipped()` directly: that one is a decision about which files this
+    validator covers, so it does not become louder because someone asked for
+    the gate to be installed.
     """
     if required(tool):
         return {"tool": tool, "file": file_path, "ok": False, "count": 1,

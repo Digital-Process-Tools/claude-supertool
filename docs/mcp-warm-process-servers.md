@@ -67,6 +67,13 @@ all named `supertool-mcp-<sha1[:12]>`:
   the adapter's children inherit: use a warm daemon, never start one, and fail
   fast on a miss instead of polling. Opt a validator back in with
   `"mcp_autospawn": true` when its timeout genuinely covers a cold start (#475).
+  `ensure_daemon` reads the flag *after* the warm-daemon fast path and *before*
+  the spawn lock, so suppression removes creation and never use. It declines by
+  raising `_spawn.AutospawnSuppressed`, and each adapter turns that into a
+  `skipped` receipt whose reason names the flag — until #1743 nothing under
+  `validators/` or `presets/mcp/` read the variable at all, and `rector-mcp`
+  with it set to `0` spent its full 30s spawn budget raising the daemon it had
+  been told not to create.
 - **Fingerprint = content, not mtime**: the resolved mcp spec (json, key-sorted)
   plus sha256 of every existing file named in its `cmd`/`args`/`env` — the config
   file, and the `mcp-*-warm` binary when the spec names it by path (absolute or
