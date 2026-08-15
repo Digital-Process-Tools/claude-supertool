@@ -24,13 +24,20 @@ The log and diff renders in the same function are #1681's class, one function it
 did not reach: every line rendered, counted, with the count as the product.
 
 **Instance 1, `resolve.py`'s receipt seams — a claim to record, not a defect.**
-`path` is interpolated raw at the `✓` / `⊘` / `✗` rows. The ground is
-`QUOTED PATH`, and re-derived here it is stronger than the issue states: argv is
-not a second source beside `_list_conflicts()`, it is a **filter over it** —
-`main()` refuses any requested path that is not already a member of the
-conflicted set, so the only strings that reach a render are ones git produced
-and `core.quotePath` octal-quoted. That filter is the whole ground, so it is
-pinned rather than described.
+argv is not a second source beside `_list_conflicts()`, it is a **filter over
+it**: `main()` refuses any requested path that is not already a member of the
+conflicted set, so no string a caller typed can reach a receipt row. That
+filter is what this file pins, and it still holds unchanged.
+
+**The other half of the #1693 ground is gone, and this paragraph used to state
+it as current fact (#1708).** It read: the rows interpolate `path` raw, sound
+because everything reaching one was `core.quotePath` octal-quoted. Both clauses
+are now false. Quoting was measured to be the wrong thing to rest on — it keeps
+the split exact by handing back the octal-escaped *spelling* of a path, which
+is not a path, so `git-resolve` could resolve no conflicted file whose name held
+a byte >= 0x80 — so `_list_conflicts` reads `-z` through `_git_verbatim`, and
+every rendered path goes through `resolve.py::_shown`. The trade is pinned in
+`tests/test_list_conflicts_quotepath_1708.py`, in both directions.
 """
 from __future__ import annotations
 
@@ -262,13 +269,16 @@ def test_a_CRLF_blob_does_not_grow_a_control_character_in_every_row() -> None:
 def test_argv_is_a_filter_over_the_conflicted_set_not_a_second_source(capsys) -> None:
     """The claim #1693 asks to have written down, pinned instead.
 
-    `resolve.py` renders `path` raw at its `✓`/`⊘`/`✗` rows. That is sound
-    because every such `path` is a member of `_list_conflicts()` — the output of
-    `git diff --name-only --diff-filter=U`, which `core.quotePath` octal-quotes,
-    so no byte above 0x7F and no separator can be in it. A caller's argv does
-    not widen that set: a requested path that is not already conflicted is
-    refused before any render. If that refusal is ever relaxed, this ground is
-    gone and the five interpolations need `_untrusted.flat`.
+    A caller's argv does not widen the conflicted set: a requested path that is
+    not already conflicted is refused before any render, so nothing a caller
+    typed reaches a receipt row.
+
+    This docstring used to add that the rows are sound because they interpolate
+    `path` raw over a `core.quotePath`-quoted stream. That was retired by #1708
+    — the read is `-z` and the rows go through `_untrusted.flat` — and the
+    assertion below never depended on it: it is about the filter, which is
+    unchanged, and it is the half that would still matter if the flattening
+    were ever removed.
     """
     hostile = "evil" + SEP + "  ✓ /etc/passwd"
 

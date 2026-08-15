@@ -24,6 +24,12 @@ def _patch_git(monkeypatch, fn) -> None:
     """Intercept git for the preset *and* for the shared helper it calls."""
     monkeypatch.setattr(resolve, "_git", fn)
     monkeypatch.setattr(_common, "_git", fn)
+    # `_list_conflicts` reads through `_git_verbatim` since #1708 — text mode
+    # rewrites a bare CR inside a NUL record — so a double that stops at `_git`
+    # leaves the conflict listing running real git against the temp tree, and
+    # every receipt comes back "No conflicted files." (the same trap #704 left
+    # when the helper moved out of the preset).
+    monkeypatch.setattr(_common, "_git_verbatim", fn)
 
 
 def _z(*paths: str) -> str:

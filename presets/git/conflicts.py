@@ -196,7 +196,7 @@ def main() -> int:
         # U+2028, so the heading it goes into is flattened. `_all_conflict_blocks`
         # and `_incoming_info` get the unflattened path, because they need the
         # one the filesystem has.
-        print(f"\n## {_untrusted.flat(path)}")
+        print(f"\n## {_untrusted.flat(path, disclose_newline=True)}")
         for line in _incoming_info(path, state):
             print(line)
         print(_all_conflict_blocks(path, preview))

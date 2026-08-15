@@ -84,6 +84,8 @@ def repo(tmp_path, monkeypatch):
     fake = _fake_git(conflicted, staged)
     monkeypatch.setattr(resolve, "_git", fake)
     monkeypatch.setattr(_common, "_git", fake)
+    # #1708: the conflicted-path read is `_git_verbatim`, not `_git`.
+    monkeypatch.setattr(_common, "_git_verbatim", fake)
     return target
 
 

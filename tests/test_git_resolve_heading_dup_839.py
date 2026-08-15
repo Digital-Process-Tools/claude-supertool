@@ -111,6 +111,11 @@ def _section_of(text: str, entry: str) -> str:
 def _patch_git(monkeypatch, fn) -> None:
     monkeypatch.setattr(resolve, "_git", fn)
     monkeypatch.setattr(_common, "_git", fn)
+    # `_list_conflicts` reads through `_git_verbatim` since #1708 - text mode
+    # rewrites a CR inside a NUL record - so a double that stops at `_git`
+    # leaves the listing running real git and every receipt reads
+    # "No conflicted files."
+    monkeypatch.setattr(_common, "_git_verbatim", fn)
 
 
 def _fake_git(calls, conflicted, staged, union_attr=()):

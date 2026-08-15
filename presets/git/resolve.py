@@ -69,8 +69,16 @@ def _shown(path: str) -> str:
 
     `flat` discloses the separator rather than dropping the tail (#1652), so
     the name stays readable and nothing is censored.
+
+    **`disclose_newline=True` is the path spelling of it (#1557)**, and not
+    optional here. The default renders a newline as a space, which is right for
+    a title — no tracker lets one hold a newline — and a lie for a path, which
+    POSIX does. Without it a file named `a<LF>b.txt` and a file named `a b.txt`
+    produce the identical row, so the reader cannot tell which of two real
+    files the receipt is about. That is the whole thing `-z` went to the
+    trouble of preserving.
     """
-    return _untrusted.flat(path)
+    return _untrusted.flat(path, disclose_newline=True)
 
 
 def _is_source_path(path: str) -> bool:

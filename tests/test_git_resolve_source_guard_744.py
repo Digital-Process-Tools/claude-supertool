@@ -27,6 +27,11 @@ _common = sys.modules["_git_common"]
 def _patch_git(monkeypatch, fn) -> None:
     monkeypatch.setattr(resolve, "_git", fn)
     monkeypatch.setattr(_common, "_git", fn)
+    # `_list_conflicts` reads through `_git_verbatim` since #1708 - text mode
+    # rewrites a CR inside a NUL record - so a double that stops at `_git`
+    # leaves the listing running real git and every receipt reads
+    # "No conflicted files."
+    monkeypatch.setattr(_common, "_git_verbatim", fn)
 
 
 # The shape from the rebase that filed the issue: master factored the comment

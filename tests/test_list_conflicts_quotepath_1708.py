@@ -40,7 +40,14 @@ import pytest
 _ROOT = Path(__file__).parent.parent
 LF = chr(10)
 SEP = chr(0x2028)
-ACCENT = "caf" + chr(0xE9) + ".txt"
+CR = chr(13)
+#: Two non-ASCII characters on purpose, and the second one is the point.
+#: U+00E9 IS representable in cp1252, so a Windows leg asserting only on
+#: `café.txt` cannot tell `use_utf8_stdout()` worked from `use_utf8_stdout()`
+#: silently declining — it swallows ValueError/OSError on `reconfigure`.
+#: U+4E16 has no cp1252 encoding, so the same rows are the positive control
+#: for the console-codepage claim rather than a restatement of it.
+ACCENT = "caf" + chr(0xE9) + "-" + chr(0x4E16) + ".txt"
 TICK = chr(0x2713)
 
 
@@ -200,9 +207,88 @@ def test_a_separator_in_a_filename_cannot_add_a_conflict(
     assert set(paths) == _on_disk(repo), repr(paths)
 
 
+@pytest.mark.skipif(
+    sys.platform.startswith("win"),
+    reason="UNTESTED ON WINDOWS: NTFS refuses a bare CR in a filename, so the "
+           "text-mode translation half of #1708 has no fixture there. It is "
+           "also unreachable there for the same reason, so this is a gap in "
+           "the evidence and not in the coverage.",
+)
+def test_a_bare_CR_in_a_filename_survives_the_read(
+        tmp_path: Path, monkeypatch) -> None:
+    """`-z` is only exact if nothing rewrites the bytes on the way back.
+
+    `_git` runs `subprocess.run(text=True)`, and Python's universal-newline
+    translation rewrites a bare CR — and a CRLF — to LF *inside* a NUL record,
+    before any split sees it. A POSIX filename may hold a CR (every byte but
+    NUL and '/' is legal), so the name that came back was not the name on disk
+    and `git add -- <path>` would have been aimed at a file that is not there.
+    `_git_verbatim` is the same call with the translation off; #1693 built it
+    for exactly this and `_list_conflicts` reads through it.
+    """
+    repo = tmp_path / "r"
+    hostile = "cr" + CR + "x.txt"
+    try:
+        _conflicted_repo(repo, [hostile, "plain.txt"])
+    except OSError as exc:  # pragma: no cover - filesystem-dependent
+        pytest.skip("UNTESTED HERE: this filesystem refused a CR in a "
+                    "filename: " + str(exc))
+    monkeypatch.chdir(repo)
+
+    paths, why = git_common._list_conflicts()
+    assert why == "", why
+    assert "plain.txt" in paths, (
+        "the fixture produced no conflicts, so nothing was measured: "
+        + repr(paths))
+    assert set(paths) == _on_disk(repo), (
+        "a CR in a filename was rewritten to LF on the way out of git, so the "
+        "name returned is not the name on disk: " + repr(paths))
+    for p in paths:
+        assert os.path.exists(repo / p), repr(p)
+
+
 # ---------------------------------------------------------------------------
 # what -z costs: a raw path can carry a separator into a receipt row
 # ---------------------------------------------------------------------------
+
+def test_two_paths_that_differ_only_by_a_newline_render_differently(
+        tmp_path: Path, monkeypatch, capsys) -> None:
+    """#1557's class, at the seam #1708 opened.
+
+    `flat()` turns a newline into a space by default, which is right for a
+    title (no tracker lets one hold a newline) and a lie for a path (POSIX
+    does). Flattened without `disclose_newline=True`, a file named
+    `a<LF>b.txt` and a file named `a b.txt` produce the SAME receipt row — so
+    the reader cannot tell which of two real files the row is about, which is
+    the whole reason `-z` went to the trouble of keeping the bytes.
+
+    Platform-independent: `_list_conflicts` is mocked, so Windows asserts it
+    too even though it cannot hold either name.
+    """
+    monkeypatch.chdir(tmp_path)
+    with_newline = "a" + LF + "b.txt"
+    with_space = "a b.txt"
+
+    def fake_git(args, **kw):
+        if args[:2] == ["rev-parse", "--git-dir"]:
+            return mock.Mock(stdout="", returncode=0, stderr="")
+        return mock.Mock(stdout="", returncode=1, stderr="no such path")
+
+    with mock.patch.object(resolve, "_git", side_effect=fake_git), \
+         mock.patch.object(resolve, "_list_conflicts",
+                           return_value=([with_newline, with_space], "")), \
+         mock.patch.object(sys, "argv", ["git-resolve", "ours", "all"]):
+        resolve.main()
+    out = capsys.readouterr().out
+    rows = [ln for ln in out.split(LF) if ln.lstrip().startswith(chr(0x2717))]
+    assert len(rows) == 2, (
+        "the fixture rendered no rows, so nothing was measured: " + repr(out))
+    assert rows[0] != rows[1], (
+        "two conflicted files with different names produced the same receipt "
+        "row - the newline was rendered as a space, so neither row names a "
+        "file the reader can find: " + repr(rows))
+    for line in out.split(LF):
+        assert LF not in line and CR not in line, repr(out)
 
 def test_a_conflicted_filename_cannot_forge_a_receipt_row(
         tmp_path: Path, monkeypatch, capsys) -> None:
@@ -248,7 +334,7 @@ def test_the_conflicts_read_does_not_depend_on_a_git_preference() -> None:
         seen.append(list(args))
         return mock.Mock(stdout="", returncode=0, stderr="")
 
-    with mock.patch.object(git_common, "_git", side_effect=fake_git):
+    with mock.patch.object(git_common, "_git_verbatim", side_effect=fake_git):
         git_common._list_conflicts()
     assert seen, "the reader ran no git command at all"
     argv = seen[0]

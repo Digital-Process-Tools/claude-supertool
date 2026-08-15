@@ -238,11 +238,23 @@ def _list_conflicts() -> tuple[list[str], str]:
     at line 639 that it leaves `core.quotePath` alone on purpose: pinning it
     beside `-z` advertises a dependency the read does not have.
 
+    **And it reads through `_git_verbatim`, because `-z` is only exact if
+    nothing rewrites the bytes on the way back.** `_git` runs
+    `subprocess.run(text=True)`, and Python's universal-newline translation
+    turns a bare CR — and a CRLF — into LF *inside* a NUL record, before any
+    split sees it. A POSIX filename may hold a CR (every byte but NUL and '/'
+    is legal), so with text mode on, the name handed back was not the name on
+    disk and the `git add -- <path>` that follows was aimed at a file that is
+    not there. #1693 built `_git_verbatim` for exactly this shape.
+
     What `-z` costs is paid by the callers, not here. A raw path can carry a
     separator into a receipt row, so `resolve.py`, `conflicts.py` and `merge.py`
-    put every rendered path through `_untrusted.flat`.
+    put every rendered path through `_untrusted.flat(..., disclose_newline=True)`
+    — the path spelling of #1557: the default renders a newline as a space,
+    which turns "this file's name has a newline in it" into a plausible name
+    that is not on disk, and makes two different real files render identically.
     """
-    res = _git(["diff", "--name-only", "--diff-filter=U", "-z"])
+    res = _git_verbatim(["diff", "--name-only", "--diff-filter=U", "-z"])
     if res.returncode != 0:
         return [], (res.stderr.strip() or f"git exited {res.returncode}")
     # NUL, not `splitlines()`: the record separator is the one character a
