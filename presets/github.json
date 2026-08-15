@@ -51,6 +51,23 @@
       ],
       "repo_target": "payload"
     },
+    "gh-pr-edit": {
+      "safety": "acts",
+      "cmd": "{python} {path}github/pr_edit.py {args}",
+      "timeout": 120,
+      "description": "Update a PUBLISHED pull request's body (and title) from the same JSON/TOML payload gh-pr-create takes, with the closing-reference check that a hand-replaced body bypasses. Correcting a published record is what this loop asks authors to do and it was the one publishing action with no op: `gh pr edit` fetches the PR through GraphQL first and the field set includes projectCards, which GitHub has sunset, so on a repository with Projects classic it fails outright before writing anything (observed 2026-08-15 on this repo, exit 1). This goes through REST PATCH, which does not touch projects. Before the write it reads the published body and re-parses it with _checks.closing_issue_refs, the same reader gh-pr and gh-pr-merge use, in THREE states: the references survived, one was DROPPED, or the published body could not be read at all — and the third is not the first. The last two REFUSE and write nothing; the single token `unlink` is how a deliberate re-scope says it means it, and the refusal names it. A `Closes` line that moved into a code fence or an HTML comment counts as dropped, because GitHub does not honour one there either. After the write it compares the body the PATCH response carries against the bytes it sent, byte for byte, in the same call — EXACT, line endings NORMALISED by the server, MISMATCH naming both lengths and the first differing line, or UNKNOWN when the response carried no body field. Only EXACT and NORMALISED exit 0: a write that landed something else is never rendered as a success, which is what the raw route's bare timestamp did. The title is sent only when the payload carries one AND it differs from what is published, and either way the receipt says which. base, head, draft, labels, assignees, reviewers and milestone are NAMED as not applied rather than silently dropped — the payload is gh-pr-create's and carries them.",
+      "syntax": "gh-pr-edit:NUMBER:@FILE[:unlink]",
+      "example": "gh-pr-edit:1737:@.max/pr.toml",
+      "paths": { "args": [2], "root": "cwd" },
+      "replaces": [
+        { "argv": "gh pr edit", "flag": "--body-file", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@FILE" },
+        { "argv": "gh pr edit", "flag": "--body", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@FILE" },
+        { "argv": "gh pr edit", "flag": "-b", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@FILE" },
+        { "argv": "gh pr edit", "flag": "--title", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@FILE" },
+        { "argv": "gh pr edit", "flag": "-t", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@FILE" }
+      ],
+      "repo_target": "payload"
+    },
     "gh-pr-merge": {
       "safety": "acts",
       "cmd": "{python} {path}github/pr_merge.py {args}",

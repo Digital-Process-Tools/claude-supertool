@@ -203,7 +203,7 @@ def test_nothing_added_here_fires_on_an_unrelated_command(
 def test_exactly_these_github_ops_declare_a_mapping():
     """The record of which absences were chosen, next to the ones that were not.
 
-    Ten of twenty-one ops declare nothing. The reasons live in
+    Ten of twenty-two ops declare nothing. The reasons live in
     `tests/test_replaces_census_1384.py`, which partitions every preset op in
     the repository into mapped and deliberately-absent and cannot drift.
     """
@@ -211,4 +211,5 @@ def test_exactly_these_github_ops_declare_a_mapping():
                 if "replaces" in definition}
     assert declared == {"gh-issue", "gh-issue-create", "gh-issues", "gh-job",
                         "gh-labels", "gh-branch", "gh-pr", "gh-pr-create",
-                        "gh-pr-merge", "gh-prs", "gh-run"}, sorted(declared)
+                        "gh-pr-edit", "gh-pr-merge", "gh-prs",
+                        "gh-run"}, sorted(declared)

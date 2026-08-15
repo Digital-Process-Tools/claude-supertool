@@ -50,6 +50,8 @@ _MAPPED = {
     # presets/github.json -- #1347 (four) and #1384 step 3 (seven)
     "gh-issue", "gh-issue-create", "gh-issues", "gh-job", "gh-labels",
     "gh-branch", "gh-pr", "gh-pr-create", "gh-pr-merge", "gh-prs", "gh-run",
+    # presets/github.json -- #1739
+    "gh-pr-edit",
     # presets/gitlab.json -- #1393
     "gl-issue", "gl-issue-create", "gl-mr", "gl-mrs", "gl-pipeline",
     "gl-job", "gl-api",
