@@ -19,9 +19,9 @@ checkout's own `allow_outside_cwd` (#1353) cannot colour the result::
     syntax detector on empty: False
 
 **The detector is now either signal, never one superseding the other.** Walked
-over the whole registry: of the 24 shipped ops whose `syntax` names a path,
+over the whole registry: of the 25 shipped ops whose `syntax` names a path,
 **zero** carry `{file}` or `{dir}` in their `cmd`. So a `cmd`-supersedes-`syntax`
-detector would have disarmed the gate for all 24 — the reason this file pins the
+detector would have disarmed the gate for all 25 — the reason this file pins the
 `syntax`-only shape as loudly as the `cmd`-only one.
 
 **`{arg}` and `{args}` are deliberately not signals**, though `{arg}` substitutes
@@ -143,8 +143,14 @@ class TestTheCmdTemplateIsADetectorSignal:
 
     def test_a_path_naming_syntax_still_fires_with_no_cmd_placeholder(
             self) -> None:
-        """`cmd` must ADD a signal, never replace one. All 24 currently-gated
-        shipped ops are this shape, so a supersede would disarm every one."""
+        """`cmd` must ADD a signal, never replace one. All 25 currently-gated
+        shipped ops are this shape, so a supersede would disarm every one.
+
+        That 25 is the `syntax` detector's population and the assertion below
+        counts `_entry_names_a_path`, the OR of syntax and cmd. They agree only
+        because the cmd detector currently matches zero of the 87 shipped ops;
+        the first op shipped with `{file}` in its `cmd` makes them diverge and
+        only the assertion moves. Do not collapse the two."""
         entry = {"cmd": "{python} x.py {args}", "syntax": "probe:PATH"}
         assert supertool._entry_names_a_path(entry) is not None
         verdict = supertool._preset_path_containment(
