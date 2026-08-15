@@ -19763,6 +19763,154 @@ def _validator_strip_core_keys(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+#: The two conventions an adapter may use for `count`, per validators/SCHEMA.md.
+#: `total` — `count` counts every row `errors` carries, `adapter` stall rows
+#: included. `measured` — `count` already excludes them.
+_VALIDATOR_COUNT_BASES = frozenset({"total", "measured"})
+
+
+def _validator_count_contract_fault(data: Any) -> Optional[str]:
+    """Does this payload's declared count convention contradict its own rows? (#1728)
+
+    `_validator_measured_count` is `max(count - absences, len(rows) - absences,
+    0)`, and the floor exists for the adapter whose `count` already excludes its
+    stall rows. Recomputing from `errors` instead would break the adapter that
+    caps `errors` — the fix #1717's reviewer proposed, the author refused, and
+    `test_a_capped_error_list_is_not_read_as_a_smaller_count` pins.
+
+    Neither arithmetic covers the payload whose **`count` is bounded by the same
+    cap that bounds `errors`**. Both terms saturate, before and after compare
+    equal, `_validator_regressed` returns False, and a `rollback_on_fail`
+    validator does not revert over a genuinely new finding. Measured on master:
+
+        before  count=4  errors=[f1, f2, f3, f4, stall]  -> 4
+        after   count=4  errors=[f5, f2, f3, f4, stall]  -> 4
+
+    **No arithmetic can separate those two payloads, because a cap is invisible
+    in a single payload unless the adapter declares it.** So this is not an
+    arithmetic fix. `count_basis` and `errors_truncated` are the declaration,
+    and this is the guard: a declaration that contradicts the rows printed under
+    it is a fault about the **adapter**, never a comparison nobody can read.
+
+    Returned as a message rather than raised, and applied at the ingest
+    chokepoint as an `adapter`-coded row — the door `refusal.crashed()` already
+    uses. That makes the result a non-verdict: rendered `NOT CHECKED`, never
+    subtracted from a baseline, never a rollback, and still loud, because
+    `_NOT_CHECKED` growing fails the call. `skipped` would be quieter than the
+    defect it reports, which is the trade `validators/common/refusal.py`
+    declines by name.
+
+    **Undeclared is not a fault**, and the reason is the population rather than
+    politeness: any repo may name its own validator in `.supertool.json`, so a
+    runtime mandate would break every third-party adapter on upgrade for a
+    shape none of them has been shown to have. An undeclared payload keeps the
+    heuristic untouched. The mandate over the *shipped* tree is
+    `tests/test_count_basis_contract_1728.py::_GRANDFATHERED`, a set that may
+    only shrink — the `_UNDECLARED_PATH_OPS` pattern.
+
+    **Declaring changes no number for a conforming payload.** For a complete
+    list the floor already produces the declared answer, and for a truncated one
+    `count` already dominates it. The declaration buys the guard, not the
+    arithmetic, which is why no shipped adapter's counts move when it starts
+    declaring — pinned by `test_declaring_changes_no_measurement`.
+
+    What is checkable from one payload, and what is not, stated rather than
+    implied: a `measured` declaration that is a **lie** — an adapter that caps
+    and says it does not — is indistinguishable here from a well-formed
+    `measured` payload, because saturation makes `count` equal the visible
+    findings by construction. That residue is why the declaration is a contract
+    an author states and not a property the core infers.
+    """
+    if not isinstance(data, dict) or "skipped" in data:
+        return None
+    basis = data.get("count_basis")
+    trunc = data.get("errors_truncated")
+    if basis is None and trunc is None:
+        return None
+    tool = _flat_cell(str(data.get("tool") or "adapter"), 40)
+    if basis is None or trunc is None:
+        return (f"{tool} declared half the count contract (count_basis="
+                f"{basis!r}, errors_truncated={trunc!r}) - both keys or "
+                f"neither, per validators/SCHEMA.md. One alone leaves the "
+                f"question the pair exists to force unanswered while looking "
+                f"answered")
+    if not isinstance(basis, str) or basis not in _VALIDATOR_COUNT_BASES:
+        return (f"{tool} declared count_basis={basis!r}, which is not one of "
+                f"{sorted(_VALIDATOR_COUNT_BASES)} - see validators/SCHEMA.md")
+    if not isinstance(trunc, bool):
+        return (f"{tool} declared errors_truncated={trunc!r}, which is not a "
+                f"boolean")
+    count = data.get("count", 0)
+    if isinstance(count, bool) or not isinstance(count, (int, float)):
+        return (f"{tool} declared count_basis={basis!r} and published "
+                f"count={count!r}, which is not a number - an undeclared "
+                f"payload may read as 0 rather than raise mid-edit, a declared "
+                f"one is an adapter contradicting its own statement")
+    rows = [e for e in (data.get("errors") or []) if isinstance(e, dict)]
+    absences = sum(1 for e in rows if (e.get("code") or "") == "adapter")
+    if trunc and basis == "measured":
+        return (f"{tool} declared count_basis='measured' with "
+                f"errors_truncated=true. An adapter may pre-subtract its "
+                f"adapter rows from count OR cap errors, never both: both "
+                f"terms of the measured count then saturate at the cap, before "
+                f"and after compare equal, and rollback_on_fail goes inert "
+                f"over a new finding (#1728)")
+    if trunc:
+        if count <= len(rows):
+            return (f"{tool} declared errors_truncated=true and published "
+                    f"count={count} over {len(rows)} row(s). A truncated list "
+                    f"dropped findings, so count must exceed the rows it "
+                    f"printed; a count bounded by the same cap that bounds "
+                    f"errors leaves the rollback gate inert (#1728)")
+        return None
+    visible = len(rows) if basis == "total" else len(rows) - absences
+    if count < visible:
+        return (f"{tool} declared count_basis={basis!r} with "
+                f"errors_truncated=false and published count={count} under "
+                f"{visible} row(s) it says it counts. A complete list cannot "
+                f"hold more findings than count counted")
+    return None
+
+
+def _validator_count_contract_reply(name: str, target: str, fault: str,
+                                    data: Dict[str, Any]) -> Dict[str, Any]:
+    """The payload a contract violation is published as (#1728).
+
+    Shaped exactly like `refusal.crashed()`, because it is the same fact one
+    layer up: the adapter said something about this file that cannot be read,
+    so there is no verdict here and someone has to fix the adapter. The
+    adapter's own rows are deliberately **not** carried through — a payload
+    whose count contradicts its rows gives no reason to trust either half, and
+    printing findings beside a fault would invite exactly the comparison this
+    refuses to make. The message names the numbers, so nothing is invisible.
+
+    `duration_ms` survives when it is a number: it describes the attempt, not
+    the verdict, and `tests/_adapter_verdict.stalled_at_its_own_wall` reads it.
+    """
+    dur = data.get("duration_ms", 0)
+    if isinstance(dur, bool) or not isinstance(dur, (int, float)):
+        dur = 0
+    return {"tool": name, "file": target, "ok": False, "count": 1,
+            "errors": [{"line": None, "col": None, "severity": "error",
+                        "code": "adapter", "msg": _flat_cell(fault, 1000)}],
+            "duration_ms": dur}
+
+
+def _validator_apply_count_contract(data: Dict[str, Any], name: str,
+                                    target: str) -> Dict[str, Any]:
+    """Ingest guard: measure a payload, or say why it cannot be measured (#1728).
+
+    Beside `_validator_strip_core_keys` at both doors — the fresh parse and the
+    cache read — for the reason #1044 gives: a cache entry is an adapter payload
+    that outlived the run which parsed it, and a guard on one door is a guard
+    with a door beside it.
+    """
+    fault = _validator_count_contract_fault(data)
+    if fault is None:
+        return data
+    return _validator_count_contract_reply(name, target, fault, data)
+
+
 def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
                        doc_maybe_stale: bool = False) -> Optional[Dict[str, Any]]:
     """Run one validator adapter on `file`. Returns SCHEMA.md-compliant dict.
@@ -19839,6 +19987,10 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
                 # contract moves, which is not the same guarantee — the strip
                 # below is still the one that makes any vintage safe to read.
                 _validator_strip_core_keys(cached)
+                # #1728: the same payload, so the same contract. A declaration
+                # that contradicts its own rows is a fault about the adapter,
+                # and a cached one is a fault replayed until the file changes.
+                cached = _validator_apply_count_contract(cached, name, target)
                 # Re-stamped, not preserved: these two describe THIS run. The
                 # answer came out of a file, so the elapsed time is the lookup,
                 # and the resolved target is the one just resolved above — the
@@ -19886,6 +20038,9 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
         # the cache read above, which returns the same payload persisted
         # (#1036, #1044).
         _validator_strip_core_keys(data)
+        # #1728: and the payload's own count convention is held to what it
+        # declared, before any arithmetic reads it.
+        data = _validator_apply_count_contract(data, name, target)
         data["elapsed_s"] = _elapsed
         if target != file:
             data["resolved_to"] = target

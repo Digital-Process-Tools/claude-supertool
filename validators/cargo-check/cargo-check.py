@@ -41,6 +41,22 @@ TOOL = "cargo-check"
 INSTALL_HINT = ("cargo not found on PATH — this file was NOT compiled "
                 "(install the Rust toolchain via rustup)")
 
+#: How this adapter's `count` relates to `errors` (validators/SCHEMA.md, #1728).
+#:
+#: `total`: every verdict emit below writes `count = len(errors)`, and this is
+#: the adapter that puts an `adapter`-coded row in that list beside real
+#: findings — a crate diagnostic naming another file (#754) — so `count` counts
+#: the stall rows too and the core subtracts them.
+#:
+#: `errors_truncated: False`: nothing here caps the list. `_parse_errors`
+#: returns every short-format diagnostic cargo printed.
+#:
+#: Stated rather than left to be inferred. It was already true, and an accident
+#: that holds is not a guarantee: this file and `phpstan` are the two the core's
+#: `_validator_measured_count` cites as the divergent conventions, which makes
+#: them the two most likely to be copied by the next adapter.
+COUNT_CONTRACT = {"count_basis": "total", "errors_truncated": False}
+
 
 def emit(d: dict) -> None:
     print(json.dumps(d))
@@ -405,7 +421,7 @@ def main() -> None:
 
     if r.returncode == 0:
         emit({"tool": "cargo-check", "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": dur})
+              "errors": [], "duration_ms": dur, **COUNT_CONTRACT})
         return
 
     output = r.stderr or r.stdout or ""
@@ -432,7 +448,7 @@ def main() -> None:
                    "msg": tool_fault("cargo check", r.returncode, output)}]
 
     emit({"tool": "cargo-check", "file": file, "ok": False, "count": len(errors),
-          "errors": errors, "duration_ms": dur})
+          "errors": errors, "duration_ms": dur, **COUNT_CONTRACT})
 
 
 if __name__ == "__main__":

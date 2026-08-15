@@ -28,6 +28,8 @@ Universal JSON. Every adapter emits this shape. Validator core never parses tool
 | `metrics`     | object           | no       | Tool-specific counters (`tests_total`, `tests_passed`, etc.). Numeric values. Used by renderer for before/after diff on metric keys even when `count` is unchanged. |
 | `diff`        | string           | no       | Unified diff produced by the tool (e.g. rector). Rendered as a fenced block below all errors in verbose mode. Ignored in default mode. |
 | `skipped`     | string           | no       | Reason the validator declined to analyse the file (scope allowlist, tool absent, ...). Its presence — not its value — marks the result as a third state. |
+| `count_basis` | string           | no       | `total` (`count` counts every row `errors` carries, `adapter` stall rows included) or `measured` (`count` already excludes them). Declared with `errors_truncated` or not at all. See "Declaring how `count` relates to `errors`" below. |
+| `errors_truncated` | bool        | no       | `true` when findings were **dropped** from `errors` — not merely that a cap exists. Declared with `count_basis` or not at all. |
 
 A blank line between two rows ends a Markdown table, and every row after it renders as a paragraph of literal pipe characters. One sat after `metrics` from #411 until #1042, which left `diff` and `skipped` — the third state — outside the rendered field table. `tests/test_schema_contract_drift_1042.py::test_no_field_row_falls_outside_its_table` now fails on it.
 
@@ -113,6 +115,32 @@ What is right depends on which base the tool prints relative to, and there are t
 The naive join this paragraph used to warn against is still wrong and for the reason it gave: joining cargo's `member/src/sib.rs` onto the *crate* root double-counts the member directory and demotes every real finding. The fix is the right base, not the absence of one.
 
 **Render `source_context` from the target the adapter was handed, never from a path rebuilt out of the tool's output.** Once the diagnostic is known to be about this file, its path adds nothing and its resolution can only go wrong.
+
+### Declaring how `count` relates to `errors` (#1728)
+
+`count` and `errors` have independent sources. Twenty adapters write `count = len(errors)`; `phpstan` takes `count` from `totals.file_errors` while building `errors` from a different key of the same document. `_validator_measured_count` therefore cannot read one off the other, and its `max(count - absences, len(rows) - absences, 0)` is a heuristic that serves two conventions at once — an adapter whose `count` already excludes its stall rows (the floor stops it being subtracted from twice) and one that caps `errors` (the subtraction stops fifty findings reading as five).
+
+**Neither term survives a payload whose `count` is bounded by the same cap that bounds `errors`.** Both saturate, before and after compare equal, `_validator_regressed` returns `false`, and a validator with `rollback_on_fail: true` does not revert over a genuinely new finding:
+
+```
+before  count=4  errors=[f1, f2, f3, f4, stall]  -> measured 4
+after   count=4  errors=[f5, f2, f3, f4, stall]  -> measured 4
+```
+
+No arithmetic can separate those two, because **a cap is invisible in a single payload unless the adapter says so**. So the fix is a contract rather than a formula:
+
+- **An adapter may pre-subtract its `adapter` rows from `count`, or it may cap `errors`. It may not do both.** `count_basis: "measured"` beside `errors_truncated: true` is the forbidden pair and is refused.
+- **`count` is always the whole total.** A `count` truncated by the same cap as `errors` is the defect above, and it is checkable: under `errors_truncated: true`, `count` must exceed the rows printed.
+- **`count` may never fall below the rows printed under it.** Correcting a count is in scope; contradicting the list is not. Undeclared, the floor repairs this silently; declared, it is reported.
+- **Both keys together or neither.** Half a declaration leaves the question the pair exists to force unanswered while looking answered.
+
+A payload that breaks any of these is published as a fault **against the adapter** — one `code: "adapter"` row carrying the numbers, which makes the result a non-verdict: rendered `NOT CHECKED`, kept out of the delta, never a rollback, and still exiting non-zero. Never `skipped`, which would be quieter than the defect it reports.
+
+**Declaring is optional at runtime and mandatory for a shipped adapter.** Any repo may name its own validator in `.supertool.json`, so a runtime mandate would break every third-party adapter on upgrade over a shape none of them has been shown to have; an undeclared payload keeps the heuristic exactly as it was. The mandate over this tree is `tests/test_count_basis_contract_1728.py::_GRANDFATHERED`, a set of the 34 adapters that do not yet declare, which may only shrink — the pattern `_UNDECLARED_PATH_OPS` uses. `cargo-check` (`total`) and `phpstan` (`measured`) declare, because they are the two the core cites as the divergent conventions and therefore the two most likely to be copied.
+
+**Declaring changes no number for a conforming payload** — for a complete list the floor already produces the declared answer, and for a truncated one `count` already dominates it. The declaration buys the guard, not the arithmetic.
+
+**What one payload cannot check, stated rather than implied.** An adapter that caps `errors` and declares `measured` anyway is indistinguishable here from a well-formed `measured` payload: saturation makes `count` equal the visible findings by construction. That residue is why this is a statement an author makes and not a property the core infers.
 
 ### Error object
 
