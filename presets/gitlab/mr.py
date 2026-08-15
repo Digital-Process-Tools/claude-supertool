@@ -365,25 +365,48 @@ def _approvals_line(iid: str | int) -> str:
 # "success") gets its own line: `failed`/`canceled`/`skipped`/`manual` are
 # this platform's spelling of #445/#454's defect class — a leg that is
 # neither passing nor still moving must never be silently absent from the
-# answer (#619). `_checks.named_disclosure()` isn't reused here — GitLab's
-# job vocabulary (`canceled`, one L) and GitHub's rollup vocabulary
-# (`CANCELLED`, two Ls, plus conclusion/status split) don't share a
-# classifier, and forcing them through one would be guessing a mapping
-# nobody has verified rather than naming what glab actually returns.
+# answer (#619).
+#
+# This set decides which legs get *named*, and only that. It is not a
+# classifier and must not become one: the tally above the names goes through
+# `_checks.summarize()`, the same judgement `gh-pr:N:status` sums its rollup
+# with (#958 — the render may differ per platform, the classification may
+# not). That reuse is safe precisely because `summarize()` does not enumerate:
+# GitLab's `canceled` (one L) is in none of that module's four state sets, so
+# it lands in the leftover term and is named there rather than mapped onto
+# GitHub's `CANCELLED` (two Ls). Nothing is guessed; the sum is what carries
+# a vocabulary neither side has taught the other.
 _GL_JOB_RESOLVES_ITSELF = {"running", "pending", "created", "scheduled"}
 
+#: A pipeline that exists and has no jobs at all. Deliberately not
+#: `_checks.NO_CHECKS`, whose words are "no check runs on this commit" — the
+#: GitHub unit and the GitHub anchor. Sharing the classifier does not mean
+#: sharing a sentence about a different object.
+_NO_JOBS = "none — the jobs API reports no job on this pipeline"
 
-def _named_gl_jobs(pipe_id: str | int, cap: int = _checks.NAMED_CAP) -> list[str]:
-    """`  label: name (job #id), ...` lines for a pipeline's non-passing jobs.
 
-    Mirrors `gl-pipeline:ID:failed`'s shape (name + job id + grouping) rather
-    than inventing a second one — that op already answers "what broke" for a
-    pipeline on its own; this is the same answer surfacing where `gl-mr` is
-    actually read; from a poll loop, without a second op call.
+def _pipeline_leg_lines(pipe_id: str | int,
+                        cap: int = _checks.NAMED_CAP) -> list[str]:
+    """`  legs: <tally>` plus a named line per non-passing status. ONE fetch.
 
-    One extra `glab api` call, made only by the caller's own judgment about
-    when it's worth it — this function does the fetch unconditionally once
-    asked, same as `gl-pipeline`'s failed-jobs list already does.
+    The tally is #1607 item 1 and it is the reason this function exists in the
+    render at all: `pipeline: success` is one word, and #445/#454's arithmetic
+    is what turns it into a statement a merge can be decided on. Every term
+    after `N total` sums back to N, so a status nobody has taught this tool
+    about surfaces as its own term instead of evaporating — see
+    `presets/_checks.summarize`, which is called rather than re-implemented.
+
+    The names below answer a different question ("what do I go and look at"),
+    mirror `gl-pipeline:ID:failed`'s shape rather than inventing a second one,
+    and come off the same fetch, so they cost no further round trip.
+
+    One `glab api` call, and the caller buys it whenever the MR has a pipeline
+    at all. Not gated on the pipeline being red, because a green pipeline with
+    four `skipped` legs is exactly the case the tally exists for and gating on
+    redness cannot see it. The in-repo precedent for paying on the merge-gate
+    render is `presets/github/pr.py`'s `_declared_for_commit`, which fires 1+N
+    requests on every `gh-pr:N:status` including the green ones; #815 forbids
+    buying a round trip *silently*, and this one is in the op's own docs.
     """
     if not pipe_id:
         return []
@@ -394,10 +417,21 @@ def _named_gl_jobs(pipe_id: str | int, cap: int = _checks.NAMED_CAP) -> list[str
         # the caller has decided the pipeline is worth naming legs for, so an
         # empty return read as "nothing to name" on exactly the render where
         # something needed naming — and slim is the poll-loop render, read
-        # most often and looked at least closely (#812).
-        return [f"  jobs: UNKNOWN — {reason}"]
+        # most often and looked at least closely (#812). A zeroed tally would
+        # be the same defect with arithmetic on top: `0 failed, 0 pending`
+        # reads as "everything is accounted for" over a read nobody completed.
+        return [f"  legs: UNKNOWN — {reason}"]
 
     entries, skipped = _dict_elements(jobs)
+    # An element `_dict_elements` could not read is still a leg of this
+    # pipeline. Tallying only what parsed would make the terms sum to fewer
+    # than the pipeline has and call the difference nothing; `None` normalises
+    # to UNKNOWN and takes its own term, so the count stays honest and the
+    # `_unreadable` note below says why. (Same fix, two surfaces: #1517 added
+    # the note, this adds the arithmetic it belongs to.)
+    states = [j.get("status") for j in entries] + [None] * skipped
+    lines = [f"  legs: {_checks.summarize(states) if states else _NO_JOBS}"]
+
     groups: dict[str, list[tuple[str, str]]] = {}
     for j in entries:
         status = str(j.get("status") or "").strip().lower()
@@ -413,7 +447,7 @@ def _named_gl_jobs(pipe_id: str | int, cap: int = _checks.NAMED_CAP) -> list[str
         job_id = str(j.get("id") or "")
         groups.setdefault(status, []).append((name, job_id))
 
-    lines: list[str] = []
+    named = 0
     for label in sorted(groups):
         items = groups[label]
         shown = items[:cap]
@@ -422,7 +456,8 @@ def _named_gl_jobs(pipe_id: str | int, cap: int = _checks.NAMED_CAP) -> list[str
         if len(items) > cap:
             text += f", +{len(items) - cap} more"
         lines.append(f"  {_untrusted.flat(label)}: {text}")
-    if not lines:
+        named += 1
+    if not named and states:
         lines.append("  jobs: none non-passing reported for this pipeline")
     if capped:
         # The one that has to be said out loud: "none non-passing" off a full
@@ -1138,13 +1173,22 @@ def main() -> int:
             if pipe_reason is not None:
                 print(f"  ! live pipeline lookup declined ({pipe_reason}) — status "
                       f"above comes from the MR payload and can be stale")
-        # The extra `glab api` round trip is bought only when the pipeline
-        # status says there might be something to name — never on a green or
-        # not-yet-started pipeline, which is the overwhelmingly common poll
-        # (#619, mirrors `gh-pr`'s "only when the rollup is empty" discipline).
-        if pipe_id and pipe_status not in ("success", "", "pending", "created", "scheduled"):
-            for line in _named_gl_jobs(pipe_id):
-                print(line)
+        # One extra `glab api` round trip, bought whenever there is a pipeline
+        # to count — including a green one (#1607).
+        #
+        # It used to be gated on `pipe_status not in (success, "", pending,
+        # created, scheduled)`, citing #619 and `gh-pr`'s "only when the rollup
+        # is empty" discipline. That gate is right for *naming* jobs and wrong
+        # for *counting* them, and the two had been merged into one condition:
+        # a pipeline GitLab calls `success` still reports `skipped`, `manual`
+        # and allow-failure `canceled` jobs, so the legs that never ran were
+        # invisible on precisely the poll a maintainer merges on. The GitHub
+        # mirror of a tally is not the rollup (free, already in the payload) —
+        # it is `_declared_for_commit`, which pays 1+N requests on every
+        # `gh-pr:N:status`, green ones included, on #804's argument that a
+        # request is cheaper than a merge on four green CodeQL legs.
+        for line in _pipeline_leg_lines(pipe_id):
+            print(line)
         print(f"merged_at: {merged_at}")
         if merge_commit:
             print(f"merge_commit: {merge_commit[:12]}")

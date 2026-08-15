@@ -378,14 +378,21 @@ def test_slim_named_jobs_decline(monkeypatch, capsys) -> None:
 
 
 def test_slim_names_an_empty_non_passing_job_list(monkeypatch, capsys) -> None:
-    """The list is only fetched once the caller has decided this pipeline is
-    worth naming legs for. Coming back with nothing to name is an answer worth
-    one line — silence there is the same absence-for-an-absence trade."""
+    """Coming back with nothing to name is an answer worth one line — silence
+    there is the same absence-for-an-absence trade.
+
+    #1607 made the sentence stronger rather than removing it. This fixture is
+    the *zero jobs* case, and `none non-passing reported for this pipeline`
+    quietly implies there were jobs and none of them were non-passing, which is
+    a different claim from the one the payload supports. The `legs:` line now
+    says which of the two it is, and the weaker line is suppressed where it
+    would be the only thing said."""
     out = _render(monkeypatch, capsys, flags=["status"],
                   pipelines=(0, json.dumps([{"status": "canceled", "id": 88}]), ""),
                   jobs=(0, "[]", ""))
     assert "pipeline: canceled (#88)" in out
-    assert "none non-passing" in out
+    assert "legs: none — the jobs API reports no job on this pipeline" in out
+    # Still not silence, and still not a decline: the read succeeded.
     assert "UNKNOWN" not in out
 
 

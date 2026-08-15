@@ -311,7 +311,7 @@ def test_branch_lookup_declines_rather_than_falling_through_to_another_mr(
 # elements. It skipped them silently; it now says how many it dropped.
 # ---------------------------------------------------------------------------
 
-def test_named_gl_jobs_skips_unreadable_elements(monkeypatch) -> None:
+def test_pipeline_leg_lines_skips_unreadable_elements(monkeypatch) -> None:
     jobs = json.dumps([
         {"status": "failed", "name": "phpstan", "id": 7},
         None,
@@ -319,17 +319,26 @@ def test_named_gl_jobs_skips_unreadable_elements(monkeypatch) -> None:
     ])
     monkeypatch.setattr(mr, "_glab_api",
                         lambda *a, **kw: _cp(["glab"], 0, jobs))
-    lines = mr._named_gl_jobs(136900)
+    lines = mr._pipeline_leg_lines(136900)
     assert "  failed: phpstan (job #7)" in lines
     assert any("2 of 3 pipeline jobs had a shape supertool could not read" in ln
                for ln in lines)
+    # #1607: the note says two were dropped, and the tally has to agree with
+    # it. A tally of 1 beside a note about 3 is the undercount this file was
+    # opened over, moved one line up.
+    assert "  legs: 3 total: 0 passed, 1 failed, 0 pending, 2 unknown" in lines[0]
 
 
-def test_named_gl_jobs_says_nothing_when_every_element_is_readable(monkeypatch) -> None:
+def test_pipeline_leg_lines_says_nothing_when_every_element_is_readable(
+        monkeypatch) -> None:
     jobs = json.dumps([{"status": "failed", "name": "phpstan", "id": 7}])
     monkeypatch.setattr(mr, "_glab_api",
                         lambda *a, **kw: _cp(["glab"], 0, jobs))
-    assert mr._named_gl_jobs(136900) == ["  failed: phpstan (job #7)"]
+    # No `!` disclosure line — nothing was dropped. The tally above the named
+    # job is #1607 and is unconditional; the guard's own output is still the
+    # empty set it was.
+    assert mr._pipeline_leg_lines(136900)[1:] == ["  failed: phpstan (job #7)"]
+    assert not any(ln.startswith("  !") for ln in mr._pipeline_leg_lines(136900))
 
 
 def test_slim_render_survives_unreadable_pipeline_jobs(monkeypatch, capsys) -> None:
