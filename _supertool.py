@@ -20089,6 +20089,13 @@ def _validator_required(name: str) -> bool:
     all — no output, non-JSON output, a crash, a reply with no verdict key, a
     timeout. The core watched every one of them happen and must be able to
     reach the same conclusion without the adapter's cooperation.
+
+    **A crash is no longer one of the five (#1697).** Every adapter now wraps
+    its `main` in `refusal.guard_main`, so an escaping exception arrives as the
+    adapter's own `code: "adapter"` row — a self-report of the #967 kind, which
+    escalates through `_validator_not_checked` whatever this function answers.
+    The count is left as it was because it is #975's, not today's; what changed
+    is which door that one walks through.
     """
     raw = os.environ.get("SUPERTOOL_REQUIRE_VALIDATORS", "")
     if not raw.strip():
@@ -20106,9 +20113,13 @@ def _validator_gate_did_not_run(data: Optional[Dict[str, Any]]) -> Optional[str]
     missing, and emitted an `adapter` error. `_validator_not_checked` keys on
     that self-report, which requires the adapter to be healthy.
 
-    Five ways it is not lands elsewhere and exited 0 (#975). Four route into
-    `_validator_unusable_reply` and become a `skipped`; the fifth is the core's
-    own `TimeoutExpired` arm, which renders `1 err (timeout)`. In all five the
+    Five ways it is not landed elsewhere and exited 0 when #975 was written.
+    Four routed into `_validator_unusable_reply` and became a `skipped`; the
+    fifth is the core's own `TimeoutExpired` arm, which renders
+    `1 err (timeout)`. **Four remain**: #1697 gave every adapter a crash net,
+    so a crash is self-reported as an `adapter` error and never reaches
+    `_validator_unusable_reply` at all — it escalates unconditionally now,
+    through the row above rather than through this function. In all of them the
     row text was already honest — it says the file was not checked. Only the
     exit code lied, which is the half `supertool 'edit:...' && git commit`
     reads, and that chain is the entire reason the variable exists.
