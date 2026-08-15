@@ -77,6 +77,23 @@ somebody else's argv rather than a constant: every lookup in one call shares
 rather than unconfigured (#1558). That spawn is also why this op is declared
 `acts` and not `read-only` — probing a tag starts whatever the harness has
 configured under a name this tool read out of another process.
+
+**`probe` is the second sub-op and the second question (#1593).** Everything
+above reads counters somebody else's traffic wrote, so with no traffic of its
+own `health` cannot say whether the read-and-forward path is working *now*: a
+consumer wedged on its read loop publishes exactly the numbers of an idle one.
+`probe` writes one synthetic event — reserved `source`, no watcher state file —
+and reports which of the consumer's own counters moved, in the same vocabulary,
+with two states of its own for the two findings `health` has no traffic to
+reach: `ACCEPTED, NOT FORWARDED` (6) and `ACCEPTED, DISCARDED` (7).
+
+**And it declines the thing the caller wants, on purpose.** `FORWARDED` is not
+arrival and the report never spells it as one; what it does instead is name the
+exact `<channel watcher_source="channel-probe" ...>` tag the caller should now
+look for, say that the increment is not attributable to this event, and say
+which half of the bridge is left to suspect if the tag never appears. A success
+line reading like receipt confirmation would rebuild #554 inside the fix for
+#1593.
 """
 from __future__ import annotations
 
@@ -102,6 +119,7 @@ sys.path.insert(0, str(Path(__file__).parent))  # for naming, our own sibling
 import _proc  # noqa: E402  (the one liveness probe, shared with gl-mrs / gh-prs)
 import _untrusted  # noqa: E402  (the health file is somebody else's text, #1187)
 import naming  # noqa: E402  (one name above the two path variables, #1477)
+import transport  # noqa: E402  (the wire shape a probe emits, #1593)
 
 #: Absent on Windows, where it is `0` and the open below carries no guard. Same
 #: spelling as `transport.py`, deliberately: this is the same directory and the
@@ -168,6 +186,19 @@ RC_CONTRADICTED = 4
 #: the opposite of the truth.
 RC_NOT_SUBSCRIBED = 5
 
+#: `probe` only. The consumer read the synthetic line off the wire — its own
+#: `lines_read` moved — and neither forwarded nor discarded it. A finding, and
+#: separate from `CANNOT DETERMINE` for the reason 4 and 5 are: something was
+#: established. Separate from 5 too, and not a renaming of it: a probe never
+#: asks the subscription question, so a report using that code would carry a
+#: claim nothing in this path measured.
+RC_PROBE_NOT_FORWARDED = 6
+#: `probe` only, and a different place to go looking. `dropped` moved instead,
+#: so the consumer read the event and refused it — the burst budget, a routing
+#: key over the attribute cap, a handler that threw. Folding it into 6 would
+#: report "it went nowhere" for an event whose disposal is on the record.
+RC_PROBE_DISCARDED = 7
+
 #: The subscription question, in the same three states as everything else here.
 SUB_SUBSCRIBED = "subscribed"
 SUB_NOT_SUBSCRIBED = "not-subscribed"
@@ -228,6 +259,30 @@ PS_TIMEOUT = 5
 MCP_LOOKUP_BUDGET = 12.0
 SUBSCRIPTION_WORST_CASE = PS_TIMEOUT * 2 + MCP_LOOKUP_BUDGET
 
+#: How long `probe` waits for the consumer's published counters to move.
+#:
+#: The real consumer increments in the same tick it reads (`forwarded++` then
+#: `publishHealth()` in `channel.ts`), and its write is floored at
+#: `HEALTH_MIN_INTERVAL_MS = 250`. So the honest observation window is a
+#: quarter-second plus whatever the machine is doing, and 3s is that with an
+#: order of magnitude of slack — long enough that "did not move" is worth
+#: printing, short enough that nobody stops running the op.
+#:
+#: **The number bounds the claim, not just the wall clock.** A consumer slower
+#: than this looks exactly like one that did nothing, so every arm that reports
+#: a non-advance prints the budget it waited, and the arm where nothing was
+#: even *read* is `CANNOT DETERMINE` rather than a finding.
+PROBE_WAIT_SECS = 3.0
+PROBE_POLL_SECS = 0.1
+
+#: What `presets/watch.json` must leave room for, on the other sub-op. Two
+#: connects at `CONNECT_TIMEOUT` — the emit, and `peer_pid` — plus the wait.
+#: The arithmetic is pinned rather than the number, the lesson of #1558: an op
+#: whose probe cannot finish inside its own declared timeout can never print
+#: the honest verdict it was written to produce, because the wrapper kills it
+#: and the reader gets a bare `TIMEOUT` with an empty body.
+PROBE_WORST_CASE = CONNECT_TIMEOUT * 2 + PROBE_WAIT_SECS
+
 #: Linux. `SO_PEERCRED` on a connected AF_UNIX socket yields `struct ucred` —
 #: three native ints, pid first — for the process on the other end. Read from
 #: the *client* side it is the process that called `listen`, which is exactly
@@ -253,6 +308,37 @@ CEILING = (
     "Whether they appeared in a Claude session is not observable from here, or\n"
     "from any process except that session: the bridge sends a JSON-RPC\n"
     "notification, which has no response to wait on."
+)
+
+#: `probe`'s own ceiling, and the reason the op exists rather than a footnote
+#: to it (#1593).
+#:
+#: Three separate refusals, and dropping any one of them turns a measurement
+#: into a claim: the last leg is unobservable from here; the caller has to make
+#: the other half of the observation themselves, so the tag is named for them;
+#: and the counter that moved cannot be attributed to *this* event, because a
+#: poller emitting in the same window advances the same number.
+#:
+#: The word this must never reach is the one a reader is hoping for. A success
+#: line that reads like receipt confirmation would rebuild #554 inside the fix
+#: for #1593 — which is why `tests/test_watch_channel_probe_1593.py` asserts
+#: against the vocabulary and not only against the verdict.
+PROBE_CEILING = (
+    "`forwarded` counts events the consumer handed to the MCP transport. It is\n"
+    "not a receipt. Whether this event appeared in a Claude session is\n"
+    "observable only from inside that session — the bridge sends a JSON-RPC\n"
+    "notification, which has no response to wait on — so no process outside it\n"
+    "can see the last leg, this one included.\n"
+    "The other half of the answer is yours, and it is the half no process here\n"
+    "can reach: the `expect` line above says whether a tag should now appear in\n"
+    "a session, and only a session can see whether it did. If it does not\n"
+    "appear under a report that says it should, the producer half is exonerated\n"
+    "and what is left is the subscription and the session — `channel:health`\n"
+    "reports on the first of those (BOUND, NOT SUBSCRIBED).\n"
+    "Nor is the increment attributable. A poller emitting in the same window\n"
+    "advances the same counter and this op cannot tell the two apart. What is\n"
+    "established is that the read-and-forward path moved at least one event in\n"
+    "the window this emit opened."
 )
 
 
@@ -463,12 +549,28 @@ def read_health(path: str) -> tuple[dict | None, str]:
     return record, ""
 
 
-def _health_objection(record: dict) -> str:
+def _health_objection(record: dict, *, allow_stale: bool = False) -> str:
     """Why these counters are not evidence, or "" when they are.
 
     The arms below are the same mistake one step apart: believing a number
     because it is present. A file left behind by a consumer that died is a
     frozen `forwarded` count that never decreases and reads as health forever.
+
+    `allow_stale` waives **only** the staleness arm, and only `probe` passes it
+    (#1593), for its *baseline* read. `health` has nothing but the file, so a
+    cold stamp ends its inquiry and must. `probe` is about to generate the
+    traffic, and for it a cold stamp is the question rather than the answer:
+    what settles the verdict is whether the file comes back — fresh, and
+    advanced — after the emit, and the after-read is made without this waiver
+    precisely so that tolerating a cold baseline never becomes believing one.
+
+    Measured, which is why the waiver exists at all: on 2026-08-15 the consumer
+    over this clone was holding the socket with counters 607s cold, and a probe
+    that declined on the baseline reported `CANNOT DETERMINE` — while the event
+    it had just written arrived in a maintainer's session as a rendered
+    `<channel>` tag. The path was working. Aborting on a cold baseline threw
+    away the strongest evidence this op can produce, in the one case that
+    produces it.
     """
     pid = record.get("pid")
     if not isinstance(pid, int) or pid <= 0:
@@ -482,7 +584,7 @@ def _health_objection(record: dict) -> str:
     if updated is None:
         return "its health file carries no readable `updated` stamp"
     age = time.time() - updated
-    if age > STALE_AFTER_SECS:
+    if age > STALE_AFTER_SECS and not allow_stale:
         return (
             f"pid {pid} is alive but has not refreshed its counters in {int(age)}s "
             f"(heartbeat is every 10s, stale after {STALE_AFTER_SECS}s) — it may be wedged"
@@ -1235,6 +1337,35 @@ def subscription_for_socket(path: str) -> Subscription:
                 (why or "the health file names no pid",))
 
 
+def _identity_lines(record: dict, holder: int | None, holder_why: str) -> list[str]:
+    """Who the consumer says it is, and whether that survived a second source.
+
+    Shared by `health` and `probe` (#1593) rather than copied, because the two
+    reports make the same claim about the same pid and a second copy of these
+    words is a second place for the hedges to rot. The hedges are the content:
+    `pid` is the health file's claim about its own writer, and the verified arm
+    still declines to call it an identity — a same-uid process that binds the
+    socket and writes the file is its own peer and agrees with itself.
+    """
+    claimed = record.get("pid")
+    if holder is not None:
+        return [
+            f"  consumer : pid {claimed}, up since {_stamp(record, 'started')}",
+            "             socket-holder verified: the process holding this socket is",
+            "             the one the health file names. That rules out a stale or",
+            "             forged file beside a live consumer; it does not rule out a",
+            "             same-uid process that bound the socket and wrote the file,",
+            "             which is its own peer and agrees with itself.",
+        ]
+    return [
+        f"  consumer : pid {claimed} (self-reported), up since "
+        f"{_stamp(record, 'started')}",
+        f"             socket-holder NOT checked — {holder_why}",
+        "             the health file names its own writer; pids are reusable, so",
+        "             nothing here proves that process is the one holding the socket",
+    ]
+
+
 def health(path: str) -> tuple[int, str]:
     """The whole report, and the exit code that encodes its state."""
     state, detail = probe_socket(path)
@@ -1309,23 +1440,7 @@ def health(path: str) -> tuple[int, str]:
             "", CEILING,
         ])
 
-    if holder is not None:
-        identity = [
-            f"  consumer : pid {claimed}, up since {_stamp(record, 'started')}",
-            "             socket-holder verified: the process holding this socket is",
-            "             the one the health file names. That rules out a stale or",
-            "             forged file beside a live consumer; it does not rule out a",
-            "             same-uid process that bound the socket and wrote the file,",
-            "             which is its own peer and agrees with itself.",
-        ]
-    else:
-        identity = [
-            f"  consumer : pid {claimed} (self-reported), up since "
-            f"{_stamp(record, 'started')}",
-            f"             socket-holder NOT checked — {holder_why}",
-            "             the health file names its own writer; pids are reusable, so",
-            "             nothing here proves that process is the one holding the socket",
-        ]
+    identity = _identity_lines(record, holder, holder_why)
 
     # #1543: every line above is about the producer half, and all of them were
     # true in the incident that filed this — bound socket, verified holder,
@@ -1365,14 +1480,250 @@ def health(path: str) -> tuple[int, str]:
     ])
 
 
+def probe(path: str, *, wait: float = PROBE_WAIT_SECS) -> tuple[int, str]:
+    """Put one synthetic event through the path, and report only what moved.
+
+    `health` reads counters somebody else's traffic wrote. This writes the
+    traffic. That is the whole difference, and it is the one #1593 is about: a
+    consumer that is bound, verified and counting publishes the same numbers
+    whether it is reading its socket or wedged on it, so with no traffic of its
+    own the strongest existing report says nothing about *now*.
+
+    **The refusal is the deliverable.** Arrival inside a session is observable
+    only from inside that session, so this reports which of the consumer's own
+    counters advanced and then hands the caller an exact tag to look for. It
+    never renders `forwarded` as receipt — see `PROBE_CEILING`, which is
+    printed under every verdict including the good one, for the same reason
+    `CEILING` is.
+
+    **Three counters, not one, and that is why there are more verdicts than
+    the issue proposed.** The consumer moves `lines_read` when it takes a line
+    off the wire, `forwarded` when it hands one on and `dropped` when it
+    refuses one. Reading only `forwarded` folds *has not read it yet* into
+    *read it and handed it nowhere*, which are a slow consumer and a broken one
+    — and sends an operator to the wrong half of the bridge.
+
+    The wait is bounded, so a consumer slower than `wait` renders exactly like
+    one that did nothing. Every arm that reports a non-advance prints the
+    budget it actually waited, and the arm where nothing was even read is
+    `CANNOT DETERMINE` rather than a finding.
+    """
+    # Baseline first: a counter read *after* the emit cannot be compared with
+    # anything, and re-reading it later would compare the consumer against
+    # itself.
+    before, before_why = read_health(path)
+
+    watcher_id = transport.probe_id()
+    verdict = transport.emit_socket(transport.probe_record(watcher_id), path)
+    tag = (f'<channel watcher_source="{transport.PROBE_SOURCE}" '
+           f'id="{watcher_id}" event="{transport.PROBE_EVENT}">')
+
+    head = [f"  socket   : {path}", f"             {verdict.detail}"]
+    head += _channel_lines(path, RESOLVED)
+    head += [
+        f"  probe    : one synthetic event written — source "
+        f"{transport.PROBE_SOURCE}, id {watcher_id}, event {transport.PROBE_EVENT}",
+        "             a reserved source, so no watcher is impersonated; and no",
+        "             watcher state file was written or overwritten by this call",
+    ]
+
+    def report(headline: str, *body: str) -> str:
+        return "\n".join([headline, *head, *body, "", PROBE_CEILING])
+
+    if verdict.state == transport.EMIT_NO_LISTENER:
+        return RC_NOT_DELIVERING, report(
+            "channel: NOT DELIVERING",
+            "  consumer : none — this event was lost at the source, and so is",
+            "             every event a poller emits right now",
+            "  expect   : nothing. No tag for this probe can appear in any session,",
+            "             because nothing took the bytes",
+        )
+    if verdict.state != transport.EMIT_ACCEPTED:
+        return RC_UNKNOWN, report(
+            "channel: CANNOT DETERMINE",
+            f"  consumer : the write did not complete — {verdict.detail}",
+            "             nothing here can tell whether a partial line reached a",
+            "             consumer, so this is a declined probe, not a negative",
+            f"  expect   : possibly {tag} — unmeasured either way",
+        )
+
+    if before is None:
+        return RC_UNKNOWN, report(
+            "channel: CANNOT DETERMINE",
+            f"  consumer : bound and it took the bytes, but {before_why}",
+            "             with no counters there is no baseline, so an advance could",
+            "             not have been observed however well the path is working",
+            *_holder_lines(path),
+            f"  expect   : possibly {tag} — this op could not check",
+        )
+    # `allow_stale`, and it is the whole shape of this op: a cold stamp on the
+    # baseline is what `health` cannot get past, and getting past it is why
+    # `probe` exists. Everything else `_health_objection` refuses still refuses
+    # here — a file naming a dead pid or no pid has no baseline in it at all.
+    objection = _health_objection(before, allow_stale=True)
+    if objection:
+        return RC_UNKNOWN, report(
+            "channel: CANNOT DETERMINE", _health_note(),
+            f"  consumer : bound and it took the bytes, but {objection}",
+            *_holder_lines(path),
+            f"  expect   : possibly {tag} — this op could not check",
+        )
+    #: Recorded, never waved away: a report that quietly started from cold
+    #: counters and a report over a channel that was warm all along must not
+    #: read the same, because they are different findings about the consumer's
+    #: heartbeat even when the verdict on the path is identical.
+    cold = _health_objection(before)
+
+    claimed = before.get("pid")
+    holder, holder_why = peer_pid(path)
+    if holder is not None and holder != claimed:
+        # Same argument as `health`'s fourth state (#1192), one step further on:
+        # the counters this probe would compare were published by something
+        # that is not holding the socket, so an advance in them would be
+        # evidence about the impersonator rather than about the event just
+        # written.
+        return RC_CONTRADICTED, report(
+            "channel: CONTRADICTED", _health_note(),
+            f"  consumer : the health file names pid {claimed}, but pid {holder} is "
+            f"the process holding this socket",
+            "             an advance in counters published by something that is not",
+            "             the consumer would say nothing about the event just written,",
+            "             so this probe is not measured rather than failed",
+            f"  expect   : unknown — {tag} may or may not appear",
+        )
+
+    identity = _identity_lines(before, holder, holder_why)
+    if cold:
+        identity += [
+            f"             baseline counters were cold — {cold}",
+            "             that is not a reason to decline here, it is the question:",
+            "             whether they come back advanced after this emit is the",
+            "             measurement, and the re-read below waives nothing",
+        ]
+    # `_health_objection` has already established that `forwarded` is a readable
+    # number on the baseline; the other two are optional and their absence is
+    # reported rather than defaulted.
+    base_fwd = _counter(before, "forwarded")
+    base_drop = _counter(before, "dropped")
+    base_read = _counter(before, "lines_read")
+
+    started = time.monotonic()
+    waited = 0.0
+    after: dict | None = None
+    after_why = ""
+    after_objection = ""
+    while True:
+        after, after_why = read_health(path)
+        after_objection = "" if after is None else _health_objection(after)
+        waited = time.monotonic() - started
+        if after is not None and not after_objection:
+            now_fwd = _counter(after, "forwarded")
+            now_drop = _counter(after, "dropped")
+            if now_fwd is not None and now_fwd > base_fwd:
+                also = ""
+                if base_drop is not None and now_drop is not None and now_drop > base_drop:
+                    also = (f", and `dropped` by {now_drop - base_drop} in the same "
+                            "window — at least one event was refused, and which of "
+                            "them was this one is not on the record")
+                return RC_FORWARDING, report(
+                    "channel: FORWARDED", _health_note(), *identity,
+                    f"  counters : forwarded {base_fwd} -> {now_fwd} "
+                    f"(+{now_fwd - base_fwd}) after {waited:.1f}s{also}",
+                    "             the consumer read from this socket and handed an",
+                    "             event to the MCP transport inside the window this",
+                    "             emit opened",
+                    f"  expect   : {tag}",
+                    "             in whichever session is subscribed to this channel",
+                )
+            if base_drop is not None and now_drop is not None and now_drop > base_drop:
+                return RC_PROBE_DISCARDED, report(
+                    "channel: ACCEPTED, DISCARDED", _health_note(), *identity,
+                    f"  counters : dropped {base_drop} -> {now_drop} "
+                    f"(+{now_drop - base_drop}) after {waited:.1f}s, forwarded "
+                    f"unchanged at {base_fwd}",
+                    "             the consumer read an event off this socket and",
+                    "             refused it — the burst budget, a routing key over",
+                    "             the attribute cap, or a handler that threw. Its own",
+                    "             stderr names which, and `claude --debug` surfaces it",
+                    f"  expect   : nothing for {tag}",
+                    "             unless the discard was somebody else's event",
+                )
+        if waited >= wait:
+            break
+        time.sleep(min(PROBE_POLL_SECS, max(0.0, wait - waited)))
+
+    # Out of budget. Everything below is about why, and the three answers are
+    # not interchangeable: this op could not look, the consumer never looked, or
+    # the consumer looked and did nothing.
+    if after is None:
+        return RC_UNKNOWN, report(
+            "channel: CANNOT DETERMINE",
+            f"  consumer : it took the bytes, and then {after_why}",
+            f"             the counters could not be re-read inside {waited:.1f}s, so",
+            "             nothing was measured — this is not a report about the",
+            "             consumer, it is a report about this process's eyesight",
+            f"  expect   : possibly {tag} — unmeasured",
+        )
+    if after_objection:
+        return RC_UNKNOWN, report(
+            "channel: CANNOT DETERMINE", _health_note(),
+            f"  consumer : it took the bytes, but {after_objection}",
+            *identity,
+            f"  expect   : possibly {tag} — unmeasured",
+        )
+
+    now_read = _counter(after, "lines_read")
+    counters = (
+        f"  counters : forwarded {base_fwd} (unchanged), dropped "
+        f"{_num(base_drop)} -> {_num(_counter(after, 'dropped'))}, lines read "
+        f"{_num(base_read)} -> {_num(now_read)}, over {waited:.1f}s"
+    )
+    if base_read is None or now_read is None:
+        return RC_UNKNOWN, report(
+            "channel: CANNOT DETERMINE", _health_note(), *identity, counters,
+            "  consumer : it took the bytes and published no readable `lines_read`,",
+            "             so `has not read it yet` and `read it and handed it",
+            "             nowhere` cannot be told apart from here — and those are a",
+            "             slow consumer and a broken one",
+            f"  expect   : possibly {tag} — unmeasured",
+        )
+    if now_read > base_read:
+        return RC_PROBE_NOT_FORWARDED, report(
+            "channel: ACCEPTED, NOT FORWARDED", _health_note(), *identity, counters,
+            "  consumer : it read an event off this socket and neither forwarded nor",
+            "             discarded it. Its counters are fresh, so it is alive and",
+            "             still publishing — this is a finding about its read loop,",
+            "             not an absence of one",
+            f"  expect   : nothing for {tag}",
+            f"             (a consumer slower than the {wait:.0f}s waited here would",
+            "             look identical, and would forward it after this report)",
+        )
+    return RC_UNKNOWN, report(
+        "channel: CANNOT DETERMINE", _health_note(), *identity, counters,
+        f"  consumer : bound, alive, publishing — and it has not read this line off",
+        f"             the wire within {waited:.1f}s. Wedged on its read loop and",
+        "             merely slower than this budget are the same picture from here,",
+        "             so this is not reported as a finding",
+        f"  expect   : possibly {tag} — unmeasured",
+    )
+
+
 def main(argv: list[str]) -> int:
     sub = argv[1] if len(argv) > 1 else "health"
-    if sub != "health":
+    if sub == "health":
+        code, report = health(SOCK_PATH)
+    elif sub == "probe":
+        code, report = probe(SOCK_PATH)
+    else:
+        # Naming both is the point. This message used to say "the only one is
+        # `channel:health`", and left unchanged it would send a caller asking
+        # "does this work right now" back to the op that cannot answer that.
         sys.stderr.write(
-            f"channel: unknown sub-op {sub!r} — the only one is `channel:health`\n"
+            f"channel: unknown sub-op {sub!r} — the two are `channel:health` "
+            "(read the consumer's published counters) and `channel:probe` "
+            "(write one synthetic event and report which counter moved)\n"
         )
         return 2
-    code, report = health(SOCK_PATH)
     print(report)
     return code
 

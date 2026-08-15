@@ -9,6 +9,7 @@ watch:SOURCE:ID[:only=event1,event2]   spawn poller (fire-and-forget)
 unwatch:SOURCE:ID                      kill the poller, remove PID file
 watches                                list active pollers, and any slot that lost one
 channel:health                         is the bridge to the session actually delivering?
+channel:probe                          put one synthetic event through the path, now, and say what moved
 radar                                  reconcile registered tiers against live truth, then report
 radar:--state                          the same tiers, read-only — spawns nothing
 ```
@@ -1880,10 +1881,15 @@ costume of a measurement, which is the defect this op exists to remove rather
 than relocate.
 
 **Branch on the report's first line, not on the exit code.** The distinct codes
-0/1/3/4 survive only when `presets/watch/channel.py` is run directly; the
+0/1/3/4/5 survive only when `presets/watch/channel.py` is run directly; the
 supertool wrapper collapses every non-zero to 1. The first line is
-`channel: FORWARDING` / `NOT DELIVERING` / `CANNOT DETERMINE` / `CONTRADICTED`
-and is what the tests key on.
+`channel: FORWARDING` / `NOT DELIVERING` / `CANNOT DETERMINE` / `CONTRADICTED` /
+`BOUND, NOT SUBSCRIBED` and is what the tests key on. (`5` and the fifth spelling
+joined in [#1543](https://github.com/Digital-Process-Tools/claude-supertool/issues/1543)
+and this paragraph did not follow them until
+[#1593](https://github.com/Digital-Process-Tools/claude-supertool/issues/1593) —
+a caller keying on the list as written would have treated the state the whole
+row above exists for as an unrecognised one.)
 
 **Why the heartbeat exists.** An idle consumer and a wedged one publish the same
 numbers — the counters only distinguish them if the *stamp* moves. `channel.ts`
@@ -2000,6 +2006,128 @@ read as covering the pid, and the forgeable thing was the verdict. On a platform
 with no peer credentials nothing narrowed at all, and the report says so on its
 own line rather than leaving a reader to infer which of the two it is looking
 at.
+
+## Does it work right now? — `channel:probe` ([#1593](https://github.com/Digital-Process-Tools/claude-supertool/issues/1593))
+
+Everything above this line reports on traffic that **already happened**. That is
+the limit `channel:health` cannot get past on its own: with no traffic of its
+own, a consumer that is bound, verified, counting and subscribed tells you
+nothing about whether the read-and-forward path is working *now* — the counters
+it reads were written by whatever last happened to flow, and a consumer wedged
+on its read loop publishes exactly the same numbers as an idle one. `radar`'s
+delivery line has the same shape and says so: it counts what watcher state files
+recorded at their last emit, "which includes slots whose poller has since gone".
+
+`channel:probe` writes one synthetic event and reports which of the consumer's
+own counters moved.
+
+```bash
+./supertool 'channel:probe'
+```
+
+**It never renders `forwarded` as arrival, and that refusal is the op.** The
+last leg is not observable from here or from any process except the receiving
+session — same JSON-RPC notification, same absence of an ack. A probe that
+printed a line reading like receipt confirmation would rebuild
+[#554](https://github.com/Digital-Process-Tools/claude-supertool/issues/554)
+inside the fix for #1593. So every verdict ends with the ceiling, and every
+verdict carries an `expect` line naming the exact tag to look for:
+
+```
+  expect   : <channel watcher_source="channel-probe" id="probe-3f9c1a04" event="probe">
+             in whichever session is subscribed to this channel
+```
+
+The id is generated per run, deliberately. A fixed one means a stale tag still
+on screen answers for the probe you just ran, which is the question all over
+again one layer up — and this channel supersedes consecutive events sharing a
+`watcher_source`/`id`, so a fixed id would also make two probes render as one
+watcher changing its mind.
+
+**Observed, not reasoned** (2026-08-15, while this op was being written). Two
+probes were run from a worktree and both arrived in a separate maintainer
+session as rendered tags — `probe-d1ec5f9a` at 19:16:32Z and `probe-65331f39`
+at 19:44:22Z. That settles three things the op itself cannot assert: the path
+runs end to end, socket through MCP transport into a session; the ids are
+distinct per emit; and `watcher_source` stayed `channel-probe` across both, so
+the reserved source is stable and collided with no real watcher. It is a single
+pair of observations from a session that happened to be listening, and it
+licenses none of them as a *verdict* — which is the point. The confirmation
+arrived because a human-facing session existed and said so, and that is exactly
+the channel the op has no access to.
+
+**A cold baseline is not a reason to decline, and getting that wrong is how
+this op nearly shipped useless.** The first cut aborted with `CANNOT DETERMINE`
+whenever the consumer's counters were already stale — copying `channel:health`'s
+verdict, which is `health`'s *correct* answer because the file is all it has.
+Measured in the same session: the consumer was holding the socket with counters
+607s cold, the probe declined, and its event arrived in the maintainer's session
+anyway. The read-and-forward path was working and the heartbeat was not, which
+is precisely the state nothing else can resolve. So the staleness check is
+waived on the baseline read and **only** there: the re-read after the emit
+waives nothing, so a positive verdict still requires the file to come back both
+fresh and advanced, and a stamp that never comes back is still `CANNOT
+DETERMINE`. Every report that started from cold counters says so on its own
+line, because "the path works and the heartbeat is dead" and "everything is
+fine" are not the same finding.
+
+**Three counters, not one, which is why there are six verdicts.** The issue
+proposed reading `forwarded`. The consumer also moves `lines_read` when it takes
+a line off the wire and `dropped` when it refuses one, and reading only the
+first folds "has not read it yet" into "read it and handed it nowhere" — a slow
+consumer and a broken one, which send you to opposite ends of the bridge.
+
+| State | Exit | What is actually known |
+|---|---|---|
+| `FORWARDED` | 0 | `forwarded` advanced inside the window this emit opened: the consumer read from the socket and handed an event to the MCP transport |
+| `ACCEPTED, DISCARDED` | 7 | `dropped` advanced instead. The consumer read an event and refused it — the burst budget, a routing key over the attribute cap, a handler that threw. Its own stderr names which, and `claude --debug` surfaces it |
+| `ACCEPTED, NOT FORWARDED` | 6 | `lines_read` advanced and neither of the others did. The consumer is alive and still publishing, and it took the event and did nothing with it. A finding about the read loop |
+| `NOT DELIVERING` | 1 | Nothing took the bytes. The definite negative, same as `health`'s |
+| `CONTRADICTED` | 4 | The counters that would be compared were published by a process that is not holding the socket ([#1192](https://github.com/Digital-Process-Tools/claude-supertool/issues/1192)), so an advance in them would be evidence about the impersonator |
+| `CANNOT DETERMINE` | 3 | No baseline, an unreadable re-read, no `lines_read` to separate the two cases above, or a consumer that had simply not read the line inside the wait |
+
+**Two things the positive verdict declines to claim, both printed under it.**
+The increment is not attributable — a poller emitting in the same window
+advances the same counter, and nothing here can tell them apart, so what is
+established is that the path moved *at least one* event. And a `FORWARDED` under
+which the tag never appears is not a contradiction: it exonerates the producer
+half and leaves the subscription and the session, the first of which
+`channel:health` reports on as `BOUND, NOT SUBSCRIBED`.
+
+**The wait is bounded and the bound is part of the claim.** 3s, against a
+consumer that increments in the same tick it reads and publishes within 250ms
+(`HEALTH_MIN_INTERVAL_MS`). A consumer slower than that renders exactly like one
+that did nothing, so every non-advance arm prints the budget it waited — and the
+arm where nothing was even *read* is `CANNOT DETERMINE` rather than a finding,
+because wedged and merely slow are the same picture from outside.
+`channel.PROBE_WORST_CASE` is pinned against the op's declared timeout by
+`tests/test_watch_channel_probe_1593.py`, the arithmetic and not the number:
+[#1558](https://github.com/Digital-Process-Tools/claude-supertool/issues/1558) is
+what happens when a probe cannot finish inside its own op's wall — the wrapper
+kills it and the reader gets a bare `TIMEOUT` with an empty body instead of the
+honest verdict.
+
+**It leaves no footprint that could later be read back as evidence.** The
+`source` is the reserved `channel-probe`, so nothing is impersonated in a
+session that routes on `watcher_source`, and the reservation is checked against
+the contents of `presets/watch/sources/` rather than promised in a comment. It
+goes through `transport.emit_socket` and not `emit_event`, so no watcher state
+file is written or overwritten: one carrying a reserved source would appear on
+`watches` and in `radar`'s delivery survey as a watcher that does not exist,
+which is the op's own footprint read back as a fact about the fleet.
+
+**`transport.probe_record()` is the other half of what the issue asked for.**
+The wire shape — `ts`, `source`, `id`, `event`, `payload`, `first_tick` — was an
+internal contract, and the only way to put a byte through the path on demand was
+to read `emit_event` and reproduce it by hand against a private module. A shape a
+caller has to reverse-engineer is a shape that drifts away from them silently.
+
+**Why not `radar:--test`.** `radar` is the board, and its delivery line is
+already a summary of somebody else's emits; the judgement about the socket lives
+in `channel`, where `channel:health` put it. Emitting is also a side effect, and
+`radar:--state` exists precisely because a read-only route through radar was
+worth carving out. If the board should surface this, the shape is `radar` calling
+`channel.probe`, not a second implementation.
 
 ## Event payload (locked contract)
 
