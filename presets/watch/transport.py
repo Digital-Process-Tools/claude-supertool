@@ -396,15 +396,23 @@ def release_pidfile(source: str, watcher_id: str, pid: int | None = None) -> Non
         pass
 
 
-def emit_socket(payload: dict[str, Any]) -> Emit:
+def emit_socket(payload: dict[str, Any], path: str | None = None) -> Emit:
     """Write one NDJSON line to the UDS socket, and say what that write means.
 
     Still best-effort — a watcher must never die because nothing was listening —
     but no longer silent about which of the three outcomes it got. The write
     itself is unchanged; what changed is that the answer leaves the function.
+
+    `path` overrides `SOCK_PATH` for one call and defaults to it, so every
+    existing caller is unaffected. It exists because `channel.probe` (#1593)
+    reports on a socket it was *given* — `channel.py` takes the path as an
+    argument all the way down, and a producer that could only ever write to its
+    own module-level constant would have made the probe's socket and the
+    probe's verdict two different sockets on any non-default channel.
     """
-    if not os.path.exists(SOCK_PATH):
-        return Emit(EMIT_NO_LISTENER, f"no socket at {naming.flat_path(SOCK_PATH)}")
+    sock_path = SOCK_PATH if path is None else path
+    if not os.path.exists(sock_path):
+        return Emit(EMIT_NO_LISTENER, f"no socket at {naming.flat_path(sock_path)}")
     if not hasattr(socket, "AF_UNIX"):
         # Mirrors the guard `channel.probe_socket` already carries, which this
         # twin never adopted. Without it the next line is a bare AttributeError
@@ -415,34 +423,34 @@ def emit_socket(payload: dict[str, Any]) -> Emit:
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(0.5)
-        s.connect(SOCK_PATH)
+        s.connect(sock_path)
         s.sendall((json.dumps(payload) + "\n").encode("utf-8"))
     except ConnectionRefusedError:
         # The path exists and nothing is behind it: a consumer that crashed
         # without unlinking, or one whose socket was replaced. This is the state
         # that reads green from `pgrep` and from `lsof`, and it is the concrete
         # shape of #554's silent window.
-        return Emit(EMIT_NO_LISTENER, f"{naming.flat_path(SOCK_PATH)} refused "
+        return Emit(EMIT_NO_LISTENER, f"{naming.flat_path(sock_path)} refused "
                     f"the connection (ConnectionRefusedError)")
     except FileNotFoundError:
         # Also a definite negative, and `detail` is the field that tells the two
         # apart (see `Emit`): the path passed the existence check above and was
         # unlinked before this connect. Reporting it as "refused" describes a
         # consumer that answered, and there was none.
-        return Emit(EMIT_NO_LISTENER, f"{naming.flat_path(SOCK_PATH)} vanished "
+        return Emit(EMIT_NO_LISTENER, f"{naming.flat_path(sock_path)} vanished "
                     f"between the check and the connect")
     except OSError as err:
         # Timeout, EPIPE, EACCES, ENOTSOCK. Something went wrong mid-write and
         # nothing here can tell whether a partial line reached the consumer.
         return Emit(EMIT_UNKNOWN,
-                    f"{type(err).__name__} writing to {naming.flat_path(SOCK_PATH)}")
+                    f"{type(err).__name__} writing to {naming.flat_path(sock_path)}")
     finally:
         if s is not None:
             try:
                 s.close()
             except OSError:
                 pass
-    return Emit(EMIT_ACCEPTED, f"{naming.flat_path(SOCK_PATH)} accepted the bytes")
+    return Emit(EMIT_ACCEPTED, f"{naming.flat_path(sock_path)} accepted the bytes")
 
 
 def write_state(source: str, watcher_id: str, state: dict[str, Any]) -> str:
@@ -944,6 +952,71 @@ def emit_event(
         # desktop; a title carrying newlines makes it several, and the extra
         # ones read as the system's.
         desktop_notify(_untrusted.flat(notify_title), _untrusted.flat(notify_message))
+
+
+#: The `source` a synthetic probe event carries, reserved so that it can never
+#: be a watcher's (#1593).
+#:
+#: Reserved is a checked property, not a promise: no directory under
+#: `presets/watch/sources/` may answer to this name, and
+#: `tests/test_watch_channel_probe_1593.py` enumerates that directory rather
+#: than trusting the comment. The consequence of getting it wrong is that a
+#: `<channel watcher_source="...">` tag produced by a probe would be
+#: indistinguishable in a session from one produced by a real watcher — a
+#: synthetic event read as news, which is the same class of defect as
+#: `first_tick`.
+PROBE_SOURCE = "channel-probe"
+PROBE_EVENT = "probe"
+
+
+def probe_record(watcher_id: str) -> dict[str, Any]:
+    """The synthetic event, in the same envelope every poller writes.
+
+    This function is the whole of #1593's second complaint. The record shape —
+    `ts`, `source`, `id`, `event`, `payload`, `first_tick` — is an internal
+    contract, and the only way to put a byte through the path on demand used to
+    be to read `emit_event` and reproduce it by hand against a private module.
+    A shape a caller has to reverse-engineer is a shape that drifts away from
+    them silently.
+
+    Deliberately **not** `emit_event`: that function also refreshes a watcher
+    state file, and the probe must not write one. A reserved source with a
+    state file of its own would appear on `watches` and in `radar`'s delivery
+    survey as a watcher that does not exist — the op's own footprint read back
+    as evidence about the fleet.
+
+    `payload` goes through `flatten_remote` like any other, even though this
+    title is the tool's own text rather than a remote's. `channel.ts` renders
+    every non-routing attribute under its remote mark regardless, so the line
+    arrives marked as data either way; taking the same route as a real event is
+    what keeps this record honest as a *sample* of one.
+    """
+    return {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "source": PROBE_SOURCE,
+        "id": watcher_id,
+        "event": PROBE_EVENT,
+        "payload": flatten_remote({
+            "title": "synthetic event from `channel:probe` — nothing is wrong; "
+                     "somebody is testing whether this path still works",
+        }),
+        # Never a first tick. `first_tick` means "state I found on startup, and
+        # it may be days old"; this event is neither state nor old, and marking
+        # it would tell a session to treat a live measurement as context.
+        "first_tick": False,
+    }
+
+
+def probe_id() -> str:
+    """A per-run watcher id, so the caller can look for *this* probe's tag.
+
+    Not a constant: two probes minutes apart would produce identical tags, and
+    a stale one still on screen would answer the question the new one was asked
+    to settle. `os.urandom` rather than a counter or a timestamp — nothing here
+    has state to count with, and a second-resolution stamp collides with the
+    retry somebody runs immediately after a confusing answer.
+    """
+    return f"probe-{os.urandom(4).hex()}"
 
 
 #: Re-exported from `naming`, which owns the classifier because `channel.py`

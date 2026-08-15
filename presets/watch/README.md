@@ -12,6 +12,7 @@ watch:SOURCE:ID[:only=event1,event2]    spawn poller (fire-and-forget)
 unwatch:SOURCE:ID                       kill poller, remove PID file
 watches                                 list active pollers (table)
 channel:health                          is the bridge to the session actually delivering?
+channel:probe                           put one synthetic event through the path, now, and say what moved
 radar                                   reconcile registered tiers against live truth, report
 radar:--state                           the same tiers, read-only — spawns nothing
 ```
@@ -26,6 +27,7 @@ Example:
 ./supertool 'watches'
 ./supertool 'unwatch:gitlab-mr:21803'
 ./supertool 'channel:health'                        # is anything receiving these?
+./supertool 'channel:probe'                         # ...and does the path work right now?
 ./supertool 'radar'                                 # prune, heal, report
 ./supertool 'radar:--state'                         # look without healing
 ```
@@ -40,11 +42,24 @@ strength of them. Note that `NO LISTENER` is the *expected* state in a session
 started without `--dangerously-load-development-channels server:claude-channel`,
 which binds no reader at all.
 
-`channel:health` is the question about the socket itself, answered in three
-states — `FORWARDING`, `NOT DELIVERING`, `CANNOT DETERMINE` — because delivery
-into a Claude session is not observable from outside it and a two-state answer
-would have to guess. See
+`channel:health` is the question about the socket itself, answered in **five**
+states — `FORWARDING`, `NOT DELIVERING`, `CANNOT DETERMINE`, `CONTRADICTED`
+(#1192) and `BOUND, NOT SUBSCRIBED` (#1543) — because delivery into a Claude
+session is not observable from outside it and a two-state answer would have to
+guess. (This paragraph said "three" until #1593, two states after the fourth and
+fifth shipped: a reader keying on the list as written would have treated a
+finding as an unrecognised verdict.) See
 [docs/presets/watch.md](../../docs/presets/watch.md#is-it-delivering--channelhealth-554).
+
+`channel:probe` is the same subject and a different question: everything
+`channel:health` reads was written by traffic that already happened, so with no
+traffic of its own it cannot say whether the path works *now* — a consumer
+wedged on its read loop publishes exactly the numbers of an idle one. `probe`
+writes one synthetic event, under a reserved source and with no watcher state
+file, and reports which of the consumer's counters moved. It never renders
+`forwarded` as arrival; it names the tag you should now look for and stops,
+because the last leg is visible only from inside the receiving session (#1593).
+See [docs/presets/watch.md](../../docs/presets/watch.md#does-it-work-right-now--channelprobe-1593).
 
 `watches` says which pollers are alive; `radar` says what is *true*. Pollers
 die with the machine and events are fire-and-forget, so at session start an
