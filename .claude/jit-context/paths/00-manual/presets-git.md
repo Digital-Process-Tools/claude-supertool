@@ -22,9 +22,14 @@ turns quoting off (`diff.py:203,233`), which is true and is not the question.
 Ask three, in order, and open the register entry with the ground you land on:
 
 1. **Does the site read a pathname, and only a pathname?** → `QUOTED PATH -`.
-   Six entries: `_git_common::_list_conflicts`, `push::_uncommitted_leftovers`,
-   `push::_recover_by_rebase`, and `checkout/diverge/status::main`, each down to
-   one `--porcelain` / `--name-status` read since #1681.
+   Five entries: `push::_uncommitted_leftovers`, `push::_recover_by_rebase`, and
+   `checkout/diverge/status::main`, each down to one `--porcelain` /
+   `--name-status` read since #1681. **`_git_common::_list_conflicts` was the
+   sixth and is gone (#1708)**: the ground was true and still wrong to rest on,
+   because quoting keeps the split exact by handing back the *spelling* of a
+   path, which no `open()` and no pathspec matches. Ask arm 1 only where the
+   record is counted or printed; where it is fed BACK to git, `-z` is the
+   answer and there is no `splitlines()` left to register.
 2. **Otherwise, name what makes the harm survivable** → `NOT QUOTED, harmless -`.
    Fail-safe (a forged row can only refuse), fail-closed, inflates a count in
    its loud direction, or the writer is the local operator. 17 entries.
@@ -71,11 +76,13 @@ exact, because a file line cannot contain LF by definition.
 That site is absent from the register by construction and its reason lives in
 `test_the_narrowed_readers_did_not_quietly_revert`.
 
-**`resolve.py` renders `path` raw at five `✓`/`⊘`/`✗` rows, and that is
-deliberate (#1693).** `targets` holds only `_list_conflicts()` output; a
-comma-separated argv PATH list is a *filter* over that set, refused unless every
-element is already conflicted. Quoting therefore reaches all five. Relax that
-refusal and they need `_untrusted.flat` the same day.
+**`resolve.py`'s `✓`/`⊘`/`✗` rows go through `_shown()` — no longer raw
+(#1708).** The argv filter still holds (`targets` is `_list_conflicts()` output;
+a comma-separated PATH list is refused unless every element is already
+conflicted), but quoting no longer does the work: `_list_conflicts` reads `-z`,
+so a path is real bytes and CAN carry LF/CR/U+2028. Every rendered path in
+`resolve.py`, `conflicts.py` and `merge.py` is flattened; the path handed to
+`open()` or `git add --` is not.
 
 **Op traps:** `git-push` refuses an ambiguous upstream rather than guessing —
 use `git-push:set-upstream`. `git-resolve` leaves a branch conflicted on

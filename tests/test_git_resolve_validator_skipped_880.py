@@ -54,7 +54,7 @@ def _fake_git(conflicted: list[str], staged: list[str]):
         if args[:3] == ["diff", "--name-only", "--diff-filter=U"]:
             return subprocess.CompletedProcess(
                 args=args, returncode=0,
-                stdout="".join(f"{p}\n" for p in conflicted), stderr="")
+                stdout="".join(p + chr(0) for p in conflicted), stderr="")
         if args[:3] == ["check-attr", "merge", "--"]:
             rows = "".join(f"{p}: merge: unspecified\n" for p in args[3:])
             return subprocess.CompletedProcess(args=args, returncode=0, stdout=rows, stderr="")

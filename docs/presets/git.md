@@ -181,7 +181,14 @@ actually clean — the routine you'd otherwise run by hand:
 Resolved: 1 | Failed: 0 | Remaining: 0
 Next: ./supertool 'git-commit:::Merge resolved' (or git merge --continue)
 ```
-**The `PATH` in those rows is git's own, never yours** ([#1693](https://github.com/Digital-Process-Tools/claude-supertool/issues/1693)). Every `✓` / `⊘` / `✗` / `~` row above interpolates the path raw, with no `_untrusted.flat` — sound because the only strings that can reach one come from `git diff --name-only --diff-filter=U`, which `core.quotePath` octal-quotes, so no byte above 0x7F and no line separator survives. A comma-separated `PATH` argument does **not** widen that: it is a filter over the conflicted set, and anything not already in it is refused before a single row is printed. That is the whole ground, it was written down nowhere for a long time, and it is pinned by a test — relax the refusal and those renders need flattening the same day.
+**The `PATH` in those rows is git's own, never yours** ([#1693](https://github.com/Digital-Process-Tools/claude-supertool/issues/1693)). A comma-separated `PATH` argument is a filter over the conflicted set, not a second source: anything not already conflicted is refused before a single row is printed.
+
+**What held those rows up used to be `core.quotePath`, and that was the wrong thing to rest on** ([#1708](https://github.com/Digital-Process-Tools/claude-supertool/issues/1708)). The rows interpolated the path raw, sound only because `git diff --name-only --diff-filter=U` octal-quotes every byte above 0x7F — a config *default*, so #1708 proposed pinning it with `-c core.quotePath=true`. Driving it first showed the setting has no correct value, on git 2.46.2:
+
+- `quotePath=true`, the default, hands back the octal-escaped **spelling** of an accented name. That is not a filename, so `git-resolve` fed it straight back as a pathspec and printed `did not match any file(s) known to git` — **no conflicted path holding a byte above 0x7F could be resolved at all**, and pinning would have frozen exactly that.
+- `quotePath=false` hands the name back usable, but one file named with a U+2028 came back as **two** records, neither of them a file.
+
+So the read is `-z` now, which is what `git-commit` settled on for the same defect at `diff --cached --name-only -z` ([#1003](https://github.com/Digital-Process-Tools/claude-supertool/issues/1003)). Paths arrive as their real bytes and the records are NUL-separated, which a filename cannot forge. **The cost moved to the render**: a real path can carry `LF`, `CR` or `U+2028`, so every path printed in a `✓` / `⊘` / `✗` / `~` row, a `## PATH` heading in `git-conflicts` and `git-merge`, or a `Still conflicted:` list goes through `_untrusted.flat` — which discloses the separator rather than dropping the tail. The paths themselves are used unflattened, because the filesystem wants the name.
 
 A marker left behind is a **hard fail** — the file is *not* staged, so a broken
 merge can never reach a commit:

@@ -208,7 +208,9 @@ def main() -> int:
 
     for path in conflicts:
         nblocks = _count_blocks(path)
-        print(f"\n## {path} ({nblocks} block(s))")
+        # Real path since #1708 (`-z`), so it opens — and so it can carry a
+        # separator into this heading. Flattened for the render only.
+        print(f"\n## {_untrusted.flat(path)} ({nblocks} block(s))")
         print(_first_conflict_block(path, preview))
 
     return 1
