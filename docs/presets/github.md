@@ -1395,7 +1395,7 @@ wrong previous head is the reading that would otherwise print nothing at all.
 
 ## A SHA is a question this op can answer
 
-The release gate in `/opensource-manager` reads *"the default branch is green at
+The release gate in `/oss:manager` reads *"the default branch is green at
 leg level **for the exact commit being tagged**"*. That is deliberately a claim
 about a commit, because the branch head can move between the check and the tag.
 
@@ -1539,7 +1539,7 @@ listed and still both have to pass.
 ## The tally counts a family, not a label
 
 `gh-labels` answers *which labels exist and who uses them*. The rolling-cohort
-rule in `/opensource-manager` asks a different question every tick — **is each
+rule in `/oss:manager` asks a different question every tick — **is each
 cohort smaller than the last?** — and that is a group-by over one label family,
 which came out as thirty characters of `gh issue list --json labels -q
 'group_by'`, rewritten from scratch each session

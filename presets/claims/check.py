@@ -3,10 +3,11 @@
 
 A doc that asserts something about the repo can go stale, and a stale line in
 a doc that is *loaded* rather than *read* produces the behaviour it describes:
-`.claude/skills/opensource-manager/SKILL.md` said no op rendered a commit's
+this repo's own maintainer skill said no op rendered a commit's
 run list months after `gh-branch:COMMIT_SHA` shipped, and the maintainer
-hand-rolled jq in obedience to it. The same file records the same failure with
-`repo:` before that.
+hand-rolled jq in obedience to it. The same file recorded the same failure with
+`repo:` before that. (That skill is gone since #1729 — the `oss` plugin's
+`/oss:manager` replaced it — and the quote is in `CHANGELOG.md` under #1220.)
 
 This checks **references, not reasoning**, and the boundary is not an
 aesthetic choice — it was measured. A probe that flagged issue citations by
