@@ -1,0 +1,54 @@
+{
+  "repo": "Digital-Process-Tools/claude-supertool",
+  "default_branch": "master",
+  "branch_pattern": "fix/{issue}",
+  "test_command": "pytest",
+  "version_sites": [
+    ".claude-plugin/plugin.json",
+    "_supertool.py",
+    "pyproject.toml",
+    "CHANGELOG.md",
+    "README.md"
+  ],
+  "changelog_dir": "changelog.d",
+  "docs_targets": [
+    "README.md"
+  ],
+  "labels": {
+    "priority": [
+      "priority-high",
+      "priority-medium",
+      "priority-low"
+    ],
+    "lanes": [
+      "lane-watch",
+      "lane-tracker-ops",
+      "lane-validators",
+      "lane-ci-cost",
+      "lane-containment",
+      "lane-release",
+      "lane-git-ops"
+    ]
+  },
+  "milestones": [
+    "v0.37.0",
+    "backlog",
+    "v0.38.0",
+    "v0.39.0",
+    "v0.42.0",
+    "v0.43.0",
+    "v0.44.0"
+  ],
+  "ci": {
+    "required_checks": 23
+  },
+  "release": {
+    "tag_pattern": "v{version}",
+    "merge_method": "squash",
+    "commit_subject": null,
+    "triggers": {
+      "merged_prs": 10,
+      "soak_hours": 48
+    }
+  }
+}
