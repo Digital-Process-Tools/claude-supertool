@@ -58,6 +58,17 @@ import os
 import re
 import sys
 
+#: The rules `replaces` cannot express, shipped with the plugin (#1698). A
+#: sibling module, so `sys.path[0]` already holds its directory whether this
+#: file was run by path or imported by a test. A broken install must not turn
+#: every Bash call into a hook error, so an import failure leaves the shipped
+#: layer off and `hooks/guard-selftest.py` is the surface that says so — the
+#: same trade `hooks/pre-bash-guard.sh` makes for a missing interpreter.
+try:
+    import shipped_rules
+except Exception:  # pragma: no cover - a broken install
+    shipped_rules = None
+
 
 def _names_word(command: str, word: str) -> bool:
     """Is *word* a whole command word here, `.exe` and friends included?
@@ -329,11 +340,38 @@ def main() -> int:
     root = os.environ.get("CLAUDE_PLUGIN_ROOT") or os.path.dirname(
         os.path.dirname(os.path.abspath(__file__)))
 
+    # The shipped rule layer (#1698), decided here and *used* below, never
+    # above a registry block. A hand-written regex must not outrank the
+    # tokeniser: the regex cannot express "except when it carries
+    # `--dry-run`", which is what made three such rules refuse commands that
+    # performed nothing and name an op that would have performed it
+    # (`tests/test_jit_block_never_outranks_the_guard_r2.py`). So this is
+    # consulted only where the registry has said nothing.
+    #
+    # It costs one small file read per Bash call and no import of
+    # `_supertool`, so #1377's fast path stays a fast path.
+    shipped = None
+    if shipped_rules is not None:
+        try:
+            shipped = shipped_rules.match(
+                command, root,
+                os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+        except Exception as exc:  # pragma: no cover - defensive
+            # Not `None`. `None` here means "no shipped rule claims this
+            # command", and a layer that crashed must not borrow that
+            # sentence - it is the same envelope a compliant command gets.
+            shipped = ("note",
+                       "supertool's shipped rule layer raised "
+                       + type(exc).__name__ + ": " + str(exc)
+                       + ". The command was allowed - this is a statement "
+                         "about the rule layer, not about the command.")
+
     # Before the import, because the import is the cost (#1377). Ordered
     # cheapest-first: the two regex screens decide most commands without ever
     # stat-ing the ancestor chain.
     words = _replaced_words(root)
-    if (words is not None
+    if (shipped is None
+            and words is not None
             and not _may_be_replaced(command, words)
             and not _project_declares_replaces(os.getcwd(), root)):
         _nothing_to_say()
@@ -347,6 +385,20 @@ def main() -> int:
         _undecided(f"supertool could not be imported from {root} ({exc})")
         return 0
 
+    # `raw_command_guard: false` is the repository's one escape from a wrong
+    # block, and it has to cover this layer too — a second gate with no hatch
+    # would make one over-broad regex unfixable from inside the repo, which is
+    # the failure `unless_flag` was added for (#1394). The shipped match is
+    # computed before the import and *discarded* here rather than skipped
+    # earlier, because reading the effective config is `_supertool`'s job and
+    # a second implementation of it is the drift #1356 names.
+    if shipped is not None:
+        try:
+            if _supertool._load_config().get("raw_command_guard") is False:
+                shipped = None
+        except Exception:  # pragma: no cover - defensive
+            shipped = None
+
     if tool_name not in (None, "Bash"):
         try:
             words = _supertool.guard_command_words()
@@ -358,7 +410,12 @@ def main() -> int:
         # to print a disclosure, and one that fires on a filename is one
         # nobody reads.
         named = [word for word in words if _names_word(command, word)]
-        if not named:
+        if shipped is not None:
+            # A shipped rule is a regex over the command text, so it reads
+            # this shell exactly as well as it reads Bash — the POSIX
+            # tokeniser #1413 declines to point at PowerShell is not involved.
+            _say(*shipped)
+        elif not named:
             _nothing_to_say()
         else:
             _undecided(
@@ -377,6 +434,13 @@ def main() -> int:
 
     if verdict.state == "blocked":
         _say("deny", _supertool.guard_refusal(verdict))
+    elif shipped is not None:
+        # Below `blocked` and above everything else: the registry's refusal
+        # names the op and honours each mapping's `unless_flag`, which a regex
+        # cannot, so it wins. Where it said nothing, the shipped rule is the
+        # only account there is, and the alternative is the silence #1698 was
+        # filed about.
+        _say(*shipped)
     elif verdict.state == "uncovered":
         # An op claims the verb and not this invocation of it (#1684). Not
         # `_undecided`: that sentence says the guard did not run, and here it

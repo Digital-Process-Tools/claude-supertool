@@ -161,11 +161,41 @@ def wrapper_denies(bash, wrapper, root, command):
     return False, note[:400]
 
 
+def rule_inventory(root, environ=None):
+    """Which shipped jit rules this install carries, and which it does not.
+
+    The second half is the point (#1698). `replaces` covers raw commands an
+    op supersedes; five hand-written rules cover what it cannot reach, and
+    until now all five lived in the supertool checkout, so every other repo
+    ran without them **and was told nothing**. One travels; the other four are
+    named here with the reason, because a guard that is quietly not there is
+    worse than one that is loudly missing — the property
+    `.claude/settings.json` already keeps when its own script is absent.
+    """
+    hooks = os.path.join(root, "hooks")
+    if hooks not in sys.path:
+        sys.path.insert(0, hooks)
+    try:
+        import shipped_rules
+    except Exception as exc:
+        return ["  rules       : could not run - hooks/shipped_rules.py "
+                "could not be imported from " + hooks + " (" + str(exc)
+                + "), so nothing here says which rules this install ships"]
+    environ = os.environ if environ is None else environ
+    project = environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    try:
+        return shipped_rules.inventory(root, project)
+    except Exception as exc:  # pragma: no cover - defensive
+        return ["  rules       : could not run - the rule inventory raised "
+                + type(exc).__name__ + ": " + str(exc)]
+
+
 def report(root, environ=None):
     """(lines, exit code). Never a clean shape for a state it could not reach."""
     wrapper = os.path.join(root, "hooks", "pre-bash-guard.sh")
     lines = ["supertool raw-command guard, self-check",
              "  plugin root : " + root]
+    lines.extend(rule_inventory(root, environ))
 
     command, why = a_command_the_registry_replaces(root)
     if why:
