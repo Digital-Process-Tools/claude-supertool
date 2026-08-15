@@ -141,6 +141,37 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, MutableMappin
 
 VERSION = "0.45.0"
 
+#: The one "is this string a number" test the core shares (#1748), anchored with
+#: a capital-Z escape rather than `$` because Python's `$` also matches before a
+#: final newline (#1188).
+#:
+#: `str.isdigit()` is not that test, and it fails in two directions:
+#:
+#: * U+0662 ARABIC-INDIC DIGIT TWO and its family are `isdecimal()` too, so
+#:   `int()` converted them and the op ran against a number nobody typed --
+#:   `around:PAT:F:<U+0662>` gave a 2-line window and `vim:F:<U+0662>jx` edited
+#:   the file and printed `2j` back in the receipt.
+#: * U+00B2 SUPERSCRIPT TWO and its family are not `isdecimal()`, so `int()`
+#:   raised and dispatch's catch-all rendered `invalid literal for int()` -- a
+#:   refusal that names an interpreter builtin instead of the argument slot.
+#:
+#: `presets/_digits.py` holds the identical pair for the presets and is
+#: deliberately NOT imported here: presets run as standalone subprocesses and
+#: put only `presets/` on their own path, so sharing one module would mean
+#: either the core importing out of the tree it dispatches into, or every preset
+#: paying the core's compile cost that #931 exists to avoid. Two four-line
+#: predicates, one recurrence test over each file, was the cheaper duplication.
+_ASCII_DIGITS = re.compile(r"^[0-9]+\Z")
+
+
+def _is_ascii_int(text: str) -> bool:
+    """True when `text` is one or more ASCII digits and nothing else.
+
+    No stripping, no sign, no separators -- a caller that wants to allow leading
+    whitespace strips it itself, so the allowance is visible at the call site.
+    """
+    return bool(_ASCII_DIGITS.match(text))
+
 
 def _fwd(p: str) -> str:
     """Normalize path separators to forward slashes for cross-platform output."""
@@ -6020,7 +6051,7 @@ def _op_around(pattern: str, path: str, n: int = 10) -> str:
         # here (the cwd was fine), so name the actual mistake instead —
         # never redirect the call itself, only the advice.
         suggest = None
-        if path.isdigit():
+        if _is_ascii_int(path):
             suggest = (
                 "`around` takes PATTERN:PATH[:N] — "
                 f"'{path}' was read as the path. Did you mean: "
@@ -8523,7 +8554,7 @@ def _grep_peel_trailing(parts: List[str]) -> Tuple[List[str], List[str],
             no_auto_read = True
         args = args[:-1]
     trailing: List[str] = []
-    while len(args) >= 3 and (args[-1].isdigit()
+    while len(args) >= 3 and (_is_ascii_int(args[-1])
                               or args[-1] == _GREP_ALL_TOKEN):
         trailing.insert(0, args[-1])
         args = args[:-1]
@@ -8616,7 +8647,7 @@ def _parse_around_args(parts: List[str]) -> tuple:
 
     # Peel N (int) from right
     n = 10
-    if len(args) >= 3 and args[-1].isdigit():
+    if len(args) >= 3 and _is_ascii_int(args[-1]):
         n = int(args[-1])
         args = args[:-1]
 
@@ -8652,7 +8683,7 @@ def _around_line_delegation(pattern: str, path: str, n: int) -> str:
     should keep doing exactly one thing rather than grow a fourth spelling of a
     range read. Its error already carries the fully-substituted `read` command.
     """
-    if not path.isdigit() or os.path.exists(path):
+    if not _is_ascii_int(path) or os.path.exists(path):
         return ""
     line = int(path)
     if line < 1:
@@ -8735,9 +8766,9 @@ def _between_numeric_hint(parts: List[str]) -> str:
     # hint exists to translate, one spelling later (#1234).
     if len(nums) == 1 and nums[0].count("-") == 1 and not os.path.exists(nums[0]):
         _a, _b = nums[0].split("-")
-        if _a.isdigit() and _b.isdigit():
+        if _is_ascii_int(_a) and _is_ascii_int(_b):
             nums = [_a, _b]
-    if not all(t.isdigit() and not os.path.exists(t) for t in nums):
+    if not all(_is_ascii_int(t) and not os.path.exists(t) for t in nums):
         return ""
     path = parts[1]
     if not path:
@@ -11971,7 +12002,7 @@ def _vim_resolve_ex_address(addr: str, cursor_line: int, total_lines: int) -> in
         line = cursor_line
     elif base == "$":
         line = total_lines
-    elif base.isdigit():
+    elif _is_ascii_int(base):
         line = int(base)
     else:
         raise ValueError(f"bad address {addr!r}")
@@ -12175,7 +12206,7 @@ def _verb_token_at(s: str, pos: int) -> tuple:
     # > / < / = + [count] + motion
     if c in "><=" and pos + 1 < sn:
         mc = pos + 1
-        while mc < sn and s[mc].isdigit():
+        while mc < sn and _is_ascii_int(s[mc]):
             mc += 1
         if mc < sn:
             nxt = s[mc]
@@ -12469,7 +12500,7 @@ def _op_vim_impl(path: str, script: str) -> str:
         # when followed by an ex command (`:`).
         if c == "V":
             j = start + 1
-            while j < n and normalized[j].isdigit():
+            while j < n and _is_ascii_int(normalized[j]):
                 j += 1
             # Optional motion: j/k/G/gg
             if j < n and normalized[j] in "jkG":
@@ -12496,7 +12527,7 @@ def _op_vim_impl(path: str, script: str) -> str:
         # motions /<pat>//<pat>.
         if c == "v":
             j = start + 1
-            while j < n and normalized[j].isdigit():
+            while j < n and _is_ascii_int(normalized[j]):
                 j += 1
             if j >= n:
                 return (start + 1, False)
@@ -12581,8 +12612,8 @@ def _op_vim_impl(path: str, script: str) -> str:
                     break
                 # Skip count prefix
                 _sv = _scan
-                if normalized[_sv].isdigit() and normalized[_sv] != "0":
-                    while _sv < n and normalized[_sv].isdigit():
+                if _is_ascii_int(normalized[_sv]) and normalized[_sv] != "0":
+                    while _sv < n and _is_ascii_int(normalized[_sv]):
                         _sv += 1
                 if _sv >= n:
                     _scan = n
@@ -12623,8 +12654,8 @@ def _op_vim_impl(path: str, script: str) -> str:
                     break
                 _rstart = _ri
                 _rverb_pos = _ri
-                if _rec_norm[_ri].isdigit() and _rec_norm[_ri] != "0":
-                    while _rverb_pos < _rn and _rec_norm[_rverb_pos].isdigit():
+                if _is_ascii_int(_rec_norm[_ri]) and _rec_norm[_ri] != "0":
+                    while _rverb_pos < _rn and _is_ascii_int(_rec_norm[_rverb_pos]):
                         _rverb_pos += 1
                 if _rverb_pos >= _rn:
                     _rec_actions.append(_rec_norm[_rstart:])
@@ -12653,8 +12684,8 @@ def _op_vim_impl(path: str, script: str) -> str:
             continue
         # Parse count: leading digits, but not if `0` alone (BOL verb).
         verb_pos = i
-        if normalized[i].isdigit() and normalized[i] != "0":
-            while verb_pos < n and normalized[verb_pos].isdigit():
+        if _is_ascii_int(normalized[i]) and normalized[i] != "0":
+            while verb_pos < n and _is_ascii_int(normalized[verb_pos]):
                 verb_pos += 1
         if verb_pos >= n:
             # trailing digits with no verb — emit as-is, _parse will error
@@ -12734,8 +12765,8 @@ def _op_vim_impl(path: str, script: str) -> str:
             action = ":" + action
         i = 0
         # count: leading digits, but `0` alone is the BOL verb
-        if action[0].isdigit() and action[0] != "0":
-            while i < len(action) and action[i].isdigit():
+        if _is_ascii_int(action[0]) and action[0] != "0":
+            while i < len(action) and _is_ascii_int(action[i]):
                 i += 1
         count = int(action[:i]) if i > 0 else 1
         rest = action[i:]
@@ -12783,7 +12814,7 @@ def _op_vim_impl(path: str, script: str) -> str:
             j = 1
             # first address — allow digits, `.`, `$`, and `+`/`-` for offsets
             # like `.+1`, `$-2`, `+1` (shortcut for `.+1`).
-            while j < len(rest) and (rest[j].isdigit() or rest[j] in ".$+-"):
+            while j < len(rest) and (_is_ascii_int(rest[j]) or rest[j] in ".$+-"):
                 j += 1
             # optional `,addr2`
             if j < len(rest) and rest[j] == ",":
@@ -12801,7 +12832,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                             break
                         j += 1
                 else:
-                    while j < len(rest) and (rest[j].isdigit() or rest[j] in ".$+-"):
+                    while j < len(rest) and (_is_ascii_int(rest[j]) or rest[j] in ".$+-"):
                         j += 1
             # Multi-char ex verbs MUST be checked before single-char s/d/m/t
             # so that e.g. `:2,4sort` doesn't get parsed as `:2,4s` with body
@@ -12864,7 +12895,7 @@ def _op_vim_impl(path: str, script: str) -> str:
             # Single address only (`:N,M` with no command is invalid in vim too).
             if j == len(rest) and "," not in rest[1:j]:
                 spec = rest[1:j]
-                if spec.isdigit() or spec in ("$", "."):
+                if _is_ascii_int(spec) or spec in ("$", "."):
                     return (count, ":goto", spec)
         # vim :%d — delete whole buffer (alias for :1,$d)
         if len(rest) >= 3 and rest[:3] == ":%d":
@@ -12993,7 +13024,7 @@ def _op_vim_impl(path: str, script: str) -> str:
             op = rest[0]
             # skip optional embedded motion count digits
             mi = 1
-            while mi < len(rest) and rest[mi].isdigit():
+            while mi < len(rest) and _is_ascii_int(rest[mi]):
                 mi += 1
             motion_count = int(rest[1:mi]) if mi > 1 else 1
             tail = rest[mi:]  # everything after the digits
@@ -13148,7 +13179,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                 # Kevin sometimes uses both V<motion> AND an explicit ex
                 # range (`VG:%d`, `Vgg:1,5d`). The user-provided ex range
                 # wins — strip our prefix's range to avoid `:%%d`/`:1,.1,5d`.
-                if rest.startswith("%") or (rest and rest[0].isdigit()) or rest.startswith("."):
+                if rest.startswith("%") or (rest and _is_ascii_int(rest[0])) or rest.startswith("."):
                     return ":" + rest
                 return repl + rest
         # V<n>?j/k<op>... → <n+1><op><op>... (V + n-line motion = n+1 lines)
@@ -13228,7 +13259,7 @@ def _op_vim_impl(path: str, script: str) -> str:
             cursor = 0
             log.append(f"  {i}. gg (BOF)")
         elif verb == "G":
-            if action.lstrip()[:1].isdigit():
+            if _is_ascii_int(action.lstrip()[:1]):
                 # explicit count: goto line
                 try:
                     cursor = _goto_line(content, count)
@@ -14492,7 +14523,7 @@ def _op_vim_impl(path: str, script: str) -> str:
         # arg is the address spec (digits | `$` | `.`).
         elif verb == ":goto":
             spec = arg
-            if spec.isdigit():
+            if _is_ascii_int(spec):
                 try:
                     cursor = _goto_line(content, int(spec))
                 except ValueError as e:
@@ -15643,17 +15674,17 @@ def _op_vim_impl(path: str, script: str) -> str:
             # current line for first digit. Handles leading minus.
             eol = _line_end(content, cursor)
             p = cursor
-            if p >= eol or not content[p].isdigit():
-                while p < eol and not content[p].isdigit():
+            if p >= eol or not _is_ascii_int(content[p]):
+                while p < eol and not _is_ascii_int(content[p]):
                     p += 1
-            if p >= eol or not content[p].isdigit():
+            if p >= eol or not _is_ascii_int(content[p]):
                 return f"ERROR: action {i} '{action}': no number on line\n"
             # walk back to leading minus if adjacent (vim treats -42 as -42)
             start_d = p
-            while start_d > 0 and content[start_d - 1].isdigit():
+            while start_d > 0 and _is_ascii_int(content[start_d - 1]):
                 start_d -= 1
             end_d = p
-            while end_d < eol and content[end_d].isdigit():
+            while end_d < eol and _is_ascii_int(content[end_d]):
                 end_d += 1
             # optional leading minus
             if start_d > 0 and content[start_d - 1] == "-":
@@ -15782,7 +15813,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                         # arg encodes motion_count (lines to move); outer
                         # count repeats the indent operation on that range.
                         _mc_str = arg.lstrip()
-                        _mc = int(_mc_str) if _mc_str.isdigit() else 1
+                        _mc = int(_mc_str) if _is_ascii_int(_mc_str) else 1
                         pos = cursor
                         for _ in range(_mc):
                             nl = content.find("\n", pos)
@@ -15792,7 +15823,7 @@ def _op_vim_impl(path: str, script: str) -> str:
                         target = pos
                     elif motion == "k":
                         _mc_str = arg.lstrip()
-                        _mc = int(_mc_str) if _mc_str.isdigit() else 1
+                        _mc = int(_mc_str) if _is_ascii_int(_mc_str) else 1
                         bol = _line_start(content, cursor)
                         pos = bol
                         for _ in range(_mc):
@@ -16323,8 +16354,8 @@ def _op_vim_impl(path: str, script: str) -> str:
                         _bi += 2
                         continue
                     _bverb_pos = _bi
-                    if _body_norm[_bi].isdigit() and _body_norm[_bi] != "0":
-                        while _bverb_pos < _bn and _body_norm[_bverb_pos].isdigit():
+                    if _is_ascii_int(_body_norm[_bi]) and _body_norm[_bi] != "0":
+                        while _bverb_pos < _bn and _is_ascii_int(_body_norm[_bverb_pos]):
                             _bverb_pos += 1
                     if _bverb_pos >= _bn:
                         _body_actions.append(_body_norm[_bstart:])
@@ -22992,11 +23023,11 @@ def _toml_parse_value(raw: str, i: int, key: str) -> Tuple[Any, int]:
         return False, i + 5
     if raw[i] == "[":
         return _toml_parse_array(raw, i, key)
-    if raw[i] == "-" or raw[i].isdigit():
+    if raw[i] == "-" or _is_ascii_int(raw[i]):
         ns = i
         if raw[i] == "-":
             i += 1
-        while i < n and raw[i].isdigit():
+        while i < n and _is_ascii_int(raw[i]):
             i += 1
         try:
             return int(raw[ns:i]), i
