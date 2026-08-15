@@ -385,10 +385,14 @@ def test_a_formatter_template_can_still_use_a_dollar_var(tmp_path):
     assert record.exists(), "formatter never ran — nothing was observed"
     assert json.loads(record.read_text(encoding="utf-8")) == [_TPL_VALUE]
 
-def test_a_dollar_in_a_target_path_is_not_expanded_by_a_validator(tmp_path):
-    """`_validator_run_one` — the third of five sites."""
-    import supertool
 
+def test_a_dollar_in_a_target_path_is_not_expanded_by_a_validator(tmp_path):
+    """`_validator_run_one` — the third of five sites.
+
+    Reached through `run_one_or_skip`, which imports `supertool` itself and
+    guards the core's own timeout (#1501) — so this body needs no import of
+    its own, unlike the four sites below that call the core directly.
+    """
     target = _dollar_named_file(tmp_path)
     if target is None:
         pytest.skip("filesystem will not hold a '$' in a filename here")
@@ -407,9 +411,7 @@ def test_a_dollar_in_a_target_path_is_not_expanded_by_a_validator(tmp_path):
 
 
 def test_a_validator_template_can_still_use_a_dollar_var(tmp_path):
-    """Control for the case above."""
-    import supertool
-
+    """Control for the case above. Same route, so no import here either."""
     target = tmp_path / "plain-validator.txt"
     target.write_text("x\n", encoding="utf-8")
     record = tmp_path / "seen-validator-ctl.json"
