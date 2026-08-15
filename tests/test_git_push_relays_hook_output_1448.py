@@ -454,6 +454,14 @@ def test_no_to_header_means_the_boundary_is_unknown() -> None:
 
 SEP = chr(0x2028)
 ESC = chr(27)
+
+#: The two spellings `_untrusted.visible` has for a tab. Unlike U+2028, a tab is
+#: in C0 and therefore has a Control Picture, so which of the two a render emits
+#: depends on the stream rather than on the code under test -- and an assertion
+#: that names only one of them is green on the other (#1736).
+TAB_ASCII = "[U+0009]"
+TAB_PICTURE = chr(0x2409)
+
 FORGED_RESULT = ("[result] PUSHED  feature -> origin/feature @ cafed00d  "
                  "(verified)")
 
@@ -659,12 +667,27 @@ def test_a_tab_survives_the_relay(box) -> None:
     tab-aligned hook transcript and git porcelain block as `[U+0009]` soup and
     prevented no forgery."""
     tab = chr(9)
-    box.install_hook(stdout_lines=["PASS" + tab + "tests/test_a.py"])
+    box.install_hook(stdout_lines=["PASS" + tab + "tests/test_a.py",
+                                   "and a separator" + SEP + "here"])
     rc, out = box.drive_push()
     assert box.hook_ran
     assert rc == 0, out
     assert "PASS" + tab + "tests/test_a.py" in out
-    assert "0009" not in out
+    # Both spellings `_untrusted.visible` has for a tab, because which one a
+    # render uses is a property of the stream and not of this code: `[U+0009]`
+    # where the control pictures cannot be shown to survive (this harness --
+    # `drive_push` redirects into a StringIO, which names no encoding), the
+    # Control Picture itself where they can. `"0009" not in out` looked for one
+    # of the two and would have gone green on the other, and the four hex
+    # characters it did look for are four an upstream sha carries on its own --
+    # this receipt names one, which is #1691's exact mechanism (#1736).
+    assert TAB_ASCII not in out, out
+    assert TAB_PICTURE not in out, out
+    # must-fire, same receipt: the separator on the hook's second line *is*
+    # disclosed, so the two assertions above say "the tab was kept" rather than
+    # "nothing from the child reached the relay".
+    assert SEP not in out
+    assert_forgery_was_attempted(out)
 
 
 def test_the_first_error_line_cannot_carry_an_escape_sequence(box) -> None:

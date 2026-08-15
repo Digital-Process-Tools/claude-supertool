@@ -181,6 +181,18 @@ def test_a_poller_with_no_channel_token_is_not_claimed_by_this_channel(machine) 
 # the board — the render the issue was filed against
 # ---------------------------------------------------------------------------
 
+def _slot_rows(out: str, source: str, watcher_id: str) -> list[str]:
+    """Board rows whose SOURCE and ID cells are this slot.
+
+    The table renders those two as separate fixed-width columns, so the id never
+    appears beside its source in the output and a bare `watcher_id in out` would
+    match a PID, a timestamp or a path just as readily. Splitting on the column
+    gap is what makes the assertion one about a *row* (#1736).
+    """
+    return [ln for ln in out.splitlines()
+            if ln.split()[:2] == [source, watcher_id]]
+
+
 def test_another_channels_poller_is_not_this_channels_orphan(machine, capsys) -> None:
     """The live render in #1514: four `no pidfile` rows belonging elsewhere."""
     machine.add_theirs(202, *SLOT)
@@ -190,8 +202,22 @@ def test_another_channels_poller_is_not_this_channels_orphan(machine, capsys) ->
     assert rows == []
     assert dispatcher.cmd_list() == 0
     out = capsys.readouterr().out
+    # The board's own statement that it has no rows, then the row itself.
+    # `"33698" not in out` was satisfied just as well by a board that printed
+    # nothing at all -- and nothing in this fixture said it printed.
+    assert "No active watchers" in out
     assert "no pidfile" not in out
-    assert "33698" not in out
+    assert _slot_rows(out, *SLOT) == []
+
+    # must-fire, same fixture: this channel's own poller on the same slot, also
+    # without a pid file, produces exactly the row asserted absent above. So the
+    # three assertions read a board that renders rather than a silent one.
+    machine.add_mine(101, *SLOT)
+    assert dispatcher.cmd_list() == 0
+    mine_out = capsys.readouterr().out
+    assert "No active watchers" not in mine_out
+    assert "no pidfile" in mine_out
+    assert len(_slot_rows(mine_out, *SLOT)) == 1, mine_out
 
 
 # ---------------------------------------------------------------------------
