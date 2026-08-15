@@ -18288,6 +18288,27 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
                     if not extra:
                         continue
                     op = _flat_field(replacement.op)
+                    # The closing clause asserts what the op DOES, never
+                    # that dropping the extras leaves the same operation
+                    # (#1707). It used to read "`git-push` is the same
+                    # invocation without them", and for the argv this branch
+                    # exists to catch that is false: drop `v0.43.0` from
+                    # `git push origin v0.43.0` and you push a branch. Three
+                    # instances, the third a `--force-with-lease` where the
+                    # dropped tokens included the safety on the operation and
+                    # only the operands were enumerated.
+                    #
+                    # The alternative — fire the clause only when the dropped
+                    # tokens are inert — needs the guard to know what a
+                    # refspec is, per utility, which is the case work
+                    # `_GUARD_GLOBAL_OPTIONS` refuses to grow. "performs X
+                    # and nothing more" is true of every argv reaching here,
+                    # covers a dropped flag as well as a dropped refspec, and
+                    # asks git nothing.
+                    #
+                    # Kept short on purpose: `_guard_notes` quotes each note
+                    # through `_GUARD_DESC_CAP`, which truncates from the END
+                    # — where this clause is.
                     line = (
                         "`" + _flat_field(" ".join(scoring)) + "` carries "
                         + ", ".join("`" + _flat_field(token) + "`"
@@ -18297,8 +18318,10 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
                         + "` replaces, and that op takes none of them: no op "
                         "covers this form, so raw `"
                         + _flat_field(scoring[0]) + "` is correct here and "
-                        "nothing was blocked. `" + op + "` is the same "
-                        "invocation without them, if that is what you meant")
+                        "nothing was blocked. `" + op + "` performs `"
+                        + _flat_field(" ".join(replacement.argv))
+                        + "` and nothing more, which is a different command "
+                        "from this one")
                     if line not in uncovered:
                         uncovered.append(line)
             continue
@@ -18484,18 +18507,32 @@ def guard_refusal(verdict: GuardVerdict) -> str:
     # It is disclosed here rather than only in the docs because this is the
     # one moment a reader is forming the belief: a denial naming a path reads
     # as "this file is protected" when what is true is "this route is
-    # protected". Naming the open route in a refusal does tell a reader where
-    # the door is, and that is the trade taken deliberately — an agent that
-    # reaches for `Edit` after this loses the validator chain and the
-    # rollback, and knowing that is what makes the choice a choice.
+    # protected".
+    #
+    # It names no tool, and that is #1706 rather than a retreat from #1671.
+    # The sentence used to close "a harness Edit/Write reaches this same path
+    # with no op, no validator and no rollback" — a working route past the
+    # gate, spelled out in the one sentence a blocked agent is guaranteed to
+    # read, and an agent that takes it loses the validator chain and the
+    # rollback this refusal exists to route it into. That was argued as a
+    # deliberate trade; it is not one a *denial* gets to make, because a
+    # denial is read as an instruction. The scope claim survives without the
+    # tool name, and the loss is now attached to the choice rather than to a
+    # route the reader is told how to take.
+    #
+    # Where the tool names still belong is where a reader is deciding rather
+    # than being denied: `docs/configuration.md`'s `raw_command_guard`
+    # section, the README deny-list recipe, and the SessionStart roster —
+    # all three asserted by tests, so this is a move and not a deletion.
     lines.append("Only invocations an op supersedes are declared under "
                  "`replaces`, so a raw call nothing maps runs untouched — "
                  "ask before running it with supertool 'guard:COMMAND'. This "
                  "gate is turned off with raw_command_guard: false in "
-                 ".supertool.json. It hooks Bash only: a harness Edit/Write "
-                 "reaches this same path with no op, no validator and no "
-                 "rollback, so this refusal is about the route, not the "
-                 "path (#1671).")
+                 ".supertool.json. It hooks Bash only, so this refusal is "
+                 "about the route, not the path: any other route to this "
+                 "file gets no op, no validator and no rollback, which makes "
+                 "it a worse write rather than a way past this one "
+                 "(#1671, #1706).")
     return "\n".join(lines)
 
 

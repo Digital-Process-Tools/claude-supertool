@@ -76,9 +76,13 @@ An un-claimed invocation is **disclosed, not silent**:
 ```text
 NOT COVERED: `git push origin v0.2.0` carries `origin`, `v0.2.0` past the `git push`
 that `git-push` replaces, and that op takes none of them: no op covers this form, so
-raw `git` is correct here and nothing was blocked. `git-push` is the same invocation
-without them, if that is what you meant.
+raw `git` is correct here and nothing was blocked. `git-push` performs `git push` and
+nothing more, which is a different command from this one.
 ```
+
+**That last sentence read "`git-push` is the same invocation without them, if that is what you meant" until [#1707](https://github.com/Digital-Process-Tools/claude-supertool/issues/1707)**, which is #1684's residue: the block was fixed and the sentence that replaced it kept prescribing. It was false for the argv the branch exists to catch — drop `v0.2.0` and you push a **branch** — and the third recorded instance was a force push, `git push --force-with-lease origin docs/claude-md-git-c`, where "without them" also discards the safety on the operation while enumerating only the operands.
+
+The two ways out were: fire the clause only when the dropped tokens are inert, or stop asserting an equivalence the guard cannot check. The first needs the guard to know what a refspec is, per utility — the case work `_GUARD_GLOBAL_OPTIONS` refuses to grow for the same reason everywhere else — so the second is what shipped. "performs `git push` and nothing more" is true of every argv that reaches here, covers a dropped flag as well as a dropped refspec, and asks git nothing. Pinned by `tests/test_guard_uncovered_note_asserts_no_equivalence_1707.py`, including its length: `_GUARD_DESC_CAP` truncates a note **from the end**, which is where the clause lives.
 
 **What it costs.** `git push origin master` is no longer refused either — a missed block on a command the op does answer when you happen to be on `master`. That is the direction this guard is allowed to be wrong in: a wrong block has no per-command escape short of `raw_command_guard: false`, which disarms every mapping in the repository. Pinned by `tests/test_guard_positional_arity_1684.py` and `tests/test_git_replaces_1384.py`.
 
