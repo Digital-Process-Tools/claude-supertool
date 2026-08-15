@@ -22,7 +22,7 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
-from refusal import absent, tool_fault
+from refusal import absent, guard_main, tool_fault
 from linebreaks import split_lines
 
 TOOL = "ruby-check"
@@ -32,18 +32,6 @@ INSTALL_HINT = "ruby not found on PATH — this file was NOT syntax-checked"
 # number, and so `tests/_adapter_budget.inner_budget` reads one value rather
 # than two spellings of it.
 TIMEOUT_S = 30
-
-#: `main`'s own `start`, published for the module-level crash handler at the
-#: foot of this file. `start` is a local and was never in that handler's scope,
-#: so every crash reported `0ms` however long it had run -- including one five
-#: seconds in (#1683).
-#:
-#: The same read every other arm reports against, not a second `time.time()`
-#: at import: a separate clock would make the crash arm's number disagree with
-#: its siblings', and it would consume a tick the driven-clock fixtures in
-#: `tests/test_adapter_wall_is_not_a_verdict_1604.py` hand to `start`.
-_STARTED: list = []
-
 
 # `file:line: message`. Extracted so the rule can be driven in process on every
 # platform — the fake-binary fixture is POSIX-only (see
@@ -86,7 +74,6 @@ def main() -> None:
 
     file = sys.argv[1]
     start = time.time()
-    _STARTED[:] = [start]
 
     if not shutil.which("ruby"):
         emit(absent(TOOL, file, INSTALL_HINT,
@@ -165,15 +152,9 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as exc:  # never leave stdout empty — callers json.loads() it
-        file = sys.argv[1] if len(sys.argv) > 1 else ""
-        emit({"tool": "ruby-check", "file": file, "ok": False, "count": 1,
-              "errors": [{"line": None, "col": None, "severity": "error",
-                          "code": "adapter", "msg": str(exc)[:300]}],
-              # Empty only if `main` raised before it set the clock -- an argv
-              # it could not read, an import that failed. Nothing had begun
-              # then, so `0` is the elapsed rather than a stand-in for one.
-              "duration_ms": (int((time.time() - _STARTED[0]) * 1000)
-                              if _STARTED else 0)})
+    # Was a hand-rolled `try/except` here, the only complete net in the tree.
+    # It published `str(exc)` alone, so a `KeyError()` or a `RecursionError` --
+    # both of which stringify to nothing -- produced a row with a blank reason,
+    # and no exception ever named its own class. `guard_main` measures its own
+    # elapsed, which is why `_STARTED` is gone (#1683, #1697).
+    guard_main(TOOL, main)

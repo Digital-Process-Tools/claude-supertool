@@ -27,7 +27,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
-from refusal import absent, skipped
+from refusal import absent, guard_main, skipped
 
 TOOL = "pyright"
 INSTALL_HINT = ("pyright not found on PATH — this file was NOT type-checked "
@@ -156,4 +156,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    guard_main(TOOL, main)

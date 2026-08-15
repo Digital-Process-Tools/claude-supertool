@@ -69,7 +69,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
-from refusal import absent, skipped  # noqa: E402
+from refusal import absent, guard_main, skipped  # noqa: E402
 from linebreaks import split_lines  # noqa: E402
 
 TOOL = "jit-index"
@@ -490,4 +490,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    guard_main(TOOL, main)

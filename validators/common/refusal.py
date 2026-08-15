@@ -11,8 +11,12 @@ Adapters route such exits through `skipped()` instead. See validators/SCHEMA.md,
 """
 from __future__ import annotations
 
+import json
 import os
 import socket
+import sys
+import time
+import traceback
 
 # Case-insensitive substrings by which an analyser announces it declined to run,
 # as opposed to a finding about the file. Deliberately narrow: an exit we cannot
@@ -300,3 +304,122 @@ def skipped(tool: str, file_path: str, reason: str, dur_ms: int) -> dict:
     """
     return {"tool": tool, "file": file_path, "duration_ms": dur_ms,
             "skipped": reason}
+
+
+#: How much of the crash message survives into the payload. The core truncates
+#: again at 300 for display (`_flat_cell`), so this is not the display width —
+#: it is the ceiling on what one broken adapter can push into a receipt, a log
+#: and a cache entry. The class name is first and the traceback last, so a cut
+#: takes frames off the end rather than the diagnosis off the front.
+CRASH_MSG_LIMIT = 1000
+
+
+def crashed(tool: str, file_path: str, exc: BaseException, dur_ms: int) -> dict:
+    """An exception escaped the adapter. Say so, in the shape the core reads (#1697).
+
+    **Not `skipped()`, and the difference is mechanical rather than stylistic.**
+    An adapter cannot set `no_verdict` — it is in the core's
+    `_VALIDATOR_CORE_ONLY_KEYS` and is stripped on the way in — and
+    `_validator_no_verdict` returns `None` the moment `skipped` is a key. So a
+    crash published as a skip reaches neither `_note_not_checked` nor
+    `_NOT_CHECKED`, and the call exits **0**: quieter than the bare crash it
+    replaced, which the core itself renders as a `no_verdict` skip and does
+    count. A crash net that lowers the alarm is worse than no crash net, and
+    that is the whole trap this function exists to not fall into.
+    `tool_fault()` already says it in prose one screen up: "a fault routed to
+    `skipped` is a validator quietly reporting clean."
+
+    `code: "adapter"` is the channel. `_validator_not_checked` keys on
+    `all(code == "adapter")`, which makes this a **non-verdict**: rendered
+    `NOT CHECKED`, never subtracted from a baseline, never a regression, never
+    a rollback — and still loud, because `_NOT_CHECKED` growing fails the call.
+    It is the third state, delivered through the door the core already built.
+
+    **The class name is published even when the exception says nothing.** The
+    net this replaced (`ruby-check`'s, the only one in the tree until now)
+    emitted `str(exc)` alone, and `str(KeyError())`, `str(RecursionError())`
+    and `str(SystemError())` are all empty — so its most likely output was a
+    row with a blank reason, which is the absence-as-presence defect wearing
+    the fix's clothing. Type first, message if there is one, tail of the
+    traceback last.
+
+    **The whole message is flattened onto one line here rather than at the
+    renderer.** A traceback carries newlines, and this repo has already been
+    bitten by the five *other* separators `str.splitlines()` breaks on writing
+    a second row at column 0 (#1522). `str.split()` splits on all of them, so
+    the join is the fix and it is applied to the finished string.
+
+    Nothing here can raise a `UnicodeEncodeError` at the `print`: the caller
+    emits through `json.dumps` with the default `ensure_ascii=True`, so the
+    bytes offered to a cp1252 console are ASCII whatever the exception said.
+    That matters because a crash net that dies encoding its own report on
+    Windows leaves exactly the empty stdout it was written to prevent.
+    """
+    frames = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    # Python 3.11+ prints `^^^^` / `~~~~` anchor rows under the failing
+    # expression and elides long call chains as `...<2 lines>...`. Both are
+    # decoration for a terminal showing the frame above them, and this keeps
+    # only three lines: on the first crash measured through this helper
+    # (`rector-mcp`, a daemon that never came up) two of the three were anchors
+    # and the third was a bare `)`, so the tail said nothing at all.
+    lines = [ln for ln in "".join(frames).splitlines()
+             if ln.strip()
+             and set(ln.strip()) - set("^~")
+             and not (ln.strip().startswith("...<")
+                      and ln.strip().endswith(">..."))]
+    tail = " | ".join(lines[-3:])
+    detail = str(exc).strip()
+    msg = "{0} adapter crashed and did NOT check this file: {1}{2} | trace: {3}".format(
+        tool, type(exc).__name__, ": " + detail if detail else "", tail)
+    return {"tool": tool, "file": file_path, "ok": False, "count": 1,
+            "errors": [{"line": None, "col": None, "severity": "error",
+                        "code": "adapter",
+                        "msg": " ".join(msg.split())[:CRASH_MSG_LIMIT]}],
+            "duration_ms": dur_ms}
+
+
+def guard_main(tool: str, main, *args) -> int:
+    """Run an adapter's `main`, and publish anything that escapes it (#1697).
+
+    An adapter's contract is one JSON object on stdout. An exception escaping
+    `main` writes **none**, and the core's fallback
+    (`_validator_unusable_reply`, "produced no output") can then report only
+    *that* the adapter died — the traceback went to a stderr the core captures
+    and never reads. This is that stderr, moved onto the channel somebody
+    looks at.
+
+    **It wraps the call, not a region inside `main`.** Every net in the tree
+    before this covered a region: `ruby-check`'s sat around `main()` at module
+    level and was the only complete one, while the four MCP adapters wrapped
+    `ensure_daemon` + `ndjson_call` and left the `print(json.dumps(
+    format_response(...)))` on the next line outside every handler they had.
+    So the count of adapters that could reach the process boundary with stdout
+    empty was 35 of 36, not the 31 that have no `except Exception` at all — a
+    handler that exists is not a handler that covers, and only the call site
+    covers the whole callee.
+
+    Five spellings for one moment is the drift #1727 closed elsewhere; this is
+    one spelling, and `tests/test_adapter_crash_net_1697.py` fails for any
+    adapter that does not use it.
+
+    `Exception`, not `BaseException`: `KeyboardInterrupt` and `SystemExit` are
+    the operator and the adapter respectively asking to stop, and neither is a
+    crash to report. An adapter that has already emitted and then dies still
+    publishes here, and the core reads the **last** stdout line, so the later
+    fact wins — which is correct, because a run that fell over after speaking
+    did not finish checking the file.
+
+    Returns `main`'s own value, so `sys.exit(guard_main(...))` and a bare
+    `guard_main(...)` both keep the exit code the adapter already had. On a
+    crash it returns 0: the receipt is on stdout, the core does not read the
+    exit code, and SCHEMA.md reserves a non-zero exit for infrastructure
+    failure rather than for a decline the adapter published.
+    """
+    started = time.monotonic()
+    try:
+        return main(*args)
+    except Exception as exc:  # noqa: BLE001 — the point is that it is blanket
+        target = sys.argv[1] if len(sys.argv) > 1 else ""
+        print(json.dumps(crashed(tool, target, exc,
+                                 int((time.monotonic() - started) * 1000))))
+        return 0

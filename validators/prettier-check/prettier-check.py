@@ -19,7 +19,7 @@ import sys
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from refusal import skipped
+from refusal import guard_main, skipped
 
 TOOL = "prettier-check"
 
@@ -203,4 +203,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    guard_main(TOOL, main)

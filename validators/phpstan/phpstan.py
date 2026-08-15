@@ -21,7 +21,7 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
-from refusal import is_refusal, skipped
+from refusal import guard_main, is_refusal, skipped
 from linebreaks import split_lines
 
 # Extra refusal substrings (comma-separated), opt-in per repo.
@@ -246,4 +246,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    guard_main("phpstan", main)

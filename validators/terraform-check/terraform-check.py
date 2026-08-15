@@ -23,7 +23,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from linebreaks import split_lines
-from refusal import absent, tool_fault
+from refusal import absent, guard_main, tool_fault
 
 TOOL = "terraform-check"
 INSTALL_HINT = ("terraform not found on PATH — this file was NOT "
@@ -156,4 +156,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    guard_main(TOOL, main)

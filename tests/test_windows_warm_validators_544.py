@@ -100,10 +100,26 @@ def _installed_bin(tmp_path: Path, bin_name: str) -> str:
     return str(p)
 
 
-def _run(mod, target: Path) -> dict:
+def _run(mod, target: Path, tool: str) -> dict:
+    """Call the adapter the way its `__main__` block does (#1697).
+
+    Not `mod.main(...)` directly: since #1697 the arm that publishes anything
+    escaping `main` is `refusal.guard_main`, wrapped around the call rather
+    than around a region inside it, and
+    `test_a_real_daemon_failure_stays_loud_even_without_a_transport` below
+    drives exactly that arm with a stubbed `ensure_daemon` that raises. The
+    module's own `_refusal` is used so this exercises the helper the adapter
+    resolved, and `sys.argv` is set because `guard_main` reads the file path
+    off it -- in every real invocation the adapter IS `argv`.
+    """
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        rc = mod.main(["adapter", str(target)])
+    argv = ["adapter", str(target)]
+    saved, sys.argv = sys.argv, argv
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = mod._refusal.guard_main(tool, mod.main, argv)
+    finally:
+        sys.argv = saved
     assert rc == 0
     return json.loads(buf.getvalue().strip().splitlines()[-1])
 
@@ -129,7 +145,7 @@ def test_no_transport_skips_instead_of_fabricating_an_adapter_finding(
                         _installed_bin(tmp_path, bin_name))
     _no_windows_daemon_facilities(monkeypatch)
 
-    result = _run(mod, target)
+    result = _run(mod, target, tool)
 
     assert "skipped" in result, f"{tool} reported a verdict it never measured: {result}"
     assert not any(e.get("code") == "adapter" for e in result.get("errors") or [])
@@ -152,7 +168,7 @@ def test_the_skip_reason_names_the_missing_transport(
                         _installed_bin(tmp_path, bin_name))
     _no_windows_daemon_facilities(monkeypatch)
 
-    reason = _run(mod, target)["skipped"]
+    reason = _run(mod, target, tool)["skipped"]
 
     assert "AF_UNIX" in reason, reason
     assert "\n" not in reason, "a skip reason renders on one row"
@@ -178,7 +194,7 @@ def test_a_missing_binary_outranks_the_missing_transport(
                         f"libs/bin/{bin_name}")
     _no_windows_daemon_facilities(monkeypatch)
 
-    reason = _run(mod, target)["skipped"]
+    reason = _run(mod, target, tool)["skipped"]
 
     assert bin_name in reason, reason
     looked_at = os.path.abspath(os.path.join(str(tmp_path), "libs", "bin", bin_name))
@@ -214,7 +230,7 @@ def test_a_real_daemon_failure_stays_loud_even_without_a_transport(
         raise RuntimeError("daemon exited during handshake")
 
     monkeypatch.setattr(mod, "ensure_daemon", boom)
-    result = _run(mod, target)
+    result = _run(mod, target, tool)
 
     assert "skipped" not in result, f"{tool} silenced a real daemon failure"
     assert result["ok"] is False
@@ -246,7 +262,7 @@ def test_a_stubbed_daemon_is_still_contacted_without_a_transport(
         lambda s, f: {"jsonrpc": "2.0", "id": 2,
                       "result": {"structuredContent": {"errors": [], "exit_code": 0}}})
 
-    _run(mod, target)
+    _run(mod, target, tool)
 
     assert contacted, (
         f"{tool} short-circuited before the injection seam — the suites that "
@@ -356,7 +372,7 @@ def test_an_adapter_without_a_transport_never_resolves_a_runtime_dir(
         lambda: (resolved.append(tool), real())[1])
     _no_windows_daemon_facilities(monkeypatch)
 
-    result = _run(mod, target)
+    result = _run(mod, target, tool)
 
     assert not resolved, (
         f"{tool} resolved the runtime dir on a build with no transport — that "

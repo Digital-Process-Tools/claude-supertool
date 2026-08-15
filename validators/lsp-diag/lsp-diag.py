@@ -23,6 +23,7 @@ import time
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.abspath(__file__)), os.pardir, "common"))
 from linebreaks import split_lines  # noqa: E402
+from refusal import guard_main  # noqa: E402
 
 
 def emit(obj: dict) -> None:
@@ -454,4 +455,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    guard_main("lsp-diag", main)
