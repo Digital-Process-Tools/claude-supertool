@@ -279,6 +279,14 @@ The remaining branch is a native Windows host with no Git for Windows, where the
 
 **That gap is disclosed rather than fixed, and the grades are these** ([#1401](https://github.com/Digital-Process-Tools/claude-supertool/issues/1401)). *Reasoned from Claude Code's own hook and setup documentation, not observed:* that shell form reaches PowerShell where Git Bash is absent, and that the `Bash` tool is absent on the same host. *Observed:* a bare `bash` under `CreateProcess` on the Windows runners is the WSL launcher, in this repository's own pytest. Nobody on this project has a Windows box, so every candidate repair was reasoning about an untestable host: `args` introduces the exec-form PATH search this section refuses, a second PowerShell entry breaks every POSIX session to serve one Windows one, and a shell string valid under both `sh -c` and PowerShell is a polyglot shipped to every user of the plugin on the strength of a Mac. The disclosure is the honest outcome, and it is what CI's twelve legs can never tell you either.
 
+### The shipped rule layer sits under the registry, and says what it is not
+
+The registry answers "which raw command does an op supersede". A second, much smaller layer answers what no `replaces` entry can reach at any spelling — piping an *op's own output* through `head`/`tail` is the one that ships ([#1698](https://github.com/Digital-Process-Tools/claude-supertool/issues/1698)). It is `hooks/shipped_rules.py`, read by the same PreToolUse hook, and it is consulted **only where `guard_command` returned no block**: a hand-written regex cannot express `unless_flag`, so it must never outrank the tokeniser that can.
+
+Two things it does not do, both deliberate. It does not fire in a repository that carries its own copy of the rule file at `.claude/jit-context/tools/00-manual/<name>.md` — layers are the ownership boundary, per rule, so a repo that wrote its own version is not refused twice with two different messages. And it does not ship the four sibling rules that would be a wrong block somewhere else: one encodes a squash-merge workflow, one names ops a caller's presets may not load, one fires on tools no shipped matcher covers, and one wants a once-per-session mode a PreToolUse hook cannot provide.
+
+`raw_command_guard: false` turns this layer off with the rest of the guard, because it is the same hook. **What it is not is silent about its own gaps:** `python3 hooks/guard-selftest.py` prints each shipped rule's state and each unshipped rule's reason, so "this repo does not have that rule" is something a reader can discover rather than something they find out by doing the thing the rule exists to stop.
+
 ## Compact mode
 
 Set `"compact": true` in `.supertool.json` to enable compact reads. When enabled, `read` ops skip blank lines and comment-only lines (`//`, `#`, `/* */`, `<!-- -->`, PHPDoc `*` lines), preserving original line numbers. Reduces token cost for exploration without losing structure.

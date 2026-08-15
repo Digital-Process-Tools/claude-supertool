@@ -191,6 +191,22 @@ Two things that table is not. It is **not git-only**: `glab` puts `--repo` / `-R
 
 The matcher tokenises the command with `shlex` and matches argv — see `_guard_segments` in `_supertool.py` for exactly which shell constructs it models and which it does not. That is the design decision [#1347](https://github.com/Digital-Process-Tools/claude-supertool/issues/1347) stands on: the hand-written regexes it replaced failed by reading a command as a string, one firing on a *directory name* and another refusing commands that carried the very flag it required.
 
+### `hooks/shipped_rules.py` — the rule `replaces` cannot express, shipped anyway
+
+Some things worth forbidding are not a raw command an op supersedes, so no `replaces` entry can reach them at any spelling. Five live in `.claude/jit-context/tools/00-manual/` as hand-written regexes, and until [#1698](https://github.com/Digital-Process-Tools/claude-supertool/issues/1698) all five were read by `claude-jit-context`'s hooks out of `$CLAUDE_PROJECT_DIR` — so they guarded sessions run inside this checkout and **no other repository**. Measured in `Digital-Process-Tools/claude-oss`, whose whole workflow is ops, `./supertool 'git-push' 2>&1 | tail -6` ran unblocked and the cut removed the two lines naming the repository that had been written to.
+
+`hooks/shipped_rules.py` is read by the PreToolUse hook `hooks/hooks.json` registers, so it reaches every plugin user in every repo. It does not copy the rules: `$CLAUDE_PLUGIN_ROOT/.claude/jit-context/` is part of every plugin install, so it reads the same markdown and the same `00-index.tsv` the jit hooks read here, translating the index's awk pattern into Python `re`.
+
+**Adding a rule to the shipped set is one entry in `SHIPPED`, and leaving it out is one entry in `NOT_SHIPPED` with the reason.** `tests/test_shipped_guard_rules_1698.py` partitions every `.md` in `00-manual/` into the two and goes red when a sixth belongs to neither — the same census `tests/test_replaces_census_1384.py` runs over the op registry, and for the same reason: a silent one-of-five and a considered one-of-five render identically.
+
+Three properties to know before you add one:
+
+- **Layers are the ownership boundary, per rule.** A project carrying its own `.claude/jit-context/tools/00-manual/<name>.md` owns that rule and the shipped one stands down for it. Without that, every supertool worktree would refuse the same command twice with two different messages — [#1376](https://github.com/Digital-Process-Tools/claude-supertool/issues/1376)'s option 3, killed rather than accepted for one release.
+- **A shipped rule never outranks the registry.** The regex cannot express "except when it carries `--dry-run`", which is what made three `block` rules refuse commands that performed nothing and name an op that would have performed it. So the hook consults a shipped rule only where `guard_command` returned no block.
+- **`deny` is the only verb, because the hook has no session memory.** A `remind` would be re-injected on every matching call instead of once per session, which is the silence-with-a-token-cost [#1413](https://github.com/Digital-Process-Tools/claude-supertool/issues/1413) declined to add. That is `op-defaults-that-narrow.md`'s recorded reason for staying local.
+
+**What does not ship is enumerated, not absent.** `python3 hooks/guard-selftest.py` prints every shipped rule with its state — enforcing, stood down for the project's own copy, or skipped with why — and then every rule that stays local with the reason it stays. A repository that does not get a rule can find out which and why; a guard that is quietly not there is worse than one that is loudly missing, which is the property `.claude/settings.json` already keeps when its own script is absent.
+
 ### An op that takes a path declares where paths may point
 
 Builtin ops have been gated since [#146](https://github.com/Digital-Process-Tools/claude-supertool/issues/146): `_PATH_ARG_POSITIONS` in `_supertool.py` says which argument slot is a path, and dispatch refuses one that resolves outside the cwd. **No preset op was in that table**, so until [#1287](https://github.com/Digital-Process-Tools/claude-supertool/issues/1287) a preset op with a path argument enforced containment itself or not at all — and "not at all" was the default for anything newly written. [#1283](https://github.com/Digital-Process-Tools/claude-supertool/issues/1283) was one instance of that: `claims:/etc/hosts` read the file in the same call that `read:/etc/hosts` refused it.
