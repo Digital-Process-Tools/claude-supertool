@@ -46,8 +46,10 @@ than inheriting `/tmp`'s mode.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -301,7 +303,220 @@ def state_dir_absence_note(state_dir: str, state: str, why: str) -> str:
     return ""
 
 
-def disclosure_lines(resolved: Resolved) -> list[str]:
+#: The five ops this preset ships. A `watch_name` in one op's `.supertool.json`
+#: block reaches only *that* op's subprocess (`_supertool.py`, "Extra config keys
+#: as environment variables"), so the set is what decides whether a project has
+#: configured its channel or only half of it. `watch` and `unwatch` are the two
+#: that spawn and kill pollers: a project that declares the name on `watches`
+#: alone reads a private board over a default-channel fleet, which is #1309's
+#: half-configured state arriving through the config door instead of the
+#: environment one.
+WATCH_OPS = ("channel", "radar", "unwatch", "watch", "watches")
+
+CONFIG_NAME = ".supertool.json"
+
+#: What a look at the project above the cwd established. Four states, and the
+#: last two are the reason this is not a boolean: `no-config` is a fact about the
+#: world — nothing here claims this channel — while `unreadable` is the admission
+#: that the question was not answered. Collapsing the second into the first
+#: prints a claim about ownership on the strength of a read that failed, which is
+#: the defect this repository files hardest against.
+DECLARED_FOUND = "found"
+DECLARED_SILENT = "silent"
+DECLARED_NO_CONFIG = "no-config"
+DECLARED_UNREADABLE = "unreadable"
+
+
+class Declared(NamedTuple):
+    """Which project claims the channel name, read from its own config.
+
+    Separate from `Resolved` and never consulted by it. The environment stays
+    authoritative for the same reason `resolve`'s precedence note gives: an
+    export is the value a *running* poller already captured, and letting a file
+    win would move the socket and the slot directory underneath a live fleet.
+    This answers a different question — *whose name is that* — and its only
+    consumer is a render.
+    """
+
+    state: str
+    #: The config that answered, or "" when none was found.
+    path: str
+    #: Every distinct `watch_name` declared, sorted. More than one is a project
+    #: whose own op blocks disagree.
+    names: tuple[str, ...]
+    #: The op blocks that declared one, sorted.
+    declaring_ops: tuple[str, ...]
+    #: The `WATCH_OPS` that declared none, sorted. Those resolve from the
+    #: environment alone.
+    silent_ops: tuple[str, ...]
+    #: Why `unreadable`, and "" otherwise.
+    why: str = ""
+
+
+def find_config(start_dir: str | None = None) -> tuple[str, str]:
+    """(the nearest `.supertool.json` at or above `start_dir`, why not).
+
+    The same upward walk the core does to decide which project an op belongs to,
+    reproduced here rather than imported: this module is loaded by a preset
+    subprocess that has no route back into the core, and the walk is a few lines.
+
+    **`os.path.isfile` is the wrong test here and that is the whole reason this
+    returns two values.** `genericpath.isfile` is an `os.stat` inside
+    `except (OSError, ValueError): return False`, so a directory in the walk that
+    this uid cannot traverse answers *there is no config here* in exactly the
+    words a directory that genuinely has none uses. The walk then keeps climbing
+    and `declared_names` reports `no-config` — a claim about the world built on a
+    look that failed, one level above the `open`/`json.load` pair that was
+    already careful to tell `unreadable` from absent. Raised in review of #1732
+    against this function's first version, which had it.
+    """
+    here = os.path.abspath(start_dir if start_dir is not None else os.getcwd())
+    while True:
+        candidate = os.path.join(here, CONFIG_NAME)
+        try:
+            if stat.S_ISREG(os.stat(candidate).st_mode):
+                return candidate, ""
+        except (FileNotFoundError, NotADirectoryError):
+            # The two shapes of "there is nothing here", on every platform CI
+            # runs. Anything else is a look that failed and is answered below.
+            pass
+        except OSError as err:
+            return "", (f"{_untrusted.flat(candidate, disclose_newline=True)} "
+                        f"could not be reached ({type(err).__name__})")
+        parent = os.path.dirname(here)
+        if parent == here:
+            return "", ""
+        here = parent
+
+
+def declared_names(start_dir: str | None = None) -> Declared:
+    """What the project above `start_dir` declares about the watch channel.
+
+    Reads a file, so it is deliberately not part of `resolve`, which is pure and
+    is imported by a detached poller. `transport.channel_disclosure` calls it on
+    the render path, where there is a reader.
+    """
+    path, unreachable = find_config(start_dir)
+    if unreachable:
+        return Declared(state=DECLARED_UNREADABLE, path="", names=(),
+                        declaring_ops=(), silent_ops=(), why=unreachable)
+    if not path:
+        return Declared(state=DECLARED_NO_CONFIG, path="", names=(),
+                        declaring_ops=(), silent_ops=tuple(WATCH_OPS))
+    try:
+        with open(path, encoding="utf-8") as handle:
+            doc = json.load(handle)
+    except (OSError, ValueError) as err:
+        return Declared(state=DECLARED_UNREADABLE, path=path, names=(),
+                        declaring_ops=(), silent_ops=(),
+                        why=type(err).__name__)
+    if not isinstance(doc, dict):
+        return Declared(state=DECLARED_UNREADABLE, path=path, names=(),
+                        declaring_ops=(), silent_ops=(),
+                        why=f"top level is {type(doc).__name__}, not an object")
+
+    ops = doc.get("ops")
+    blocks = ops if isinstance(ops, dict) else {}
+    declaring = {
+        op: block["watch_name"]
+        for op, block in blocks.items()
+        if isinstance(block, dict) and isinstance(block.get("watch_name"), str)
+        and block["watch_name"]
+    }
+    silent = tuple(sorted(set(WATCH_OPS) - set(declaring)))
+    if not declaring:
+        return Declared(state=DECLARED_SILENT, path=path, names=(),
+                        declaring_ops=(), silent_ops=silent)
+    return Declared(state=DECLARED_FOUND, path=path,
+                    names=tuple(sorted(set(declaring.values()))),
+                    declaring_ops=tuple(sorted(declaring)),
+                    silent_ops=silent)
+
+
+def _flat_list(values: tuple[str, ...]) -> str:
+    return ", ".join(_untrusted.flat(v, disclose_newline=True) for v in values)
+
+
+def project_notes(resolved: Resolved, declared: Declared | None) -> list[str]:
+    """Whose channel this is, for a board that used to render every fleet alike.
+
+    A name derives one socket and one poller-slot directory, so two projects
+    under one name are one fleet — events from one project's pollers arrive on
+    the other's channel, and each board reports a population that is not its own.
+    Every surface rendered that identically to a correct private fleet: the name,
+    the two paths, and no field naming an owner. The reported instance was four
+    repositories sharing one hand-copied `SUPERTOOL_WATCH_NAME` in one machine's
+    `settings.local.json` (#1732).
+
+    Silent when there is nothing to say — no name in force and nothing declared
+    is the default channel, and a banner on every board is one nobody reads
+    (#1495). Nothing here changes what is in force; a render cannot, and should
+    not, move a live fleet's paths.
+
+    Every value below is flattened. The name arrives from a file this process did
+    not write and the path from directory names an operator chose, and both land
+    at column 0 on `watches`' board, where a newline used to be able to forge a
+    row (#1423/#1522).
+    """
+    if declared is None or not resolved.name:
+        # **Only a named channel has an owner to dispute.** The default paths are
+        # shared by construction and `README.md` says so, so "whose is this" has
+        # no answer worth a line there. The tempting extra case — a project that
+        # declares a name nothing exported — is dropped on purpose, twice over:
+        # it is nearly unreachable, because a `watch_name` in an op's block
+        # arrives at *that* op as `SUPERTOOL_WATCH_NAME` with no launcher
+        # involved, so the op whose block declares it always has it in force; the
+        # reachable half is an op whose own block is silent, which `silent_ops`
+        # reports from the declaring side and reports better. Measured cost of
+        # printing it anyway: twelve exact-stdout board tests in four unrelated
+        # suites gained a banner, which is the "banner nobody reads" #1495
+        # refused, arriving as churn.
+        return []
+    name = _untrusted.flat(resolved.name)
+
+    out: list[str] = []
+    where = _untrusted.flat(declared.path, disclose_newline=True)
+    if declared.state == DECLARED_UNREADABLE:
+        # `path` is "" when the *walk* failed rather than the parse, and there
+        # `why` already names the path it could not reach. One branch, so the
+        # two ways of not knowing read as the same answer, which they are.
+        what = (f"{where} could not be read ({declared.why})" if where
+                else declared.why)
+        return [f"{what}, so which project claims {name} is unknown — "
+                f"not unclaimed"]
+    if declared.state == DECLARED_NO_CONFIG:
+        return [f"no {CONFIG_NAME} at or above this directory, so nothing here "
+                f"claims the name {name} — this socket and these poller slots "
+                f"may be another project's fleet"]
+    if declared.state == DECLARED_SILENT:
+        return [f"{where} declares no watch_name in any op block, so {name} came "
+                f"from the environment — this socket and these poller slots may "
+                f"be another project's fleet"]
+
+    theirs = _flat_list(declared.names)
+    if resolved.name not in declared.names:
+        out.append(f"{name} is in force but {where} declares {theirs} — this is "
+                   f"not this project's channel, and its socket and poller slots "
+                   f"are shared with whatever exported {NAME_ENV}")
+    elif len(declared.names) > 1:
+        out.append(f"op blocks in {where} disagree about watch_name ({theirs}) — "
+                   f"{name} is in force, so the ops declaring the others are on "
+                   f"a channel this board is not about")
+    else:
+        out.append(f"name {name} is declared by {where} "
+                   f"(ops: {_flat_list(declared.declaring_ops)}) — this "
+                   f"project's own channel")
+
+    if declared.silent_ops:
+        out.append(f"watch ops declaring no watch_name: "
+                   f"{_flat_list(declared.silent_ops)} — those resolve from the "
+                   f"environment alone, so this project's board and its pollers "
+                   f"can end up on different channels")
+    return out
+
+
+def disclosure_lines(resolved: Resolved,
+                     declared: Declared | None = None) -> list[str]:
     """The channel this process is on, for any surface that renders a board.
 
     `[]` when there is nothing to say — the default paths, no override, no
@@ -335,6 +550,7 @@ def disclosure_lines(resolved: Resolved) -> list[str]:
     if resolved.refusal:
         out.append(resolved.refusal)
     out.extend(resolved.notes)
+    out.extend(project_notes(resolved, declared))
     return out
 
 

@@ -893,6 +893,12 @@ def _channel_lines(path: str, resolved: naming.Resolved) -> list[str]:
     if resolved.refusal:
         body.append(resolved.refusal)
     body.extend(resolved.notes)
+    # Whose name this is (#1732). `channel:health` builds its own body rather
+    # than going through `transport.channel_disclosure` — it indents every line
+    # into the report's column — so the attribution has to be asked for here too,
+    # or the one surface an operator opens when they suspect a shared channel is
+    # the one that does not say.
+    body.extend(naming.project_notes(resolved, naming.declared_names()))
     body.extend(consumer_lines(resolved))
     if not body:
         return []
