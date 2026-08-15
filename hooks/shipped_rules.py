@@ -44,7 +44,11 @@ from collections import namedtuple
 #: rule file -> the wire verb it is enforced with. `deny` only: the wrapper
 #: has no session memory, so a `remind` would be re-injected on every matching
 #: call rather than once, and a note under every call anyone writes is one
-#: nobody reads — the reasoning `_may_be_replaced` already applies.
+#: nobody reads — the reasoning `_may_be_replaced` already applies. That is
+#: about a *healthy* install noting forever by design, and is not what the
+#: broken-index disclosure in `match` does: that one fires only where this
+#: module's own shipped tree is defective and stops when it is repaired, which
+#: is the trade `hooks/pre-bash-guard.sh`'s `decline` already makes.
 SHIPPED = {
     "supertool-no-cut.md": "deny",
 }

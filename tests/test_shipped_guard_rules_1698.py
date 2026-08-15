@@ -219,6 +219,52 @@ def test_a_broken_shipped_index_is_a_note_not_silence(tmp_path: Path) -> None:
     assert "supertool-no-cut.md" in text, text
 
 
+def test_the_broken_index_note_rides_on_every_command_deliberately(
+        tmp_path: Path) -> None:
+    """A reviewer called this over-firing. It is, and it is the right cost.
+
+    `echo hello` shares nothing with `supertool-no-cut`'s subject and still
+    gets the disclosure, because the pattern that would have decided is the
+    thing that failed to compile — there is nothing left to screen with. The
+    module's own `SHIPPED` comment refuses a note under every call, and this
+    is not that: `op-defaults-that-narrow` would note on every call in a
+    *healthy* install, forever, by design; this fires only in a **defective**
+    one and stops the moment the index is repaired. That is the difference
+    between a permanent tax and a defect alarm, and it is the trade
+    `hooks/pre-bash-guard.sh`'s own `decline` already makes — it fires on
+    `echo hello` too when no interpreter answers.
+
+    The condition cannot arrive from this repository:
+    `test_the_shipped_tree_honours_every_rule_it_claims_to_ship` below is the
+    write-time gate, the same place #1254 put a dead jit escape.
+    """
+    manual = tmp_path / ".claude" / "jit-context" / "tools" / "00-manual"
+    manual.mkdir(parents=True)
+    (manual / "00-index.tsv").write_text(
+        "Bash\t~[[:alpha:]]+\tsupertool-no-cut.md\tblock\t\t\n",
+        encoding="utf-8")
+    (manual / "supertool-no-cut.md").write_text("---\nx: 1\n---\nbody\n",
+                                                encoding="utf-8")
+    answer = shipped_rules.match("echo hello unrelated command",
+                                 str(tmp_path), str(_project(tmp_path)))
+    assert answer is not None and answer[0] == "note", answer
+
+
+def test_the_shipped_tree_honours_every_rule_it_claims_to_ship() -> None:
+    """The gate that keeps the note above unreachable from a release.
+
+    A `SHIPPED` name with no index row, a row whose mode disagrees with the
+    verb, a pattern that does not translate, a body that is not on disk — each
+    is a rule that looks shipped and is not, and each would reach every plugin
+    user as a note on every Bash call. Caught here instead, at the same point
+    #1254 catches a jit escape awk cannot compile.
+    """
+    rules, skipped = shipped_rules.load(str(_ROOT))
+    assert skipped == [], skipped
+    assert sorted(rule.name for rule in rules) == sorted(
+        shipped_rules.SHIPPED), rules
+
+
 def test_an_install_with_no_rule_layer_at_all_stays_quiet(
         tmp_path: Path) -> None:
     """The control for the row above, and the reason it is not `skipped`.
