@@ -147,6 +147,13 @@ class FakeConsumer:
         #: Connections accepted and deliberately never drained, kept open for
         #: the lifetime of the fixture. See `_serve`.
         self.held = []
+        #: The fixture's own third state (#1758). `lines_read == 0` has two
+        #: readings — nothing was sent, or the read raised and nobody heard —
+        #: and a test whose premise is the first passes under the second unless
+        #: the harness can say which it hit. Every test below that depends on
+        #: the read path asserts this is empty, so a broken harness fails
+        #: loudly instead of satisfying a negative assertion for free.
+        self.errors = []
         self.started = _stamp()
         self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.srv.bind(path)
@@ -205,8 +212,18 @@ class FakeConsumer:
                         if not chunk:
                             break
                         buf += chunk
-                except OSError:
-                    pass
+                except OSError as err:
+                    # Recorded, not swallowed (#1758). This is the one `except`
+                    # in the fixture that is NOT teardown: it guards the read
+                    # path, which is the thing every counter assertion in this
+                    # file is about. A bare `pass` here gives the harness two
+                    # indistinguishable ways to report `lines_read == 0` — the
+                    # consumer did not read, and the consumer could not be
+                    # heard — and the second one passes the tests whose premise
+                    # is the first. That is this file's own subject turned on
+                    # its own scaffolding, and it is a near neighbour of the
+                    # BrokenPipeError fixture bug already fixed above.
+                    self.errors.append(f"{type(err).__name__}: {err}")
                 for line in buf.split(NL):
                     if not line.strip():
                         continue
@@ -220,22 +237,59 @@ class FakeConsumer:
                     self.publish()
 
     def close(self) -> None:
+        """Teardown, and every `except OSError` below is teardown-only (#1758).
+
+        The distinction from the one in `_serve` is the whole answer to that
+        review: nothing here can make an assertion pass. This runs after the
+        serve thread has been stopped and joined, no test reads any of these
+        results, and each descriptor is already known-dead to the only peer
+        that ever held it — the probe, which is a finished subprocess or a
+        returned function call by the time anything gets here.
+
+        What a failure would cost is a leaked file in the system temp
+        directory, and not a wrong verdict: `_sock_path()` keys on pid *and*
+        `time.time_ns()`, so a socket or health file that outlives its fixture
+        cannot be picked up by another test. Raising instead would be actively
+        worse — it would replace a real assertion failure with a teardown
+        error raised from the `finally` that was trying to report it.
+        """
         self._stop.set()
         self.thread.join(timeout=5)
         for conn in self.held:
             try:
                 conn.close()
             except OSError:
-                pass
+                pass  # teardown: the peer is gone, and nothing reads this
         try:
             self.srv.close()
         except OSError:
-            pass
+            pass  # teardown: an unclosable listener outlives the process anyway
         for path in (self.path, self.health_path):
             try:
                 os.unlink(path)
             except OSError:
-                pass
+                pass  # teardown: a leaked temp file, and the names are unique
+
+
+def _harness_was_heard(consumer: FakeConsumer) -> None:
+    """The fixture's read path raised nothing, so its counters mean what they say.
+
+    Called in every test that builds a `FakeConsumer`, and it is the reason
+    `_serve` records an `OSError` instead of swallowing one (#1758). Two tests
+    here have `lines_read == 0` as their *premise* — the wedged reader, and the
+    cold baseline that stays cold — and that number has two causes: nothing
+    arrived, or the read raised and nobody heard. Without this, a harness that
+    broke would satisfy those assertions for free, which is precisely the
+    failure the op under test exists to refuse, wearing the test suite as a
+    costume.
+
+    Deliberately not folded into `close()`: that runs in a `finally`, so an
+    assertion there would fire *instead of* whatever real failure the block was
+    trying to report.
+    """
+    assert not consumer.errors, (
+        "the fixture's own read path raised, so its counters are not evidence "
+        f"either way: {consumer.errors}")
 
 
 def _run_probe(sock: str, extra_env=None, sub: str = "probe"):
@@ -280,6 +334,7 @@ def test_probe_reports_forwarded_when_the_consumer_advances_its_counter(tmp_path
         result = _run_probe(path, {"SUPERTOOL_WATCH_STATE_DIR": str(tmp_path)})
     finally:
         consumer.close()
+    _harness_was_heard(consumer)
     assert result.returncode == channel.RC_FORWARDING, result.stdout + result.stderr
     assert result.stdout.startswith("channel: FORWARDED"), result.stdout
     assert consumer.forwarded == 1, "the fixture never saw the probe's event"
@@ -297,6 +352,7 @@ def test_probe_never_renders_forwarded_as_delivered(tmp_path):
         result = _run_probe(path, {"SUPERTOOL_WATCH_STATE_DIR": str(tmp_path)})
     finally:
         consumer.close()
+    _harness_was_heard(consumer)
     body = result.stdout.lower()
     assert "delivered" not in body, result.stdout
     assert "delivery" not in body, result.stdout
@@ -314,6 +370,7 @@ def test_probe_names_the_tag_the_caller_should_now_look_for(tmp_path):
         result = _run_probe(path, {"SUPERTOOL_WATCH_STATE_DIR": str(tmp_path)})
     finally:
         consumer.close()
+    _harness_was_heard(consumer)
     assert transport.PROBE_SOURCE in result.stdout
     assert "watcher_source" in result.stdout, result.stdout
     assert consumer.lines_read == 1
@@ -348,6 +405,7 @@ def test_probe_writes_no_watcher_state_file(tmp_path):
         result = _run_probe(path, {"SUPERTOOL_WATCH_STATE_DIR": str(state_dir)})
     finally:
         consumer.close()
+    _harness_was_heard(consumer)
     assert result.returncode == channel.RC_FORWARDING, result.stdout + result.stderr
     left = sorted(p.name for p in state_dir.iterdir())
     assert left == [], f"the probe left {left} in the poller state directory"
@@ -383,6 +441,7 @@ def test_probe_reports_a_finding_when_the_line_is_read_and_not_forwarded():
         code, report = channel.probe(path, wait=1.5)
     finally:
         consumer.close()
+    _harness_was_heard(consumer)
     assert consumer.lines_read == 1, "the fixture never read the probe's event"
     assert code == channel.RC_PROBE_NOT_FORWARDED, report
     assert report.startswith("channel: ACCEPTED, NOT FORWARDED"), report
@@ -399,6 +458,7 @@ def test_probe_names_the_discard_when_dropped_is_what_moved():
         code, report = channel.probe(path, wait=1.5)
     finally:
         consumer.close()
+    _harness_was_heard(consumer)
     assert consumer.dropped == 1
     assert code == channel.RC_PROBE_DISCARDED, report
     assert report.startswith("channel: ACCEPTED, DISCARDED"), report
@@ -416,6 +476,7 @@ def test_probe_declines_when_the_consumer_never_reads_the_line():
         code, report = channel.probe(path, wait=0.8)
     finally:
         consumer.close()
+    _harness_was_heard(consumer)
     assert consumer.lines_read == 0
     assert code == channel.RC_UNKNOWN, report
     assert report.startswith("channel: CANNOT DETERMINE"), report
@@ -487,6 +548,7 @@ def test_a_cold_baseline_that_warms_and_advances_is_a_definite_positive():
         code, report = channel.probe(path, wait=2.0)
     finally:
         consumer.close()
+    _harness_was_heard(consumer)
     assert consumer.forwarded == 1, "the fixture never forwarded the probe's event"
     assert code == channel.RC_FORWARDING, report
     assert report.startswith("channel: FORWARDED"), report
@@ -507,6 +569,7 @@ def test_a_cold_baseline_that_stays_cold_is_still_not_a_verdict():
         code, report = channel.probe(path, wait=0.8)
     finally:
         consumer.close()
+    _harness_was_heard(consumer)
     assert code == channel.RC_UNKNOWN, report
     assert report.startswith("channel: CANNOT DETERMINE"), report
     assert "refreshed" in report or "stale" in report, report

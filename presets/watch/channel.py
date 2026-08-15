@@ -1608,10 +1608,19 @@ def probe(path: str, *, wait: float = PROBE_WAIT_SECS) -> tuple[int, str]:
     base_read = _counter(before, "lines_read")
 
     started = time.monotonic()
-    waited = 0.0
-    after: dict | None = None
-    after_why = ""
-    after_objection = ""
+    # No pre-loop defaults for the four names the loop binds, and that is a
+    # decision rather than a tidy-up (#1758, where a bot flagged `waited = 0.0`
+    # as merely unnecessary). The loop is `while True` with no `continue`, so
+    # its first three statements bind all four before anything reads them and
+    # every default was dead. What a default would buy is worse than nothing:
+    # `waited` is printed as a measured duration, so a restructure that skipped
+    # the assignment would render a wait nobody performed as `after 0.0s`, and
+    # `after_why` an empty one as a reason-less reason. Unbound is an
+    # `UnboundLocalError` on the first CI run; defaulted is a measurement this
+    # op never made, printed as one it did — the exact defect this op exists to
+    # refuse, rebuilt in its own bookkeeping. `after` keeps its annotation
+    # because the type is worth stating; a bare annotation binds no value.
+    after: dict | None
     while True:
         after, after_why = read_health(path)
         after_objection = "" if after is None else _health_objection(after)
