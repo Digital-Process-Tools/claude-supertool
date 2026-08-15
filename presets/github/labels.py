@@ -37,7 +37,7 @@ names, only where at least two labels share a prefix (a family of one is not a
 family), and the header states that it was derived.
 
 **`tally=PREFIX` answers the burn-down instead of the vocabulary** (#1084).
-The rolling-cohort rule in `/opensource-manager` turns on one comparison — *is
+The rolling-cohort rule in `/oss:manager` turns on one comparison — *is
 each cohort smaller than the last?* — and it is a group-by over one label
 family, which nothing rendered. So every tick produced the same thirty
 characters of `gh issue list --json labels -q 'group_by'`, rewritten from

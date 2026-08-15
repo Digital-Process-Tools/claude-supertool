@@ -1,6 +1,7 @@
 """#1220 — a document's references go stale silently.
 
-`.claude/skills/opensource-manager/SKILL.md` told the maintainer, under a
+This repo's own maintainer skill — deleted in #1729, quoted in `CHANGELOG.md`
+under #1220 — told the maintainer, under a
 bullet headed "Two genuine gaps", that no op rendered a commit's run list and
 nothing tallied label distribution. Both had shipped. The same file records the
 same failure with `repo:` months earlier. A wrong claim in your own notes does

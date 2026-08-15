@@ -1,6 +1,6 @@
 """#1084 — the cohort burn-down was thirty characters of jq, every tick.
 
-`/opensource-manager` must report the rolling-cohort count and its delta on
+`/oss:manager` must report the rolling-cohort count and its delta on
 every tick, and the whole mechanism is one comparison: *is each cohort smaller
 than the last?* That is a group-by over one label family, and no op did it, so
 it came out as a `gh issue list --json labels -q 'group_by'` pipeline rewritten

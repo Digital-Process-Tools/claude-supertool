@@ -1,7 +1,7 @@
 """#1628 — the burn-down's open column must not cost a search per label.
 
 `gh-labels:tally=cohort-` is the designated source for a number
-`/opensource-manager` orders reported every tick. On 2026-08-13 it refused at 15
+`/oss:manager` orders reported every tick. On 2026-08-13 it refused at 15
 labels; on 2026-08-14, past the escape hatch at 16, it returned **34 of 34 cells
 UNKNOWN** — the family cost `2N + 2` search calls against an API allowing 30 a
 minute, and the family grows by one label per release. There is no future state

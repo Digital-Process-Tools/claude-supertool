@@ -184,7 +184,7 @@ CHANNEL_FLAG = "--dangerously-load-development-channels"
 TAG_PREFIX = "server:"
 
 #: `claude mcp get NAME` is the harness's own answer to "is NAME configured" —
-#: the same question `bin/supertool-workspace` asks before registering the
+#: the same question `bin/oss-workspace` asks before registering the
 #: consumer, so this op and the launcher cannot disagree about it. It is read
 #: for its EXIT CODE; the only prose consulted is the refusal that distinguishes
 #: "no such server" from "the lookup failed", and anything else is the third
@@ -795,7 +795,7 @@ def consumer_lines(resolved: naming.Resolved,
     **The fourth surface has two routes, and only one of them is checkable
     here (#1541).** An `.mcp.json` `env` block is a declaration this op can read
     and compare. An environment variable exported by whatever launched the
-    session — what `bin/supertool-workspace` does, and the only route that does
+    session — what `bin/oss-workspace` does, and the only route that does
     not write a single checkout's private name into an artifact every user
     installs — is not: the consumer inherits the session's environment, and this
     process only has its own, which carries whatever supertool injected from
@@ -853,7 +853,7 @@ def consumer_lines(resolved: naming.Resolved,
                 f"consumer inherits it from the session that spawned it")
             inherits.append(
                 f"that environment is not readable from here: "
-                f"`bin/supertool-workspace` exports {naming.NAME_ENV}, and a "
+                f"`bin/oss-workspace` exports {naming.NAME_ENV}, and a "
                 f"session started any other way leaves the consumer on "
                 f"{naming.DEFAULT_SOCK} while this process reads "
                 f"{naming.flat_path(resolved.sock)}")

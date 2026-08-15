@@ -24,7 +24,9 @@ COULDN'T CHECK
 
 ## Why it exists
 
-`.claude/skills/opensource-manager/SKILL.md` told the maintainer, in a bullet
+This repo's own maintainer skill — since deleted in favour of the `oss` plugin's
+(#1729), but the sentence survives in `CHANGELOG.md` under #1220 — told the
+maintainer, in a bullet
 headed **"Two genuine gaps"**, that no op rendered a commit's run list and that
 nothing tallied label distribution. Both had shipped — `gh-branch:COMMIT_SHA`
 (#1083) and `gh-labels:tally=PREFIX` (#1084) — and the second is the cohort
