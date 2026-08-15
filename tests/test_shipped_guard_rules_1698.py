@@ -179,6 +179,60 @@ def test_a_missing_rule_directory_is_skipped_not_clean(tmp_path: Path) -> None:
     assert skipped, "an install with no rule files must say so"
 
 
+def test_an_index_that_is_not_utf8_declines_rather_than_raising(
+        tmp_path: Path) -> None:
+    """`open(encoding="utf-8")` raises `UnicodeDecodeError`, not `OSError`.
+
+    A narrow `except OSError` never fires on it, the exception leaves `load`,
+    and the caller's own `except Exception` turns a broken index into
+    `nothing matched` — the guard's whole defect class, inside the guard.
+    """
+    manual = tmp_path / ".claude" / "jit-context" / "tools" / "00-manual"
+    manual.mkdir(parents=True)
+    (manual / "00-index.tsv").write_bytes(
+        b"Bash" + b"\t" + b"~a" + b"\t" + b"x.md" + b"\t" + b"block\xff\n")
+    rules, skipped = shipped_rules.load(str(tmp_path))
+    assert rules == []
+    assert skipped, "an index that could not be decoded must say so"
+
+
+def test_a_broken_shipped_index_is_a_note_not_silence(tmp_path: Path) -> None:
+    """The finding an auditor raised on the first cut of this change.
+
+    `match` dropped `load`'s skip notes, so a rule that is indexed, named in
+    `SHIPPED` and impossible to honour returned the same `None` as a command
+    nothing claimed. That is an absence produced by the tool read as an
+    absence in the world, shipped inside the thing that exists to stop it.
+    """
+    manual = tmp_path / ".claude" / "jit-context" / "tools" / "00-manual"
+    manual.mkdir(parents=True)
+    (manual / "00-index.tsv").write_text(
+        "Bash\t~[[:alpha:]]+\tsupertool-no-cut.md\tblock\t\t\n",
+        encoding="utf-8")
+    (manual / "supertool-no-cut.md").write_text("---\nx: 1\n---\nbody\n",
+                                                encoding="utf-8")
+    answer = shipped_rules.match(_PIPED, str(tmp_path),
+                                 str(_project(tmp_path)))
+    assert answer is not None, "a rule that could not be honoured said nothing"
+    verb, text = answer
+    assert verb == "note", answer
+    assert "supertool-no-cut.md" in text, text
+
+
+def test_an_install_with_no_rule_layer_at_all_stays_quiet(
+        tmp_path: Path) -> None:
+    """The control for the row above, and the reason it is not `skipped`.
+
+    A plugin root that carries no rule directory is an install without the
+    layer, not a layer that is broken. A note there would be attached to every
+    Bash call anyone ever makes, forever, which is the silence-with-a-token-
+    cost #1413 declined to add — and `hooks/guard-selftest.py` is the surface
+    that reports it, the same division #1378 settled for the hook as a whole.
+    """
+    assert shipped_rules.match(_PIPED, str(tmp_path),
+                               str(_project(tmp_path))) is None
+
+
 # --- the inventory: a repo without the rules gets a statement --------------
 
 def test_the_inventory_names_every_rule_and_every_absence(
@@ -228,14 +282,15 @@ def test_the_inventory_is_ascii_so_a_cp1252_console_can_print_it(
 
 # --- end to end, through the file Claude Code actually runs ----------------
 
-def _hook(command: str, project: Path, tmp_path: Path):
+def _hook(command: str, project: Path, tmp_path: Path,
+          tool_name: str = "Bash"):
     """The house idiom: inherit the environment and override two keys.
 
     A hand-built `env` would need a portable `PATH`, and there is no such
     literal — `/usr/bin:/bin` is a POSIX assertion that would take the
     `windows-latest` legs down with it.
     """
-    payload = json.dumps({"tool_name": "Bash",
+    payload = json.dumps({"tool_name": tool_name,
                           "tool_input": {"command": command}})
     env = dict(os.environ)
     env["CLAUDE_PLUGIN_ROOT"] = str(_ROOT)
@@ -259,6 +314,22 @@ def test_the_hook_says_nothing_about_the_unpiped_op(tmp_path: Path) -> None:
     project = _project(tmp_path)
     hook = _hook(_UNPIPED, project, tmp_path)
     assert "permissionDecision" not in hook, hook
+
+
+@pytest.mark.parametrize("command,denies", [(_PIPED, True), (_UNPIPED, False)])
+def test_the_powershell_route_gets_the_same_answer(
+        tmp_path: Path, command: str, denies: bool) -> None:
+    """Wherever the PowerShell tool is enabled Claude routes shell commands
+    through it, and a hook that never fires there reads exactly like one that
+    fired and approved (#1413). The registry declines that route because its
+    tokeniser is POSIX; a shipped rule is a regex over the command text, so it
+    reads this shell as well as it reads Bash and does not decline. The
+    `False` row is the control: without it this passes on a layer that denies
+    every PowerShell call.
+    """
+    hook = _hook(command, _project(tmp_path), tmp_path,
+                 tool_name="PowerShell")
+    assert (hook.get("permissionDecision") == "deny") is denies, hook
 
 
 @pytest.mark.parametrize("enabled,denies", [(False, False), (True, True)])

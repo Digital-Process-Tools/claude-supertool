@@ -356,8 +356,15 @@ def main() -> int:
             shipped = shipped_rules.match(
                 command, root,
                 os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-        except Exception:  # pragma: no cover - defensive
-            shipped = None
+        except Exception as exc:  # pragma: no cover - defensive
+            # Not `None`. `None` here means "no shipped rule claims this
+            # command", and a layer that crashed must not borrow that
+            # sentence - it is the same envelope a compliant command gets.
+            shipped = ("note",
+                       "supertool's shipped rule layer raised "
+                       + type(exc).__name__ + ": " + str(exc)
+                       + ". The command was allowed - this is a statement "
+                         "about the rule layer, not about the command.")
 
     # Before the import, because the import is the cost (#1377). Ordered
     # cheapest-first: the two regex screens decide most commands without ever

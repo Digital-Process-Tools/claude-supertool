@@ -138,7 +138,12 @@ def load(root: str):
     try:
         with open(index, encoding="utf-8") as handle:
             raw = handle.read()
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        # `ValueError` and not `OSError` alone: an index that is not UTF-8
+        # raises `UnicodeDecodeError`, which is a `ValueError`. A narrower
+        # clause never fires on it, the exception leaves this function, and
+        # the caller turns a corrupt index into "nothing matched" — the
+        # guard's own defect class, inside the guard.
         return [], [_skip(
             _INDEX,
             "could not be read at " + directory + " (" + str(exc)
@@ -213,7 +218,7 @@ def _body(rule: Rule):
     try:
         with open(rule.path, encoding="utf-8") as handle:
             text = handle.read()
-    except OSError:
+    except (OSError, ValueError):
         return None
     lines = text.splitlines()
     if lines and lines[0].strip() == "---":
@@ -233,7 +238,7 @@ def match(command: str, plugin_root: str, project_dir: str):
     a pattern tuned against that matcher must not become case-sensitive by
     changing which engine reads it.
     """
-    rules, _skipped = load(plugin_root)
+    rules, skipped = load(plugin_root)
     lowered = command.lower()
     for rule in rules:
         if not rule.regex.search(lowered):
@@ -251,6 +256,26 @@ def match(command: str, plugin_root: str, project_dir: str):
                 + ". The command was allowed - this is a statement about the "
                 "rule, not about the command.")
         return rule.verb, text
+
+    if skipped and os.path.isfile(
+            os.path.join(rule_directory(plugin_root), _INDEX)):
+        # **Three states, and this is the third.** A rule that is indexed,
+        # named in `SHIPPED` and impossible to honour used to return the same
+        # `None` as a command nothing claimed — a rule that looks shipped and
+        # is not, which is the whole shape #1698 was filed about, reproduced
+        # inside its own fix.
+        #
+        # Bounded to an install whose index is *present*. A plugin root with
+        # no rule directory carries no layer rather than a broken one, and a
+        # note there would ride on every Bash call anyone ever makes;
+        # `hooks/guard-selftest.py` reports that half, which is the division
+        # #1378 already settled for the hook as a whole.
+        return "note", (
+            "supertool ships guard rules the `replaces` registry cannot "
+            "express, and this install could not honour "
+            + str(len(skipped)) + " of them: " + "; ".join(skipped)
+            + ". The command was allowed - this is a statement about the "
+            "rule layer, not about the command.")
     return None
 
 
