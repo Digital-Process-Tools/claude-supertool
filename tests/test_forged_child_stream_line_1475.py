@@ -58,6 +58,15 @@ gh_pr = _load("presets/github/pr.py", "github_pr_1475")
 SEP = chr(0x2028)
 ESC = chr(0x1b)
 
+#: The two spellings `_untrusted.visible` has for a tab. Unlike U+2028, a tab is
+#: in C0 and therefore has a Control Picture, so which of the two a render emits
+#: depends on the stream rather than on the code under test. Under pytest
+#: `sys.stdout` names utf-8, so a re-flattened tab here spells `TAB_PICTURE` --
+#: and the `"0009" not in body` this replaces was the one spelling that could
+#: not arrive (#1736).
+TAB_ASCII = "[U+0009]"
+TAB_PICTURE = chr(0x2409)
+
 FORGED_RESULT = "[result] 1 op run, 1 write"
 FORGED_STATUS = "Status: COMMITTED"
 MARKERS = ("[result]", "Status:", "First error:", "HEAD after:")
@@ -166,10 +175,22 @@ def test_a_tab_survives_the_commit_relay() -> None:
     """The other half of #1448's trade, pinned so it is not re-flattened."""
     tab = chr(9)
     body = chr(10).join(commit._failure_receipt(
-        _completed(stdout="PASS" + tab + "tests/test_a.py"),
+        _completed(stdout="PASS" + tab + "tests/test_a.py" + chr(10)
+                   + "and a separator" + SEP + "here"),
         head_before="a" * 7, head_after="a" * 7))
     assert "PASS" + tab + "tests/test_a.py" in body
-    assert "0009" not in body
+    # Both spellings, not the ASCII one alone. `_stream()` reads
+    # `sys.stdout.encoding`, which under pytest is utf-8, so a receipt that
+    # re-flattened this tab would spell it `TAB_PICTURE` and `"0009" not in
+    # body` would have gone green on exactly the regression it was written for
+    # -- an absence produced by the assertion, read as an absence in the render
+    # (#1736). The four hex characters are also four a sha carries (#1691).
+    assert TAB_ASCII not in body, body
+    assert TAB_PICTURE not in body, body
+    # must-fire, same receipt: the separator on the child's second line *is*
+    # disclosed, so the two assertions above say "the tab was kept" rather than
+    # "nothing from the child reached the relay".
+    assert_disclosed(body)
 
 # ---------------------------------------------------------------------------
 # the detector: nothing stopped the eighth

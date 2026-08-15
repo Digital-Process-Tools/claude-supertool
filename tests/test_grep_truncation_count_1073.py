@@ -134,11 +134,30 @@ def test_context_mode_ceiling_is_the_ceiling_not_whatever_it_overshot_to(
     `ceiling + 1` exactly and a missing clamp is off by one rather than by 26.
     """
     monkeypatch.setenv("SUPERTOOL_GREP_COUNT_CEILING", "4")
-    head = _header(_supertool.op_grep("needle", _tree(tmp_path, 30), limit=2,
+    tree = _tree(tmp_path, 30)
+    head = _header(_supertool.op_grep("needle", tree, limit=2,
                                       context=1, no_auto_read=True))
     assert "4+ matches total" in head, head
     assert "count capped at 4" in head, head
-    assert "30" not in head, head
+
+    # The two fields the receipt attributes to counting, spelled the way the
+    # unclamped `seen` would have spelled them and built from the same renderer
+    # rather than from a literal. A bare `"30" not in head` is also satisfied --
+    # or falsified -- by the results count, the scanned-files count, the `limit`
+    # or the `context`, none of which this test is about, and it stops meaning
+    # anything the day the walk overshoots to some other number (#1736).
+    ceiling = _supertool._grep_count_ceiling(2)
+    seen = sum(1 for g in _supertool._grep_recursive_context(
+        "needle", tree, ceiling + 1, 1, ()) for line in g if line[2] == "match")
+    unclamped = _supertool._truncation_suffix(True, total=seen, capped=True)
+    floor, cap = f"{seen}+ matches total", f"count capped at {seen}"
+    # must-fire: those are the current spellings of the two fields, so a renamed
+    # or dropped field reddens here instead of quietly making the two assertions
+    # below pass for a second reason.
+    assert floor in unclamped and cap in unclamped, unclamped
+    assert seen > ceiling, (seen, ceiling)
+    assert floor not in head, head
+    assert cap not in head, head
 
 
 def test_context_mode_overshoots_the_ceiling_so_the_clamp_is_load_bearing(

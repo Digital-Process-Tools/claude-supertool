@@ -104,8 +104,25 @@ def test_a_pr_that_only_mentions_the_number_is_not_reported_as_linked(monkeypatc
         returncode=0, stdout=_graphql_payload([]), stderr="",
     ))
 
-    assert "774" not in out
+    # `#774` is how the listing spells a linked PR -- the field the receipt
+    # attributes to the thing under test. A bare `"774" not in out` is equally
+    # satisfied by a render that printed nothing at all, and equally falsified
+    # by three digits landing anywhere else in the section (#1736).
+    assert "#774" not in out
     assert "none" in out.lower()
+
+    # must-fire, same fixture: the identical render *does* name #774 when the
+    # API returns it as an actual closer. So the absence above means "the
+    # mentioner never entered the response", which is the claim, rather than
+    # "this section renders nothing".
+    named = _linked_section(monkeypatch, lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=_graphql_payload([
+            {"number": 774, "title": "fix: a different thing",
+             "state": "MERGED", "headRefName": "fix/774"},
+        ]), stderr="",
+    ))
+    assert "#774" in named
+    assert "none" not in named.lower()
 
 
 # --- item 3: false negative -------------------------------------------------
