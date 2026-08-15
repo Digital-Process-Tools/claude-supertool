@@ -61,7 +61,7 @@ if os.path.dirname(_HERE) not in sys.path:
     sys.path.insert(0, os.path.dirname(_HERE))
 
 from _git_common import (  # noqa: E402
-    _git, use_utf8_stdout, query_open_prs_by_branch,
+    _git, _git_verbatim, use_utf8_stdout, query_open_prs_by_branch,
     query_merged_prs_for_branches,
     foreign_worktree, foreign_worktree_note,  # #1536
 )
@@ -75,9 +75,19 @@ STATE_UNKNOWN = "cannot tell"
 
 #: Exit 0 only for the answer that is safe to act on. `cannot tell` gets its
 #: own code so a caller cannot collapse it into either neighbour.
+#:
+#: `EXIT_DIRTY` is #1751's, and it NARROWS exit 0 rather than widening it. The
+#: reap this integer gates is `git worktree remove`, and occupancy alone never
+#: answered the question that call destroys: a detached tree has no branch, so
+#: its merge column is structurally `n/a`, and `idle` at exit 0 was then the
+#: entire verdict over a tree holding uncommitted work. A caller testing `== 0`
+#: declines, which is the safe direction; a caller testing `== 1` for
+#: `occupied` is untouched, because occupancy keeps its own integer and still
+#: outranks this one.
 EXIT_IDLE = 0
 EXIT_OCCUPIED = 1
 EXIT_UNKNOWN = 2
+EXIT_DIRTY = 3
 
 #: A write newer than this reads as someone working. 15 minutes is chosen to
 #: sit above a slow model turn and below a coffee break.
@@ -182,6 +192,17 @@ MERGED_NO = "not-merged"
 MERGED_UNKNOWN = "unknown"
 MERGED_NA = "n/a"
 
+#: And the state #1750 found missing: the branch never committed anything, so
+#: there is nothing to measure and `merged` is a claim about no work at all.
+#:
+#: Observed on the live board at `62bc3f0`: SEVEN of eight fleet worktrees
+#: rendered `[merged]` while an agent was editing each of them seconds earlier.
+#: Every one had zero commits — the developer agents commit once, at the end —
+#: and "every commit is already an ancestor of master" is vacuously true of
+#: nothing. That made a brand-new branch and a fully-landed one the same cell,
+#: in the column a maintainer reads to decide which tree is safe to delete.
+MERGED_NO_COMMITS = "no-own-commits"
+
 
 class Merged:
     """Whether this branch's work is in the base — and by which method.
@@ -202,9 +223,73 @@ class Merged:
         return f"Merged({self.state!r}, {self.token!r}, {self.detail!r})"
 
 
+def branch_ever_committed(branch: str, runner=None):
+    """Has this branch ever moved since it was created? `True` / `False` / `None`.
+
+    The signal #1750 needs, and the one the issue's own proposal cannot be.
+    #1750 offers `git rev-list <base>..<branch>` being empty as "the direct
+    test". It is not a second opinion at all — it is the *same predicate* the
+    ancestry read already performs, because a branch is an ancestor of the base
+    **iff** `base..branch` is empty. Measured on git 2.46.2 against a repo
+    holding `feat/real` (three commits, merged `--no-ff`) and `fix/new`
+    (created from master, never committed):
+
+        for-each-ref --merged master  ->  feat/real, fix/new, master
+        rev-list --count master..feat/real  ->  0
+        rev-list --count master..fix/new    ->  0
+
+    The commit graph cannot separate *landed* from *never started*: both leave
+    the branch tip reachable from the base. The reflog can, it is local, and it
+    costs nothing on the network, so `nopr` keeps working:
+
+        feat/real@{0} commit: real work
+        feat/real@{1} branch: Created from HEAD
+        fix/new@{0}   branch: Created from master
+
+    **`None` is not `False`.** A reflog can be absent for reasons that say
+    nothing about the branch — `core.logAllRefUpdates` off, a bare repo, a
+    fresh clone that did not create the ref locally, or expiry that trimmed the
+    oldest entries. Answering `False` there renders `no commits yet` over a
+    branch that may hold a year of work, which is this file's own defect class
+    pointed at the fix for it.
+
+    Read as a **positive only**, in the same asymmetry `merged_for` already
+    uses for ancestry: only a log that was read AND holds nothing but creation
+    entries downgrades the row. Anything else leaves the previous behaviour
+    exactly where it was.
+    """
+    if not branch:
+        return None
+    # `_git_verbatim`, not `_git`: `%gs` is a reflog SUBJECT, which for a commit
+    # entry is somebody's commit message. `_git` runs `subprocess.run(text=True)`
+    # and text mode rewrites a lone CR and a CRLF to LF before any preset sees
+    # the stream, so a crafted message could split into extra records that read
+    # as git's own. With the translation off a reflog line cannot contain LF by
+    # definition, which makes the split below exact.
+    run = _git_verbatim if runner is None else runner
+    # The fully-qualified ref, never the short name: it disambiguates a tag
+    # sharing the branch's name, and it means the argument cannot begin with a
+    # `-` however the ref was spelled.
+    res = run(["reflog", "show", "--format=%gs", "refs/heads/" + branch])
+    if res.returncode != 0:
+        return None
+    entries = [line.strip() for line in res.stdout.split(chr(10)) if line.strip()]
+    if not entries:
+        return None
+    # `branch: Created from X` is what `git branch` and `git worktree add -b`
+    # write and nothing else does. A `commit:`, `rebase`, `merge`, `reset` or
+    # `pull` entry all mean the ref moved, and every one of them is a reason to
+    # leave the `merged` verdict alone rather than to claim the branch is new.
+    # `bool(...)` is not a cast for the scanner's benefit: it is where the
+    # child's text provably stops being text (#1475). Nothing about a reflog
+    # subject survives into the answer — only whether some entry was not a
+    # creation entry — so the taint ends here rather than at a render.
+    return bool(any(not e.startswith("branch: Created") for e in entries))
+
+
 def merged_for(branch: str, ancestors, merged_prs, ancestors_why: str = "",
-               base: str = "master") -> Merged:
-    """Which of the four answers holds for this worktree's branch (#1229).
+               base: str = "master", ever_committed=None) -> Merged:
+    """Which of the five answers holds for this worktree's branch (#1229, #1750).
 
     Two signals, deliberately asymmetric:
 
@@ -236,9 +321,31 @@ def merged_for(branch: str, ancestors, merged_prs, ancestors_why: str = "",
                       "bare), so there is nothing to measure against " + base)
 
     if ancestors is not None and branch in ancestors:
+        # #1750: ancestry is `branch tip is reachable from base`, which a branch
+        # that never committed satisfies by holding nothing. The reflog is asked
+        # HERE and only here — a non-ancestor is answered by the PR page below
+        # and a probe on it would be a git call per row buying no answer.
+        probe = branch_ever_committed if ever_committed is None else ever_committed
+        moved = probe(branch)
+        if moved is False:
+            return Merged(MERGED_NO_COMMITS, "no commits yet",
+                          f"no commits yet — this branch has never moved since "
+                          f"it was created (its reflog holds only the creation "
+                          f"entry), so it is an ancestor of {base} by holding "
+                          f"NOTHING, not by landing. Anything an agent has done "
+                          f"here is uncommitted and exists nowhere else")
+        if moved is None:
+            return Merged(MERGED_UNKNOWN, "merge unknown",
+                          f"merged: UNKNOWN — an ancestor of {base}, but its "
+                          f"reflog did not answer, so whether this branch ever "
+                          f"held commits of its own is unestablished. A branch "
+                          f"created and never committed to is an ancestor too, "
+                          f"and the two are indistinguishable in the commit "
+                          f"graph (#1750)")
         return Merged(MERGED_YES, "merged",
                       f"merged: yes — every commit is already an ancestor of "
-                      f"{base} (local, no network)")
+                      f"{base}, and its reflog shows the branch did commit "
+                      f"(local, no network)")
 
     if merged_prs is not None and merged_prs.answered:
         pr = merged_prs.get(branch)
@@ -271,6 +378,153 @@ def merged_for(branch: str, ancestors, merged_prs, ancestors_why: str = "",
     return Merged(MERGED_NO, "not merged",
                   f"merged: no — not an ancestor of {base}, and no merged PR "
                   "has this branch as its head")
+
+
+#: Dirty states. Three, and the third is why the column is worth its git call.
+#:
+#: `DIRTY_CLEAN` and `DIRTY_UNKNOWN` are the pair that must never merge. A
+#: `git status` that timed out, hit a missing directory or failed outright
+#: returns no records, and no records is exactly what a clean tree returns —
+#: so the two collapse into the reassuring one unless they are kept apart by
+#: construction. That collapse is the whole subject of #1751 one layer up:
+#: `idle` was reachable by nothing having answered.
+DIRTY_CLEAN = "clean"
+DIRTY_DIRTY = "dirty"
+DIRTY_UNKNOWN = "unknown"
+
+#: The dirty scan's own budget. A stall is `unknown`, never "found nothing".
+DIRTY_SCAN_TIMEOUT = 10
+
+
+class Dirty:
+    """Does this worktree hold work that exists nowhere else? (#1751)
+
+    The field the board was missing entirely. For a tree with a branch the
+    merge column covered most of it — `merged: yes` means the commits are on
+    the base and only uncommitted changes remain at risk. For a **detached**
+    tree the merge column is structurally `n/a`, so `idle` was the entire
+    verdict standing between `git worktree remove` and destroyed work, and
+    `idle` is a statement about the process table at one instant.
+
+    `count` is the number of change RECORDS, not files: an untracked directory
+    collapses to one record (`?? udir/`), which is git's own summary and not a
+    loss this layer introduces.
+    """
+
+    __slots__ = ("state", "token", "detail", "count")
+
+    def __init__(self, state: str, token: str, detail: str, count: int = 0) -> None:
+        self.state = state
+        self.token = token
+        self.detail = detail
+        self.count = count
+
+    def __repr__(self) -> str:
+        return f"Dirty({self.state!r}, {self.token!r}, {self.count!r})"
+
+
+def _count_porcelain_z(out: str) -> int:
+    """Change records in `status --porcelain -z` output.
+
+    `-z` rather than the newline form for one reason: a filename may contain a
+    newline, and this count is PRINTED. NUL-separated records make it exact
+    instead of inflatable by whoever named the file — and `_git` runs
+    `text=True`, which rewrites a lone CR and a CRLF to LF before any preset
+    sees the stream, so the newline form could not have been trusted anyway.
+
+    A rename or copy carries its origin path as its OWN NUL field (measured,
+    git 2.46.2: `R  new.py<NUL>old.py<NUL>`), so counting fields reports two
+    changes for one renamed file.
+    """
+    fields = out.split(chr(0))
+    if fields and fields[-1] == "":
+        fields.pop()
+    count = 0
+    index = 0
+    while index < len(fields):
+        record = fields[index]
+        index += 1
+        if not record:
+            continue
+        count += 1
+        # `XY PATH`, and X or Y being R/C means an origin path follows.
+        if record[:1] in ("R", "C") or record[1:2] in ("R", "C"):
+            index += 1
+    return count
+
+
+def dirty_for(path: str, runner=None) -> Dirty:
+    """The uncommitted-work column, in three states (#1751).
+
+    `--no-optional-locks` is not a nicety. `git status` refreshes the index and
+    writes it back, and this op's contract is INSPECTION ONLY — it must not
+    write inside a tree a live agent is holding, must not contend for
+    `index.lock`, and must not perturb the newest-write mtime that the
+    occupancy column one cell to the left is reading.
+
+    **`-c status.showUntrackedFiles=normal` is what makes this a GATE rather
+    than a render** (#1290, #1295). That setting is an ordinary user or repo
+    preference, and with it inherited a tree whose only uncommitted work is
+    UNTRACKED reports no records at all — indistinguishable here from clean, in
+    the column an exit code branches on. A display preference is not allowed to
+    turn a destructive decision green. `-c` outranks both config files and the
+    environment, which is why the pin goes on the argv.
+    """
+    def _default(args):
+        return _git(args, timeout=DIRTY_SCAN_TIMEOUT)
+
+    run = _default if runner is None else runner
+    res = run(["--no-optional-locks", "-C", path,
+               "-c", "status.showUntrackedFiles=normal",
+               "status", "--porcelain", "-z"])
+    if res.returncode != 0:
+        # git's stderr is a child stream and this sentence is rendered, so it is
+        # flattened at the producer rather than relying on `render()` doing it
+        # one frame up (#1475): nothing here may reach column 0 or add a line.
+        why = _untrusted.flat(
+            (res.stderr or "").strip().replace(chr(10), " ")[:200]) or (
+            f"git exited {res.returncode} and said nothing")
+        return Dirty(DIRTY_UNKNOWN, "dirty unknown",
+                     f"uncommitted work: UNKNOWN — the status read did not "
+                     f"answer ({why}). This is the tool failing to look, NOT a "
+                     f"finding that the tree is clean")
+    # `int(...)` for the same reason as the `bool(...)` above: the records are
+    # counted and then discarded, so no byte a filename chose reaches a render
+    # from here — only how many there were.
+    count = int(_count_porcelain_z(res.stdout))
+    if count:
+        return Dirty(DIRTY_DIRTY, f"dirty: {count}",
+                     f"uncommitted work: {count} change record"
+                     f"{'' if count == 1 else 's'} — this tree holds work that "
+                     f"exists nowhere else, and removing it destroys that work",
+                     count)
+    return Dirty(DIRTY_CLEAN, "clean",
+                 "uncommitted work: none — `git status --porcelain` was read in "
+                 "this tree and returned no records", 0)
+
+
+def exit_code_for(state: str, dirty_state: str) -> int:
+    """The one integer, and what each column may contribute to it (#1751).
+
+    Occupancy keeps precedence and keeps its own codes: somebody being in the
+    tree is the more urgent fact and the one a caller already branches on.
+    Under `idle`, the dirty column decides — because `idle` alone was never a
+    statement about whether the tree holds work, and for a detached tree
+    nothing else in the render was either.
+
+    A dirty scan that could not answer lands on `cannot tell`, not on `idle`.
+    The footer's standing advice for that code — treat the tree as occupied
+    until something answers — is exactly right here.
+    """
+    if state == STATE_OCCUPIED:
+        return EXIT_OCCUPIED
+    if state != STATE_IDLE:
+        return EXIT_UNKNOWN
+    if dirty_state == DIRTY_DIRTY:
+        return EXIT_DIRTY
+    if dirty_state == DIRTY_CLEAN:
+        return EXIT_IDLE
+    return EXIT_UNKNOWN
 
 
 class Assessment:
@@ -979,10 +1233,15 @@ def _exit_note(code: int, why: str) -> str:
     disagreed about the same call, and the render was the one with no way to
     settle it. This does not change any code — it says which line produced it.
     """
-    return (f"[exit {code}] {why}. This integer is the occupancy answer "
+    return (f"[exit {code}] {why}. This integer is the SAFE-TO-REAP answer "
             f"compressed into one and nothing more "
-            f"({EXIT_IDLE} = idle, {EXIT_OCCUPIED} = occupied, "
-            f"{EXIT_UNKNOWN} = cannot tell, or the op could not answer at all)")
+            f"({EXIT_IDLE} = idle and clean, {EXIT_OCCUPIED} = occupied, "
+            f"{EXIT_UNKNOWN} = cannot tell, or the op could not answer at all, "
+            f"{EXIT_DIRTY} = idle but holding uncommitted work). Only "
+            f"{EXIT_IDLE} is clear to proceed on, and #1751 made FEWER trees "
+            f"qualify for it, never more: `idle` now has to be clean too. A "
+            f"detached tree has no merge column, so `idle` alone used to "
+            f"authorise deleting work that existed nowhere else")
 
 
 def render(rows: list, exit_note: str = "") -> str:
@@ -1013,6 +1272,7 @@ def render(rows: list, exit_note: str = "") -> str:
         entry, verdict = row[0], row[1]
         tracker = row[2] if len(row) > 2 else None
         merge = row[3] if len(row) > 3 else None
+        dirty = row[4] if len(row) > 4 else None
         branch = entry.get("branch") or ("(detached)" if entry.get("detached") else "?")
         tags = []
         # Every state prints, including `not merged`. The absent tag was the
@@ -1020,6 +1280,11 @@ def render(rows: list, exit_note: str = "") -> str:
         # was wrong that way on 16 of 24 rows on the live fleet.
         if merge is not None and merge.state != MERGED_NA:
             tags.append(merge.token)
+        # And `clean` prints for the same reason (#1751). A dirty column that
+        # only spoke when it found something would make "no tag" mean both
+        # `clean` and `the column did not run` — #1229's defect, re-added.
+        if dirty is not None:
+            tags.append(dirty.token)
         if entry.get("prunable"):
             tags.append("prunable")
         suffix = f"  [{', '.join(tags)}]" if tags else ""
@@ -1032,6 +1297,8 @@ def render(rows: list, exit_note: str = "") -> str:
             out.append(f"             · {flat(tracker.detail)}")
         if merge is not None:
             out.append(f"             · {flat(merge.detail)}")
+        if dirty is not None:
+            out.append(f"             · {flat(dirty.detail)}")
         out.append("")
 
     # The whole-board `merged-into-base: unknown — <why>` line is gone with
@@ -1042,6 +1309,8 @@ def render(rows: list, exit_note: str = "") -> str:
     tally = {STATE_OCCUPIED: 0, STATE_IDLE: 0, STATE_UNKNOWN: 0}
     unknown_trackers = 0
     unknown_merges = 0
+    dirty_trees = 0
+    unknown_dirty = 0
     for row in rows:
         verdict = row[1]
         tally[verdict.state] = tally.get(verdict.state, 0) + 1
@@ -1051,6 +1320,11 @@ def render(rows: list, exit_note: str = "") -> str:
         merge = row[3] if len(row) > 3 else None
         if merge is not None and merge.state == MERGED_UNKNOWN:
             unknown_merges += 1
+        dirty = row[4] if len(row) > 4 else None
+        if dirty is not None and dirty.state == DIRTY_DIRTY:
+            dirty_trees += 1
+        if dirty is not None and dirty.state == DIRTY_UNKNOWN:
+            unknown_dirty += 1
     # The tracker count rides the one line that survives `| tail -1`. A row
     # whose PR state was never read has to be visible from there, or the
     # summary is the place the missing answer disappears.
@@ -1060,6 +1334,13 @@ def render(rows: list, exit_note: str = "") -> str:
     # state was never established must be visible from `| tail -1`, or the
     # summary is where the missing answer disappears (#1229).
     merge_part = (f", {unknown_merges} merge unknown" if unknown_merges else "")
+    # The count a reap reads before it deletes anything, on the same surviving
+    # line as the two above (#1751). A tree holding uncommitted work is the one
+    # row where the destructive call is unrecoverable, so it is not allowed to
+    # live only in the body.
+    dirty_part = (f", {dirty_trees} DIRTY" if dirty_trees else "")
+    dirty_unknown_part = (f", {unknown_dirty} dirty unknown"
+                          if unknown_dirty else "")
     # Above `[result]`, never below it: that line is what `gh-pr-merge` and
     # every `| tail -1` reader take the tally off, so the exit disclosure sits
     # next to it rather than after it (#1496).
@@ -1067,7 +1348,8 @@ def render(rows: list, exit_note: str = "") -> str:
         out.append(exit_note)
     out.append(
         f"[result] {tally[STATE_OCCUPIED]} occupied, {tally[STATE_IDLE]} idle, "
-        f"{tally[STATE_UNKNOWN]} cannot tell{tracker_part}{merge_part} — "
+        f"{tally[STATE_UNKNOWN]} cannot tell{tracker_part}{merge_part}"
+        f"{dirty_part}{dirty_unknown_part} — "
         "'cannot tell' is NOT "
         "'idle': nothing answered, so treat that tree as occupied until something does"
         + (" · a tracker 'unknown' is the lookup failing, not an absent PR"
@@ -1203,21 +1485,43 @@ def main() -> int:
                                         upstreams, upstream_why))
              if want_pr else None,
              merged_for(entry.get("branch") or "", ancestors, merged_prs,
-                        ancestors_why=ancestors_why, base=base))
+                        ancestors_why=ancestors_why, base=base),
+             # Every row, branch or not — that is the point of #1751. The one
+             # tree whose merge column can never answer is the detached one,
+             # and it is the tree this column exists for.
+             dirty_for(entry.get("path", "")))
             for entry in entries]
     # The code is decided before the render so the render can disclose it. Every
     # arm below is unchanged in what it returns (#1282's included); what is new
     # is that the body names the integer and what produced it (#1496).
     if wanted and len(rows) == 1:
         state = rows[0][1].state
-        # The exit code stays a statement about *occupancy* only. A tracker
-        # that did not answer says nothing about whether the tree is safe
-        # to enter, and folding it in here would make `git-worktrees:PATH`
-        # refuse a free worktree because GitHub was down.
-        code = {STATE_IDLE: EXIT_IDLE,
-                STATE_OCCUPIED: EXIT_OCCUPIED}.get(state, EXIT_UNKNOWN)
-        why = ("the occupancy verdict for the one worktree asked about is "
-               f"`{state}` — the op itself did not fail")
+        dirt = rows[0][4]
+        # The TRACKER column stays out of this integer, and that reasoning is
+        # unchanged: a lookup that did not answer says nothing about whether
+        # the tree is safe to enter, and folding it in would make
+        # `git-worktrees:PATH` refuse a free worktree because GitHub was down.
+        #
+        # The DIRTY column is in it, and is a different kind of claim (#1751).
+        # It is a LOCAL read about the tree itself, in the same class as
+        # occupancy rather than as the network columns — and it is the only
+        # thing that answers the question the gated call destroys. A detached
+        # tree has no merge column at all, so `idle` at exit 0 was the whole
+        # verdict over work that exists nowhere else.
+        code = exit_code_for(state, dirt.state)
+        if code == EXIT_DIRTY:
+            why = ("the one worktree asked about is `idle` but holds "
+                   f"UNCOMMITTED WORK ({dirt.count} change record"
+                   f"{'' if dirt.count == 1 else 's'}) — nobody is in it, and "
+                   "removing it would destroy work that exists nowhere else. "
+                   "The op itself did not fail")
+        elif code == EXIT_UNKNOWN and state == STATE_IDLE:
+            why = ("the one worktree asked about is `idle`, but whether it "
+                   "holds uncommitted work could not be read, so this call "
+                   "cannot certify it — the op itself did not fail")
+        else:
+            why = ("the occupancy verdict for the one worktree asked about is "
+                   f"`{state}` — the op itself did not fail")
     elif wanted:
         # More than one row: the filter above is ancestor-or-descendant, so a
         # nested layout pulls in the trees above and below the named one and

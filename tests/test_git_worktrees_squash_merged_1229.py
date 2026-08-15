@@ -69,9 +69,10 @@ def _declined(reason: str):
 
 
 def _verdict(branch, *, ancestors=frozenset(), ancestors_why="",
-             base="master", merged_prs=None):
+             base="master", merged_prs=None, ever_committed=None):
     return wt.merged_for(branch, ancestors, merged_prs,
-                         ancestors_why=ancestors_why, base=base)
+                         ancestors_why=ancestors_why, base=base,
+                         ever_committed=ever_committed)
 
 
 # ── the three states ─────────────────────────────────────────────────────
@@ -86,8 +87,17 @@ def test_a_squash_merged_branch_is_merged_even_though_it_is_no_ancestor() -> Non
 
 
 def test_ancestry_still_answers_yes_on_its_own_with_no_network() -> None:
-    """Kept as a positive: an ancestor is merged for certain, offline."""
-    got = _verdict("chore/x", ancestors={"chore/x"}, merged_prs=None)
+    """Kept as a positive: an ancestor is merged for certain, offline.
+
+    #1750 narrowed what ancestry alone proves and did not remove this. Being an
+    ancestor is `base..branch` is empty, which a branch that never committed
+    satisfies by holding nothing — so the reflog now decides between the two,
+    and it is stubbed here to the case this test is about: a branch that DID
+    commit. `test_git_worktrees_no_commits_and_dirty_1750_1751.py` owns the
+    other two arms.
+    """
+    got = _verdict("chore/x", ancestors={"chore/x"}, merged_prs=None,
+                   ever_committed=lambda branch: True)
     assert got.state == wt.MERGED_YES, got
     assert "ancestor" in got.detail, got.detail
 

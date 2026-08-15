@@ -176,6 +176,12 @@ REGISTER: dict[str, str] = {
     "presets/git/push.py::_uncommitted_leftovers": PIN,
     "presets/git/commit.py::_worktree_changes": PIN,
     "presets/github/pr_merge.py::_worktree_dirt": PIN_IN_RUNNER,
+    # #1751. The reap board's uncommitted-work column, and the most literal
+    # instance of this defect class on the register: the op's exit code
+    # branches on it, and a caller gates `git worktree remove` on that integer.
+    # With the setting inherited, a tree whose only work is untracked reports
+    # clean and the gated call deletes it.
+    "presets/git/worktrees.py::dirty_for": PIN,
 
     # -- renders: shown to a human, and nothing else reads the result.
     # Pinning these would override a display preference the user set on

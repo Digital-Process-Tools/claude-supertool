@@ -201,11 +201,18 @@ def test_the_shipped_op_does_not_exit_zero_for_cannot_tell(
 
 
 def test_git_worktrees_declares_which_of_its_values_is_clean() -> None:
-    """The only shipped op that overloads its exit code says so itself."""
+    """The only shipped op that overloads its exit code says so itself.
+
+    `3` (#1751, `idle` but holding uncommitted work) is in `values` and NOT in
+    `clean`, which is the half that matters here: a value declared clean is one
+    `supertool 'git-worktrees:P' && <reap>` proceeds on, and a tree holding work
+    that exists nowhere else is the one row where that call is unrecoverable.
+    `clean` staying exactly `[0]` is the assertion, not an incidental.
+    """
     registry = json.loads(
         (REPO_ROOT / "presets" / "git.json").read_text(encoding="utf-8"))
     entry = registry["ops"]["git-worktrees"]
-    expected = {"values": [0, 1, 2], "clean": [0]}
+    expected = {"values": [0, 1, 2, 3], "clean": [0]}
 
     assert entry.get("exitStatus") == expected, entry.get("exitStatus")
 

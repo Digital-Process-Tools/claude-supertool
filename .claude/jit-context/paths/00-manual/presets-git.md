@@ -86,4 +86,9 @@ so a path is real bytes and CAN carry LF/CR/U+2028. Every rendered path in
 
 **Op traps:** `git-push` refuses an ambiguous upstream rather than guessing —
 use `git-push:set-upstream`. `git-resolve` leaves a branch conflicted on
-refusal, doesn't skip it.
+refusal, doesn't skip it. `git-worktrees` spends its exit integer on an answer
+(0 idle+clean, 1 occupied, 2 cannot tell, 3 idle but dirty — #1751): a code not
+listed in `exitStatus.values` in `presets/git.json` is read by the dispatcher as
+a REFUSAL, and one listed in `clean` is read as permission to reap, so adding a
+state means editing that entry and `tests/test_value_exit_{codes_1672,clean_1705}.py`
+in the same change.
