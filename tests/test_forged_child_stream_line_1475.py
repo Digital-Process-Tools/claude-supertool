@@ -8,7 +8,7 @@ so a U+2028 survives *inside* a relayed line and everything the reader anchors
 at column 0 becomes the writer's to choose.
 
 **The fix is at the seam, not at the sites.** Seven sites were named and the
-sweep below finds 144 sites in 32 files, which is what a per-site fix earns:
+sweep below finds 146 sites in 32 files, which is what a per-site fix earns:
 the same defect re-filed once per call. So
 
 * `_git_common._first_error_line` flattens what it returns. Every caller —
@@ -184,7 +184,7 @@ def test_a_tab_survives_the_commit_relay() -> None:
 # grows quietly — which is the failure mode of the thing it would be guarding".
 #
 # **So this is not a zero-assertion, and pretending otherwise is what would
-# make it useless.** Measured on this branch: 144 candidate sites in 32 files
+# make it useless.** Measured on this branch: 146 candidate sites in 32 files
 # across `presets/git`, `presets/github` and `presets/gitlab`. Not all are
 # defects — `push._local_head` returns `r.stdout.strip()`, and that is a SHA —
 # and closing them is four lanes of work this PR is not.
@@ -292,7 +292,17 @@ SINK_SHAPES = tuple(SHAPE_PROBES)
 #: branch's other seven narrowings bind to a name and did not move it. Located
 #: by differencing the per-file tally against the merge-base, before the number
 #: moved.
-UNRESOLVED = 111
+#:
+#: 111 -> 113 on 2026-08-15 (#1724). Both added sites are the two arguments of
+#: ONE `zip(untracked if full else untracked[:10], timed)` in
+#: `presets/git/status.py::main` — `zip` is not a call this scan models, and
+#: neither argument binds a name that carries the taint onward, so the pair is
+#: unresolved by construction rather than unhandled by the product. What the
+#: loop then prints is the porcelain path byte-identically to what git wrote,
+#: which is the ground `tests/test_preset_git_splitlines_register_1130.py`
+#: records for `status.py::main`. Located by differencing this file's own
+#: `unresolved_escapes` against the merge-base, before the number moved.
+UNRESOLVED = 113
 
 #: Calls whose result cannot be a string, so the taint stops there. A type
 #: argument, not an allowlist: `json.loads(r.stdout)` yields a dict, and every
@@ -337,7 +347,28 @@ CENSUS = {
     # went with them (they are the same two relays' other arm plus the two
     # dict keys the scan counts beside them).
     "presets/git/resolve.py": 0,  # -6, #1638
-    "presets/git/status.py": 18,  # +3, #1626: three `.append` sinks
+    # 18 -> 20, #1724. Two added sites, both LOCATED before the number moved by
+    # differencing this file's own `_scan` against the merge-base:
+    #   * `status.py::_worktree_root`'s `return top.stdout.strip()` — `git
+    #     rev-parse --show-toplevel`. It is a `return <expr>` and so a sink by
+    #     this scan's model, but the value is never rendered: its one consumer
+    #     joins it onto a path and hands it to `os.stat`. Flattening it would
+    #     make it stop opening, which is the case #1557 already argues about
+    #     `repo_label()` — a display string is not an openable path. The scan
+    #     cannot see "never printed", which is exactly what `UNRESOLVED`'s note
+    #     says a number from here does not claim.
+    #   * the `... (N more, newest of them written Xs ago)` marker, whose
+    #     `extra` traces back to the `--porcelain` read through `timed`. Every
+    #     value it interpolates is a FLOAT age formatted by `_age` as an
+    #     integer and a unit letter; no byte off any child stream reaches that
+    #     string. Marking it with `_untrusted.flat` would satisfy the scan by
+    #     flattening a number, which is routing around the guard rather than
+    #     answering it.
+    # The untracked rows themselves did NOT move the number: the path is still
+    # printed byte-identically to what git wrote (the quoting ground the #1130
+    # register records), and `l` is a `for` target, which this scan does not
+    # taint - as it did not before.
+    "presets/git/status.py": 20,  # +3 #1626 (three `.append` sinks), +2 #1724
     "presets/git/trail.py": 1,  # -3, #1681: two log renders and _format_error
     "presets/git/worktrees.py": 5,  # -1, #1654: the third `for-each-ref` decline
     "presets/github/_release_gate.py": 2,

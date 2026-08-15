@@ -188,7 +188,11 @@ def test_untracked_truncated_by_default(tmp_path: Path, monkeypatch) -> None:
     _stub_no_mr(monkeypatch)
     out = _run_main(repo, monkeypatch)
     assert "### Untracked (15)" in out
-    assert "... (5 more)" in out
+    # `(5 more` rather than `(5 more)`: since #1724 the marker also carries the
+    # newest write among the hidden rows, so that the cap cannot conceal the
+    # entry the mtime column was added to surface. The count is what this test
+    # is about and it is asserted; the suffix has its own test.
+    assert "... (5 more" in out
     assert "untracked_14" not in out
 
 

@@ -299,7 +299,15 @@ REGISTER: dict[str, str] = {
         "one is why the old entry was wrong rather than merely incomplete: it "
         "argued a fragment is dropped by the `'ahead' in track` test, which is "
         "true and means the SURVIVING row is rendered under a truncated "
-        "refname no branch here has.",
+        "refname no branch here has. #1724 added a SECOND consumer of the same "
+        "one split - each `??` row is now `os.stat`ed for its mtime - and it "
+        "is still one read and still this ground. The printed path is "
+        "unchanged, byte-for-byte what git wrote; `_unquote_path` produces a "
+        "separate value that is only ever OPENED, so a separator inside a "
+        "filename reaches the filesystem, not the render. What a forged row "
+        "could add is one more untracked line carrying a time, in a section "
+        "whose whole point is to be read sceptically - and the added field "
+        "cannot manufacture a clean verdict, because it publishes no verdict.",
 
     # -- trail.py -----------------------------------------------------------
     # `trail.py::main` was here with three sites, on the ground that its output
