@@ -18306,22 +18306,32 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
                     # covers a dropped flag as well as a dropped refspec, and
                     # asks git nothing.
                     #
-                    # Kept short on purpose: `_guard_notes` quotes each note
-                    # through `_GUARD_DESC_CAP`, which truncates from the END
-                    # — where this clause is.
+                    # The clause leads the note rather than closing it, and
+                    # that is not cosmetic. `_guard_notes` quotes each note
+                    # through `_GUARD_DESC_CAP` and truncates from the END,
+                    # and the echoed command is caller-supplied and
+                    # unbounded — a long refspec spends the whole budget on
+                    # its own before the note reaches its point. Written last,
+                    # the correction arrived cut mid-word for the very argv
+                    # the third instance reported, and not at all for a
+                    # longer branch name: `… (+N chars)` discloses that
+                    # something was cut, never that what was cut was the
+                    # correction. What truncation costs now is the echo of a
+                    # command the caller just typed, and "nothing was
+                    # blocked" — which `guard_uncovered_note` states in its
+                    # own wrapper, outside the cap.
+                    prefix = _flat_field(" ".join(replacement.argv))
                     line = (
-                        "`" + _flat_field(" ".join(scoring)) + "` carries "
+                        "`" + op + "` performs `" + prefix + "` and nothing "
+                        "more, which is a different command from this one. `"
+                        + _flat_field(" ".join(scoring)) + "` carries "
                         + ", ".join("`" + _flat_field(token) + "`"
                                     for token in extra)
-                        + " past the `" + _flat_field(" ".join(
-                            replacement.argv)) + "` that `" + op
-                        + "` replaces, and that op takes none of them: no op "
+                        + " past the `" + prefix + "` that `" + op
+                        + "` replaces, and that op takes none of them; no op "
                         "covers this form, so raw `"
                         + _flat_field(scoring[0]) + "` is correct here and "
-                        "nothing was blocked. `" + op + "` performs `"
-                        + _flat_field(" ".join(replacement.argv))
-                        + "` and nothing more, which is a different command "
-                        "from this one")
+                        "nothing was blocked")
                     if line not in uncovered:
                         uncovered.append(line)
             continue

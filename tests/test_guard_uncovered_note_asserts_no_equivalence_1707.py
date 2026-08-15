@@ -128,7 +128,7 @@ def test_nothing_past_the_prefix_is_promised_to_survive(shipped_git):
 
 def test_the_reported_tag_push_note_is_not_truncated_by_the_text_cap(
         shipped_git):
-    """`_GUARD_DESC_CAP` cuts from the end, and the end is the fix.
+    """`_GUARD_DESC_CAP` cuts from the end, so the fix does not sit there.
 
     Asserted on the rendered sentence rather than on the constructed line,
     because what an agent reads is `guard_uncovered_note`.
@@ -136,11 +136,57 @@ def test_the_reported_tag_push_note_is_not_truncated_by_the_text_cap(
     verdict = supertool.guard_command(_TAG_PUSH)
     line = verdict.uncovered[0]
     assert len(line) <= supertool._GUARD_DESC_CAP, (
-        "the note is %d characters against a %d cap, so the clause that "
-        "replaced the false equivalence is cut off in the hook's own output: "
+        "the note is %d characters against a %d cap: "
         % (len(line), supertool._GUARD_DESC_CAP) + line)
     rendered = supertool.guard_uncovered_note(verdict)
     assert "performs `git push` and nothing more" in rendered, rendered
+
+
+#: Long enough that the echoed command alone spends the note's whole budget.
+#: A refspec is caller-supplied and unbounded; nothing caps it before the note.
+_LONG_PUSH = ("git push --force-with-lease origin "
+              "refs/heads/docs/claude-md-git-config-super-extra-long-branch")
+
+
+@pytest.mark.parametrize("command", [_TAG_PUSH, _FORCE_PUSH, _LONG_PUSH])
+def test_the_clause_survives_the_cap_for_an_argv_of_any_length(
+        shipped_git, command):
+    """Found by the #1707 self-review, and it is the whole point of the fix.
+
+    `_guard_notes` quotes each note through `_GUARD_DESC_CAP` and truncates
+    **from the end**. The corrective clause was written at the end, so for
+    the very argv the third instance reported it arrived cut mid-word, and
+    for a longer refspec it did not arrive at all — the honest sentence
+    replaced by `… (+N chars)`, which discloses that something was cut and
+    not that what was cut was the correction. So the clause is now the
+    *head* of the note: what truncation now costs is the echo of the command
+    the caller just typed, and the fact that nothing was blocked, which
+    `guard_uncovered_note`'s own wrapper states outside the cap.
+
+    Parametrised over all three lengths rather than the short one, because a
+    row that only ever runs under the cap asserts nothing about truncation.
+    """
+    verdict = supertool.guard_command(command)
+    assert verdict.state == "uncovered", (command, verdict)
+    rendered = supertool.guard_uncovered_note(verdict)
+    assert "performs `git push` and nothing more" in rendered, (
+        "the clause that replaced the false equivalence did not survive the "
+        "%d-character cap for this argv: " % supertool._GUARD_DESC_CAP
+        + rendered)
+
+
+def test_the_longest_argv_really_does_exercise_the_cap(shipped_git):
+    """The must-fire control for the row above.
+
+    Without it, `_LONG_PUSH` passing proves nothing: a note that happens to
+    fit renders identically to one that was written to survive being cut.
+    """
+    line = supertool.guard_command(_LONG_PUSH).uncovered[0]
+    assert len(line) > supertool._GUARD_DESC_CAP, (
+        "the long argv no longer overruns the cap, so the truncation "
+        "assertion above is vacuous: %d characters" % len(line))
+    assert "(+" in supertool.guard_uncovered_note(
+        supertool.guard_command(_LONG_PUSH)), "nothing was truncated at all"
 
 
 def test_the_op_output_carries_the_same_sentence(shipped_git):
