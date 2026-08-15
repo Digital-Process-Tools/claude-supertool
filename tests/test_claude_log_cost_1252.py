@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _changelog_findable import assert_change_is_findable  # noqa: E402
 
 PRESET_DIR = Path(__file__).resolve().parent.parent / "presets" / "claude-log"
 sys.path.insert(0, str(PRESET_DIR))
@@ -53,6 +57,37 @@ def _write_jsonl(path: Path, events: list) -> None:
     with path.open("w", encoding="utf-8") as f:
         for ev in events:
             f.write(json.dumps(ev) + "\n")
+
+
+# `\r?$` rather than `$`: `subprocess.run(text=True)` translates newlines, so a
+# stray CR should not survive to here — but the one platform that would prove
+# otherwise is the one this was not written on, and the tolerance costs nothing.
+_MEASURED = re.compile(
+    r"^Measured: (\d+) sessions?, (\d+) tool results?, (\d+) bytes\r?$", re.M)
+
+
+def measured(stdout: str) -> tuple:
+    """(sessions, results, bytes) read off the report's own `Measured:` line.
+
+    #1731: the selection tests asserted a bare `"500" not in r.stdout`, meaning
+    "session bbbb's 500-byte result was not counted". What that actually says
+    is that the three characters `500` appear nowhere in the report — and the
+    report prints byte totals, percentiles, shares and a filesystem path, any
+    of which can carry them. So the assertion could not tell its finding from a
+    coincidence: it failed under the full suite and passed in isolation on the
+    same commit (13457 + 1 = 13458 — identical selection, order the only
+    difference).
+
+    This reads the field the report *attributes* to what it measured. It raises
+    when the line is absent rather than returning a default, because every
+    caller here is making a claim about a number, and a report that printed
+    nothing must redden rather than satisfy a negative assertion for free.
+    """
+    m = _MEASURED.search(stdout)
+    assert m is not None, (
+        "the report has no `Measured:` line, so nothing can be concluded "
+        "about what it counted:" + os.linesep + stdout)
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
 
 
 class FakeProject:
@@ -170,9 +205,15 @@ class TestDisclosure:
         )
         r = proj.run()
         assert "non-text" in r.stdout.lower()
-        # the image payload is not silently folded into the byte total
-        assert "2000" not in r.stdout
-        assert "15" in r.stdout
+        # Both tool results are counted (2), and only their text is: 10 + 5.
+        # The image block's 2000 base64 bytes are excluded, not folded in.
+        #
+        # `"2000" not in r.stdout` and `"15" in r.stdout` were the same defect
+        # as #1731's — the first passes on any report that happens not to print
+        # those digits, the second on any report that happens to print `15`
+        # anywhere, and `15` occurs in most of them. The total the report
+        # attributes to what it measured settles both.
+        assert measured(r.stdout) == (1, 2, 15), r.stdout
 
     def test_no_sessions_says_so_rather_than_printing_zeroes(self, proj: FakeProject) -> None:
         r = proj.run()
@@ -417,17 +458,49 @@ class TestSkewAndFailures:
 
 class TestSelection:
     def test_single_uuid_argument_measures_only_that_session(self, proj: FakeProject) -> None:
+        """`aaaa`'s 10 bytes counted, `bbbb`'s 500 not folded in (#1731).
+
+        One equality carries both halves on purpose. `== (1, 1, 10)` is at once
+        the must-fire case (the selected session *was* measured) and the
+        must-not-fire one (the other session's 500 bytes are not in the total),
+        and `measured` raises on a report that printed nothing — so there is no
+        way for this to pass on an absence the harness produced.
+        """
         proj.add_session("aaaa", [_tool_use("a", "Bash", {}), _tool_result("a", "1" * 10)])
         proj.add_session("bbbb", [_tool_use("b", "Bash", {}), _tool_result("b", "2" * 500)])
         r = proj.run("aaaa")
         assert "aaaa" in r.stdout
-        assert "500" not in r.stdout
+        assert measured(r.stdout) == (1, 1, 10), r.stdout
+
+    def test_no_argument_measures_every_session_in_the_project(self, proj: FakeProject) -> None:
+        """The positive control for the two selection tests, same fixture.
+
+        Without it, `== (1, 1, 10)` above would still pass against a `cost.py`
+        that had stopped seeing `bbbb` at all — a selection test whose evidence
+        is indistinguishable from a broken reader. Here the same parse has to
+        report both sessions and all 510 bytes, so the numbers those tests
+        exclude are proven reachable in the run that should include them.
+        """
+        proj.add_session("aaaa", [_tool_use("a", "Bash", {}), _tool_result("a", "1" * 10)])
+        proj.add_session("bbbb", [_tool_use("b", "Bash", {}), _tool_result("b", "2" * 500)])
+        r = proj.run()
+        assert measured(r.stdout) == (2, 2, 510), r.stdout
 
     def test_numeric_argument_limits_session_count(self, proj: FakeProject) -> None:
+        """`1` selects the most recent session only — here `bbbb`.
+
+        `"500" in r.stdout` was the same defect in the presence direction
+        (#1731): a coincidental `500` anywhere in the report satisfied it, so a
+        pass was not evidence the limit had selected anything in particular.
+        """
         a = proj.add_session("aaaa", [_tool_use("a", "Bash", {}), _tool_result("a", "1" * 10)])
         b = proj.add_session("bbbb", [_tool_use("b", "Bash", {}), _tool_result("b", "2" * 500)])
         os.utime(a, (1_700_000_000, 1_700_000_000))
         os.utime(b, (1_700_000_100, 1_700_000_100))
         r = proj.run("1")
         assert "1 session" in r.stdout
-        assert "500" in r.stdout
+        assert measured(r.stdout) == (1, 1, 500), r.stdout
+
+
+def test_documented() -> None:
+    assert_change_is_findable(1731)

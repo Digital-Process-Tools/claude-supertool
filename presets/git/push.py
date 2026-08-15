@@ -2350,8 +2350,12 @@ def _report_recovery_timeout(stage: str, branch: str, target: str,
     elif state == "not-started":
         print("No rebase is in progress — the working tree is unchanged and "
               "your branch is where it was.")
+        # #1691: `allowed is None` used to drop the figure and nothing else,
+        # leaving "needs more than to rebase recovery" on the caller's screen.
+        # The third state is that the number is unknown, which is a phrase and
+        # not an empty string.
         print("Retry. If this repo genuinely needs more than "
-              + (f"{allowed}s " if allowed is not None else "")
+              + (f"{allowed}s " if allowed is not None else "the clock it got ")
               + f"to {stage}, the budget is _RECOVER_TIMEOUT in "
               "presets/git/push.py — or, when the push deadline was the "
               "tighter of the two, `git-push:budget=SECONDS`. Raising "
