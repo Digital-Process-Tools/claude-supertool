@@ -381,26 +381,31 @@ def test_source_context_numbers_lines_the_way_the_tool_does(sep, tmp_path):
 #: split is safe there. Keyed by the source line rather than by line number so
 #: it survives edits above it; a new call site anywhere fails this test.
 ALLOWED = {
+    "common/refusal.py": {
+        'lines = [ln for ln in "".join(frames).splitlines()':
+            "our own traceback text, with no writer but CPython — the four "
+            "per-adapter copies of this split were folded into `crashed()` "
+            "here by #1697, and the exemption moved with them. The exception "
+            "MESSAGE inside it is somebody else's and can carry any of the "
+            "ten separators; it is flattened by `' '.join(msg.split())` on "
+            "the finished string, which splits on all ten, so a fragment "
+            "cannot reach a receipt on a row of its own (#1522).",
+    },
     "rector-mcp/rector-mcp.py": {
         "for line in buf.splitlines():":
             "bytes, not str: the JSON-RPC frame reader. `bytes.splitlines()` "
             "adds only C0 controls, which JSON forbids unescaped inside a "
             "string, and a mis-split fragment fails json.loads and produces no "
             "record — it can withhold a response, never mint one.",
-        "tb = traceback.format_exc().splitlines()[-3:]":
-            "our own traceback text, with no writer but CPython.",
     },
     "phpmd-mcp/phpmd-mcp.py": {
         "for line in buf.splitlines():": "as rector-mcp above.",
-        "tb = traceback.format_exc().splitlines()[-3:]": "our own traceback text.",
     },
     "phpstan-mcp/phpstan-mcp.py": {
         "for line in buf.splitlines():": "as rector-mcp above.",
-        "tb = traceback.format_exc().splitlines()[-3:]": "our own traceback text.",
     },
     "phpunit-mcp/phpunit-mcp.py": {
         "for line in buf.splitlines():": "as rector-mcp above.",
-        "tb = traceback.format_exc().splitlines()[-3:]": "our own traceback text.",
     },
     "terraform-check/terraform-check.py": {
         "lines = [ln.lstrip(GUTTER).strip() for ln in stripped.splitlines()]":

@@ -17,7 +17,7 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
-from refusal import tool_fault
+from refusal import guard_main, tool_fault
 from linebreaks import lf_line_of_v8_line
 
 # `node --check` opens a syntax report with the resolved path of the file it
@@ -175,4 +175,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    guard_main("node-check", main)

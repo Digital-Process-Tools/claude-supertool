@@ -42,6 +42,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -101,12 +102,30 @@ def _looked_at(tmp_path: Path, bin_name: str) -> str:
     return os.path.abspath(os.path.join(str(tmp_path), "libs", "bin", bin_name))
 
 
-def _run(mod, target: Path) -> dict:
+def _run(mod, target: Path, tool: str) -> dict:
+    """Call the adapter the way its `__main__` block does (#1697).
+
+    Not `mod.main(...)` directly. Since #1697 the publish path for anything
+    escaping `main` is `refusal.guard_main`, wrapped around the call rather
+    than around a region inside it -- which is exactly the arm
+    `test_a_daemon_that_exists_and_fails_is_still_an_error` below drives, and
+    calling `main` bare walks past it and reports the net as absent. The
+    module's own `_refusal` is used rather than a fresh import so this
+    exercises the helper the adapter itself resolved.
+
+    `sys.argv` is set for the same reason: `guard_main` reads the file path
+    off it, because in every real invocation the adapter IS `argv`.
+    """
     import io
     import contextlib
     buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        rc = mod.main(["adapter", str(target)])
+    argv = ["adapter", str(target)]
+    saved, sys.argv = sys.argv, argv
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = mod._refusal.guard_main(tool, mod.main, argv)
+    finally:
+        sys.argv = saved
     assert rc == 0
     return json.loads(buf.getvalue().strip().splitlines()[-1])
 
@@ -125,7 +144,7 @@ def test_missing_daemon_binary_at_a_path_skips(
     mod = _load_adapter(monkeypatch, tmp_path, rel, bin_env, cwd_env,
                         f"libs/bin/{bin_name}")
 
-    result = _run(mod, target)
+    result = _run(mod, target, tool)
 
     assert "skipped" in result, f"{tool} reported instead of declining: {result}"
     assert bin_name in result["skipped"]
@@ -148,7 +167,7 @@ def test_missing_daemon_binary_on_path_skips(
     mod = _load_adapter(monkeypatch, tmp_path, rel, bin_env, cwd_env,
                         f"{bin_name}-absent-from-path")
 
-    result = _run(mod, target)
+    result = _run(mod, target, tool)
 
     assert "skipped" in result, f"{tool} reported instead of declining: {result}"
     assert "composer" in result["skipped"], "the reason must stay discoverable"
@@ -175,7 +194,7 @@ def test_a_daemon_that_exists_and_fails_is_still_an_error(
         raise RuntimeError("daemon exited during handshake")
 
     monkeypatch.setattr(mod, "ensure_daemon", boom)
-    result = _run(mod, target)
+    result = _run(mod, target, tool)
 
     assert "skipped" not in result, f"{tool} silenced a real daemon failure"
     assert result["ok"] is False

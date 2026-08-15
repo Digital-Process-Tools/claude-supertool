@@ -84,7 +84,7 @@ import tempfile
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from refusal import required, required_but_absent, skipped, tool_fault
+from refusal import guard_main, required, required_but_absent, skipped, tool_fault
 
 TOOL = "gitleaks"
 
@@ -230,4 +230,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    guard_main(TOOL, main)

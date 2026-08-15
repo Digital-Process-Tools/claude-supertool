@@ -26,7 +26,7 @@ import pathlib
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
-from refusal import absent
+from refusal import absent, guard_main
 
 TOOL = "git-status"
 INSTALL_HINT = ("git not found on PATH — the working-tree delta for this file "
@@ -149,4 +149,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    guard_main(TOOL, main)

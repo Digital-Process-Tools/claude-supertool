@@ -43,7 +43,7 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
-from refusal import absent, tool_fault, skipped
+from refusal import absent, guard_main, tool_fault, skipped
 from linebreaks import lf_line_of_v8_line
 
 TIMEOUT_S = 30
@@ -508,4 +508,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    guard_main("html-check", main)

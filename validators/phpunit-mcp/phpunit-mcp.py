@@ -244,20 +244,16 @@ def main(argv: list[str]) -> int:
             "phpunit-mcp", file_path, str(e),
             int((time.monotonic() - t0) * 1000))))
         return 0
-    except Exception as e:
-        import traceback
-        tb = traceback.format_exc().splitlines()[-3:]
-        print(json.dumps({
-            "tool": "phpunit-mcp", "file": file_path, "ok": False, "count": 1,
-            "errors": [{"line": None, "col": None, "severity": "error",
-                        "code": "adapter", "msg": f"{type(e).__name__}: {e} | trace: {' | '.join(tb)}"}],
-            "duration_ms": int((time.monotonic() - t0) * 1000),
-        }))
-        return 0
     dur_ms = int((time.monotonic() - t0) * 1000)
     print(json.dumps(format_response(file_path, resp, dur_ms)))
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    # The net used to be a nine-line `except Exception` inside `main`, wrapped
+    # around `ensure_daemon` + `ndjson_call` only -- so the
+    # `print(json.dumps(format_response(...)))` two lines below it was outside
+    # every handler this adapter had, and an exception there left stdout empty
+    # exactly as if there were no net at all. Four copies of it, one per MCP
+    # adapter, differing only in the name they wrote into the payload (#1697).
+    sys.exit(_refusal.guard_main("phpunit-mcp", main, sys.argv))

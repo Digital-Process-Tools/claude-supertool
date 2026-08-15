@@ -34,6 +34,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from linebreaks import split_lines
+from refusal import guard_main
 
 
 DEFAULT_RULESETS = "cleancode,codesize,controversial,design,naming,unusedcode"
@@ -176,4 +177,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    guard_main("phpmd", main)

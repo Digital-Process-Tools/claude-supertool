@@ -1363,11 +1363,26 @@ the test**, and only running it says so.
 
 **The adapter side of the same rule.** An adapter that grants itself a budget
 must survive blowing it. Letting `TimeoutExpired` escape kills the process on
-a traceback with **empty stdout**, and every caller `json.loads()` that — so a
-slow linter surfaces as a `JSONDecodeError` naming neither the tool nor the
-timeout. Emit the decline instead (`code: "adapter"`, message naming the
-budget); `test_every_adapter_that_grants_itself_a_budget_survives_blowing_it`
-enforces it across `validators/`.
+a traceback with **empty stdout**, and a slow linter then surfaces as an
+absence rather than as a wall. Emit the decline instead (`code: "adapter"`,
+message naming the budget);
+`test_every_adapter_that_grants_itself_a_budget_survives_blowing_it` enforces
+it across `validators/`.
+
+Since [#1697](https://github.com/Digital-Process-Tools/claude-supertool/issues/1697)
+`refusal.guard_main` catches whatever still escapes and publishes it, so the
+stdout is no longer empty — but the arm above is still the one to write. The
+net names the exception class and the file that raised; the arm names the
+budget, which is the only spelling that tells a wall apart from a fault. **A
+crash net is a floor, never a substitute for the decline a code path knows how
+to make.**
+
+Two claims that used to sit on this line and are wrong, kept here because both
+are still repeated: the caller is not "every caller `json.loads()`" — the core
+tests `if not out` before it parses, and has since
+[#634](https://github.com/Digital-Process-Tools/claude-supertool/issues/634) —
+and the symptom was never a `JSONDecodeError`. It was a `skipped` reading
+`produced no output`, with the traceback discarded on a stderr nothing reads.
 
 ### Never assert an adapter's verdict as a bare boolean
 
