@@ -293,6 +293,26 @@ The third one is new. `GET /projects/:id/merge_requests/:iid/approvals` is docum
 
 The `## Issue #N` block that follows the conflicts section takes the same treatment, because it had the same two shapes: a failed lookup printed nothing at all, and a non-object payload crashed the render. It now degrades to `Issue: #N — details unavailable (<reason>)`.
 
+### `:status` sums the pipeline's legs, and the terms add back to the count
+
+`pipeline: failed` was one word where `gh-pr:N:status` sums legs ([#1607](https://github.com/Digital-Process-Tools/claude-supertool/issues/1607)). That is [#445](https://github.com/Digital-Process-Tools/claude-supertool/issues/445)/[#454](https://github.com/Digital-Process-Tools/claude-supertool/issues/454)'s arithmetic missing on the render a maintainer merges on: `canceled`, `skipped`, `manual` and `timed out` are neither passes nor pendings, and a pipeline GitLab calls **`success`** still reports them — so a run where four legs never executed rendered byte-identically to one where every leg passed.
+
+```
+pipeline: success (#4242) | a1b2c3d4 | 2026-08-15 09:12:04 | 3m12s
+  legs: 12 total: 8 passed, 0 failed, 0 pending, 2 skipped, 1 manual, 1 canceled ⚠ NOT ALL GREEN
+  skipped: deploy-staging (job #91), deploy-prod (job #92)
+```
+
+**One classifier, not two.** The tally is `presets/_checks.py`'s `summarize()` — the same function that sums GitHub's `statusCheckRollup` — fed GitLab's own job status tokens. [#958](https://github.com/Digital-Process-Tools/claude-supertool/issues/958)'s rule is that the render may legitimately differ per platform and the *judgement* may not, and the reuse is safe precisely because that module does not enumerate: GitLab's one-L `canceled` is in none of its four state sets, so it lands in the leftover term and is **named there** rather than mapped onto GitHub's two-L `CANCELLED`. Nothing is guessed. A status GitLab adds after this was written gets its own term for the same reason.
+
+**Every term after `N total` sums back to N**, including the ones nobody planned for. An element the jobs array carried that `gl-mr` could not read is still a leg of the pipeline, so it counts as `unknown` rather than shrinking the total — the `! N of M pipeline jobs had a shape supertool could not read` note below the tally and the arithmetic in it now agree, where before the note said three and the count said one.
+
+**It costs one `glab api` jobs request per `:status` call, green pipelines included.** The fetch used to be gated on the pipeline already being not-green, which is right for *naming* jobs and wrong for *counting* them: gating on redness cannot see the case the tally exists for. [#815](https://github.com/Digital-Process-Tools/claude-supertool/issues/815) forbids buying a per-call round trip **silently**, not buying one — so it is stated here, in the op's `description`, and in the README. The GitHub mirror is not the rollup (free, already in the payload) but `_declared_for_commit`, which fires 1+N requests on every `gh-pr:N:status` including green ones, on [#804](https://github.com/Digital-Process-Tools/claude-supertool/issues/804)'s argument that a request is cheaper than a merge on four green CodeQL legs.
+
+**Three states, and the third is why this is not just a count.** A jobs request that could not be completed renders `legs: UNKNOWN — <reason>` and never a zeroed tally: `0 failed, 0 pending` reads as "everything is accounted for and nothing is outstanding", which over a read nobody completed is the one reading that is definitely wrong. A pipeline that genuinely has no jobs says so in GitLab's own vocabulary (`none — the jobs API reports no job on this pipeline`) rather than borrowing `_checks.NO_CHECKS`, whose words are about check runs on a commit.
+
+**Still open on this render:** approval state, which `:full` shows and `:status` does not, because it is a second `/approvals` request and whether the slim render should pay for it is undecided — see the allowlist entry in `tests/test_gh_gl_status_parity_628.py`.
+
 ### An element the render could not read is counted, never dropped in silence
 
 Every list `gl-mr` fetches — discussions, notes, diffs, jobs, pipelines, reviewers, assignees — is documented by GitLab as an array of **objects**. The op checked that the array was an array and then called `.get()` on whatever was inside it ([#735](https://github.com/Digital-Process-Tools/claude-supertool/issues/735)). A `null`, a bare string or a nested list in any of those arrays raised `AttributeError` out of `main()` and took every section below it with it — the discussions loop sits above the pipeline, files, description and comments blocks.

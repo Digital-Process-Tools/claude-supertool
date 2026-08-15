@@ -20,7 +20,7 @@
       "cmd": "{python} {path}gitlab/mr.py {args}",
       "timeout": 20,
       "repo_target": true,
-      "description": "MR review: branch, pipeline, approval, linked issue, diff stat, per-file name-status (A/D/R/M) list, comments. A truncated description says so twice — in the header and at the cut — with the exact char count withheld. :status = slim merge-state only. :full uncaps the description, the file list + comments",
+      "description": "MR review: branch, pipeline, approval, linked issue, diff stat, per-file name-status (A/D/R/M) list, comments. A truncated description says so twice — in the header and at the cut — with the exact char count withheld. :status = slim merge-state only, plus a summed leg tally under the pipeline line whose terms add back to the job count, so a `success` pipeline hiding skipped/manual/canceled legs stops rendering as one where everything ran. That tally costs one `glab api` jobs request per call, on a green pipeline too — stated here rather than bought quietly; when it cannot be fetched the line says UNKNOWN and why, never a zeroed tally. :full uncaps the description, the file list + comments",
       "syntax": "gl-mr:NUMBER_OR_BRANCH[:status|:full]",
       "replaces": [
         { "argv": "glab mr view", "use": "gl-mr:NUMBER_OR_BRANCH" },

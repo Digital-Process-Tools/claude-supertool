@@ -79,11 +79,12 @@ _SYNONYMS: dict[str, tuple[str, str, str]] = {
         "pipeline",
         "GitHub's unit is a flat list of check runs; GitLab's is one pipeline "
         "object whose jobs nest in stages. The issue is explicit that a checks "
-        "tally shape must not be forced onto a pipeline model. Both name the "
-        "CI state on this line; that the GitHub side additionally carries a "
-        "summed leg tally and the GitLab side does not is a real gap, but it "
-        "is a gap in the value, not in the fact set, and it is tracked "
-        "separately rather than frozen here.",
+        "tally shape must not be forced onto a pipeline model, and it has not "
+        "been: both sides now sum their legs through the one classifier in "
+        "presets/_checks.py (#1607 closed that gap), but GitHub sums its "
+        "rollup inline on this line while GitLab sums a separate jobs fetch "
+        "onto an indented `legs:` line under it. The spellings differ because "
+        "the objects do; the arithmetic and the vocabulary do not.",
     ),
 }
 

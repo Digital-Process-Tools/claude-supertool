@@ -327,8 +327,23 @@ def test_gl_slim_status_names_failed_and_cancelled_jobs(monkeypatch, capsys) -> 
     assert "docs" not in out  # running — resolves itself, not named
 
 
-def test_gl_slim_status_all_green_skips_jobs_fetch_entirely(monkeypatch, capsys) -> None:
-    """Cost discipline: the extra API call is bought only when it might matter."""
+def test_gl_slim_status_all_green_buys_the_jobs_fetch_exactly_once(
+        monkeypatch, capsys) -> None:
+    """A green pipeline now DOES buy the jobs call, and this is the reversal.
+
+    This test used to be `..._skips_jobs_fetch_entirely`, asserting "the extra
+    API call is bought only when it might matter". #1607 is the finding that it
+    always matters: GitLab reports `success` for a pipeline whose jobs include
+    `skipped`, `manual` and allow-failure `canceled` legs, so the green poll is
+    exactly where legs that never ran were invisible — and the fetch is the only
+    way to see them, because no field on the pipeline object carries a job
+    count. Gating on redness cannot see the case the tally exists for.
+
+    #619's discipline is not deleted, it is narrowed to what it can still
+    defend: **one** call, and only when there is a pipeline to count. The
+    unbounded version of this cost is what the cap on `_pipeline_leg_lines`'
+    endpoint (`per_page=100`, hedged when full) already answers.
+    """
     mr_json = _mr_payload(head_pipeline={"status": "success", "id": 5002})
     calls: list[str] = []
 
@@ -345,4 +360,29 @@ def test_gl_slim_status_all_green_skips_jobs_fetch_entirely(monkeypatch, capsys)
     mr.main()
     out = capsys.readouterr().out
     assert "failed:" not in out
-    assert not any("jobs" in c for c in calls)
+    jobs_calls = [c for c in calls if "jobs" in c]
+    assert len(jobs_calls) == 1, calls
+    assert "pipelines/5002/jobs" in jobs_calls[0], jobs_calls
+
+
+def test_gl_slim_status_with_no_pipeline_buys_no_jobs_fetch(
+        monkeypatch, capsys) -> None:
+    """The half of #619's cost discipline that survives intact.
+
+    The must-fire twin of the assertion above: an empty call list has to be
+    reachable, or `len(...) == 1` there is measuring the harness.
+    """
+    mr_json = _mr_payload(head_pipeline=None)
+    calls: list[str] = []
+
+    def fake_api(endpoint, timeout=10):  # type: ignore[no-untyped-def]
+        calls.append(endpoint)
+        return _fake_gl_run("[]")
+
+    monkeypatch.setattr(mr.subprocess, "run",
+                        lambda args, **kw: _fake_gl_run(mr_json))
+    monkeypatch.setattr(mr, "_glab_api", fake_api)
+    monkeypatch.setattr(sys, "argv", ["mr.py", "618", "status"])
+    mr.main()
+    capsys.readouterr()
+    assert not any("jobs" in c for c in calls), calls

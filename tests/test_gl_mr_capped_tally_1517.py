@@ -118,9 +118,13 @@ def test_none_non_passing_off_a_full_page_is_not_a_clean_pipeline(monkeypatch) -
         mr, "_fetch_tally",
         lambda *a, **k: ([{"id": i, "name": "t", "status": "success"}
                           for i in range(100)], None, True))
-    lines = mr._named_gl_jobs(42)
+    lines = mr._pipeline_leg_lines(42)
     assert any("none non-passing" in line for line in lines), lines
     assert any("PAGE FULL" in line for line in lines), lines
+    # #1607 put a tally above that line. It is the same floor and must carry
+    # the same hedge — "100 total: 100 passed" off a full page is the exact
+    # sentence this file exists to stop being read as a total.
+    assert any(line.strip().startswith("legs: 100 total:") for line in lines), lines
 
 
 def test_none_non_passing_off_a_short_page_says_so_plainly(monkeypatch) -> None:
@@ -128,9 +132,13 @@ def test_none_non_passing_off_a_short_page_says_so_plainly(monkeypatch) -> None:
         mr, "_fetch_tally",
         lambda *a, **k: ([{"id": 1, "name": "t", "status": "success"}],
                          None, False))
-    lines = mr._named_gl_jobs(42)
+    lines = mr._pipeline_leg_lines(42)
     assert any("none non-passing" in line for line in lines), lines
     assert not any("PAGE FULL" in line for line in lines), lines
+    # The twin: an uncapped tally prints as exact, or the hedge above stops
+    # meaning anything.
+    assert any(line.strip() == "legs: 1 total: 1 passed, 0 failed, 0 pending"
+               for line in lines), lines
 
 
 # ---------------------------------------------------------------------------

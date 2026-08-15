@@ -11,7 +11,7 @@ The file is right and the count is wrong. `presets/gitlab/mr.py` renders a job
 name from the pipeline API in **two** places, not one, and they are on different
 renders:
 
-* `_named_gl_jobs` — `  {status}: {name} (job #{id}), ...`, the block the
+* `_pipeline_leg_lines` — `  {status}: {name} (job #{id}), ...`, the block the
   **`:status`** render prints. That is the poll-loop render: read most often and
   looked at least closely, which is the argument #982 makes for the board and
   which applies here with more force.
@@ -73,7 +73,7 @@ def _jobs(sep: str) -> list[dict]:
 def _named(monkeypatch: Any, sep: str) -> list[str]:
     monkeypatch.setattr(mr_mod, "_fetch_array",
                         lambda endpoint, noun, timeout=10: (_jobs(sep), None))
-    return mr_mod._named_gl_jobs(77)
+    return mr_mod._pipeline_leg_lines(77)
 
 
 def _failed(monkeypatch: Any, sep: str) -> list[str]:
