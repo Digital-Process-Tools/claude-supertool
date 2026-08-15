@@ -819,12 +819,29 @@ def main() -> int:
                     # sort past it. Everything was stat'd, including what is
                     # cut, so the newest hidden write is free to report — and
                     # it is the one fact that would otherwise cost a second
-                    # call to `git-status:full`. Silent when no hidden row had
-                    # a readable time, rather than reporting the newest of the
-                    # ones that happened to answer.
-                    hidden = [a for a, _w in timed[10:] if a is not None]
-                    extra = (f", newest of them written {_age(min(hidden))} ago"
-                             if hidden else "")
+                    # call to `git-status:full`.
+                    #
+                    # Three states here too, and the first draft of this line
+                    # had two. `... (5 more)` with nothing after it rendered
+                    # identically whether every hidden row was stat'd and none
+                    # was recent, or NONE of them could be stat'd at all — and
+                    # the second is precisely the state another process writing
+                    # in your tree produces. `newest of them written 0s ago`
+                    # was the same defect facing the other way: true about the
+                    # rows that answered, silent about the ones that did not,
+                    # so a reader takes it as a statement about all five.
+                    cut = timed[10:]
+                    known = [a for a, _w in cut if a is not None]
+                    blind = len(cut) - len(known)
+                    if not known:
+                        extra = (f", newest write among them UNKNOWN — no "
+                                 f"mtime here could be read")
+                    else:
+                        extra = f", newest of them written {_age(min(known))} ago"
+                        if blind:
+                            extra += (f"; {blind} of {len(cut)} mtimes "
+                                      f"unreadable, so a newer write may be "
+                                      f"among them")
                     print(f"  ... ({len(untracked) - 10} more{extra})")
 
     # 4. Stash

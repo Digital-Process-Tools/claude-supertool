@@ -203,3 +203,80 @@ def test_truncated_default_view_still_reports_the_newest_hidden_write(tmp_path, 
     more = next(l for l in out.splitlines() if l.strip().startswith("... (5 more"))
     assert ("newest of them written 0s ago" in more
             or "newest of them written 1s ago" in more), more
+    assert "unreadable" not in more, more
+
+
+def test_a_hidden_tail_nobody_could_time_says_so_rather_than_going_quiet(
+        tmp_path, monkeypatch) -> None:
+    """The same defect one level in: silence where the newest hidden write goes.
+
+    A `... (5 more)` with no time on it renders identically whether every hidden
+    row was stat'd and none was interesting, or none of them could be stat'd at
+    all. The second is exactly the state a process writing in your tree
+    produces, so the marker has to say which it is.
+
+    Real, not mocked: the five hidden rows are really removed between `git
+    status` and the stat, the same race the sibling test uses.
+    """
+    repo = _init_repo(tmp_path)
+    old = time.time() - 86400
+    for i in range(10):
+        p = repo / ("a_" + format(i, "02d"))
+        p.write_text("x" + NL)
+        os.utime(p, (old, old))
+    for i in range(5):
+        (repo / ("z_" + str(i))).write_text("gone by the time we look" + NL)
+
+    real_git = status._git
+
+    def racing_git(args, timeout=None):
+        res = real_git(args, timeout)
+        if args[:1] == ["status"]:
+            for i in range(5):
+                gone = repo / ("z_" + str(i))
+                if gone.exists():
+                    gone.unlink()
+        return res
+
+    monkeypatch.setattr(status, "_git", racing_git)
+    _stub_no_mr(monkeypatch)
+    out = _run_main(repo, monkeypatch)
+
+    more = next(l for l in out.splitlines() if l.strip().startswith("... (5 more"))
+    assert "UNKNOWN" in more, more
+    assert "5 of 5" in more or "no mtime" in more, more
+    # Paired positive control in the same fixture: the ten VISIBLE rows were
+    # readable and do carry a time, so this cannot pass by the column having
+    # collapsed everywhere.
+    assert "written 24h ago" in _line_for(out, "a_00")
+
+
+def test_a_partly_readable_hidden_tail_reports_both_halves(tmp_path, monkeypatch) -> None:
+    """Newest known write AND how many could not be read — neither alone."""
+    repo = _init_repo(tmp_path)
+    old = time.time() - 86400
+    for i in range(10):
+        p = repo / ("a_" + format(i, "02d"))
+        p.write_text("x" + NL)
+        os.utime(p, (old, old))
+    for i in range(5):
+        (repo / ("z_" + str(i))).write_text("y" + NL)
+
+    real_git = status._git
+
+    def racing_git(args, timeout=None):
+        res = real_git(args, timeout)
+        if args[:1] == ["status"]:
+            for i in (0, 1):
+                gone = repo / ("z_" + str(i))
+                if gone.exists():
+                    gone.unlink()
+        return res
+
+    monkeypatch.setattr(status, "_git", racing_git)
+    _stub_no_mr(monkeypatch)
+    out = _run_main(repo, monkeypatch)
+
+    more = next(l for l in out.splitlines() if l.strip().startswith("... (5 more"))
+    assert "newest of them written" in more, more
+    assert "2 of 5" in more, more
