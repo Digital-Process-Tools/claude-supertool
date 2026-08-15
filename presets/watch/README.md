@@ -170,7 +170,7 @@ environment one. This repository shipped exactly that shape until #1732. Every
 render now names the watch ops that declare nothing, so the gap is visible
 rather than inferred.
 
-**That configures four of the five surfaces, and the fifth is the one that
+**That configures five of the six surfaces, and the sixth is the one that
 matters.** `claude-channel` is spawned by the harness from `.mcp.json`, never by
 supertool, so no config key reaches it. Two routes do:
 

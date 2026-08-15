@@ -49,6 +49,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import NamedTuple
@@ -352,21 +353,39 @@ class Declared(NamedTuple):
     why: str = ""
 
 
-def find_config(start_dir: str | None = None) -> str:
-    """The nearest `.supertool.json` at or above `start_dir`, or "".
+def find_config(start_dir: str | None = None) -> tuple[str, str]:
+    """(the nearest `.supertool.json` at or above `start_dir`, why not).
 
     The same upward walk the core does to decide which project an op belongs to,
     reproduced here rather than imported: this module is loaded by a preset
-    subprocess that has no route back into the core, and the walk is four lines.
+    subprocess that has no route back into the core, and the walk is a few lines.
+
+    **`os.path.isfile` is the wrong test here and that is the whole reason this
+    returns two values.** `genericpath.isfile` is an `os.stat` inside
+    `except (OSError, ValueError): return False`, so a directory in the walk that
+    this uid cannot traverse answers *there is no config here* in exactly the
+    words a directory that genuinely has none uses. The walk then keeps climbing
+    and `declared_names` reports `no-config` — a claim about the world built on a
+    look that failed, one level above the `open`/`json.load` pair that was
+    already careful to tell `unreadable` from absent. Raised in review of #1732
+    against this function's first version, which had it.
     """
     here = os.path.abspath(start_dir if start_dir is not None else os.getcwd())
     while True:
         candidate = os.path.join(here, CONFIG_NAME)
-        if os.path.isfile(candidate):
-            return candidate
+        try:
+            if stat.S_ISREG(os.stat(candidate).st_mode):
+                return candidate, ""
+        except (FileNotFoundError, NotADirectoryError):
+            # The two shapes of "there is nothing here", on every platform CI
+            # runs. Anything else is a look that failed and is answered below.
+            pass
+        except OSError as err:
+            return "", (f"{_untrusted.flat(candidate, disclose_newline=True)} "
+                        f"could not be reached ({type(err).__name__})")
         parent = os.path.dirname(here)
         if parent == here:
-            return ""
+            return "", ""
         here = parent
 
 
@@ -377,7 +396,10 @@ def declared_names(start_dir: str | None = None) -> Declared:
     is imported by a detached poller. `transport.channel_disclosure` calls it on
     the render path, where there is a reader.
     """
-    path = find_config(start_dir)
+    path, unreachable = find_config(start_dir)
+    if unreachable:
+        return Declared(state=DECLARED_UNREADABLE, path="", names=(),
+                        declaring_ops=(), silent_ops=(), why=unreachable)
     if not path:
         return Declared(state=DECLARED_NO_CONFIG, path="", names=(),
                         declaring_ops=(), silent_ops=tuple(WATCH_OPS))
@@ -455,8 +477,13 @@ def project_notes(resolved: Resolved, declared: Declared | None) -> list[str]:
     out: list[str] = []
     where = _untrusted.flat(declared.path, disclose_newline=True)
     if declared.state == DECLARED_UNREADABLE:
-        return [f"{where} could not be read ({declared.why}), so which project "
-                f"claims {name or 'this channel'} is unknown — not unclaimed"]
+        # `path` is "" when the *walk* failed rather than the parse, and there
+        # `why` already names the path it could not reach. One branch, so the
+        # two ways of not knowing read as the same answer, which they are.
+        what = (f"{where} could not be read ({declared.why})" if where
+                else declared.why)
+        return [f"{what}, so which project claims {name} is unknown — "
+                f"not unclaimed"]
     if declared.state == DECLARED_NO_CONFIG:
         return [f"no {CONFIG_NAME} at or above this directory, so nothing here "
                 f"claims the name {name} — this socket and these poller slots "

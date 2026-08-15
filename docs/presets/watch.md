@@ -1370,6 +1370,33 @@ nobody reads. A name losing silently to a stale export is exactly the silence
 this whole section is about, and until #1495 the boards were where it still
 happened.
 
+**Every board also says which project claims the name**
+([#1732](https://github.com/Digital-Process-Tools/claude-supertool/issues/1732)).
+One name is one socket and one slot directory, so two projects under it are one
+fleet, and until #1732 that rendered exactly like a correct private one. On a
+named channel, `watches`, `radar` and `channel:health` read the
+`.supertool.json` at or above the CWD and say what it claims:
+
+```
+watches: name oss-supertool (from SUPERTOOL_WATCH_NAME) — socket /tmp/supertool-watch-oss-supertool.sock, poller slots /tmp/supertool-watch-oss-supertool
+watches: name oss-supertool is declared by /path/to/repo/.supertool.json (ops: channel, radar, unwatch, watch, watches) — this project's own channel
+```
+
+and, from a second project running the same exported name:
+
+```
+watches: /other/repo/.supertool.json declares no watch_name in any op block, so oss-supertool came from the environment — this socket and these poller slots may be another project's fleet
+```
+
+Four states, and the last two are deliberately not the same answer: `found`,
+`silent` (a config declaring none), `no-config` (nothing above the CWD), and
+`unreadable` — a config that could not be parsed, **or a directory in the walk
+this uid cannot traverse**, which is stated as *unknown, not unclaimed*. It also
+names the `WATCH_OPS` that declare nothing, because a `watch_name` reaches only
+its own op's subprocess and `watch`/`unwatch` are the ones that spawn and kill
+pollers. **Precedence does not move**: the environment stays authoritative, and
+the attribution is a render.
+
 **The name has two homes, and the check is the deliverable.** A key in
 `.supertool.json` reaches every poller, `radar` and `channel:health` through the
 config-to-env route (`docs/contributing.md`) — and it cannot reach the consumer,
@@ -1382,8 +1409,9 @@ which the harness spawns from `.mcp.json`:
     "env": { "SUPERTOOL_WATCH_NAME": "b" } } } }
 ```
 
-Configuring three of four surfaces is the half-configured state through a new
-door, so `channel:health` reads `.mcp.json` at the plugin root and at the
+Configuring five of six surfaces — the five ops of `WATCH_OPS`, but not the
+consumer — is the half-configured state through a new door, so `channel:health`
+reads `.mcp.json` at the plugin root and at the
 current directory and compares the socket each declares against the one this
 process uses. Three states: they agree (one line, only when a name is in play —
 agreement is not news), they disagree (both resolved sockets named, always), or

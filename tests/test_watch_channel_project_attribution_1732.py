@@ -122,6 +122,67 @@ def test_an_unparseable_config_is_unreadable_and_never_no_config(tmp_path) -> No
     assert declared.why, "an unreadable state with no reason is a bare refusal"
 
 
+@pytest.mark.skipif(
+    os.name == "nt" or os.geteuid() == 0,
+    reason="needs a directory this uid cannot traverse: Windows does not honour "
+           "a 0o000 mode this way, and root traverses it regardless")
+def test_a_directory_the_walk_cannot_traverse_is_unreadable_not_absent(
+        tmp_path) -> None:
+    """The absence the *tool* produced, one level above the parse.
+
+    `os.path.isfile` is `os.stat` inside `except OSError: return False`, so the
+    first version of the walk answered "no config here" for a directory it could
+    not traverse and kept climbing — reporting `no-config`, which is a claim
+    about the world, off a look that failed. Raised in review of #1732."""
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    inner = locked / "repo"
+    inner.mkdir()
+    locked.chmod(0o000)
+    try:
+        declared = naming.declared_names(str(inner))
+    finally:
+        locked.chmod(0o700)
+    assert declared.state == naming.DECLARED_UNREADABLE, declared
+    assert declared.state != naming.DECLARED_NO_CONFIG
+    blob = _blob(naming.resolve(NAMED), declared)
+    assert "unknown" in blob, blob
+    assert "nothing here claims" not in blob, blob
+
+
+def test_a_traversable_walk_that_finds_nothing_is_still_absent(tmp_path) -> None:
+    """The positive control for the assertion above: the refusal must not have
+    swallowed the ordinary "there is genuinely no config" answer."""
+    inner = tmp_path / "plain" / "repo"
+    inner.mkdir(parents=True)
+    assert naming.declared_names(str(inner)).state == naming.DECLARED_NO_CONFIG
+
+
+def test_a_watch_name_on_a_non_watch_op_counts_and_that_is_deliberate(
+        tmp_path) -> None:
+    """Reviewed and kept (#1732).
+
+    Restricting the scan to `WATCH_OPS` looks tidier and would be wrong: the
+    config-to-env route is **per op**, so `{"dashboard": {"watch_name": "x"}}`
+    really does put `dashboard`'s subprocess on channel `x`. Reporting that as a
+    disagreement is accurate; hiding it would make the one surface that can see
+    a stray declaration decline to mention it. The deleted `bin/supertool-workspace`
+    scanned every block for the same reason, and `bin/oss-workspace` still does.
+    `silent_ops` is the half that is scoped to `WATCH_OPS`, because "which ops
+    resolve from the environment alone" is only a question about this preset's."""
+    root = _project(tmp_path / "repo", {
+        **{op: {"watch_name": "oss-supertool"} for op in naming.WATCH_OPS},
+        "dashboard": {"watch_name": "somewhere-else"},
+    })
+    declared = naming.declared_names(str(root))
+    assert "dashboard" in declared.declaring_ops, declared
+    assert declared.names == ("oss-supertool", "somewhere-else"), declared
+    assert declared.silent_ops == (), "every WATCH_OP declares one"
+    blob = _blob(naming.resolve(NAMED), declared)
+    assert "disagree" in blob, blob
+    assert "somewhere-else" in blob, blob
+
+
 def test_op_blocks_that_disagree_are_all_reported(tmp_path) -> None:
     root = _project(tmp_path / "repo", {
         "watches": {"watch_name": "oss-supertool"},
