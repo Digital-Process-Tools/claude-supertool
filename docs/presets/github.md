@@ -523,6 +523,8 @@ The last row is the line this fix deliberately does not cross. Pre-judging a val
 
 **One tokenizer, not three.** The parser, the vocabulary check and the wording of both refusals live in `presets/_filter_tokens.py`, shared by `gh-issues`, `gh-prs` and `gl-mrs`. Two independently written refusal paths in one preset family is how they drifted apart in the first place ([#628](https://github.com/Digital-Process-Tools/claude-supertool/issues/628)).
 
+**And one digit test, not eleven.** "Is this a number" is `presets/_digits.py::is_ascii_int`, and `str.isdigit()` is never it ([#1727](https://github.com/Digital-Process-Tools/claude-supertool/issues/1727)). It is True for two classes that behave differently and are both wrong: Unicode decimals (`٢`, `۲`, `২`), which `int()` converts, so the op runs against a number the caller did not type; and superscripts (`²`, `³`), where `str.isdecimal()` is False and `int()` **raises**, so an `isdigit()`-then-`int()` line is an uncaught `ValueError` on caller text. `per=²` reached that inside `bad_values` — the guard whose job is to refuse the value — and `gh-following:²` and `gh-starred:²` died before fetching anything. `str.isdecimal()` closes the second class and not the first, so it is not the answer either; what these call sites mean is ASCII digits, which is what a forge id, a page size and a PR number are.
+
 ### `gh-prs` declines its watch column under a target
 
 Watch pollers write `supertool-watch-github-pr__{number}.pid` — keyed by PR number, with no repo in the key. Under a repo target that key is ambiguous: a live poller for `#12` of the repo you are standing in cannot be told apart from `#12` of the repo the board is about.

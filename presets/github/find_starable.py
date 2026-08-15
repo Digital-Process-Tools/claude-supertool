@@ -22,6 +22,7 @@ import urllib.parse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
+import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
 
 
 def parse_args(arg: str) -> tuple[str, int]:
@@ -33,8 +34,11 @@ def parse_args(arg: str) -> tuple[str, int]:
     if not topic:
         sys.stderr.write("ERROR: empty topic\n")
         sys.exit(2)
-    n = int(parts[1]) if len(parts) > 1 and parts[1].strip().isdigit() else int(
-        os.environ.get("SUPERTOOL_DEFAULT_LIMIT", "30"))
+    # ASCII digits, not `str.isdigit()`: the latter is True for `²`, where
+    # `int()` raises and this line died before the search ran (#1727).
+    n = (int(parts[1])
+         if len(parts) > 1 and _digits.is_ascii_int(parts[1].strip())
+         else int(os.environ.get("SUPERTOOL_DEFAULT_LIMIT", "30")))
     return topic, min(n, 100)
 
 

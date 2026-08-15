@@ -42,6 +42,8 @@ sentences:
 from __future__ import annotations
 
 import re
+
+import _digits  # (the one ASCII-digit test, shared since #1727)
 import string
 
 # Sentinel domain: the value must parse as an integer >= 1. Used for `per=`,
@@ -119,7 +121,7 @@ def looks_like_ref(value: object) -> bool:
         return False
     # Four digits then a dash: the caller meant a date. Send them back to the
     # date refusal rather than off hunting for a tag.
-    if len(text) >= 5 and text[:4].isdigit() and text[4] == "-":
+    if len(text) >= 5 and _digits.is_ascii_int(text[:4]) and text[4] == "-":
         return False
     return all(c in _REF_ALLOWED for c in text)
 
@@ -387,11 +389,18 @@ def bad_values(
             continue
         val = filters[key]
         if allowed is POSITIVE_INT:
-            ok = val.isdigit() and int(val) >= 1
+            # `str.isdigit()` is not this test and this is the site that proved
+            # it (#1727): it is True for `²`, where `str.isdecimal()` is False
+            # and `int()` RAISES — so `gh-issues:per=²` died with an uncaught
+            # ValueError inside the guard whose whole job is to name a value the
+            # op cannot honour. It is also True for `٢`, which converts to 2 and
+            # would have been honoured as a page size nobody typed.
+            ok = _digits.is_ascii_int(val) and int(val) >= 1
             expected = POSITIVE_INT
         elif allowed is POSITIVE_INT_LIST:
             members = [m.strip() for m in val.split(",")]
-            ok = bool(members) and all(m.isdigit() and int(m) >= 1 for m in members)
+            ok = bool(members) and all(
+                _digits.is_ascii_int(m) and int(m) >= 1 for m in members)
             expected = POSITIVE_INT_LIST
         elif allowed is ISO_INSTANT:
             ok = parse_iso_instant(val) is not None

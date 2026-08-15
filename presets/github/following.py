@@ -10,10 +10,16 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
+import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
 
 
 def main(arg: str) -> int:
-    n = int(arg) if arg.strip().isdigit() else env_int("SUPERTOOL_DEFAULT_LIMIT", 30, minimum=1)
+    # `str.isdigit()` here was an uncaught ValueError: it is True for `²`,
+    # where `int()` raises, so `gh-following:²` died before it fetched anything
+    # (#1727). A junk limit falls back to the default, as it always did for
+    # every other non-numeric argument.
+    n = (int(arg) if _digits.is_ascii_int(arg.strip())
+         else env_int("SUPERTOOL_DEFAULT_LIMIT", 30, minimum=1))
     result = subprocess.run(
         ["gh", "api", f"user/following?per_page={min(n, 100)}"],
         capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",

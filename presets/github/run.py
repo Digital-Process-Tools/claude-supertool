@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 from collections import Counter
@@ -18,6 +17,7 @@ import _declared_legs  # noqa: E402  (the second leg count, shared with gh-pr / 
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 import _untrusted  # noqa: E402  (a run's branch and its workflow/job names are remote text — #851/#965)
+import _digits  # noqa: E402  (the one ASCII-digit test, shared with every preset that reads an id — #1727)
 
 # Parenthetical that keeps GitHub's own run-level field visible next to the
 # computed tally (#789). Visible, but never leading: `Status: queued` was
@@ -42,11 +42,12 @@ _TERMINAL_RUN_STATUS = "completed"
 _STEP_CAP = _checks.NAMED_CAP
 
 
-#: Anchored with `\Z` and not `$`: Python's `$` also matches immediately before
-#: a final newline, so `^[0-9]+$` accepts `"5\n"` — through the one guard whose
-#: whole purpose is to refuse before anything is fetched (#1188). Both values it
-#: gates are built into a subprocess argv.
-_DIGITS = re.compile(r"^[0-9]+\Z")
+#: Shared since #1727 rather than retyped here. `presets/_digits.py` carries the
+#: `\Z` anchor (#1188) and both character classes `str.isdigit()` wrongly admits;
+#: this module keeping its own copy is how the loose spelling got to be the one
+#: nine other presets copied. Both values it gates are built into a subprocess
+#: argv.
+_DIGITS = _digits.DIGITS
 
 #: The attempt selector's token. `attempt=N` and not a bare second number:
 #: `gh-run:31815095925:1` says nothing at the call site about what the 1 is, and

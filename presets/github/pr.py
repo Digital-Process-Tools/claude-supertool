@@ -18,6 +18,7 @@ import _checks  # noqa: E402  (the one check tally, shared with gh-prs / git-sta
 import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run / gh-branch)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
+import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
@@ -900,8 +901,10 @@ def main() -> int:
     desc_max = None if full else DESCRIPTION_MAX
     comment_max = None if full else COMMENT_MAX
 
-    # If not all digits, treat as branch name
-    if not arg.isdigit():
+    # If not all ASCII digits, treat as branch name. `str.isdigit()` was the
+    # test until #1727 and admitted `٢`, which then went to `gh pr view ٢` as
+    # though the caller had named a PR.
+    if not _digits.is_ascii_int(arg):
         try:
             branch_result = _gh([
                 "pr", "list", "--head", arg, "--json", "number",

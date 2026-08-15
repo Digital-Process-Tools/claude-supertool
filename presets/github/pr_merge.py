@@ -60,6 +60,7 @@ import _publish_safety  # noqa: E402
 import _refname  # noqa: E402
 import _repo_target  # noqa: E402
 import _untrusted  # noqa: E402
+import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
 
 
 def _load_pr_module():
@@ -1215,7 +1216,9 @@ def parse_argv(argv: Sequence[str]) -> tuple[str, str, bool, bool, str]:
             if piece:
                 tokens.append(piece)
 
-    if not tokens or not tokens[0].isdigit():
+    # ASCII digits, not `str.isdigit()` (#1727) — this number is the one that
+    # decides which PR gets merged, and it comes off the caller's op string.
+    if not tokens or not _digits.is_ascii_int(tokens[0]):
         return ("", "squash", False, False, _usage())
 
     number, method, force, cleanup = tokens[0], "squash", False, False
