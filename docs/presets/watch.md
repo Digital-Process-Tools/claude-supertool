@@ -1602,7 +1602,7 @@ to the socket at all, which is the normal state of most sessions. The footers
 name that case rather than letting the board report an ordinary session as
 broken.
 
-## Opening a session the channel can reach — `bin/supertool-workspace` ([#1538](https://github.com/Digital-Process-Tools/claude-supertool/issues/1538))
+## Opening a session the channel can reach — `bin/oss-workspace` ([#1538](https://github.com/Digital-Process-Tools/claude-supertool/issues/1538), [#1729](https://github.com/Digital-Process-Tools/claude-supertool/issues/1729))
 
 Two conditions have to hold at once for a live watch, and neither is the default:
 
@@ -1612,17 +1612,25 @@ Two conditions have to hold at once for a live watch, and neither is the default
   `radar` reads `ops.radar.radar_tiers` from the CWD's project root — started
   elsewhere it opens some other repo's board, or refuses.
 
+**The launcher lives in the `oss` plugin, not in this repository.** `bin/supertool-workspace`
+was here until #1729 and is gone: `bin/oss-workspace` does everything it did,
+works over any repository rather than only this one, and adds the two checks this
+copy never had — it clears `CDPATH` before any `cd`, and it reports a
+`.supertool.json` that declares no radar tiers, which is the armed-board-that-
+delivers-nothing state one level earlier than `channel:health` can see it.
+
 ```bash
-ln -sf "$PWD/bin/supertool-workspace" ~/.local/bin/supertool-workspace
-supertool-workspace                 # from any directory
-supertool-workspace --model opus    # extra args pass through verbatim
+ln -sf ~/.claude/plugins/cache/dpt-plugins/oss/<version>/bin/oss-workspace ~/.local/bin/oss-workspace
+oss-workspace                 # from the repository you mean, not from anywhere
+oss-workspace --model opus    # extra args pass through verbatim
 ```
 
-The script resolves the clone from **its own location**, walking the symlink
-first, rather than from a path under `$HOME` — so it works for any checkout, the
-same way `supertool` itself reaches `PATH`. It refuses rather than launching if
-the directory it resolved has no `.supertool.json`, because a session opened over
-a non-project root is a radar with no tiers, which renders as a quiet board.
+The **working directory is the selection**: `oss-workspace` opens the repository
+you are standing in and leaves the CWD exactly where you put it, rather than
+resolving one clone from its own location the way this repo's copy did. It says
+so rather than refusing when there is no `.supertool.json`, because a session
+with no board is still a session; check `supertool 'channel:health'` before
+trusting a board it did open.
 
 A shell alias was the earlier recipe and is worse in two ways that both bit: it
 lives in a dotfile no test can read and no clone carries, and the one in
@@ -1631,7 +1639,7 @@ circulation had no `cd` in it at all.
 **The launcher carries this clone's channel name to the consumer, and nothing
 about it ships.** Nothing in `.supertool.json` is read by `channel.ts` — the
 harness spawns it — so the name has to arrive some other way. It arrives in the
-environment: the launcher reads the one `watch_name` its clone declares and
+environment: the launcher reads the one `watch_name` the repository declares and
 exports it before `exec`, and a stdio MCP server the harness spawns inherits that
 environment (measured against claude 2.1.219 with a probe server that dumps
 `env`). One source of truth, no second copy to drift.
@@ -1647,13 +1655,12 @@ checkout is a different thing and still works; an explicit
 `SUPERTOOL_WATCH_NAME` already in your environment wins over the launcher's, and
 the launcher says so on stderr rather than moving the paths under a live fleet.
 
-**The trailing `/opensource-manager` prompt is appended only when there is
-nothing else to pass.** `claude [options] [command] [prompt]` takes one
-positional: a second is accepted and then ignored, and a variadic option
-(`--add-dir a b`) swallows whatever follows it. So arguments and the prompt
-cannot both be delivered — with arguments the argv is left exactly as given and
-the launcher says on stderr that the prompt was not appended. Run
-`/opensource-manager` inside the session, or start it with no arguments.
+**`claude [options] [command] [prompt]` takes one positional**: a second is
+accepted and then ignored, and a variadic option (`--add-dir a b`) swallows
+whatever follows it. `bin/supertool-workspace` appended its `/opensource-manager`
+prompt last and therefore delivered it only when there were no arguments, saying
+so on stderr otherwise; `bin/oss-workspace` puts the prompt **first** and the
+channel flag last, which is the ordering that delivers both.
 
 Check the result rather than trusting the recipe:
 
@@ -1706,7 +1713,8 @@ halves measured against claude 2.1.219 in
 So two facts are read: the process that spawned the socket-holder (`ps`, via the
 consumer's ppid — the harness spawns an MCP server as a child of the session),
 and whether the tag in its argv names a configured server (`claude mcp get`, the
-same question `bin/supertool-workspace` asks before it registers the consumer).
+same question the `oss` plugin's `bin/oss-workspace` asks before it registers
+the consumer).
 
 | What is read | Verdict |
 |---|---|

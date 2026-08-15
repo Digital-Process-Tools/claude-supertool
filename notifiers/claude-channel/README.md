@@ -407,7 +407,7 @@ failure this is preventing. Two ways forward:
   word ([#1477](https://github.com/Digital-Process-Tools/claude-supertool/issues/1477)).
   Export it in the environment the session is launched from — the harness passes
   its own environment to the servers it spawns, which is what
-  `bin/supertool-workspace` relies on — or set it in this server's `env` block in
+  the `oss` plugin's `bin/oss-workspace` relies on — or set it in this server's `env` block in
   a project `.mcp.json` you ship to nobody (never in a plugin's, #1541). Set
   `watch_name` on the watch ops in `.supertool.json` for the producers;
   `channel:health` compares the two files, and says the comparison could not be

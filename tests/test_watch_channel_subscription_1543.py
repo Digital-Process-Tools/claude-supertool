@@ -10,7 +10,8 @@ was listening on.
 pins which part.** Two facts are readable: the process that spawned the
 socket-holder, and whether the channel tag in that process's argv names an MCP
 server the harness has *configured* — `claude mcp get NAME`, the same question
-`bin/supertool-workspace` asks before it registers the consumer. Neither is a
+the `oss` plugin's `bin/oss-workspace` asks before it registers the consumer.
+Neither is a
 statement about what the session did with the notification, which stays
 unobservable and stays in `CEILING`.
 
@@ -48,9 +49,9 @@ from _changelog_findable import assert_change_is_findable  # noqa: E402
 
 CONSUMER_ARGV = "bun /Users/x/notifiers/claude-channel/channel.ts"
 SESSION_PID = 4242
-TAGGED = ("claude /opensource-manager "
+TAGGED = ("claude /oss:tick "
           "--dangerously-load-development-channels server:supertool-channel")
-UNTAGGED = "claude /opensource-manager"
+UNTAGGED = "claude /oss:tick"
 
 
 def _sock_path() -> str:
@@ -183,7 +184,7 @@ def test_the_counters_are_still_printed_under_the_new_verdict(forwarding, monkey
 # --- what must still be FORWARDING -------------------------------------------
 
 def test_a_configured_tag_is_still_forwarding(forwarding, monkeypatch):
-    """The known-good state measured on 2026-08-13: `supertool-workspace`
+    """The known-good state measured on 2026-08-13: the workspace launcher
     registers the consumer at local scope and tags it, and events arrive."""
     _process_table(monkeypatch, TAGGED)
     _configured(monkeypatch, True)

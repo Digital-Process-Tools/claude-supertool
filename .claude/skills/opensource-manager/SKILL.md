@@ -535,17 +535,19 @@ an unflagged session's radar as a snapshot, not a live watch, and say which you 
 
 Only needed when you want to be _woken_ by a red PR. Skip all of it for a one-shot board.
 
-1. **Launch with `bin/supertool-workspace`** (#1538). Two things must be true at once and neither is
+1. **Launch with the `oss` plugin's `bin/oss-workspace`** (#1538, #1729 — `bin/supertool-workspace`
+   was this repo's own copy and is deleted). Two things must be true at once and neither is
    the default: the flag, which is **undocumented** (absent from `claude --help`, verified
    2026-08-07, so no `settings.json` key can be assumed and none should be invented), and the
    **directory**, because `radar` reads its tiers from the CWD's project root — started anywhere
    else it opens some other repo's board, or refuses. The launcher does both, exports the channel
-   name out of the clone's own `.supertool.json` so the harness-spawned consumer inherits it, and
-   passes any extra arguments through verbatim:
+   name out of the repository's own `.supertool.json` so the harness-spawned consumer inherits it,
+   and passes any extra arguments through verbatim. **The CWD is the selection** — it opens the
+   repository you are standing in, so `cd` here first:
 
    ```bash
-   ln -sf ~/Documents/claude-supertool/bin/supertool-workspace ~/.local/bin/supertool-workspace
-   supertool-workspace                      # from anywhere
+   ln -sf ~/.claude/plugins/cache/dpt-plugins/oss/<version>/bin/oss-workspace ~/.local/bin/oss-workspace
+   cd ~/Documents/claude-supertool && oss-workspace
    ```
 
    **It registers the consumer itself, and that is the part that was missing until #1544.** The

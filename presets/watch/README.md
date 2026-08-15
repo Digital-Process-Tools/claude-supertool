@@ -179,8 +179,8 @@ A plugin's own `.mcp.json` installs for everybody, so a name true of one checkou
 puts every other user's consumer on a socket their own pollers never bind — this
 repository did exactly that and took it back out in
 [#1541](https://github.com/Digital-Process-Tools/claude-supertool/issues/1541).
-`bin/supertool-workspace` is the export route: it reads the one `watch_name` its
-clone declares and exports it before launching. The `env` block is for an
+The `oss` plugin's `bin/oss-workspace` is the export route: it reads the one
+`watch_name` the repository declares and exports it before launching. The `env` block is for an
 `.mcp.json` you wrote for your own project root and ship to nobody.
 
 A name in one file and not the other *is* the half-configured state, arriving
