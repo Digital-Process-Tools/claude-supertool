@@ -31,5 +31,14 @@ supertool
 .claude/jit-context/.discovery/
 .claude/remember/
 
+# The harness's per-machine settings. The tracked `.claude/settings.json` next
+# to it carries only the raw-command guard registration, which every clone
+# should inherit; everything the harness maintains for one disk -- the
+# `enabledPlugins` roster, MCP server toggles -- belongs here instead. Ignored
+# by name because the maintainer's disk ignored it only through
+# `~/.config/git/ignore`, a file no other clone has, so everywhere else it sat
+# untracked and one `git add -A` from being committed (#1747).
+.claude/settings.local.json
+
 .max/
 .max-ci.log
