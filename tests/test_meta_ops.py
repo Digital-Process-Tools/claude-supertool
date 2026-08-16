@@ -24,7 +24,12 @@ def test_ops_no_config(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_ops_builtin_ops_section(tmp_path: Path, monkeypatch) -> None:
-    """builtin-ops section renders syntax, description, and example."""
+    """builtin-ops section renders syntax, description, and example.
+
+    Asserted against `full=True` since #1774: the default listing is
+    signatures, and the descriptive render moved behind `ops:full`. The
+    signature half is asserted on the default too, below.
+    """
     config = tmp_path / ".supertool.json"
     config.write_text(json.dumps({
         "builtin-ops": {
@@ -43,12 +48,15 @@ def test_ops_builtin_ops_section(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     supertool._CONFIG = None
     supertool._CONFIG_CHECKED = False
-    out = supertool.op_ops()
+    out = supertool.op_ops(full=True)
     assert "read:PATH[:OFFSET:LIMIT]" in out
     assert "Read file (300 lines, 20KB cap)" in out
     assert "read:src/foo.py:10:50" in out
     assert "grep:PATTERN:PATH[:LIMIT]" in out
     assert "Search files" in out
+    default = supertool.op_ops()
+    assert "read:PATH[:OFFSET:LIMIT]" in default
+    assert "Read file (300 lines, 20KB cap)" not in default
 
 
 def test_ops_custom_ops_with_description(tmp_path: Path, monkeypatch) -> None:
@@ -67,7 +75,7 @@ def test_ops_custom_ops_with_description(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     supertool._CONFIG = None
     supertool._CONFIG_CHECKED = False
-    out = supertool.op_ops()
+    out = supertool.op_ops(full=True)
     assert "phpstan" in out
     assert "PHPStan level 9. Use after every Edit." in out
     assert "phpstan:src/Foo.php" in out
@@ -142,7 +150,8 @@ def test_ops_status_0_hides_custom(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_ops_both_sections_combined(tmp_path: Path, monkeypatch) -> None:
-    """Both builtin-ops and custom ops appear in output."""
+    """Both builtin-ops and custom ops appear in output (`full=True` since
+    #1774 — the default carries the same rows without their prose)."""
     config = tmp_path / ".supertool.json"
     config.write_text(json.dumps({
         "builtin-ops": {
@@ -162,7 +171,7 @@ def test_ops_both_sections_combined(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     supertool._CONFIG = None
     supertool._CONFIG_CHECKED = False
-    out = supertool.op_ops()
+    out = supertool.op_ops(full=True)
     assert "## Operations" in out
     assert "read:PATH" in out
     assert "lint" in out
@@ -215,7 +224,7 @@ def test_ops_aliases_section_rendered() -> None:
         }
     }
     supertool._CONFIG_CHECKED = True
-    out = supertool.op_ops()
+    out = supertool.op_ops(full=True)
     assert "## Aliases" in out
     assert "verify" in out
     assert "Run all quality checks" in out
@@ -302,7 +311,13 @@ def test_ops_compact_keeps_example_and_desc_with_hint(tmp_path: Path, monkeypatc
 
 
 def test_ops_full_mode_always_shows_examples(tmp_path: Path, monkeypatch) -> None:
-    """Plain op_ops() (compact=False) shows examples regardless of hint flag."""
+    """`ops:full` shows examples regardless of the hint flag.
+
+    "Full mode" meant `compact=False` when this was written; since #1774 that
+    is the signature listing and the descriptive one is `full=True`. The flag
+    it is really about — `hint` gating examples in compact mode only — is
+    unchanged, and the default's own contract is asserted alongside it.
+    """
     _set_config(monkeypatch, tmp_path, {
         "builtin-ops": {
             "read": {
@@ -312,9 +327,12 @@ def test_ops_full_mode_always_shows_examples(tmp_path: Path, monkeypatch) -> Non
             }
         }
     })
-    out = supertool.op_ops()
+    out = supertool.op_ops(full=True)
     assert "read:src/foo.py:1:50" in out
     assert "Example:" in out
+    default = supertool.op_ops()
+    assert "read:PATH" in default
+    assert "Example:" not in default
 
 
 def test_ops_compact_no_warning_when_under_cap(tmp_path: Path, monkeypatch) -> None:
@@ -467,8 +485,25 @@ def test_help_known_builtin_without_docs(tmp_path: Path, monkeypatch) -> None:
     )
     for op in names:
         out = supertool.op_help(op)
-        assert "has no documented help" in out, f"{op} -> {out!r}"
+        # #1773 — an empty local `builtin-ops` is the *consumer* shape, and
+        # every one of these now answers from the reference that ships beside
+        # the binary. The property under test is unchanged and stronger: no op
+        # the dispatcher accepts may come back as "no help for op".
+        assert "no help for op" not in out, f"{op} -> {out!r}"
         assert op in out, f"{op} -> {out!r}"
+
+
+def test_help_known_builtin_with_no_docs_anywhere(tmp_path: Path,
+                                                  monkeypatch) -> None:
+    """The arm #1773 leaves reachable: an install whose shipped reference is
+    missing or unreadable. It must still separate "valid op, undocumented"
+    from "no such op", and its remedy must be true from any directory."""
+    _set_config(monkeypatch, tmp_path, {"builtin-ops": {}})
+    monkeypatch.setattr(supertool, "_shipped_config", lambda: {})
+    out = supertool.op_help("read")
+    assert "has no documented help" in out
+    assert "ops:roster" in out
+    assert "docs/operations" not in out
 
 
 def test_help_routes_via_dispatch(tmp_path: Path, monkeypatch) -> None:
