@@ -119,6 +119,30 @@ This is not a rule invented for one field. Measured across every shipped preset:
 
 **A second invocation form goes after ` | `, and starts with the op's own name.** `gh-check:CHECK_RUN_ID | gh-check:pr:NUMBER` is the shape, shared by `bluesky_list`, `devto_list`, `hashnode_list` and (since #1590) `gh-prs`. A bare `|` inside a form is an alternation between *values* and means something different — 34 fields use it that way.
 
+**`description` is not the long form — there is no long form** ([#1774](https://github.com/Digital-Process-Tools/claude-supertool/issues/1774)). The note above sends provenance and rationale here, and that is still the right destination relative to `syntax`. What it does not say, and what a writer needs before adding a paragraph, is that `ops` and `help:OP` render this field **byte for byte the same**. On 0.46.0 `gh-prs` carries 4,512 characters of `description`; its `ops` row is 4,706 bytes and `help:gh-prs` is 4,721 — the difference is the syntax line and the payload-route footer. So a clause written for the maintainer record is not filed somewhere a reader can opt into. It is injected into every reader of the roster, on every call, forever.
+
+Measured across the 128 documented ops in the shipped tree:
+
+| | |
+|---|---|
+| total | 76,795 chars |
+| median | 151 |
+| p90 | 1,868 |
+| max | 6,578 (`channel`) |
+| top 10 rows | 37,739 = **49% of the corpus, in 8% of the ops** |
+
+The assembled `ops` render is 74,838 bytes against `_HOOK_OUTPUT_CAP_BYTES` = 7,168, which is why this repo's own SessionStart injection has fallen back to a bare alphabetical list of op names carrying no signatures at all.
+
+**The line to draw.** A `description` says what the op does, what it will refuse, and what it declines to tell you — the three things a caller cannot get from the `syntax` field and cannot afford to learn from a failed call. What it is *not* is the record of how the op got here. These, from one entry, are all true and none of them belong on a line printed to every reader of the roster:
+
+- "It defaulted to `author=@me` until #1207 — disclosing that filter (#1072) was not enough, and three PRs nobody on the team wrote sat unseen for 5h to 1 day behind a footer read past every time."
+- "radar's `gh-prs` tier does NOT narrow by author … this line claimed the opposite until #1411."
+- "Resolving one has three outcomes and this line used to say a filter has only two."
+
+Those have homes that a reader pays for only when they ask: the issue, the changelog fragment, the docstring of the test that pins the behaviour. The behaviour itself — *bare `gh-prs` is every open PR on the repo; a role filter beside `anyauthor` is refused* — stays.
+
+**A ratchet, not a rewrite.** `tests/test_description_is_not_a_changelog_1774.py` caps a new op at 2,000 characters (p90, rounded up — nine ops in ten already fit) and carries the twelve that are over it in a ledger with their exact size. Those may shrink and may not grow, and an op that comes under the cap is deleted from the ledger rather than left at a stale number. Nothing asks for the twelve to be rewritten in one PR; the point is that the direction is one-way while #1774 decides whether the roster keeps carrying prose at all.
+
 ### `replaces` — the raw command this op supersedes
 
 If your op exists because a raw command was the wrong way to get the answer, say so **in the op**, and the shipped guard enforces it for every plugin user:
