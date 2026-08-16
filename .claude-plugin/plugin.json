@@ -1,7 +1,7 @@
 {
   "name": "supertool",
   "description": "Batched file operations for autonomous Claude Code runs. Collapses N reads/greps/globs into one Bash round-trip. Includes session-start prompt injection and a PreToolUse guard that refuses raw shell commands an op replaces, plus a small shipped rule layer for what `replaces` cannot express (hooks/guard-selftest.py lists it). Blocking the harness's own file tools is the operator's setting, not the plugin's (README, Hard-block native tools).",
-  "version": "0.46.0",
+  "version": "0.47.0",
   "author": {
     "name": "Digital Process Tools"
   },

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-08-16
+
+### Changed
+
+- **`ops` is every signature; `ops:full` is every description** ([#1774](https://github.com/Digital-Process-Tools/claude-supertool/issues/1774)). The descriptive listing was 74,838 bytes against a 7,168-byte SessionStart cap — ~19k tokens for the one call whose job is to tell a caller which op answers their question. The default is now the signatures alone, 3,670 bytes in this tree, and the row count is identical: nothing is hidden, the prose moved.
+
+  The cost was never spread evenly. Across the 128 documented ops the median description is 151 characters and the top ten rows are 37,739 — 49% of the corpus in 8% of the ops — because `description` is printed whole by both this listing and `help:OP`, and had become the record of how each op got here. [#1775](https://github.com/Digital-Process-Tools/claude-supertool/pull/1775) put a ratchet under that growth; this changes who pays for it.
+
+  The default footer states the exact size of what it withheld and the two tokens that fetch it, measured from the full render rather than described, so a listing that later shrinks reports a smaller saving by construction. `ops:roster` (#1231) and `ops-compact` are unchanged, and a token the op does not have is still refused naming the ones it does.
+
+### Fixed
+
+- **`help:OP` answers for a core op from any directory the plugin is installed in** ([#1773](https://github.com/Digital-Process-Tools/claude-supertool/issues/1773)). `op_help` read `builtin-ops` out of the config `_load_config()` finds by walking up from cwd, and that block lives in supertool's own `.supertool.json` — not a preset, so it was merged into nobody else's tree. From a plain consumer repo `help:read`, `help:grep`, `help:paste` and `help:edit` all answered `has no documented help` while `help:gh-pr` answered in full: the split was never documented/undocumented, it was preset op / core op, and the core ops are the ones a new caller reaches for first.
+
+  **The plugin install is the route this reaches.** A `pip install` carries no `.supertool.json` — `pyproject.toml` declares two modules and no package data — so on that route the fallback finds nothing and says so, which is a true sentence about a real gap and not the fix working. That gap is [#1783](https://github.com/Digital-Process-Tools/claude-supertool/issues/1783), found by this release's own audit and filed rather than fixed here, because packaging wants its own CI evidence rather than a re-read of the manifest.
+
+  The project's config still answers first and still wins outright — a project that redefines an op documents its own version. Only a name no section here has heard of reaches the reference that ships beside the binary, and the answer says so rather than letting an entry about the binary read as an entry about this tree. Deliberately a lookup and not a merge: a consumer's `ops` gaining forty builtin descriptions is [#1774](https://github.com/Digital-Process-Tools/claude-supertool/issues/1774) pointing the other way.
+
+  The refusal that remains — an install whose shipped reference is missing or unreadable — no longer names `docs/operations`, a directory that exists next to this checkout and nowhere else. It names `ops:roster` and the op's own error instead, both true from anywhere.
+
+- **An unreadable shipped reference stops reporting as an absent one, and the `ops` footer names the quantity it measures** ([#1781](https://github.com/Digital-Process-Tools/claude-supertool/issues/1781)). Both found by the v0.47.0 release audit, in code [#1773](https://github.com/Digital-Process-Tools/claude-supertool/issues/1773) and [#1774](https://github.com/Digital-Process-Tools/claude-supertool/issues/1774) had shipped hours earlier.
+
+  `_shipped_config()` caught `OSError` and yielded `{}`, so three different worlds printed one sentence: a reference that was absent, one that could not be read, and one that was read and documents nothing. The audit built all three from this checkout's own binary and `cmp -s` reported the `chmod 000` install byte-for-byte identical to the install with no file at all — while the file beside that binary documented the op the refusal said nothing shipped for. Three states now, not two: the lookup records which world it found and the refusal says so, naming the path, and the unreadable arm answers `UNKNOWN` rather than answering the question at all.
+
+  The `ops` footer said the withheld descriptions were `74838 bytes`; that is `ops:full`'s whole render, headers and signatures included, so the prose withheld was overstated by the size of the default listing. The number stays — it is what asking for the descriptions costs — and the sentence now says which quantity it is.
+
+  `ops:full` also reached no document: `docs/operations/meta.md` still described `ops` as the reference "with descriptions and examples", and a grep for the new token across all 28 files under `docs/` returned nothing. Both are written up now, and the byte counts in `meta.md` and `README.md` — 47,254 and 9,067, stale since well before this release — are re-measured with the command that takes them beside them.
+
 ## [0.46.0] - 2026-08-16
 
 ### Added
@@ -6755,7 +6783,8 @@ All three adapters share the same shape: auto-spawn UDS daemon via `presets/mcp/
 
 Initial public changelog. See git history for prior versions.
 
-[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.46.0...HEAD
+[Unreleased]: https://github.com/Digital-Process-Tools/claude-supertool/compare/v0.47.0...HEAD
+[0.47.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.47.0
 [0.46.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.46.0
 [0.45.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.45.0
 [0.44.0]: https://github.com/Digital-Process-Tools/claude-supertool/releases/tag/v0.44.0
