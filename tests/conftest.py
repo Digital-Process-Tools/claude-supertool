@@ -994,6 +994,11 @@ RESET_GLOBALS = (
     # `_shipped_config` or points the lookup elsewhere would otherwise hand the
     # next test whichever answer it installed.
     "_SHIPPED_CONFIG",
+    # The three-state verdict beside it (#1781) and the directory the lookup
+    # reads. Both are rebound at run time, and a verdict cached from one
+    # install describing the next is the finding this pair exists to prevent.
+    "_SHIPPED_CONFIG_STATE",
+    "_SHIPPED_CONFIG_DIR",
     # Per-process `git status` snapshot behind the read marker (#1126). It is
     # scratch in exactly the sense this list means: correct for the call that
     # built it, and a stale answer for the next test, which would see another
