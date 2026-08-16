@@ -16529,24 +16529,75 @@ def op_version() -> str:
     return f"supertool {VERSION}\n"
 
 
+_SHIPPED_CONFIG: Optional[Dict[str, Any]] = None
+
+
+def _shipped_config() -> Dict[str, Any]:
+    """The `.supertool.json` that ships beside this module (#1773).
+
+    `_load_config()` walks up from **cwd**, so it finds the *project's* config.
+    Preset ops carry their documentation wherever the plugin is installed, but
+    the builtin ops' `builtin-ops` block lives in this repository's own config
+    — not a preset, and merged into nobody else's tree. From a plain consumer
+    repo `help:read`, `help:grep`, `help:paste` and `help:edit` therefore all
+    answered "has no documented help", while `help:gh-pr` answered in full.
+
+    Read from `__file__`'s directory rather than by any config search: the fact
+    being looked up is a property of *this binary*, and the whole failure was a
+    lookup that depended on where the caller was standing. Cached, and an
+    unreadable or malformed file yields `{}` — a fallback that cannot answer
+    must leave the caller with the ordinary refusal, never a traceback.
+    """
+    global _SHIPPED_CONFIG
+    if _SHIPPED_CONFIG is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            ".supertool.json")
+        data: Any = None
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            data = None
+        _SHIPPED_CONFIG = data if isinstance(data, dict) else {}
+    return _SHIPPED_CONFIG
+
+
+def _help_entry(config: Dict[str, Any],
+                op_name: str) -> Optional[Dict[str, Any]]:
+    """The documentation entry for `op_name` in one config, or None."""
+    for section in ("builtin-ops", "ops", "aliases"):
+        entry = config.get(section, {})
+        if not isinstance(entry, dict) or op_name not in entry:
+            continue
+        info = entry[op_name]
+        if isinstance(info, dict):
+            return info
+    return None
+
+
 def op_help(op_name: str) -> str:
     """Output the full reference for a single op from .supertool.json.
 
     Same metadata `ops` lists, but scoped to one op and never compacted — so
     payload shapes (e.g. vim's macro grammar) are readable without grepping
     source. Looks through builtin-ops, then custom ops, then aliases.
+
+    The project's config answers first and always wins: a project that
+    redefines an op documents its own version, and that is the one its caller
+    must be shown. Only when no section here has heard of the name does the
+    shipped reference answer (#1773), and the answer says so — the entry
+    describes the binary, not this tree.
     """
     if not op_name:
         return ("ERROR: help needs an op name — help:OP (e.g. help:vim).\n"
                 "Run 'ops' for the full list.\n")
     config = _load_config()
-    for section in ("builtin-ops", "ops", "aliases"):
-        entry = config.get(section, {})
-        if not isinstance(entry, dict) or op_name not in entry:
-            continue
-        info = entry[op_name]
-        if not isinstance(info, dict):
-            continue
+    info = _help_entry(config, op_name)
+    from_shipped = False
+    if info is None:
+        info = _help_entry(_shipped_config(), op_name)
+        from_shipped = info is not None
+    if info is not None:
         out: List[str] = [str(info.get("syntax", op_name))]
         desc = info.get("description", "")
         if desc:
@@ -16563,11 +16614,18 @@ def op_help(op_name: str) -> str:
         route = _help_payload_route(op_name)
         if route:
             out.append(route)
+        if from_shipped:
+            out.append("")
+            out.append(f"(From supertool's shipped reference — nothing in this "
+                       f"project's config documents '{op_name}'. A project "
+                       f"entry of its own would override this one.)")
         return "\n".join(out) + "\n"
     if op_name in _valid_op_names():
-        return (f"ERROR: op '{op_name}' has no documented help in "
-                f".supertool.json. It's a valid operation here — run 'ops' for "
-                f"the list, or see docs/operations.\n")
+        return (f"ERROR: op '{op_name}' has no documented help here, and none "
+                f"shipped with this binary either.\n"
+                f"  It is a valid operation — `ops:roster` lists every name "
+                f"loaded here, and the op's own error teaches its "
+                f"signature.\n")
     return (f"ERROR: no help for op: {op_name}\n"
             f"Run 'ops' for the full list of operations.\n")
 
@@ -16605,11 +16663,27 @@ def _configured_op_names(config: Dict[str, Any]) -> set:
     return names
 
 
-def op_ops(compact: bool = False) -> str:
+def op_ops(compact: bool = False, full: bool = False) -> str:
     """Output the ops reference from .supertool.json (builtin-ops + ops sections).
 
     Source of truth is the JSON config. If no config exists, falls back to
     listing built-in op names without descriptions.
+
+    **The default is signatures** (#1774). Every op, every name, the shape of
+    the call — and nothing else. The descriptive render is `ops:full`, which is
+    what this op used to be: 74,838 bytes in this tree against a 7,168-byte
+    SessionStart cap, ~19k tokens spent by a caller whose question was which op
+    lists PRs. The cost was never spread evenly — across 128 documented ops the
+    median description is 151 characters and the top ten rows are 49% of the
+    corpus — because `description` is printed whole by both this listing and
+    `help:OP`, and had become the record of how each op got here. #1775 put a
+    ratchet under the growth; this changes who pays for it.
+
+    Nothing is dropped: the row count is identical in both modes, and the
+    default footer states the size of what it withheld and the token that
+    fetches it. A shorter listing that said nothing would be the defect this
+    repo keeps having — an absence produced by the tool, read as an absence in
+    the world.
 
     When compact=True, drops example lines for ops that don't have hint=true,
     and — if the resulting body still exceeds _HOOK_OUTPUT_CAP_BYTES — prepends
@@ -16640,8 +16714,12 @@ def op_ops(compact: bool = False) -> str:
         """Whether to print the Example: line for this op given current mode."""
         if not info.get("example"):
             return False
-        if not compact:
+        if full:
             return True
+        if not compact:
+            # Signature mode. An example is a second line per op and the whole
+            # subject here is the shape of the call, which `syntax` already is.
+            return False
         return bool(info.get("hint"))
 
     def _emit_desc(info: dict) -> str:
@@ -16655,8 +16733,13 @@ def op_ops(compact: bool = False) -> str:
         desc = info.get("description", "")
         if not desc:
             return ""
-        if not compact:
+        if full:
             return desc
+        if not compact:
+            # #1774 — the default listing is signatures. The prose is one token
+            # away (`ops:full`) and one op away (`help:OP`), and the footer
+            # names both with the byte count it withheld.
+            return ""
         return desc if info.get("hint") else ""
 
     # Where the disclosure goes depends on which absence it is describing.
@@ -16746,6 +16829,19 @@ def op_ops(compact: bool = False) -> str:
         lines.append("")
 
     body = "\n".join(lines) + "\n"
+
+    # #1774 — say what was withheld, in bytes, and how to get it. Measured
+    # rather than described: the number is the full render's own size, so a
+    # listing that has been trimmed reports a smaller saving by construction
+    # and this line cannot go stale the way a hand-written one would.
+    if not compact and not full:
+        withheld = len(op_ops(full=True).encode("utf-8"))
+        body += (
+            f"\nSignatures only — the description of every op above is "
+            f"withheld ({withheld} bytes).\n"
+            f"  One op, in full: `help:OP`.  Every description: `ops:full`.  "
+            f"Names plus safety class: `ops:roster`.\n"
+        )
 
     # In compact mode, only warn if the body still won't fit the harness cap.
     # When it fits, no warning — the absence is itself a signal that the listing
@@ -16890,9 +16986,10 @@ def _ops_argument_refusal(arg: str, op_name: str = "ops") -> str:
                 f"  Its full entry: `help:{arg}` — more than the listing row "
                 f"carries.\n"
                 f"  Every name plus its safety class: `ops:roster`. "
-                f"Every entry: `ops`.\n")
+                f"Every signature: `ops`. Every description: `ops:full`.\n")
     return (f"ERROR: unknown argument to `{op_name}`: '{arg}'.\n"
-            f"  Accepted: `ops` (every entry), `ops:roster` (every name plus "
+            f"  Accepted: `ops` (every signature), `ops:full` (every "
+            f"signature plus its description), `ops:roster` (every name plus "
             f"its safety class), `ops-compact` (the capped listing).\n"
             f"  '{arg}' is also not an op name loaded here — `ops:roster` "
             f"lists the ones that are.\n")
@@ -25465,6 +25562,11 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     body = op_ops(compact=(op == "ops-compact"))
                 elif ops_arg == "roster" and op == "ops":
                     body = op_ops_roster()
+                elif ops_arg == "full" and op == "ops":
+                    # What bare `ops` was before #1774 made signatures the
+                    # default. Named on the default listing's own footer, with
+                    # the byte count it is asking the caller to spend.
+                    body = op_ops(full=True)
                 else:
                     body = _ops_argument_refusal(ops_arg, op)
         else:
