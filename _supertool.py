@@ -16531,6 +16531,18 @@ def op_version() -> str:
 
 _SHIPPED_CONFIG: Optional[Dict[str, Any]] = None
 
+#: Which of the three worlds the last `_shipped_config()` call found. `None`
+#: until one runs, then exactly one of `read` / `absent` / `unreadable`.
+#: Separated from the `{}` it returns because those three states produced one
+#: string, and one of the three sentences it produced was false (#1781).
+_SHIPPED_CONFIG_STATE: Optional[str] = None
+
+#: The directory the shipped reference is read from. A module-level name rather
+#: than a call to `os.path.dirname(__file__)` inline so a test can build the
+#: three installs without copying the binary — the audit that found #1781 had
+#: to copy `supertool.py` and `_supertool.py` into three temp trees to do it.
+_SHIPPED_CONFIG_DIR: Optional[str] = None
+
 
 def _shipped_config() -> Dict[str, Any]:
     """The `.supertool.json` that ships beside this module (#1773).
@@ -16548,18 +16560,45 @@ def _shipped_config() -> Dict[str, Any]:
     unreadable or malformed file yields `{}` — a fallback that cannot answer
     must leave the caller with the ordinary refusal, never a traceback.
     """
-    global _SHIPPED_CONFIG
+    global _SHIPPED_CONFIG, _SHIPPED_CONFIG_STATE
     if _SHIPPED_CONFIG is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            ".supertool.json")
+        directory = _SHIPPED_CONFIG_DIR or os.path.dirname(
+            os.path.abspath(__file__))
+        path = os.path.join(directory, ".supertool.json")
         data: Any = None
-        try:
-            with open(path, encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (OSError, ValueError):
-            data = None
+        if not os.path.exists(path):
+            # The install genuinely shipped no reference. Separable from the
+            # two below, and the only one of the three where "it does not
+            # document this op" is a sentence anybody could act on.
+            _SHIPPED_CONFIG_STATE = "absent"
+        else:
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except (OSError, ValueError):
+                data = None
+            # A JSON scalar or list parses without raising and documents
+            # nothing, which is not the same fact as a file that documents
+            # nothing: one is a reference, the other is not one. Both land in
+            # `unreadable` because in neither case was the question answered.
+            if isinstance(data, dict):
+                _SHIPPED_CONFIG_STATE = "read"
+            else:
+                _SHIPPED_CONFIG_STATE = "unreadable"
         _SHIPPED_CONFIG = data if isinstance(data, dict) else {}
     return _SHIPPED_CONFIG
+
+
+def _shipped_reference_path() -> str:
+    """Where `_shipped_config()` looks — named in the refusal, never guessed at.
+
+    A remedy that says "check the file" without saying which file sends the
+    reader to the project config they are standing in, which is the one place
+    the answer is not.
+    """
+    directory = _SHIPPED_CONFIG_DIR or os.path.dirname(
+        os.path.abspath(__file__))
+    return os.path.join(directory, ".supertool.json")
 
 
 def _help_entry(config: Dict[str, Any],
@@ -16621,9 +16660,30 @@ def op_help(op_name: str) -> str:
                        f"entry of its own would override this one.)")
         return "\n".join(out) + "\n"
     if op_name in _valid_op_names():
-        return (f"ERROR: op '{op_name}' has no documented help here, and none "
-                f"shipped with this binary either.\n"
-                f"  It is a valid operation — `ops:roster` lists every name "
+        # Three states, not two (#1781). `_shipped_config()` returned `{}` for
+        # a reference that was absent, one that was unreadable and one that was
+        # read and documents nothing — and the single sentence built on it
+        # asserted the third about all three. A `chmod 000` install rendered
+        # byte-for-byte identically to an install with no file at all, while
+        # the file sitting beside the binary documented the op.
+        _shipped_config()
+        if _SHIPPED_CONFIG_STATE == "unreadable":
+            shipped = (f"  A reference does ship beside this binary and it "
+                       f"could NOT be read, so whether it documents "
+                       f"'{op_name}' is UNKNOWN — this is not a report that it "
+                       f"does not. Check the file's permissions and that it is "
+                       f"a JSON object: {_shipped_reference_path()}\n")
+        elif _SHIPPED_CONFIG_STATE == "absent":
+            shipped = (f"  No reference shipped beside this binary — "
+                       f"{_shipped_reference_path()} is not there, which is an "
+                       f"incomplete install rather than an undocumented op.\n")
+        else:
+            shipped = ("  The reference shipped beside this binary was read "
+                       "and does not document it either.\n")
+        return (f"ERROR: op '{op_name}' has no documented help in this "
+                f"project's config.\n"
+                + shipped
+                + f"  It is a valid operation — `ops:roster` lists every name "
                 f"loaded here, and the op's own error teaches its "
                 f"signature.\n")
     return (f"ERROR: no help for op: {op_name}\n"
@@ -16837,8 +16897,9 @@ def op_ops(compact: bool = False, full: bool = False) -> str:
     if not compact and not full:
         withheld = len(op_ops(full=True).encode("utf-8"))
         body += (
-            f"\nSignatures only — the description of every op above is "
-            f"withheld ({withheld} bytes).\n"
+            f"\nSignatures only — every description above is withheld. "
+            f"`ops:full` is the same rows carrying them, and costs "
+            f"{withheld} bytes in total.\n"
             f"  One op, in full: `help:OP`.  Every description: `ops:full`.  "
             f"Names plus safety class: `ops:roster`.\n"
         )
