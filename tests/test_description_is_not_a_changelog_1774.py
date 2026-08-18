@@ -43,7 +43,6 @@ MAX_DESCRIPTION = 2000
 # how the burn-down stays visible rather than sitting here at a stale number.
 _OVER_BUDGET = {
     "channel": 6578,
-    "git-worktrees": 4832,
     "gh-prs": 4512,
     "git-push": 3991,
     "gh-pr-merge": 3589,
@@ -52,6 +51,7 @@ _OVER_BUDGET = {
     "gh-branch": 2784,
     "gh-labels": 2723,
     "dashboard": 2401,
+    "git-worktrees": 2383,
     "guard": 2166,
     "radar": 2141,
 }
