@@ -139,7 +139,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, MutableMapping, NamedTuple, Optional, Sequence, Tuple
 
-VERSION = "0.45.0"
+VERSION = "0.47.0"
 
 #: The one "is this string a number" test the core shares (#1748), anchored with
 #: a capital-Z escape rather than `$` because Python's `$` also matches before a
@@ -16529,24 +16529,114 @@ def op_version() -> str:
     return f"supertool {VERSION}\n"
 
 
+_SHIPPED_CONFIG: Optional[Dict[str, Any]] = None
+
+#: Which of the three worlds the last `_shipped_config()` call found. `None`
+#: until one runs, then exactly one of `read` / `absent` / `unreadable`.
+#: Separated from the `{}` it returns because those three states produced one
+#: string, and one of the three sentences it produced was false (#1781).
+_SHIPPED_CONFIG_STATE: Optional[str] = None
+
+#: The directory the shipped reference is read from. A module-level name rather
+#: than a call to `os.path.dirname(__file__)` inline so a test can build the
+#: three installs without copying the binary — the audit that found #1781 had
+#: to copy `supertool.py` and `_supertool.py` into three temp trees to do it.
+_SHIPPED_CONFIG_DIR: Optional[str] = None
+
+
+def _shipped_config() -> Dict[str, Any]:
+    """The `.supertool.json` that ships beside this module (#1773).
+
+    `_load_config()` walks up from **cwd**, so it finds the *project's* config.
+    Preset ops carry their documentation wherever the plugin is installed, but
+    the builtin ops' `builtin-ops` block lives in this repository's own config
+    — not a preset, and merged into nobody else's tree. From a plain consumer
+    repo `help:read`, `help:grep`, `help:paste` and `help:edit` therefore all
+    answered "has no documented help", while `help:gh-pr` answered in full.
+
+    Read from `__file__`'s directory rather than by any config search: the fact
+    being looked up is a property of *this binary*, and the whole failure was a
+    lookup that depended on where the caller was standing. Cached, and an
+    unreadable or malformed file yields `{}` — a fallback that cannot answer
+    must leave the caller with the ordinary refusal, never a traceback.
+    """
+    global _SHIPPED_CONFIG, _SHIPPED_CONFIG_STATE
+    if _SHIPPED_CONFIG is None:
+        directory = _SHIPPED_CONFIG_DIR or os.path.dirname(
+            os.path.abspath(__file__))
+        path = os.path.join(directory, ".supertool.json")
+        data: Any = None
+        if not os.path.exists(path):
+            # The install genuinely shipped no reference. Separable from the
+            # two below, and the only one of the three where "it does not
+            # document this op" is a sentence anybody could act on.
+            _SHIPPED_CONFIG_STATE = "absent"
+        else:
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except (OSError, ValueError):
+                data = None
+            # A JSON scalar or list parses without raising and documents
+            # nothing, which is not the same fact as a file that documents
+            # nothing: one is a reference, the other is not one. Both land in
+            # `unreadable` because in neither case was the question answered.
+            if isinstance(data, dict):
+                _SHIPPED_CONFIG_STATE = "read"
+            else:
+                _SHIPPED_CONFIG_STATE = "unreadable"
+        _SHIPPED_CONFIG = data if isinstance(data, dict) else {}
+    return _SHIPPED_CONFIG
+
+
+def _shipped_reference_path() -> str:
+    """Where `_shipped_config()` looks — named in the refusal, never guessed at.
+
+    A remedy that says "check the file" without saying which file sends the
+    reader to the project config they are standing in, which is the one place
+    the answer is not.
+    """
+    directory = _SHIPPED_CONFIG_DIR or os.path.dirname(
+        os.path.abspath(__file__))
+    return os.path.join(directory, ".supertool.json")
+
+
+def _help_entry(config: Dict[str, Any],
+                op_name: str) -> Optional[Dict[str, Any]]:
+    """The documentation entry for `op_name` in one config, or None."""
+    for section in ("builtin-ops", "ops", "aliases"):
+        entry = config.get(section, {})
+        if not isinstance(entry, dict) or op_name not in entry:
+            continue
+        info = entry[op_name]
+        if isinstance(info, dict):
+            return info
+    return None
+
+
 def op_help(op_name: str) -> str:
     """Output the full reference for a single op from .supertool.json.
 
     Same metadata `ops` lists, but scoped to one op and never compacted — so
     payload shapes (e.g. vim's macro grammar) are readable without grepping
     source. Looks through builtin-ops, then custom ops, then aliases.
+
+    The project's config answers first and always wins: a project that
+    redefines an op documents its own version, and that is the one its caller
+    must be shown. Only when no section here has heard of the name does the
+    shipped reference answer (#1773), and the answer says so — the entry
+    describes the binary, not this tree.
     """
     if not op_name:
         return ("ERROR: help needs an op name — help:OP (e.g. help:vim).\n"
                 "Run 'ops' for the full list.\n")
     config = _load_config()
-    for section in ("builtin-ops", "ops", "aliases"):
-        entry = config.get(section, {})
-        if not isinstance(entry, dict) or op_name not in entry:
-            continue
-        info = entry[op_name]
-        if not isinstance(info, dict):
-            continue
+    info = _help_entry(config, op_name)
+    from_shipped = False
+    if info is None:
+        info = _help_entry(_shipped_config(), op_name)
+        from_shipped = info is not None
+    if info is not None:
         out: List[str] = [str(info.get("syntax", op_name))]
         desc = info.get("description", "")
         if desc:
@@ -16563,11 +16653,39 @@ def op_help(op_name: str) -> str:
         route = _help_payload_route(op_name)
         if route:
             out.append(route)
+        if from_shipped:
+            out.append("")
+            out.append(f"(From supertool's shipped reference — nothing in this "
+                       f"project's config documents '{op_name}'. A project "
+                       f"entry of its own would override this one.)")
         return "\n".join(out) + "\n"
     if op_name in _valid_op_names():
-        return (f"ERROR: op '{op_name}' has no documented help in "
-                f".supertool.json. It's a valid operation here — run 'ops' for "
-                f"the list, or see docs/operations.\n")
+        # Three states, not two (#1781). `_shipped_config()` returned `{}` for
+        # a reference that was absent, one that was unreadable and one that was
+        # read and documents nothing — and the single sentence built on it
+        # asserted the third about all three. A `chmod 000` install rendered
+        # byte-for-byte identically to an install with no file at all, while
+        # the file sitting beside the binary documented the op.
+        _shipped_config()
+        if _SHIPPED_CONFIG_STATE == "unreadable":
+            shipped = (f"  A reference does ship beside this binary and it "
+                       f"could NOT be read, so whether it documents "
+                       f"'{op_name}' is UNKNOWN — this is not a report that it "
+                       f"does not. Check the file's permissions and that it is "
+                       f"a JSON object: {_shipped_reference_path()}\n")
+        elif _SHIPPED_CONFIG_STATE == "absent":
+            shipped = (f"  No reference shipped beside this binary — "
+                       f"{_shipped_reference_path()} is not there, which is an "
+                       f"incomplete install rather than an undocumented op.\n")
+        else:
+            shipped = ("  The reference shipped beside this binary was read "
+                       "and does not document it either.\n")
+        return (f"ERROR: op '{op_name}' has no documented help in this "
+                f"project's config.\n"
+                + shipped
+                + f"  It is a valid operation — `ops:roster` lists every name "
+                f"loaded here, and the op's own error teaches its "
+                f"signature.\n")
     return (f"ERROR: no help for op: {op_name}\n"
             f"Run 'ops' for the full list of operations.\n")
 
@@ -16605,11 +16723,27 @@ def _configured_op_names(config: Dict[str, Any]) -> set:
     return names
 
 
-def op_ops(compact: bool = False) -> str:
+def op_ops(compact: bool = False, full: bool = False) -> str:
     """Output the ops reference from .supertool.json (builtin-ops + ops sections).
 
     Source of truth is the JSON config. If no config exists, falls back to
     listing built-in op names without descriptions.
+
+    **The default is signatures** (#1774). Every op, every name, the shape of
+    the call — and nothing else. The descriptive render is `ops:full`, which is
+    what this op used to be: 74,838 bytes in this tree against a 7,168-byte
+    SessionStart cap, ~19k tokens spent by a caller whose question was which op
+    lists PRs. The cost was never spread evenly — across 128 documented ops the
+    median description is 151 characters and the top ten rows are 49% of the
+    corpus — because `description` is printed whole by both this listing and
+    `help:OP`, and had become the record of how each op got here. #1775 put a
+    ratchet under the growth; this changes who pays for it.
+
+    Nothing is dropped: the row count is identical in both modes, and the
+    default footer states the size of what it withheld and the token that
+    fetches it. A shorter listing that said nothing would be the defect this
+    repo keeps having — an absence produced by the tool, read as an absence in
+    the world.
 
     When compact=True, drops example lines for ops that don't have hint=true,
     and — if the resulting body still exceeds _HOOK_OUTPUT_CAP_BYTES — prepends
@@ -16640,8 +16774,12 @@ def op_ops(compact: bool = False) -> str:
         """Whether to print the Example: line for this op given current mode."""
         if not info.get("example"):
             return False
-        if not compact:
+        if full:
             return True
+        if not compact:
+            # Signature mode. An example is a second line per op and the whole
+            # subject here is the shape of the call, which `syntax` already is.
+            return False
         return bool(info.get("hint"))
 
     def _emit_desc(info: dict) -> str:
@@ -16655,8 +16793,13 @@ def op_ops(compact: bool = False) -> str:
         desc = info.get("description", "")
         if not desc:
             return ""
-        if not compact:
+        if full:
             return desc
+        if not compact:
+            # #1774 — the default listing is signatures. The prose is one token
+            # away (`ops:full`) and one op away (`help:OP`), and the footer
+            # names both with the byte count it withheld.
+            return ""
         return desc if info.get("hint") else ""
 
     # Where the disclosure goes depends on which absence it is describing.
@@ -16746,6 +16889,20 @@ def op_ops(compact: bool = False) -> str:
         lines.append("")
 
     body = "\n".join(lines) + "\n"
+
+    # #1774 — say what was withheld, in bytes, and how to get it. Measured
+    # rather than described: the number is the full render's own size, so a
+    # listing that has been trimmed reports a smaller saving by construction
+    # and this line cannot go stale the way a hand-written one would.
+    if not compact and not full:
+        withheld = len(op_ops(full=True).encode("utf-8"))
+        body += (
+            f"\nSignatures only — every description above is withheld. "
+            f"`ops:full` is the same rows carrying them, and costs "
+            f"{withheld} bytes in total.\n"
+            f"  One op, in full: `help:OP`.  Every description: `ops:full`.  "
+            f"Names plus safety class: `ops:roster`.\n"
+        )
 
     # In compact mode, only warn if the body still won't fit the harness cap.
     # When it fits, no warning — the absence is itself a signal that the listing
@@ -16890,9 +17047,10 @@ def _ops_argument_refusal(arg: str, op_name: str = "ops") -> str:
                 f"  Its full entry: `help:{arg}` — more than the listing row "
                 f"carries.\n"
                 f"  Every name plus its safety class: `ops:roster`. "
-                f"Every entry: `ops`.\n")
+                f"Every signature: `ops`. Every description: `ops:full`.\n")
     return (f"ERROR: unknown argument to `{op_name}`: '{arg}'.\n"
-            f"  Accepted: `ops` (every entry), `ops:roster` (every name plus "
+            f"  Accepted: `ops` (every signature), `ops:full` (every "
+            f"signature plus its description), `ops:roster` (every name plus "
             f"its safety class), `ops-compact` (the capped listing).\n"
             f"  '{arg}' is also not an op name loaded here — `ops:roster` "
             f"lists the ones that are.\n")
@@ -18288,17 +18446,50 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
                     if not extra:
                         continue
                     op = _flat_field(replacement.op)
+                    # The closing clause asserts what the op DOES, never
+                    # that dropping the extras leaves the same operation
+                    # (#1707). It used to read "`git-push` is the same
+                    # invocation without them", and for the argv this branch
+                    # exists to catch that is false: drop `v0.43.0` from
+                    # `git push origin v0.43.0` and you push a branch. Three
+                    # instances, the third a `--force-with-lease` where the
+                    # dropped tokens included the safety on the operation and
+                    # only the operands were enumerated.
+                    #
+                    # The alternative — fire the clause only when the dropped
+                    # tokens are inert — needs the guard to know what a
+                    # refspec is, per utility, which is the case work
+                    # `_GUARD_GLOBAL_OPTIONS` refuses to grow. "performs X
+                    # and nothing more" is true of every argv reaching here,
+                    # covers a dropped flag as well as a dropped refspec, and
+                    # asks git nothing.
+                    #
+                    # The clause leads the note rather than closing it, and
+                    # that is not cosmetic. `_guard_notes` quotes each note
+                    # through `_GUARD_DESC_CAP` and truncates from the END,
+                    # and the echoed command is caller-supplied and
+                    # unbounded — a long refspec spends the whole budget on
+                    # its own before the note reaches its point. Written last,
+                    # the correction arrived cut mid-word for the very argv
+                    # the third instance reported, and not at all for a
+                    # longer branch name: `… (+N chars)` discloses that
+                    # something was cut, never that what was cut was the
+                    # correction. What truncation costs now is the echo of a
+                    # command the caller just typed, and "nothing was
+                    # blocked" — which `guard_uncovered_note` states in its
+                    # own wrapper, outside the cap.
+                    prefix = _flat_field(" ".join(replacement.argv))
                     line = (
-                        "`" + _flat_field(" ".join(scoring)) + "` carries "
+                        "`" + op + "` performs `" + prefix + "` and nothing "
+                        "more, which is a different command from this one. `"
+                        + _flat_field(" ".join(scoring)) + "` carries "
                         + ", ".join("`" + _flat_field(token) + "`"
                                     for token in extra)
-                        + " past the `" + _flat_field(" ".join(
-                            replacement.argv)) + "` that `" + op
-                        + "` replaces, and that op takes none of them: no op "
+                        + " past the `" + prefix + "` that `" + op
+                        + "` replaces, and that op takes none of them; no op "
                         "covers this form, so raw `"
                         + _flat_field(scoring[0]) + "` is correct here and "
-                        "nothing was blocked. `" + op + "` is the same "
-                        "invocation without them, if that is what you meant")
+                        "nothing was blocked")
                     if line not in uncovered:
                         uncovered.append(line)
             continue
@@ -18484,18 +18675,32 @@ def guard_refusal(verdict: GuardVerdict) -> str:
     # It is disclosed here rather than only in the docs because this is the
     # one moment a reader is forming the belief: a denial naming a path reads
     # as "this file is protected" when what is true is "this route is
-    # protected". Naming the open route in a refusal does tell a reader where
-    # the door is, and that is the trade taken deliberately — an agent that
-    # reaches for `Edit` after this loses the validator chain and the
-    # rollback, and knowing that is what makes the choice a choice.
+    # protected".
+    #
+    # It names no tool, and that is #1706 rather than a retreat from #1671.
+    # The sentence used to close "a harness Edit/Write reaches this same path
+    # with no op, no validator and no rollback" — a working route past the
+    # gate, spelled out in the one sentence a blocked agent is guaranteed to
+    # read, and an agent that takes it loses the validator chain and the
+    # rollback this refusal exists to route it into. That was argued as a
+    # deliberate trade; it is not one a *denial* gets to make, because a
+    # denial is read as an instruction. The scope claim survives without the
+    # tool name, and the loss is now attached to the choice rather than to a
+    # route the reader is told how to take.
+    #
+    # Where the tool names still belong is where a reader is deciding rather
+    # than being denied: `docs/configuration.md`'s `raw_command_guard`
+    # section, the README deny-list recipe, and the SessionStart roster —
+    # all three asserted by tests, so this is a move and not a deletion.
     lines.append("Only invocations an op supersedes are declared under "
                  "`replaces`, so a raw call nothing maps runs untouched — "
                  "ask before running it with supertool 'guard:COMMAND'. This "
                  "gate is turned off with raw_command_guard: false in "
-                 ".supertool.json. It hooks Bash only: a harness Edit/Write "
-                 "reaches this same path with no op, no validator and no "
-                 "rollback, so this refusal is about the route, not the "
-                 "path (#1671).")
+                 ".supertool.json. It hooks Bash only, so this refusal is "
+                 "about the route, not the path: any other route to this "
+                 "file gets no op, no validator and no rollback, which makes "
+                 "it a worse write rather than a way past this one "
+                 "(#1671, #1706).")
     return "\n".join(lines)
 
 
@@ -25465,6 +25670,11 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     body = op_ops(compact=(op == "ops-compact"))
                 elif ops_arg == "roster" and op == "ops":
                     body = op_ops_roster()
+                elif ops_arg == "full" and op == "ops":
+                    # What bare `ops` was before #1774 made signatures the
+                    # default. Named on the default listing's own footer, with
+                    # the byte count it is asking the caller to spend.
+                    body = op_ops(full=True)
                 else:
                     body = _ops_argument_refusal(ops_arg, op)
         else:

@@ -113,12 +113,22 @@ def test_refusal_discloses_that_it_governs_one_route() -> None:
     The trailer already names the op, where the op lives and the off switch.
     What it never said is that the denial is about *how* the write was
     attempted.
+
+    **It says that without naming a tool since #1706.** This test asserted
+    `Edit|Write` in the refusal until then, which made the scope disclosure
+    and a spelled-out route past the gate the same assertion — and the second
+    one is a remedy that loses the validator chain and the rollback. The
+    scope claim is what #1671 was about and is what is pinned here; the tool
+    names are pinned on the roster (above), in `docs/configuration.md` and in
+    the README recipe (below), which is where a reader is deciding rather
+    than being denied. `tests/test_guard_refusal_names_no_bypass_1706.py`
+    holds the negative.
     """
     text = _refusal()
-    assert re.search(r"\bEdit\b|\bWrite\b", text), (
-        "a refusal that never names the unguarded route lets the reader "
+    assert "Bash" in text, (
+        "a refusal that never names the route it governs lets the reader "
         "conclude the path itself is protected")
-    assert "Bash" in text
+    assert "route, not the path" in text, text
 
 
 def test_refusal_adds_no_line_shape_the_tool_did_not_write() -> None:

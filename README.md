@@ -11,7 +11,7 @@
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![OS](https://img.shields.io/badge/tested%20on-Linux%20%7C%20macOS%20%7C%20Windows-blue)](https://github.com/Digital-Process-Tools/claude-supertool/actions/workflows/tests.yml)
 [![License](https://img.shields.io/badge/license-Community-brightgreen)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.45.0-orange)](.claude-plugin/plugin.json)
+[![Version](https://img.shields.io/badge/version-0.47.0-orange)](.claude-plugin/plugin.json)
 
 Saves tokens. Saves money. Saves turns. Works the same in interactive sessions and autonomous runs — humans pair-programming with Claude Code use it every day, not just Kevin-style headless agents. One Python file, zero deps, Python 3.9+.
 
@@ -189,9 +189,9 @@ Just install. The session-start hook runs `./supertool 'introduction' 'output-fo
 
 > **Heads-up — hook output cap.** Claude Code truncates hook stdout around 7KB; over that, only a ~2KB preview reaches the model and the rest is silently saved to disk.
 >
-> No descriptive listing fits: `ops` is 47,254 bytes here and `ops-compact` 9,067, so the startup listing used to be truncated on *every* session, hiding every op alphabetically after `grep` — the whole `gh-*` and `git-*` families, `radar`, `watch`, `paste`, `tree`. What was hidden was existence, and a reader cannot miss what they never learned about.
+> No descriptive listing fits: `ops:full` is 74,838 bytes here and `ops-compact` 14,708, so the startup listing used to be truncated on *every* session, hiding every op alphabetically after `grep` — the whole `gh-*` and `git-*` families, `radar`, `watch`, `paste`, `tree`. What was hidden was existence, and a reader cannot miss what they never learned about.
 >
-> `ops:roster` is ~1.7KB: every op name and nothing else, each carrying a safety class — unmarked is read-only and safe to call blind, `*` writes files in this tree, `!` changes something outside it or starts something that outlives the call. Descriptions are one call away and richer there: `help:OP` gives the full contract, the semantics and an example. Plain `'ops'` always returns everything.
+> `ops:roster` is ~1.7KB: every op name and nothing else, each carrying a safety class — unmarked is read-only and safe to call blind, `*` writes files in this tree, `!` changes something outside it or starts something that outlives the call. Descriptions are one call away and richer there: `help:OP` gives the full contract, the semantics and an example. Plain `'ops'` is every signature at ~3.7KB, and `'ops:full'` is every description (#1774) — neither hides a row, and the signature listing states in bytes what asking for the descriptions will cost.
 
 ### Plain / ASCII output mode (hooks & CI)
 
@@ -233,7 +233,7 @@ claude -p "..." --permission-mode bypassPermissions \
 
 Installed with the plugin, on by default. A `PreToolUse` hook checks every `Bash` command against the op registry: if an op declares that it supersedes that invocation, the command is refused and the refusal quotes **the op's own description**.
 
-**It governs one route, and it says so.** The hook's matcher is `Bash|PowerShell`; the harness's own `Edit`/`Write` are not Bash and are never inspected. A refusal naming a path therefore means *this route is protected*, not *this file is protected* — so the refusal text and the SessionStart roster both state the scope, and closing the other door is the deny list above ([#1671](https://github.com/Digital-Process-Tools/claude-supertool/issues/1671)).
+**It governs one route, and it says so.** The hook's matcher is `Bash|PowerShell`; the harness's own `Edit`/`Write` are not Bash and are never inspected. A refusal naming a path therefore means *this route is protected*, not *this file is protected* — so the refusal text and the SessionStart roster both state the scope, and closing the other door is the deny list above ([#1671](https://github.com/Digital-Process-Tools/claude-supertool/issues/1671)). **The refusal states that scope without naming a tool** ([#1706](https://github.com/Digital-Process-Tools/claude-supertool/issues/1706)): it used to close by naming `Edit`/`Write` as reaching the same path with no op, no validator and no rollback, which is a working route past the gate offered in the sentence that denies. It now says any other route loses those three, which is the deterrent without the direction; the tool names live here, in the deny-list recipe above, and in the roster — surfaces where a reader is deciding rather than being denied.
 
 ```
 $ gh pr view 1321 --json state

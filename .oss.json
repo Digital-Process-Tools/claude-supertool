@@ -38,7 +38,6 @@
     "v0.39.0",
     "v0.42.0"
   ],
-  "_milestones_note": "v0.43.0 and v0.44.0 were listed here while CLOSED on the forge, and a closed milestone cannot take work. Verified 2026-08-15 against the milestones API: closed are v0.25.0-v0.36.0, v0.41.0, v0.43.0, v0.44.0. The four version milestones left open (v0.37.0, v0.38.0, v0.39.0, v0.42.0) each hold 0 open issues, so `backlog` (74 open) is in practice the only target. No milestone exists for post-v0.45.0 work; creating one is a maintainer decision, not a config fix.",
   "release": {
     "tag_pattern": "v{version}",
     "create_release": true,

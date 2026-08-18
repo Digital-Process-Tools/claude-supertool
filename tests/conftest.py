@@ -988,6 +988,17 @@ RESET_GLOBALS = (
     "_FORMAT_QUEUE",
     "_GIT_IGNORED_CACHE",
     "_LEAKED_GIT_ENV",
+    # The shipped reference `help:OP` falls back to when the project config has
+    # never heard of a name (#1773). A cache of one file beside the binary, so
+    # it cannot go stale within a process — but a test that patches
+    # `_shipped_config` or points the lookup elsewhere would otherwise hand the
+    # next test whichever answer it installed.
+    "_SHIPPED_CONFIG",
+    # The three-state verdict beside it (#1781) and the directory the lookup
+    # reads. Both are rebound at run time, and a verdict cached from one
+    # install describing the next is the finding this pair exists to prevent.
+    "_SHIPPED_CONFIG_STATE",
+    "_SHIPPED_CONFIG_DIR",
     # Per-process `git status` snapshot behind the read marker (#1126). It is
     # scratch in exactly the sense this list means: correct for the call that
     # built it, and a stale answer for the next test, which would see another
