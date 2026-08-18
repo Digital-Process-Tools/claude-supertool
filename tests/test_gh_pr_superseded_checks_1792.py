@@ -393,9 +393,47 @@ def test_a_live_failure_still_refuses_and_says_so() -> None:
         f"refused, and named no reason: {lines!r}")
 
 
+def _hostile_named() -> list:
+    """A superseded failure whose check-run *name* contains the word REFUSED.
+
+    A check-run name is whoever-writes-the-workflow's text — a job `name:`, or a
+    matrix value interpolated from branch or PR metadata — and it is rendered
+    verbatim into the disclosure line. It must not be able to reach a decision.
+    """
+    return [
+        _leg("build (ubuntu-latest, 3.11) connection REFUSED", "FAILURE",
+             "2026-08-17T22:23:27Z", "2026-08-17T22:23:58Z", job="10"),
+        _leg("build (ubuntu-latest, 3.11) connection REFUSED", "SUCCESS",
+             "2026-08-18T06:33:20Z", "2026-08-18T06:33:41Z", job="11"),
+    ]
+
+
+def test_a_check_run_name_cannot_refuse_the_merge() -> None:
+    """The fail-closed arm must not be reachable by remote text.
+
+    `misfiled` began as `"REFUSED" in n`, an unanchored substring over lines
+    that embed check-run names verbatim. A workflow author naming a job
+    `connection REFUSED` — an entirely ordinary name for a job that tests one —
+    then blocked every merge of a pull request carrying it, with a refusal
+    saying the disclosure was misfiled. That is this fix's own defect class
+    pointed at itself: a note deciding a verdict, one layer further in.
+
+    The tool's own refusals are anchored at line start, which is the convention
+    every other refusal in the op already uses and which a name rendered
+    mid-line cannot reach — `_untrusted.flat` has already taken the newline
+    that would be the only other route there.
+    """
+    allowed, lines = _verdict(_hostile_named())
+    assert allowed is True, (
+        f"a check-run name containing the word REFUSED blocked the merge: "
+        f"{lines!r}")
+    assert any("connection REFUSED" in ln for ln in lines), (
+        f"the leg was neither disclosed nor counted: {lines!r}")
+
+
 @pytest.mark.parametrize("mutate, label", [
     (lambda legs: legs, "failed superseded legs only"),
-    (lambda legs: legs[:0] or legs, "unchanged"),
+    (lambda _legs: _hostile_named(), "superseded leg named REFUSED"),
     (lambda legs: [dict(l, conclusion="SUCCESS") for l in legs], "all passed"),
     (lambda legs: [dict(l, conclusion="FAILURE") for l in legs], "all failed"),
     (lambda legs: [dict(l, conclusion="CANCELLED") for l in legs], "all cancelled"),
@@ -439,14 +477,25 @@ def test_a_note_that_spells_a_refusal_fails_closed() -> None:
     original = _checks.superseded_disclosure
     try:
         _checks.superseded_disclosure = lambda *_a, **_k: [
-            "  REFUSED: a line in the wrong list"]
-        allowed, lines = _verdict(_reported())
+            "REFUSED: a line in the wrong list"]
+        bad_allowed, bad_lines = _verdict(_reported())
+        # The control, in the same test and the same fixture. Without it this
+        # passes against a *full revert* to the pre-fix code, where every
+        # non-empty note list refuses regardless of content — so the assertion
+        # above alone cannot tell the fail-closed arm from the bug it replaces.
+        _checks.superseded_disclosure = lambda *_a, **_k: [
+            "  a perfectly ordinary disclosure line"]
+        ok_allowed, _ok_lines = _verdict(_reported())
     finally:
         _checks.superseded_disclosure = original
-    assert allowed is False, (
+
+    assert bad_allowed is False, (
         "a line spelling REFUSED arrived as a note and the gate merged past it")
-    assert any("misfiled" in ln or "wrong list" in ln for ln in lines), (
-        f"failed closed and did not say why: {lines!r}")
+    assert any("misfiled" in ln for ln in bad_lines), (
+        f"failed closed and did not say why: {bad_lines!r}")
+    assert ok_allowed is True, (
+        "a benign note still decides the verdict — this is the original bug, "
+        "and the assertions above pass against it")
 
 
 def test_every_tally_the_merge_op_prints_comes_from_one_arithmetic() -> None:

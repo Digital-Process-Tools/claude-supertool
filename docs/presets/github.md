@@ -1632,6 +1632,18 @@ the return contract, where every branch meets. A note that spells `REFUSED`
 anyway is treated as a refusal and said out loud, rather than trusted for being
 in the notes list: the merge is irreversible, so the classification fails closed.
 
+**That check is anchored at line start, and the first version was not.** For one
+commit it was an unanchored `"REFUSED" in line`, over lines that render
+check-run names verbatim — and a check-run name is written by whoever writes the
+repo's workflow files, down to a matrix value interpolated from branch metadata.
+A job called `connection REFUSED`, an ordinary name for a job that tests one,
+then blocked every merge of every pull request carrying it. Same defect class as
+the one above, one layer further in: remote text reaching a decision. The anchor
+closes it because a name is always rendered mid-line, after
+`  superseded failed: `, and `_untrusted.flat` has already taken the newline
+that would be the only other route to column 0. Both self-review spawns found
+this independently and both reproduced it.
+
 That is also a lesson about the test, not only the code. The test that let it
 through asserted that a *phrase* was absent from the findings text, which is
 true of a gate refusing for a different reason and true of a gate refusing while

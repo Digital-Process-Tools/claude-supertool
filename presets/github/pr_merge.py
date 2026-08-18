@@ -215,7 +215,22 @@ def gate(pr: dict, declared: int | None = None,
     # Fail closed, and say so. A note spelling a refusal is treated as one
     # rather than trusted for being in the notes list — trusting the list it
     # arrived in is the assumption that produced this bug.
-    misfiled = [n for n in notes if "REFUSED" in n]
+    #
+    # **Anchored at line start, and that is not a detail.** This was
+    # `"REFUSED" in n` for one commit, an unanchored substring over lines that
+    # render check-run names verbatim — and a check-run name is whoever writes
+    # the repo's workflow files, down to a matrix value interpolated from
+    # branch metadata. A job called `connection REFUSED`, which is an ordinary
+    # name for a job that tests one, then blocked every merge of every pull
+    # request carrying it. That is this fix's own defect class pointed at
+    # itself, one layer further in: remote text reaching a decision.
+    #
+    # The anchor closes it because `named_disclosure` renders a name mid-line,
+    # after `  superseded failed: `, and `_untrusted.flat` has already taken
+    # the newline that would be the only other way to reach column 0. So a
+    # name cannot spell this, and the tool's own refusals — which all begin
+    # `REFUSED:` — still can.
+    misfiled = [n for n in notes if n.lstrip().startswith("REFUSED")]
     if misfiled:
         lines.append(
             f"REFUSED: {len(misfiled)} disclosure line(s) for PR #{num} spell "
