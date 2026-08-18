@@ -84,6 +84,25 @@ The sentence above was true only of `validate` when it was first written, and fa
 
 A read-op argument beginning with `@` is only treated as a payload when it could be one — `@-`, a file that exists, or a lone `@….toml` / `@….json`. `grep:@Override:src/` still searches for `@Override`.
 
+### `@-` belongs in the reference slot, and nowhere else
+
+`OP:@-` reads stdin. `OP:SOMETHING:@-` does not, and until [#1776](https://github.com/Digital-Process-Tools/claude-supertool/issues/1776) it did not say so either: the route is gated on the argument straight after the op name, so a `@-` further along was ordinary content. `paste:victim.txt:@-` wrote the two characters `@-` over the file and reported `rewrote victim.txt (1 lines, 39 → 3 bytes)` — true in every word, and the byte count was the only thing that distinguished it from the write the caller meant. `append`, `edit`, `replace` and `replace_lines` all had it.
+
+A field that is exactly `@-` is now refused before any op runs, in both colon forms — `paste:PATH:@-` and `paste:::PATH:::@-` — and the refusal prints the payload route and its keys. A field that merely *mentions* `@-` is content and is written as before: the check is equality on the whole field, not a search inside it.
+
+`:::` is included even though it never routed a payload from a later field either, so it is not where the ambiguity lives. It is the separator this repository tells agents to reach for first, which makes it where the mistyped sigil arrives most often, and the two characters land on disk exactly the same way.
+
+**The read ops are not covered.** `grep:PATTERN:@-`, `read:@-` in a later slot and their siblings take `@-` as a *path* and answer `path not found: @-` — nothing written, nothing lost, and the string named back. That is a worse message than the one above and a better one than silence; widening the refusal to reach it would print a remedy with no keys in it, since the payload hint is built from the mutating registry.
+
+To put the two characters in a file, send them through the payload, which is not scanned:
+
+```bash
+./supertool 'paste:@-' <<'EOF'
+path = "notes.txt"
+content = '''@-'''
+EOF
+```
+
 ### Where a relative `@payload` path resolves from
 
 **Against the directory the call was made from — never against `cwd:`.**
