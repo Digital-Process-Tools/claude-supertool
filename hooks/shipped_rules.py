@@ -62,7 +62,11 @@ NOT_SHIPPED = {
         "only, so no shipped matcher can reach it. plugin.json already states "
         "that blocking the harness's own file tools is the operator's "
         "setting, not the plugin's; README's `Hard-block native tools` is the "
-        "recipe for opting in.",
+        "recipe for opting in. Re-measured for #1791, which reported this rule "
+        "as shipping and blocking every file operation in other people's "
+        "repositories: it does not, and its index pattern is `~.`, so "
+        "shipping it would deny every Bash command there rather than only the "
+        "file tools. Pinned by tests/test_harness_tools_do_not_ship_1791.py.",
     "merged-is-not-ancestry.md":
         "it encodes this repository's merge strategy, not supertool's "
         "behaviour. `git branch --merged` is an ancestry test that under-"
