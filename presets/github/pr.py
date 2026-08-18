@@ -977,6 +977,11 @@ def main() -> int:
         mergeable = d.get("mergeable", "?")
         review_decision = d.get("reviewDecision") or "none"
         check_states = _checks.github_states(d.get("statusCheckRollup"))
+        # Live only (#1792). The full set answers "is there a rollup at all"
+        # and feeds the reconciliation, which is a coverage question; anything
+        # that reads a *verdict* off the tally has to see what the tally says,
+        # and the tally no longer counts a superseded leg as failed.
+        live_states = _checks.github_live_states(d.get("statusCheckRollup"))
         merge_commit = (d.get("mergeCommit") or {}).get("oid", "")
         # Merge evidence, at parity with `gl-mr:status` (#628). `gh pr merge`
         # can print nothing on success, so the merge is read back off the
@@ -1010,10 +1015,17 @@ def main() -> int:
         for line in shortfall_lines:
             print(line)
         for line in _checks.named_disclosure(
-            _checks.github_named_states(d.get("statusCheckRollup"))
+            _checks.github_named_live(d.get("statusCheckRollup"))
         ):
             print(line)
-        unit_line = _leg_unit_line(check_states)
+        # #1792: a leg a later run of the same name replaced is not red, and it
+        # is not gone either. Named separately so the reader sees that a leg
+        # failed *and* that it stopped deciding anything.
+        for line in _checks.superseded_disclosure(
+            _checks.github_named_superseded(d.get("statusCheckRollup"))
+        ):
+            print(line)
+        unit_line = _leg_unit_line(live_states)
         if unit_line:
             print(unit_line)
         print(f"review: {review_decision}")
@@ -1107,12 +1119,18 @@ def main() -> int:
     # rather than named — see _checks.absence() (#585). It buys the evidence for
     # that (one GraphQL call) only here, never when runs exist.
     check_states = _checks.github_states(d.get("statusCheckRollup"))
+    # Live states, not every state: a leg a later run of the same name replaced
+    # no longer decides the check on GitHub's side either, and counting it here
+    # is what made a PR the forge calls `clean` unmergeable through this op
+    # (#1792). `check_states` stays the full set — the reconciliation it feeds
+    # is a coverage question, not a verdict.
+    live_states = _checks.github_live_states(d.get("statusCheckRollup"))
     shortfall_lines: list[str] = []
     if check_states:
         # `with_age` is #801 — see the `:status` branch above.
         checks_text = _checks.summarize_github(
             d.get("statusCheckRollup"), with_age=True)
-        merge_note = "" if _checks.all_green(check_states) else (
+        merge_note = "" if _checks.all_green(live_states) else (
             f" — checks {_checks.NOT_GREEN}, see Checks above"
         )
         # A tally that does not cover every leg is not a merge signal even when
@@ -1132,10 +1150,15 @@ def main() -> int:
     for line in shortfall_lines:
         print(line)
     for line in _checks.named_disclosure(
-        _checks.github_named_states(d.get("statusCheckRollup"))
+        _checks.github_named_live(d.get("statusCheckRollup"))
     ):
         print(line)
-    unit_line = _leg_unit_line(check_states)
+    # #1792 — see the `:status` branch above.
+    for line in _checks.superseded_disclosure(
+        _checks.github_named_superseded(d.get("statusCheckRollup"))
+    ):
+        print(line)
+    unit_line = _leg_unit_line(live_states)
     if unit_line:
         print(unit_line)
 

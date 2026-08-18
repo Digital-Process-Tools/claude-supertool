@@ -275,6 +275,129 @@ def github_named_states(checks: object) -> List[tuple[str, str, str, str]]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# superseded legs (#1792)
+# ---------------------------------------------------------------------------
+
+# The tally term. A leg here has left the passed/failed/pending arithmetic, so
+# it needs a name of its own or the sum stops accounting for every leg handed
+# in — which is this module's whole reason to exist.
+SUPERSEDED_TERM = "superseded"
+
+# Printed under the named disclosure, once. It says what the term means *and*
+# what it deliberately does not do, because "we now collapse repeat runs" is
+# the reading that would make #1640 a regression.
+SUPERSEDED_NOTE = (
+    "A later check run of the same name started after each of these finished, "
+    "so GitHub decides the check on the later run and these are not counted "
+    "red in the tally above. They are also unretractable — no trigger "
+    "withdraws a concluded run — which is why they are named here rather than "
+    "dropped (#1792). Two runs of one name whose wall clocks overlap supersede "
+    "nothing and both still have to pass (#1640). `gh-job:<id>:fail` reads any "
+    "of them."
+)
+
+
+def _leg_window(check: object) -> tuple:
+    """`(name, started_epoch, completed_epoch)` for one rollup entry.
+
+    Either stamp is `None` when it cannot be established — absent, gh's
+    zero-time sentinel, or a `StatusContext`, which carries no run timing at
+    all. `parse_ts` already collapses all three to `None`, and that is what
+    makes the third state below reachable rather than guessed.
+    """
+    if not isinstance(check, dict):
+        return ("", None, None)
+    name = str(check.get("name") or check.get("context") or "?")
+    return (name, parse_ts(check.get("startedAt")),
+            parse_ts(check.get("completedAt")))
+
+
+def github_superseded(checks: object) -> List[bool]:
+    """Per rollup entry: has a later run of the same check name replaced it?
+
+    Length always `== len(checks)`, so this composes with `github_states()`
+    and `github_named_states()` by position.
+
+    **The discriminator is timing, not name, and that is the whole of #1792.**
+    GitHub decides a required check on the latest run carrying its name, so a
+    pull request the forge calls `clean` used to render `NOT ALL GREEN` here —
+    unfixably, because a concluded check run cannot be withdrawn by any trigger
+    the maintainer can pull. But collapsing to latest-per-name is not the fix:
+    GitHub's default code-scanning setup emits **two runs of one workflow per
+    push and both must pass** (#1640), and measured against this repository's
+    own `d1bb0837` those two runs emit check runs whose *names collide* — two
+    `Analyze (javascript-typescript)`, two `Analyze (python)`, two check
+    suites, started in the same second. Latest-per-name drops one of each pair
+    and reports a leg that never ran as green.
+
+    So a leg is superseded only when another leg of the same name **started
+    strictly after this one completed**. The code-scanning pair overlaps in
+    wall clock and neither supersedes anything; the five stale `fragment` runs
+    of #1792 completed at 22:23 and the run that passed started eight hours
+    later, so all five are superseded.
+
+    This is deliberately **narrower** than GitHub's own rule. Two same-named
+    legs that overlap in time with one failed still read red here even where
+    the forge says clean. That direction is chosen once and on purpose: a loud
+    false alarm costs a reader one look, and a quietly-swallowed failure costs
+    a merge.
+
+    Third state, per `docs/validators.md` §"Declining instead of guessing": a
+    leg whose completion cannot be read is never superseded. Dropping it would
+    be this function manufacturing exactly the silence it exists to remove.
+    """
+    if not isinstance(checks, list):
+        return []
+    windows = [_leg_window(c) for c in checks]
+    by_name: dict = {}
+    for i, (name, _started, _done) in enumerate(windows):
+        by_name.setdefault(name, []).append(i)
+
+    out = [False] * len(windows)
+    for idxs in by_name.values():
+        if len(idxs) < 2:
+            continue
+        for i in idxs:
+            done = windows[i][2]
+            if done is None:
+                continue
+            # `j != i` rather than a per-name maximum: a malformed leg whose
+            # own start is after its own completion would otherwise supersede
+            # itself and vanish from every count.
+            out[i] = any(windows[j][1] is not None and windows[j][1] > done
+                         for j in idxs if j != i)
+    return out
+
+
+def github_superseded_count(checks: object) -> int:
+    """How many rollup entries a later run of the same name replaced."""
+    return sum(1 for flag in github_superseded(checks) if flag)
+
+
+def github_live_states(checks: object) -> List[str]:
+    """`github_states()` with the superseded entries removed.
+
+    What decides green. Never use it as a leg *count*: the reconciliation
+    against what the runs declare (#724/#804) is a coverage question and has to
+    see every entry, so it keeps reading `github_states()`.
+    """
+    return [s for s, sup in zip(github_states(checks), github_superseded(checks))
+            if not sup]
+
+
+def github_named_live(checks: object) -> List[tuple]:
+    """`github_named_states()` without the superseded entries."""
+    return [e for e, sup in zip(github_named_states(checks),
+                                github_superseded(checks)) if not sup]
+
+
+def github_named_superseded(checks: object) -> List[tuple]:
+    """`github_named_states()` restricted to the superseded entries."""
+    return [e for e, sup in zip(github_named_states(checks),
+                                github_superseded(checks)) if sup]
+
+
 # Legs listed per non-passing group before the line switches to `+N more`.
 # `summarize()`'s own arithmetic is unbounded — it has to be, the count has
 # to sum to the total — but *naming* fourteen legs one poll after another is
@@ -288,7 +411,8 @@ NAMED_CAP = 5
 
 
 def named_disclosure(
-    entries: Sequence[tuple[str, str, str, str]], cap: int = NAMED_CAP
+    entries: Sequence[tuple[str, str, str, str]], cap: int = NAMED_CAP,
+    label_prefix: str = "",
 ) -> List[str]:
     """One line per non-pass/non-pending state, naming every leg (#619).
 
@@ -346,7 +470,24 @@ def named_disclosure(
         text = ", ".join(parts)
         if len(items) > cap:
             text += f", +{len(items) - cap} more"
-        lines.append(f"  {label}: {text}")
+        lines.append(f"  {label_prefix}{label}: {text}")
+    return lines
+
+
+def superseded_disclosure(entries: Sequence[tuple[str, str, str, str]],
+                          cap: int = NAMED_CAP) -> List[str]:
+    """Name the legs `summarize()` moved out of the red count (#1792).
+
+    `[]` when nothing was superseded, and never anything else: a leg that
+    stopped blocking the merge and left no line behind is the third state
+    rendering as the first, which is the defect this whole change is about. The
+    grouping is `named_disclosure`'s, prefixed — so `failed`, `cancelled` and
+    `timed_out` keep the labels they carry everywhere else and a reader can see
+    *what* the superseded leg did, not merely that one existed.
+    """
+    lines = named_disclosure(entries, cap, label_prefix="superseded ")
+    if lines:
+        lines.append(f"  {SUPERSEDED_NOTE}")
     return lines
 
 
@@ -603,7 +744,7 @@ def github_pending_stamps(checks: object) -> List[object]:
 
 
 def summarize(states: Sequence[str] | Iterable[str],
-              pending_note: str = "") -> str:
+              pending_note: str = "", superseded: int = 0) -> str:
     """Render the summary that follows `Checks: `.
 
     Always opens with `N total` and every count after it sums to N, so the
@@ -612,7 +753,21 @@ def summarize(states: Sequence[str] | Iterable[str],
         12 total: 10 passed, 0 failed, 0 pending, 2 cancelled ⚠ NOT ALL GREEN
         12 total: 0 passed, 0 failed, 12 pending ⚠ NOT ALL GREEN
         3 total: 3 passed, 0 failed, 0 pending
+        6 total: 1 passed, 0 failed, 0 pending, 5 superseded
         none reported — no check runs on this commit
+
+    `states` is the **live** set and `superseded` counts the legs a later run
+    of the same name replaced (#1792). They are a term rather than a silent
+    subtraction for the reason every other term here exists: `N total` has to
+    keep accounting for every leg on the commit, and five failures that left
+    the red count without leaving a number behind would be exactly the fold
+    this module was written to stop. `superseded_disclosure()` names them.
+
+    A superseded leg does not withhold the green — that is #1792's whole
+    point — but an **empty** live set with superseded legs does. That is
+    unreachable while supersession is defined by an ordering (a chain always
+    leaves one live leg at the end), and it is asserted anyway: a tally where
+    nothing live decided anything must never render as a pass.
 
     `pending_note` (#801) is appended after the whole line, past the marker —
     deliberately *outside* the comma-separated term list, because the promise
@@ -624,7 +779,8 @@ def summarize(states: Sequence[str] | Iterable[str],
         18 total: 14 passed, 0 failed, 4 pending ⚠ NOT ALL GREEN — oldest pending 41m
     """
     tokens = [normalize(s) for s in states]
-    total = len(tokens)
+    n_superseded = max(0, int(superseded or 0))
+    total = len(tokens) + n_superseded
     if total == 0:
         return NO_CHECKS
 
@@ -638,9 +794,11 @@ def summarize(states: Sequence[str] | Iterable[str],
     leftovers = Counter(_label(t) for t in tokens if bucket(t) == "other")
     for label, count in sorted(leftovers.items(), key=lambda kv: (-kv[1], kv[0])):
         parts.append(f"{count} {label}")
+    if n_superseded:
+        parts.append(f"{n_superseded} {SUPERSEDED_TERM}")
 
     line = f"{total} total: " + ", ".join(parts)
-    if buckets.get("passed", 0) != total:
+    if not tokens or buckets.get("passed", 0) != len(tokens):
         line += f" {NOT_GREEN}"
     if n_pending and pending_note:
         line += f" — {pending_note}"
@@ -657,7 +815,8 @@ def summarize_github(checks: object, with_age: bool = False) -> str:
     note = ""
     if with_age:
         note, _lines = pending_disclosure(github_pending_stamps(checks))
-    return summarize(github_states(checks), note)
+    return summarize(github_live_states(checks), note,
+                     superseded=github_superseded_count(checks))
 
 
 def github_pending_lines(checks: object) -> List[str]:

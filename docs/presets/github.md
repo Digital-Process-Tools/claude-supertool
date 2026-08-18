@@ -1545,6 +1545,74 @@ the fence markers. Only the label changes: `workflow_names()` still reads the
 real name off the run object, and both rows of a two-run workflow are still
 listed and still both have to pass.
 
+## A superseded check run, and why it is not the section above
+
+`gh-pr:N:status` counted **every** check run on the head SHA. GitHub evaluates a
+required check on the **latest** run carrying that name, so a pull request the
+forge reports as `mergeable: true, mergeable_state: clean` rendered here as
+`NOT ALL GREEN`
+([#1792](https://github.com/Digital-Process-Tools/claude-supertool/issues/1792)),
+reported against `jbkkz/requivo` PR #18:
+
+```
+checks: 14 total: 9 passed, 5 failed, 0 pending  ⚠ NOT ALL GREEN
+  failed: fragment (job #95528525867), fragment (job #95528526529), …
+```
+
+Six check runs named `fragment` on that SHA: five that concluded `failure` at
+22:23, and one that concluded `success` eight hours later. **The five are
+unretractable** — no workflow trigger withdraws a check run that already
+concluded — so a pull request entering this state could never satisfy the merge
+gate by any action its maintainer could take.
+
+**The obvious collapse is wrong, and the section above is why.** Latest-per-name
+would drop one of the two code-scanning runs. Measured against `d1bb0837` on
+2026-08-18, those two runs emit check runs whose *names collide*: two
+`Analyze (javascript-typescript)`, two `Analyze (python)`, in two check suites,
+started in the same second. Latest-per-name would report a leg that never ran as
+green.
+
+So the discriminator here is **timing, not name**:
+
+> a leg is superseded when another leg of the same name **started strictly after
+> this one completed**.
+
+The code-scanning pair overlaps in wall clock and supersedes nothing. The five
+`fragment` failures finished before the passing run began, so all five are.
+
+**This is a different question from the section above, on purpose.** `gh-branch`
+asks whether every run on the commit *covered* its legs, and there the unit is
+the run id or nothing. This asks which leg *decides* a check, and there the unit
+is the name plus an ordering. Both live in the tree; neither is the other's
+answer.
+
+**It is deliberately narrower than GitHub's own rule.** Two same-named legs that
+overlap in time with one failed still read red here even where the forge says
+clean. A loud false alarm costs a reader one look; a quietly-swallowed failure
+costs a merge.
+
+**Three states, and the third is never silent.** The superseded legs take their
+own tally term — so `N total` still accounts for every leg on the commit — and
+their own named disclosure line, which keeps the *state* they concluded in:
+
+```
+checks: 6 total: 1 passed, 0 failed, 0 pending, 5 superseded
+  superseded failed: fragment (job #95528525867), fragment (job #95528526529), …
+  A later check run of the same name started after each of these finished, …
+```
+
+A leg whose completion cannot be read — an absent stamp, `gh`'s
+`0001-01-01T00:00:00Z` sentinel, or a legacy `StatusContext`, which carries no
+run timing at all — is **never** superseded. It stays counted and stays red;
+declining is the third state, and dropping it would manufacture exactly the
+silence this change removes.
+
+`gh-pr-merge` reads the same split: `github_live_states()` decides green, while
+the reconciliation against what the runs declare keeps seeing every leg, because
+that is a coverage question and not a verdict. The gate prints the superseded
+disclosure on both its paths — a merge cleared without saying which legs stopped
+counting would be the same defect one layer up.
+
 ## The tally counts a family, not a label
 
 `gh-labels` answers *which labels exist and who uses them*. The rolling-cohort
