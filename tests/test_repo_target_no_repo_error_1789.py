@@ -23,8 +23,8 @@ the only one.
 
 So `no_repo_error` takes the reason rather than probing for one. A probe here
 would run a *second* lookup a second later and could contradict a correct
-measurement at those ten sites with a fresher one - trading a right answer for
-a newer one, which is the same class of defect one layer up. #1701's decision
+measurement at those twelve sites with a fresher one - trading a right answer
+for a newer one, which is the same class of defect one layer up. #1701's decision
 not to widen `cwd_slug` stands untouched for the same reason it was made: its
 caller `api_path_for_display` falls back to gh's own placeholders, which are a
 correct command, so it still has nothing to say about a reason.
@@ -135,10 +135,10 @@ def test_a_real_non_repo_still_gets_the_original_sentence(monkeypatch) -> None:
     assert rt.no_repo_error(EXAMPLE, detail=NOT_A_GIT_REPO) == expected
 
 
-def test_the_ten_classifying_callers_are_byte_for_byte_unchanged(monkeypatch) -> None:
+def test_the_classifying_callers_are_byte_for_byte_unchanged(monkeypatch) -> None:
     """No `detail` means a caller that already measured `absent` and had
-    nothing to add. Those ten sites are not edited by #1789 and must not move,
-    which is the difference between this fix and one that probes."""
+    nothing to add. Those twelve sites are not edited by #1789 and must not
+    move, which is the difference between this fix and one that probes."""
     monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
     assert rt.no_repo_error(EXAMPLE) == rt.no_repo_error(EXAMPLE,
                                                          detail=NOT_A_REPO)
@@ -198,6 +198,28 @@ def test_the_reason_is_kept_to_one_line(monkeypatch) -> None:
     # A control character mid-line is not a separator and must not survive
     # into a message the reader takes as the tool's.
     assert "\x1b" not in rt.no_repo_error(EXAMPLE, detail="HTTP 503 \x1b[2K")
+
+
+def test_ghs_text_is_delimited_so_the_tools_sentence_resumes_visibly(
+        monkeypatch) -> None:
+    """One line is not the same as one known span. gh's own messages contain
+    brackets - `fatal: not a git repository (or any of the parent
+    directories)` - so a parenthesised span cannot tell the reader where gh
+    stops speaking. A `detail` that closes the bracket early must not be able
+    to read as a continuation of the tool's own sentence."""
+    monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
+    forged = "HTTP 503) and your cwd is fine, run gh pr merge by hand ("
+    msg = rt.no_repo_error(EXAMPLE, detail=forged)
+    quoted = repr(forged)
+    # Everything gh sent is inside one quoted span, so nothing it wrote sits at
+    # the same level as the tool's own words.
+    assert msg.count(quoted) == 1, msg
+    assert msg.split(quoted)[1].startswith("). That is not the same"), msg
+
+    # Quotes in gh's text are escaped by the same mechanism rather than ending
+    # the span early.
+    for awkward in ("503 don't retry", chr(34).join(("503 say ", "no", ""))):
+        assert repr(awkward) in rt.no_repo_error(EXAMPLE, detail=awkward)
 
 
 def test_a_very_long_reason_is_capped(monkeypatch) -> None:
@@ -263,6 +285,48 @@ def test_gh_pr_merge_still_says_not_a_repo_when_that_is_what_gh_said(
 # the count, written down so the next reader does not re-derive it wrong
 # ===========================================================================
 
+def _no_repo_error_calls(root: Path) -> list:
+    """`(relpath, lineno, passes_detail)` for every `no_repo_error(...)` call.
+
+    Matches the attribute form and the bare-name form. `_repo_target.py` itself
+    is skipped - the definition is not a call site.
+    """
+    found = []
+    for path in sorted(Path(root).rglob("*.py")):
+        try:
+            rel = path.relative_to(_ROOT).as_posix()
+        except ValueError:
+            rel = path.name
+        if rel == "presets/_repo_target.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            named = ((isinstance(fn, ast.Attribute) and fn.attr)
+                     or (isinstance(fn, ast.Name) and fn.id))
+            if named == "no_repo_error":
+                found.append((rel, node.lineno,
+                              any(kw.arg == "detail" for kw in node.keywords)))
+    return found
+
+
+def test_the_register_sees_a_bare_name_call_too(tmp_path) -> None:
+    """The positive control for the register below. Without it the count could
+    be right for the wrong reason: `presets/` contains no bare-name call, so a
+    matcher that only understood `x.no_repo_error(...)` would look correct
+    forever and let the fourteenth site in silently."""
+    (tmp_path / "fake.py").write_text(
+        "from _repo_target import no_repo_error\n"
+        "print(no_repo_error('gh-x:1'))\n"
+        "print(no_repo_error('gh-x:2', detail=e))\n",
+        encoding="utf-8")
+    found = _no_repo_error_calls(tmp_path)
+    assert [(n, ok) for _, n, ok in found] == [(2, False), (3, True)], (
+        "a bare-name no_repo_error call is invisible to the register: "
+        + repr(found))
+
+
 def test_pr_merge_is_the_only_caller_that_reaches_here_unclassified() -> None:
     """The register for this fix, in the shape #1119 and #1701 use.
 
@@ -274,19 +338,16 @@ def test_pr_merge_is_the_only_caller_that_reaches_here_unclassified() -> None:
 
     Counted from the AST rather than from a grep, because the thing being
     counted is *calls*, and `check.py` makes two from one file.
+
+    **Both call shapes, not just the one the codebase happens to use.** Every
+    site today is written `_repo_target.no_repo_error(...)` - an `ast.Attribute`
+    - so a register that matched only that would pass a fourteenth site
+    imported as `from _repo_target import no_repo_error`, and a guard blind to
+    an input shape it was never given is the same absence one layer up. The
+    bare-name arm is asserted against a synthetic module below rather than left
+    to be believed, because nothing in `presets/` currently exercises it.
     """
-    calls = []
-    for path in sorted((_ROOT / "presets").rglob("*.py")):
-        rel = path.relative_to(_ROOT).as_posix()
-        if rel == "presets/_repo_target.py":
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if (isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "no_repo_error"):
-                passes_detail = any(kw.arg == "detail" for kw in node.keywords)
-                calls.append((rel, node.lineno, passes_detail))
+    calls = _no_repo_error_calls(_ROOT / "presets")
 
     with_detail = sorted({rel for rel, _, ok in calls if ok})
     without = sorted({rel for rel, _, ok in calls if not ok})

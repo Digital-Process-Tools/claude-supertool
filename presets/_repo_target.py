@@ -251,6 +251,14 @@ def _one_line(text: str) -> str:
     bounded length — because the text lands mid-sentence in a message the
     reader takes as the tool's, and a multi-line hint from gh must not be able
     to add a line of its own to it.
+
+    **Where it lands is quoted with `!r`, and that is the other half of this.**
+    Flattening bounds the text to one line but not to a known span within it:
+    gh's own messages routinely contain brackets — `fatal: not a git repository
+    (or any of the parent directories)` — so a parenthesised span cannot tell
+    the reader where gh stops speaking and the tool resumes. `repr` escapes the
+    quote it delimits with, so the span is unambiguous whatever gh sent, and
+    the text after it is visibly the tool's again.
     """
     first = ""
     for line in (text or "").replace("\r\n", "\n").split("\n"):
@@ -326,7 +334,7 @@ def no_repo_error(cli_example: str, detail: str | None = None) -> str:
         if state == UNKNOWN:
             return (
                 f"ERROR: repo target {value!r} could not be checked — the "
-                f"lookup did not answer ({why}). Whether the target is wrong "
+                f"lookup did not answer ({why!r}). Whether the target is wrong "
                 f"and whether gh could reach GitHub are both UNKNOWN from "
                 f"here. Retry; if it persists: gh repo view {value}"
             )
@@ -337,7 +345,7 @@ def no_repo_error(cli_example: str, detail: str | None = None) -> str:
     if state == UNKNOWN:
         return (
             f"ERROR: could not work out which GitHub repo this is — the "
-            f"lookup did not answer ({why}). That is not the same as the cwd "
+            f"lookup did not answer ({why!r}). That is not the same as the cwd "
             f"not being a GitHub repo, and which of the two it is is UNKNOWN "
             f"from here. Retry; if it persists, check gh (gh auth status; "
             f"gh repo view), or name a repo with a leading repo: op "

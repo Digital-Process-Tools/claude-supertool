@@ -450,11 +450,14 @@ ERROR: PR #265 not found in some-org/typo. Check the number, or the repo target
 ```
 $ ./supertool 'gh-pr-merge:1:squash'                   # during a GitHub outage
 ERROR: could not work out which GitHub repo this is — the lookup did not answer
-(GraphQL: Something went wrong while executing your query.). That is not the same
-as the cwd not being a GitHub repo, and which of the two it is is UNKNOWN from
-here. Retry; if it persists, check gh (gh auth status; gh repo view), or name a
-repo with a leading repo: op (./supertool 'repo:OWNER/NAME' 'gh-pr-merge:1').
+('GraphQL: Something went wrong while executing your query.'). That is not the
+same as the cwd not being a GitHub repo, and which of the two it is is UNKNOWN
+from here. Retry; if it persists, check gh (gh auth status; gh repo view), or
+name a repo with a leading repo: op (./supertool 'repo:OWNER/NAME'
+'gh-pr-merge:1').
 ```
+
+gh's own text is quoted rather than parenthesised, because gh's messages contain brackets of their own (`fatal: not a git repository (or any of the parent directories)`) and a reader has to be able to see where gh stops speaking and the tool resumes.
 
 **`gh-prs` declines its watch column under a target.** Watch pollers write `supertool-watch-github-pr__{number}.pid` — keyed by PR number with no repo — so a live poller for `#12` of one repo cannot be told from `#12` of another. The board prints `?` rather than 👁 or blank (blank asserts *not watched*), and the footer drops its ready-to-run `watch:github-pr:N` rather than offer a command that would poll the wrong repo. Three states, not two.
 
