@@ -24346,6 +24346,71 @@ def _at_file_payload_hint(op: str) -> str:
     return chr(10) + chr(10).join(lines)
 
 
+def _stdin_ref_in_value_field(op: str, parts: List[str]) -> str:
+    """Refuse `@-` sitting in a field that is content, not a payload reference.
+
+    `@-` means stdin everywhere in this grammar, and the @payload route is
+    gated on `parts[1]` alone. So `paste:victim.txt:@-` never read stdin: the
+    two characters fell through to `op_paste` as the CONTENT and were written
+    over the file, under a receipt that said `rewrote victim.txt (1 lines,
+    39 -> 3 bytes)`. Nothing about that receipt is false, and nothing in it
+    says the body it wrote is not the body that was piped in — the byte count
+    was the only tell, and had the intended body been three bytes long there
+    would have been none (#1776).
+
+    The same shape reached `append`, `edit`, `replace` and `replace_lines`:
+    one gate, one field position, five ops that write. `vim` refused it by
+    accident — its script parser has no verb `@` — which is a loud failure but
+    not one that names the route that works.
+
+    Scoped to ops with a MUTATING payload route — `_at_file_fields`, not the
+    union `_at_file_route_ops` reports — because that is what makes this a
+    refusal rather than a dead end: there is a working call to name, and
+    `_at_file_payload_hint` names it. The read ops (`grep`, `around`,
+    `grep_around`, `between`, `read`, `validate`) have a payload route of their
+    own and are deliberately out: a `@-` in one of their value fields is a
+    PATH, so it fails by name — `path not found: @-` — with nothing written and
+    nothing lost, and the hint has no keys to print for them, so refusing there
+    would trade a loud error for a quieter one. Their message could still be
+    better; that is a separate finding, not this guard.
+
+    Both colon forms are covered, `:` and `:::`. The `:::` form never routed a
+    payload from a later field either, so it is not where the ambiguity lives —
+    but it is the separator this repository tells agents to reach for first, so
+    it is where the mistyped sigil arrives most often, and the harm is
+    identical. Nothing becomes unwritable: the payload route below writes the
+    two characters.
+
+    Not applied to fields that arrived through a payload or a batch sub-op.
+    There the caller has already said "these bytes, exactly", nothing was
+    tokenized, and that route stays the way to write the two characters
+    literally — a guard with no way through is this repository's own defect
+    class wearing the costume of a fix.
+
+    Equality, not a substring hunt: a field that merely mentions `@-` in prose
+    is ordinary content, and this repository writes that sentence often.
+    """
+    names = _at_file_fields(op)
+    if not names:
+        return ""
+    for idx, value in enumerate(parts[1:], start=1):
+        if value != "@-":
+            continue
+        field = names[idx - 1] if idx - 1 < len(names) else "field " + str(idx)
+        return (
+            "ERROR: " + op + ": the " + field + " field is `@-`, the stdin "
+            "payload reference — but only `" + op + ":@-` reads stdin, and "
+            "there the reference is the whole argument. Here it is a value, "
+            "so `@-` would have been taken as the " + field + " itself: the "
+            "two characters, not the bytes on stdin. Nothing ran."
+            + chr(10)
+            + "  Send the fields through the payload instead, which is also "
+            "the only way to pass a literal `@-`:"
+            + _at_file_payload_hint(op) + chr(10)
+        )
+    return ""
+
+
 def _at_file_route_ops() -> List[str]:
     """Every op that has an @payload route, from both registries that grant one.
 
@@ -24984,6 +25049,14 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # bytes — backslashes and newlines must NOT be reinterpreted as shell-
     # style escapes. Only colon-CLI input needs `_decode_escapes`.
     _dec = (lambda s: s) if _at_file_used else _decode_escapes
+
+    # `@-` reached a VALUE field rather than the reference slot (#1776). Ahead
+    # of every handler, because the whole point is that no write happens: this
+    # used to fall through and be written to disk as content.
+    if not _at_file_used:
+        _stdin_ref = _stdin_ref_in_value_field(op, parts)
+        if _stdin_ref:
+            return _receipt(header, _stdin_ref)
 
     # Published for the preset subprocess launcher, which is several frames
     # down and receives only `parts`. Set on every frame rather than once per
