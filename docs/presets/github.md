@@ -1613,6 +1613,30 @@ that is a coverage question and not a verdict. The gate prints the superseded
 disclosure on both its paths — a merge cleared without saying which legs stopped
 counting would be the same defect one layer up.
 
+**A note can never decide the verdict, and the first version of this fix got
+that wrong.** `gate()` returned `(not lines, lines)`, and the disclosure was
+appended to that same list on the passing path — so a line saying these legs are
+*not* counted red decided the merge was refused. The reader saw the note, then
+`[result] REFUSED`, with **zero `REFUSED:` lines**, and was then offered the raw
+`gh pr merge` escape hatch: routed onto the path with no leg reconciliation and
+no post-merge read-back, for no valid reason. It hid because `named_disclosure`
+skips the passed bucket, so a superseded *pass* — the ordinary re-push case —
+emits nothing and flipped nothing; only a superseded *failure* emits, which is
+exactly the reported case. Four merges went through the afternoon it shipped.
+
+So `lines` holds two kinds, `allowed` is computed from the refusals alone, and
+the invariant is one sentence: **`allowed is False` if and only if at least one
+line says `REFUSED`.** It is asserted as a property over several rollups rather
+than as one more example, because the defect was not in any branch — it was in
+the return contract, where every branch meets. A note that spells `REFUSED`
+anyway is treated as a refusal and said out loud, rather than trusted for being
+in the notes list: the merge is irreversible, so the classification fails closed.
+
+That is also a lesson about the test, not only the code. The test that let it
+through asserted that a *phrase* was absent from the findings text, which is
+true of a gate refusing for a different reason and true of a gate refusing while
+naming nothing. Assert the boolean.
+
 ## The tally counts a family, not a label
 
 `gh-labels` answers *which labels exist and who uses them*. The rolling-cohort

@@ -321,36 +321,132 @@ _MERGE_SPEC.loader.exec_module(pr_merge)
 
 
 def _pr_row(rollup: list) -> dict:
+    """A PR with nothing wrong with it except what the rollup says.
+
+    `mergeStateStatus` is `CLEAN` and `declared` is passed as the real leg
+    count at every call site below. Both were missing from the first version of
+    this section, and the second one is why it shipped a defect: every gate
+    test passed `declared=None`, so `shortfall` declined on every one of them
+    and emitted a `REFUSED` line. The genuinely-clean passing path — the only
+    path on which the verdict can be wrong in the dangerous direction — was
+    never exercised by anything (#1792, second round).
+    """
     return {
         "number": 18, "headRefOid": "7" * 40, "statusCheckRollup": rollup,
-        "mergeable": "MERGEABLE", "reviewDecision": "", "isDraft": False,
-        "state": "OPEN",
+        "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN",
+        "reviewDecision": "", "isDraft": False, "state": "OPEN",
     }
 
 
-def test_the_merge_gate_stops_refusing_the_clean_pr() -> None:
-    """#1792's actual cost. `gh-pr:N:status` is what a maintainer reads; this
-    is what refuses, and the refusal was unfixable by any action they had."""
-    body = " ".join(pr_merge._check_findings(_pr_row(_reported()), None, ()))
-    assert "not all green" not in body.lower(), (
-        f"the gate still refuses a pull request GitHub calls `clean`: {body!r}")
+def _verdict(rollup: list) -> tuple:
+    """`gate()` over a rollup, with `declared` reconciled against it.
+
+    **The boolean, never the prose.** The first version of these tests asserted
+    that the phrase `not all green` was absent from the findings text. That is
+    true of a gate that refuses for a different reason, and true of a gate that
+    refuses while naming nothing at all — which is exactly what shipped. A test
+    that reads the message cannot see the verdict.
+    """
+    declared = len(_checks.github_states(rollup))
+    return pr_merge.gate(_pr_row(rollup), declared, ())
 
 
-def test_the_merge_gate_still_refuses_a_live_failure() -> None:
+def test_a_failed_superseded_leg_does_not_refuse_the_merge() -> None:
+    """#1792's actual cost, and the regression its own fix shipped.
+
+    `gate()` returned `(not lines, lines)`, and the superseded disclosure was
+    appended to that same list on the passing path. An informational line
+    therefore flipped the verdict: the maintainer read a note saying these legs
+    "are not counted red in the tally above" and then `[result] REFUSED`, with
+    **zero `REFUSED:` lines** to act on. The reporter's own case is the one
+    that triggers it, because `named_disclosure` skips the passed bucket — a
+    superseded *pass* emits no lines and never flipped anything, which is why
+    four merges went through the day this shipped without showing it.
+    """
+    allowed, _lines = _verdict(_reported())
+    assert allowed is True, (
+        "five failed legs on this sha were superseded eight hours ago and the "
+        "gate refuses the merge anyway")
+
+
+def test_the_gate_still_names_the_superseded_legs_when_it_passes() -> None:
+    """The paired half. Not refusing must not become not saying.
+
+    Together with the test above this is the whole contract: the disclosure is
+    present *and* the verdict is True. Either one alone is satisfiable by a
+    gate that is simply wrong in the other direction.
+    """
+    _allowed, lines = _verdict(_reported())
+    body = " ".join(lines)
+    assert "superseded" in body and "95528525867" in body, (
+        f"five legs failed, stopped blocking, and left no trace: {body!r}")
+
+
+def test_a_live_failure_still_refuses_and_says_so() -> None:
     """The positive control, in the same fixture."""
     legs = _reported()
     legs[-1]["conclusion"] = "FAILURE"
-    body = " ".join(pr_merge._check_findings(_pr_row(legs), None, ()))
-    assert "REFUSED" in body and "not all green" in body.lower(), (
-        f"the live run of `fragment` failed and the gate cleared it: {body!r}")
+    allowed, lines = _verdict(legs)
+    assert allowed is False, (
+        "the live run of `fragment` failed and the gate cleared the merge")
+    assert any(ln.lstrip().startswith("REFUSED") for ln in lines), (
+        f"refused, and named no reason: {lines!r}")
 
 
-def test_the_merge_gate_names_the_superseded_legs_on_the_passing_path() -> None:
-    """A gate that clears a merge without saying which legs stopped counting is
-    the third state rendering as the first, one layer up from the tally."""
-    body = " ".join(pr_merge._check_findings(_pr_row(_reported()), None, ()))
-    assert "superseded" in body and "95528525867" in body, (
-        f"five legs failed, stopped blocking, and left no trace: {body!r}")
+@pytest.mark.parametrize("mutate, label", [
+    (lambda legs: legs, "failed superseded legs only"),
+    (lambda legs: legs[:0] or legs, "unchanged"),
+    (lambda legs: [dict(l, conclusion="SUCCESS") for l in legs], "all passed"),
+    (lambda legs: [dict(l, conclusion="FAILURE") for l in legs], "all failed"),
+    (lambda legs: [dict(l, conclusion="CANCELLED") for l in legs], "all cancelled"),
+    (lambda legs: legs + [_leg("e2e", "FAILURE", "2026-08-18T07:00:00Z",
+                               "2026-08-18T07:01:00Z", job="7")], "live failure"),
+    (lambda legs: legs + [_leg("e2e", "", "2026-08-18T07:00:00Z", "", job="8")],
+     "live pending"),
+])
+def test_a_refusal_always_names_itself(mutate, label) -> None:
+    """The general property, and the one that would have caught this.
+
+    Whatever the gate decides and however it decides it, `allowed is False`
+    must be accompanied by at least one line that says `REFUSED`. The inverse
+    — a line that says `REFUSED` while the gate allows — is checked in the same
+    assertion, because that is the dangerous direction: it clears an
+    irreversible merge past a stated objection.
+
+    Written as a property over several rollups rather than as one more example,
+    because the defect was not in any particular branch. It was in the return
+    contract, where every branch meets.
+    """
+    allowed, lines = _verdict(mutate(_reported()))
+    refusals = [ln for ln in lines if ln.lstrip().startswith("REFUSED")]
+    assert allowed == (not refusals), (
+        f"[{label}] gate allowed={allowed} with {len(refusals)} REFUSED "
+        f"line(s) — a verdict and its stated reasons disagree. Lines: {lines!r}"
+    )
+
+
+def test_a_note_that_spells_a_refusal_fails_closed() -> None:
+    """The third state of the classification itself.
+
+    Notes and refusals are two lists now, which means they can drift: a future
+    line appended to the wrong one silently changes a verdict. The direction
+    that matters is a refusal misfiled as a note, because that clears a merge.
+    So `gate()` re-reads its own notes, and a note spelling `REFUSED` is
+    treated as one and said out loud — rather than trusting the list it
+    arrived in, which is the assumption that produced this bug in the first
+    place.
+    """
+    original = _checks.superseded_disclosure
+    try:
+        _checks.superseded_disclosure = lambda *_a, **_k: [
+            "  REFUSED: a line in the wrong list"]
+        allowed, lines = _verdict(_reported())
+    finally:
+        _checks.superseded_disclosure = original
+    assert allowed is False, (
+        "a line spelling REFUSED arrived as a note and the gate merged past it")
+    assert any("misfiled" in ln or "wrong list" in ln for ln in lines), (
+        f"failed closed and did not say why: {lines!r}")
 
 
 def test_every_tally_the_merge_op_prints_comes_from_one_arithmetic() -> None:

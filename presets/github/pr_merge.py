@@ -122,6 +122,19 @@ def gate(pr: dict, declared: int | None = None,
     spelled it, and offers the op that answers the next question. A refusal
     whose reason a reader has to go and look up sends them to the web UI, which
     is the cost this family exists to remove.
+
+    **`lines` holds two kinds and only one of them decides.** A *refusal* says
+    `REFUSED:` and withholds the merge; a *note* is disclosure and withholds
+    nothing. `allowed` is computed from the refusals alone, and the invariant
+    is one sentence: `allowed is False` if and only if at least one line says
+    `REFUSED`. `tests/test_gh_pr_superseded_checks_1792.py` asserts it as a
+    property over several rollups rather than as one more example, because
+    the defect it is pinning was not in any branch — it was here, in the return
+    contract, where every branch meets.
+
+    The caller may print every line on either path. Nothing in `lines` is
+    conditional on the verdict, and a note printed only when the gate refuses
+    would be a disclosure that disappears exactly when the merge happens.
     """
     lines: List[str] = []
     num = pr.get("number", "?")
@@ -174,7 +187,45 @@ def gate(pr: dict, declared: int | None = None,
 
     lines.extend(_check_findings(pr, declared, missing, reason))
 
-    return (not lines, lines)
+    # --- the verdict comes from the refusals, never from the line count ------
+    #
+    # This used to be `return (not lines, lines)`, and the superseded
+    # disclosure was appended to that same list on the passing path — so a line
+    # whose entire purpose is to say "these legs are NOT counted red" decided
+    # that the merge was refused. The maintainer read the note, then
+    # `[result] REFUSED`, with zero `REFUSED:` lines to act on, and was then
+    # offered the raw `gh pr merge` escape hatch — routed onto the path with no
+    # leg reconciliation and no post-merge read-back, for no valid reason
+    # (#1792, second round).
+    #
+    # It hid because `named_disclosure` skips the passed and pending buckets:
+    # a superseded *pass* — the ordinary case, a re-push — emits no lines and
+    # flipped nothing. Only a superseded *failure* emits, and that is precisely
+    # the reported case. Four merges went through the afternoon it shipped.
+    #
+    # `notes` is disclosure and can never decide anything. Two lists rather
+    # than one, and the split is enforced below rather than trusted: a parallel
+    # list drifts, and the direction that matters is a refusal misfiled as a
+    # note, because that clears an irreversible merge past a stated objection.
+    notes = _checks.superseded_disclosure(
+        [(_untrusted.flat(n), s, k, i)
+         for n, s, k, i in _checks.github_named_superseded(
+             pr.get("statusCheckRollup"))])
+
+    # Fail closed, and say so. A note spelling a refusal is treated as one
+    # rather than trusted for being in the notes list — trusting the list it
+    # arrived in is the assumption that produced this bug.
+    misfiled = [n for n in notes if "REFUSED" in n]
+    if misfiled:
+        lines.append(
+            f"REFUSED: {len(misfiled)} disclosure line(s) for PR #{num} spell "
+            f"a refusal, so they are misfiled — a note cannot decide a verdict "
+            f"and a refusal cannot be silent, and this is neither. Treated as "
+            f"a refusal because the merge is irreversible. This is a bug in "
+            f"this op, not in the pull request."
+        )
+
+    return (not lines, lines + notes)
 
 
 def _check_findings(pr: dict, declared: int | None,
@@ -236,10 +287,6 @@ def _check_findings(pr: dict, declared: int | None,
     tally = _checks.summarize_github(rollup)
     out: List[str] = []
 
-    superseded_lines = _checks.superseded_disclosure(
-        [(_untrusted.flat(n), s, k, i)
-         for n, s, k, i in _checks.github_named_superseded(rollup)])
-
     if not _checks.all_green(live):
         named = [(_untrusted.flat(n), s, k, i)
                  for n, s, k, i in _checks.github_named_live(rollup)]
@@ -277,13 +324,7 @@ def _check_findings(pr: dict, declared: int | None,
                 f"neither a pass nor a fail. Waiting is the correct action; "
                 f"`gh-pr:{num}:status` says when they settle."
             )
-        out.extend(superseded_lines)
         return out
-
-    # On the *passing* path too. A gate that clears a merge without saying
-    # which legs stopped counting is the third state rendering as the first,
-    # one layer up from the tally (#1792).
-    out.extend(superseded_lines)
 
     marker, shortfall_lines = _checks.shortfall(len(states), declared, missing,
                                                 reason=reason)
@@ -1345,6 +1386,14 @@ def main() -> int:
     print(f"  reconciled:  {len(states)} legs read, {declared} declared")
     print(f"  mergeable:   {_checks.normalize(pr.get('mergeable'))} / "
           f"{_checks.normalize(pr.get('mergeStateStatus'))}")
+    # The gate's notes, on the path where the merge actually happens (#1792).
+    # `gate()` returns refusals and notes in one list and only the refusals
+    # decide, so on this path every line here is disclosure. Printing them only
+    # under `## Gate` — the refusal branch above — would make the superseded
+    # legs visible in every case except the one where they stop mattering,
+    # which is the case a reader is entitled to see them in.
+    for line in gate_lines:
+        print(line)
     print()
 
     if not force:
