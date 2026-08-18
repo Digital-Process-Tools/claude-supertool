@@ -150,12 +150,18 @@ def test_the_batch_footer_does_not_call_value_answers_refusals(
 
 
 def test_git_worktrees_declares_the_integers_its_own_note_documents() -> None:
-    """The op this was filed against, and the only shipped one that overloads."""
+    """The op this was filed against, and the only shipped one that overloads.
+
+    `3` joined the set in #1751 — `idle` but holding uncommitted work. A value
+    the registry does not declare is read by the dispatcher as a REFUSAL, so
+    this list growing with the op is the whole point of the guard rather than
+    an inconvenience of it.
+    """
     registry = json.loads((REPO_ROOT / "presets" / "git.json").read_text(encoding="utf-8"))
     entry = registry["ops"]["git-worktrees"]
 
     # `clean` is #1705's half of the same declaration, pinned in its own file.
-    assert entry.get("exitStatus", {}).get("values") == [0, 1, 2], entry.get("exitStatus")
+    assert entry.get("exitStatus", {}).get("values") == [0, 1, 2, 3], entry.get("exitStatus")
 
 
 def test_change_is_documented() -> None:
