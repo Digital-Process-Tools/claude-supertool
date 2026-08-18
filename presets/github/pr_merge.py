@@ -224,13 +224,25 @@ def _check_findings(pr: dict, declared: int | None,
             f"not a green one. " + pointer,
         ]
 
+    # Two counts, and they answer different questions (#1792). `states` is
+    # every leg on the sha and feeds the reconciliation below, which asks
+    # whether the tally *covers* what the runs declare. `live` drops the legs a
+    # later run of the same name replaced and is what decides green — GitHub
+    # evaluates a required check on its latest run, so refusing on a superseded
+    # failure refused a pull request the forge called `clean`, permanently: a
+    # concluded check run cannot be withdrawn by any trigger the maintainer has.
     states = _checks.github_states(rollup)
-    tally = _checks.summarize(states)
+    live = _checks.github_live_states(rollup)
+    tally = _checks.summarize_github(rollup)
     out: List[str] = []
 
-    if not _checks.all_green(states):
+    superseded_lines = _checks.superseded_disclosure(
+        [(_untrusted.flat(n), s, k, i)
+         for n, s, k, i in _checks.github_named_superseded(rollup)])
+
+    if not _checks.all_green(live):
         named = [(_untrusted.flat(n), s, k, i)
-                 for n, s, k, i in _checks.github_named_states(rollup)]
+                 for n, s, k, i in _checks.github_named_live(rollup)]
         out.append(f"REFUSED: checks on {sha} are not all green — {tally}")
 
         # `named_disclosure` drops the pending bucket on purpose — on a status
@@ -265,13 +277,19 @@ def _check_findings(pr: dict, declared: int | None,
                 f"neither a pass nor a fail. Waiting is the correct action; "
                 f"`gh-pr:{num}:status` says when they settle."
             )
+        out.extend(superseded_lines)
         return out
+
+    # On the *passing* path too. A gate that clears a merge without saying
+    # which legs stopped counting is the third state rendering as the first,
+    # one layer up from the tally (#1792).
+    out.extend(superseded_lines)
 
     marker, shortfall_lines = _checks.shortfall(len(states), declared, missing,
                                                 reason=reason)
     if marker:
         out.append(
-            f"REFUSED: every one of the {len(states)} legs read on {sha} "
+            f"REFUSED: every one of the {len(live)} live legs read on {sha} "
             f"passed, but the tally could not be squared with what the runs "
             f"declare ({marker}), so whether these are all of the legs is "
             f"UNKNOWN. `gh-branch`'s own verdict makes the same call: a green "
