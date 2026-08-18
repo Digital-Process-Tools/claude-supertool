@@ -25,13 +25,21 @@ detector would have disarmed the gate for all 25 — the reason this file pins t
 `syntax`-only shape as loudly as the `cmd`-only one.
 
 **`{arg}` and `{args}` are deliberately not signals**, though `{arg}` substitutes
-the very same `parts[1]` that `{file}` does. Twenty-four shipped ops carry
-`{arg}`; 8 of those name a path in `syntax` and are already held by the syntax
-detector, leaving 16 that use it for a handle, a ref, a tag, an ID or a repo
-slug and take no path. Promoting it would refuse those 16 and gate nothing.
-`{file}` and `{dir}` are the placeholders whose NAME is the claim. The 24/8/16
-split, and the reason #1357's proposed `{arg}` lint was measured and not built,
-are in `tests/test_arg_placeholder_and_paths_env_1357.py`.
+the very same `parts[1]` that `{file}` does. 20 shipped ops carry `{arg}`; 8 of
+those name a path in `syntax` and are already held by the syntax detector,
+leaving 12 that use it for a handle, a ref, a tag, an ID or a repo slug and take
+no path. Promoting it would refuse those 12 and gate nothing. `{file}` and
+`{dir}` are the placeholders whose NAME is the claim. The 20/8/12 split, and the
+reason #1357's proposed `{arg}` lint was measured and not built, are in
+`tests/test_arg_placeholder_and_paths_env_1357.py`.
+
+Every figure in that paragraph is recomputed from that file's helpers and
+checked against this docstring at the foot of this module, by
+`TestTheArgSplitInThisDocstringIsPinnedToTheLiveCount` — because prose and a
+green assertion one file away disagreed here for two releases (#1761). Do not
+restate a superseded figure above: the pin refuses a second `N/N/N` triple in
+this docstring, which keeps the paragraph a single current claim rather than a
+history. The history is in the file the paragraph names.
 
 #1351 rides here because it is the same sentence from the other end: the
 detector's docstring held up `gl-api` as the worked example of a declared op,
@@ -42,14 +50,24 @@ register shrinks 20 -> 19 and the example is true instead of accurate.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 import pytest
 
 import supertool
+from test_arg_placeholder_and_paths_env_1357 import (  # the split's owner
+    _arg_ops, _path_shaped_arg_ops)
 
 _ROOT = Path(__file__).resolve().parent.parent
+
+_MODULE_DOC = __doc__ or ""
+
+# Line breaks in a docstring are a wrapping decision, not a claim. The #1761
+# pin matches against this flattened copy so re-flowing a paragraph never
+# reddens it — only a figure changing does.
+_MODULE_DOC_FLAT = re.sub(r"\s+", " ", _MODULE_DOC)
 
 
 @pytest.fixture(autouse=True)
@@ -394,3 +412,83 @@ class TestGlApiDeclaresRatherThanBeingGrandfathered:
         assert undeclared == [], (
             "the detector docstring cites these as declared and they are not: "
             + ", ".join(undeclared))
+
+
+class TestTheArgSplitInThisDocstringIsPinnedToTheLiveCount:
+    """#1761 — the `{arg}` split above is joined to the count it quotes.
+
+    It read `24/8/16` from #873 until #1761, through #1715 moving the figure a
+    second time, while `test_arg_placeholder_and_paths_env_1357.py` asserted
+    the real one green on every run one file away. Nothing joined the two, so
+    the number CI checks and the number a reader consults before deciding
+    whether the `{arg}` lint is worth building could disagree indefinitely.
+    This is the join, and it recomputes through that file's own helpers rather
+    than restating them — a second copy of the measurement is the defect.
+    """
+
+    @staticmethod
+    def _live() -> Tuple[int, int, int]:
+        arg_ops = _arg_ops()
+        path_shaped = _path_shaped_arg_ops()
+        assert arg_ops, "no shipped op carries {arg} — re-measure, do not pass"
+        assert path_shaped, "no {arg} op names a path — re-measure"
+        return len(arg_ops), len(path_shaped), len(arg_ops) - len(path_shaped)
+
+    def test_the_docstring_carries_exactly_one_split_and_it_is_current(
+            self) -> None:
+        total, path_shaped, rest = self._live()
+        live = "%d/%d/%d" % (total, path_shaped, rest)
+        found = sorted(set(re.findall(r"\b\d+/\d+/\d+\b", _MODULE_DOC)))
+        assert found == [live], (
+            "this module's docstring quotes %s; the live split computed from "
+            "the shipped manifests is %s. Exactly one triple is allowed here, "
+            "so a superseded figure belongs in the history the paragraph "
+            "points at, not above it (#1761)." % (found or "no split", live))
+
+    def test_every_figure_in_the_sentence_is_the_live_one(self) -> None:
+        """The triple is not the only place the numbers are spelled out.
+
+        Each phrase is built from the computed figure, so a docstring that
+        merely dropped a number fails here rather than passing quietly.
+        """
+        total, path_shaped, rest = self._live()
+        for phrase in (
+                "%d shipped ops carry `{arg}`" % total,
+                "%d of those name a path" % path_shaped,
+                "leaving %d that use it" % rest,
+                "refuse those %d and gate nothing" % rest):
+            assert phrase in _MODULE_DOC_FLAT, (
+                "this module's docstring no longer contains %r. If you "
+                "reworded the sentence, update this pin; if the figure moved, "
+                "the docstring is stale and the number here is the live one "
+                "(#1761)." % phrase)
+
+    def test_the_contributing_doc_quotes_the_same_live_figures(self) -> None:
+        """The third copy, and it had drifted to a third value.
+
+        `docs/contributing.md` restated the split in words rather than as a
+        slash triple, so the grep that found the other two could not see it:
+        it read 21/8/13 while the docstring read 24/8/16 and the assertion
+        read the truth. Both populations it quotes are pinned here — the
+        `{arg}` split and the syntax detector's own count — because the doc
+        is the copy a contributor reads before writing an op.
+        """
+        total, path_shaped, rest = self._live()
+        syntax_named = [name for name, entry in _registry().items()
+                        if supertool._syntax_names_a_path(
+                            entry.get("syntax", ""))]
+        assert syntax_named, "the syntax detector finds nothing — re-measure"
+        doc = (_ROOT / "docs" / "contributing.md").read_text(encoding="utf-8")
+        flat = re.sub(r"\s+", " ", doc)
+        for phrase in (
+                "%d shipped ops carry `{arg}`" % total,
+                "%d of them name a path in `syntax`" % path_shaped,
+                "leaving %d that pass a handle" % rest,
+                "refuse those %d and gate nothing" % rest,
+                "of the %d shipped ops the `syntax` detector finds"
+                % len(syntax_named)):
+            assert phrase in flat, (
+                "docs/contributing.md no longer contains %r. If you reworded "
+                "the sentence, update this pin; if the figure moved, the doc "
+                "is stale and the number here is the live one (#1761)."
+                % phrase)
