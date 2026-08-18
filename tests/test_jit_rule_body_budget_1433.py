@@ -17,6 +17,9 @@ was written about grew to 61 lines across three incident write-ups. (It said
 "injected in full on every match" until #1442, which is true of a `tools/` body
 and not of the `paths/` body that sentence sits in.)
 
+Both ceilings count the body with line endings NORMALISED (#1799), so the
+number is a property of the content and not of the checkout that holds it.
+
 Would this pass if the code did nothing? No: supertool-no-cut.md is 3,884 bytes
 at the parent commit, over the 3,200-byte ceiling, and the content assertions
 below fail on a body shrunk by deleting the replacement-op table instead of the
@@ -34,6 +37,40 @@ TAB = "\t"
 # Headroom of ~340 bytes over the largest compliant rule at the time of writing
 # (op-defaults-that-narrow.md, 2,861). ~800 tokens, re-paid on every match.
 BUDGET = 3200
+
+
+def _body_bytes(path):
+    """The size of a rule body as CONTENT, not as bytes on disk (#1799).
+
+    CRLF collapses to LF before the count, so the number is the same on every
+    checkout. The reasoning, and what this number does and does not claim, is
+    the block above the #1799 tests below. ``None`` means the file could not be
+    read -- a third state, never folded into "fits".
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    return len(raw.replace(b"\r\n", b"\n"))
+
+
+def _over_budget(files, budget):
+    """(over, unmeasurable) -- three states, not two (#1799).
+
+    A file the index names and nobody can read is NOT the same answer as a file
+    that fits, and the paths side used to return the second for the first by
+    filtering on ``is_file()`` before measuring. It is returned separately so a
+    caller cannot mistake "no findings" for "nothing was looked at".
+    """
+    over = {}
+    unmeasurable = []
+    for path in files:
+        size = _body_bytes(path)
+        if size is None:
+            unmeasurable.append(path.name)
+        elif size > budget:
+            over[path.name] = size
+    return over, unmeasurable
 
 
 def _indexed_rule_files():
@@ -74,7 +111,7 @@ def _indexed_paths_rules():
         if len(fields) < 2 or not fields[1].endswith(".md"):
             continue
         path = PATHS / fields[1]
-        if path.is_file() and path not in out:
+        if path not in out:
             out.append(path)
     return out
 
@@ -96,11 +133,10 @@ def test_paths_rules_are_named_at_all():
 
 
 def test_no_tools_rule_body_exceeds_the_per_match_budget():
-    over = {
-        p.name: p.stat().st_size
-        for p in _indexed_rule_files()
-        if p.stat().st_size > BUDGET
-    }
+    over, unmeasurable = _over_budget(_indexed_rule_files(), BUDGET)
+    assert not unmeasurable, (
+        f"tools rule bodies the index names and this test could not read: "
+        f"{unmeasurable}. Unmeasured, not compliant.")
     assert not over, (
         f"tools rule bodies over the {BUDGET}-byte per-match budget: {over}. "
         "These are injected in full on every match, false ones included. "
@@ -108,16 +144,107 @@ def test_no_tools_rule_body_exceeds_the_per_match_budget():
 
 
 def test_no_paths_rule_body_exceeds_the_per_session_budget():
-    over = {
-        p.name: p.stat().st_size
-        for p in _indexed_paths_rules()
-        if p.stat().st_size > PATHS_BUDGET
-    }
+    over, unmeasurable = _over_budget(_indexed_paths_rules(), PATHS_BUDGET)
+    assert not unmeasurable, (
+        f"paths rule bodies the index names and this test could not read: "
+        f"{unmeasurable}. Unmeasured, not compliant.")
     assert not over, (
         f"paths rule bodies over the {PATHS_BUDGET}-byte per-session budget: "
         f"{over}. Paid once per session per agent, so the ceiling is looser "
         "than the tools one -- but it is a ratchet, and growing past it wants "
         "a measurement, not a bigger number.")
+
+
+# ── #1799: the count is a property of the content, not of the checkout ──────
+#
+# Git checks these files out with the platform's line endings, so a Windows
+# runner reads one extra byte per line for byte-identical content. PR #1768's
+# presets-git.md is 5,918 bytes / 94 lines with LF; all four `windows-latest`
+# legs of run #31912614030 failed with {'presets-git.md': 6012} -- 5918 + 94
+# exactly -- while the ubuntu and macOS legs of the same run passed.
+#
+# WHAT THE NUMBER CLAIMS, written down because there are two readings and only
+# one of them is a property of the repository: it is the size of the body its
+# AUTHOR wrote, line endings normalised. It is NOT the number of bytes this
+# particular checkout happens to hold. The ratchet exists to bound what an
+# author adds; a CR git inserted at checkout is not authored, is invisible on
+# the author's machine, and cannot be removed by editing the file -- so counting
+# it names a size that exists on no machine the author has, which is the shape
+# that reads as a flake and gets re-run.
+#
+# The cost of that choice, said rather than hidden: on a CRLF checkout the hook
+# does inject those CRs. `claude-jit-context/scripts/common.sh` returns
+# `e["body"]` as read (`jit_inject_text()`), and its CR handling is escaping for
+# JSON, not stripping. So on such a checkout the real injected cost is up to one
+# byte per line above what this test reports. That is a property of the
+# checkout, not of the rule, and the place to fix it is `.gitattributes` at
+# checkout time -- deliberately not done in this change, which owns one test.
+#
+# A LONE CR is still counted. Nothing inserts one, so it is authored content.
+
+_FIXTURE_LINE = b"x" * 61  # 62 bytes with LF, 63 with CRLF
+_LF = b"\n"
+_CRLF = b"\r\n"
+
+
+def _fixture(directory, name, lines, eol):
+    path = directory / name
+    path.write_bytes((_FIXTURE_LINE + eol) * lines)
+    return path
+
+
+# 96 * 62 = 5952 under the 6000 budget with LF; 96 * 63 = 6048 over it with
+# CRLF. The straddle is the whole defect, and it is asserted below rather than
+# trusted, so a change to PATHS_BUDGET cannot leave these tests quietly vacuous.
+_STRADDLE_LINES = 96
+_OVER_LINES = 120  # 7440 with LF -- over the budget on every platform
+
+
+def test_the_crlf_fixture_actually_straddles_the_budget():
+    """Vacuity guard: without the straddle, every assertion below is free."""
+    lf = _STRADDLE_LINES * (len(_FIXTURE_LINE) + 1)
+    crlf = _STRADDLE_LINES * (len(_FIXTURE_LINE) + 2)
+    assert lf < PATHS_BUDGET < crlf, (
+        f"the fixture no longer straddles the budget: LF {lf}, CRLF {crlf}, "
+        f"budget {PATHS_BUDGET}")
+    assert _OVER_LINES * (len(_FIXTURE_LINE) + 1) > PATHS_BUDGET
+
+
+def test_body_size_is_the_same_under_lf_and_crlf(tmp_path):
+    lf = _fixture(tmp_path, "lf.md", _STRADDLE_LINES, _LF)
+    crlf = _fixture(tmp_path, "crlf.md", _STRADDLE_LINES, _CRLF)
+    assert crlf.stat().st_size == lf.stat().st_size + _STRADDLE_LINES
+    assert _body_bytes(crlf) == _body_bytes(lf) == lf.stat().st_size
+
+
+def test_a_compliant_body_is_compliant_on_a_crlf_checkout_too(tmp_path):
+    """The #1799 failure: identical content, red on Windows and green here."""
+    files = [_fixture(tmp_path, "lf.md", _STRADDLE_LINES, _LF),
+             _fixture(tmp_path, "crlf.md", _STRADDLE_LINES, _CRLF)]
+    over, unmeasurable = _over_budget(files, PATHS_BUDGET)
+    assert not unmeasurable
+    assert over == {}, f"a CRLF checkout pushed a compliant body over: {over}"
+
+
+def test_an_oversized_body_still_fails_under_both_line_endings(tmp_path):
+    """Positive control. Without this, normalising to zero would also pass."""
+    files = [_fixture(tmp_path, "lf.md", _OVER_LINES, _LF),
+             _fixture(tmp_path, "crlf.md", _OVER_LINES, _CRLF)]
+    over, unmeasurable = _over_budget(files, PATHS_BUDGET)
+    assert not unmeasurable
+    content = _OVER_LINES * (len(_FIXTURE_LINE) + 1)
+    assert over == {"lf.md": content, "crlf.md": content}, (
+        f"an over-budget body must fail on both, at the content size: {over}")
+
+
+def test_an_indexed_body_nobody_can_read_is_not_reported_as_compliant(tmp_path):
+    """Three states. The paths side used to drop these before measuring."""
+    missing = tmp_path / "gone.md"
+    over, unmeasurable = _over_budget(
+        [missing, _fixture(tmp_path, "lf.md", _STRADDLE_LINES, _LF)],
+        PATHS_BUDGET)
+    assert unmeasurable == ["gone.md"]
+    assert over == {}
 
 
 def test_the_no_cut_rule_keeps_the_part_that_helps():
