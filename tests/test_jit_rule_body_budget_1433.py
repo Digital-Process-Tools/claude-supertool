@@ -104,6 +104,11 @@ def _indexed_paths_rules():
     so the filter was keyed on a field with no reader (#1442). It happened to
     budget jit-context.md at 3,023 while exempting docs-index.md at 5,847,
     which is an arbitrary line, not a lenient one.
+
+    It also used to filter on ``is_file()``, so a rule the index named and
+    nobody could read never reached the measurement and the check answered
+    "fits" for "never looked". Every named path is returned now; ``_over_budget``
+    reports the unreadable ones as their own state (#1799).
     """
     out = []
     for raw in (PATHS / "00-index.tsv").read_text(encoding="utf-8").splitlines():
