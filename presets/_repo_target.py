@@ -205,24 +205,151 @@ def api_path_printable(suffix: str, timeout: int = 15) -> str:
     return api_path_for_display(suffix, cwd_slug(timeout))
 
 
-def no_repo_error(cli_example: str) -> str:
+#: gh answered, and the answer was "there is no repository here". A
+#: **measurement** — evidence about the cwd, or about the target.
+ABSENT = "absent"
+#: gh did not answer: missing, hung, unauthenticated, 503, unparseable. The
+#: absence of a measurement, which is a different fact from :data:`ABSENT` and
+#: is the whole of #1789.
+UNKNOWN = "unknown"
+
+#: Substrings of gh's own stderr that mean *asked, and there is no repository
+#: here* rather than *could not ask*. The same phrases the twelve classifying
+#: call sites already match on — `pr.py`, `issue.py`, `issues.py` (three),
+#: `run.py`, `job.py`, `labels.py`, `prs.py`, `branch.py`, `check.py` (two) —
+#: kept here so the one caller that has NOT classified reaches the same
+#: verdict rather than a thirteenth spelling of it.
+#:
+#: Deliberately short of a full taxonomy: anything unrecognised falls to
+#: :data:`UNKNOWN`, because the two mistakes do not cost the same. Calling a
+#: real non-repo `unknown` prints a hedged sentence; calling a 503 `absent`
+#: prints a false claim about the reader's machine and sends them to fix
+#: something that was never broken.
+_ABSENT_CWD = (
+    "not a git repository",
+    "no git remotes",
+    "git remotes found",
+    "github host",
+    "could not determine base repository",
+)
+_ABSENT_TARGET = (
+    "could not resolve to a repository",
+    "http 404",
+)
+
+#: How much of gh's stderr is worth pasting into one error line.
+_DETAIL_CAP = 200
+
+
+def _one_line(text: str) -> str:
+    """gh's stderr, reduced to something that can sit inside our own sentence.
+
+    Not `_untrusted.flat`, on purpose: this module is stdlib-only and its tests
+    load it by path before any preset has put `presets/` on `sys.path`, so
+    importing a sibling here would be a new way for an error path to fail. What
+    is needed is narrower than `flat` anyway — one line, no control characters,
+    bounded length — because the text lands mid-sentence in a message the
+    reader takes as the tool's, and a multi-line hint from gh must not be able
+    to add a line of its own to it.
+
+    **Where it lands is quoted with `!r`, and that is the other half of this.**
+    Flattening bounds the text to one line but not to a known span within it:
+    gh's own messages routinely contain brackets — `fatal: not a git repository
+    (or any of the parent directories)` — so a parenthesised span cannot tell
+    the reader where gh stops speaking and the tool resumes. `repr` escapes the
+    quote it delimits with, so the span is unambiguous whatever gh sent, and
+    the text after it is visibly the tool's again.
+    """
+    first = ""
+    for line in (text or "").replace("\r\n", "\n").split("\n"):
+        stripped = line.strip()
+        if stripped:
+            first = stripped
+            break
+    cleaned = "".join(ch if ch.isprintable() else " " for ch in first).strip()
+    if len(cleaned) > _DETAIL_CAP:
+        cleaned = cleaned[:_DETAIL_CAP - 1].rstrip() + "…"
+    return cleaned
+
+
+def classify_detail(detail: str, slug: str | None = None) -> str:
+    """:data:`ABSENT` or :data:`UNKNOWN` for an error string gh produced.
+
+    `slug` picks the vocabulary. gh complains about a *directory* one way and
+    about a *named repository* another, and reading a target's 404 against the
+    cwd's markers would classify every misspelled target as `unknown`.
+    """
+    low = (detail or "").lower()
+    markers = _ABSENT_TARGET if slug else _ABSENT_CWD
+    return ABSENT if any(m in low for m in markers) else UNKNOWN
+
+
+def no_repo_error(cli_example: str, detail: str | None = None) -> str:
     """The message for "gh could not work out which repo this is".
 
     Before #673 this said `cwd is not a GitHub repo`, which was a complete and
     honest answer while the cwd was the only way to name a repo. It is not any
-    more, and the two cases have to be told apart:
+    more, and the cases have to be told apart:
 
     * **No target given** — the cwd really is the problem, and the message now
       names the second route as well as the first.
     * **A target was given** — the cwd is irrelevant. Blaming it would send the
       reader to fix something that is not broken while the real fault (a typo,
       or no access) goes unnamed.
+    * **gh did not answer at all** — #1789. Both sentences above are *factual
+      claims about the reader's environment*, and a caller that reached here on
+      any gh failure whatsoever makes this function assert one it cannot
+      support. Observed downstream on 2026-08-17 during a GraphQL outage:
+      `gh-pr-merge:1:squash|force` printed *cwd is not a GitHub repo* in a
+      working clone of a real repository, and succeeded on the same op minutes
+      later. The cost is not only the wrong sentence — the first message's
+      third remedy, *run gh directly with --repo*, means raw `gh pr merge` for
+      that op, which this repo's own guard refuses and which skips the leg
+      reconciliation and the post-merge read-back. A blip must not push a
+      maintainer off the audited path, so that remedy stays on the arm whose
+      claim was measured.
+
+    **`detail` is gh's own error, and the third arm is reachable only through
+    it.** Not a lookup of this module's own: twelve of the thirteen call sites
+    already match gh's stderr against the not-a-repo family *before* calling,
+    so they arrive having measured `absent`, and a second lookup run here a
+    second later could contradict a correct measurement with a fresher one —
+    the same class of defect one layer up. They pass nothing and keep byte for
+    byte the message they had. `pr_merge.py` is the thirteenth and the one
+    #1789 was filed against: it reaches here on *any* failure of its identity
+    read, holding the reason in `ident_err`, and used to drop it.
+
+    #1701 asked whether `cwd_slug()` should carry a third state and decided
+    against, because no caller read one — sound then, and still sound. The
+    reader #1789 identified is this function, and it is a *different* lookup
+    from `cwd_slug`'s: the callers hand it a result they already have.
     """
     value = target()
+    state = classify_detail(detail, value) if detail is not None else ABSENT
+    # An `unknown` never renders without a reason. A caller that passes an
+    # empty string has still said "I could not ask" — that is the state, and
+    # the blank is disclosed rather than turned into empty parentheses.
+    why = _one_line(detail or "") or "gh gave no reason"
     if value:
+        if state == UNKNOWN:
+            return (
+                f"ERROR: repo target {value!r} could not be checked — the "
+                f"lookup did not answer ({why!r}). Whether the target is wrong "
+                f"and whether gh could reach GitHub are both UNKNOWN from "
+                f"here. Retry; if it persists: gh repo view {value}"
+            )
         return (
             f"ERROR: repo target {value!r} could not be resolved by gh. "
             f"Check the spelling and your access: gh repo view {value}"
+        )
+    if state == UNKNOWN:
+        return (
+            f"ERROR: could not work out which GitHub repo this is — the "
+            f"lookup did not answer ({why!r}). That is not the same as the cwd "
+            f"not being a GitHub repo, and which of the two it is is UNKNOWN "
+            f"from here. Retry; if it persists, check gh (gh auth status; "
+            f"gh repo view), or name a repo with a leading repo: op "
+            f"(./supertool 'repo:OWNER/NAME' '{cli_example}')."
         )
     return (
         "ERROR: cwd is not a GitHub repo and no repo target was given. "

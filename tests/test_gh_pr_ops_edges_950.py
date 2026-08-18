@@ -244,11 +244,27 @@ def test_a_bare_force_token_is_accepted(monkeypatch, capsys):
 
 
 def test_an_unresolvable_repo_is_named_rather_than_assumed(monkeypatch, capsys):
+    """`no auth` is gh *not answering*, so the message must not claim the cwd
+    is not a GitHub repo (#1789). It asserted exactly that until this site
+    started handing `ident_err` over — during a GraphQL outage a working clone
+    of a real repository was told it was not a GitHub repo, and the sentence's
+    third remedy routes this op onto raw `gh pr merge`."""
     monkeypatch.setattr(merge, "_repo_identity", lambda: ("", "", "no auth"))
     monkeypatch.setattr(sys, "argv", ["pr_merge.py", "944"])
     assert merge.main() == 1
     out = capsys.readouterr().out
-    assert "cwd is not a GitHub repo" in out or "could not be resolved" in out
+    assert "cwd is not a GitHub repo" not in out, out
+    assert "did not answer" in out and "no auth" in out, out
+
+
+def test_a_cwd_that_really_is_not_a_repo_is_still_told_so(monkeypatch, capsys):
+    """The positive control for the test above. The hedged sentence must not
+    become the only one this site can produce."""
+    monkeypatch.setattr(merge, "_repo_identity",
+                        lambda: ("", "", "fatal: not a git repository"))
+    monkeypatch.setattr(sys, "argv", ["pr_merge.py", "944"])
+    assert merge.main() == 1
+    assert "cwd is not a GitHub repo" in capsys.readouterr().out
 
 
 def test_gh_pr_merge_never_running_is_unverified_not_merged(monkeypatch,

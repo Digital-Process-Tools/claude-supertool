@@ -1266,7 +1266,15 @@ def main() -> int:
 
     repo, default_branch, ident_err = _repo_identity()
     if ident_err and not repo:
-        print(_repo_target.no_repo_error(f"gh-pr-merge:{number}"))
+        # `ident_err` is handed over rather than dropped (#1789). This site is
+        # the reproduction: during a GraphQL outage the identity read failed,
+        # the reason was discarded here, and `no_repo_error` rendered the
+        # collapsed answer as "cwd is not a GitHub repo" in a working clone.
+        # The error we already hold is contemporaneous with the failure, which
+        # is better evidence than a second lookup a second later — and it
+        # spares this terminal path a `gh repo view` it does not need.
+        print(_repo_target.no_repo_error(f"gh-pr-merge:{number}",
+                                         detail=ident_err))
         return 1
 
     pr, err = _gh_json(["pr", "view", number, "--json", _PR_FIELDS]

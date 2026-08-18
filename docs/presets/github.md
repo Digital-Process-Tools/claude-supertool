@@ -482,8 +482,13 @@ Every path this process **executes** still goes through `api_path`, unchanged.
 | No target, cwd is not a GitHub clone | `cwd is not a GitHub repo and no repo target was given. cd into a GitHub-cloned repo, name one with a leading repo: op …, or run gh directly with --repo OWNER/REPO.` |
 | Target given, `gh` cannot resolve it | `repo target 'owner/name' could not be resolved by gh. Check the spelling and your access: gh repo view owner/name` |
 | Target given, the number is wrong | `PR #265 not found in owner/name. Check the number, or the repo target (gh repo view owner/name).` |
+| **`gh` did not answer at all** | `could not work out which GitHub repo this is — the lookup did not answer (…). That is not the same as the cwd not being a GitHub repo, and which of the two it is is UNKNOWN from here. Retry; …` |
 
 The third one used to read *not found in this repo … verify you're in the right repo*, which under a target sends the reader to inspect a working directory that took no part in the request.
+
+**The fourth row is [#1789](https://github.com/Digital-Process-Tools/claude-supertool/issues/1789), and the first two are claims about your machine.** They were rendered from an answer that said only "not the slug", so a `gh` that could not answer took the first row: during a GraphQL outage `gh-pr-merge:1:squash|force` told a working clone of a real repository that it was not a GitHub repo, and the same op succeeded minutes later. The cost is not only the wrong sentence — the first row's third remedy, *run gh directly with --repo*, means raw `gh pr merge` for that op, which the raw-command guard refuses and which skips the leg reconciliation and the post-merge read-back. So that remedy stays on the row whose claim was measured, and the new row names `gh`'s own reason and asks for a retry instead of a `cd`.
+
+Twelve of the thirteen callers match `gh`'s stderr against the not-a-repo family before they call, so they arrive having measured and their message is unchanged. `gh-pr-merge` was the one that did not, and it now hands its reason over rather than dropping it. `cwd_slug()` keeps the two states [#1701](https://github.com/Digital-Process-Tools/claude-supertool/issues/1701) gave it, for the reason #1701 gave: its caller falls back to `gh`'s own placeholders, which are a correct command, so it still has nothing to say about a reason.
 
 ### A token `gh-prs` cannot apply is refused, not dropped
 
