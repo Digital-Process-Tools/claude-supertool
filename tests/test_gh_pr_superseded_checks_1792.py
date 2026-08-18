@@ -39,6 +39,7 @@ failure is never invisible; it is only not *blocking*.
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import re
 import sys
@@ -306,6 +307,74 @@ def test_the_op_no_longer_blocks_the_clean_pr(monkeypatch, capsys, slim) -> None
         f"the five failures vanished from the output entirely:\n{out}")
     assert "NOT ALL GREEN" not in out, (
         f"the marker survived somewhere else on the dashboard:\n{out}")
+
+
+# --------------------------------------------------------------------------
+# the gate — the op that actually refused the merge
+# --------------------------------------------------------------------------
+
+_MERGE_SPEC = importlib.util.spec_from_file_location(
+    "github_pr_merge_1792", ROOT / "presets" / "github" / "pr_merge.py")
+assert _MERGE_SPEC is not None and _MERGE_SPEC.loader is not None
+pr_merge = importlib.util.module_from_spec(_MERGE_SPEC)
+_MERGE_SPEC.loader.exec_module(pr_merge)
+
+
+def _pr_row(rollup: list) -> dict:
+    return {
+        "number": 18, "headRefOid": "7" * 40, "statusCheckRollup": rollup,
+        "mergeable": "MERGEABLE", "reviewDecision": "", "isDraft": False,
+        "state": "OPEN",
+    }
+
+
+def test_the_merge_gate_stops_refusing_the_clean_pr() -> None:
+    """#1792's actual cost. `gh-pr:N:status` is what a maintainer reads; this
+    is what refuses, and the refusal was unfixable by any action they had."""
+    body = " ".join(pr_merge._check_findings(_pr_row(_reported()), None, ()))
+    assert "not all green" not in body.lower(), (
+        f"the gate still refuses a pull request GitHub calls `clean`: {body!r}")
+
+
+def test_the_merge_gate_still_refuses_a_live_failure() -> None:
+    """The positive control, in the same fixture."""
+    legs = _reported()
+    legs[-1]["conclusion"] = "FAILURE"
+    body = " ".join(pr_merge._check_findings(_pr_row(legs), None, ()))
+    assert "REFUSED" in body and "not all green" in body.lower(), (
+        f"the live run of `fragment` failed and the gate cleared it: {body!r}")
+
+
+def test_the_merge_gate_names_the_superseded_legs_on_the_passing_path() -> None:
+    """A gate that clears a merge without saying which legs stopped counting is
+    the third state rendering as the first, one layer up from the tally."""
+    body = " ".join(pr_merge._check_findings(_pr_row(_reported()), None, ()))
+    assert "superseded" in body and "95528525867" in body, (
+        f"five legs failed, stopped blocking, and left no trace: {body!r}")
+
+
+def test_every_tally_the_merge_op_prints_comes_from_one_arithmetic() -> None:
+    """The gate and the banner it prints must not compute the tally twice.
+
+    `## Gate — passed` used to render `_checks.summarize(github_states(...))`
+    — the pre-#1792 shape — immediately before an irreversible merge that
+    `_check_findings` had already authorised on the *live* set. The banner then
+    read `⚠ NOT ALL GREEN` under a heading saying the gate passed: the
+    arithmetic that cleared the merge disagreeing with the arithmetic printed
+    beside it, on the last line a reader sees before the merge happens.
+
+    A source check rather than a render, deliberately: `main()` needs a live
+    `gh` and the defect is a *second* call site, so what has to be pinned is
+    that there is only one.
+    """
+    src = inspect.getsource(pr_merge)
+    stray = [ln.strip() for ln in src.splitlines()
+             if "_checks.summarize(" in ln]
+    assert not stray, (
+        "pr_merge.py renders a tally through `_checks.summarize()`, which does "
+        "not know about superseded legs — every tally this op prints has to "
+        f"come from `summarize_github()` or the gate contradicts itself: {stray!r}"
+    )
 
 
 @pytest.mark.parametrize("slim", [True, False], ids=["status", "full"])

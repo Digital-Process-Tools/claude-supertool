@@ -290,7 +290,8 @@ def _check_findings(pr: dict, declared: int | None,
     if marker:
         out.append(
             f"REFUSED: every one of the {len(live)} live legs read on {sha} "
-            f"passed, but the tally could not be squared with what the runs "
+            f"passed, but the tally of all {len(states)} legs on the commit "
+            f"could not be squared with what the runs "
             f"declare ({marker}), so whether these are all of the legs is "
             f"UNKNOWN. `gh-branch`'s own verdict makes the same call: a green "
             f"is a claim about all of the legs, and 'every leg I managed to "
@@ -1322,7 +1323,15 @@ def main() -> int:
         return 1
 
     states = _checks.github_states(pr.get("statusCheckRollup"))
-    authorising = _checks.summarize(states)
+    # The tally the gate actually authorised on, not a second one computed a
+    # different way (#1792). `summarize(github_states(...))` here counted the
+    # superseded legs as live failures, so the banner printed immediately
+    # before an irreversible merge read `⚠ NOT ALL GREEN` under a heading
+    # saying `Gate — passed` — the arithmetic that cleared the merge and the
+    # arithmetic displayed beside it disagreeing, on the one line a reader
+    # stops at. `reconciled:` below stays on the full count: that is the
+    # coverage question and it has to see every leg.
+    authorising = _checks.summarize_github(pr.get("statusCheckRollup"))
     print("## Gate — passed")
     print(f"  checks:      {authorising}")
     print(f"  reconciled:  {len(states)} legs read, {declared} declared")
