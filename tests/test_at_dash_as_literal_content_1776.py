@@ -18,6 +18,7 @@ both colon forms, and the payload route that is the documented way to send a
 multi-line body.
 """
 import io
+import json
 import sys
 from pathlib import Path
 
@@ -28,6 +29,7 @@ import supertool
 
 NL = chr(10)
 Q3 = chr(39) * 3
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 VICTIM = "IMPORTANT EXISTING CONTENT" + NL + "second line" + NL
 
@@ -135,35 +137,107 @@ def test_the_field_named_in_the_message_is_the_one_that_holds_the_sigil():
     assert "the content field is" in rl_out, rl_out
 
 
-def test_git_commit_at_dash_is_refused():
-    """`git-commit`'s route is derived from its `syntax` in the preset config
-    rather than from the builtin table, so it is the one guarded op that can
-    leave the registry without anyone editing this guard -- and the only one
-    whose membership depends on which config this process loaded."""
-    if not _supertool._at_file_fields("git-commit"):
-        # Loudly, with what went untested: a silent pass here would report
-        # coverage of the one op that can vanish from the registry.
-        pytest.skip("git-commit has no payload route in this environment, so "
-                    "the guard's coverage of it went unasserted")
+@pytest.fixture
+def git_commit_route():
+    """Make `git-commit`'s payload route exist for the duration of one test.
+
+    Without this the op is invisible here, always. Its route is derived from
+    the preset manifest rather than from `_AT_FILE_BUILTIN_DEFAULTS`, and
+    `tests/conftest.py`'s autouse `_disable_rtk_and_config` sets
+    `supertool._CONFIG = {}` for every test in the suite -- so
+    `_at_file_fields("git-commit")` is empty on every invocation, not on some
+    of them. An earlier version of this file skipped when the route was absent
+    and called that honest; it is not, because the condition is never false.
+    A test that skips on every run in CI reads as coverage in the count and
+    asserts nothing, which is the defect class this whole file exists about,
+    sitting inside the fix for it.
+
+    The syntax is read off the shipped manifest rather than typed here, so this
+    stays joined to the artifact: reword `syntax` until `_fields_from_syntax`
+    stops deriving clean identifiers -- the documented way to silently delete an
+    op's payload route -- and this goes red instead of skipping.
+    """
+    manifest = json.loads(
+        (REPO_ROOT / "presets" / "git.json").read_text(encoding="utf-8"))
+    entry = manifest.get("ops", {}).get("git-commit")
+    assert entry and entry.get("syntax"), (
+        "presets/git.json no longer declares a git-commit op with a syntax; "
+        "the guard's coverage of it cannot be asserted from here")
+
+    saved_config = _supertool._CONFIG
+    saved_registry = _supertool._AT_FILE_REGISTRY
+    saved_built = _supertool._AT_FILE_REGISTRY_BUILT
+    _supertool._CONFIG = {"ops": {"git-commit": entry}}
+    _supertool._AT_FILE_REGISTRY_BUILT = False
+    try:
+        yield entry["syntax"]
+    finally:
+        _supertool._CONFIG = saved_config
+        _supertool._AT_FILE_REGISTRY = saved_registry
+        _supertool._AT_FILE_REGISTRY_BUILT = saved_built
+
+
+def test_git_commit_at_dash_is_refused(git_commit_route):
+    """`git-commit` is the most destructive op the guard covers and the only one
+    whose membership in the registry is derived rather than declared."""
+    # The route is really there now -- assert that before assuming it, or this
+    # test degrades back into the silent pass it replaced.
+    assert _supertool._at_file_fields("git-commit") == ["message", "paths"]
+
     out = _supertool._stdin_ref_in_value_field(
         "git-commit", ["git-commit", "a message", "@-"])
     assert "ERROR" in out
     assert "git-commit:@-" in out
-    assert "paths" in out
+    # `paths`, not `message` and not `content`: the name is read off the
+    # registry by position, so a message naming another field means the
+    # derivation drifted.
+    assert "the paths field is" in out, out
+
+    # And the guard stays quiet where it should: `git-commit:@-` is the payload
+    # reference itself, intercepted upstream, never this refusal.
+    assert _supertool._stdin_ref_in_value_field(
+        "git-commit", ["git-commit"]) == ""
 
 
-def test_the_message_does_not_claim_a_write_that_could_not_happen():
-    """Three of the guarded ops never write the field to a file --
-    `replace_dry` is a preview, `vim`'s field is a macro, `git-commit`'s is a
-    pathspec. One template serves them all, so it may not say `written to
-    disk`."""
-    for op, parts in (
-        ("vim", ["vim", "f.txt", "@-"]),
-        ("replace_dry", ["replace_dry", "a", "@-", "f.txt"]),
+def _claim_sentence(op, field, parts):
+    """The refusal's first line with the op and field names taken out of it.
+
+    That line is where the whole claim lives; everything after it is the
+    payload hint. Normalising the two names out is what lets one op's sentence
+    be compared against another's.
+    """
+    out = _supertool._stdin_ref_in_value_field(op, parts)
+    assert out, op
+    return out.splitlines()[0].replace(op, "OP").replace(field, "FIELD")
+
+
+def test_one_template_serves_every_op_so_it_cannot_claim_a_write(
+        git_commit_route):
+    """The message may not assert anything that is false for some guarded op.
+
+    Three of them never put the field on disk: `replace_dry` is a preview,
+    `vim`'s field is a macro script, `git-commit`'s is a pathspec. The
+    protection is structural rather than a banned-word list -- assert that the
+    sentence is the SAME for an op that writes and for ops that do not, so a
+    consequence added for `paste` cannot be added without also being asserted
+    about `git-commit`. A previous version of this test checked that the
+    string `written to disk` was absent; that phrase was never in the message
+    at all, so it would have passed against any rewrite whatsoever.
+    """
+    writes = _claim_sentence("paste", "content", ["paste", "f.txt", "@-"])
+    for op, field, parts in (
+        ("git-commit", "paths", ["git-commit", "a message", "@-"]),
+        ("vim", "script", ["vim", "f.txt", "@-"]),
+        ("replace_dry", "new", ["replace_dry", "a", "@-", "f.txt"]),
     ):
-        out = _supertool._stdin_ref_in_value_field(op, parts)
-        assert out, op
-        assert "written to disk" not in out, op
+        assert _claim_sentence(op, field, parts) == writes, op
+
+    # The template's own claim, stated positively: what it says happened is
+    # that nothing did. This is the half that fails if the sentence is rewritten
+    # into something true of `paste` alone.
+    assert "Nothing ran." in writes, writes
+    for lie in ("written to disk", "was written", "overwrit", "wrote"):
+        assert lie not in writes, (lie, writes)
 
 
 def test_triple_colon_at_dash_is_refused_too(tmp_path, monkeypatch):
