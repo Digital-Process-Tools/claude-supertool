@@ -123,6 +123,106 @@ class TestTheRouteLineIsBounded:
         assert chr(10) not in line.strip(chr(10)), repr(line)
 
 
+class TestARouteTooBigForTheBudgetIsCountedNotDropped:
+    """Three causes, one empty string — this repo's own defect, in the fix.
+
+    `_guard_route_for` returned "" for an op with no route, for an op whose
+    route did not fit `_GUARD_TEXT_BUDGET`, and for a registry lookup that
+    raised. The first is an answer; the other two are the route going missing
+    with nothing said, which is what #1815 was filed about one layer up.
+    Found by the audit of this diff, not by the issue.
+    """
+
+    @staticmethod
+    def _match(op, use, description, command):
+        return supertool.GuardMatch(op=op, use=use, description=description,
+                                    argv=command, command=command)
+
+    def _verdict(self, n, use_len=200, desc_len=400):
+        return supertool.GuardVerdict(
+            state="blocked",
+            matches=tuple(
+                self._match(f"probe-{i}", "x" * use_len, "d" * desc_len,
+                            f"cmd{i}")
+                for i in range(n)),
+            notes=())
+
+    @pytest.fixture
+    def every_op_has_a_route(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(supertool, "_at_file_specs",
+                            lambda op: [("message", False, False)])
+
+    #: The marker deliberately does NOT reuse the wording of the existing
+    #: "further replaced invocation(s) ... are not detailed here" line, which
+    #: fires on the same crowded refusal for a different reason. The first
+    #: draft of these tests asserted on that phrase and matched the wrong
+    #: line — two withholdings that render identically is the same conflation
+    #: this class is about.
+    WITHHELD = "payload route(s) were not shown"
+
+    #: Long `use` strings and short descriptions: the shape that walks `spent`
+    #: up to just under `_GUARD_TEXT_BUDGET` so a later match is rendered with
+    #: too little room for its own route, rather than the loop breaking first.
+    #: The first draft of these tests used long descriptions and never reached
+    #: the branch at all -- it went red proving the fixture wrong, not the code.
+    #:
+    #: **No shipped registry produces this shape**, measured: the `use` strings
+    #: in presets/*.json run to ~40 characters and their descriptions are
+    #: capped at 320, so three matches fit with room for every route and the
+    #: fourth is already past the budget. It takes a project `.supertool.json`
+    #: declaring a `use` several hundred characters long -- which is exactly
+    #: the registry-authored text `_guard_quote` and #1391 already treat as
+    #: something a stranger wrote. So this class is a boundary, reasoned from
+    #: the branch conditions and then pinned, not a live user-facing scenario.
+    CROWDED = dict(use_len=200, desc_len=5)
+
+    def test_the_withheld_routes_are_counted(self, every_op_has_a_route):
+        text = supertool.guard_refusal(self._verdict(5, **self.CROWDED))
+        assert "Payload route: supertool" in text, text
+        assert self.WITHHELD in text, text
+
+    def test_the_count_names_how_many(self, every_op_has_a_route):
+        text = supertool.guard_refusal(self._verdict(5, **self.CROWDED))
+        shown = text.count("Payload route: supertool")
+        rendered = text.count("is replaced by supertool")
+        withheld = [line for line in text.splitlines()
+                    if self.WITHHELD in line]
+        assert len(withheld) == 1, text
+        # Counted against the matches that were RENDERED, not against all
+        # five: a match the budget never reached is already accounted for by
+        # the "further replaced invocation(s)" line, and counting it twice
+        # would overstate what went missing.
+        assert str(rendered - shown) in withheld[0], (rendered, shown, withheld)
+
+    def test_an_op_with_no_route_is_not_counted_as_withheld(
+            self, monkeypatch: pytest.MonkeyPatch):
+        # The must-not-fire half. Its partner is the class above: without one
+        # of them, a line that never renders and a line that always renders
+        # both look correct.
+        monkeypatch.setattr(supertool, "_at_file_specs", lambda op: [])
+        text = supertool.guard_refusal(self._verdict(5, **self.CROWDED))
+        assert self.WITHHELD not in text, text
+
+    def test_and_a_route_that_fits_is_still_printed_in_full(
+            self, every_op_has_a_route):
+        # The other partner: a budget that is not under pressure must still
+        # render the whole line, keys and all.
+        text = supertool.guard_refusal(self._verdict(1, use_len=10))
+        assert "Payload route: supertool 'probe-0:@-' — keys: message" in text
+        assert self.WITHHELD not in text, text
+
+    def test_a_registry_that_raises_is_not_read_as_no_route(
+            self, monkeypatch: pytest.MonkeyPatch):
+        def boom(op):
+            raise RuntimeError("registry is broken")
+        monkeypatch.setattr(supertool, "_at_file_specs", boom)
+        text = supertool.guard_refusal(self._verdict(1, use_len=10))
+        # The refusal still renders — a denial that raises is a denial nobody
+        # sees — but it does not claim the op has no payload route.
+        assert "probe-0" in text, text
+        assert "could not be read" in text, text
+
+
 class TestAntiVacuity:
     """Without these, every assertion above is about a dead registry."""
 

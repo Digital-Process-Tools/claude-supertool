@@ -18127,6 +18127,15 @@ _GUARD_VALUELESS_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
         "-z", "--null", "--amend", "--no-post-rewrite", "--post-rewrite",
         "--allow-empty", "--allow-empty-message", "--pathspec-file-nul",
         "-u", "--untracked-files",
+        # `-S, --gpg-sign[=<key-id>]` — attached-value-only, the same shape as
+        # `-u` above. Missed on the first pass and found by the audit of this
+        # diff, which re-derived the whole row from `git commit -h` rather
+        # than reading the table back. The `--no-` negation spellings are
+        # deliberately still absent: each is valueless too, so listing them
+        # would narrow the window further, but none has been measured here and
+        # an unmeasured row in a table whose comment says "measured" is worse
+        # than a short one.
+        "-S", "--gpg-sign",
     }),
     ("git", "push"): frozenset({
         "-v", "--verbose", "-q", "--quiet", "--all", "--branches", "--mirror",
@@ -18737,23 +18746,41 @@ def _guard_payload_route(op: str,
             + "; the form for an argument holding ':' or a newline.")
 
 
-def _guard_route_for(op: str, room: int) -> str:
-    """`_guard_payload_route` for a registry op, if the message can afford it.
+#: What `_guard_route_for` answers, and why three values rather than a string
+#: that is sometimes empty. The audit of #1815's own fix found the first draft
+#: returning "" for all three, which is this repository's house defect landing
+#: inside the change that was meant to remove one instance of it: an op with
+#: no route and an op whose route the budget could not afford rendered the
+#: same bytes, and the second is the route going missing with nothing said.
+_GUARD_ROUTE_NONE = "none"        # the op has no @payload route. An answer.
+_GUARD_ROUTE_SHOWN = "shown"      # the line below is it.
+_GUARD_ROUTE_WITHHELD = "withheld"  # it has one; this message cannot fit it.
+_GUARD_ROUTE_UNREADABLE = "unreadable"  # the registry did not answer.
 
-    Returns "" rather than a half-line when it cannot: a route truncated
-    mid-spelling is a route the caller cannot type, which is the failure this
-    line exists to remove.
+
+def _guard_route_for(op: str, room: int) -> Tuple[str, str]:
+    """`_guard_payload_route` for a registry op, plus WHY it is or is not here.
+
+    Returns `(state, line)`. The line is empty in every state but `shown`, and
+    the state is what keeps the three silences apart — see the constants above.
+
+    A route is never truncated to fit: a route cut mid-spelling is a route the
+    caller cannot type, which is the failure this line exists to remove. It is
+    withheld whole and counted instead, the same shape `_guard_notes_hidden`
+    already uses for a note that did not fit.
     """
-    if room <= 0:
-        return ""
     try:
         specs = _at_file_specs(op)
-    except Exception:  # pragma: no cover - a broken registry
-        # A refusal that raises is a refusal nobody sees. The op is still
-        # named on the `Use:` line above and `help:OP` still answers.
-        return ""
+    except Exception:
+        # A refusal that raises is a refusal nobody sees, so this is caught —
+        # but it must not borrow `none`'s sentence. `help:OP` still answers.
+        return _GUARD_ROUTE_UNREADABLE, ""
     line = _guard_payload_route(op, specs)
-    return line if 0 < len(line) <= room else ""
+    if not line:
+        return _GUARD_ROUTE_NONE, ""
+    if room <= 0 or len(line) > room:
+        return _GUARD_ROUTE_WITHHELD, ""
+    return _GUARD_ROUTE_SHOWN, line
 
 
 def guard_refusal(verdict: GuardVerdict) -> str:
@@ -18781,6 +18808,13 @@ def guard_refusal(verdict: GuardVerdict) -> str:
     lines: List[str] = []
     spent = 0
     shown = 0
+    #: Routes that exist and are not on the page, by why. Counted rather than
+    #: dropped: an op with no `@payload` route and an op whose route this
+    #: message could not afford both rendered nothing, so the caller could not
+    #: tell "there is no other form" from "there is one you are not being
+    #: shown" — the absence #1815 is about, reproduced inside its own fix and
+    #: caught by the audit of that diff rather than by the issue.
+    unshown_routes: Dict[str, int] = {}
     for match in verdict.matches:
         if shown >= _GUARD_MAX_MATCHES or spent >= _GUARD_TEXT_BUDGET:
             break
@@ -18795,7 +18829,10 @@ def guard_refusal(verdict: GuardVerdict) -> str:
         # that op's own multi-line form. Truncation is positional; relevance
         # is not, and the part answering what was just refused is the part to
         # move out of the truncated half rather than to hope survives it.
-        route = _guard_route_for(match.op, left - len(use))
+        route_state, route = _guard_route_for(match.op, left - len(use))
+        if route_state in (_GUARD_ROUTE_WITHHELD, _GUARD_ROUTE_UNREADABLE):
+            unshown_routes.setdefault(route_state, 0)
+            unshown_routes[route_state] += 1
         description = _guard_quote(
             match.description,
             min(_GUARD_DESC_CAP, left - len(use) - len(route)))
@@ -18810,6 +18847,19 @@ def guard_refusal(verdict: GuardVerdict) -> str:
         if description:
             lines.append(f"  {description}")
         lines.append(f"  Full contract: supertool 'help:{op}'")
+        lines.append("")
+    withheld = unshown_routes.get(_GUARD_ROUTE_WITHHELD, 0)
+    unreadable = unshown_routes.get(_GUARD_ROUTE_UNREADABLE, 0)
+    if withheld:
+        lines.append(f"{withheld} payload route(s) were not shown — this "
+                     f"message ran out of room, not the ops out of routes. "
+                     f"supertool 'help:OP' prints one in full.")
+        lines.append("")
+    if unreadable:
+        lines.append(f"{unreadable} op(s) above have a payload route that "
+                     f"could not be read from the registry — ask supertool "
+                     f"'help:OP'. This says nothing about whether they have "
+                     f"one.")
         lines.append("")
     hidden = len(verdict.matches) - shown
     if hidden:
