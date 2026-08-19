@@ -255,6 +255,43 @@ usually a CI round later.
 doubled `old` cannot match, the runner reports the skip, and nothing reaches
 disk. Same detector, different consequence, decided by whether the bytes land.
 
+**The refusal locates every occurrence, not the first**
+([#1814](https://github.com/Digital-Process-Tools/claude-supertool/issues/1814),
+[#1808](https://github.com/Digital-Process-Tools/claude-supertool/issues/1808),
+[#1819](https://github.com/Digital-Process-Tools/claude-supertool/issues/1819)).
+Each one is reported as `N/M at payload line L, column C`, with an excerpt of
+your own line centred on the pair and a caret under it:
+
+```text
+  ↳ `content` -- 3 occurrences of `\\`, all shown:
+      1/3 at payload line 4, column 18:
+          A = re.compile(r'\\d+')
+                           ^^
+      2/3 at payload line 6, column 17:
+          B = 'x' * 40 + '\\n' + 'y'*40
+                          ^^
+```
+
+The retry on this route is the whole payload, so a refusal that named one of
+three offences cost three full re-sends of a file that had already been parsed
+in full — measured at four re-sends in one agent run, on payloads up to 14 KB.
+The excerpt is centred on the pair rather than taken from the head of the line
+because a shell `printf` format is frequently 200 characters in, and the head of
+that line does not contain the offending bytes at all. Beyond four occurrences
+in one field the rest are named by payload line rather than counted, and beyond
+three fields each remaining field is named with its lines.
+
+The message also states that the **two fixes are opposite** and that nothing in
+the tool can tell which you meant. *Needs `literal_backslashes = true`* and *has
+doubled backslashes that wanted to be single* are the two readings, they are
+decided per occurrence, and they used to read identically.
+
+Where the excerpt has to be flattened — a `U+2028` inside your value
+([#1583](https://github.com/Digital-Process-Tools/claude-supertool/issues/1583))
+— the caret is **declined with a reason** rather than drawn on offsets the
+flattening has shifted. The payload line and column are measured on the raw
+payload and are exact either way.
+
 **If you meant two backslashes, say so:**
 
 ```

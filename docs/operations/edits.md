@@ -290,20 +290,31 @@ new = '''PAT = re.compile("\\d+")'''
 
 writes `\\d+`, not `\d+`. Same for a newline: `\n` inside a literal block is the two characters `\` and `n`, never a line break — type a real newline instead. Nothing on this route evaluates an expression, so a function call written into payload content lands as its own characters; when you need an escape sequence processed, use a basic block, where TOML escapes do apply. An ESC is spelled `\u001b` there; `\x1b` is not a TOML escape at all, so it is refused at parse time rather than landing wrong.
 
-The safe half is `old`: a doubled anchor cannot match, the op declines, and the skip is counted. The half that is not is `new` — the anchor matches, the bytes land, the receipt says `edited`, and the validators agree, because two backslashes are legal in nearly every language this repo edits. So a payload whose literal block carries a lone `\\` is named before any op runs:
+The safe half is `old`: a doubled anchor cannot match, the op declines, and the skip is counted. That half stays a **note**, and it now names the field, the count and the payload line the first pair sits on. The half that is not safe is `new` and `content` — the anchor matches, the bytes land, the receipt says `edited`, and the validators agree, because two backslashes are legal in nearly every language this repo edits. That half is **refused** before any op runs ([#1087](https://github.com/Digital-Process-Tools/claude-supertool/issues/1087)), and the refusal locates every occurrence rather than the first:
 
 ```text
-⚠ payload: a ''' literal block carries `\\`. A literal block processes NO escapes, so each pair reaches the file as TWO backslashes -- if you meant one, write one.
-  ↳ `new` (1 occurrence): PAT = re.compile("\\d+")
-  ↳ this is a note, NOT a correction -- nothing was rewritten, because a pair is sometimes exactly what was meant and guessing in the write path is worse than the bug.
+ERROR: @file payload refused (p.toml): a ''' literal block carries `\\` in a field that is WRITTEN to the file, and a literal block processes NO escapes -- each pair would reach disk as TWO backslashes, pass every validator, and be wrong only in string contents.
+  ↳ `new` -- 1 occurrence of `\\`, all shown:
+      1/1 at payload line 3, column 28:
+          PAT = re.compile("\\d+")
+                            ^^
+  ↳ TWO OPPOSITE fixes, and nothing here can tell which you meant -- decide per occurrence, then send the payload once:
+      meant ONE backslash (escape reflex -- a literal block eats nothing): write one.
+      meant TWO (a shell printf format, a Windows path, a LaTeX line break): add `literal_backslashes = true` at the top level of the payload, and this refusal becomes a decision you recorded. It applies to the WHOLE payload -- every op, every field.
 ```
 
-It is a **note, not a correction**, and never a refusal. Some payloads genuinely want two characters, and collapsing them would guess at intent in the write path, where a wrong guess costs more than the bug it replaces. Two things are deliberately not flagged, because a warning that fires on the correct spelling is one authors stop reading:
+That example showed the **note** shape for a `new` field, which has taken the refusal arm since #1087.
+
+Every occurrence is located because the retry is the whole payload. One refusal per offence cost four full re-sends in one measured agent run, on payloads up to 14 KB, and the scan had already parsed all of them at the moment it reported one ([#1814](https://github.com/Digital-Process-Tools/claude-supertool/issues/1814)). The excerpt is centred on the pair rather than taken from the head of the line, because a `printf` format is frequently 200 characters into a long line and 40 characters of that line's head does not contain the offending bytes at all ([#1808](https://github.com/Digital-Process-Tools/claude-supertool/issues/1808)). Beyond four occurrences in one field the rest are named by payload line, never merely counted — a count sends the reader back to re-derive by hand the one fact the scanner already had.
+
+Where the excerpt has to be flattened — a `U+2028` inside the value, say ([#1583](https://github.com/Digital-Process-Tools/claude-supertool/issues/1583)) — the caret is **declined with a reason** rather than drawn on offsets the flattening has shifted, or dropped in silence. The payload line and column are measured on the raw payload and stay exact.
+
+Neither arm is a **correction**: nothing is rewritten either way. Some payloads genuinely want two characters, and collapsing them would guess at intent in the write path, where a wrong guess costs more than the bug it replaces. Two things are deliberately not flagged at all, because a guard that fires on the correct spelling is one authors stop reading:
 
 - a `"""basic"""` block, where `\\` *is* one backslash and is the right spelling;
 - a run of three or more, which was counted rather than produced by reflex.
 
-To write one backslash, write one. To write a pair deliberately, keep the literal block — the note is only a note — or say it in a basic block, where each backslash doubles.
+To write one backslash, write one. To write a pair deliberately in `old` — the note arm — keep the literal block; the note is only a note. To write one deliberately in `new` or `content`, the literal block alone is not enough, because that arm is refused: set `literal_backslashes = true` at the top level of the payload, or say it in a `"""basic"""` block, where each backslash doubles.
 
 ### `batch:@file` — mixed ops in one round-trip
 
