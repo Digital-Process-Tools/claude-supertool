@@ -5504,8 +5504,8 @@ def _pattern_gate(pattern: str) -> Tuple[str, str, str]:
     return effective, "", _bre_rewrite_note(pattern, effective, rewritten)
 
 
-def _grep_pattern_note(pattern: str, path: str) -> str:
-    """Name the pattern grep actually ran, when a ':' made that a choice (#1065).
+def _pattern_read_as_note(pattern: str, path: str, op: str = "grep") -> str:
+    """Name the pattern `op` actually ran, when a ':' made that a choice (#1065).
 
     `grep:re:Checks|failed:PATH` tokenizes to the pattern `re:Checks|failed`,
     and `|` binds looser than concatenation, so the first alternation branch is
@@ -5523,14 +5523,24 @@ def _grep_pattern_note(pattern: str, path: str) -> str:
     disclosed one: a receipt that is precise about the pattern and silent about
     which of the remaining tokens became the FILE reads as complete, which is
     exactly what stops a reader checking the half that moved.
+
+    Parameterised on the op since #1821, which was filed against grep and is
+    true of `around`. Both rejoin with `_split_arg`, both share
+    `_colon_split_hint` for the PATH slot that does not exist — and where the
+    slot DOES exist, only grep said which pattern it had settled on. `around`
+    printed a plausible answer and nothing else, which is the same defect one
+    step further along: not a caveat in the wrong place, no caveat. The op name
+    is threaded through rather than hardcoded because the escape hatch and the
+    `re:` sentence are both op-specific, and a note that tells an `around`
+    caller about `grep:@-` sends them to a route they did not call.
     """
     if ":" not in pattern:
         return ""
     note = (f"(pattern read as {pattern!r}, path as {path!r} — the ':' is part "
-            "of the regex, not a separator. Use grep:@- with a `pattern` key "
+            f"of the regex, not a separator. Use {op}:@- with a `pattern` key "
             "if the split was meant to fall elsewhere.)" + chr(10))
     if pattern.startswith("re:"):
-        note += ("(grep has no `re:` prefix — every grep pattern is already a "
+        note += (f"({op} has no `re:` prefix — every {op} pattern is already a "
                  "regex, so `re:` is literal text and forms part of the first "
                  "alternation branch. `between:re:START:END:PATH` is the op "
                  "that has one.)" + chr(10))
@@ -5621,7 +5631,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
     _effective, refusal, note = _pattern_gate(pattern)
     if refusal:
         return refusal
-    return (_grep_pattern_note(pattern, path)
+    return (_pattern_read_as_note(pattern, path, "grep")
             + note
             + _op_grep(pattern, path, limit, context, count_only,
                        no_exclude, no_auto_read))
@@ -6009,17 +6019,27 @@ def _around_one_file(regex: "re.Pattern[str]", path: str, n: int) -> str:
 
 
 def op_around(pattern: str, path: str, n: int = 10) -> str:
-    """around, guarded and disclosed exactly as op_grep is (#1120).
+    """around, guarded and disclosed exactly as op_grep is (#1120, #1821).
 
     Split from the body for the same reason op_grep is: the refusal and the
     rewrite disclosure belong to every caller of the op, and leaving `around`
     with only the refusal reproduced the original asymmetry one level down —
     a rewrite that merely changes the pattern was still invisible here.
+
+    "exactly as op_grep is" was written in #1120 and was not true until #1821:
+    the BRE-rewrite disclosure travelled and the `:`-rejoin disclosure did not,
+    so `around:mode:.*remind|title:DIR` rejoined the pattern the same way grep
+    does, found two files, and named neither half of the split it had just
+    guessed at. The PATH slot that does NOT resolve was already refused by
+    `_colon_split_hint` in dispatch; this is the other branch, where the guess
+    succeeds and the answer is the plausible wrong one.
     """
     _effective, refusal, note = _pattern_gate(pattern)
     if refusal:
         return refusal
-    return note + _op_around(pattern, path, n)
+    return (_pattern_read_as_note(pattern, path, "around")
+            + note
+            + _op_around(pattern, path, n))
 
 
 def _op_around(pattern: str, path: str, n: int = 10) -> str:
