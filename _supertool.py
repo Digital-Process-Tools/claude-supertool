@@ -23854,11 +23854,18 @@ def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
     # exactly the identifier that sends the reader back to re-derive by hand
     # which of nine ops was meant, which is close to not reporting them at all.
     for _key, label, _line, total, occs in findings[_PAYLOAD_DBS_MAX_FIELDS:]:
+        # The line list is capped by the same constant as a located block, and
+        # for the same reason. Uncapped, a field with 93 pairs -- the count in
+        # #1808's own report -- put 93 numbers on one line, which is the wall
+        # this render was bounded to avoid, reintroduced one branch over.
+        shown = ", ".join(str(o[0]) for o in occs[:_PAYLOAD_DBS_MAX_OCCURRENCES])
+        over = len(occs) - _PAYLOAD_DBS_MAX_OCCURRENCES
         out.append(
             "  " + arrow + " `" + label + "` -- " + str(total) + " occurrence"
             + ("" if total == 1 else "s") + (
                 ", at payload line" + ("" if len(occs) == 1 else "s") + " "
-                + ", ".join(str(o[0]) for o in occs) if occs else ""
+                + shown + (" and " + str(over) + " more" if over > 0 else "")
+                if occs else ""
             ) + chr(10)
         )
     out.append(

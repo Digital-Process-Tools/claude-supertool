@@ -97,6 +97,25 @@ def _refuse(tmp_path: Path, content: str, head: str = "") -> str:
     return out
 
 
+def mark_glyph() -> str:
+    """The sub-line glyph the repo's own convention puts at the head of a
+    continuation line, resolved through `mark()` so this follows plain mode
+    rather than restating it."""
+    return supertool.mark(chr(8627))
+
+
+def _authored_lines(out: str) -> list:
+    """Every line of the located block that THIS RENDER wrote, excerpts removed.
+
+    Spelled as the complement of the caller's own lines rather than as a list of
+    the tool's, so a line added to the render later joins the set by default. A
+    positive list is a set somebody has to remember to extend, and the thing
+    being asserted here is precisely that nothing is missed."""
+    body = out[out.index("payload refused"):out.index("(#1087,")]
+    excerpts = {"          " + ln for ln in THREE_LINES.splitlines()}
+    return [ln for ln in body.splitlines() if ln not in excerpts and ln.strip()]
+
+
 # --- must fire -------------------------------------------------------------
 
 
@@ -225,18 +244,97 @@ def test_every_offending_field_is_still_named(tmp_path: Path) -> None:
     assert not a.exists() and not b.exists(), out
 
 
-def test_the_message_is_plain_ascii_safe(tmp_path: Path) -> None:
+def test_the_scaffolding_this_render_writes_is_plain_ascii(tmp_path: Path) -> None:
     """cp1252 is the Windows console default and cannot encode an ellipsis or a
     box-drawing glyph; a print that raises UnicodeEncodeError kills the process
-    at the report rather than at the work. The elision marker added here is
-    ASCII by construction, so this asserts the whole occurrence block rather
-    than one character. `mark()` passes an unmapped glyph through unchanged, so
-    plain mode is not a guarantee on its own."""
+    at the report rather than at the work. `mark()` passes an unmapped glyph
+    straight through, so plain mode is not a guarantee on its own -- which is
+    why the elision marker and the caret here are ASCII by construction.
+
+    **Scope, stated because the obvious wider assertion would be wrong.** This
+    covers the lines this render AUTHORS: the located header, the `N/M at
+    payload line L, column C` line, the caret, and the elided tail. It does not
+    cover the excerpt line, and cannot: that line is the caller's own payload
+    text, which is legitimately any Unicode, and a tool that refused to echo it
+    would be refusing to answer the question it was asked. The excerpt is
+    already flattened for the separator class (#886, #1583); the encoding of
+    the stream it goes out on is `_reconfigure_stdout_utf8`'s job, not this
+    render's, and it forces UTF-8 before any op runs.
+
+    An earlier draft of this test claimed to assert "the whole occurrence
+    block" while selecting only two of its four authored lines -- coverage
+    reported and not held, which is the class this repository is named after.
+    The selection below is spelled as the complement of the excerpt lines, so a
+    newly added authored line joins it by default rather than by being
+    remembered. Widening it that way immediately found the `mark()` glyph on the
+    header line, which is why the assertion is split by mode below rather than
+    applied flat: the glyph is deliberate, repo-wide and cp1252-hostile, and
+    `mark()` is the thing that answers for it."""
     out = _refuse(tmp_path, THREE_LINES)
-    block = [ln for ln in out.splitlines() if "payload line" in ln or "^^" in ln]
-    assert block, out
-    for ln in block:
+    authored = _authored_lines(out)
+    assert len(authored) >= 8, ("the located block is not in the output: "
+                                + repr(authored))
+    assert any(ln.strip() == "^^" for ln in authored), out
+    assert any("payload line" in ln for ln in authored), out
+    # Rich mode: everything this change writes is ASCII. The one non-ASCII
+    # character on these lines is the `mark()` glyph, which is the repo's own
+    # convention rather than this render's, and is asserted against below.
+    for ln in authored:
+        ln.replace(mark_glyph(), "").encode("cp1252")
+
+
+def test_plain_mode_makes_the_whole_located_block_cp1252_safe(
+        tmp_path: Path, monkeypatch) -> None:
+    """The other half, and the one that is a real guarantee.
+
+    `mark()` maps its known glyphs to ASCII in plain mode and passes an UNKNOWN
+    glyph through unchanged, so "we called mark()" is not on its own a claim
+    that the output is encodable -- a new glyph would walk straight through.
+    Asserted on the whole authored block rather than on the glyph, so it covers
+    whatever this render gains later.
+
+    Its must-fire partner is the rich-mode test above: an implementation that
+    emitted nothing at all would satisfy an encodability assertion trivially,
+    and that one requires the caret and the payload-line line to be present."""
+    monkeypatch.setenv("SUPERTOOL_PLAIN", "1")
+    out = _refuse(tmp_path, THREE_LINES)
+    authored = _authored_lines(out)
+    assert any("payload line" in ln for ln in authored), out
+    for ln in authored:
         ln.encode("cp1252")
+
+
+def test_a_field_past_the_field_cap_names_its_lines_but_stays_bounded(
+        tmp_path: Path) -> None:
+    """The branch beyond `_PAYLOAD_DBS_MAX_FIELDS`, which had no test.
+
+    #1087's rule says every field stays NAMED, so this arm still lists payload
+    lines rather than a bare count. But it listed ALL of them: a field with the
+    93 pairs of #1808's own report put 93 numbers on one line -- the wall the
+    located block is capped to avoid, reintroduced one branch over. Both halves
+    are asserted here, because either one alone is satisfiable by deleting the
+    other."""
+    n = supertool._PAYLOAD_DBS_MAX_FIELDS + 1
+    per = supertool._PAYLOAD_DBS_MAX_OCCURRENCES + 3
+    chunks = []
+    for i in range(n):
+        t = tmp_path / ("f" + str(i) + ".txt")
+        body = NL.join("v" + str(j) + " = 1 + " + PAIR + "d" for j in range(per))
+        chunks.append(
+            "[[ops]]" + NL + 'op = "paste"' + NL
+            + "path = " + _toml_path(t) + NL
+            + "content = " + Q3 + NL + body + NL + Q3 + NL
+        )
+    out = supertool.dispatch("batch:" + _payload(tmp_path, "".join(chunks)))
+    tail = [ln for ln in out.splitlines() if "ops[" + str(n - 1) + "]" in ln]
+    assert tail, ("the field past the cap is not named at all: " + out)
+    assert "payload line" in tail[0], (
+        "named but not located -- a count sends the reader back to the payload: "
+        + tail[0])
+    assert tail[0].count(",") <= supertool._PAYLOAD_DBS_MAX_OCCURRENCES, (
+        "the line list is unbounded: " + tail[0])
+    assert "more" in tail[0], (
+        "the elided occurrences vanished rather than being counted: " + tail[0])
 
 
 # --- must not fire ---------------------------------------------------------
