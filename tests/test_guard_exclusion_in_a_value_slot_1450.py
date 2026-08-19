@@ -99,7 +99,11 @@ class TestNothingNewIsBlocked:
         assert supertool.guard_command(cmd).state != "blocked", cmd
 
     @pytest.mark.parametrize("cmd", [
-        "git push --force-with-lease --dry-run",
+        # `git push --force-with-lease --dry-run` was here until #1816 gave
+        # the guard a table of git's valueless flags. `--force-with-lease`
+        # takes an attached value or none, so nothing behind it is ever its
+        # value and the window this row stood for is closed for git. gh is
+        # deliberately not in that table, so this row is the live one.
         "gh pr create --draft --dry-run",
     ])
     def test_and_the_ambiguity_is_disclosed_rather_than_guessed(
@@ -120,6 +124,10 @@ class TestAnUnambiguousExclusionStaysSilent:
         "git push --dry-run origin main",
         "git commit --amend --dry-run",
         "git commit --amend",
+        # Newly decidable under #1816's arity table, and asserted here as
+        # well as in tests/test_guard_flag_arity_1816.py because the claim
+        # this class makes -- clean AND silent -- is the one that changed.
+        "git push --force-with-lease --dry-run",
         "git status -s -z",
         "gh issue list --web",
         "gh issue list --label bug --web",

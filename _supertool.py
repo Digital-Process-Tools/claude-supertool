@@ -18087,6 +18087,110 @@ def _guard_is_exclusion(replacement: _Replacement, token: str) -> bool:
         "-" + letter in replacement.unless_flag for letter in stem[1:]))
 
 
+# Flags that consume NO separate value, for the four git subcommands the
+# shipped presets actually gate. **Measured, not reasoned**: `git commit -h`,
+# `git push -h`, `git status -h` and `git worktree list -h` on git 2.46.2 (this
+# box, 2026-08-19). git's parse-options prints `<arg>` after a flag that takes
+# one and nothing after a flag that does not; `--force-with-lease[=<ref>]` and
+# `-u[=<mode>]` take an *attached* value only, so a following token is never
+# theirs and they belong here.
+#
+# Why a table at all, and why only this half. `_guard_exclusion_slots` had to
+# call every exclusion behind another flag ambiguous, because "does the
+# preceding flag eat this token" is per-utility arity (#1450). That window
+# landed on `git commit --amend` — the invocation a guard would least like to
+# be unable to read (#1816). One table row closes it for the commands the
+# registry gates, and closes nothing else.
+#
+# ONLY the valueless half is tabled, and a flag absent from it stays exactly
+# where #1450 left it: ambiguous, allowed, disclosed. That is the third state,
+# and it is the whole reason this can be a hardcoded fact about another
+# program without going quietly wrong — the two ways it can be stale are a
+# flag git *adds* (absent, so ambiguous, so unchanged) and a flag git changes
+# to take a value (present, so read as standing, so the entry is un-claimed
+# and the command is ALLOWED). Both land on allow-more, which is the direction
+# `_guard_is_exclusion` states this matcher may be wrong in. Neither can
+# manufacture a block.
+#
+# Scoped to git on purpose. gh is deliberately absent: `_GUARD_GLOBAL_OPTIONS`
+# already records that gh moves flags between its root and its leaves between
+# releases, and gh's flag set churns per release in a way git's does not. So
+# `gh pr create --draft --dry-run` stays disclosed, which is also what keeps
+# #1450's disclosure path covered by a real command.
+_GUARD_VALUELESS_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
+    ("git", "commit"): frozenset({
+        "-q", "--quiet", "-v", "--verbose", "--reset-author", "-s",
+        "--signoff", "-e", "--edit", "--no-edit", "--status", "--no-status",
+        "-a", "--all", "-i", "--include", "--interactive", "-p", "--patch",
+        "-o", "--only", "-n", "--no-verify", "--verify", "--dry-run",
+        "--short", "--branch", "--ahead-behind", "--porcelain", "--long",
+        "-z", "--null", "--amend", "--no-post-rewrite", "--post-rewrite",
+        "--allow-empty", "--allow-empty-message", "--pathspec-file-nul",
+        "-u", "--untracked-files",
+    }),
+    ("git", "push"): frozenset({
+        "-v", "--verbose", "-q", "--quiet", "--all", "--branches", "--mirror",
+        "-d", "--delete", "--tags", "-n", "--dry-run", "--porcelain", "-f",
+        "--force", "--force-with-lease", "--force-if-includes", "--thin",
+        "--no-thin", "-u", "--set-upstream", "--progress", "--no-progress",
+        "--prune", "--no-verify", "--verify", "--follow-tags", "--signed",
+        "--atomic", "--no-atomic", "-4", "--ipv4", "-6", "--ipv6",
+    }),
+    ("git", "status"): frozenset({
+        "-v", "--verbose", "-s", "--short", "-b", "--branch", "--show-stash",
+        "--ahead-behind", "--porcelain", "--long", "-z", "--null", "-u",
+        "--untracked-files", "--ignored", "--ignore-submodules", "--column",
+        "--no-renames", "--renames", "-M", "--find-renames",
+    }),
+    ("git", "worktree", "list"): frozenset({
+        "--porcelain", "-z", "-v", "--verbose",
+    }),
+}
+
+
+def _guard_valueless_flags(argv: Sequence[str]) -> FrozenSet[str]:
+    """The `_GUARD_VALUELESS_FLAGS` row for this argv, longest prefix first.
+
+    `git worktree list` and `git worktree` would both be prefixes of the same
+    command if the shorter one existed; longest-first is what keeps a future
+    coarser row from shadowing a finer one.
+    """
+    for length in range(min(len(argv), 3), 0, -1):
+        row = _GUARD_VALUELESS_FLAGS.get(tuple(argv[:length]))
+        if row is not None:
+            return row
+    return frozenset()
+
+
+def _guard_flag_takes_no_value(argv: Sequence[str], token: str) -> bool:
+    """Does the table say *token* consumes no separate value in this argv?
+
+    `False` covers BOTH "it takes one" and "this flag is not in the table",
+    and that conflation is deliberate rather than a missing third state: both
+    answers leave the neighbouring token exactly where `_guard_exclusion_slots`
+    already left it — ambiguous, allowed, and disclosed in a note. Only `True`
+    narrows anything, so the unknown case cannot be told from the known-value
+    case *by its effect*, and there is no caller that would do something
+    different with them. The state that would be lost by a two-valued answer
+    is the disclosure, and the disclosure is what survives.
+
+    A single-dash token is a cluster, so it is valueless only when EVERY letter
+    in it is: `git commit -as` is `-a -s` and eats nothing, while `-am` ends in
+    a flag that takes the message. A cluster carrying an attached value
+    (`-uall`) has letters that are not flags at all, so it answers `False` and
+    stays ambiguous.
+    """
+    flags = _guard_valueless_flags(argv)
+    if not flags:
+        return False
+    stem = token.split("=", 1)[0]
+    if stem in flags:
+        return True
+    if stem.startswith("--") or len(stem) < 2:
+        return False
+    return all("-" + letter in flags for letter in stem[1:])
+
+
 def _guard_exclusion_slots(replacement: _Replacement, argv: Sequence[str]
                            ) -> Tuple[List[str], List[str]]:
     """The exclusion tokens in this argv, split by the slot they stand in.
@@ -18107,10 +18211,13 @@ def _guard_exclusion_slots(replacement: _Replacement, argv: Sequence[str]
             continue
         # A long option carrying its value attached (`--title=x`) leaves no
         # slot open, so what follows stands on its own. A bare `-t` may or may
-        # not take one, and telling those apart is per-subcommand arity this
-        # guard does not carry (`_GUARD_GLOBAL_OPTIONS` says why).
+        # not take one — and for the git subcommands the presets gate,
+        # `_GUARD_VALUELESS_FLAGS` answers that (#1816). Everywhere else the
+        # answer is still "not known", which is `valued`: the disclosure
+        # #1450 put here, unchanged.
         prev = options[i - 1] if i else ""
-        if i and _guard_is_flag(prev) and "=" not in prev:
+        if (i and _guard_is_flag(prev) and "=" not in prev
+                and not _guard_flag_takes_no_value(argv, prev)):
             valued.append(token)
         else:
             standing.append(token)
@@ -18141,6 +18248,12 @@ def _guard_exclusion_state(replacement: _Replacement, argv: Sequence[str]
     slot is scored. Blocking a preview and naming `git-push` as the substitute
     is the `misdirects` shape the v0.35.0 audit named: the refusal performs
     what the blocked command declined to.
+
+    The `git push --force-with-lease --dry-run` above is that argument's
+    history rather than a live example: `_GUARD_VALUELESS_FLAGS` reads
+    `--force-with-lease` as eating nothing since #1816, so that command is
+    `excluded` and silent. `gh pr create --draft --dry-run` is the shipped
+    invocation still standing in this state, gh being deliberately untabled.
 
     A help flag un-claims every entry, whatever it declares, and is **not**
     handled here — it is a property of the whole segment rather than of one
@@ -18408,6 +18521,12 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
         # so there is no undecidable exclusion left to disclose.
         ambiguous = ([] if _guard_help_state(scoring) == "help"
                      else replacements)
+        # Which op's claim each ambiguous token left unevaluated. Collected
+        # before any note is written, because the note names it: "the guard
+        # could not read a flag" and "whether `git-commit` replaces this
+        # command was never asked" are different sentences to act on, and only
+        # the second tells a caller what re-issuing would buy (#1816).
+        unread: Dict[str, List[str]] = {}
         for replacement in ambiguous:
             if not _guard_argv_matches(replacement, scoring):
                 continue
@@ -18419,16 +18538,26 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
                 # slot `--dry-run` stands in.
                 continue
             for token in valued:
-                ambiguity = (
-                    "`" + _flat_field(token) + "` in `"
-                    + _flat_field(" ".join(scoring)) + "` sits immediately "
-                    "after another flag, so an exclusion that un-claims an op "
-                    "could not be told from that option's value — the shape "
-                    "that made `gh pr create -t --dry-run -b y` open a pull "
-                    "request titled `--dry-run` (#1450). Nothing here was "
-                    "blocked and nothing was read as replaced")
-                if ambiguity not in notes:
-                    notes.append(ambiguity)
+                ops = unread.setdefault(token, [])
+                if replacement.op not in ops:
+                    ops.append(replacement.op)
+        for token, ops in unread.items():
+            # Capped like every other list this message renders (#1454): five
+            # `git push` mappings share one exclusion list, and while they
+            # dedup to one op name here, a project registry need not.
+            named = ", ".join("`" + _flat_field(op) + "`" for op in ops[:3])
+            if len(ops) > 3:
+                named += f" and {len(ops) - 3} more"
+            ambiguity = (
+                "`" + _flat_field(token) + "` in `"
+                + _flat_field(" ".join(scoring)) + "` sits after another "
+                "flag, so an exclusion could not be told from that option's "
+                "value (#1450). Unread: "
+                "whether " + named + " replaces this command. Nothing was "
+                "blocked; re-issue with that flag out of a value slot, or ask "
+                "supertool 'guard:COMMAND'")
+            if ambiguity not in notes:
+                notes.append(ambiguity)
         if not scored:
             # Nothing claims this segment. If something claims the *verb* and
             # declined on arity, say so: falling through silently is the
@@ -18570,6 +18699,50 @@ def _guard_quote(text: str, cap: int) -> str:
     return flat[:cap].rstrip() + f"… (+{len(flat) - cap} chars)"
 
 
+def _guard_payload_route(op: str,
+                         specs: Sequence[Tuple[str, bool, bool]]) -> str:
+    """One line naming *op*'s `@payload` route, or "" for an op without one.
+
+    Derived from `_at_file_specs` — the same registry that drives the route —
+    never typed here, for the reason `_help_payload_route` already carries a
+    docstring about: a hand-written copy keeps advertising a route at exactly
+    the moment a syntax reword deletes it.
+
+    Quoted and bounded like every other registry-derived string in a
+    system-authored denial (#1391): a project-defined op names its own fields,
+    and a field name holding a line separator would otherwise write a line of
+    its author's choosing inside the refusal.
+    """
+    if not specs:
+        return ""
+    keys = ", ".join(
+        name + ("[]" if variadic else "") + (" (optional)" if optional else "")
+        for name, optional, variadic in specs)
+    return ("  Payload route: supertool '"
+            + _guard_quote(op, _GUARD_USE_CAP) + ":@-' — keys: "
+            + _guard_quote(keys, _GUARD_USE_CAP)
+            + "; the form for an argument holding ':' or a newline.")
+
+
+def _guard_route_for(op: str, room: int) -> str:
+    """`_guard_payload_route` for a registry op, if the message can afford it.
+
+    Returns "" rather than a half-line when it cannot: a route truncated
+    mid-spelling is a route the caller cannot type, which is the failure this
+    line exists to remove.
+    """
+    if room <= 0:
+        return ""
+    try:
+        specs = _at_file_specs(op)
+    except Exception:  # pragma: no cover - a broken registry
+        # A refusal that raises is a refusal nobody sees. The op is still
+        # named on the `Use:` line above and `help:OP` still answers.
+        return ""
+    line = _guard_payload_route(op, specs)
+    return line if 0 < len(line) <= room else ""
+
+
 def guard_refusal(verdict: GuardVerdict) -> str:
     """The message the hook denies with — the op's own words, not a second copy.
 
@@ -18600,14 +18773,27 @@ def guard_refusal(verdict: GuardVerdict) -> str:
             break
         left = _GUARD_TEXT_BUDGET - spent
         use = _guard_quote(match.use, min(_GUARD_USE_CAP, left))
-        description = _guard_quote(match.description,
-                                   min(_GUARD_DESC_CAP, left - len(use)))
-        spent += len(use) + len(description)
+        # The `@payload` route is spent from the budget BEFORE the description
+        # and printed above it, and that ordering is the whole of #1815. The
+        # description is cut at `_GUARD_DESC_CAP` by position, and the op's
+        # multi-line route lives 3.5KB into `git-commit`'s — so `git commit
+        # -F -`, the one raw spelling that takes a body, was refused, pointed
+        # at an op, and shown a contract whose visible half did not contain
+        # that op's own multi-line form. Truncation is positional; relevance
+        # is not, and the part answering what was just refused is the part to
+        # move out of the truncated half rather than to hope survives it.
+        route = _guard_route_for(match.op, left - len(use))
+        description = _guard_quote(
+            match.description,
+            min(_GUARD_DESC_CAP, left - len(use) - len(route)))
+        spent += len(use) + len(route) + len(description)
         shown += 1
         op = _guard_quote(match.op, _GUARD_USE_CAP)
         lines.append(f"`{_flat_field(match.command)}` is replaced by "
                      f"supertool's `{op}` op.")
         lines.append(f"  Use: supertool '{use}'")
+        if route:
+            lines.append(route)
         if description:
             lines.append(f"  {description}")
         lines.append(f"  Full contract: supertool 'help:{op}'")
