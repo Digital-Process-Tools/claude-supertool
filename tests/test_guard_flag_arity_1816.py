@@ -76,6 +76,28 @@ class TestTheDefect:
         assert verdict.state == "clean", verdict
         assert verdict.notes == (), verdict
 
+    @pytest.mark.parametrize("cmd", [
+        "/usr/bin/git commit --no-verify --amend",
+        "git.exe commit --no-verify --amend",
+    ])
+    def test_and_however_the_command_word_was_spelled(
+            self, shipped_presets, cmd):
+        # The table is keyed on `git`, and the review of this diff found the
+        # lookup reading `argv[0]` raw: an absolute path missed every row and
+        # fell back to the disclosure this issue was filed to remove, on a
+        # spelling that reaches the same binary. #1389 is the same finding one
+        # matcher over. It fails toward a disclosure rather than toward a
+        # block, which is exactly why nothing else would have caught it.
+        verdict = supertool.guard_command(cmd)
+        assert verdict.state == "clean", verdict
+        assert verdict.notes == (), verdict
+
+    def test_and_that_spelling_is_still_matched_at_all(self, shipped_presets):
+        # The must-fire partner: without it the two rows above pass on any
+        # argv the guard has stopped reading.
+        assert supertool.guard_command(
+            "/usr/bin/git commit -m x").state == "blocked"
+
 
 class TestTheWindowStaysOpenWhereItMustFire:
     """The must-fire partner for every silence asserted above.

@@ -18154,9 +18154,22 @@ def _guard_valueless_flags(argv: Sequence[str]) -> FrozenSet[str]:
     `git worktree list` and `git worktree` would both be prefixes of the same
     command if the shorter one existed; longest-first is what keeps a future
     coarser row from shadowing a finer one.
+
+    The command word goes through `_guard_command_word` first, exactly as
+    `_guard_argv_matches` does it — the row is keyed on `git`, and without
+    this `/usr/bin/git commit --no-verify --amend` misses the table and falls
+    back to the disclosure #1816 was filed to remove, on a spelling that
+    reaches the very same binary. Same argument as #1389, which found the
+    basename applied to `_GUARD_SHELLS` alone while an absolute path to any
+    other replaced binary walked past the matcher. The miss is in the safe
+    direction (a disclosure, never a block), which is precisely what makes it
+    invisible: the fixed spelling and the unfixed one both allow the command.
     """
-    for length in range(min(len(argv), 3), 0, -1):
-        row = _GUARD_VALUELESS_FLAGS.get(tuple(argv[:length]))
+    if not argv:
+        return frozenset()
+    head = [_guard_command_word(argv[0])] + list(argv[1:])
+    for length in range(min(len(head), 3), 0, -1):
+        row = _GUARD_VALUELESS_FLAGS.get(tuple(head[:length]))
         if row is not None:
             return row
     return frozenset()

@@ -11,13 +11,21 @@ about a command that opens a PR.
 slot is *blocked*, because the alternative is a silent `git push`. Here the
 ambiguous slot is where previews live:
 
-    $ git push --force-with-lease --dry-run
+    $ gh pr create --draft --dry-run
 
 `--dry-run` is an exclusion sitting immediately after another flag. Blocking
-that names `git-push` as the substitute, and an agent obeying the refusal
-pushes for real -- the `misdirects` shape the v0.35.0 audit named. Measured:
-seven shipped invocations flip clean -> blocked under a naive value-slot rule,
-five of them previews of a destructive push. They are the boundary class below.
+that names `gh-pr-create` as the substitute, and an agent obeying the refusal
+opens the PR for real -- the `misdirects` shape the v0.35.0 audit named.
+Measured: seven shipped invocations flip clean -> blocked under a naive
+value-slot rule, five of them previews of a destructive push. They are the
+boundary class below.
+
+**This paragraph illustrated itself with `git push --force-with-lease
+--dry-run` until #1816.** That command is `clean` and silent now:
+`_GUARD_VALUELESS_FLAGS` reads `--force-with-lease` as taking an attached
+value or none, so nothing behind it is ever its value. The argument above is
+unchanged and is still why the slot is not scored -- only the example moved,
+to one gh spelling, gh being deliberately absent from that table.
 
 So the exclusion still stands, nothing new is blocked, and the verdict stops
 being `clean`: an exclusion consumed from a possible value slot makes the
