@@ -18117,8 +18117,17 @@ def _guard_is_exclusion(replacement: _Replacement, token: str) -> bool:
 # releases, and gh's flag set churns per release in a way git's does not. So
 # `gh pr create --draft --dry-run` stays disclosed, which is also what keeps
 # #1450's disclosure path covered by a real command.
-_GUARD_VALUELESS_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
-    ("git", "commit"): frozenset({
+#
+# A tuple of pairs rather than a dict, and that is not a style choice.
+# `tests/test_state_reset_and_lint_timeout.py` asks that every module-level
+# mutable container in this file be accounted for in conftest's reset or exempt
+# list, on the ground that a new dict is per-run scratch until somebody says
+# otherwise (#397). This one is a constant, and a tuple of frozensets says so
+# structurally — no hand-maintained list in another file to fall out of date,
+# and the same choice the values had already made. Four rows, scanned; a dict
+# would buy nothing at this size.
+_GUARD_VALUELESS_FLAGS: Tuple[Tuple[Tuple[str, ...], FrozenSet[str]], ...] = (
+    (("git", "commit"), frozenset({
         "-q", "--quiet", "-v", "--verbose", "--reset-author", "-s",
         "--signoff", "-e", "--edit", "--no-edit", "--status", "--no-status",
         "-a", "--all", "-i", "--include", "--interactive", "-p", "--patch",
@@ -18136,25 +18145,25 @@ _GUARD_VALUELESS_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
         # an unmeasured row in a table whose comment says "measured" is worse
         # than a short one.
         "-S", "--gpg-sign",
-    }),
-    ("git", "push"): frozenset({
+    })),
+    (("git", "push"), frozenset({
         "-v", "--verbose", "-q", "--quiet", "--all", "--branches", "--mirror",
         "-d", "--delete", "--tags", "-n", "--dry-run", "--porcelain", "-f",
         "--force", "--force-with-lease", "--force-if-includes", "--thin",
         "--no-thin", "-u", "--set-upstream", "--progress", "--no-progress",
         "--prune", "--no-verify", "--verify", "--follow-tags", "--signed",
         "--atomic", "--no-atomic", "-4", "--ipv4", "-6", "--ipv6",
-    }),
-    ("git", "status"): frozenset({
+    })),
+    (("git", "status"), frozenset({
         "-v", "--verbose", "-s", "--short", "-b", "--branch", "--show-stash",
         "--ahead-behind", "--porcelain", "--long", "-z", "--null", "-u",
         "--untracked-files", "--ignored", "--ignore-submodules", "--column",
         "--no-renames", "--renames", "-M", "--find-renames",
-    }),
-    ("git", "worktree", "list"): frozenset({
+    })),
+    (("git", "worktree", "list"), frozenset({
         "--porcelain", "-z", "-v", "--verbose",
-    }),
-}
+    })),
+)
 
 
 def _guard_valueless_flags(argv: Sequence[str]) -> FrozenSet[str]:
@@ -18178,9 +18187,10 @@ def _guard_valueless_flags(argv: Sequence[str]) -> FrozenSet[str]:
         return frozenset()
     head = [_guard_command_word(argv[0])] + list(argv[1:])
     for length in range(min(len(head), 3), 0, -1):
-        row = _GUARD_VALUELESS_FLAGS.get(tuple(head[:length]))
-        if row is not None:
-            return row
+        key = tuple(head[:length])
+        for prefix, row in _GUARD_VALUELESS_FLAGS:
+            if prefix == key:
+                return row
     return frozenset()
 
 
