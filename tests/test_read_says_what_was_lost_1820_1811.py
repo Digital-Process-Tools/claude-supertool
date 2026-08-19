@@ -112,6 +112,86 @@ def test_a_typed_limit_is_still_called_the_limit(tmp_path: Path) -> None:
     assert "read.max_lines" not in note, note
 
 
+# --- #1820 at offset 0, where there is no window note at all ----------------
+
+
+def test_a_satisfied_range_from_line_1_is_not_rendered_as_a_truncation(
+    tmp_path: Path,
+) -> None:
+    """`read:PATH:1-50` never reaches the window note.
+
+    `_read_window_note` is called only when `offset > 0`, and a range starting
+    at line 1 has an offset of 0 — so the whole #1820 fix above missed the
+    shape it is most likely to be asked about. Both this and the case below
+    closed with a bare `... (150 more lines)`, byte for byte identical, one
+    having delivered exactly what was asked and the other having been cut by a
+    bound the caller never set. Found by the auditor on the committed diff.
+    """
+    f = _lines(tmp_path, 200)
+    out = supertool.dispatch(f"read:{f}:1-50")
+    assert "nothing was cut" in out, out[-500:]
+
+
+def test_the_default_cap_at_offset_0_says_it_was_the_op_that_stopped(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The positive control, and the other half of the ambiguity: a plain
+    `read:PATH` stopped by `read.max_lines` must NOT read as a satisfied
+    window, and must name the bound that actually stopped it."""
+    monkeypatch.setenv("SUPERTOOL_READ_MAX_LINES", "50")
+    f = _lines(tmp_path, 200)
+    out = supertool.dispatch(f"read:{f}")
+    assert "nothing was cut" not in out, out[-500:]
+    assert "read.max_lines" in out, out[-500:]
+
+
+def test_a_typed_window_at_offset_0_is_not_offered_narrowing_advice(
+    tmp_path: Path,
+) -> None:
+    """A caller who typed `read:PATH:1-50` has demonstrated they know the
+    forms; #1811's advice is for the caller who typed no window at all."""
+    f = _lines(tmp_path, 200)
+    out = supertool.dispatch(f"read:{f}:1-50")
+    assert "START-END" not in out, out[-500:]
+
+
+def test_glob_auto_read_does_not_claim_a_window_nobody_asked_for(
+    tmp_path: Path,
+) -> None:
+    """`glob:PATH` auto-reads through `render_file` with the op's own default
+    pre-resolved into the LIMIT slot, so `limit <= 0` never fires and the
+    default read as a bound the caller had typed. The footer then claimed
+    `lines 1-300 are the whole window asked for, nothing was cut` while
+    `read.max_lines` had cut 100 lines and nobody had asked for any window at
+    all — this fix's own defect, inverted. Found by the reviewer on the
+    working tree, and not by the suite, because nothing here drove the
+    auto-read paths.
+    """
+    f = _lines(tmp_path, 400, name="big.txt")
+    out = supertool.dispatch(f"glob:{f}")
+    assert "more lines" in out, out[-400:]
+    assert "nothing was cut" not in out, out[-500:]
+    assert "read.max_lines" in out, out[-500:]
+
+
+def test_render_file_declines_when_nobody_said_whether_a_window_was_asked_for(
+    tmp_path: Path,
+) -> None:
+    """The third state, for a caller that says nothing.
+
+    `limit_defaulted` defaults to `None` — *unknown* — rather than to `False`.
+    `False` is a positive claim that the caller typed this bound, and a future
+    call site that pre-resolves the default (as all three auto-read sites did)
+    would silently inherit it and print the same false verdict. Unknown prints
+    neither verdict, which is honest, rather than the flattering one.
+    """
+    f = _lines(tmp_path, 400, name="big.txt")
+    out = supertool.render_file(str(f), 0, 300)
+    assert "more lines" in out, out[-400:]
+    assert "nothing was cut" not in out, out[-400:]
+    assert "read.max_lines" not in out, out[-400:]
+
+
 # --- #1811: the way out, named where the caller is standing -----------------
 
 

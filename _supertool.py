@@ -4373,7 +4373,7 @@ def _read_narrowing_hint(path: str) -> str:
 def render_file(path: str, offset: int = 0, limit: int = 0,
                 grep_filter: str = "", force_full: bool = False,
                 range_form: bool = False, *,
-                limit_defaulted: bool = False) -> str:
+                limit_defaulted: bool | None = None) -> str:
     """Emit a file's contents with line numbers, truncated at caps.
 
     Shared by read: and by grep/glob auto-promote branches.
@@ -4408,7 +4408,18 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
     # integer (the same reason `filter_scan_all` is recorded on the line above).
     # `filter_scan_all` is excluded: it re-synthesises LIMIT to reach EOF, so
     # the bound that ends that read is the file, not either of these two.
-    limit_defaulted = limit_defaulted or (limit <= 0 and not filter_scan_all)
+    # Three states, not two, and the default is the third. `False` is a
+    # positive claim — "the caller typed this bound" — and a call site that
+    # pre-resolves `read.max_lines` into the LIMIT slot cannot be told from one
+    # that typed 300, so a `False` default is inherited silently by exactly the
+    # callers who know least. All three auto-read sites did that, and the
+    # footer then told a `glob:PATH` caller `lines 1-300 are the whole window
+    # asked for, nothing was cut` while the default had cut 100 lines and
+    # nobody had asked for a window at all. `None` means the caller did not
+    # say; neither verdict is printed, which is the honest answer rather than
+    # the flattering one.
+    if limit_defaulted is None and limit <= 0 and not filter_scan_all:
+        limit_defaulted = True
     if limit <= 0:
         limit = _get_op_int("read", "max_lines", MAX_READ_LINES)
     if not path or not os.path.isfile(path):
@@ -4650,16 +4661,42 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
             f"({remaining} more line{'s' if remaining != 1 else ''}) — "
             f"use read:PATH:OFFSET:LIMIT to get more)\n"
         )
-        if offset == 0 and not force_full:
+        if offset == 0 and limit_defaulted is True and not force_full:
             out.append(_read_narrowing_hint(path))
     elif not filter_regex and last_scanned < line_count:
-        out.append(f"... ({line_count - last_scanned} more lines)\n")
+        # `... (N more lines)` on its own is #1820 all over again, in the one
+        # shape the window note cannot reach: `_read_window_note` fires only
+        # when `offset > 0`, and a range starting at line 1 has an offset of 0.
+        # So `read:PATH:1-50` — asked for, delivered whole — and a plain
+        # `read:PATH` the `read.max_lines` default cut at 50 closed with the
+        # SAME bare footer, byte for byte. One caller has everything they
+        # asked for and the other is missing 150 lines to a bound they never
+        # set. Found by the audit of the first commit of this fix, which is
+        # why it is a second hunk rather than part of the first.
+        why = ""
+        if limit_defaulted is True:
+            why = (f" — the read.max_lines default of {limit} stopped the "
+                   f"read here, not the file")
+        elif limit_defaulted is False and last_scanned >= offset + limit:
+            # `nothing was cut` is claimed only when nothing was suppressed.
+            # Under compact mode blanks and comments ARE dropped from the
+            # output, and this footer — unlike the window note — has no `held`
+            # clause beside it to say so, so the bare phrase would be a false
+            # claim standing alone. What stays true either way is which bound
+            # ended the window, which is the fact #1820 is about.
+            intact = "" if compact else ", nothing was cut"
+            why = (f" — lines {offset + 1}-{last_scanned} are the whole window "
+                   f"asked for{intact}; those {line_count - last_scanned} "
+                   f"are simply below it")
+        out.append(f"... ({line_count - last_scanned} more lines{why})\n")
         # #1811: this footer disclosed the stop and named no way out at all —
         # the weaker of the two, and the one a plain `read:PATH` on a long file
-        # actually lands on. Gated on `offset == 0` because a caller who
-        # already typed a window has demonstrated they know the forms, and
-        # advice printed on every read is advice nobody reads.
-        if offset == 0 and not force_full:
+        # actually lands on. Gated on `limit_defaulted` rather than on
+        # `offset == 0`: the caller this advice is for is the one who named no
+        # window at all, and a caller who typed `read:PATH:1-50` has already
+        # demonstrated they know the forms. Advice printed on every read is
+        # advice nobody reads.
+        if offset == 0 and limit_defaulted is True and not force_full:
             out.append(_read_narrowing_hint(path))
     elif not filter_regex and offset > 0:
         # `[complete file — no more lines]` after a windowed read was a plain
@@ -4707,7 +4744,7 @@ def _read_window_note(path: str, limit: int, offset: int,
                       capped: bool = False, cap_reached: bool = False,
                       byte_cap: int = 0,
                       limit_synthetic: bool = False,
-                      limit_defaulted: bool = False,
+                      limit_defaulted: bool | None = None,
                       range_form: bool = False,
                       skipped_by: str = "") -> str:
     """One line naming the window the caller asked for and the window actually
@@ -4742,8 +4779,14 @@ def _read_window_note(path: str, limit: int, offset: int,
     hits 3,208. Neither number is a rounding error, and a refusal that breaks a
     form callers legitimately use is a regression dressed as a fix.
 
-    A window ends for one of three reasons and the note names which: the LIMIT
-    was reached, the file ended, or the byte cap cut it short. The first
+    A window ends at one of FOUR bounds and the note names which: a LIMIT the
+    caller typed, the `read.max_lines` default they did not (#1820 — one word
+    was covering both, and they want opposite responses), the file ending, or
+    the byte cap cutting it short. Naming the bound is not the same as saying
+    whether it cost anything, so a window that ended at a caller-set bound with
+    nothing dropped also says `nothing was cut`; EOF is excluded because it
+    settles that in its own words below, and a real cap cut is the state the
+    clause distinguishes from. The first
     version of this note computed the shortfall against the requested end and
     attributed all of it to EOF, so a 20KB truncation was announced as "the end
     of the file" at the top of a render whose own footer said 146 lines
@@ -4863,7 +4906,7 @@ def _read_window_note(path: str, limit: int, offset: int,
         # that hides the rest of the file. `read:PATH:10` reported the second
         # in the vocabulary of the first — a request the caller never made,
         # named back to them as theirs.
-        if limit_defaulted:
+        if limit_defaulted is True:
             reasons.append(f"the read.max_lines default of {limit} lines was "
                            f"reached — you named no LIMIT, so this bound is "
                            f"the op's and {line_count - last_scanned} lines of "
@@ -4904,7 +4947,8 @@ def _read_window_note(path: str, limit: int, offset: int,
         stops = (f", stopping at line {last_scanned}: "
                  + " and ".join(reasons)
                  + " coincide here — which one ended the window cannot be told apart")
-    if limit_ended and not limit_defaulted and not capped and _EOF not in reasons:
+    if (limit_ended and limit_defaulted is False and not capped
+            and _EOF not in reasons):
         # The third state, and the one this note never had (#1820). Every
         # clause above names which bound closed the window; none of them said
         # whether that bound cost the caller anything. So a window returned
@@ -5998,7 +6042,11 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
         else:
             out.append(f"[auto-read: single file < {_get_op_int('read', 'max_bytes', MAX_READ_BYTES)} bytes, "
                        "match found]\n")
-            out.append(render_file(path, 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
+            # The LIMIT here is this op's own default, never a bound anyone
+            # typed — said out loud rather than left to be inferred from a
+            # positive integer that looks identical either way (#1820).
+            out.append(render_file(path, 0, _get_op_int("read", "max_lines", MAX_READ_LINES),
+                                   limit_defaulted=True))
 
     return "".join(out)
 
@@ -6397,7 +6445,9 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
         if no_auto_read:
             return f"{pattern}\n"
         return ("[auto-read: concrete path, no wildcards]\n"
-                + render_file(pattern, 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
+                + render_file(pattern, 0,
+                              _get_op_int("read", "max_lines", MAX_READ_LINES),
+                              limit_defaulted=True))
 
     excl = _get_exclude_paths("glob", no_exclude)
     # over_fetch=1 (#448): `(N files)` implies completeness the same way grep's
@@ -6488,7 +6538,9 @@ def op_glob(pattern: str, no_exclude: bool = False, no_auto_read: bool = False) 
                        f"read:{files[0]}:full to see it]\n")
         else:
             out.append(f"[auto-read: glob returned 1 file]\n")
-            out.append(render_file(files[0], 0, _get_op_int("read", "max_lines", MAX_READ_LINES)))
+            out.append(render_file(files[0], 0,
+                                   _get_op_int("read", "max_lines", MAX_READ_LINES),
+                                   limit_defaulted=True))
 
     return "".join(out)
 

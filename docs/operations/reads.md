@@ -185,7 +185,23 @@ is a different fact rather than an oversight:
 
 The claim is about the **window**, not the lines: under `grep=` the emitted count
 is smaller than the scanned count, and the `N of those M lines emitted` clause is
-what speaks to that.
+what speaks to that. Under **compact mode** the footer form below drops the
+`nothing was cut` half outright — blanks and comments really were dropped, and
+unlike the window note that footer has no `held` clause beside it to say so.
+
+#### At offset 0 the same distinction lives in the footer
+
+The window note is emitted only for a read with a **non-zero OFFSET**, and a
+range starting at line 1 has an offset of zero. So `read:PATH:1-50` never
+reached any of the above, and closed with a bare `... (150 more lines)` — byte
+for byte what a plain `read:PATH` cut short by `read.max_lines` printed. One
+caller had everything they asked for; the other was missing 150 lines to a bound
+they never set. The footer now carries the same two verdicts:
+
+```
+... (150 more lines — lines 1-50 are the whole window asked for, nothing was cut; those 150 are simply below it)
+... (150 more lines — the read.max_lines default of 50 stopped the read here, not the file)
+```
 
 The first version of this note knew only two of them and treated any shortfall
 against the requested end as EOF, so a capped read opened with `stopping at line
@@ -231,7 +247,7 @@ byte — while `grep`'s own `… (+N chars)` note points callers at that exact r
 Reaching the cap and being cut by it are separate facts and the note says which:
 
 ```
-window: range 2-2 (START-END form); returning lines 2-2 of 4, stopping at line 2: the limit was reached — the 20000-byte cap was reached on that line and dropped nothing; it stops whole lines and never truncates one, so these bytes are complete
+window: range 2-2 (START-END form); returning lines 2-2 of 4, stopping at line 2: the limit was reached — the window ends here because it was asked to, nothing was cut — the 20000-byte cap was reached on that line and dropped nothing; it stops whole lines and never truncates one, so these bytes are complete
 ```
 
 Silence would be the other half of the same defect — the output *is* at the cap,
