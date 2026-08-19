@@ -138,7 +138,7 @@ def test_the_field_named_in_the_message_is_the_one_that_holds_the_sigil():
 
 
 @pytest.fixture
-def git_commit_route():
+def git_commit_route(with_preset_op):
     """Make `git-commit`'s payload route exist for the duration of one test.
 
     Without this the op is invisible here, always. Its route is derived from
@@ -152,29 +152,15 @@ def git_commit_route():
     asserts nothing, which is the defect class this whole file exists about,
     sitting inside the fix for it.
 
-    The syntax is read off the shipped manifest rather than typed here, so this
-    stays joined to the artifact: reword `syntax` until `_fields_from_syntax`
-    stops deriving clean identifiers -- the documented way to silently delete an
-    op's payload route -- and this goes red instead of skipping.
+    The mechanics moved to `conftest.with_preset_op` in #1812, which is the
+    same argument made once for the whole suite rather than rediscovered per
+    file: the entry still comes off the shipped manifest rather than being
+    typed, so rewording `syntax` until `_fields_from_syntax` stops deriving
+    clean identifiers still reddens instead of skipping, and `payload_route=
+    True` is what says out loud that this file needs the route and not merely
+    the op.
     """
-    manifest = json.loads(
-        (REPO_ROOT / "presets" / "git.json").read_text(encoding="utf-8"))
-    entry = manifest.get("ops", {}).get("git-commit")
-    assert entry and entry.get("syntax"), (
-        "presets/git.json no longer declares a git-commit op with a syntax; "
-        "the guard's coverage of it cannot be asserted from here")
-
-    saved_config = _supertool._CONFIG
-    saved_registry = _supertool._AT_FILE_REGISTRY
-    saved_built = _supertool._AT_FILE_REGISTRY_BUILT
-    _supertool._CONFIG = {"ops": {"git-commit": entry}}
-    _supertool._AT_FILE_REGISTRY_BUILT = False
-    try:
-        yield entry["syntax"]
-    finally:
-        _supertool._CONFIG = saved_config
-        _supertool._AT_FILE_REGISTRY = saved_registry
-        _supertool._AT_FILE_REGISTRY_BUILT = saved_built
+    yield with_preset_op("git-commit", payload_route=True)["git-commit"]["syntax"]
 
 
 def test_git_commit_at_dash_is_refused(git_commit_route):
