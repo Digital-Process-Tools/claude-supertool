@@ -71,6 +71,15 @@ Every route by which this board could narrow itself says so:
                 `RadarUnreachable` subclass, so a caller can tell "GitHub did
                 not answer" from "the board says X" without matching on the
                 message (#1568). Radar treats both identically.
+
+                Within that, the *message* has three states and not two
+                (#1823). Only a probe that got an answer saying the credential
+                is unusable names the credential and prints `gh auth login`;
+                a failure that established no cause quotes the exit status and
+                the stderr of the call that did not answer, and prints no
+                remedy at all. The remedy is a claim about a cause, and the
+                caller acts on it — a loop told the credential is gone stops,
+                where a loop told the tier could not answer retries.
   empty match   a filter that selected nothing is reported *with its scope*.
                 "No open PRs" and "this filter matched nothing" are different
                 facts and only one of them is about the world.
@@ -147,6 +156,14 @@ prs = _load("radar_github_prs", _WATCH.parent / "github" / "prs.py")
 pr = _load("radar_github_pr", _WATCH.parent / "github" / "pr.py")
 branch = _load("radar_github_branch", _WATCH.parent / "github" / "branch.py")
 snapshot = _load("radar_snapshot", _HERE / "_snapshot.py")
+# The one predicate both tiers share: "did the probe establish that there is no
+# usable credential?" (#1823). One copy, for `_snapshot.py`'s reason.
+_auth_probe = _load("radar_auth_probe", _HERE / "_auth_probe.py")
+
+#: Re-exported so this tier's own vocabulary is readable from one place, and so
+#: the structural test that no marker is a bare status number has a name to
+#: reach for that does not depend on how the module is loaded.
+NOT_AUTHENTICATED_MARKERS = _auth_probe.NOT_AUTHENTICATED_MARKERS
 
 SOURCE = prs.WATCH_SOURCE
 SNAPSHOT_PREFIX = "supertool-radar-gh-prs"
@@ -288,11 +305,19 @@ GH_RC_NO_CREDENTIALS = 4
 #: below with their own messages; they move into this set unchanged, because
 #: "no credentials" and "throttled" are both "GitHub did not answer this
 #: question today" from every caller's point of view.
+#:
+#: "Unchanged" is why the bare `401` and `403` were here, and why they had to
+#: be tightened with the arms they mirror (#1823): a status matched as a bare
+#: three-character substring is also a request id, a user id and an epoch. This
+#: set is the *fallback*, so a loose entry here is far less costly than one
+#: above -- it produces "could not reach", which names no cause and prints no
+#: remedy. It was still tightened, because two halves of one story that
+#: disagree about what `401` means is how the next reader picks the wrong one.
 _UNREACHABLE_MARKERS = (
     "not logged in",
-    "401",
+    "http 401",
     "rate limit",
-    "403",
+    "http 403",
     # gh's transport layer surfaces Go's net errors verbatim.
     "dial tcp",
     "no such host",
@@ -463,14 +488,28 @@ def live_open_prs(filters: dict[str, str]) -> list[dict]:
                 "gh has no credentials in this environment, so it refused "
                 "before making a request: " + err)
         low = err.lower()
-        if "not logged in" in low or "401" in err:
-            raise RadarUnreachable("gh not authenticated. Run: gh auth login")
-        if "rate limit" in low or "403" in err:
+        if _auth_probe.says_not_authenticated(err):
+            # State 2: the probe got an answer *saying* the credential is
+            # unusable, so the remedy is a claim about a cause something
+            # established, and it stays (#1823).
             raise RadarUnreachable(
-                f"gh refused the query (rate limit or permission): {err}")
+                f"gh says this request was not authenticated (exit "
+                f"{result.returncode}): {err}. Run: gh auth login")
+        if "rate limit" in low or "http 403" in low:
+            raise RadarUnreachable(
+                f"gh refused the query (rate limit or permission, exit "
+                f"{result.returncode}): {err}")
         if _unreachable(err):
-            raise RadarUnreachable(f"gh could not reach the API: {err}")
-        raise RadarError(f"gh pr list: {err}")
+            raise RadarUnreachable(
+                f"gh could not reach the API (exit {result.returncode}): {err}")
+        # State 3: `gh` failed and nothing here established why. The issue's
+        # own fallback -- quote the exit status and the stderr of the call that
+        # did not answer, rather than name a cause. Naming one costs more than
+        # an inaccurate string: a loop told the credential is gone stops, where
+        # a loop told the tier could not answer retries and continues.
+        raise RadarError(
+            f"gh pr list did not answer, and nothing in its output says why "
+            f"(exit {result.returncode}): {err}")
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError as exc:

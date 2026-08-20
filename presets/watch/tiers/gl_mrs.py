@@ -169,6 +169,13 @@ mrs = _load("radar_gitlab_mrs", _WATCH.parent / "gitlab" / "mrs.py")
 # previous board keyed by the population it describes is not a GitLab argument,
 # and a second copy of it in the GitHub tier is how a fixed defect comes back.
 snapshot = _load("radar_snapshot", _HERE / "_snapshot.py")
+# "Did the probe establish that there is no usable credential?" — shared with
+# the GitHub tier for the snapshot's reason, and because both tiers had the
+# same bare-`401` collapse and would drift apart while being fixed (#1823).
+_auth_probe = _load("radar_auth_probe", _HERE / "_auth_probe.py")
+
+#: This tier's not-authenticated vocabulary, from the one copy.
+NOT_AUTHENTICATED_MARKERS = _auth_probe.NOT_AUTHENTICATED_MARKERS
 
 SOURCE = defaults.DEFAULT_SOURCE
 FEED_SOURCE = defaults.DEFAULT_FEED_SOURCE
@@ -373,9 +380,19 @@ def _query(filters: dict[str, str], per_page: int) -> list[dict]:
         raise RadarError(f"glab mr list failed: {exc}") from exc
     if result.returncode != 0:
         err = (result.stderr or "").strip() or "unknown error"
-        if "not logged in" in err.lower() or "401" in err:
-            raise RadarError("glab not authenticated. Run: glab auth login")
-        raise RadarError(f"glab mr list: {err}")
+        if _auth_probe.says_not_authenticated(err):
+            # The probe got an answer saying the credential is unusable, so
+            # the remedy names a cause something established (#1823).
+            raise RadarError(
+                f"glab says this request was not authenticated (exit "
+                f"{result.returncode}): {err}. Run: glab auth login")
+        # Nothing established a cause. Quote the exit status and the stderr of
+        # the call that did not answer rather than name one: `"401" in err`
+        # used to match a correlation id and send the reader to `glab auth
+        # login`, a remedy for a credential that was never the problem.
+        raise RadarError(
+            f"glab mr list did not answer, and nothing in its output says why "
+            f"(exit {result.returncode}): {err}")
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
