@@ -334,20 +334,35 @@ GUARDED = (
 )
 
 
-def test_no_guarded_file_reaches_for_isdigit_again() -> None:
+def _non_ascii_digit_code_lines(text: str) -> list[str]:
     """Code lines only. Prose in this repo quotes `str.isdigit()` in backticks
-    to say why it is wrong, and a test that forbade the word would forbid the
-    explanation."""
+    to say why it is wrong, and a scan that forbade the word would forbid the
+    explanation. Same reader as `tests/test_core_ascii_digit_guards_1748.py`,
+    on purpose: two spellings of one scan is what #1727 was filed about.
+
+    `.isdecimal(` is in the list because it is the spelling that produces the
+    defect, not merely a related one (#1764): it is True for `٢` (U+0662) and
+    `int()` converts it, which is the first of the two classes this module's
+    docstring names. It was absent from both readers until #1764.
+    """
+    offenders: list[str] = []
+    for n, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith("#") or "`" in line:
+            continue
+        if (".isdigit(" in line or ".isnumeric(" in line
+                or ".isdecimal(" in line):
+            offenders.append("%d: %s" % (n, stripped))
+    return offenders
+
+
+def test_no_guarded_file_reaches_for_isdigit_again() -> None:
     offenders: list[str] = []
     for rel in GUARDED:
         path = PRESETS / rel
         assert path.exists(), rel
-        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith("#") or "`" in line:
-                continue
-            if ".isdigit(" in line or ".isnumeric(" in line:
-                offenders.append("%s:%d: %s" % (rel, n, stripped))
+        for hit in _non_ascii_digit_code_lines(path.read_text(encoding="utf-8")):
+            offenders.append("%s:%s" % (rel, hit))
     assert offenders == [], LF.join(offenders)
 
 
@@ -363,3 +378,27 @@ def test_the_recurrence_guard_can_actually_see_one() -> None:
             and "`" not in line]
     assert hits, ("the control file no longer contains what the scan looks "
                   "for — the scan above proves nothing until this is re-aimed")
+
+
+def test_the_scan_sees_every_spelling_that_lets_a_non_ascii_digit_reach_int() -> None:
+    """One case per predicate the scan must catch, plus the lines it must not.
+
+    `str.isdecimal()` is the spelling that produces the defect this file
+    guards, and it was the one the scan could not see (#1764): it is True for
+    `٢` (U+0662) and `int()` converts it, so `if x.isdecimal(): int(x)` at any
+    guarded site is #1727 again behind a green leg. `isdigit`/`isnumeric` were
+    already matched; they are here so a later narrowing cannot pass silently.
+
+    The must-not-match half is not decoration. `test_no_guarded_file_...`
+    asserts an empty list, which a reader returning nothing also satisfies;
+    these three lines are what stops a reader returning *everything* from
+    looking like a working scan.
+    """
+    for spelling in (".isdigit(", ".isnumeric(", ".isdecimal("):
+        line = "if x%s):" % spelling
+        assert _non_ascii_digit_code_lines(line) == ["1: " + line], spelling
+
+    assert _non_ascii_digit_code_lines(
+        "no digits here" + LF
+        + "# a commented x.isdecimal() mention" + LF
+        + "prose quoting `x.isdecimal()` in backticks" + LF) == []

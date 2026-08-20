@@ -29,16 +29,29 @@ Every case below is a triple, and the triple is the point:
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 ROOT = Path(__file__).parent.parent
 ENTRY = ROOT / "supertool.py"
 CORE = ROOT / "_supertool.py"
+PRESETS = ROOT / "presets"
+
+
+def _load(rel: str, name: str) -> Any:
+    """Load a preset module by path. The presets are not a package and run as
+    standalone subprocesses, so this is the only way to reach one from here."""
+    spec = importlib.util.spec_from_file_location(name, PRESETS / rel)
+    assert spec is not None and spec.loader is not None, rel
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 #: U+00B2. `str.isdigit()` True, `str.isdecimal()` False -> `int()` raises.
 SUP = "²"
@@ -138,19 +151,65 @@ def test_vim_does_not_edit_the_file_on_a_unicode_count(probe: Path) -> None:
     assert rc != 0, out
 
 
+# --- the core's claim about the presets ------------------------------------
+
+def test_the_core_and_the_presets_hold_the_identical_digit_predicate() -> None:
+    """`_supertool.py`'s comment states that `presets/_digits.py` "holds the
+    identical pair" and is deliberately not imported, because presets run as
+    standalone subprocesses with only `presets/` on their path. Nothing
+    compared them (#1765).
+
+    The duplication is deliberate and stays; what was missing is the pin. If
+    the two drift, the core and a preset disagree about what a number is at
+    two layers of one call, and no leg goes red. Mirrors
+    `tests/test_mcp_autospawn_honoured_1743.py`, which pins the one other
+    core/preset pair the same comment style claims.
+
+    Compared as live objects rather than against a literal written twice:
+    a third copy of the pattern here would be one more thing to keep in step,
+    which is the defect and not the test for it.
+    """
+    import supertool  # noqa: PLC0415
+
+    digits = _load("_digits.py", "st_digits_1765")
+    assert supertool._ASCII_DIGITS.pattern == digits.DIGITS.pattern
+    assert supertool._ASCII_DIGITS.flags == digits.DIGITS.flags
+
+    # Both must actually be the ASCII test, not merely equal to each other:
+    # two identically-wrong regexes would satisfy the assertions above.
+    for probe in ("2", "1764"):
+        assert supertool._ASCII_DIGITS.match(probe), probe
+        assert digits.DIGITS.match(probe), probe
+    # `ascii()` rather than `repr()`: these probes are U+0662 and U+00B2, and a
+    # failure message is written with the console's codepage, not the source
+    # file's. On a cp1252 console `repr()` would raise UnicodeEncodeError while
+    # reporting the failure, replacing the assertion nobody can now read.
+    for probe in (DEC, SUP, "2 ", "2" + chr(10), "", "1.0"):
+        assert not supertool._ASCII_DIGITS.match(probe), ascii(probe)
+        assert not digits.DIGITS.match(probe), ascii(probe)
+
+
 # --- recurrence guard ------------------------------------------------------
 
 def _isdigit_code_lines(text: str) -> list[str]:
     """Code lines only. Prose in this repo quotes `str.isdigit()` in backticks
     to say why it is wrong, and a scan that forbade the word would forbid the
     explanation. Same reader as `tests/test_ascii_digit_guards_1727.py`, on
-    purpose: two spellings of one scan is what #1727 was filed about."""
+    purpose: two spellings of one scan is what #1727 was filed about.
+
+    `.isdecimal(` is in the list because it is the spelling that produces the
+    defect, not merely a related one (#1764): it is True for U+0662 and
+    `int()` converts it, so it is the expensive half of this module's own
+    docstring. It was absent from both readers until #1764, which left the
+    silent-conversion class the only one that could recur behind a green leg.
+    """
     offenders: list[str] = []
     for n, line in enumerate(text.splitlines(), 1):
         stripped = line.strip()
         if stripped.startswith("#") or "`" in line:
             continue
-        if ".isdigit(" in line or ".isnumeric(" in line:
+        if (".isdigit(" in line or ".isnumeric(" in line
+                or ".isdecimal(" in line):
             offenders.append("%d: %s" % (n, stripped))
     return offenders
 
@@ -162,6 +221,28 @@ def test_the_recurrence_scan_can_actually_see_one() -> None:
     seen = _isdigit_code_lines(
         "if x.isdigit():\n# a `x.isdigit()` mention\nno digits here\n")
     assert seen == ["1: if x.isdigit():"], seen
+
+
+def test_the_scan_sees_every_spelling_that_lets_a_non_ascii_digit_reach_int() -> None:
+    """One case per predicate the scan must catch, plus the lines it must not.
+
+    `str.isdecimal()` is the spelling that produces the expensive half this
+    module's docstring describes, and it was the one the scan could not see
+    (#1764): U+0662 is `isdecimal()` and `int()` converts it, so
+    `if x.isdecimal(): int(x)` anywhere in the core is the silent-conversion
+    defect again behind a green leg.
+
+    The must-not-match half is the pair for the empty-list assertion below,
+    which a reader that returned nothing would also satisfy.
+    """
+    for spelling in (".isdigit(", ".isnumeric(", ".isdecimal("):
+        line = "if x%s):" % spelling
+        assert _isdigit_code_lines(line) == ["1: " + line], spelling
+
+    assert _isdigit_code_lines(
+        "no digits here\n"
+        "# a commented x.isdecimal() mention\n"
+        "prose quoting `x.isdecimal()` in backticks\n") == []
 
 
 def test_the_core_does_not_reach_for_isdigit_again() -> None:
