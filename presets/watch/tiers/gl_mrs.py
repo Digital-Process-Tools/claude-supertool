@@ -432,13 +432,25 @@ def _query(filters: dict[str, str], per_page: int) -> list[dict]:
         # and read as a verdict about the board. Not a prose match: the sign of
         # the return code is the whole predicate (#1568, ported here by #1847).
         #
-        # POSIX-only in effect, and deliberately not branched on the platform:
-        # Windows has no signal exit codes, so `returncode` there is the process
-        # exit status and never negative, and this arm simply does not fire. The
-        # fallback below still quotes the exit status and names no cause, which
-        # is the correct answer when nothing established one — so the Windows
-        # behaviour is less specific rather than wrong. `gh_prs` has carried the
-        # same arm with the same reach since #1568.
+        # Deliberately not branched on the platform: the predicate is the sign
+        # of an integer and it is safe to evaluate anywhere, so there is nothing
+        # to branch on and no way for this to go vacuous on one leg.
+        #
+        # What it is *reached by* is a reasoned claim rather than an observed
+        # one, and it is stated as such. On POSIX `subprocess` documents `-N`
+        # for a signal, so the word below is exact. Windows reports the process
+        # exit status instead, and `_winapi.GetExitCodeProcess` is declared to
+        # return `unsigned long`, so an NT status like `0xC0000005` should
+        # arrive as `3221225477` and never trip this arm — the negative spelling
+        # of the same DWORD circulates widely, from shells and from Python 2, so
+        # the claim is worth distrusting. Nobody here has a Windows runner to
+        # settle it on, and the suite drives this path through a fake, so the
+        # Windows leg exercises the branch without ever establishing which side
+        # of it a real killed `glab` lands on. If it does fire there, the
+        # classification is still right — the process did not finish deciding
+        # anything — and only the word "signal" is wrong. `gh_prs` has carried
+        # the same arm and the same wording since #1568, so fixing the vocabulary
+        # is one change to both tiers rather than a divergence introduced here.
         err = mrs._untrusted.flat((result.stderr or "").strip()) or "unknown error"
         raise RadarUnreachable(
             f"glab mr list was killed by signal {-result.returncode} "
