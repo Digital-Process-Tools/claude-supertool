@@ -204,6 +204,13 @@ def closing_ref_verdict(old_body: object, new_body: str,
     Read with `_checks.closing_issue_refs`, so a `Closes` line that moved into a
     code fence or an HTML comment counts as lost: GitHub does not honour one
     there either, and a gate matching raw text would call that update clean.
+
+    Three **gate** states, four messages under `ok`. The gate asks only whether
+    anything was lost; the message describes the transition, and those are not
+    the same question. Reporting the pre-edit set for all four is #1834/#1788 —
+    `main` prints this message and `linked_issue_line(new refs)` directly under
+    it, so an edit that *added* the first reference printed an absence above the
+    line naming what it had just bound.
     """
     new_refs = _checks.closing_issue_refs(new_body)
 
@@ -218,8 +225,23 @@ def closing_ref_verdict(old_body: object, new_body: str,
     old_refs = _checks.closing_issue_refs(old_body)
     lost = [ref for ref in old_refs if ref not in new_refs]
     if not lost:
+        # Nothing was lost, so every old ref survived and `old_refs` is the
+        # carried set. What it is NOT is a description of the body being
+        # written: the additions live only in `new_refs`, and reporting the
+        # pre-edit set as if it were the post-edit one is #1834/#1788 — an
+        # edit that added the first `Closes` line printed "the published body
+        # linked no issue, and neither does this one" directly above the
+        # `Issue: #321` line that disproved it. Four answers, because
+        # `carried` and `added` are independent and both can be non-empty.
+        added = [ref for ref in new_refs if ref not in old_refs]
+        if old_refs and added:
+            return (REF_OK, [], (f"carried through: {', '.join(old_refs)}; "
+                                 f"added: {', '.join(added)}"))
         if old_refs:
             return (REF_OK, [], f"carried through: {', '.join(old_refs)}")
+        if added:
+            return (REF_OK, [], (f"added: {', '.join(added)} — the published "
+                                 f"body linked none, this one does"))
         return (REF_OK, [],
                 "the published body linked no issue, and neither does this one")
 
