@@ -811,7 +811,7 @@ def test_grep_delegated_marks_truncation(tmp_path: Path, rtk: _RtkStub) -> None:
     # its own coverage in tests/test_delegated_grep_total_1771.py.
     assert ("(3 results in 1 files, scanned ? files — delegated to rtk, "
             "limit 3 — TRUNCATED, more matches exist, total unknown "
-            "(the delegated count pass did not run))\n"
+            "(the delegated count pass returned no total))\n"
             ) in out
     assert out.count(":alpha") == 3, "body trimmed to the limit"
 

@@ -405,6 +405,31 @@ def test_a_census_that_contradicts_the_shown_rows_is_refused(
 
     assert "total unknown" in out
     assert _reported_total(out) is None
+    # The census *ran* here. Reporting that it "returned no total" would be a
+    # receipt misreporting its own mechanism, in the change that exists to stop
+    # receipts doing that. Raised by the audit of this commit's first version.
+    assert "refused as incoherent" in out, (
+        f"the refusal is reported as a pass that never ran: "
+        f"{out.splitlines()[0] if out else '<empty>'!r}"
+    )
+    assert "returned no total" not in out
+
+
+def test_the_two_declines_do_not_share_one_sentence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rtk_no_census,
+) -> None:
+    """The control for the assertion above: a census that never answered gets
+    the other sentence, so the two states cannot collapse into each other."""
+    a = tmp_path / "a.txt"
+    a.write_text("alpha\n", encoding="utf-8")
+    rtk_no_census("".join(f"{a}:{i}:alpha\n" for i in range(1, 6)))
+    monkeypatch.chdir(tmp_path)
+
+    out = supertool.op_grep("alpha", ".", limit=3, no_auto_read=True)
+
+    assert "returned no total" in out, (
+        f"{out.splitlines()[0] if out else '<empty>'!r}")
+    assert "refused as incoherent" not in out
 
 
 def test_the_second_pass_can_be_switched_off(

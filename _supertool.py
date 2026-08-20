@@ -8103,20 +8103,32 @@ def _rtk_grep_report(rtk_out: str, limit: int,
         if m:
             files.add(m.group(1))
     total: Optional[int] = None
+    reason: Optional[str] = None
     scanned_clause = ", scanned ? files"
     if truncated and census is not None:
         counted = census()
-        if counted is not None and counted[0] > len(lines):
+        if counted is None:
+            pass
+        elif counted[0] <= len(lines):
+            # The census ran and was refused. Saying it "returned no total"
+            # here would be the same class of wrong receipt this whole change
+            # is about, one field over — so the two declines say which.
+            reason = (f"the delegated count came back at {counted[0]}, "
+                      f"at or below the {len(lines)} rows shown, and was "
+                      "refused as incoherent")
+        else:
             total, scanned = counted
             scanned_clause = _scanned_suffix(scanned)
     header = (f"({len(lines)} results in {len(files)} files"
               f"{scanned_clause} — delegated to rtk"
-              f", limit {limit}{_truncation_suffix(truncated, total)})\n")
+              f", limit {limit}"
+              f"{_truncation_suffix(truncated, total, reason=reason)})\n")
     return header + "".join(ln + "\n" for ln in lines) + "\n"
 
 
 def _truncation_suffix(truncated: bool, total: Optional[int] = None,
-                       capped: bool = False) -> str:
+                       capped: bool = False,
+                       reason: Optional[str] = None) -> str:
     """Report format's truncation disclosure (#448, #1073).
 
     `(1 results in 1 files, scanned 118353 files, limit 1)` reads as an
@@ -8140,17 +8152,25 @@ def _truncation_suffix(truncated: bool, total: Optional[int] = None,
       the gap belongs in the sentence rather than in a trailing parenthesis.
 
     Only the delegated rtk path can reach the third state, and since #1771 it
-    reaches it only when the `grep -rc` census could not answer — rtk absent or
-    failing, output that is not `path:N`, or the second pass switched off with
-    `builtin-ops.grep.count_truncated: 0`. The delegated total is exact rather
-    than capped when it arrives: `-c` counts in C, so there is no walker to stop
-    early and nothing to clamp.
+    reaches it only when the `grep -rc` census could not answer. `reason` says
+    which way, because "it never ran" and "it ran and I refused its answer" are
+    two different things to do next, and one sentence for both would be a
+    receipt misreporting its own mechanism — the defect class this marker was
+    built to close, aimed at the marker. The default covers every path on which
+    no total came back at all: rtk absent, failing or timing out; output that is
+    not `path:N`; a non-ASCII decimal `int()` would have converted; or the pass
+    switched off with `builtin-ops.grep.count_truncated: 0`. The caller passes
+    its own when the census answered and was rejected.
+
+    The delegated total is exact rather than capped when it arrives: `-c` counts
+    in C, so there is no walker to stop early and nothing to clamp.
     """
     if not truncated:
         return ""
     if total is None:
-        return (" — TRUNCATED, more matches exist, total unknown "
-                "(the delegated count pass did not run)")
+        return (" — TRUNCATED, more matches exist, total unknown ("
+                + (reason or "the delegated count pass returned no total")
+                + ")")
     if capped:
         return (f" — TRUNCATED, {total}+ matches total "
                 f"(count capped at {total})")
