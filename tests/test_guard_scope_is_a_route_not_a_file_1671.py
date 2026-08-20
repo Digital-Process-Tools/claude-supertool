@@ -44,18 +44,6 @@ _ROOT = Path(__file__).resolve().parent.parent
 _SESSION_CAP = 7168
 
 
-@pytest.fixture
-def shipped_config(monkeypatch: pytest.MonkeyPatch):
-    """The repo's own config — conftest hands tests `_CONFIG = {}`."""
-    cfg = json.loads((_ROOT / ".supertool.json").read_text(encoding="utf-8"))
-    supertool._merge_presets(cfg, str(_ROOT))
-    monkeypatch.setattr(supertool, "_CONFIG", cfg)
-    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
-    monkeypatch.setattr(supertool, "_CONFIG_PATH",
-                        str(_ROOT / ".supertool.json"))
-    return cfg
-
-
 # --- the SessionStart roster states the scope ------------------------------
 
 def test_roster_legend_says_the_guard_is_bash_only(shipped_config) -> None:
