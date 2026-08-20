@@ -23,8 +23,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 import supertool
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

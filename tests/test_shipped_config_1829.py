@@ -25,8 +25,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 import supertool
 
 from conftest import _load_shipped_config

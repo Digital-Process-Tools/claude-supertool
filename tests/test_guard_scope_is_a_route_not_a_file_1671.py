@@ -33,8 +33,6 @@ import json
 import re
 from pathlib import Path
 
-import pytest
-
 import supertool
 
 
