@@ -28,8 +28,9 @@ jobs:
     # minutes is 3.1x the worst windows leg ever measured here, so it can only
     # fire for a hang, not for a slow runner — the #702 trade, in CI config.
     # Deliberately
-    # not the same number as `notifiers` below (24-37s): one figure across two
-    # job classes an order of magnitude apart is no guard on the smaller one.
+    # not the same number as `notifiers` below (47-70s as of 2026-08-20; 24-37s
+    # when this line was written): one figure across two job classes an order of
+    # magnitude apart is no guard on the smaller one.
     # Per-OS budgets inside this matrix were considered and declined — bounding
     # ubuntu at 15 instead of 30 is noise against the 360 it replaces, and it is
     # three numbers to keep in step instead of one. Pinned by
@@ -419,7 +420,11 @@ jobs:
     # #722: this is the job that hung — 26 minutes and still running on PR #715,
     # against 24-37s on every one of the last five master runs, stuck on the
     # channel integration step while its macOS twin passed in 32s. 10 minutes is
-    # ~16x the worst observed run of the whole job. The multiple is large on
+    # ~8.6x the worst observed run of the whole job — it said ~16x until #1862,
+    # against the 37s above; re-measured 2026-08-20 over the 14 most recent
+    # successful runs this job takes 47-70s, so the base roughly doubled and
+    # nothing recomputed the multiple. The claim the multiple exists to make
+    # survives at 8.6x and the arithmetic did not. The multiple is large on
     # purpose and the base is why: three of these steps are package-manager
     # installs (npm, pip, bun) whose tail latency against a degraded registry is
     # minutes rather than seconds, so a tight multiple of 37s would fire on a bad

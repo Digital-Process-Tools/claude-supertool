@@ -96,6 +96,23 @@ _PER_TEST_RE = re.compile(r"--timeout[= ](\d+)")
 #: | `notifiers` | 47-70s | 28 (2 OS) | 70s |
 #: | `lint-new` | 13-33s | 14 | 33s |
 #:
+#: n=14 here where the `lint-new` comment in the workflow says 12: #1849
+#: measured that job over 12 runs and #1862 re-measured every class over 14 a
+#: day later. Same date, same 13-33s range, different denominators, and two
+#: undated-looking sample sizes for one quantity read as a contradiction -- so
+#: it is said here rather than left to be noticed.
+#:
+#: **`pytest` is the tight one, and it is tight on purpose rather than by
+#: luck.** Its floor of 20 min is 1200s against 2x585 = 1170s: 30 seconds of
+#: slack, where every other class has minutes. That is not a landmine waiting
+#: on a slow runner -- these are two static numbers, so nothing here reds
+#: because CI had a bad afternoon. It reds when somebody *re-measures* pytest
+#: and the worst leg has grown past 600s. When that happens the answer is to
+#: raise the pytest budget, not to shave the observation: the assertion exists
+#: to make that decision arrive as a red rather than as a slow drift nobody
+#: computed. It is flagged here so the next person to re-measure is not
+#: surprised into taking the cheap option.
+#:
 #: **What this cannot check, stated rather than implied.** Nothing here knows
 #: whether the date is current -- a table left untouched for a year reads
 #: exactly like one taken this morning, and no offline test can tell them
