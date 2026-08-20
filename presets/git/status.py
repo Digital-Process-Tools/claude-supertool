@@ -29,6 +29,7 @@ import _checks  # noqa: E402  (the one check tally, shared with gh-pr / gh-prs)
 import _untrusted  # noqa: E402  (an MR/PR title and target branch are the opener's text — #965)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 from _git_common import ANSWERED_NONE, TIMEOUT_RC, st_hint, use_utf8_stdout  # noqa: E402
+from _git_common import unanswered_repo_lines  # noqa: E402  (#1858)
 from _git_common import foreign_worktree, foreign_worktree_note  # noqa: E402  (#1536)
 from _git_common import _git as _spawn_git  # noqa: E402
 
@@ -561,6 +562,26 @@ def main() -> int:
 
     # 1. Branch + tracking
     branch_result = _git(["branch", "-vv", "--no-color"])
+    # `TIMEOUT_RC` first, because the arm below reads a NON-ANSWER as a verdict
+    # about the repository (#1858). `branch -vv` is run for its return code only
+    # — it is the "are we in a repository" probe — and a stall is not evidence
+    # that we are not: git returns "not a git repository" immediately, it does
+    # not spend a budget on it. The whole report used to be dropped on the
+    # strength of that, under `ERROR: git failed`, which is the sentence for a
+    # git that answered.
+    #
+    # Still a refusal, and still exit 1. The alternative — carry on and render
+    # the report — manufactures a page out of a machine that is not answering:
+    # every section below has its own graceful non-zero arm, so it would print
+    # `Branch: ?` over empty sections that mean "unread", which is the quiet
+    # failure this repository is named for. What changes is that the sentence
+    # names the third state, so a caller knows to re-run.
+    if branch_result.returncode == TIMEOUT_RC:
+        for line in unanswered_repo_lines(
+                branch_result.stderr.strip() or f"exit {TIMEOUT_RC}",
+                probe="git branch -vv --no-color"):
+            print(line)
+        return 1
     if branch_result.returncode != 0:
         stderr = branch_result.stderr.lower()
         if "not a git repository" in stderr:

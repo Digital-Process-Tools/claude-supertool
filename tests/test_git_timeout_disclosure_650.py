@@ -177,11 +177,17 @@ def _skip_if_an_unshimmed_git_call_stalled(stalled: str | None) -> None:
     git call to answer inside the budget. That premise is not free: the budget
     these tests set is 1s, and the file's own docstring measured a worst real
     git latency of 0.76s under 96 CPU burners -- 1.3x of headroom. When a
-    contended machine spends it, `presets/git/status.py` treats the unanswered
-    `branch -vv` as a git FAILURE and returns 1 with no report at all, so the
-    assertions below read a machine limit as a verdict about the product. That
-    is #1845, and the product half of it is filed separately -- this guard does
-    not fix it, it stops the suite from mis-attributing it.
+    contended machine spends it, `presets/git/status.py` refuses with a named
+    third state and returns 1 with no report at all, so the assertions below
+    would read a machine limit as a verdict about the product. That is #1845.
+    This guard does not fix it and never did; it stops the suite from
+    mis-attributing it.
+
+    #1858 fixed the product half of the SENTENCE: the unanswered `branch -vv`
+    used to be rendered as `ERROR: git failed`, a verdict about git rather than
+    about the call, and it now says the probe did not answer. What did not
+    change is that there is no report, which is the whole reason this guard
+    exists, so nothing here stands down.
 
     The cost, stated rather than hidden: on a leg loaded enough to trip this,
     the test does not run. A skip carrying a token is visible; a false red that
@@ -626,8 +632,8 @@ def _run_conflicts(repo: Path, monkeypatch, stalled: str | None = None) -> tuple
             "not -- " + "; ".join(f"`{c}`" for c in unexpected)
             + (f" (only `git {stalled} ...` was meant to stall)" if stalled
                else " (no call was meant to stall)")
-            + ". `conflicts.py:160` reads a TIMEOUT_RC as `not inside a git "
-            "repository`, so nothing is claimed about the product here"
+            + ". A stalled probe costs this fixture its premise, so nothing "
+            "is claimed about the product here"
         )
     return buf.getvalue(), rc
 

@@ -87,11 +87,13 @@ import _untrusted  # noqa: E402  (an MR/PR target branch is the opener's text â€
 from _git_common import (  # noqa: E402
     GIT_OUTPUT_HEAD_LINES as _GIT_OUTPUT_HEAD_LINES,
     GIT_OUTPUT_TAIL_LINES as _GIT_OUTPUT_TAIL_LINES,
+    NOT_A_REPO,
     TIMEOUT_RC,
     MrLookup,
     _first_error_line,
     _git,
     bounded_lines,
+    probe_repo,
     install_dir,
     query_open_mr_result,
     reject_fetch_option,
@@ -99,6 +101,7 @@ from _git_common import (  # noqa: E402
     relayed_lines as _relayed_lines,
     repo_label,
     st_hint,
+    unanswered_repo_lines,
     use_utf8_stdout,
 )
 
@@ -2650,8 +2653,19 @@ def main() -> int:
 
 def _push_op() -> int:
     """The op itself. Reached only through main(), which owns the guard."""
-    if _git(["rev-parse", "--git-dir"]).returncode != 0:
-        print("ERROR: not inside a git repository.")
+    # Three states (#1858). The `_result` line is a machine-read receipt, so
+    # the distinction has to survive into it: `not inside a git repository` is
+    # a fact about the tree that no retry changes, and a probe that did not
+    # answer is exactly the case a retry does change.
+    inside, why = probe_repo(_git)
+    if inside is None:
+        for line in unanswered_repo_lines(why):
+            print(line)
+        _result("NOT PUSHED - no push attempted (could not tell whether this "
+                "is a git repository - the probe did not answer)")
+        return 1
+    if not inside:
+        print(NOT_A_REPO)
         _result("NOT PUSHED - no push attempted (not inside a git repository)")
         return 1
 

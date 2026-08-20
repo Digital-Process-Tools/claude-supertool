@@ -18,7 +18,10 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.dirname(_HERE))  # for _env (#654)
 
-from _git_common import _git, _list_conflicts, st_hint, use_utf8_stdout  # noqa: E402
+from _git_common import (  # noqa: E402
+    NOT_A_REPO, TIMEOUT_RC, _git, _list_conflicts, probe_repo, st_hint,
+    unanswered_repo_lines, use_utf8_stdout,
+)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _untrusted  # noqa: E402  (a conflicted PATH is a real name now — #1708)
 
@@ -136,8 +139,31 @@ def _incoming_info(path: str, state: str) -> list[str]:
     return lines
 
 
+#: `_detect_state`'s third state: the probe did not answer, so the state is
+#: unknown. Distinct from `""`, which means git answered and there is nothing
+#: in progress — the sentence `main` renders as "no merge/rebase/cherry-pick in
+#: progress" and which was printed over a live merge for a stalled probe
+#: (#1858).
+STATE_UNKNOWN = "unknown"
+
+
 def _detect_state() -> str:
+    """Which multi-commit operation is in progress — or `STATE_UNKNOWN`.
+
+    `""` is a claim: git looked and there is nothing in progress. A call that
+    did not answer has established no such thing, and folding it into `""` put
+    "no merge/rebase/cherry-pick in progress" at the top of the one report a
+    caller reaches for *while stopped mid-merge*.
+
+    A git that genuinely failed still answers `""`. Its non-zero return is not
+    ambiguous the way a timeout is — every state below is read off the
+    filesystem once the git dir is known, so a refused `rev-parse` in a
+    directory this op has already established is a repository is a state it can
+    honestly report as absent.
+    """
     res = _git(["rev-parse", "--git-dir"])
+    if res.returncode == TIMEOUT_RC:
+        return STATE_UNKNOWN
     if res.returncode != 0:
         return ""
     gd = res.stdout.strip()
@@ -157,15 +183,23 @@ def main() -> int:
     use_utf8_stdout()
     preview = env_int("SUPERTOOL_PREVIEW_LINES", DEFAULT_PREVIEW_LINES, minimum=0)
 
-    if _git(["rev-parse", "--git-dir"]).returncode != 0:
-        print("ERROR: not inside a git repository.")
+    inside, why = probe_repo(_git)
+    if inside is None:
+        for line in unanswered_repo_lines(why):
+            print(line)
+        return 1
+    if not inside:
+        print(NOT_A_REPO)
         return 1
 
     state = _detect_state()
     conflicts, unavailable = _list_conflicts()
 
     print("# git-conflicts")
-    if state:
+    if state == STATE_UNKNOWN:
+        print("State: UNKNOWN — `git rev-parse --git-dir` did not answer. "
+              "This is NOT 'nothing in progress'.")
+    elif state:
         print(f"State: {state} in progress")
     else:
         print("State: no merge/rebase/cherry-pick in progress")
@@ -179,7 +213,12 @@ def main() -> int:
 
     if not conflicts:
         print("No conflicted files.")
-        return 0
+        # An unknown state changes what this sentence means. "No conflicted
+        # files" with a merge in progress is a resolved merge waiting to be
+        # committed; with nothing in progress it is an ordinary clean tree.
+        # Exiting 0 here would present the report as complete when the one
+        # field that distinguishes those two went unread (#1858).
+        return 1 if state == STATE_UNKNOWN else 0
 
     print(f"Conflicts: {len(conflicts)} file(s)")
     if state == "merge":
@@ -209,7 +248,10 @@ def main() -> int:
     print("Keep both sides (union): " + st_hint("git-resolve:::both:::PATH"))
     print("Or edit manually, then: git add PATH && git commit")
 
-    return 0
+    # Same reason as the clean-tree arm above: the conflicts are real and
+    # listed, but no `Abort:` line could be offered because the state went
+    # unread, so the report is incomplete rather than complete (#1858).
+    return 1 if state == STATE_UNKNOWN else 0
 
 
 if __name__ == "__main__":
