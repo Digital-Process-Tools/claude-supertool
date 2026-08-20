@@ -37,7 +37,15 @@ def test_parse_error_carries_the_hint(tmp_path: Path) -> None:
         supertool._load_at_file("@" + str(payload))
     message = str(excinfo.value)
     assert "TOML parse error" in message
-    assert "odd number of ''' runs" in message
+    # The wording moved in #1830 and the diagnosis got narrower, not looser.
+    # This payload's content carries a ''' run that closes the block early;
+    # the count is odd as well, but that was never the mechanism, and saying
+    # "odd number of runs" about a payload whose real problem is a run inside a
+    # value sent the reader after a count. The message now names where the run
+    # is. `test_an_odd_delimiter_run_is_already_explained` still pins the
+    # odd-count wording, on a payload that has no early close to find.
+    assert "closed the block early" in message
+    assert "payload line 2" in message
 
 
 def test_basic_block_carries_content_with_triple_quotes(tmp_path: Path) -> None:
