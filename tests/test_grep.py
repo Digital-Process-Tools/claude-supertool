@@ -804,10 +804,14 @@ def test_grep_delegated_marks_truncation(tmp_path: Path, rtk: _RtkStub) -> None:
     assert rtk.calls, "delegated branch not taken — this test pins nothing"
     assert rtk.calls[0][:5] == ["grep", "-rn", "-E", "-m", "4"], (
         "no over-fetch requested")
-    # rtk answers without a candidate list, so there is no total to state and
-    # the report says which of the three states it is in (#1073).
+    # The stub answers every call with the same `path:lineno:content` text, so
+    # #1771's `grep -rc` census pass gets output it cannot parse as `path:N`
+    # and declines — which is exactly the third state this pins: the report
+    # names the total unknown rather than inventing one. The counted state has
+    # its own coverage in tests/test_delegated_grep_total_1771.py.
     assert ("(3 results in 1 files, scanned ? files — delegated to rtk, "
-            "limit 3 — TRUNCATED, more matches exist (total not counted))\n"
+            "limit 3 — TRUNCATED, more matches exist, total unknown "
+            "(the delegated count pass returned no total))\n"
             ) in out
     assert out.count(":alpha") == 3, "body trimmed to the limit"
 
