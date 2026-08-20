@@ -590,9 +590,11 @@ def main(argv: "Optional[Sequence[str]]" = None, env=None,
             STATE_SKIPPED,
             "  not a pull_request event and no --base given, so there is no "
             "diff scope to check.",
-            "  This gate is scoped to the files a PR adds; a push has no such "
-            "scope and inventing one would report on a population nobody "
-            "chose. Named rather than left silent (#1481).")[1]
+            "  This gate is scoped to the files a PR touches -- adds, copies "
+            "or renames, and modifies against their own merge base. A push "
+            "has neither scope, and inventing one would report on a "
+            "population nobody chose. Named rather than left silent "
+            "(#1481, #1849).")[1]
     return run(base=base, head=args.head, cwd=cwd)
 
 

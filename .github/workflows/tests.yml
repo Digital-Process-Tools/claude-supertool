@@ -330,12 +330,24 @@ jobs:
     # re-surfaces the 263 and the leg goes permanently red.
     name: lint (files this PR adds, renames or modifies)
     runs-on: ubuntu-latest
-    # Not sized from observation — this job has never run. It is a checkout, a
-    # pip install and one ruff invocation over a handful of files, i.e. the
-    # `notifiers` shape (24-37s observed) rather than the pytest one, so it
-    # takes the `notifiers` budget by analogy and says so. Re-derive it from
-    # this job's own durations once there are some; a number carried over from
-    # a different job class is exactly what #702 was filed about.
+    # Now sized from this job's own observations, which is what the previous
+    # comment here asked for and could not do: it said "this job has never
+    # run" and took the `notifiers` budget by analogy, and that sentence went
+    # stale the first time the job ran without anybody noticing — a number
+    # carried over from a different job class is exactly what #702 was filed
+    # about, and so is a justification that outlives its evidence.
+    #
+    # Measured 2026-08-20 over the 12 most recent successful `tests` runs:
+    # 13-33s, median ~17s. #1849 adds a second ruff pass over the modified
+    # files, worth ~7s on a 443-file diff (443 changed .py, 231 of them
+    # modified, measured locally over 200 commits of master) and nothing at
+    # all on the one- to twenty-file diffs that are the normal case.
+    #
+    # The budget stays at 10 minutes rather than being tightened to fit: the
+    # spread above is a checkout and a pip install, both of which depend on a
+    # cache that can miss and a network that can be slow, and the cost of this
+    # number being too small is a red leg on a PR that is fine. It is a
+    # runaway bound, not a performance target.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
