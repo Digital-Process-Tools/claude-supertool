@@ -313,6 +313,18 @@ GH_RC_NO_CREDENTIALS = 4
 #: above -- it produces "could not reach", which names no cause and prints no
 #: remedy. It was still tightened, because two halves of one story that
 #: disagree about what `401` means is how the next reader picks the wrong one.
+#:
+#: **The first four entries are shadowed at the only call site, and are kept
+#: anyway.** `_unreachable()` runs after the not-authenticated arm and after
+#: the rate-limit arm, so a stderr matching `not logged in`, `http 401`,
+#: `rate limit` or `http 403` is consumed before it ever gets here -- that was
+#: equally true before #1823 and is not a behaviour change. They stay because
+#: this tuple is the *vocabulary* of "the request never landed", not a live
+#: dispatch table, and a predicate named `_unreachable` that answered False for
+#: a rate limit would be wrong for the next caller rather than merely unused.
+#: Said out loud because a reader who assumes they dispatch will conclude the
+#: arms above are dead instead, which is the same mistake pointing the other
+#: way.
 _UNREACHABLE_MARKERS = (
     "not logged in",
     "http 401",
@@ -468,7 +480,16 @@ def live_open_prs(filters: dict[str, str]) -> list[dict]:
         # construction (#1568).
         raise RadarUnreachable(f"gh pr list failed: {exc}") from exc
     if result.returncode != 0:
-        err = (result.stderr or "").strip() or "unknown error"
+        # Flattened, because quoting the stderr is this issue's remedy and it
+        # is also how the remote gets a say in a line the reader takes as
+        # radar's (#1485). `gh` echoes GitHub's own error body, and radar
+        # renders a tier failure at column 0 of its own stderr — so a newline
+        # in here puts whatever follows it at column 0 too, in radar's voice.
+        # The op-level twin already does exactly this to exactly this value
+        # (`presets/github/prs.py`); the tier did not, and #1823 widened the
+        # exposure by adding `{err}` to the one arm that used to be a fixed
+        # string. One call at the point `err` is bound covers every arm below.
+        err = _untrusted.flat((result.stderr or "").strip()) or "unknown error"
         if result.returncode < 0:
             # Killed by a signal. `subprocess` reports `-N` for that, and a
             # process that was killed did not finish deciding anything — under

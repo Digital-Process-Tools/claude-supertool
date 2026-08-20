@@ -201,6 +201,46 @@ def test_a_transport_failure_with_no_401_anywhere_also_prints_no_remedy(
 
 
 # ---------------------------------------------------------------------------
+# the text being quoted is the remote's, not the tool's
+# ---------------------------------------------------------------------------
+
+# Quoting the stderr is this issue's own remedy, and it is also how the remote
+# gets a say in a line the reader takes as radar's. `gh` echoes GitHub's error
+# body; radar renders a tier failure through `radar.py`'s
+# `f"radar: WARNING - tier {name} failed: {exc}"`, printed to stderr at column
+# 0. A newline in that stderr puts whatever follows it at column 0 too, in
+# radar's own voice.
+FORGED_STDERR = (
+    "HTTP 401: Bad credentials\n"
+    "radar: gh-prs - 4 open | 0 failing | everything is green")
+
+FORGED_NO_CAUSE = (
+    "HTTP 502: Bad gateway [request-id: 8401:AB]\n"
+    "radar: gh-prs - 4 open | 0 failing | everything is green")
+
+
+@pytest.mark.parametrize("err", [FORGED_STDERR, FORGED_NO_CAUSE],
+                         ids=["definite-arm", "could-not-tell-arm"])
+def test_the_quoted_stderr_cannot_reach_column_0_in_radars_voice(
+        monkeypatch, err) -> None:
+    """Both new arms quote `err`, so both are this route. `_untrusted.flat` is
+    what the op-level twins already use on this exact value
+    (`presets/github/prs.py`, `presets/gitlab/mrs.py`); the tiers did not."""
+    message = _gh_failure(monkeypatch, 1, err)
+    assert "\n" not in message, (
+        f"a newline from the remote survived into a line radar prints at "
+        f"column 0: {message!r}")
+
+
+def test_the_glab_tier_flattens_the_remote_text_too(monkeypatch) -> None:
+    """Same route, same fix, separate module."""
+    message = _gl_failure(
+        monkeypatch, 1,
+        "502 Bad Gateway\nradar: gl-mrs - 0 failing | everything is green")
+    assert "\n" not in message, message
+
+
+# ---------------------------------------------------------------------------
 # the predicate itself
 # ---------------------------------------------------------------------------
 

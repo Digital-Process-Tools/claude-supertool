@@ -379,7 +379,11 @@ def _query(filters: dict[str, str], per_page: int) -> list[dict]:
     except Exception as exc:  # noqa: BLE001 — surfaced as RadarError
         raise RadarError(f"glab mr list failed: {exc}") from exc
     if result.returncode != 0:
-        err = (result.stderr or "").strip() or "unknown error"
+        # Flattened for the GitHub tier's reason (#1485/#1823): `glab` echoes
+        # GitLab's own error body, and radar prints a tier failure at column 0
+        # of its own stderr. `presets/gitlab/mrs.py` already flattens exactly
+        # this value; this tier did not.
+        err = mrs._untrusted.flat((result.stderr or "").strip()) or "unknown error"
         if _auth_probe.says_not_authenticated(err):
             # The probe got an answer saying the credential is unusable, so
             # the remedy names a cause something established (#1823).

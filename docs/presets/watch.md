@@ -516,6 +516,8 @@ That is worse than an inaccurate string, and the reason is what the caller does 
 
 `gl-mrs` carries the same split. It has no `RadarUnreachable` class of its own, so both of its states are `RadarError` — but the remedy no longer appears on a failure that established nothing.
 
+**The stderr being quoted is the remote's, so it is flattened.** Radar prints a tier failure at column 0 of its own stderr, and the CLI echoes GitHub's or GitLab's error body — a newline in that body puts whatever follows it at column 0 too, in radar's voice. Both tiers route it through `_untrusted.flat` at the point the value is bound, which is what `presets/github/prs.py` and `presets/gitlab/mrs.py` already did to exactly this value ([#1485](https://github.com/Digital-Process-Tools/claude-supertool/issues/1485)). Quoting the evidence is the remedy for naming a false cause; flattening it is what stops that remedy becoming a second route in.
+
 ### Why it is a parallel tier and not `gl-mrs` generalised
 
 Three of the four things `gl-mrs` does turn out not to transfer:
