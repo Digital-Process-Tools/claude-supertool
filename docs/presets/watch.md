@@ -500,6 +500,24 @@ Rows are `gh-prs` rows, so the board, the op and `gl-mrs` cannot drift apart. Th
 | `[legs UNVERIFIED: …]` | every check on this PR is green, but the tally could not be squared with the legs its runs declare |
 | `[watch?]` | coverage is not knowable for this board — see the repo-target rule below |
 
+### A tier that could not reach the forge says so, and prints no remedy for a cause it did not establish ([#1823](https://github.com/Digital-Process-Tools/claude-supertool/issues/1823))
+
+Three states, not two, and the third is the one a caller acts on differently:
+
+| State | When | What it says |
+|---|---|---|
+| reachable | exit 0 | the board |
+| **definitely not authenticated** | the probe got an answer saying so — `gh`'s own `not logged in` prose, an `HTTP 401` status, `Bad credentials`, or exit 4 | names the credential and prints `Run: gh auth login` |
+| **could not tell** | anything else: a timeout, a throttle, a socket, a gateway error, an exit nothing here recognises | quotes the **exit status and the stderr** of the call that did not answer, and prints **no** remedy |
+
+The predicate that decides it lives in `presets/watch/tiers/_auth_probe.py`, one copy for both tiers, and it matches a **status** rather than a number. It used to be `"401" in err` — a bare three-character substring tested against the whole of a CLI's stderr, which also matches a GitHub user id (`rate limit exceeded for user ID 44012345`), a request id (`[request-id: C401:1F2A]`) and a GitLab correlation id. Every one of those rendered as `gh not authenticated. Run: gh auth login`.
+
+That is worse than an inaccurate string, and the reason is what the caller does next. A maintainer loop reading `gh not authenticated` has a documented action — re-authenticate, which is interactive and outside the loop's authority — where the correct action was to retry. #1823 caught it between two successful authenticated `gh` calls seconds apart; a bare re-run of `radar` with nothing changed passed.
+
+`gl-mrs` carries the same split. It has no `RadarUnreachable` class of its own, so both of its states are `RadarError` — but the remedy no longer appears on a failure that established nothing.
+
+**The stderr being quoted is the remote's, so it is flattened.** Radar prints a tier failure at column 0 of its own stderr, and the CLI echoes GitHub's or GitLab's error body — a newline in that body puts whatever follows it at column 0 too, in radar's voice. Both tiers route it through `_untrusted.flat` at the point the value is bound, which is what `presets/github/prs.py` and `presets/gitlab/mrs.py` already did to exactly this value ([#1485](https://github.com/Digital-Process-Tools/claude-supertool/issues/1485)). Quoting the evidence is the remedy for naming a false cause; flattening it is what stops that remedy becoming a second route in.
+
 ### Why it is a parallel tier and not `gl-mrs` generalised
 
 Three of the four things `gl-mrs` does turn out not to transfer:
