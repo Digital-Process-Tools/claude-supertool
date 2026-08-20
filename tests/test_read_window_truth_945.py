@@ -24,7 +24,15 @@ import supertool
 _LINE_RE = re.compile(r"^\s*(\d+)→", re.M)
 _WINDOW_RE = re.compile(r"^window: .*$", re.M)
 _RETURNING_RE = re.compile(r"returning lines (\d+)-(\d+) of (\d+)")
-_MORE_RE = re.compile(r"\((\d+) more lines?\)")
+# The trailing `)` was an assumption about formatting, not part of what any
+# assertion here is about: every use reads `group(1)` and compares the COUNT.
+# Since #1820 the footer may carry a reason after the count — which bound ended
+# the window — so the paren no longer closes immediately. Widened to a
+# lookahead rather than relaxed: it still anchors on the footer's own opening
+# paren and on the count, so it cannot start matching some other parenthesised
+# number in the render. No assertion below is weakened; each still compares the
+# same count against the same body.
+_MORE_RE = re.compile(r"\((\d+) more lines?(?=[)\s])")
 
 
 def _emitted(out: str) -> list[int]:

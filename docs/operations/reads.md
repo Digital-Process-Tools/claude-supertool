@@ -84,7 +84,7 @@ asked for and the window returned:
 
 ```
 (403 lines, 18211 bytes)
-window: offset 19 + limit 1 (OFFSET:LIMIT form) = lines 20-20; returning lines 20-20 of 403, stopping at line 20: the limit was reached; OFFSET is a skip count, so 19 lines were skipped: this window is read:file.py:20-20 — for lines 19-19 use read:file.py:19-19
+window: offset 19 + limit 1 (OFFSET:LIMIT form) = lines 20-20; returning lines 20-20 of 403, stopping at line 20: the limit was reached — the window ends here because it was asked to, nothing was cut; OFFSET is a skip count, so 19 lines were skipped: this window is read:file.py:20-20 — for lines 19-19 use read:file.py:19-19
     20→...
 ```
 
@@ -133,16 +133,75 @@ A windowed read that reaches EOF closes with `[end of file — lines 1-OFFSET no
 shown]`. `[complete file — no more lines]` is reserved for a read that started
 at line 1, where it is true.
 
-### Why the window ended — three reasons, never two
+### Why the window ended — four bounds, never two
 
-The clause after `stopping at line N` names which of three things ended the
-window:
+The clause after `stopping at line N` names which bound ended the window. It was
+two ([#945](https://github.com/Digital-Process-Tools/claude-supertool/issues/945)),
+then three, and is four since
+[#1820](https://github.com/Digital-Process-Tools/claude-supertool/issues/1820)
+split the one word that was covering two of them:
 
-| Clause                              | What happened                                          |
-| ----------------------------------- | ------------------------------------------------------ |
-| `the limit was reached`             | LIMIT lines were read; the file continues              |
-| `the end of the file`               | there was nothing after line N                         |
-| `cut short by the 20000-byte cap`   | the render hit its byte budget; the file continues     |
+| Clause                                        | What happened                                                    |
+| --------------------------------------------- | ---------------------------------------------------------------- |
+| `the limit was reached`                       | the LIMIT **you typed** was read; the file continues             |
+| `the read.max_lines default of N lines was reached` | you named no LIMIT — the bound is the op's, not yours      |
+| `the end of the file`                         | there was nothing after line N                                   |
+| `cut short by the 20000-byte cap`             | the render hit its byte budget; the file continues               |
+
+**"Limit" was one word for two bounds until
+[#1820](https://github.com/Digital-Process-Tools/claude-supertool/issues/1820).**
+`read:PATH:10:20` ends at a window the caller closed themselves; `read:PATH:10`
+ends at `read.max_lines`, the op's own cap on output standing in for a bound
+nobody named. The two want opposite responses — nothing, and a wider read — and
+both said `the limit was reached`. The second now names the setting and counts
+the lines below it.
+
+### Did the window come back whole?
+
+Naming the bound is not the same as saying whether it cost anything, and the
+note only did the first. A window returned **whole** and a window the byte cap
+**cut short** both opened with `stopping at line N: ...`, so the only way to tell
+them apart was to read again, wider, and compare — which is what
+[#1820](https://github.com/Digital-Process-Tools/claude-supertool/issues/1820)
+was filed for, one extra read spent to learn the first had already answered.
+
+A window that ended at the bound **the caller set**, with nothing dropped, now
+says so:
+
+```
+window: range 40-72 (START-END form); returning lines 40-72 of 1974, stopping at line 72: the limit was reached — the window ends here because it was asked to, nothing was cut
+```
+
+The clause is deliberately absent from the other three states, and each absence
+is a different fact rather than an oversight:
+
+- **EOF** already settles it in its own words (`nothing follows line N`,
+  [#1342](https://github.com/Digital-Process-Tools/claude-supertool/issues/1342)).
+  A second verdict beside it is two speakers on one question.
+- **Cut short by the cap** is the state this distinguishes from, and saying
+  `nothing was cut` there would be false.
+- **The `read.max_lines` default** was not asked for, so nothing about it "ends
+  where it was asked to". Its own clause counts what is below it instead.
+
+The claim is about the **window**, not the lines: under `grep=` the emitted count
+is smaller than the scanned count, and the `N of those M lines emitted` clause is
+what speaks to that. Under **compact mode** the footer form below drops the
+`nothing was cut` half outright — blanks and comments really were dropped, and
+unlike the window note that footer has no `held` clause beside it to say so.
+
+#### At offset 0 the same distinction lives in the footer
+
+The window note is emitted only for a read with a **non-zero OFFSET**, and a
+range starting at line 1 has an offset of zero. So `read:PATH:1-50` never
+reached any of the above, and closed with a bare `... (150 more lines)` — byte
+for byte what a plain `read:PATH` cut short by `read.max_lines` printed. One
+caller had everything they asked for; the other was missing 150 lines to a bound
+they never set. The footer now carries the same two verdicts:
+
+```
+... (150 more lines — lines 1-50 are the whole window asked for, nothing was cut; those 150 are simply below it)
+... (150 more lines — the read.max_lines default of 50 stopped the read here, not the file)
+```
 
 The first version of this note knew only two of them and treated any shortfall
 against the requested end as EOF, so a capped read opened with `stopping at line
@@ -188,7 +247,7 @@ byte — while `grep`'s own `… (+N chars)` note points callers at that exact r
 Reaching the cap and being cut by it are separate facts and the note says which:
 
 ```
-window: range 2-2 (START-END form); returning lines 2-2 of 4, stopping at line 2: the limit was reached — the 20000-byte cap was reached on that line and dropped nothing; it stops whole lines and never truncates one, so these bytes are complete
+window: range 2-2 (START-END form); returning lines 2-2 of 4, stopping at line 2: the limit was reached — the window ends here because it was asked to, nothing was cut — the 20000-byte cap was reached on that line and dropped nothing; it stops whole lines and never truncates one, so these bytes are complete
 ```
 
 Silence would be the other half of the same defect — the output *is* at the cap,
@@ -203,7 +262,7 @@ printed, so the span the note names is wider than the count of lines in the
 body, and the note says how many were suppressed:
 
 ```
-window: offset 10 + limit 50 (OFFSET:LIMIT form) = lines 11-60; returning lines 11-60 of 200, 25 of those 50 lines emitted (compact mode skipped 25), stopping at line 60: the limit was reached; OFFSET is a skip count, so 10 lines were skipped: this window is read:file.py:11-60 — for lines 10-59 use read:file.py:10-59
+window: offset 10 + limit 50 (OFFSET:LIMIT form) = lines 11-60; returning lines 11-60 of 200, 25 of those 50 lines emitted (compact mode skipped 25), stopping at line 60: the limit was reached — the window ends here because it was asked to, nothing was cut; OFFSET is a skip count, so 10 lines were skipped: this window is read:file.py:11-60 — for lines 10-59 use read:file.py:10-59
 ```
 
 Every number in the render — the window line, the `... (N more lines)` footer and
@@ -216,6 +275,49 @@ The semantics were not changed. `read:PATH:START-END` already spells 1-based
 inclusive addressing and is the form to prefer; re-basing OFFSET would have
 broken every caller who had it right, trading a visible wrong answer for an
 invisible one.
+
+### A whole-file read that did not come back whole says how to narrow it
+
+`read:PATH` on a large file renders the file's **head** and stops. The head is
+the region least likely to be why the file was read — a whole-file read of a
+long file is rarely about its first few hundred lines — so the preview is often
+paid for and answers nothing, and the caller issues a second, narrower call
+anyway
+([#1811](https://github.com/Digital-Process-Tools/claude-supertool/issues/1811)).
+
+The stop was already disclosed; the way out was not. `... (N more lines)` named
+no remedy at all, and the byte-cap footer named only `read:PATH:OFFSET:LIMIT` —
+the one spelling this repo has three issues of evidence that callers read as
+START:END ([#382](https://github.com/Digital-Process-Tools/claude-supertool/issues/382),
+[#1417](https://github.com/Digital-Process-Tools/claude-supertool/issues/1417),
+[#1489](https://github.com/Digital-Process-Tools/claude-supertool/issues/1489)).
+Both footers now close with the two forms that narrow:
+
+```
+... (900 more lines)
+    ↳ that is the head of the file — for a region, read:big.py:START-END; to find one, read:big.py:::grep=PATTERN
+```
+
+This is what `between:`'s refusal already does — suggest its own narrowing form
+at the moment it declines, rather than after the reader has paid.
+
+**The preview is kept.** Dropping it for a structure block was the other
+candidate and loses more than it saves: the head is what tells the caller what
+kind of file this is, which is the input to writing the narrowing call. Guessing
+a region to preview instead was the third, and `read:PATH` implies none — that
+is the shape the issue is about.
+
+**It fires only where it is actionable**: a read that returned the file has
+nothing to narrow, a caller who already typed a window has demonstrated they
+know the forms, and `:full` asked for the whole thing. Advice printed on every
+read is advice nobody reads.
+
+Where `rtk` renders the read instead, the line is appended to rtk's own output —
+rtk owns the preview and its footer and knows nothing about supertool's call
+forms, the same argument the line-numbering disclosure above is here for. The
+gate there is supertool's own caps rather than a parse of rtk's text, which
+under-fires where rtk compresses a file supertool would have returned intact.
+That is the safe direction.
 
 ## Eliding a repeat read
 
