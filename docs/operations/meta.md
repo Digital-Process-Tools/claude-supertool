@@ -91,6 +91,8 @@ BLOCKED
   Full contract: supertool 'help:gh-pr'
 ```
 
+**An op with a `@payload` route has it named on its own line, under `Use:` and above the description** ([#1815](https://github.com/Digital-Process-Tools/claude-supertool/issues/1815)). `gh-pr` has none, which is why the example above shows none — an op whose `syntax` carries `:::` does, and the line is derived from the same registry the route uses. It stands above the description because the description is cut by position: `git-commit`'s multi-line route lived past the cut, so `git commit -F -` was refused toward an op whose visible contract did not contain the route it was being refused toward.
+
 **It parses, it does not pattern-match.** The command is tokenised into argv the way a shell would, so the match is on the command word, its subcommands and its flags — a directory named `claude-supertool` is not an invocation, a flag after a quoted argument is still a token, and a heredoc body is content rather than argv. Flags select *which* op is named: `--json state` points at `gh-pr:N:status`, `--json files` at `gh-pr:N:diff`.
 
 `UNDECIDED` is a real third state and is never rendered as `OK`. A command that did not tokenise, one that hides a substitution inside double quotes or hands a string to `eval` / `sh -c`, or a registry that could not be fully enumerated, all mean the guard did not answer — and the hook allows the command while saying so in the transcript, because a gate that quietly did not run is indistinguishable from a command that complied.

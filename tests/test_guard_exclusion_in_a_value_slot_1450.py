@@ -11,13 +11,21 @@ about a command that opens a PR.
 slot is *blocked*, because the alternative is a silent `git push`. Here the
 ambiguous slot is where previews live:
 
-    $ git push --force-with-lease --dry-run
+    $ gh pr create --draft --dry-run
 
 `--dry-run` is an exclusion sitting immediately after another flag. Blocking
-that names `git-push` as the substitute, and an agent obeying the refusal
-pushes for real -- the `misdirects` shape the v0.35.0 audit named. Measured:
-seven shipped invocations flip clean -> blocked under a naive value-slot rule,
-five of them previews of a destructive push. They are the boundary class below.
+that names `gh-pr-create` as the substitute, and an agent obeying the refusal
+opens the PR for real -- the `misdirects` shape the v0.35.0 audit named.
+Measured: seven shipped invocations flip clean -> blocked under a naive
+value-slot rule, five of them previews of a destructive push. They are the
+boundary class below.
+
+**This paragraph illustrated itself with `git push --force-with-lease
+--dry-run` until #1816.** That command is `clean` and silent now:
+`_GUARD_VALUELESS_FLAGS` reads `--force-with-lease` as taking an attached
+value or none, so nothing behind it is ever its value. The argument above is
+unchanged and is still why the slot is not scored -- only the example moved,
+to one gh spelling, gh being deliberately absent from that table.
 
 So the exclusion still stands, nothing new is blocked, and the verdict stops
 being `clean`: an exclusion consumed from a possible value slot makes the
@@ -99,7 +107,11 @@ class TestNothingNewIsBlocked:
         assert supertool.guard_command(cmd).state != "blocked", cmd
 
     @pytest.mark.parametrize("cmd", [
-        "git push --force-with-lease --dry-run",
+        # `git push --force-with-lease --dry-run` was here until #1816 gave
+        # the guard a table of git's valueless flags. `--force-with-lease`
+        # takes an attached value or none, so nothing behind it is ever its
+        # value and the window this row stood for is closed for git. gh is
+        # deliberately not in that table, so this row is the live one.
         "gh pr create --draft --dry-run",
     ])
     def test_and_the_ambiguity_is_disclosed_rather_than_guessed(
@@ -120,6 +132,10 @@ class TestAnUnambiguousExclusionStaysSilent:
         "git push --dry-run origin main",
         "git commit --amend --dry-run",
         "git commit --amend",
+        # Newly decidable under #1816's arity table, and asserted here as
+        # well as in tests/test_guard_flag_arity_1816.py because the claim
+        # this class makes -- clean AND silent -- is the one that changed.
+        "git push --force-with-lease --dry-run",
         "git status -s -z",
         "gh issue list --web",
         "gh issue list --label bug --web",
