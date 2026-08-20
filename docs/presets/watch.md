@@ -514,7 +514,19 @@ The predicate that decides it lives in `presets/_auth_probe.py`, one copy for bo
 
 That is worse than an inaccurate string, and the reason is what the caller does next. A maintainer loop reading `gh not authenticated` has a documented action — re-authenticate, which is interactive and outside the loop's authority — where the correct action was to retry. #1823 caught it between two successful authenticated `gh` calls seconds apart; a bare re-run of `radar` with nothing changed passed.
 
-`gl-mrs` carries the same split. It has no `RadarUnreachable` class of its own, so both of its states are `RadarError` — but the remedy no longer appears on a failure that established nothing.
+`gl-mrs` carries the same split, and since [#1847](https://github.com/Digital-Process-Tools/claude-supertool/issues/1847) it carries it in the *type* as well as in the prose. Both tiers raise the same three classes, out of one module — `presets/watch/tiers/_radar_errors.py`:
+
+| Class | Means | A caller should |
+|---|---|---|
+| `RadarError` | the forge answered, and what it said is a finding about the board | stop; a retry produces the same answer |
+| `RadarUnreachable` (a `RadarError`) | the request never landed | retry |
+| `RadarUnconfigured` (a `RadarUnreachable`) | the CLI holds no credentials, so it refused before asking | stop, and tell somebody to set a token |
+
+The subclassing is what keeps every existing `except RadarError` — radar's tier isolation, `radar_state`'s filter arm — behaving exactly as it did.
+
+**`gh_prs.RadarError` and `gl_mrs.RadarError` are the same class object**, and that is the part of #1847 that is easy to get wrong invisibly. Each tier resolves its helpers through its own `_load`, which builds a fresh module object per call; two tiers loading one file that way get two unrelated classes with identical names, every per-tier test still passes, and an `except` written against one silently never fires on the other. `_radar_errors.py` is therefore reached by a plain `import` off `sys.path`, the way `_filter_tokens` is, so the interpreter's own module cache guarantees one class. `tests/test_radar_error_classes_1847.py` pins the identity rather than the names.
+
+**`gl-mrs` never raises `RadarUnconfigured`, and that is a stated gap rather than a missing case.** `gh_prs` can separate "no credential is configured" from "the credential was rejected" because `gh` publishes exit 4 for the first and nothing else does; `glab` publishes no equivalent, so the only thing left to split them on is prose — which is the bare-`401` collapse `_auth_probe.py` exists to prevent. The GitLab tier raises `RadarUnreachable` for both and exports the narrower class anyway, so a caller can write one `except` for the pair regardless of which tier answered. `gl-mrs` also has no transport-marker whitelist of its own, so a `glab` that failed on DNS or a socket lands as a plain `RadarError` where its GitHub twin would say `RadarUnreachable`.
 
 **The stderr being quoted is the remote's, so it is flattened.** Radar prints a tier failure at column 0 of its own stderr, and the CLI echoes GitHub's or GitLab's error body — a newline in that body puts whatever follows it at column 0 too, in radar's voice. Both tiers route it through `_untrusted.flat` at the point the value is bound, which is what `presets/github/prs.py` and `presets/gitlab/mrs.py` already did to exactly this value ([#1485](https://github.com/Digital-Process-Tools/claude-supertool/issues/1485)). Quoting the evidence is the remedy for naming a false cause; flattening it is what stops that remedy becoming a second route in.
 
@@ -2277,8 +2289,30 @@ Each `watch` invocation forks a detached poller process. The process IS the subs
 - `unwatch` stops **every** live poller for that slot — the tracked one and any untracked ones — SIGTERM then SIGKILL, and removes the file
 - Stale PIDs swept by the `watches` op automatically
 - Pollers auto-stop when the source declares the target terminal (`is_terminal(state) -> bool`)
+- Pollers also stop after **120 consecutive failed polls** ([#1852](https://github.com/Digital-Process-Tools/claude-supertool/issues/1852)) — see below
 
 `SOURCE` and `ID` must not contain `__` (reserved as the filename separator) or `/` (both are interpolated into a `/tmp` path).
+
+### A poller that cannot poll gives up ([#1852](https://github.com/Digital-Process-Tools/claude-supertool/issues/1852))
+
+`is_terminal` ends the normal life of a watcher: the MR merges, the poller exits, its state file is cleared. The error branch could not reach that check and did not try to — a failed poll produces no new state to judge — so it wrote `last_error`, slept and retried, forever. An expired token, a deleted MR, a renamed project or a source module that no longer imports therefore polled until a reboot. Measured on one machine: 22 live pollers, the oldest eight days into watching an MR that had stopped being interesting on day one.
+
+So the error branch has a bound of its own.
+
+| | |
+|---|---|
+| **How many** | `dispatcher.MAX_CONSECUTIVE_POLL_FAILURES`, 120. At the default 30s interval that is an hour of *uninterrupted* failure — it outlasts a VPN reconnect, a runner restart and a maintenance window, and does not outlast a credential that is gone. |
+| **Consecutive, not a rate** | One successful poll starts the count again, so a forge that answers one poll in ten keeps its watcher. The guard is against a failure that will never clear. |
+| **Per source** | A source overrides it with `MAX_CONSECUTIVE_FAILURES` on its poller module. Deliberately not an environment variable: the poller is reached through a fork and an exec, so an env var would have to be set in whatever shell spawned `radar`. |
+| **On the way out** | It leaves through the same `finally` a terminal exit leaves through, so the **pidfile is released** and the slot is handed back to `radar` to re-arm. |
+| **The state file is kept** | Unlike a terminal exit, which clears it. A merged MR has nothing left to explain; a give-up's `last_error` and its new `gave_up` record (`ts`, `after_failures`, `message`) are the entire account of why coverage ended, and without them the board can render a stopped watcher but not a re-armable one. `gave_up` is its own key rather than an inference from `last_error`, because a poller that is failing and *still trying* writes `last_error` too. |
+| **It says so** | One `watcher_gave_up` event. This is the **dispatcher's** event, not a source's: it is in no `events.json`, because those declare what a source can emit and what `only=` can select, and neither is true here — and for the same reason `only=` does not filter it. A watcher that filtered away its own obituary would stop, release its slot and tell nobody, which is the original silence one layer further in. |
+
+**What this deliberately is not.** It does not reap a poller because nothing is bound to the socket. `watches` computes `EMIT_NO_LISTENER` per row and refuses to draw a conclusion about the poller from it — a session started without the channel server binds no reader at all, and that is the expected state rather than a fault; [#511](https://github.com/Digital-Process-Tools/claude-supertool/issues/511) records that acting on it cost two live watchers. The bound counts this poller's own failed polls and reads nothing about delivery.
+
+There is also **no absolute lifetime ceiling**, and that is a decision rather than an omission. An MR open for months is a legitimate state, and a timer that ends a poller which is succeeding is the same shape as reaping on `NO LISTENER`: age is a proxy for "nobody cares", and a proxy for that is not a fault. The predicate that *is* about interest already exists in the right place — `radar` reaps pollers whose slot its own filter no longer covers, on every run.
+
+**The error backoff is interruptible.** The success branch already waited in one-second steps and checked the stop flag between them; the error branch was a single `time.sleep(interval)`, and [PEP 475](https://peps.python.org/pep-0475/) resumes an interrupted sleep for its remaining time rather than returning early. So `unwatch` was honoured within a second by a poller that was working and ignored for up to a full interval by one that was not — which is the poller an operator is most likely to be stopping. Both branches now call `_wait_interruptible`.
 
 ### One poller per slot ([#476](https://github.com/Digital-Process-Tools/claude-supertool/issues/476))
 

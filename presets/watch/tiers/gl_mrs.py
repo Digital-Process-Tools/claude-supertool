@@ -174,6 +174,37 @@ snapshot = _load("radar_snapshot", _HERE / "_snapshot.py")
 # same bare-`401` collapse and would drift apart while being fixed (#1823).
 _auth_probe = _load("radar_auth_probe", _WATCH.parent / "_auth_probe.py")
 
+# The failure *kinds*, shared with the GitHub tier for the same reason the
+# predicate above is shared — and reached by `import`, not `_load`, because
+# `_load` would give each tier its own `RadarError` class object and an
+# `except` written against one would never fire on the other (#1847).
+#
+# It stays under `tiers/` where `_auth_probe.py` did not (#1846 moved that one
+# to `presets/`), and the difference is reach rather than taste: 23 call sites
+# under `presets/github/` and `presets/gitlab/` needed the *predicate*, while
+# `RadarError` is radar vocabulary that the op-level twins never raise. A name
+# with no meaning outside radar does not belong above radar.
+sys.path.insert(0, str(_HERE))
+import _radar_errors  # noqa: E402
+
+#: This tier's failure vocabulary, from the one copy. `RadarError` keeps the
+#: name every existing caller already catches; the other two are what this tier
+#: had no way to say before #1847 — a caller could not tell "GitLab did not
+#: answer" from "the board says X" without matching on the message, and a
+#: caller that matches on a message is what the fix was supposed to remove.
+RadarError = _radar_errors.RadarError
+RadarUnreachable = _radar_errors.RadarUnreachable
+#: Exported so a caller can write one `except` for the pair regardless of which
+#: tier raised — but never raised here. `gh_prs` can tell "no credential is
+#: configured" from "the credential was rejected" because `gh` publishes exit 4
+#: for the first and nothing else; `glab` publishes no equivalent, and the only
+#: thing left to split them on is prose. Splitting on prose is the bare-`401`
+#: collapse `_auth_probe.py` exists to prevent, so this tier declines the
+#: narrower claim and raises `RadarUnreachable` instead. That is the gap said
+#: out loud rather than a guess dressed as a verdict; `docs/presets/watch.md`
+#: carries it too.
+RadarUnconfigured = _radar_errors.RadarUnconfigured
+
 #: This tier's not-authenticated vocabulary, from the one copy: the shared
 #: markers plus the GitLab ones. This tier speaks GitLab, so it reads the
 #: GitLab vocabulary -- the rule is *whoever speaks GitLab passes
@@ -254,10 +285,6 @@ KNOWN_FLAGS: set[str] = set()
 # answers with its default, `opened`. The merged board renders as the open one
 # and radar heals watchers onto it.
 VALUE_DOMAINS: dict[str, object] = {"state": mrs._STATES}
-
-
-class RadarError(RuntimeError):
-    """Live GitLab could not be reached. Never degrade to 'all green'."""
 
 
 def _parse(arg: str) -> dict[str, list[str]]:
@@ -381,11 +408,53 @@ def _query(filters: dict[str, str], per_page: int) -> list[dict]:
     A partial union is a board that is quietly missing rows, so one failing
     query fails the whole reconcile — an unreachable GitLab must never render
     as an MR that is fine.
+
+    *Which* RadarError is the point since #1847. `RadarUnreachable` means the
+    request never landed and a caller should retry; a plain `RadarError` means
+    GitLab answered and what it said is a finding about the board. Every
+    predicate below that picks the first is structural — a spawn that did not
+    complete, a negative returncode — or `_auth_probe`'s; nothing here reads
+    prose to decide it, and an unrecognised failure stays plain rather than
+    being widened into a transport claim.
     """
     try:
         result = mrs._run(mrs._build_list_cmd(filters, per_page))
-    except Exception as exc:  # noqa: BLE001 — surfaced as RadarError
-        raise RadarError(f"glab mr list failed: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 — surfaced as RadarUnreachable
+        # The spawn itself never completed, so nothing was asked of GitLab:
+        # `glab` absent, hung against its budget, or killed. Unreachable by
+        # construction, the same argument gh_prs makes at its own spawn.
+        raise RadarUnreachable(f"glab mr list failed: {exc}") from exc
+    if result.returncode < 0:
+        # Killed by a signal. `subprocess` reports `-N` for that, and a process
+        # that was killed did not finish deciding anything — under a loaded
+        # runner the OOM killer and a reaper both land here, usually with empty
+        # stderr, which the fallback arm below would render as `unknown error`
+        # and read as a verdict about the board. Not a prose match: the sign of
+        # the return code is the whole predicate (#1568, ported here by #1847).
+        #
+        # Deliberately not branched on the platform: the predicate is the sign
+        # of an integer and it is safe to evaluate anywhere, so there is nothing
+        # to branch on and no way for this to go vacuous on one leg.
+        #
+        # What it is *reached by* is a reasoned claim rather than an observed
+        # one, and it is stated as such. On POSIX `subprocess` documents `-N`
+        # for a signal, so the word below is exact. Windows reports the process
+        # exit status instead, and `_winapi.GetExitCodeProcess` is declared to
+        # return `unsigned long`, so an NT status like `0xC0000005` should
+        # arrive as `3221225477` and never trip this arm — the negative spelling
+        # of the same DWORD circulates widely, from shells and from Python 2, so
+        # the claim is worth distrusting. Nobody here has a Windows runner to
+        # settle it on, and the suite drives this path through a fake, so the
+        # Windows leg exercises the branch without ever establishing which side
+        # of it a real killed `glab` lands on. If it does fire there, the
+        # classification is still right — the process did not finish deciding
+        # anything — and only the word "signal" is wrong. `gh_prs` has carried
+        # the same arm and the same wording since #1568, so fixing the vocabulary
+        # is one change to both tiers rather than a divergence introduced here.
+        err = mrs._untrusted.flat((result.stderr or "").strip()) or "unknown error"
+        raise RadarUnreachable(
+            f"glab mr list was killed by signal {-result.returncode} "
+            f"before it answered: {err}")
     if result.returncode != 0:
         # Flattened for the GitHub tier's reason (#1485/#1823): `glab` echoes
         # GitLab's own error body, and radar prints a tier failure at column 0
@@ -395,7 +464,13 @@ def _query(filters: dict[str, str], per_page: int) -> list[dict]:
         if _auth_probe.says_not_authenticated(err, _auth_probe.GITLAB_MARKERS):
             # The probe got an answer saying the credential is unusable, so
             # the remedy names a cause something established (#1823).
-            raise RadarError(
+            #
+            # `RadarUnreachable`, not `RadarUnconfigured`: this arm covers both
+            # "glab holds no token" and "the token was rejected", and `glab`
+            # gives no structural way to tell them apart (see the export note
+            # at the top of this module). `gh_prs` narrows to the second class
+            # only on exit 4, which is a code rather than prose.
+            raise RadarUnreachable(
                 f"glab says this request was not authenticated (exit "
                 f"{result.returncode}): {err}. Run: glab auth login")
         # Nothing established a cause. Quote the exit status and the stderr of
