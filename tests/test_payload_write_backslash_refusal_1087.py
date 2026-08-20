@@ -198,10 +198,24 @@ def test_every_mutating_field_is_classified_as_written_or_not() -> None:
     )
 
 
-def test_a_run_of_four_is_still_never_touched(tmp_path: Path) -> None:
-    """Counted, not produced by reflex. Refusing a deliberate run is how the
-    signal gets spent."""
+def test_a_run_of_four_is_refused_too(tmp_path: Path) -> None:
+    """Reversed by #1860, and the reversal is the point of the test.
+
+    This asserted the opposite until #1860, on the ground that "four was
+    counted, not produced by reflex". Four was produced by reflex, twice, and
+    the mechanism the original rationale could not have had is that THIS
+    REFUSAL manufactures it: four is what a caller writes immediately after
+    reading the two-backslash refusal and doubling again to escape the escape.
+    The guard's own premise -- the run reaches disk at full length, passes
+    every validator, and is wrong only in string contents -- was always true
+    of four.
+
+    The pairing that keeps this honest is in
+    test_receipt_arity_and_identity_1855_1860.py: odd runs must still WRITE, so
+    the widening cannot have become "refuse every backslash"."""
     target = _target(tmp_path, 'PAT = "x"' + NL)
+    before = target.read_text(encoding="utf-8")
     quad = "new = " + Q3 + 'PAT = "' + BS * 4 + 'd+"' + Q3
     out = supertool.dispatch("edit:" + _payload(tmp_path, _edit_body(target, quad)))
-    assert "ERROR" not in out, out
+    assert "ERROR" in out, out
+    assert target.read_text(encoding="utf-8") == before, "the write landed anyway"

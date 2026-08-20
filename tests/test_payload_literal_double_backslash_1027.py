@@ -131,12 +131,15 @@ def test_a_single_backslash_in_a_literal_is_not_flagged(tmp_path: Path) -> None:
     assert "literal block" not in out.lower(), out
 
 
-def test_a_run_of_four_is_not_flagged(tmp_path: Path) -> None:
-    """Four backslashes were counted, not doubled by escape reflex. Warning on a
-    deliberate run is how the signal gets spent."""
+def test_a_run_of_four_is_flagged(tmp_path: Path) -> None:
+    """Reversed by #1860. The claim this made -- "four was counted, not doubled
+    by escape reflex" -- was falsified twice by callers who had just read the
+    two-backslash refusal and doubled again to escape the escape. The rule is
+    evenness now, not length; `test_a_single_backslash_in_a_literal_is_not_
+    flagged` above is the control that stops it becoming "flag everything"."""
     target = _target(tmp_path, 'PAT = "x"' + NL)
     out = supertool.dispatch("edit:" + _edit_payload(tmp_path, target, LITERAL_QUAD))
-    assert "literal block" not in out.lower(), out
+    assert "literal block" in out.lower(), out
 
 
 def test_a_doubled_backslash_in_old_is_still_named(tmp_path: Path) -> None:
