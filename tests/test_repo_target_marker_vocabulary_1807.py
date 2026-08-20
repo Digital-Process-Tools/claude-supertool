@@ -106,10 +106,34 @@ def _body_calls(body: list, name: str) -> bool:
 def call_site_markers(root: Path) -> tuple:
     """`(cwd_sites, target_sites)` of `(relpath, lineno, sorted_markers)`.
 
-    A *cwd* guard is an `if` whose body calls `no_repo_error` or returns the
-    `"repo"` bucket that `check.py` and `job.py` route through. A *target*
-    guard is one returning the `"notfound"` bucket. `_repo_target.py` itself is
-    skipped: the definition is not a call site.
+    Both halves are keyed on **what the arm produces**, not on how it is
+    spelled, because the same verdict is written two ways in this tree:
+
+    * a *cwd* guard calls `no_repo_error` directly, or returns the `"repo"`
+      bucket that `check.py` and `job.py` route through;
+    * a *target* guard returns the `"notfound"` bucket, or builds the
+      not-found sentence inline by calling `_repo_target.not_found_scope` /
+      `not_found_hint`.
+
+    That second arm of each pair is the whole reason this is not keyed on the
+    bucket alone. Keyed on `return "notfound"` only, this found **2** target
+    guards where the tree has **7**: `pr.py`, `issue.py`, `branch.py`, `run.py`
+    and `labels.py` inline the message instead of bucketing it, and their
+    markers went underived. The union came out right anyway, because those
+    sites happen to use the same phrases as the two that were seen - which is
+    precisely the shape this repository keeps filing: a derivation that
+    silently saw less than it claimed, reported as a clean answer.
+
+    Keying on the *next arm in the if-chain* was tried and rejected: it is
+    right for six sites and picks up `labels.py`'s `auth` arm, because
+    `labels.py` has no target arm at all.
+
+    `_repo_target.py` itself is skipped: the definition is not a call site.
+
+    **Known blind spot**, harmless today and written down rather than left to
+    be rediscovered: `_in_strings` reads only the left operand, so a guard
+    inverted to `s in "literal"` would go unseen. No guard in `presets/` is
+    written that way, and the inverted form does not mean the same thing.
     """
     cwd, target = [], []
     for path in sorted(Path(root).rglob("*.py")):
@@ -129,7 +153,9 @@ def call_site_markers(root: Path) -> tuple:
             if (_body_calls(node.body, "no_repo_error")
                     or _body_returns(node.body, "repo")):
                 cwd.append((rel, node.lineno, sorted(markers)))
-            elif _body_returns(node.body, "notfound"):
+            elif (_body_returns(node.body, "notfound")
+                    or _body_calls(node.body, "not_found_scope")
+                    or _body_calls(node.body, "not_found_hint")):
                 target.append((rel, node.lineno, sorted(markers)))
     return cwd, target
 
@@ -139,6 +165,20 @@ def _union(sites: list) -> set:
     for _, _, markers in sites:
         out |= set(markers)
     return out
+
+
+def _under(sites: list, prefix: str) -> list:
+    """The sites under one forge's directory.
+
+    `classify_detail` reads **gh's** stderr, so `_ABSENT_TARGET` is a claim
+    about `presets/github/`. `presets/gitlab/` builds the same not-found
+    sentence from the same helper and so lands in the same derivation - and it
+    matches on the same phrases today, which is a fact worth asserting on its
+    own rather than one worth folding into the GitHub union. Kept apart so
+    that a GitLab rewording fails a GitLab-named assertion instead of looking
+    like a change in what gh says.
+    """
+    return [s for s in sites if s[0].startswith(prefix)]
 
 
 def test_the_derivation_sees_a_guard_written_either_way(tmp_path) -> None:
@@ -158,11 +198,14 @@ def test_the_derivation_sees_a_guard_written_either_way(tmp_path) -> None:
         "    if 'beta marker' in s:\n"
         "        return 'repo'\n"
         "    if 'gamma marker' in s:\n"
-        "        return 'notfound'\n",
+        "        return 'notfound'\n"
+        "def inline(s):\n"
+        "    if 'delta marker' in s:\n"
+        "        return f'ERROR: x {_repo_target.not_found_scope()}.'\n",
         encoding="utf-8")
     cwd, target = call_site_markers(tmp_path)
     assert _union(cwd) == {"alpha marker", "beta marker"}, repr(cwd)
-    assert _union(target) == {"gamma marker"}, repr(target)
+    assert _union(target) == {"gamma marker", "delta marker"}, repr(target)
 
 
 def test_the_call_site_vocabulary_is_what_1807_reported() -> None:
@@ -177,13 +220,46 @@ def test_the_call_site_vocabulary_is_what_1807_reported() -> None:
         "github host", "not a git repository", "git remotes",
         "could not determine",
     }, repr(cwd)
-    assert _union(target) == {
-        "could not resolve", "404", "not found",
-    }, repr(target)
+    # `422` and `no commit found` are `branch.py`'s own resource-specific
+    # markers, sitting in the same arm. They are part of what that call site
+    # matches on, so they belong in the derived union; nothing below requires
+    # a tuple counterpart for them.
+    github_target = _under(target, "presets/github/")
+    assert _union(github_target) == {
+        "could not resolve", "404", "not found", "422", "no commit found",
+    }, repr(github_target)
     assert len(cwd) == 10, (
         "the number of cwd-classifying guards changed (was 10 at #1807, "
         "covering the 12 classifying calls the #1789 register counts): "
         + repr(cwd))
+    assert len(github_target) == 7, (
+        "the number of target-classifying guards changed (was 7 at #1807). "
+        "This count is the half that was wrong first: keyed on the "
+        "`notfound` bucket alone it read 2, and the union was right anyway - "
+        "so a count that is merely plausible is not evidence here: "
+        + repr(github_target))
+    assert all(rel.startswith("presets/github/") for rel, _, _ in cwd), (
+        "a cwd guard turned up outside presets/github/. `no_repo_error` and "
+        "the `repo` bucket are gh's vocabulary: " + repr(cwd))
+
+
+def test_gitlab_matches_on_the_same_target_phrases_for_now() -> None:
+    """Asserted apart from the GitHub union, on purpose.
+
+    `presets/gitlab/` reaches the same not-found sentence through the same
+    helper, so it lands in the same derivation. It is not what
+    `_ABSENT_TARGET` is a claim about, and folding it in would mean a GitLab
+    rewording failed an assertion named for gh. Pinned here instead, so the
+    overlap is a stated fact rather than an accident nobody is watching.
+    """
+    _, target = call_site_markers(_ROOT / "presets")
+    gitlab = _under(target, "presets/gitlab/")
+
+    assert len(gitlab) == 4, repr(gitlab)
+    assert _union(gitlab) == {"could not resolve", "404", "not found"}, (
+        "GitLab's target vocabulary drifted from GitHub's. That is allowed - "
+        "say so here. It does not by itself say anything about "
+        "_ABSENT_TARGET, which reads gh's stderr: " + repr(gitlab))
 
 
 # ===========================================================================
@@ -198,6 +274,7 @@ def test_every_tuple_marker_refines_a_call_site_marker() -> None:
     one unclassified caller would reach a verdict the other twelve cannot.
     """
     cwd_sites, target_sites = call_site_markers(_ROOT / "presets")
+    target_sites = _under(target_sites, "presets/github/")
     for tuple_markers, site_markers, label in (
             (rt._ABSENT_CWD, _union(cwd_sites), "_ABSENT_CWD"),
             (rt._ABSENT_TARGET, _union(target_sites), "_ABSENT_TARGET"),
@@ -218,7 +295,7 @@ def test_the_tuples_are_strictly_narrower_not_the_same_phrases() -> None:
     """
     cwd_sites, target_sites = call_site_markers(_ROOT / "presets")
     cwd_site_markers = _union(cwd_sites)
-    target_site_markers = _union(target_sites)
+    target_site_markers = _union(_under(target_sites, "presets/github/"))
 
     for site_marker, tuple_marker in (
             ("git remotes", "no git remotes"),
@@ -299,6 +376,7 @@ def test_widening_to_the_call_site_vocabulary_would_reintroduce_1789(
     because a failure to reach gh was rendered as a claim about the machine.
     """
     cwd_sites, target_sites = call_site_markers(_ROOT / "presets")
+    target_sites = _under(target_sites, "presets/github/")
 
     def widened(detail: str, slug: str | None) -> str:
         low = detail.lower()
