@@ -23498,6 +23498,26 @@ def _toml_literal_backslash_refusal(raw: str) -> str:
 # the mistake, and the total is carried in the count.
 _PAYLOAD_DBS_MAX_FIELDS = 3
 
+# How many OCCURRENCES inside one field get a located block (#1814). The old
+# render stopped at the first, so a field with three offending lines was refused
+# three times and each refusal cost a full re-send of the payload -- measured at
+# four re-sends in one agent run, one on a 14 KB test file and one on a 6 KB
+# pull-request payload. Everything needed to report all of them was already
+# parsed at the moment it reported one.
+#
+# Bounded rather than unbounded because a block is three lines, and a payload
+# that legitimately carries forty pairs would otherwise answer with a wall. What
+# is beyond the cap is NAMED by payload line, never merely counted -- #1087's
+# rule one level down: `and 3 further occurrences` withholds exactly the fact
+# that sends the reader back to re-derive it by hand.
+_PAYLOAD_DBS_MAX_OCCURRENCES = 4
+
+# Characters of the caller's own line kept either side of the pair. The old
+# excerpt was the HEAD of the line, 48 characters, which on the reported 9 KB
+# payload did not contain the offending bytes at all: a shell printf format is
+# frequently 200 characters into a long line (#1808).
+_PAYLOAD_DBS_CONTEXT = 22
+
 # A run of EXACTLY two backslashes. Longer runs are deliberately not matched:
 # three or four were counted, not produced by escape reflex, and firing on the
 # deliberate case is how a warning stops being read.
@@ -23521,8 +23541,94 @@ _PAYLOAD_WARNINGS: List[str] = []
 _TOML_OPS_HEADER = re.compile(r"(?m)^[ \t]*\[\[[ \t]*ops[ \t]*\]\]")
 
 
-def _toml_literal_double_backslashes(raw: str) -> List[Tuple[str, str, str, int]]:
-    r"""`(key, label, first line flattened, count)` per literal block with `\\`.
+def _dbs_occurrences(raw: str, offset: int,
+                     content: str) -> List[Tuple[int, int, str, Optional[int]]]:
+    r"""Locate every `\\` in one literal block: `(line, column, excerpt, caret)`.
+
+    `line` and `column` are 1-based positions in the SUBMITTED PAYLOAD, not in
+    the value -- that is the coordinate the author can act on without re-reading
+    their own draft, and the one all three issues asked for (#1808, #1819). They
+    are measured on `raw` by counting `chr(10)`, which is what a text editor
+    numbers by; the ten-separator question (#886) belongs to the excerpt, below,
+    and deliberately not to the numbering, where a U+2028 would produce a line
+    number no editor agrees with.
+
+    `excerpt` is centred on the pair rather than taken from the head of the
+    line. The old render showed the first 48 characters of whatever line the
+    first hit sat on, and on the reported payload the offending bytes were not
+    in it (#1808).
+
+    `caret` is the offset into `excerpt` where the pair starts, or **None** when
+    the excerpt had to be flattened and the offset can no longer be trusted.
+    That third state is the point: `_flat_field` may `repr()` its argument
+    (#886), which is not offset-preserving, so a caret computed before
+    flattening would point confidently at the wrong character. A caret that
+    cannot be placed says so and leaves the exact line and column standing --
+    silently omitting it, or drawing it anyway, are the two failures this
+    repository is named after.
+    """
+    out: List[Tuple[int, int, str, Optional[int]]] = []
+    for m in _EXACT_DOUBLE_BACKSLASH.finditer(content):
+        at_abs = offset + m.start()
+        line_no = raw.count(chr(10), 0, at_abs) + 1
+        col = at_abs - (raw.rfind(chr(10), 0, at_abs) + 1) + 1
+        start = content.rfind(chr(10), 0, m.start()) + 1
+        stop = content.find(chr(10), m.start())
+        line = content[start:] if stop < 0 else content[start:stop]
+        at = m.start() - start
+        lo = max(0, at - _PAYLOAD_DBS_CONTEXT)
+        hi = min(len(line), at + 2 + _PAYLOAD_DBS_CONTEXT)
+        # ASCII elision on purpose. `mark()` passes an unmapped glyph straight
+        # through, so plain mode is not a guarantee, and a cp1252 console raises
+        # UnicodeEncodeError at the print -- killing the process at the refusal
+        # rather than at the work the refusal was about.
+        lead = "..." if lo > 0 else ""
+        excerpt = lead + line[lo:hi] + ("..." if hi < len(line) else "")
+        caret: Optional[int] = len(lead) + (at - lo)
+        flat = _flat_field(excerpt)
+        if flat != excerpt:
+            excerpt, caret = flat, None
+        out.append((line_no, col, excerpt, caret))
+    return out
+
+
+def _dbs_occurrence_block(label: str, occs: List[Tuple[int, int, str, Optional[int]]],
+                          total: int) -> str:
+    """Render one field's located occurrences (#1808, #1814, #1819)."""
+    arrow = mark(chr(8627))
+    shown = occs[:_PAYLOAD_DBS_MAX_OCCURRENCES]
+    rest = occs[_PAYLOAD_DBS_MAX_OCCURRENCES:]
+    lines = [
+        "  " + arrow + " `" + label + "` -- " + str(total) + " occurrence"
+        + ("" if total == 1 else "s") + " of `" + chr(92) * 2 + "`"
+        + (", first " + str(len(shown)) + " shown:" if rest else ", all shown:")
+        + chr(10)
+    ]
+    for n, (line_no, col, excerpt, caret) in enumerate(shown, 1):
+        lines.append(
+            "      " + str(n) + "/" + str(total) + " at payload line "
+            + str(line_no) + ", column " + str(col) + ":" + chr(10)
+            + "          " + excerpt + chr(10)
+        )
+        lines.append(
+            "          " + " " * caret + chr(94) * 2 + chr(10) if caret is not None
+            else "          (no caret -- the excerpt carried a line separator or "
+            "an unprintable and was flattened, so an offset into it would point "
+            "at the wrong character. The payload line and column above are "
+            "measured on the raw payload and are exact.)" + chr(10)
+        )
+    if rest:
+        lines.append(
+            "      ... and " + str(len(rest)) + " more, at payload line"
+            + ("" if len(rest) == 1 else "s") + " "
+            + ", ".join(str(o[0]) for o in rest) + chr(10)
+        )
+    return "".join(lines)
+
+
+def _toml_literal_double_backslashes(
+        raw: str) -> List[Tuple[str, str, str, int, List[Tuple[int, int, str, Optional[int]]]]]:
+    r"""`(key, label, first line, count, occurrences)` per literal block with `\\`.
 
     Provenance is the whole point and it is read off the source, not the parsed
     value: in a basic block `\\` IS one backslash and is the correct spelling,
@@ -23560,9 +23666,15 @@ def _toml_literal_double_backslashes(raw: str) -> List[Tuple[str, str, str, int]
             # refusal that render it. Flattened here rather than at the two
             # render sites so the tuple's third element means what its name
             # says everywhere it is read.
+            # The fifth element is what #1814 was filed about: the scan had
+            # already walked the whole block to produce `total`, and threw
+            # every position but the first away. `search` -> `finditer` is the
+            # whole of the mechanism; the cost was one re-send of the payload
+            # per discarded position.
             findings.append(
                 (key, label,
-                 _flat_field(line.strip())[:_TOML_LITERAL_TAIL_CHARS], total))
+                 _flat_field(line.strip())[:_TOML_LITERAL_TAIL_CHARS], total,
+                 _dbs_occurrences(raw, i + 3, content)))
         i = raw.find(opener, nxt)
     return findings
 
@@ -23630,10 +23742,16 @@ def _payload_double_backslash_note(raw: str) -> str:
         + bs * 2 + "`. A literal block processes NO escapes, so each pair reaches "
         "the file as TWO backslashes -- if you meant one, write one." + chr(10)
     ]
-    for _key, label, line, total in findings[:_PAYLOAD_DBS_MAX_FIELDS]:
+    for _key, label, line, total, occs in findings[:_PAYLOAD_DBS_MAX_FIELDS]:
+        # The payload line number, not the located block. `old` is an anchor:
+        # the pair cannot match, the runner reports the skip, and nothing lands,
+        # so the reader needs to FIND the pair, not to be argued out of it --
+        # the two-directions block belongs to the refusal, where a write was
+        # stopped. The line number is the same fact both wanted (#1819).
+        at = (", first at payload line " + str(occs[0][0])) if occs else ""
         lines.append(
             "  " + arrow + " `" + label + "` (" + str(total) + " occurrence"
-            + ("" if total == 1 else "s") + "): " + line + chr(10)
+            + ("" if total == 1 else "s") + at + "): " + line + chr(10)
         )
     rest = findings[_PAYLOAD_DBS_MAX_FIELDS:]
     if rest:
@@ -23741,19 +23859,47 @@ def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
     if not findings:
         return ""
     bs = chr(92)
-    named = "; ".join(
-        "`" + label + "` (" + str(total) + "x): " + line
-        for _key, label, line, total in findings
-    )
-    return (
+    arrow = mark(chr(8627))
+    out = [
         "a " + chr(39) * 3 + " literal block carries `" + bs * 2 + "` in a field "
         "that is WRITTEN to the file, and a literal block processes NO escapes "
         "-- each pair would reach disk as TWO backslashes, pass every validator, "
-        "and be wrong only in string contents. " + named + ". If you meant one "
-        "backslash, write one. If you meant two, add `"
-        + _PAYLOAD_LITERAL_BS_KEY + " = true` at the top level of the payload "
-        "and this refusal becomes a decision you recorded. (#1087, #1096)"
+        "and be wrong only in string contents." + chr(10)
+    ]
+    for _key, label, _line, total, occs in findings[:_PAYLOAD_DBS_MAX_FIELDS]:
+        out.append(_dbs_occurrence_block(label, occs, total))
+    # Every remaining field is still NAMED (#1087) -- only its located block is
+    # dropped. A located block is three lines per occurrence, so a nine-op batch
+    # would otherwise answer with a wall; but `and 6 further fields` withholds
+    # exactly the identifier that sends the reader back to re-derive by hand
+    # which of nine ops was meant, which is close to not reporting them at all.
+    for _key, label, _line, total, occs in findings[_PAYLOAD_DBS_MAX_FIELDS:]:
+        # The line list is capped by the same constant as a located block, and
+        # for the same reason. Uncapped, a field with 93 pairs -- the count in
+        # #1808's own report -- put 93 numbers on one line, which is the wall
+        # this render was bounded to avoid, reintroduced one branch over.
+        shown = ", ".join(str(o[0]) for o in occs[:_PAYLOAD_DBS_MAX_OCCURRENCES])
+        over = len(occs) - _PAYLOAD_DBS_MAX_OCCURRENCES
+        out.append(
+            "  " + arrow + " `" + label + "` -- " + str(total) + " occurrence"
+            + ("" if total == 1 else "s") + (
+                ", at payload line" + ("" if len(occs) == 1 else "s") + " "
+                + shown + (" and " + str(over) + " more" if over > 0 else "")
+                if occs else ""
+            ) + chr(10)
+        )
+    out.append(
+        "  " + arrow + " TWO OPPOSITE fixes, and nothing here can tell which you "
+        "meant -- decide per occurrence, then send the payload once:" + chr(10)
+        + "      meant ONE backslash (escape reflex -- a literal block eats "
+        "nothing): write one." + chr(10)
+        + "      meant TWO (a shell printf format, a Windows path, a LaTeX line "
+        "break): add `" + _PAYLOAD_LITERAL_BS_KEY + " = true` at the top level "
+        "of the payload, and this refusal becomes a decision you recorded. It "
+        "applies to the WHOLE payload -- every op, every field." + chr(10)
+        + "  (#1087, #1096, #1808, #1814, #1819)"
     )
+    return "".join(out)
 
 
 def _eol_backslash_pair(text: str) -> Optional[Tuple[str, int]]:

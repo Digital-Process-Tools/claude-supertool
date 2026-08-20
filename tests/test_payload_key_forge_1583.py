@@ -169,8 +169,30 @@ def test_a_payload_value_excerpt_cannot_forge_a_line_either(tmp_path, field, op)
         assert not line.startswith(_FORGED_VALUE), (
             field, "the caller wrote a whole line of the note/refusal", out)
 
-    # Still names the field and still shows the excerpt, on one line.
+    # Still names the field, and still shows the excerpt.
     stem_lines = [ln for ln in out.splitlines() if "`" + field + "`" in ln]
     assert stem_lines, (field, "the offending field was not named", out)
-    assert any(_FORGED_VALUE[:20] in ln for ln in stem_lines), (
-        field, "the excerpt was split away from the field it belongs to", out)
+
+    # `old` keeps the one-line note. `content` takes the refusal arm, which
+    # since #1808/#1814 renders one located block per occurrence -- field
+    # header, then `N/M at payload line L, column C`, then the excerpt and a
+    # caret on their own lines. So "on the same line as the field" no longer
+    # states this file's property; it states the old layout.
+    #
+    # What #1583 is actually about is a caller-written value reaching column 0
+    # and being read as a line of the report. That is asserted above and holds
+    # unchanged. Asserted here in the stronger form the new layout allows:
+    # every line carrying ANY of the caller's text is indented, rather than
+    # only the line that happens to begin with this one fixture's exact string.
+    # The old check was `not startswith(_FORGED_VALUE)`, which a value differing
+    # in its first character walks straight through; column 0 is the property,
+    # and it is asserted here for every carrying line and both arms. The note
+    # arm indents by 2 and the refusal arm by 10, so the bar is one space.
+    carrying = [ln for ln in out.splitlines()
+                if any(_FORGED_VALUE[i:i + 12] in ln for i in range(0, 24, 4))]
+    assert carrying, (
+        field, "the excerpt is gone: the field is named with nothing to locate",
+        out)
+    for ln in carrying:
+        assert ln.startswith(" "), (
+            field, "caller text at the report's own margin", ln, out)
