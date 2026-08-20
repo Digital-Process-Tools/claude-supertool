@@ -159,7 +159,7 @@ snapshot = _load("radar_snapshot", _HERE / "_snapshot.py")
 # The one predicate both tiers share: "did the probe establish that there is no
 # usable credential?" (#1823). One copy, for `_snapshot.py`'s reason -- and it
 # now sits in `presets/`, not here, because #1846 found the same bare-`401`
-# collapse in 22 `presets/github/` and `presets/gitlab/` sites that cannot
+# collapse in 23 `presets/github/` and `presets/gitlab/` sites that cannot
 # reach a module under `watch/tiers/`.
 _auth_probe = _load("radar_auth_probe", _WATCH.parent / "_auth_probe.py")
 

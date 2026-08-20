@@ -34,9 +34,9 @@ already drifted (`gh_prs` grew exit-code 4 and a transport whitelist in #1568;
 `gl_mrs` still has neither).
 
 **Why this is in `presets/` and not in `presets/watch/tiers/`, where it landed
-two hours earlier.** #1846 counted the same predicate in 22 more call sites --
-16 under `presets/github/`, 7 under `presets/gitlab/`, of which one file has
-two -- and none of them can reach a module nested under `watch/`. They import
+two hours earlier.** #1846 counted the same predicate in 23 more call sites --
+16 under `presets/github/` (15 files; `issues.py` carries two) and 7 under
+`presets/gitlab/` -- and none of them can reach a module nested under `watch/`. They import
 `presets/_*.py` through the `sys.path` insert every preset script already does.
 A second copy under `presets/` would have been the drift this module exists to
 prevent, on its first day; moving it cost two `_load` call sites and a line of

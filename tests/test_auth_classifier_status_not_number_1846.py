@@ -4,8 +4,9 @@
 
     if "401" in s or "unauthorized" in s or "not logged in" in s:
 
--- was still in 22 more call sites across `presets/github/` and
-`presets/gitlab/`, and five of those widened it again with a bare
+-- was still in 23 more call sites across `presets/github/` and
+`presets/gitlab/` (16 and 7; `issues.py` carries two), and five of those
+widened it again with a bare
 ``"token" in s``.
 
 `"401"` is three characters tested against the whole of a CLI's stderr.
@@ -317,6 +318,41 @@ def test_no_marker_anywhere_in_the_probe_is_a_bare_status_number() -> None:
             f"{name}: a bare status number is a substring of request ids, "
             f"user ids and epochs, not a statement about a credential: "
             f"{bare!r}")
+
+
+def test_the_extra_vocabulary_is_load_bearing_and_is_not_a_number() -> None:
+    """`extra` has to change the answer, or passing it is decoration.
+
+    `could not authenticate` is prose `glab` writes and `gh` does not, so it
+    must be True for a GitLab caller and False for a GitHub one -- and the
+    number that started all this must stay False for both.
+    """
+    glab_prose = "could not authenticate to gitlab.com"
+    assert auth_probe.says_not_authenticated(glab_prose,
+                                             auth_probe.GITLAB_MARKERS)
+    assert not auth_probe.says_not_authenticated(glab_prose)
+    for extra in ((), auth_probe.GITLAB_MARKERS):
+        assert not auth_probe.says_not_authenticated(
+            "500 Internal Server Error for project 44012345", extra)
+
+
+def test_whoever_speaks_gitlab_carries_the_gitlab_vocabulary() -> None:
+    """The radar GitLab tier and its own op-level twin must not disagree.
+
+    Found by the review pass: `presets/gitlab/mrs.py` got `GITLAB_MARKERS` and
+    `presets/watch/tiers/gl_mrs.py`, the radar tier over the same board, did
+    not -- so radar would have declined a `could not authenticate` the op
+    recognised. That is the drift #1823 put the predicate in one file to stop,
+    reintroduced one argument along rather than one copy along.
+    """
+    gl_tier = _module("gl_mrs_tier_1846",
+                      "watch/tiers/gl_mrs.py")
+    assert gl_tier.NOT_AUTHENTICATED_MARKERS == (
+        auth_probe.NOT_AUTHENTICATED_MARKERS + auth_probe.GITLAB_MARKERS), (
+        "the GitLab radar tier's declared vocabulary is not the GitLab one")
+    src = (PRESETS / "watch" / "tiers" / "gl_mrs.py").read_text(encoding="utf-8")
+    assert "says_not_authenticated(err, _auth_probe.GITLAB_MARKERS)" in src, (
+        "the tier declares the GitLab vocabulary but does not pass it")
 
 
 def test_no_preset_tests_a_bare_status_number_or_a_bare_token_word() -> None:

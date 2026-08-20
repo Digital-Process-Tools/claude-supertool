@@ -338,7 +338,7 @@ UNRESOLVED = 113
 #:
 #: `says_not_authenticated` is the second, for exactly that argument and no
 #: other. It returns `bool` -- `presets/_auth_probe.py`, whose whole body is
-#: `any(marker in low for marker in markers)` -- and #1846 gave it 22 call
+#: `any(marker in low for marker in markers)` -- and #1846 gave it 23 call
 #: sites across `presets/github/` and `presets/gitlab/`, each handing it a
 #: `stderr` to decide one branch. Left out of this set they raised `UNRESOLVED`
 #: 113 -> 132, which would have been 19 sites where the taint provably stops
