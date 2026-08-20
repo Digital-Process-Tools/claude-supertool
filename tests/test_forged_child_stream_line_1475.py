@@ -335,8 +335,18 @@ UNRESOLVED = 113
 #: taint provably stops at the call, so counting four such sites in
 #: `UNRESOLVED` would pad a bound with sites that are not unresolved, which
 #: the note above that number says a bound may not be.
+#:
+#: `says_not_authenticated` is the second, for exactly that argument and no
+#: other. It returns `bool` -- `presets/_auth_probe.py`, whose whole body is
+#: `any(marker in low for marker in markers)` -- and #1846 gave it 22 call
+#: sites across `presets/github/` and `presets/gitlab/`, each handing it a
+#: `stderr` to decide one branch. Left out of this set they raised `UNRESOLVED`
+#: 113 -> 132, which would have been 19 sites where the taint provably stops
+#: added to a number documented as *what this scan cannot see*. The census
+#: (`raw_child_stream_sinks`) did not move, and neither did `UNRESOLVED` once
+#: the entry was added -- both checked before the number was touched.
 NOT_TEXT = frozenset({"loads", "int", "float", "len", "bool",
-                      "mentions_gitlab_token"})
+                      "mentions_gitlab_token", "says_not_authenticated"})
 
 _SCANNED = ("presets/github", "presets/gitlab", "presets/git")
 

@@ -172,7 +172,7 @@ snapshot = _load("radar_snapshot", _HERE / "_snapshot.py")
 # "Did the probe establish that there is no usable credential?" — shared with
 # the GitHub tier for the snapshot's reason, and because both tiers had the
 # same bare-`401` collapse and would drift apart while being fixed (#1823).
-_auth_probe = _load("radar_auth_probe", _HERE / "_auth_probe.py")
+_auth_probe = _load("radar_auth_probe", _WATCH.parent / "_auth_probe.py")
 
 #: This tier's not-authenticated vocabulary, from the one copy.
 NOT_AUTHENTICATED_MARKERS = _auth_probe.NOT_AUTHENTICATED_MARKERS

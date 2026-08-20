@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _untrusted  # noqa: E402  (a runner description and a CI tag are remote text, and these are hand-padded tables — #970)
+import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 
 # GitLab does not write contacted_at on every poll — it throttles the update.
 # Measured on a live fleet: one runner's contacted_at stayed frozen at the same
@@ -107,7 +108,10 @@ def _format_error(stderr: str, resource: str) -> str:
     s = stderr.lower()
     if "404" in s or "not found" in s or "could not resolve" in s:
         return f"ERROR: {resource} not found. Verify you're in the right repo."
-    if "401" in s or "unauthorized" in s or "authenticate" in s or "bad token" in s or "token expired" in s:
+    # A status, never a number (#1846). go-gitlab echoes the request URL into
+    # every error string, so a project, job or pipeline id containing `401`
+    # made a 500 or a throttle render as a missing credential.
+    if _auth_probe.says_not_authenticated(s, _auth_probe.GITLAB_MARKERS):
         return "ERROR: glab not authenticated. Run: glab auth login"
     if "403" in s or "forbidden" in s:
         return (

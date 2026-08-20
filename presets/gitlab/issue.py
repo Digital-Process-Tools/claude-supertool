@@ -22,6 +22,7 @@ import _image_root  # noqa: E402  (the attachment root, created and proven ours 
 import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
 import _secrets  # noqa: E402  (the one GitLab token-prefix list — #1645)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
+import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 
 DESCRIPTION_MAX = 3000
 # Related MRs are listed, not summarised, so the list is capped. A *count* cut
@@ -60,8 +61,10 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     # `_secrets.mentions_gitlab_token`, not a literal: this line read `glpat_`
     # until #1645, GitLab mints `glpat-`, and the only test over it used the
     # same wrong spelling. One list, cited to GitLab's docs, in one file.
-    if ("401" in s or "unauthorized" in s or "authenticate" in s
-            or "bad token" in s or "token expired" in s
+    # A status, never a number (#1846). go-gitlab echoes the request URL into
+    # every error string, so a project, job or pipeline id containing `401`
+    # made a 500 or a throttle render as a missing credential.
+    if (_auth_probe.says_not_authenticated(s, _auth_probe.GITLAB_MARKERS)
             or _secrets.mentions_gitlab_token(s)):
         return "ERROR: glab not authenticated. Run: glab auth login"
     if "403" in s or "forbidden" in s:

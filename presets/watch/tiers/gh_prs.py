@@ -157,8 +157,11 @@ pr = _load("radar_github_pr", _WATCH.parent / "github" / "pr.py")
 branch = _load("radar_github_branch", _WATCH.parent / "github" / "branch.py")
 snapshot = _load("radar_snapshot", _HERE / "_snapshot.py")
 # The one predicate both tiers share: "did the probe establish that there is no
-# usable credential?" (#1823). One copy, for `_snapshot.py`'s reason.
-_auth_probe = _load("radar_auth_probe", _HERE / "_auth_probe.py")
+# usable credential?" (#1823). One copy, for `_snapshot.py`'s reason -- and it
+# now sits in `presets/`, not here, because #1846 found the same bare-`401`
+# collapse in 22 `presets/github/` and `presets/gitlab/` sites that cannot
+# reach a module under `watch/tiers/`.
+_auth_probe = _load("radar_auth_probe", _WATCH.parent / "_auth_probe.py")
 
 #: Re-exported so this tier's own vocabulary is readable from one place, and so
 #: the structural test that no marker is a bare status number has a name to
