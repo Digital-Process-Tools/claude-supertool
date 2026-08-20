@@ -233,12 +233,19 @@ def closing_ref_verdict(old_body: object, new_body: str,
         # linked no issue, and neither does this one" directly above the
         # `Issue: #321` line that disproved it. Four answers, because
         # `carried` and `added` are independent and both can be non-empty.
+        # Both halves are ordered by the body being WRITTEN, not by the one
+        # being replaced. `lost` is empty here, so `carried` is `old_refs` as a
+        # set either way; taking the new body's order means this line and the
+        # `Issue:` line under it list the same references in the same sequence,
+        # and a body that only reorders its own `Closes` lines does not produce
+        # two lines that have to be read as sets before they agree.
+        carried = [ref for ref in new_refs if ref in old_refs]
         added = [ref for ref in new_refs if ref not in old_refs]
-        if old_refs and added:
-            return (REF_OK, [], (f"carried through: {', '.join(old_refs)}; "
+        if carried and added:
+            return (REF_OK, [], (f"carried through: {', '.join(carried)}; "
                                  f"added: {', '.join(added)}"))
-        if old_refs:
-            return (REF_OK, [], f"carried through: {', '.join(old_refs)}")
+        if carried:
+            return (REF_OK, [], f"carried through: {', '.join(carried)}")
         if added:
             return (REF_OK, [], (f"added: {', '.join(added)} — the published "
                                  f"body linked none, this one does"))

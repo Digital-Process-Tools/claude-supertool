@@ -123,12 +123,34 @@ def test_an_unreadable_published_body_is_still_unknown_not_an_addition():
 # the invariant the receipt broke — the two lines cannot contradict each other
 # ===========================================================================
 
+def test_carried_through_is_ordered_by_the_body_being_written():
+    """A body that only reorders its own `Closes` lines. Both lines were true
+    before — the sets agree — but they listed the same two references in
+    opposite orders, so agreeing meant reading them as sets. Found by the
+    review of this change's own first commit."""
+    _state, _lost, msg = m.closing_ref_verdict(
+        "Closes #1, closes #2.", "Closes #2, closes #1.", "")
+    assert msg == "carried through: #2, #1"
+    assert _checks.linked_issue_line(
+        _checks.closing_issue_refs("Closes #2, closes #1.")) == "Issues: #2, #1"
+
+
+def test_a_cross_repo_reference_is_not_confused_with_a_local_one():
+    """`closing_issue_refs` returns display forms, so `owner/repo#5` and `#5`
+    are different strings and the set arithmetic must keep them apart."""
+    _state, _lost, msg = m.closing_ref_verdict(
+        "Closes o/r#5.", "Closes o/r#5.\n\nCloses #5.", "")
+    assert msg == "carried through: o/r#5; added: #5"
+
+
 @pytest.mark.parametrize("old,new", [
     ("prose", "Closes #321."),
     ("prose", "Closes #275, closes #296."),
     ("`Closes #275, closes #296`", "Closes #275, closes #296."),
     ("Closes #230.", "Closes #230.\n\nCloses #231."),
     ("Closes #1739.", "Closes #1739."),
+    ("Closes #1, closes #2.", "Closes #2, closes #1."),
+    ("Closes o/r#5.", "Closes o/r#5.\n\nCloses #5."),
     ("prose", "more prose"),
 ])
 def test_the_two_receipt_lines_never_contradict_each_other(old, new):
