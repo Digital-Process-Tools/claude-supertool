@@ -278,10 +278,18 @@ jobs:
     # measuring machine, not variance in the work — against ~3m36s for the same
     # suite with no coverage at all. Tracing a 16.8k-line `supertool.py` inside
     # each of ~900 spawned children is what the top of that range buys, and it
-    # is the cost of the attribution that makes the number true. 20 is ~3.3x the
-    # worst observed run, sized like the pytest budget above rather than tight,
-    # so it fires for a hang and not for a slow runner. Pinned by
-    # `tests/test_ci_job_timeouts_722.py`.
+    # is the cost of the attribution that makes the number true.
+    #
+    # #1862: "20 is ~3.3x the worst observed run" was the claim here, and it was
+    # ~3.3x the worst *local* run. Measured 2026-08-20 over the 14 most recent
+    # successful runs, this job takes 353-528s in CI, so 20 minutes is 2.3x —
+    # still a hang-guard rather than a benchmark, but not what the sentence
+    # said, and the floor derived from the local number had drifted under the
+    # real worst run. Local timings do not size a CI budget; they were the only
+    # ones available when this job was added, and nothing went back for the
+    # real ones. Sized like the pytest budget above rather than tight, so it
+    # fires for a hang and not for a slow runner. Pinned, with the durations
+    # themselves, by `tests/test_ci_job_timeouts_722.py`.
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

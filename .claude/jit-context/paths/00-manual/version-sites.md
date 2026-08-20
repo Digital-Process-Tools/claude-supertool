@@ -5,7 +5,9 @@ match: .claude-plugin/|pyproject.toml
 
 `.claude-plugin/plugin.json`, `_supertool.py` (`VERSION`), `pyproject.toml`, `CHANGELOG.md`, and the `README.md` badge.
 
-Four are guarded by tests — `test_plugin_manifest_version_matches_code`, `tests/test_pyproject_version_522.py`, `test_changelog_link_refs_918`, `test_readme_version_badge_matches_code`. Believing a site is unguarded is what justifies skipping the sweep; the sweep's real value is finding a **sixth** site no test covers. When one turns up, add its guard in the same commit.
+All five are guarded. Four by name — `test_plugin_manifest_version_matches_code`, `tests/test_pyproject_version_522.py`, `test_changelog_link_refs_918`, `test_readme_version_badge_matches_code` — and the fifth, `_supertool.py`, is what they are all pinned to. **The badge is not the unguarded one**; believing it was is what produced #1854.
+
+Since #1854 the **set** is guarded too: `tests/test_version_sites_agree_1854.py` derives the sites from `.oss.json`'s `version_sites` and reds if one disagrees, if one cannot be read, or if the list names a site the test has no reader for. That last arm is the sixth-site case — declaring a new site now fails the suite instead of quietly gaining no guard.
 
 ```bash
 git grep -n "0\.32\.0"          # no path filter, no --include
