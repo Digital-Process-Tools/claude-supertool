@@ -71,12 +71,6 @@ merge = _load_preset("merge")
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX /bin/sh shim")
 
-#: Resolved at import, while PATH is still the real one. Every fixture below
-#: replaces PATH with a directory holding nothing but a shim, so a
-#: `shutil.which("git")` evaluated INSIDE a test returns that shim -- and the
-#: shim is precisely what a contention check must not ask.
-_REAL_GIT_AT_IMPORT = shutil.which("git")
-
 
 # ---------------------------------------------------------------------------
 # A real git that really hangs, for one subcommand only
@@ -586,60 +580,56 @@ def _conflicted_repo(tmp_path: Path) -> Path:
     return repo
 
 
-#: What `git-conflicts` prints when its own `rev-parse --git-dir` probe does
-#: not come back 0 -- including when it merely TIMED OUT (conflicts.py:160).
-_NOT_A_REPO = "ERROR: not inside a git repository."
+def _run_conflicts(repo: Path, monkeypatch, stalled: str | None = None) -> tuple[str, int]:
+    """Run `git-conflicts`. STALLED names the one subcommand the shim hangs.
 
+    The contention guard needs the same evidence the `git-status` one has: that
+    a call ACTUALLY timed out. `conflicts.py` keeps no unanswered-call list, so
+    one is recorded here by wrapping its `_git` -- a `TIMEOUT_RC` seen with our
+    own eyes, not inferred from the sentence the product printed.
 
-def _run_conflicts(repo: Path, monkeypatch) -> tuple[str, int]:
-    """Run `git-conflicts`, declining rather than lying when the machine is loaded.
+    The first cut of this did infer it, and both reviewers of the commit caught
+    it: it skipped whenever the output held `not inside a git repository` and
+    the directory really was a repository. Those two facts are equally true of
+    a deterministic regression that prints the refusal unconditionally, with no
+    timing involved -- and because
+    `test_conflicts_still_reports_a_genuinely_clean_tree` runs through here
+    too, the mutant that guard's own docstring claimed was killed would have
+    been skipped instead. A guard that greens a real regression is the exact
+    defect this repository is named for, so the string match is gone.
 
-    The contention guard here cannot read an unanswered-call list the way the
-    `git-status` one does -- `conflicts.py` keeps none. What it has instead is
-    an unambiguous signal: the fixture has just BUILT this repository with real
-    git, so `not inside a git repository` cannot be true of it. Under
-    contention the unshimmed `rev-parse --git-dir` loses the 1s budget,
-    `conflicts.py:160` reads `returncode != 0` without excluding `TIMEOUT_RC`,
-    and the refusal is printed about a repository that is demonstrably there
-    (#1845). The repository is re-checked here on an UNBUDGETED call before
-    anything is skipped, so a genuine refusal still fails.
-
-    This does not paper over an unconditional-decline regression: that mutant
-    is killed by `test_conflicts_still_reports_a_genuinely_clean_tree`, which
-    runs real git with no shim and demands the honest answer.
+    What is left cannot fire without a real stall: no timeout recorded, no
+    skip, whatever the product printed.
     """
     monkeypatch.chdir(repo)
     monkeypatch.setattr(conflicts.sys, "argv", ["conflicts.py"])
+
+    stalls: list[str] = []
+    real_git = conflicts._git
+
+    def recording_git(args, timeout=None):
+        res = real_git(args, timeout)
+        if res.returncode == status.TIMEOUT_RC:
+            stalls.append("git " + " ".join(args))
+        return res
+
+    monkeypatch.setattr(conflicts, "_git", recording_git)
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = conflicts.main()
-    out = buf.getvalue()
-    if _NOT_A_REPO in out and _is_really_a_repo(repo):
+
+    unexpected = [c for c in stalls
+                  if stalled is None or _subcommand_of(c) != stalled]
+    if unexpected:
         pytest.skip(
-            "contended-git(#1845): `git-conflicts` refused with "
-            + repr(_NOT_A_REPO) + " for a repository that IS one -- its "
-            "unshimmed `rev-parse --git-dir` did not answer inside the 1s "
-            "budget, so nothing is claimed about the product here"
+            "contended-git(#1845): a git call this fixture needs to ANSWER did "
+            "not -- " + "; ".join(f"`{c}`" for c in unexpected)
+            + (f" (only `git {stalled} ...` was meant to stall)" if stalled
+               else " (no call was meant to stall)")
+            + ". `conflicts.py:160` reads a TIMEOUT_RC as `not inside a git "
+            "repository`, so nothing is claimed about the product here"
         )
-    return out, rc
-
-
-def _is_really_a_repo(repo: Path) -> bool:
-    """Unbudgeted, unshimmed second opinion, so the skip above needs evidence.
-
-    Uses the real binary by absolute path rather than whatever `PATH` the test
-    installed -- the shim on `PATH` is the thing under suspicion, and asking it
-    would be asking the suspect.
-    """
-    if not _REAL_GIT_AT_IMPORT:
-        return False          # cannot corroborate -> do not skip, fail loudly
-    try:
-        done = subprocess.run(
-            [_REAL_GIT_AT_IMPORT, "-C", str(repo), "rev-parse", "--git-dir"],
-            capture_output=True, text=True, timeout=60)
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    return done.returncode == 0
+    return buf.getvalue(), rc
 
 
 def test_a_failed_conflict_list_does_not_read_as_no_conflicts(
@@ -673,13 +663,59 @@ def test_a_stalled_conflict_list_declines_instead_of_crashing(
     monkeypatch.setenv("SUPERTOOL_GIT_TIMEOUT", "1")
 
     started = time.monotonic()
-    out, rc = _run_conflicts(repo, monkeypatch)
+    out, rc = _run_conflicts(repo, monkeypatch, stalled="diff")
     elapsed = time.monotonic() - started
 
     assert "No conflicted files." not in out, out
     assert "UNKNOWN" in out, out
     assert rc != 0
     assert elapsed < 60, elapsed
+
+
+def test_the_conflicts_contention_guard_needs_a_real_stall_to_fire(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The guard must not fire on a product that simply says the wrong thing.
+
+    This is the regression both reviewers of the first commit reproduced: a
+    guard keyed on `git-conflicts` printing `not inside a git repository` for a
+    directory that IS one skips for a DETERMINISTIC wrong answer just as
+    readily as for a contended stall -- and since the clean-tree test below
+    runs through the same helper, the unconditional-decline mutant it exists to
+    kill would have been skipped rather than failed.
+
+    So: a `main` that prints the refusal with no git call stalling must reach
+    the caller as output, never as a skip.
+    """
+    repo = _repo(tmp_path)
+    monkeypatch.setenv("PATH", _git_only_path(tmp_path))
+    monkeypatch.setattr(
+        conflicts, "main",
+        lambda: (print("ERROR: not inside a git repository."), 1)[1])
+
+    out, rc = _run_conflicts(repo, monkeypatch)
+
+    assert "not inside a git repository" in out, out
+    assert rc == 1
+
+
+def test_the_conflicts_contention_guard_does_fire_on_a_real_stall(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The other half -- a guard that never fires reads exactly like no guard.
+
+    `rev-parse` is stalled rather than `diff`, so the call that loses the
+    budget is the repository probe at `conflicts.py:160` itself: the real #1845
+    shape, not a simulation of it.
+    """
+    repo = _conflicted_repo(tmp_path)
+    monkeypatch.setenv("PATH", _slow_git_path(tmp_path, "rev-parse"))
+    monkeypatch.setenv("SUPERTOOL_GIT_TIMEOUT", "1")
+
+    with pytest.raises(pytest.skip.Exception) as exc:
+        _run_conflicts(repo, monkeypatch, stalled="diff")
+    assert "contended-git(#1845)" in str(exc.value)
+    assert "rev-parse" in str(exc.value)
 
 
 def test_conflicts_still_reports_a_genuinely_clean_tree(
