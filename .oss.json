@@ -32,11 +32,7 @@
     ]
   },
   "milestones": [
-    "v0.37.0",
-    "backlog",
-    "v0.38.0",
-    "v0.39.0",
-    "v0.42.0"
+    "backlog"
   ],
   "release": {
     "tag_pattern": "v{version}",
