@@ -195,9 +195,21 @@ which have always worked:
 | `'''` **and** `"""` | the JSON payload form, which needs no delimiter at all |
 
 Since [#394](https://github.com/Digital-Process-Tools/claude-supertool/issues/394)
-the parse error names both, and fires the hint on an odd number of `'''` runs —
-every literal block opens and closes, so a stray one means the content carried
-its own.
+the parse error names both. **The trigger is structural, not a parity count**
+([#1830](https://github.com/Digital-Process-Tools/claude-supertool/issues/1830)):
+every `= '''` opener is walked to the run that closes it, and anything left on
+that line other than whitespace or a `#` comment means the delimiter closed the
+value early. The hint names the payload line and column of that run.
+
+Parity was the original test — every literal block opens and closes, so a stray
+run means the content carried its own — and it is wrong in the direction that
+matters. A payload quoting the delimiter **twice**, once in `old` and once in
+`new`, is an even count and breaks exactly the same way; that is the ordinary
+shape for a payload which is *about* the literal-block syntax, and it used to
+get a bare `Expected newline or end of document after a statement (at line 6,
+column 18)` with no mention of the delimiter at all. The odd-count trigger is
+kept behind the structural one, because an unterminated block is odd and has no
+early close to find.
 
 ### Ending a block with a quote
 

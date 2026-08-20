@@ -9264,6 +9264,72 @@ def _absorbed_path_hint(op: str, leading: str, path: str,
     )
 
 
+# Which grep_around slot each numeric position is, for the refusal below, and
+# whether `all` is a value that slot takes. It is a LIMIT and only a LIMIT
+# (#1328), so `grep_around:PAT:PATH:N:all` is a shipped spelling the refusal
+# must not swallow — caught by `test_grep_around_takes_all_too` while #1826 was
+# being written, which is the same "a guard deleted a guard" failure the
+# docstring below argues a right-to-left rejoin would cause. In the N slot
+# `all` never reaches here: `_GREP_AROUND_ALL_IN_N_SLOT` returns first with a
+# message that names the slot order, which is more specific than this one.
+_GREP_AROUND_NUMERIC_SLOTS = ((3, "N", False), (4, "LIMIT", True))
+
+
+def _grep_around_numeric_refusal(parts: List[str], pattern: str,
+                                 path: str) -> str:
+    """Refuse a grep_around whose N or LIMIT slot is not a number (#1826).
+
+    `grep_around` is the one op in this family that keeps PATTERN and PATH in
+    **fixed** slots, and that is deliberate rather than an oversight in need of
+    the `_parse_grep_args` rejoin. Three shipped guards are built on it:
+    `_PATH_ARG_POSITIONS["grep_around"] = (2,)` gates the path statically,
+    `_GREP_AROUND_ALL_IN_N_SLOT` reads `all` out of slot 3, and #1345's
+    fifth-token refusal counts slots. A right-to-left rejoin peels trailing
+    integers, so `grep_around:PAT:PATH:all` would take `all` for the PATH and
+    the first two guards would be gone — which is why this is a refusal and not
+    a parse change.
+
+    What the fixed slots cost is that a `:` in the PATTERN puts its own tail in
+    a numeric slot. Until now that surfaced as `ERROR: argument parsing:
+    invalid literal for int() with base 10: 'CONST'` — the interpreter talking
+    about the caller's search term. It also means #1065's `pattern read as`
+    disclosure, extended to `around` in #1821, can never fire here:
+    `_colon_split_hint` needs a `:` in the *leading* argument and `parts[1]`
+    cannot hold one. So this refusal carries the disclosure itself.
+
+    Returns "" when both slots are absent, empty or numeric — every call that
+    worked before still reaches `op_grep` unchanged.
+    """
+    for index, slot, takes_all in _GREP_AROUND_NUMERIC_SLOTS:
+        if len(parts) <= index:
+            return ""
+        token = parts[index]
+        if not token or _is_ascii_int(token):
+            continue
+        if takes_all and token == _GREP_ALL_TOKEN:
+            continue
+        q = chr(39) * 3
+        nl = chr(10)
+        return (
+            f"ERROR: grep_around: the {slot} slot takes a number and got "
+            f"{token!r}.{nl}"
+            f"  Read as pattern={pattern!r} + path={path!r} — grep_around keeps "
+            f"both in fixed slots (PATTERN:PATH:N:LIMIT) and does not rejoin a "
+            f"':' back into the pattern, unlike grep and around.{nl}"
+            f"  If your pattern contains ':', that is the likely cause, and a "
+            f"payload says where it ends:{nl}"
+            f"    ./supertool 'grep_around:@-' <<'EOF'{nl}"
+            f"    pattern = {q}<pattern, colons and all>{q}{nl}"
+            f'    path = "<path>"{nl}'
+            f"    n = 3{nl}"
+            f"    limit = 10{nl}"
+            f"    EOF{nl}"
+            f"  (or grep_around:@file.toml — same shape the mutating ops "
+            f"use.){nl}"
+        )
+    return ""
+
+
 def _colon_split_hint(op: str, leading: str, path: str,
                       keys: Tuple[str, ...] = ("pattern",),
                       call_prefix: Optional[str] = None) -> str:
@@ -18007,10 +18073,15 @@ def _guard_help_state(argv: Sequence[str]) -> str:
                `gh issue list -h` and `git commit --help` all print usage and
                run nothing, so no op supersedes them (#1430).
     ``value``  the only help flag present sits immediately after another
-               flag, where it may be that flag's value rather than a request.
-               `git commit -m -h` commits with the message `-h`; `git push
-               origin -o -h main` pushes with the push-option `-h`. Measured on
-               git 2.46.2 / gh 2.50.0, not reasoned.
+               flag **that the arity table cannot call valueless**, where it
+               may be that flag's value rather than a request. `git commit -m
+               -h` commits with the message `-h`; `git push origin -o -h main`
+               pushes with the push-option `-h`. Measured on git 2.46.2 / gh
+               2.50.0, not reasoned. Where `_GUARD_VALUELESS_FLAGS` does have a
+               row for the preceding flag, the ambiguity is not real and the
+               answer is ``help`` (#1832) — that clause is the only edge in
+               this family that widens what is allowed, and its whole
+               justification is the table.
     ``none``   no help flag in the option slice at all.
 
     The v0.36.0 round-1 audit found `-h` un-claiming all 28 mappings from any
@@ -18051,9 +18122,27 @@ def _guard_help_state(argv: Sequence[str]) -> str:
         # in a value slot. Without it `git commit -m -h --help` was `value` —
         # measured, it prints usage and commits nothing (exit 129) — and the
         # comment above claimed an order-independence the code did not have.
+        #
+        # And a flag the arity table calls valueless is the same fact from the
+        # other side (#1832). `_GUARD_VALUELESS_FLAGS` was added on #1815/#1816
+        # for the four git subcommands the shipped presets gate, and it already
+        # carried what settles this: `-a` consumes no separate value, so `-h`
+        # behind it is a request for help, not `-a`'s argument. Until then
+        # `git commit -a -h` — usage, exit 129, commits nothing — was scored
+        # `value` and REFUSED toward `git-commit`, an op that commits: a
+        # misdirect, not merely a wrong block. `git commit -m -h` is unmoved,
+        # because `-m` is not in the row.
+        #
+        # This is the one edge in this family that turns a block into an allow,
+        # so it is only ever as good as the table. Every spelling the four rows
+        # generate — 101 of them — was run against git 2.46.2 and every one
+        # printed usage; `tests/test_guard_help_behind_valueless_flag_1832.py`
+        # re-derives that set from the table itself, so a value-taking flag
+        # added to a row later fails there rather than shipping as an allow.
         prev = options[i - 1] if i else ""
         if (i == 0 or not _guard_is_flag(prev)
-                or prev.split("=", 1)[0] in _GUARD_HELP_FLAGS):
+                or prev.split("=", 1)[0] in _GUARD_HELP_FLAGS
+                or _guard_flag_takes_no_value(argv, prev)):
             return "help"
         ambiguous = True
     return "value" if ambiguous else "none"
@@ -23760,30 +23849,96 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
     return result
 
 
+_TOML_LITERAL_OPENER = re.compile(r"=[ \t]*'''")
+
+
+def _toml_delimiter_early_close(raw: str) -> int:
+    """Offset of the ''' run that closed a value early, or -1 (#1830).
+
+    Checkable without a successful parse, which is the whole requirement: this
+    runs *because* the parse failed. Walk every `= '''` opener, find the run
+    that closes it, and look at what is left on that line. TOML allows only
+    whitespace or a `#` comment after a value, so any other text means the run
+    that closed the block was carried by the content and the remainder is being
+    read as syntax — which is the reported error, `Expected newline or end of
+    document after a statement`, pointing at a column nowhere near the cause.
+
+    Returns the offset of the closing run rather than a bool so the message can
+    name the payload line, the one coordinate the author can act on without
+    re-reading their own draft — the same argument as `_dbs_occurrences`.
+
+    An unterminated block is deliberately NOT reported here. It is a different
+    failure with its own message (`unterminated ''' for 'key'`), and the parity
+    trigger kept below still covers the shape #394 shipped for.
+    """
+    at = 0
+    while True:
+        m = _TOML_LITERAL_OPENER.search(raw, at)
+        if not m:
+            return -1
+        _end, run, nxt = _toml_multiline_close(raw, m.end(), chr(39), False)
+        if run < 0:
+            return -1
+        stop = raw.find(chr(10), nxt)
+        rest = (raw[nxt:] if stop < 0 else raw[nxt:stop]).strip()
+        if rest and not rest.startswith("#"):
+            return run
+        at = nxt
+
+
 def _toml_delimiter_hint(raw: str) -> str:
     """Explain a TOML parse failure caused by ''' inside a ''' block (#394).
 
     The parse error points at a column in the payload, which is where the
-    delimiter closed — not at the ''' in the content that closed it. An odd
-    number of ''' runs is exactly that shape: every literal block opens and
-    closes, so a stray one means the content carried its own.
+    delimiter closed — not at the ''' in the content that closed it.
+
+    **Parity is not the test.** #394 fired only on an odd number of ''' runs,
+    on the reasoning that every block opens and closes, so a stray one means
+    the content carried its own. That reasoning is sound and the check built
+    from it is not: a run *inside a value* breaks the parse at any count, and
+    the even case is the likely one for exactly the payloads most in need of
+    the hint — a document that quotes the literal-block syntax, once in `old`
+    and once in `new`. Hit twice in one agent run (#1830), and what the caller
+    got was a bare column number with no mention of the delimiter at all.
+
+    So the structural check leads and the parity one is kept behind it, because
+    the two catch different shapes: an unterminated block is odd and has no
+    early close to find.
 
     Silent when the payload has no ''' at all — then the failure is ordinary
     TOML and a delimiter lecture would be noise. Silent too when no ''' ever
     opens a value: `new = "isn't it''' odd"` carries the run harmlessly inside
     a basic string, and a delimiter lecture there sends the reader after the
-    wrong cause, which is worse than saying nothing at all.
+    wrong cause, which is worse than saying nothing at all. Silent, likewise,
+    on `old = '''x'''  # note`: a trailing comment is valid TOML, so trailing
+    text is a finding only when it is not one.
     """
-    if raw.count("'''") % 2 == 0:
+    if not _TOML_LITERAL_OPENER.search(raw):
         return ""
-    if not re.search(r"=[ \t]*'''", raw):
+    escapes = (
+        '    Use a \"\"\"basic\"\"\" block instead (escapes apply, so \\ doubles), '
+        "or the JSON payload form,\n"
+        "    which needs no delimiter: {\"path\": ..., \"old\": ..., \"new\": ...}\n"
+    )
+    at = _toml_delimiter_early_close(raw)
+    if at >= 0:
+        line = raw.count(chr(10), 0, at) + 1
+        col = at - (raw.rfind(chr(10), 0, at) + 1) + 1
+        return (
+            f"\n  {mark('↳')} a ''' run inside a value closed the block early — payload "
+            f"line {line}, column {col}.\n"
+            "    Everything after it on that line is then read as TOML syntax, which is "
+            "where the parse error above points.\n"
+            "    An EVEN number of ''' runs breaks this way too, so the count settles "
+            "nothing (#1830).\n"
+            + escapes
+        )
+    if raw.count("'''") % 2 == 0:
         return ""
     return (
         f"\n  {mark('↳')} the payload has an odd number of ''' runs — content containing "
         "''' closes the block early.\n"
-        '    Use a \"\"\"basic\"\"\" block instead (escapes apply, so \\ doubles), '
-        "or the JSON payload form,\n"
-        "    which needs no delimiter: {\"path\": ..., \"old\": ..., \"new\": ...}\n"
+        + escapes
     )
 
 
@@ -25805,6 +25960,14 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             ga_path = parts[2] if len(parts) > 2 and parts[2] else "."
             if len(parts) > 3 and parts[3] == _GREP_ALL_TOKEN:
                 return _receipt(header, _GREP_AROUND_ALL_IN_N_SLOT)
+            # Both numeric slots, before either int() runs (#1826). A colon in
+            # the PATTERN pushes its own tail into the N slot, and int() raised
+            # through dispatch as `invalid literal for int() with base 10` —
+            # the interpreter's sentence about the caller's search term, naming
+            # neither the cause nor an escape.
+            _ga_bad = _grep_around_numeric_refusal(parts, ga_pattern, ga_path)
+            if _ga_bad:
+                return _receipt(header, _ga_bad)
             ga_context = int(parts[3]) if len(parts) > 3 and parts[3] else 3
             ga_limit_tok = parts[4] if len(parts) > 4 and parts[4] else ""
             if ga_limit_tok == _GREP_ALL_TOKEN:
