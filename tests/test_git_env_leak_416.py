@@ -179,6 +179,11 @@ def test_pre_push_hook_scrubs_before_invoking_pytest(tmp_path):
 
     env = dict(os.environ)
     env["PYTHON"] = str(stub)
+    # The hook is invoked with no argv and no stdin, which used to reach the
+    # suite through the not-git fallback arm (#1802 retired it). This test is
+    # about the env scrub that happens *before* the suite runs, so it asks for
+    # the run explicitly rather than depending on the zero-ref default.
+    env["PREPUSH_FULL"] = "1"
     for name in EXPECTED_VARS:
         env[name] = str(repo / ".git")
     result = subprocess.run(

@@ -33,8 +33,6 @@ import json
 import re
 from pathlib import Path
 
-import pytest
-
 import supertool
 
 
@@ -42,18 +40,6 @@ _ROOT = Path(__file__).resolve().parent.parent
 
 #: The SessionStart budget `hooks/session-start.sh` is written against.
 _SESSION_CAP = 7168
-
-
-@pytest.fixture
-def shipped_config(monkeypatch: pytest.MonkeyPatch):
-    """The repo's own config — conftest hands tests `_CONFIG = {}`."""
-    cfg = json.loads((_ROOT / ".supertool.json").read_text(encoding="utf-8"))
-    supertool._merge_presets(cfg, str(_ROOT))
-    monkeypatch.setattr(supertool, "_CONFIG", cfg)
-    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
-    monkeypatch.setattr(supertool, "_CONFIG_PATH",
-                        str(_ROOT / ".supertool.json"))
-    return cfg
 
 
 # --- the SessionStart roster states the scope ------------------------------

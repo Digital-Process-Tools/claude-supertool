@@ -34,18 +34,6 @@ import supertool
 REPO_ROOT = Path(__file__).parent.parent
 
 
-@pytest.fixture
-def shipped_config(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """This repo's own .supertool.json — conftest hands tests `_CONFIG = {}`."""
-    cfg = json.loads((REPO_ROOT / ".supertool.json").read_text(encoding="utf-8"))
-    supertool._merge_presets(cfg, str(REPO_ROOT))
-    monkeypatch.setattr(supertool, "_CONFIG", cfg)
-    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
-    monkeypatch.setattr(supertool, "_CONFIG_PATH",
-                        str(REPO_ROOT / ".supertool.json"))
-    return cfg
-
-
 #: Both configs this repo ships. `.supertool.example.json` is the template a
 #: user copies, so a phantom there is one that propagates — and it had a third,
 #: `grep-no-exclude`, that #1245 did not count. Enumerating from the files

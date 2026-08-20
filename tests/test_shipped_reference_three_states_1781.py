@@ -149,16 +149,6 @@ def test_the_state_is_reset_between_lookups(tmp_path: Path, monkeypatch,
     assert "UNKNOWN" not in supertool.op_help("read")
 
 
-@pytest.fixture
-def shipped_config(monkeypatch: pytest.MonkeyPatch):
-    cfg = json.loads((REPO_ROOT / ".supertool.json").read_text(encoding="utf-8"))
-    supertool._merge_presets(cfg, str(REPO_ROOT))
-    monkeypatch.setattr(supertool, "_CONFIG", cfg)
-    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
-    monkeypatch.setattr(supertool, "_CONFIG_PATH", str(REPO_ROOT / ".supertool.json"))
-    return cfg
-
-
 def test_the_footer_number_is_what_ops_full_costs(shipped_config) -> None:
     """Measured: `ops` 3,676 and `ops:full` 74,838, so naming the larger number
     as "the description of every op" overstated the prose by the whole default
