@@ -23,8 +23,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 import supertool
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -46,22 +44,6 @@ def _load_claims_check():
 
 
 _claims_check = _load_claims_check()
-
-
-@pytest.fixture
-def shipped_config(monkeypatch: pytest.MonkeyPatch):
-    """conftest hands every test ``_CONFIG = {}`` (#1030).
-
-    Without this the listing takes its no-config fallback and `op_help` calls
-    every op undocumented — so the test would go red for the isolation, not for
-    the defect, and stay red after the fix.
-    """
-    cfg = json.loads((REPO_ROOT / ".supertool.json").read_text(encoding="utf-8"))
-    supertool._merge_presets(cfg, str(REPO_ROOT))
-    monkeypatch.setattr(supertool, "_CONFIG", cfg)
-    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
-    monkeypatch.setattr(supertool, "_CONFIG_PATH", str(REPO_ROOT / ".supertool.json"))
-    return cfg
 
 
 def test_repo_is_a_main_level_op_like_cwd():

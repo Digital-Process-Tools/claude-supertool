@@ -102,6 +102,7 @@ Besides documentation, `builtin-ops` entries can also override default behavior:
 | `grep` | `max_results` | 10               | Default result limit when not specified in the op                                        |
 | `grep` | `max_line_chars` | 500           | Max chars per output line (match or context); remainder shown as `… (+N chars)`           |
 | `grep` | `count_ceiling` | 1000           | How far past `LIMIT` a truncated grep keeps counting so it can state `N matches total`. Past the ceiling it says `N+ … (count capped at N)` rather than a number it did not reach. Never applied below `LIMIT`. Env: `SUPERTOOL_GREP_COUNT_CEILING` |
+| `grep` | `count_truncated` | 1 (switch)  | `0` → a truncated **rtk-delegated** grep skips its `grep -rc` census pass and reports `total unknown (the delegated count pass returned no total)` instead of an exact total. The census is a second full scan of the tree, bought only on truncation ([#1771](https://github.com/Digital-Process-Tools/claude-supertool/issues/1771)). No effect on the native walker, which is governed by `count_ceiling`. Env: `SUPERTOOL_GREP_COUNT_TRUNCATED` |
 | `grep` | `extensions`  | `[]` (all files) | Restrict grep to these file patterns (e.g. `["*.py", "*.js"]`). Empty = search all files |
 | `around` | `max_bytes` | 16000            | Max bytes for an `around:` context window (truncates at a line boundary)                 |
 | `grep_around` | `max_bytes` | 16000       | Max bytes for a `grep_around:` (and `grep:`-with-context) window                          |

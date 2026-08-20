@@ -22,11 +22,8 @@ roster, both asserted here so the split is a fact rather than a claim.
 """
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
-
-import pytest
 
 import supertool
 
@@ -35,17 +32,6 @@ _ROOT = Path(__file__).resolve().parent.parent
 #: Harness write tools. Matched on a word boundary rather than bare, or the
 #: trailer's own prose could never mention writing at all.
 _WRITE_TOOLS = re.compile(r"\b(Edit|Write|MultiEdit|NotebookEdit)\b")
-
-
-@pytest.fixture
-def shipped_config(monkeypatch: pytest.MonkeyPatch):
-    cfg = json.loads((_ROOT / ".supertool.json").read_text(encoding="utf-8"))
-    supertool._merge_presets(cfg, str(_ROOT))
-    monkeypatch.setattr(supertool, "_CONFIG", cfg)
-    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
-    monkeypatch.setattr(supertool, "_CONFIG_PATH",
-                        str(_ROOT / ".supertool.json"))
-    return cfg
 
 
 def _refusal(command: str = "git commit -m x") -> str:
