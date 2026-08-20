@@ -24,6 +24,11 @@ The **diff**, never the tree — the files a PR adds, copies or renames, where
 new rule from a ruff release then only reds a PR that is already touching the
 file, which is exactly the cost the workflow comment refuses to socialise.
 
+Since #1849 it also owns the files a PR **modifies**, measured against their own
+merge-base revision rather than checked whole. That half and the reason it is
+not scoped to touched lines live in `tests/test_lint_new_modified_files_1849.py`;
+what stays here is the `ACR` half and the three states.
+
 Two facts re-derived from the tree rather than taken from the issue, both of
 which change the design:
 
@@ -157,17 +162,27 @@ def test_a_file_the_diff_adds_is_checked(repo: Path) -> None:
     assert "F821" in out, out
 
 
-def test_a_file_the_diff_only_modifies_is_not_checked(repo: Path) -> None:
+def test_a_pre_existing_finding_in_a_modified_file_is_not_reported(
+    repo: Path,
+) -> None:
     """The whole point of scoping to the diff.
 
     `old.py` carries a dead import from before this branch existed. Reporting it
     is the tree-wide gate the workflow refuses, on somebody else's line.
+
+    Renamed from `..._only_modifies_is_not_checked` by #1849, which is a change
+    of fact and not of wording: a modified file *is* checked now, against its
+    own base revision. What has not changed -- and is the assertion -- is that
+    a finding already there is not reported. The old spelling asserted `"old.py"
+    not in out`, which the receipt now legitimately contains, because the
+    receipt lists what was checked. `"old.py:"` is the finding line: only a
+    finding puts `:line:col:` after the path.
     """
     (repo / "old.py").write_text(DEAD_IMPORT + "Y = 2" + chr(10), encoding="utf-8")
     _commit(repo)
     code, out = _gate(repo)
     assert code == gate.EXIT_OK, out
-    assert "old.py" not in out, out
+    assert "old.py:" not in out, out
 
 
 def test_a_file_nobody_touched_is_not_checked(repo: Path) -> None:
@@ -280,8 +295,11 @@ def test_the_finding_count_is_the_files_carrying_findings_not_the_files_checked(
     # substring -- which is #1661's defect written into #1629's test.
     headline = [line.strip() for line in out.splitlines()
                 if "carry lint findings" in line]
-    assert headline == ["1 of 2 file(s) this PR adds, copies or renames carry "
-                        "lint findings:"], out
+    # The noun moved with the scope in #1849: the denominator now covers the
+    # modified files too, so a headline still saying `adds, copies or renames`
+    # would understate what the run looked at -- the same misread one layer on.
+    assert headline == ["1 of 2 .py file(s) in this PR's diff carry lint "
+                        "findings:"], out
 
 
 def test_a_finding_line_that_names_no_file_leaves_the_count_unstated(
