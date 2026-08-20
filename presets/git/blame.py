@@ -9,7 +9,10 @@ import sys
 # loads scripts via importlib (no dir on path), so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _git_common import TIMEOUT_RC, _git, use_utf8_stdout  # noqa: E402
+from _git_common import (  # noqa: E402
+    NOT_A_REPO, TIMEOUT_RC, _git, probe_repo, unanswered_repo_lines,
+    use_utf8_stdout,
+)
 
 # `git blame` reads history for one file; `rev-parse --git-dir` is a stat. Both
 # are well under the shared 10s default, and neither is worth its own number.
@@ -45,13 +48,26 @@ def main() -> int:
     # Check git repo. The OSError guard stays local — `_git_common._git`
     # converts a stall into TIMEOUT_RC but lets a git that cannot start at all
     # raise, and "git not available" is this preset's own wording for it.
+    #
+    # Three states, not two (#1858). The comment directly above already named
+    # TIMEOUT_RC and the arm below still read it as *no*, which is how this
+    # site survived the first pass of the same fix: a stalled `rev-parse` said
+    # `not inside a git repository` about a repository that plainly is one.
+    # `trail.py`, `investigate.py` and `checkout.py` print the same sentence and
+    # are NOT in this population — all three gate it on `not a git repository`
+    # appearing in git's own stderr, and a timeout's stderr says `timed out
+    # after Ns`, so they fall through to the verbatim-relay arm already.
     try:
-        result = _git(["rev-parse", "--git-dir"])
-        if result.returncode != 0:
-            print("ERROR: not inside a git repository.")
-            return 1
+        inside, why = probe_repo(_git)
     except OSError:
         print("ERROR: git not available.")
+        return 1
+    if inside is None:
+        for msg in unanswered_repo_lines(why):
+            print(msg)
+        return 1
+    if not inside:
+        print(NOT_A_REPO)
         return 1
 
     start = max(1, line - n)

@@ -24,7 +24,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from _git_common import _git, _list_conflicts, use_utf8_stdout  # noqa: E402
+from _git_common import (  # noqa: E402
+    NOT_A_REPO, _git, _list_conflicts, probe_repo, unanswered_repo_lines,
+    use_utf8_stdout,
+)
 import _secrets  # noqa: E402  (a dying adapter puts credentials on stderr — #925)
 import _untrusted  # noqa: E402  (a failed child's stderr is untrusted text — #883)
 
@@ -926,8 +929,17 @@ def main() -> int:
             print(f"ERROR: BLOCKS list is empty, got {blocks_arg!r}")
             return 1
 
-    if _git(["rev-parse", "--git-dir"]).returncode != 0:
-        print("ERROR: not inside a git repository.")
+    # Three states, not two (#1858). `git-resolve` writes to conflicted files,
+    # so "I could not tell whether this is a repository" is the one answer that
+    # must not be spoken as "it is not one" — the caller is mid-merge.
+    inside, why = probe_repo(_git)
+    if inside is None:
+        for line in unanswered_repo_lines(why):
+            print(line)
+        print("  Nothing was resolved.")
+        return 1
+    if not inside:
+        print(NOT_A_REPO)
         return 1
 
     all_conflicts, unavailable = _list_conflicts()

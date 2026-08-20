@@ -40,12 +40,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _untrusted  # noqa: E402  (a hook's stream is somebody else's text — #1475)
 from _git_common import (  # noqa: E402
+    NOT_A_REPO,
+    TIMEOUT_RC,
     _first_error_line,
     _git,
+    probe_repo,
     query_open_mr,
     relayed_block,
     repo_label,
     st_hint,
+    unanswered_repo_lines,
     use_utf8_stdout,
 )
 
@@ -579,6 +583,22 @@ def _expand_all():
     The index read is required rather than best-effort for the same reason:
     under `--all` the caller typed no list, so a silently short one is a
     receipt that claims completeness it does not have.
+
+    **`--no-renames`, and it is load-bearing (#1865).** Rename detection is on
+    by default, so for a staged `git mv a b` this read prints `b` alone — the
+    deletion of `a` is folded into a rename entry and its name never appears.
+    That silently subtracted from the set the paragraph above had just decided
+    to include: `--all` committed the added half of the move, left the deletion
+    staged, and landed a tree holding two copies of the file. Half a rename
+    compiles, imports, and passes any test that only touches the new path.
+    Measured on git 2.46.2 — `--name-only` prints `b`, `--name-only
+    --no-renames` prints `a` and `b`.
+
+    Every index read in this file carries the flag for the same reason. The two
+    `--diff-filter=D` reads need it most: with detection on, a rename is not
+    reported as a deletion at all, so the #324 drop that keeps a gone-from-disk
+    path out of `git add` did not fire and naming both halves of a move aborted
+    with `fatal: pathspec 'a' did not match any files`.
     """
     modified, untracked, unknown = _worktree_changes()
     if unknown:
@@ -588,7 +608,7 @@ def _expand_all():
             "  What is dirty is UNKNOWN, so there is no list to accept.",
             "  Name the paths explicitly: git-commit:::MESSAGE:::PATHS",
         ]
-    idx = _git(["diff", "--cached", "--name-only", "-z"])
+    idx = _git(["diff", "--cached", "--name-only", "--no-renames", "-z"])
     if idx.returncode != 0:
         # `str.split()` cannot be forged with a separator — `split(None)` uses
         # the *Unicode* whitespace predicate, so U+2028, U+0085 and the
@@ -860,7 +880,7 @@ def _staged_elsewhere(git_fn=None):
     checks the return code itself.
     """
     run = _git if git_fn is None else git_fn
-    res = run(["diff", "--cached", "--name-only", "-z"])
+    res = run(["diff", "--cached", "--name-only", "--no-renames", "-z"])
     if res.returncode != 0:
         return []
     return _z_paths(res.stdout)
@@ -882,7 +902,7 @@ def _still_staged_lines(git_fn=None):
     receipt contradicted itself out loud.
     """
     run = _git if git_fn is None else git_fn
-    left = run(["diff", "--cached", "--name-only", "-z"])
+    left = run(["diff", "--cached", "--name-only", "--no-renames", "-z"])
     if left.returncode != 0:
         said = _untrusted.flat(" ".join((left.stderr or "").split())[:120])
         return [
@@ -1020,9 +1040,18 @@ def main() -> int:
     # `merge.py`'s head_before/head_after — which look identical and are
     # deliberately not — nothing between these two points can move the git dir,
     # so there is one question here and it is now asked once.
-    git_dir_res = _git(["rev-parse", "--git-dir"])
-    if git_dir_res.returncode != 0:
-        print("ERROR: not inside a git repository.")
+    # Three states (#1858): the probe answering "no" and the probe not
+    # answering at all are different facts, and this op is about to WRITE. The
+    # git dir travels with the answer so the merge probe below still reads it
+    # from one call rather than two.
+    inside, git_dir = probe_repo(_git)
+    if inside is None:
+        for line in unanswered_repo_lines(git_dir):
+            print(line)
+        print("  Nothing was staged and nothing was committed.")
+        return 1
+    if not inside:
+        print(NOT_A_REPO)
         return 1
 
     head_before = _head_sha()
@@ -1034,7 +1063,7 @@ def main() -> int:
     # during a merge`, exit 128). A merge commit is whole-index by
     # construction, so the scoping stands down there rather than turning a
     # working call into a fatal one.
-    _gd = git_dir_res.stdout.strip()
+    _gd = git_dir
     in_merge = bool(_gd) and (
         os.path.exists(os.path.join(_gd, "MERGE_HEAD"))
         or os.path.exists(os.path.join(_gd, "CHERRY_PICK_HEAD"))
@@ -1076,7 +1105,8 @@ def main() -> int:
         # an empty set here answers "git does not know it" for the one state
         # where the ambiguity is live and the deletion is about to be
         # committed under a sentinel reading of its own name (#324's shape).
-        gone = _git(["diff", "--cached", "--diff-filter=D", "--name-only", "-z"])
+        gone = _git(["diff", "--cached", "--diff-filter=D", "--name-only",
+                     "--no-renames", "-z"])
         gone_set = set(_z_paths(gone.stdout))
         if _known_to_git(_ALL_TOKEN, gone_set):
             mod, untr, unk = _worktree_changes()
@@ -1106,7 +1136,7 @@ def main() -> int:
         # dropped from the add list and `git add` aborts on a file that is
         # gone from disk — #324, alive for every non-ASCII path.
         deleted = _git(["diff", "--cached", "--diff-filter=D", "--name-only",
-                        "-z"])
+                        "--no-renames", "-z"])
         staged_deletions = set(_z_paths(deleted.stdout))
         # #751 — a PATH that is neither path-shaped nor known to git is far more
         # likely the tail of a ':'-split message than a file. Refuse before
@@ -1141,7 +1171,31 @@ def main() -> int:
     # git's `nothing added to commit`, exit 1, under a header that has already
     # printed `Staged: 1 path(s)`.
     scope = ["--"] + paths if (paths and not in_merge) else []
-    staged = _git(["diff", "--cached", "--name-only", "-z"] + scope)
+    staged = _git(["diff", "--cached", "--name-only", "--no-renames", "-z"] + scope)
+    # `TIMEOUT_RC` before the fold, and this is the worst-placed instance of
+    # #1858's class in the file: `git add` has ALREADY run, twenty lines up.
+    # A stall here therefore reaches `_nothing_staged_lines`, which re-derives
+    # from fresh calls and — with the paths now staged and the worktree
+    # consequently clean — prints `ERROR: nothing staged — the working tree is
+    # clean, so there is nothing to commit.` over an index this very op just
+    # filled. Not a missing section: a positive false claim about the world,
+    # made by the op that caused the state it is denying.
+    #
+    # Found by the #1858 audit, not by the sweep, because it does not print
+    # `not inside a git repository` and so matched no grep the sweep ran. It is
+    # in scope for the same issue: its work item is every `returncode != 0`
+    # with a `TIMEOUT_RC` in reach, not every copy of one sentence.
+    if staged.returncode == TIMEOUT_RC:
+        print("ERROR: could not tell what is staged — `git diff --cached` did "
+              "not answer (%s)."
+              % _untrusted.flat((staged.stderr or "").strip()
+                                or "exit %d" % TIMEOUT_RC))
+        print("  NO COMMIT WAS MADE. The index was not read, so this is not a "
+              "claim that it is empty.")
+        if paths:
+            print("  Anything this call staged is STILL STAGED. Re-run, or "
+                  "inspect with: " + st_hint("git-status"))
+        return 1
     if staged.returncode != 0 or not staged.stdout.strip():
         for line in _nothing_staged_lines(named):
             print(line)

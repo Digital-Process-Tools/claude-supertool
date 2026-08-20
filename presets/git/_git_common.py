@@ -162,6 +162,93 @@ def _git_verbatim(args: list[str], timeout: int | None = None) -> subprocess.Com
     )
 
 
+#: The sentence seven ops print when git says this is not a repository. Three
+#: more print it too — `trail.py`, `investigate.py`, `checkout.py` — but reach
+#: it by matching git's own stderr, so they are not callers of `probe_repo`.
+NOT_A_REPO = "ERROR: not inside a git repository."
+
+
+def probe_repo(git_fn=None, args: list[str] | None = None) -> tuple[bool | None, str]:
+    """Is the cwd inside a git repository — established, not inferred (#1858).
+
+    *git_fn* is the CALLER's `_git`, and passing it is not ceremony. Every
+    preset here wraps or rebinds that name and some of them hang behaviour off
+    it — `status.py`'s records each unanswered call in `_UNANSWERED` so the
+    footer can name it, and the whole suite mocks git at that seam. A helper
+    that reached for `_git_common._git` directly would silently escape both:
+    the probe would go unrecorded in the very op whose footer exists to record
+    it, and three existing tests that mock `mod._git` would keep passing while
+    exercising real git. Defaulting to this module's own `_git` is for a caller
+    that has no seam of its own.
+
+    Three states, because there are three:
+
+    * `(True, <stdout>)` — git answered yes, and the answer is carried so a
+      caller that wants the git dir does not ask twice.
+    * `(False, "")` — git answered no.
+    * `(None, <why>)` — **the call did not answer**, and nothing has been
+      established about the repository at all.
+
+    The third one is the whole point. Seven ops opened by reading this probe's
+    `returncode != 0` as *no* and printing `not inside a git repository` — over
+    a repository that was mid-merge with live conflict markers on disk. That is
+    not a missing section, it is a positive false claim about the world, and a
+    caller told it has no reason to retry.
+
+    The failure path is deliberately unchanged: git exiting non-zero for its own
+    reasons still returns `False` and still gets the loud refusal. A fix that
+    folded every non-zero return into "could not tell" would have bought the
+    false claim's silence with a real refusal's silence, which is the more
+    expensive of the two.
+
+    *why* is flattened even though this arm is reached only on `TIMEOUT_RC`,
+    where the stderr is `_git`'s own (`timed out after Ns`). The first cut said
+    so and left it raw, and #1475's census caught it: "our own text by
+    construction" is a claim about a call graph, and the whole point of that
+    census is that such claims go stale one refactor later. `flat` is
+    idempotent, so being right costs nothing and being wrong costs a forged
+    line at column 0 in a receipt.
+    """
+    run = _git if git_fn is None else git_fn
+    res = run(args or ["rev-parse", "--git-dir"])
+    if res.returncode == TIMEOUT_RC:
+        return None, (_untrusted.flat(res.stderr.strip())
+                      or f"git exited {TIMEOUT_RC}")
+    if res.returncode != 0:
+        return False, ""
+    # Flattened by the same argument `repo_label` uses ~290 lines below (#1557,
+    # #1475): git prints the directory's real name here, and a repository whose
+    # path carries a line separator turns any line rendering it into two, the
+    # second at column 0. Today `commit.py` only joins `MERGE_HEAD` onto this
+    # and never prints it — but "no caller renders it" is a claim about a call
+    # graph, which is exactly what the census exists to stop anyone relying on.
+    #
+    # The failure direction is checked, not assumed: on a path `flat` would
+    # alter, the join stops matching, `in_merge` reads False, the pathspec
+    # scoping stays on, and git refuses the partial commit outright. Loud.
+    return True, _untrusted.flat(res.stdout.strip())
+
+
+def unanswered_repo_lines(why: str, probe: str = "git rev-parse --git-dir") -> list[str]:
+    """The third state's render, identical in every op that prints it (#1858).
+
+    One wording in one place because the sentence is the fix: what a caller does
+    next depends entirely on being able to tell "you are not in a repository"
+    from "I could not find out". Deliberately does NOT contain the string
+    `not inside a git repository`, so a reader — and a test — cannot mistake one
+    for the other by substring.
+    """
+    # `why` is flattened here as well as at its source: `status.py` builds its
+    # own from `branch_result.stderr` and never passes through `probe_repo`, so
+    # the render is the only place that covers every caller. Idempotent (#1475).
+    return [
+        f"ERROR: could not tell whether this is a git repository — "
+        f"`{probe}` did not answer ({_untrusted.flat(why)}).",
+        "  Nothing was inspected. That is not the same as being outside a "
+        "repository, so re-run rather than acting on this.",
+    ]
+
+
 def reject_fetch_option(remote: str, ref: str) -> str:
     """Non-empty error when a fetch (remote, ref) pair would smuggle an option.
 

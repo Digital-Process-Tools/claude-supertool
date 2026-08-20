@@ -36,7 +36,10 @@ import sys
 # loads scripts via importlib (no dir on path), so add it explicitly.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from _git_common import _git, repo_label, use_utf8_stdout  # noqa: E402
+from _git_common import (  # noqa: E402
+    NOT_A_REPO, _git, probe_repo, repo_label, unanswered_repo_lines,
+    use_utf8_stdout,
+)
 import _untrusted  # noqa: E402  (a diff's paths and added lines are not our text — #1130)
 
 MAX_FILES = 60
@@ -362,8 +365,14 @@ def main() -> int:
     arg1 = positional[0] if len(positional) > 0 else ""
     arg2 = positional[1] if len(positional) > 1 else ""
 
-    if _git(["rev-parse", "--is-inside-work-tree"]).returncode != 0:
-        print("ERROR: not inside a git repository.")
+    inside, why = probe_repo(_git, ["rev-parse", "--is-inside-work-tree"])
+    if inside is None:
+        for line in unanswered_repo_lines(
+                why, probe="git rev-parse --is-inside-work-tree"):
+            print(line)
+        return 1
+    if not inside:
+        print(NOT_A_REPO)
         return 1
 
     if arg1 == "staged":
