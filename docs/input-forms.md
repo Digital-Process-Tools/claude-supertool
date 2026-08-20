@@ -252,14 +252,16 @@ Both intents have a spelling — write **one** backslash to continue the line (a
 block will not eat it), or spell the pair in a `"""basic"""` block, where each doubles
 to four.
 
-### A doubled backslash in a field that gets written is refused
+### An even run of backslashes in a field that gets written is refused
 
-A `'''` literal block carrying `\\` in a field whose bytes land on disk — `new`
-and `content` — is refused before any op runs
-([#1087](https://github.com/Digital-Process-Tools/claude-supertool/issues/1087)).
-A literal block processes no escapes, so each pair reaches the file as two
-characters, and that file then passes every validator: two backslashes are legal
-in nearly every language this repo edits. The write is wrong only in string
+A `'''` literal block carrying an EVEN run of backslashes in a field whose bytes land
+on disk — `new` and `content` — is refused before any op runs
+([#1087](https://github.com/Digital-Process-Tools/claude-supertool/issues/1087),
+[#1860](https://github.com/Digital-Process-Tools/claude-supertool/issues/1860)).
+A literal block processes no escapes, so the run reaches the file at its full
+length, and that file then passes every validator: backslashes are legal
+in nearly every language this repo edits. Odd runs — one, three, five — still
+write unrefused, because doubling cannot produce one. The write is wrong only in string
 contents, so nothing downstream fires and the author finds out from behaviour,
 usually a CI round later.
 
@@ -275,13 +277,13 @@ Each one is reported as `N/M at payload line L, column C`, with an excerpt of
 your own line centred on the pair and a caret under it:
 
 ```text
-  ↳ `content` -- 3 occurrences of `\\`, all shown:
-      1/3 at payload line 4, column 18:
+  ↳ `content` -- 3 even backslash runs, all shown:
+      1/3 at payload line 4, column 18 -- a run of 2:
           A = re.compile(r'\\d+')
                            ^^
-      2/3 at payload line 6, column 17:
-          B = 'x' * 40 + '\\n' + 'y'*40
-                          ^^
+      2/3 at payload line 6, column 17 -- a run of 4:
+          B = 'x' * 40 + '\\\\n' + 'y'*40
+                          ^^^^
 ```
 
 The retry on this route is the whole payload, so a refusal that named one of

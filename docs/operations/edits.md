@@ -75,7 +75,7 @@ A multi-line anchor is scored on the **whole block**, and it names the window ra
 
 ```
 ERROR: old string not found in app.py
-  ↳ nearest match at lines 804-806 (91%): read:app.py:804-806
+  ↳ nearest match at lines 804-806 (91%, differs in 2 of 3 lines): read:app.py:804-806
 ```
 
 Until #1489 the score was `SequenceMatcher.ratio()` of the **first non-blank line of `old`** alone. For a multi-line anchor that line is usually boilerplate — a `def`, a `}`, an import — so the run that filed the issue was pointed at a line ~800 away from the right one, at an identical 68%, twice. The number was not too low: it was a fact about one line of an anchor the caller had written four lines of, and raising the floor would only have withheld the good hints alongside the bad. Two passes replace it — a sliding line-multiset over every window of the anchor's height to locate candidates, then the character ratio on the top ones, so the percentage printed still means what it used to.
@@ -96,7 +96,30 @@ ERROR: old string not found in app.py
 
 Until [#1614](https://github.com/Digital-Process-Tools/claude-supertool/issues/1614) that floor was unreachable for any anchor over 20 lines. Rival candidates within the anchor's own height of the leader are one neighbourhood rather than two answers, and for a tall anchor all 20 sampled windows sit inside one such neighbourhood by arithmetic — so the tie was consulted only on a list that was empty by construction, and a 30-line anchor over 34 tied windows got `nearest match at lines 1-30 (98%)`: one sample of 20, named as a fact, ~470 lines from the block the caller wrote. More tied than scored is now its own reason to decline.
 
-That third state exists because a confidently wrong line number costs more than none: the caller reads the wrong 30 lines and re-anchors against them. It also fires when the scan's cost budget runs out before the file does — a best-so-far over a prefix is not a best, and reporting it as one is the defect this whole hint is about. The budget is what keeps the diagnostic off the critical path on a file the line-count guard cannot see: 60 lines of a 40 KB minified bundle took over 30 minutes before it existed. A percentage computed over a clipped line says so in the same breath: `(100%, scored on the first 1000 characters)`.
+### The percentage never claims identity, and the difference is named
+
+`f"{ratio:.0%}"` rounds. A twelve-line anchor differing from the file by three trailing spaces scores `0.9976209357652657`, which renders as `100%` — printed directly under `old string not found`, so the receipt held two sentences a caller cannot both believe ([#1855](https://github.com/Digital-Process-Tools/claude-supertool/issues/1855)). Nothing was normalising anything: the metric was honest and the render was not, which is why the fix is in one message and not in the matcher.
+
+A near miss now reports `>99%` — true, and unreadable as identity — and the receipt names **what kind** of difference it is, because the caller's question is never "how close" but "what do I look for":
+
+```
+ERROR: old string not found in app.py
+  ↳ nearest match at lines 114-125 (>99%, differs only in whitespace): read:app.py:114-125
+  ↳ nearest match at lines 114-125 (95%, differs in 1 of 12 lines): read:app.py:114-125
+```
+
+Those two send the reader to different places, and the reported cost of not distinguishing them was one extra read call spent finding a one-line difference the scan had already measured and thrown away. The class has a third state, and it is the one the issue is really about. `splitlines()` drops line endings and the hint strips blank lines off both ends of the anchor, so the compared lines can be **equal** while the byte comparison that refused the edit was not. The percentage is then a true 100, and capping it would be a lie in the other direction — so the receipt keeps the number and says what it is a 100 *of*:
+
+```
+ERROR: old string not found in app.py
+  ↳ nearest match at lines 114-125 (100%, identical line-for-line, so the difference is outside the compared text: line endings, or blank lines at the ends of `old`): read:app.py:114-125
+```
+
+Leaving that one bare would have left the filed contradiction alive in the single case where the figure really is 100.
+
+A **single-line** anchor gets the percentage and the whitespace or identical clause, but no count: the hint already prints the file's line verbatim beside the number, and `differs in 1 of 1 lines` is the only count the arithmetic allows. The count says how many anchor lines matched nowhere in the window, not how many differ at their own index — a one-line insertion shifts everything after it, and a positional count would report that as eleven differences.
+
+That third state exists because a confidently wrong line number costs more than none: the caller reads the wrong 30 lines and re-anchors against them. It also fires when the scan's cost budget runs out before the file does — a best-so-far over a prefix is not a best, and reporting it as one is the defect this whole hint is about. The budget is what keeps the diagnostic off the critical path on a file the line-count guard cannot see: 60 lines of a 40 KB minified bundle took over 30 minutes before it existed. A percentage computed over a clipped line says so in the same breath: `(>99%, scored on the first 1000 characters, differs in 1 of 12 lines)`.
 
 ## Ops
 
@@ -290,17 +313,17 @@ new = '''PAT = re.compile("\\d+")'''
 
 writes `\\d+`, not `\d+`. Same for a newline: `\n` inside a literal block is the two characters `\` and `n`, never a line break — type a real newline instead. Nothing on this route evaluates an expression, so a function call written into payload content lands as its own characters; when you need an escape sequence processed, use a basic block, where TOML escapes do apply. An ESC is spelled `\u001b` there; `\x1b` is not a TOML escape at all, so it is refused at parse time rather than landing wrong.
 
-The safe half is `old`: a doubled anchor cannot match, the op declines, and the skip is counted. That half stays a **note**, and it now names the field, the count and the payload line the first pair sits on. The half that is not safe is `new` and `content` — the anchor matches, the bytes land, the receipt says `edited`, and the validators agree, because two backslashes are legal in nearly every language this repo edits. That half is **refused** before any op runs ([#1087](https://github.com/Digital-Process-Tools/claude-supertool/issues/1087)), and the refusal locates every occurrence rather than the first:
+The safe half is `old`: a doubled anchor cannot match, the op declines, and the skip is counted. That half stays a **note**, and it now names the field, the count and the payload line the first run sits on. The note's reach is the scanner's, so it widened with the refusal: a doubled anchor is noted at four and six exactly as at two. The half that is not safe is `new` and `content` — the anchor matches, the bytes land, the receipt says `edited`, and the validators agree, because two backslashes are legal in nearly every language this repo edits. That half is **refused** before any op runs ([#1087](https://github.com/Digital-Process-Tools/claude-supertool/issues/1087)), and the refusal locates every occurrence rather than the first:
 
 ```text
-ERROR: @file payload refused (p.toml): a ''' literal block carries `\\` in a field that is WRITTEN to the file, and a literal block processes NO escapes -- each pair would reach disk as TWO backslashes, pass every validator, and be wrong only in string contents.
-  ↳ `new` -- 1 occurrence of `\\`, all shown:
-      1/1 at payload line 3, column 28:
+ERROR: @file payload refused (p.toml): a ''' literal block carries an EVEN run of backslashes (\\, \\\\, ...) in a field that is WRITTEN to the file, and a literal block processes NO escapes -- the run would reach disk at its full length, pass every validator, and be wrong only in string contents. Each occurrence below names the run it found.
+  ↳ `new` -- 1 even backslash run, all shown:
+      1/1 at payload line 3, column 28 -- a run of 2:
           PAT = re.compile("\\d+")
                             ^^
   ↳ TWO OPPOSITE fixes, and nothing here can tell which you meant -- decide per occurrence, then send the payload once:
-      meant ONE backslash (escape reflex -- a literal block eats nothing): write one.
-      meant TWO (a shell printf format, a Windows path, a LaTeX line break): add `literal_backslashes = true` at the top level of the payload, and this refusal becomes a decision you recorded. It applies to the WHOLE payload -- every op, every field.
+      meant HALF the run (escape reflex -- a literal block eats nothing, so a doubled 1 arrives as 2 and a doubled 2 as 4): write half of what is caretted above.
+      meant the run AS WRITTEN (a shell printf format, a Windows path, a LaTeX line break): add `literal_backslashes = true` at the top level of the payload, and this refusal becomes a decision you recorded. It applies to the WHOLE payload -- every op, every field.
 ```
 
 That is the refusal. This section used to print the **note** shape here instead, for a `new` field — which has taken the refusal arm since #1087, so the example had been showing the wrong arm.
@@ -312,7 +335,9 @@ Where the excerpt has to be flattened — a `U+2028` inside the value, say ([#15
 Neither arm is a **correction**: nothing is rewritten either way. Some payloads genuinely want two characters, and collapsing them would guess at intent in the write path, where a wrong guess costs more than the bug it replaces. Two things are deliberately not flagged at all, because a guard that fires on the correct spelling is one authors stop reading:
 
 - a `"""basic"""` block, where `\\` *is* one backslash and is the right spelling;
-- a run of three or more, which was counted rather than produced by reflex.
+- an ODD run — one, three, five — which doubling cannot produce: doubling one gives two and doubling two gives four.
+
+The second bullet used to read "three or more, which was counted rather than produced by reflex", and the rule was a run of *exactly* two. Four was produced by reflex twice ([#1860](https://github.com/Digital-Process-Tools/claude-supertool/issues/1860)), by callers who had just read this very refusal and doubled again to escape the escape — the refusal manufactured its own blind spot, and its stated premise ("would reach disk at its full length, pass every validator, and be wrong only in string contents") was always as true of four as of two. The test is evenness now, and the receipt names the run length it found rather than saying `\\`.
 
 To write one backslash, write one. To write a pair deliberately in `old` — the note arm — keep the literal block; the note is only a note. To write one deliberately in `new` or `content`, the literal block alone is not enough, because that arm is refused: set `literal_backslashes = true` at the top level of the payload, or say it in a `"""basic"""` block, where each backslash doubles.
 
