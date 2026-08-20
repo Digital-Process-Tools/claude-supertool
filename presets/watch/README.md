@@ -417,10 +417,15 @@ Each `watch` invocation forks a detached poller process. The process IS the
 subscription — no central config to manage:
 
 - PID file per active watcher: `/tmp/supertool-watch-{source}__{id}.pid`
-- `unwatch` reads the PID file, SIGTERM (then SIGKILL after 200ms), removes the file
+- `unwatch` reads the PID file, SIGTERM (then SIGKILL after 500ms), removes the file
 - Stale PIDs swept by the `watches` op automatically
 - Pollers auto-stop when the source declares the target terminal
   (`is_terminal(state) -> bool`)
+- Pollers also stop after `MAX_CONSECUTIVE_POLL_FAILURES` (120) failed polls in
+  a row, emit `watcher_gave_up`, release the pidfile and **keep** their state
+  file so the board can say why ([#1852](https://github.com/Digital-Process-Tools/claude-supertool/issues/1852)).
+  One successful poll starts the count again; a source overrides the bound with
+  `MAX_CONSECUTIVE_FAILURES`. Full write-up in `docs/presets/watch.md`.
 
 ## Writing a new source
 

@@ -758,6 +758,86 @@ def _silence_stdio() -> None:
         pass
 
 
+#: How many polls in a row may raise before a poller hands its slot back.
+#:
+#: Generous on purpose, and finite on purpose. The failure this bounds is not a
+#: blip -- it is an expired token, a deleted MR, a renamed project, a source
+#: module that no longer imports. Every one of those fails identically forever,
+#: and before #1852 the loop retried them until a reboot: 22 pollers alive at
+#: once on one machine, the oldest eight days into watching an MR that had
+#: stopped being interesting.
+#:
+#: A count rather than a wall-clock age, because a count is what the loop can
+#: observe without a clock it would then have to trust across a suspend. At the
+#: default 30s interval this is an hour of *uninterrupted* failure, which
+#: outlasts a VPN reconnect, a runner restart and a GitLab maintenance window
+#: and does not outlast a credential that is gone.
+#:
+#: A source that knows its own failure modes better overrides it by exposing
+#: `MAX_CONSECUTIVE_FAILURES`. Deliberately not an environment variable: the
+#: poller is reached through a fork and an exec, so an env var read here is one
+#: an operator has to have set in whatever shell spawned radar, and no source
+#: has asked for the knob. The per-source attribute is the narrower answer and
+#: is where the knowledge actually lives.
+MAX_CONSECUTIVE_POLL_FAILURES = 120
+
+#: What a poller says on its way out when the bound above is reached.
+#:
+#: The dispatcher's event, not a source's, and it is deliberately in no
+#: `events.json`: those files declare what a source can emit and what `only=`
+#: can select, and neither is true of this key. It bypasses `only` for the same
+#: reason -- a watcher that filtered away its own obituary would stop, release
+#: its slot and tell nobody, which is the silence this issue is about, one layer
+#: further in.
+GAVE_UP_EVENT = "watcher_gave_up"
+
+
+def _wait_interruptible(seconds: int, stop_flag: dict[str, bool]) -> None:
+    """Wait `seconds`, in one-second steps, giving up early on a stop.
+
+    One call for both branches of the poll loop, because they disagreed. The
+    success branch already stepped a second at a time and checked the flag
+    between steps; the error branch was a single `time.sleep(interval)`, and
+    PEP 475 resumes an interrupted sleep for its remaining time rather than
+    returning early. So `unwatch` was honoured within a second by a poller that
+    was working and ignored for up to a full interval by one that was not --
+    which is exactly the poller an operator is most likely to be stopping.
+    """
+    for _ in range(max(0, int(seconds))):
+        if stop_flag["stop"]:
+            return
+        time.sleep(1)
+
+
+def _record_give_up(source: str, watcher_id: str, failures: int,
+                    message: str) -> None:
+    """Write why coverage ended, then say so on the channel.
+
+    The state file is *kept*, unlike a terminal exit, and the two differ for a
+    reason. A terminal watcher has nothing left to explain -- the MR merged --
+    so its state file is only a way for a consumer that globs them to report a
+    merged MR as an active watch. A give-up is the opposite: `last_error` and
+    the count below are the entire record of why the slot went quiet, and
+    without them the board can render a stopped watcher but not a re-armable
+    one. `gave_up` is its own key rather than an inference from `last_error`,
+    because a poller that is failing and still trying writes `last_error` too.
+    """
+    full = transport.read_state(source, watcher_id)
+    full["gave_up"] = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "after_failures": failures,
+        "message": message,
+    }
+    transport.write_state(source, watcher_id, full)
+    transport.emit_event(
+        source, watcher_id, GAVE_UP_EVENT,
+        {"after_failures": failures, "last_error": message},
+        notify_title=f"watch: {source}:{watcher_id} stopped",
+        notify_message=(f"{failures} consecutive failed polls. "
+                        f"Last error: {message}"),
+    )
+
+
 def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
     """The poll loop. Writes PID file, runs until terminal or signal.
 
@@ -799,6 +879,14 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
     interval = int(getattr(poller, "INTERVAL", 30))
     stop_flag = {"stop": False}
     reached_terminal = False
+    # The error branch's own bound (#1852). A failed poll produces no new state,
+    # so the terminal check below cannot be consulted from it — which is exactly
+    # why it retried forever. Counted here rather than inferred from the state
+    # file: the count has to reset on the first success, and a file another
+    # process may rewrite is not where a loop invariant belongs.
+    max_failures = int(getattr(poller, "MAX_CONSECUTIVE_FAILURES",
+                               MAX_CONSECUTIVE_POLL_FAILURES))
+    consecutive_failures = 0
 
     def _handle_sigterm(*_a):
         stop_flag["stop"] = True
@@ -811,12 +899,28 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
             try:
                 events, new_state = poller.poll(state, ctx)
             except Exception as e:  # noqa: BLE001 — never crash, log to state
+                consecutive_failures += 1
                 full = transport.read_state(source, watcher_id)
                 full["last_error"] = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                                       "message": str(e)}
+                                       "message": str(e),
+                                       "consecutive": consecutive_failures}
                 transport.write_state(source, watcher_id, full)
-                time.sleep(interval)
+                if consecutive_failures >= max_failures:
+                    # Out through the same `finally` a terminal exit takes, so
+                    # the pidfile is released and the slot is handed back. Not
+                    # `reached_terminal`: that clears the state file, and the
+                    # state file is the only record of why this stopped.
+                    _record_give_up(source, watcher_id,
+                                    consecutive_failures, str(e))
+                    break
+                _wait_interruptible(interval, stop_flag)
                 continue
+
+            # Whatever went wrong is over. The bound is on a *run* of failures,
+            # so a flaky forge that answers one poll in ten keeps its watcher —
+            # the guard is against a failure that will never clear, not against
+            # a failure rate.
+            consecutive_failures = 0
 
             for ev in events:
                 if only and ev.get("event") not in only:
@@ -844,10 +948,7 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
                 reached_terminal = True
                 break
 
-            for _ in range(interval):
-                if stop_flag["stop"]:
-                    break
-                time.sleep(1)
+            _wait_interruptible(interval, stop_flag)
     finally:
         # Only if this process still owns the slot. A poller shutting down
         # slowly, whose slot was meanwhile reclaimed, must not unlink its

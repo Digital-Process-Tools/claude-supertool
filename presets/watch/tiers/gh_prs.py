@@ -163,6 +163,20 @@ snapshot = _load("radar_snapshot", _HERE / "_snapshot.py")
 # reach a module under `watch/tiers/`.
 _auth_probe = _load("radar_auth_probe", _WATCH.parent / "_auth_probe.py")
 
+# The failure *kinds*, shared with the GitLab tier for the same reason the
+# predicate above is shared — and reached by `import`, not `_load`, because
+# `_load` would give each tier its own `RadarError` class object and an
+# `except` written against one would never fire on the other (#1847).
+sys.path.insert(0, str(_HERE))
+import _radar_errors  # noqa: E402
+
+#: This tier's failure vocabulary, from the one copy. Re-exported under the
+#: names callers already use, so `except gh_prs.RadarError` keeps working and
+#: is now the *same* class as `except gl_mrs.RadarError`.
+RadarError = _radar_errors.RadarError
+RadarUnreachable = _radar_errors.RadarUnreachable
+RadarUnconfigured = _radar_errors.RadarUnconfigured
+
 #: Re-exported so this tier's own vocabulary is readable from one place, and so
 #: the structural test that no marker is a bare status number has a name to
 #: reach for that does not depend on how the module is loaded.
@@ -234,60 +248,22 @@ RADAR_OPTIONS = {"quiet_when_healthy", "default_branch", "reconcile_cap",
 RADAR_QUIET_DEFAULT = False
 
 
-class RadarError(RuntimeError):
-    """The board could not be built. Never degrade to 'all green'."""
-
-
-class RadarUnreachable(RadarError):
-    """The board could not be built because GitHub was not reached (#1568).
-
-    A subclass, so every existing `except RadarError` — radar's tier isolation,
-    `radar_state`'s filter arm — keeps behaving exactly as it did. What it adds
-    is a state a *caller* can branch on: "the API did not answer" is not the
-    same fact as "the board says X", and until this they arrived as one type
-    carrying different prose.
-
-    The consumer that needed the distinction is the suite. A live `gh` call in
-    the default test selection turned a busy socket into a red leg that read as
-    a verdict about the diff (#1568); `tests/_live_gh.py` skips countably on
-    this class and re-raises everything else. A caller that matched on the
-    message instead would drift the day one of these strings is reworded, which
-    is the predicate `tests/_lint_budget.py` argues against at length.
-
-    Deliberately NOT raised for a reply that arrived and was wrong — an
-    unparseable body, a JSON object where a list belongs. `gh` answered there,
-    and what it said is a finding about the boundary.
-    """
-
-
-class RadarUnconfigured(RadarUnreachable):
-    """`gh` has no credentials here, so it refused before asking (#1568).
-
-    A subclass of `RadarUnreachable` rather than a sibling, because every
-    consumer that already treats "not reached" as "not a verdict about the
-    board" must keep doing so without being taught a second name — the same
-    argument that makes `RadarUnreachable` a `RadarError`.
-
-    It is still a distinct state, and the difference is what the reader should
-    do. An unreachable API is transient: the socket blipped, try again, and the
-    next run is green. An UNCONFIGURED one is standing — it will produce the
-    same result on every run, forever, until somebody sets a token. Summing the
-    two would make the second unreadable in both directions: a permanently
-    non-zero count is wallpaper, and once a token IS set, a non-zero count can
-    no longer be read as "somebody deleted the env line", which is a real
-    finding about the workflow. #1274's argument, one level over.
-
-    The predicate is `gh`'s own exit code, not its prose. Measured on gh 2.50.0:
-    exit 4 is its auth-configuration code and nothing else produces it — both
-    spellings of "no credentials" (`gh auth login` interactively, `set the
-    GH_TOKEN environment variable` under Actions) exit 4, while a *rejected*
-    token exits 1 with `HTTP 401` and every product failure exits 1. That
-    distinction is exact and matters: a rejected token means the request landed.
-
-    Filed because PR #1586 went red on four legs with the Actions spelling,
-    which carries no 401, no rate limit and no Go net error — nothing a prose
-    predicate could ever have caught.
-    """
+# The three failure kinds are `_radar_errors.py`, imported above and re-exported
+# under these names. They moved out of this file in #1847 so that the GitLab
+# tier could raise the same classes rather than a parallel set no `except` of
+# this tier's would ever catch. Nothing about the taxonomy changed in the move;
+# what did is that `gh_prs.RadarError is gl_mrs.RadarError`.
+#
+# The tier-local half stayed here, because it is the half that is about `gh`:
+# the predicate for `RadarUnconfigured` is `gh`'s own exit code, not its prose.
+# Measured on gh 2.50.0, exit 4 is its auth-configuration code and nothing else
+# produces it — both spellings of "no credentials" (`gh auth login`
+# interactively, `set the GH_TOKEN environment variable` under Actions) exit 4,
+# while a *rejected* token exits 1 with `HTTP 401` and every product failure
+# exits 1. That distinction is exact and matters: a rejected token means the
+# request landed. PR #1586 went red on four legs with the Actions spelling,
+# which carries no 401, no rate limit and no Go net error — nothing a prose
+# predicate could ever have caught.
 
 
 #: `gh`'s dedicated exit code for "I have no credentials to use". Not a
