@@ -99,6 +99,17 @@ def test_fresh_and_stale_untracked_paths_both_carry_a_time(tmp_path, monkeypatch
     two_hours_ago = time.time() - 7200
     os.utime(repo / "old_scratch", (two_hours_ago, two_hours_ago))
     (repo / "fresh_stray").write_text("dropped just now" + NL)
+    # Pinned, not left at "now". `_age` renders whole seconds, so `written 0s
+    # ago` is an assertion with a ONE-SECOND budget: a loaded machine that
+    # takes two seconds to get from here to the render fails it, and the
+    # failure reads as a verdict about the product (#1845). Five minutes is
+    # inside the 15m activity window with 3x margin, and `_age`'s minute
+    # bucket holds it at `5m` for a full 60 seconds of drift -- a 60x wider
+    # budget. It is also a STRONGER assertion than the old disjunction: `5m`
+    # can only come from the mtime set here, where `0s` is equally what a
+    # render that had lost the mtime and formatted `_age(0)` would print.
+    five_minutes_ago = time.time() - 300
+    os.utime(repo / "fresh_stray", (five_minutes_ago, five_minutes_ago))
 
     _stub_no_mr(monkeypatch)
     out = _run_main(repo, monkeypatch, "full")
@@ -108,7 +119,7 @@ def test_fresh_and_stale_untracked_paths_both_carry_a_time(tmp_path, monkeypatch
 
     # Marker present.
     assert "activity window" in fresh, fresh
-    assert "written 0s ago" in fresh or "written 1s ago" in fresh, fresh
+    assert "written 5m ago" in fresh, fresh
     # Marker absent — on a line that provably rendered, and that still carries
     # the field, so this cannot pass by the whole column being missing.
     assert "activity window" not in old, old
@@ -194,6 +205,13 @@ def test_truncated_default_view_still_reports_the_newest_hidden_write(tmp_path, 
         p.write_text("x" + NL)
         os.utime(p, (old, old))
     (repo / "zz_stray").write_text("dropped just now" + NL)
+    # Pinned for the same reason as the sibling case above (#1845): `newest of
+    # them written 0s ago` is a one-second budget, and the delay a loaded
+    # machine adds between this write and the render is read as a product
+    # verdict. `5m` still sorts as the newest of the fifteen -- the other
+    # fourteen are a day old -- and survives 60 seconds of drift.
+    five_minutes_ago = time.time() - 300
+    os.utime(repo / "zz_stray", (five_minutes_ago, five_minutes_ago))
 
     _stub_no_mr(monkeypatch)
     out = _run_main(repo, monkeypatch)
@@ -201,8 +219,7 @@ def test_truncated_default_view_still_reports_the_newest_hidden_write(tmp_path, 
     assert "### Untracked (15)" in out
     assert "zz_stray" not in out          # genuinely hidden by the cap
     more = next(l for l in out.splitlines() if l.strip().startswith("... (5 more"))
-    assert ("newest of them written 0s ago" in more
-            or "newest of them written 1s ago" in more), more
+    assert "newest of them written 5m ago" in more, more
     assert "unreadable" not in more, more
 
 

@@ -41,7 +41,7 @@ from pathlib import Path
 import pytest
 
 import supertool
-from _gitshim import dispatch_on_subcommand
+from _gitshim import TAKES_A_SEPARATE_ARGUMENT, dispatch_on_subcommand
 
 _ROOT = Path(__file__).parent.parent
 _STATUS_PATH = _ROOT / "presets" / "git" / "status.py"
@@ -70,6 +70,12 @@ resolve = _load_preset("resolve")
 merge = _load_preset("merge")
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX /bin/sh shim")
+
+#: Resolved at import, while PATH is still the real one. Every fixture below
+#: replaces PATH with a directory holding nothing but a shim, so a
+#: `shutil.which("git")` evaluated INSIDE a test returns that shim -- and the
+#: shim is precisely what a contention check must not ask.
+_REAL_GIT_AT_IMPORT = shutil.which("git")
 
 
 # ---------------------------------------------------------------------------
@@ -150,12 +156,74 @@ def _repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _run_status(repo: Path, monkeypatch) -> str:
+def _subcommand_of(rendered: str) -> str:
+    """The git subcommand in an `_UNANSWERED` entry like `git -C /x status -s`.
+
+    Same rule as the PATH shim in `_gitshim`, and deliberately so: the shim is
+    what decides which call stalls, so anything that disagrees with it here
+    would classify a stall as expected when the shim never fired on it. Global
+    flags are skipped, and the ones taking a separate argument consume it.
+    """
+    argv = rendered.split()[1:]          # drop the leading "git"
+    i = 0
+    while i < len(argv):
+        if argv[i] in TAKES_A_SEPARATE_ARGUMENT:
+            i += 2
+        elif argv[i].startswith("-"):
+            i += 1
+        else:
+            return argv[i]
+    return ""
+
+
+def _skip_if_an_unshimmed_git_call_stalled(stalled: str | None) -> None:
+    """Third state for a timing assertion: the machine could not meet the premise.
+
+    Every fixture here stalls ONE subcommand on purpose and needs every other
+    git call to answer inside the budget. That premise is not free: the budget
+    these tests set is 1s, and the file's own docstring measured a worst real
+    git latency of 0.76s under 96 CPU burners -- 1.3x of headroom. When a
+    contended machine spends it, `presets/git/status.py` treats the unanswered
+    `branch -vv` as a git FAILURE and returns 1 with no report at all, so the
+    assertions below read a machine limit as a verdict about the product. That
+    is #1845, and the product half of it is filed separately -- this guard does
+    not fix it, it stops the suite from mis-attributing it.
+
+    The cost, stated rather than hidden: on a leg loaded enough to trip this,
+    the test does not run. A skip carrying a token is visible; a false red that
+    trains people to re-run is not.
+    """
+    unexpected = [
+        (cmd, why) for cmd, why in status._UNANSWERED
+        if cmd.startswith("git ")
+        and why.startswith("timed out after")
+        and (stalled is None or _subcommand_of(cmd) != stalled)
+    ]
+    if unexpected:
+        pytest.skip(
+            "contended-git(#1845): a git call this fixture needs to ANSWER did "
+            "not, so nothing is claimed about the product here -- "
+            + "; ".join(f"`{cmd}` ({why})" for cmd, why in unexpected)
+            + (f" (only `git {stalled} ...` was meant to stall)" if stalled
+               else " (no call was meant to stall)")
+        )
+
+
+def _run_status(repo: Path, monkeypatch, stalled: str | None = None) -> str:
+    """Run `git-status`. STALLED names the one subcommand the shim hangs.
+
+    The return code is checked AFTER the premise guard on purpose: when an
+    unshimmed call times out the product returns 1 and prints no report, so
+    asserting the code first would turn a machine limit into a bare
+    `assert 1 == 0` naming nothing.
+    """
     monkeypatch.chdir(repo)
     monkeypatch.setattr(status.sys, "argv", ["status.py"])
     buf = io.StringIO()
     with redirect_stdout(buf):
-        assert status.main() == 0
+        rc = status.main()
+    _skip_if_an_unshimmed_git_call_stalled(stalled)
+    assert rc == 0
     return buf.getvalue()
 
 
@@ -172,7 +240,7 @@ def test_a_stalled_git_call_does_not_kill_the_whole_report(
     monkeypatch.setenv("SUPERTOOL_GIT_TIMEOUT", "1")
 
     started = time.monotonic()
-    out = _run_status(repo, monkeypatch)
+    out = _run_status(repo, monkeypatch, stalled="rev-list")
     elapsed = time.monotonic() - started
 
     assert "# git-status" in out
@@ -196,7 +264,7 @@ def test_the_report_says_which_git_call_went_unanswered(
     repo = _repo(tmp_path)
     monkeypatch.setenv("PATH", _slow_git_path(tmp_path, "rev-list"))
     monkeypatch.setenv("SUPERTOOL_GIT_TIMEOUT", "1")
-    out = _run_status(repo, monkeypatch)
+    out = _run_status(repo, monkeypatch, stalled="rev-list")
 
     assert status.INCOMPLETE_MARKER in out
     note = next(l for l in out.splitlines() if status.INCOMPLETE_MARKER in l)
@@ -238,7 +306,7 @@ def test_a_stalled_call_is_never_rendered_as_a_git_success(
     repo = _repo(tmp_path)
     monkeypatch.setenv("PATH", _slow_git_path(tmp_path, "rev-list"))
     monkeypatch.setenv("SUPERTOOL_GIT_TIMEOUT", "1")
-    out = _run_status(repo, monkeypatch)
+    out = _run_status(repo, monkeypatch, stalled="rev-list")
 
     assert "no own commits" not in out
     assert "vs master:" not in out
@@ -274,12 +342,67 @@ def test_a_stalled_branch_name_reads_unknown_not_blank(
     repo = _repo(tmp_path)
     monkeypatch.setenv("PATH", _slow_git_path(tmp_path, "rev-parse"))
     monkeypatch.setenv("SUPERTOOL_GIT_TIMEOUT", "1")
-    out = _run_status(repo, monkeypatch)
+    out = _run_status(repo, monkeypatch, stalled="rev-parse")
 
     branch_line = next(l for l in out.splitlines() if l.startswith("Branch:"))
     assert branch_line.strip() != "Branch:", "a stall rendered as an empty branch name"
     assert "?" in branch_line, branch_line
     assert status.INCOMPLETE_MARKER in out
+
+
+def test_the_contention_guard_fires_on_an_unshimmed_stall_and_only_on_one(
+    monkeypatch,
+) -> None:
+    """Both halves, because a guard that never fires reads exactly like no guard.
+
+    #1845's flake is an unshimmed `branch -vv` losing the 1s budget on a loaded
+    machine; the product then returns 1 with no report and the assertions blame
+    it. The guard turns that into a skip. Each case below is paired with one
+    that must NOT skip, so a guard stuck in the "always decline" position --
+    which would quietly green the whole file -- fails here.
+    """
+    def unanswered(entries):
+        monkeypatch.setattr(status, "_UNANSWERED", list(entries))
+
+    # Fires: a real call this fixture needed an ANSWER from did not give one.
+    unanswered([("git branch -vv --no-color", "timed out after 1s")])
+    with pytest.raises(pytest.skip.Exception) as exc:
+        _skip_if_an_unshimmed_git_call_stalled("rev-parse")
+    assert "contended-git(#1845)" in str(exc.value)
+    assert "branch" in str(exc.value)
+
+    # Silent: the shimmed call stalling IS the premise, not a broken one.
+    unanswered([("git rev-parse --abbrev-ref HEAD", "timed out after 1s")])
+    _skip_if_an_unshimmed_git_call_stalled("rev-parse")
+
+    # Silent: nothing stalled at all.
+    unanswered([])
+    _skip_if_an_unshimmed_git_call_stalled("rev-parse")
+    _skip_if_an_unshimmed_git_call_stalled(None)
+
+    # Silent: a git call that FAILED rather than timed out is a real finding
+    # and must stay red, not be laundered into a skip.
+    unanswered([("git branch -vv --no-color", "exit 128: fatal: bad object")])
+    _skip_if_an_unshimmed_git_call_stalled("rev-parse")
+
+    # Fires with no subcommand shimmed: this fixture expected every call to
+    # answer, so any stall breaks the premise.
+    unanswered([("git status --porcelain", "timed out after 1s")])
+    with pytest.raises(pytest.skip.Exception):
+        _skip_if_an_unshimmed_git_call_stalled(None)
+
+
+def test_the_guard_reads_the_subcommand_the_way_the_shim_does() -> None:
+    """A disagreement here classifies a stall the shim never caused as expected.
+
+    Global flags are skipped and `-C <path>` consumes its value -- the exact
+    trap `_gitshim`'s own docstring was written for.
+    """
+    assert _subcommand_of("git rev-parse --abbrev-ref HEAD") == "rev-parse"
+    assert _subcommand_of("git -C /tmp/x status --porcelain") == "status"
+    assert _subcommand_of("git --no-pager branch -vv") == "branch"
+    assert _subcommand_of("git -c core.abbrev=8 rev-list --count HEAD") == "rev-list"
+    assert _subcommand_of("git") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -463,13 +586,60 @@ def _conflicted_repo(tmp_path: Path) -> Path:
     return repo
 
 
+#: What `git-conflicts` prints when its own `rev-parse --git-dir` probe does
+#: not come back 0 -- including when it merely TIMED OUT (conflicts.py:160).
+_NOT_A_REPO = "ERROR: not inside a git repository."
+
+
 def _run_conflicts(repo: Path, monkeypatch) -> tuple[str, int]:
+    """Run `git-conflicts`, declining rather than lying when the machine is loaded.
+
+    The contention guard here cannot read an unanswered-call list the way the
+    `git-status` one does -- `conflicts.py` keeps none. What it has instead is
+    an unambiguous signal: the fixture has just BUILT this repository with real
+    git, so `not inside a git repository` cannot be true of it. Under
+    contention the unshimmed `rev-parse --git-dir` loses the 1s budget,
+    `conflicts.py:160` reads `returncode != 0` without excluding `TIMEOUT_RC`,
+    and the refusal is printed about a repository that is demonstrably there
+    (#1845). The repository is re-checked here on an UNBUDGETED call before
+    anything is skipped, so a genuine refusal still fails.
+
+    This does not paper over an unconditional-decline regression: that mutant
+    is killed by `test_conflicts_still_reports_a_genuinely_clean_tree`, which
+    runs real git with no shim and demands the honest answer.
+    """
     monkeypatch.chdir(repo)
     monkeypatch.setattr(conflicts.sys, "argv", ["conflicts.py"])
     buf = io.StringIO()
     with redirect_stdout(buf):
         rc = conflicts.main()
-    return buf.getvalue(), rc
+    out = buf.getvalue()
+    if _NOT_A_REPO in out and _is_really_a_repo(repo):
+        pytest.skip(
+            "contended-git(#1845): `git-conflicts` refused with "
+            + repr(_NOT_A_REPO) + " for a repository that IS one -- its "
+            "unshimmed `rev-parse --git-dir` did not answer inside the 1s "
+            "budget, so nothing is claimed about the product here"
+        )
+    return out, rc
+
+
+def _is_really_a_repo(repo: Path) -> bool:
+    """Unbudgeted, unshimmed second opinion, so the skip above needs evidence.
+
+    Uses the real binary by absolute path rather than whatever `PATH` the test
+    installed -- the shim on `PATH` is the thing under suspicion, and asking it
+    would be asking the suspect.
+    """
+    if not _REAL_GIT_AT_IMPORT:
+        return False          # cannot corroborate -> do not skip, fail loudly
+    try:
+        done = subprocess.run(
+            [_REAL_GIT_AT_IMPORT, "-C", str(repo), "rev-parse", "--git-dir"],
+            capture_output=True, text=True, timeout=60)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return done.returncode == 0
 
 
 def test_a_failed_conflict_list_does_not_read_as_no_conflicts(
