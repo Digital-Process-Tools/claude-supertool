@@ -10334,7 +10334,7 @@ def _nearest_pct(ratio: float, identical: bool) -> str:
     `f"{r:.0%}"` renders 0.998 as `100%`, and the hint that carries it is
     printed directly under `old string not found`. Two sentences a caller
     cannot both believe: measured on a twelve-line block differing by three
-    trailing spaces, `SequenceMatcher.ratio()` is 0.9980013324450366 and the
+    trailing spaces, `SequenceMatcher.ratio()` is 0.9976209357652657 and the
     receipt said the match was exact.
 
     Nothing is normalising anything -- the metric is honest and the render was
@@ -10373,13 +10373,26 @@ def _nearest_diff_kind(anchor: List[str], window: List[str]) -> str:
     """
     if anchor == window:
         return ("identical line-for-line, so the difference is outside the "
-                "compared text: line endings, or blank lines at the ends of "
-                "`old`")
+                "compared text: blank or whitespace-only lines at the ends of "
+                "`old`, or line endings")
     if [_normalise_ws(ln) for ln in anchor] == [_normalise_ws(ln) for ln in window]:
         return "differs only in whitespace"
+    if len(anchor) == 1:
+        # The one case where this says nothing. A single-line hint already
+        # prints the file's line verbatim beside the percentage, so
+        # "differs in 1 of 1 lines" is the only count arithmetic allows and
+        # the reader can see the difference in the text next to it.
+        return ""
     same = sum(block.size for block
                in difflib.SequenceMatcher(a=anchor, b=window,
                                           autojunk=False).get_matching_blocks())
+    # Anchor lines matched NOWHERE in the window, not lines differing at their
+    # own index: a one-line insertion shifts every line after it and a
+    # positional count would call that eleven differences. The clamp cannot
+    # fire today -- `window` is sliced to `len(anchor)`, so `same ==
+    # len(anchor)` implies equality and the branch above already returned --
+    # and it is kept because `differs in 0 of 12 lines` under `old string not
+    # found` would be this issue again, one rewrite later.
     differing = max(1, len(anchor) - same)
     return f"differs in {differing} of {len(anchor)} lines"
 
@@ -10436,6 +10449,9 @@ def _edit_nearest_hint(old: str, lines: List[str], path: str = "") -> str:
         # undercounts the withheld places by two.
         extra = total - len(picked)
         more = f" and {extra} more" if extra > 0 else ""
+        # `identical=False` unconditionally: this arm names SEVERAL places, so
+        # there is no one window to be identical to, and a bare 100% here would
+        # claim every one of them is the anchor.
         return (f"cannot suggest a nearest match: {at_least}{total} places "
                 f"score the same ({_nearest_pct(best, False)}) — lines "
                 f"{shown}{more}. The anchor does not tell them apart; "
@@ -24278,6 +24294,14 @@ _PAYLOAD_DBS_MAX_OCCURRENCES = 4
 # frequently 200 characters into a long line (#1808).
 _PAYLOAD_DBS_CONTEXT = 22
 
+# How much of one run is DRAWN, once the rule reaches arbitrary even lengths
+# (#1860). The run length is named in words on the same line, so the drawing is
+# there to locate it, not to count it: a 400-backslash run drew a 400-character
+# excerpt and a 400-caret row under it, twice per occurrence, four occurrences
+# per field -- a 2 KB receipt for one finding. Past this many the excerpt is cut
+# and carries its own trailing ellipsis.
+_PAYLOAD_DBS_MAX_RUN_DRAWN = 20
+
 # A maximal run of backslashes whose length is EVEN. Odd runs are still not
 # matched, and that is the whole of the rule.
 #
@@ -24296,7 +24320,7 @@ _PAYLOAD_DBS_CONTEXT = 22
 # and the three-run of a regex, still write unrefused -- without that the
 # payload route becomes unusable for the regex and Windows-path cases the
 # remedy sanctions.
-_EXACT_DOUBLE_BACKSLASH = re.compile(r"(?<!\\)(?:\\\\)+(?!\\)")
+_EVEN_BACKSLASH_RUN = re.compile(r"(?<!\\)(?:\\\\)+(?!\\)")
 
 # The bare key immediately preceding a value, read backwards off the source.
 _PAYLOAD_KEY_BEFORE_VALUE = re.compile(r"([A-Za-z0-9_.\-]+)[ \t]*=[ \t]*$")
@@ -24343,7 +24367,7 @@ def _dbs_occurrences(raw: str, offset: int,
     repository is named after.
     """
     out: List[Tuple[int, int, str, Optional[int], int]] = []
-    for m in _EXACT_DOUBLE_BACKSLASH.finditer(content):
+    for m in _EVEN_BACKSLASH_RUN.finditer(content):
         at_abs = offset + m.start()
         # The RUN LENGTH, carried rather than assumed to be two (#1860). Once
         # the scan reaches four and six, a caret two characters wide under a
@@ -24358,7 +24382,12 @@ def _dbs_occurrences(raw: str, offset: int,
         line = content[start:] if stop < 0 else content[start:stop]
         at = m.start() - start
         lo = max(0, at - _PAYLOAD_DBS_CONTEXT)
-        hi = min(len(line), at + run + _PAYLOAD_DBS_CONTEXT)
+        drawn = min(run, _PAYLOAD_DBS_MAX_RUN_DRAWN)
+        # Trailing context only when the WHOLE run was drawn. Where it was cut,
+        # the characters after the cut are the rest of the run, so "context"
+        # would be 22 more backslashes -- the thing the cap exists to stop.
+        after = _PAYLOAD_DBS_CONTEXT if drawn == run else 0
+        hi = min(len(line), at + drawn + after)
         # ASCII elision on purpose. `mark()` passes an unmapped glyph straight
         # through, so plain mode is not a guarantee, and a cp1252 console raises
         # UnicodeEncodeError at the print -- killing the process at the refusal
@@ -24394,7 +24423,13 @@ def _dbs_occurrence_block(label: str,
             + "          " + excerpt + chr(10)
         )
         lines.append(
-            "          " + " " * caret + chr(94) * run + chr(10) if caret is not None
+            # The caret row is as wide as what was DRAWN, never as wide as the
+            # run: past _PAYLOAD_DBS_MAX_RUN_DRAWN the excerpt is cut and ends
+            # in its own ellipsis, and a caret row wider than the text above it
+            # points at nothing. The true length is in words on the line above.
+            "          " + " " * caret
+            + chr(94) * min(run, _PAYLOAD_DBS_MAX_RUN_DRAWN) + chr(10)
+            if caret is not None
             else "          (no caret -- the excerpt carried a line separator or "
             "an unprintable and was flattened, so an offset into it would point "
             "at the wrong character. The payload line and column above are "
@@ -24410,8 +24445,10 @@ def _dbs_occurrence_block(label: str,
 
 
 def _toml_literal_double_backslashes(
-        raw: str) -> List[Tuple[str, str, str, int, List[Tuple[int, int, str, Optional[int]]]]]:
-    r"""`(key, label, first line, count, occurrences)` per literal block with `\\`.
+        raw: str) -> List[Tuple[str, str, str, int,
+                          List[Tuple[int, int, str, Optional[int], int]]]]:
+    r"""`(key, label, first line, count, occurrences)` per literal block holding
+    an EVEN backslash run.
 
     Provenance is the whole point and it is read off the source, not the parsed
     value: in a basic block `\\` IS one backslash and is the correct spelling,
@@ -24433,9 +24470,9 @@ def _toml_literal_double_backslashes(
         content = raw[i + 3:end]
         key_m = _PAYLOAD_KEY_BEFORE_VALUE.search(raw[:i])
         key = key_m.group(1) if key_m else "?"
-        hit = _EXACT_DOUBLE_BACKSLASH.search(content)
+        hit = _EVEN_BACKSLASH_RUN.search(content)
         if hit and key.lower() != "op":
-            total = len(_EXACT_DOUBLE_BACKSLASH.findall(content))
+            total = len(_EVEN_BACKSLASH_RUN.findall(content))
             start = content.rfind(chr(10), 0, hit.start()) + 1
             stop = content.find(chr(10), hit.start())
             line = content[start:] if stop < 0 else content[start:stop]
@@ -24503,16 +24540,25 @@ def _payload_double_backslash_note(raw: str) -> str:
 
     * **Literal blocks only.** A basic block spells one backslash with two;
       flagging that would flag the fix.
-    * **Runs of exactly two.** Three or more were counted deliberately.
+    * **EVEN runs only.** An odd run -- one, three, five -- is not something a
+      doubling reflex can produce, and refusing it would make the payload route
+      unusable for the regex and Windows-path cases the remedy sanctions. This
+      read "runs of exactly two, three or more were counted deliberately" until
+      #1860, where four turned out to be what a caller writes right after
+      reading the two-backslash refusal.
 
     It is deliberately NOT narrowed to "escape-looking" sequences. The reported
     cases were `\\d`, `\\302` and `\\n`; `\d` and `\302` are not TOML escapes,
     so the reflex being caught is generic, not TOML-specific, and any escape set
     narrow enough to be a filter would miss the report it was written for.
-    Measured instead: 710 of 208854 lines in this repository carry a `\\` --
-    0.34%, and this is the pathological corpus, since its densest files are
-    tests ABOUT backslash handling. A note at that rate is not one an author
-    learns to skip.
+    Measured instead, and RE-MEASURED when the rule widened from a pair to any
+    even run (#1860): 910 of 368801 tracked lines in this repository carry one
+    -- 0.25%, of which 104 lines carry a run longer than two, which is the part
+    the old rule did not see. This is the pathological corpus, since its densest
+    files are tests ABOUT backslash handling. A note at that rate is not one an
+    author learns to skip. The earlier figure was 710 of 208854 lines (0.34%)
+    for runs of exactly two, against a smaller tree; it is quoted here because a
+    rate that moved is worth more than a rate that was replaced.
     """
     findings = [f for f in _toml_literal_double_backslashes(raw)
                 if f[0].lower() not in _PAYLOAD_DBS_WRITE_KEYS]
@@ -24534,7 +24580,7 @@ def _payload_double_backslash_note(raw: str) -> str:
         # stopped. The line number is the same fact both wanted (#1819).
         at = (", first at payload line " + str(occs[0][0])) if occs else ""
         lines.append(
-            "  " + arrow + " `" + label + "` (" + str(total) + " occurrence"
+            "  " + arrow + " `" + label + "` (" + str(total) + " even backslash run"
             + ("" if total == 1 else "s") + at + "): " + line + chr(10)
         )
     rest = findings[_PAYLOAD_DBS_MAX_FIELDS:]
@@ -24667,7 +24713,7 @@ def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
         shown = ", ".join(str(o[0]) for o in occs[:_PAYLOAD_DBS_MAX_OCCURRENCES])
         over = len(occs) - _PAYLOAD_DBS_MAX_OCCURRENCES
         out.append(
-            "  " + arrow + " `" + label + "` -- " + str(total) + " occurrence"
+            "  " + arrow + " `" + label + "` -- " + str(total) + " even backslash run"
             + ("" if total == 1 else "s") + (
                 ", at payload line" + ("" if len(occs) == 1 else "s") + " "
                 + shown + (" and " + str(over) + " more" if over > 0 else "")

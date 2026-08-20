@@ -77,6 +77,10 @@ def test_an_even_run_of_six_is_refused_and_writes_nothing(tmp_path: Path) -> Non
     doubled three exactly as four is a doubled two."""
     out, disk = _paste(tmp_path, 6)
     assert "ERROR" in out, out
+    # Named, not merely non-empty: a TOML parse error is also an ERROR with no
+    # file on disk, so without this the test passes for the wrong reason.
+    assert "refused" in out.lower(), out
+    assert "a run of 6" in out, out
     assert disk is None, "a refused paste created the file, holding " + repr(disk)
 
 
@@ -113,8 +117,16 @@ def test_the_refusal_names_the_run_length_it_found(tmp_path: Path) -> None:
     to look for a pair that is not there. The count of characters is the fact
     the caller acts on."""
     out, _disk = _paste(tmp_path, 4)
-    assert "4" in out, "the run length is not in the refusal: " + out
-    assert BS * 4 in out, "the offending run is not quoted back: " + out
+    assert "a run of 4" in out, (
+        "the run length is not named in the refusal: " + out)
+    # Paired against a run of TWO, because the header quotes both arities as
+    # examples and the footer carries issue numbers containing the digit 4:
+    # a bare 4-in-out and a BS*4-in-out check BOTH pass on a run of two, which is
+    # what an earlier draft of this test asserted.
+    two, _ = _paste(tmp_path, 2)
+    assert "a run of 2" in two, two
+    assert "a run of 4" not in two, (
+        "a run of two is reported as a run of four: " + two)
 
 
 def test_the_optin_still_suppresses_a_widened_refusal(tmp_path: Path) -> None:
@@ -220,6 +232,24 @@ def test_a_line_difference_is_named_differently_from_a_whitespace_one() -> None:
         "the receipt does not say how many lines differ: " + hint_line)
 
 
+def test_a_single_line_anchor_gets_no_tautological_count() -> None:
+    """The count is suppressed where arithmetic fixes it. A one-line anchor can
+    only ever \"differ in 1 of 1 lines\", and the hint already prints the file's
+    line verbatim beside the percentage -- so the clause would be noise added to
+    the receipt this change exists to shorten. The whitespace class is NOT
+    suppressed there: a one-line anchor differing only in a trailing space is
+    exactly the case a caller cannot see by re-reading."""
+    lines = ["alpha beta gamma delta", "other", "third"]
+    hint = supertool._edit_nearest_hint("alpha beta gamma delt", lines, "f.py")
+    assert hint, "no hint at all"
+    assert "1 of 1" not in hint, hint
+    assert "differs in" not in hint, (
+        "a one-line anchor still carries a line count: " + hint)
+    ws = supertool._edit_nearest_hint("alpha beta gamma delta ", lines, "f.py")
+    assert "whitespace" in ws.lower(), (
+        "the class that IS useful for one line was suppressed too: " + ws)
+
+
 def test_a_distant_match_still_reports_its_real_percentage() -> None:
     """The control against fixing this by deleting the number. A genuine 60-90%
     near miss must still print its own figure, not a capped one."""
@@ -254,6 +284,48 @@ def test_a_true_hundred_percent_says_why_it_is_still_not_a_match() -> None:
     assert "identical line-for-line" in hint, (
         "a genuine 100% is printed bare under `old string not found`: " + hint)
     assert "line endings" in hint, hint
+
+
+def test_the_identical_branch_is_reachable_through_a_real_edit(tmp_path: Path) -> None:
+    """The branch above is exercised by calling the hint directly, which proves
+    the RENDER and not that any payload can reach it. A branch no caller can
+    arrive at is a receipt nobody will ever read.
+
+    Whitespace-only padding lines, not empty ones: the hint strips both off the
+    anchor, but empty ones make the byte comparison SUCCEED here (the newline
+    ending the line before the block is already in the file), so that anchor
+    edits cleanly and never produces a hint. CRLF does not reach it either --
+    the op re-terminates LF text to match a CRLF file and the edit succeeds."""
+    target = tmp_path / "t.py"
+    body = _block()
+    target.write_text(NL.join(_file(body)) + NL, encoding="utf-8")
+    padded = ["   "] + list(body) + ["   "]
+    payload = (
+        "path = " + _toml_path(target) + NL
+        + "old = " + Q3 + NL.join(padded) + Q3 + NL
+        + "new = " + Q3 + "REPLACED" + Q3 + NL
+    )
+    out = supertool.dispatch("edit:" + _payload(tmp_path, payload))
+    assert "old string not found" in out, out
+    assert "identical line-for-line" in out, (
+        "the third state is unreachable from a real payload: " + out)
+    assert "REPLACED" not in target.read_text(encoding="utf-8")
+
+
+def test_a_long_run_does_not_draw_itself(tmp_path: Path) -> None:
+    """Once the rule reaches arbitrary even lengths, the drawing has to stop
+    somewhere. A 400-backslash run drew a 400-character excerpt and a 400-caret
+    row under it -- a 2 KB receipt for one finding, in a message whose whole job
+    is to be read. The run length stays in words; only the drawing is capped."""
+    out, disk = _paste(tmp_path, 400)
+    assert "a run of 400" in out, out
+    assert disk is None, out
+    # Not a bound on the widest LINE -- the ERROR header carries an absolute
+    # tmp path and is the longest line either way. The claim is about the run.
+    assert BS * 40 not in out, "the receipt still draws the whole run"
+    carets = [ln.strip() for ln in out.splitlines() if set(ln.strip()) == {chr(94)}]
+    assert carets, "no caret row at all: " + out
+    assert all(len(c) <= 20 for c in carets), carets
 
 
 def test_an_exact_anchor_still_edits(tmp_path: Path) -> None:

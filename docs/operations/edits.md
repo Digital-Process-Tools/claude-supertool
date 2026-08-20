@@ -75,7 +75,7 @@ A multi-line anchor is scored on the **whole block**, and it names the window ra
 
 ```
 ERROR: old string not found in app.py
-  ↳ nearest match at lines 804-806 (91%): read:app.py:804-806
+  ↳ nearest match at lines 804-806 (91%, differs in 2 of 3 lines): read:app.py:804-806
 ```
 
 Until #1489 the score was `SequenceMatcher.ratio()` of the **first non-blank line of `old`** alone. For a multi-line anchor that line is usually boilerplate — a `def`, a `}`, an import — so the run that filed the issue was pointed at a line ~800 away from the right one, at an identical 68%, twice. The number was not too low: it was a fact about one line of an anchor the caller had written four lines of, and raising the floor would only have withheld the good hints alongside the bad. Two passes replace it — a sliding line-multiset over every window of the anchor's height to locate candidates, then the character ratio on the top ones, so the percentage printed still means what it used to.
@@ -98,14 +98,14 @@ Until [#1614](https://github.com/Digital-Process-Tools/claude-supertool/issues/1
 
 ### The percentage never claims identity, and the difference is named
 
-`f"{ratio:.0%}"` rounds. A twelve-line anchor differing from the file by three trailing spaces scores `0.9980013324450366`, which renders as `100%` — printed directly under `old string not found`, so the receipt held two sentences a caller cannot both believe ([#1855](https://github.com/Digital-Process-Tools/claude-supertool/issues/1855)). Nothing was normalising anything: the metric was honest and the render was not, which is why the fix is in one message and not in the matcher.
+`f"{ratio:.0%}"` rounds. A twelve-line anchor differing from the file by three trailing spaces scores `0.9976209357652657`, which renders as `100%` — printed directly under `old string not found`, so the receipt held two sentences a caller cannot both believe ([#1855](https://github.com/Digital-Process-Tools/claude-supertool/issues/1855)). Nothing was normalising anything: the metric was honest and the render was not, which is why the fix is in one message and not in the matcher.
 
 A near miss now reports `>99%` — true, and unreadable as identity — and the receipt names **what kind** of difference it is, because the caller's question is never "how close" but "what do I look for":
 
 ```
 ERROR: old string not found in app.py
   ↳ nearest match at lines 114-125 (>99%, differs only in whitespace): read:app.py:114-125
-  ↳ nearest match at lines 114-125 (94%, differs in 1 of 12 lines): read:app.py:114-125
+  ↳ nearest match at lines 114-125 (95%, differs in 1 of 12 lines): read:app.py:114-125
 ```
 
 Those two send the reader to different places, and the reported cost of not distinguishing them was one extra read call spent finding a one-line difference the scan had already measured and thrown away. The class has a third state, and it is the one the issue is really about. `splitlines()` drops line endings and the hint strips blank lines off both ends of the anchor, so the compared lines can be **equal** while the byte comparison that refused the edit was not. The percentage is then a true 100, and capping it would be a lie in the other direction — so the receipt keeps the number and says what it is a 100 *of*:
@@ -116,6 +116,8 @@ ERROR: old string not found in app.py
 ```
 
 Leaving that one bare would have left the filed contradiction alive in the single case where the figure really is 100.
+
+A **single-line** anchor gets the percentage and the whitespace or identical clause, but no count: the hint already prints the file's line verbatim beside the number, and `differs in 1 of 1 lines` is the only count the arithmetic allows. The count says how many anchor lines matched nowhere in the window, not how many differ at their own index — a one-line insertion shifts everything after it, and a positional count would report that as eleven differences.
 
 That third state exists because a confidently wrong line number costs more than none: the caller reads the wrong 30 lines and re-anchors against them. It also fires when the scan's cost budget runs out before the file does — a best-so-far over a prefix is not a best, and reporting it as one is the defect this whole hint is about. The budget is what keeps the diagnostic off the critical path on a file the line-count guard cannot see: 60 lines of a 40 KB minified bundle took over 30 minutes before it existed. A percentage computed over a clipped line says so in the same breath: `(>99%, scored on the first 1000 characters, differs in 1 of 12 lines)`.
 
