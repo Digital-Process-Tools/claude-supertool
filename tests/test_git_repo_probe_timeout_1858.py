@@ -429,5 +429,95 @@ def test_a_stalled_probe_does_not_cost_git_status_its_whole_report(
     assert rc != 0, out
 
 
+def _dirty_repo(tmp_path: Path) -> Path:
+    """A repo with one tracked file modified and nothing staged."""
+    repo = _repo(tmp_path)
+    (repo / ".supertool.json").write_text('{"presets": ["git"]}' + chr(10),
+                                          encoding="utf-8")
+    (repo / "f").write_text("changed" + chr(10), encoding="utf-8")
+    return repo
+
+
+def _head(repo: Path) -> str:
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          capture_output=True, text=True,
+                          encoding="utf-8", errors="replace").stdout.strip()
+
+
+def test_a_stalled_index_read_is_not_rendered_as_an_empty_index(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`commit.py`'s post-`git add` index read — the worst-placed instance.
+
+    Not a repo probe, so no grep for `not inside a git repository` reaches it;
+    found by the audit of this fix rather than by its sweep. The shape is the
+    same fold and the consequence is worse, because `git add` has ALREADY run
+    when this read happens. Stalled, the old code fell into
+    `_nothing_staged_lines`, which re-derives from fresh calls: the named path
+    is now staged, the working tree is consequently clean, and the op printed
+
+        ERROR: nothing staged — the working tree is clean, so there is
+        nothing to commit.
+
+    over an index it had just filled itself. A caller told that has no reason
+    to look, and the staged path then rides into somebody else's commit —
+    which is #1228, the defect the scoping in this very function exists for.
+
+    The second `diff` is the target: the call order is `--diff-filter=D` first,
+    then `add`, then this read. Stalling `diff` after the first one lands on it
+    exactly, with a real `TIMEOUT_RC` rather than a mocked return code.
+    """
+    repo = _dirty_repo(tmp_path)
+    before = _head(repo)
+    monkeypatch.setenv("PATH", _slow_git_path_after_first_call(tmp_path, "diff"))
+    monkeypatch.setenv("SUPERTOOL_GIT_TIMEOUT", "1")
+
+    out, rc = _run(_load("commit"), ["commit.py", "msg", "f"], repo, monkeypatch,
+                   expect_stall=True)
+
+    assert "working tree is clean" not in out, out
+    assert "nothing staged" not in out, out
+    assert "could not tell what is staged" in out, out
+    assert "NO COMMIT WAS MADE" in out, out
+    assert rc != 0, out
+    assert _head(repo) == before, "the refusal must not have committed"
+
+
+def test_a_genuinely_empty_index_still_says_nothing_staged(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The control. A tree with nothing to commit must stay exactly as loud.
+
+    Same reason as every other control here: a fix that answered "could not
+    tell" for every non-zero return would satisfy the test above and delete a
+    real refusal. Real git, no shim, a clean tree.
+    """
+    repo = _repo(tmp_path)
+    (repo / ".supertool.json").write_text('{"presets": ["git"]}' + chr(10),
+                                          encoding="utf-8")
+    monkeypatch.setenv("PATH", _git_only_path(tmp_path))
+
+    out, rc = _run(_load("commit"), ["commit.py", "msg", "f"], repo, monkeypatch,
+                   expect_stall=False)
+
+    assert "nothing staged" in out, out
+    assert "could not tell what is staged" not in out, out
+    assert rc != 0, out
+
+
+def test_an_unstalled_commit_still_commits(tmp_path: Path, monkeypatch) -> None:
+    """The other control: the new arm must not intercept the working path."""
+    repo = _dirty_repo(tmp_path)
+    before = _head(repo)
+    monkeypatch.setenv("PATH", _git_only_path(tmp_path))
+
+    out, rc = _run(_load("commit"), ["commit.py", "msg", "f"], repo, monkeypatch,
+                   expect_stall=False)
+
+    assert rc == 0, out
+    assert "could not tell what is staged" not in out, out
+    assert _head(repo) != before, out
+
+
 def test_the_change_is_findable() -> None:
     assert_change_is_findable(1858, REPO)

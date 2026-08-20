@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _untrusted  # noqa: E402  (a hook's stream is somebody else's text — #1475)
 from _git_common import (  # noqa: E402
     NOT_A_REPO,
+    TIMEOUT_RC,
     _first_error_line,
     _git,
     probe_repo,
@@ -1171,6 +1172,30 @@ def main() -> int:
     # printed `Staged: 1 path(s)`.
     scope = ["--"] + paths if (paths and not in_merge) else []
     staged = _git(["diff", "--cached", "--name-only", "--no-renames", "-z"] + scope)
+    # `TIMEOUT_RC` before the fold, and this is the worst-placed instance of
+    # #1858's class in the file: `git add` has ALREADY run, twenty lines up.
+    # A stall here therefore reaches `_nothing_staged_lines`, which re-derives
+    # from fresh calls and — with the paths now staged and the worktree
+    # consequently clean — prints `ERROR: nothing staged — the working tree is
+    # clean, so there is nothing to commit.` over an index this very op just
+    # filled. Not a missing section: a positive false claim about the world,
+    # made by the op that caused the state it is denying.
+    #
+    # Found by the #1858 audit, not by the sweep, because it does not print
+    # `not inside a git repository` and so matched no grep the sweep ran. It is
+    # in scope for the same issue: its work item is every `returncode != 0`
+    # with a `TIMEOUT_RC` in reach, not every copy of one sentence.
+    if staged.returncode == TIMEOUT_RC:
+        print("ERROR: could not tell what is staged — `git diff --cached` did "
+              "not answer (%s)."
+              % _untrusted.flat((staged.stderr or "").strip()
+                                or "exit %d" % TIMEOUT_RC))
+        print("  NO COMMIT WAS MADE. The index was not read, so this is not a "
+              "claim that it is empty.")
+        if paths:
+            print("  Anything this call staged is STILL STAGED. Re-run, or "
+                  "inspect with: " + st_hint("git-status"))
+        return 1
     if staged.returncode != 0 or not staged.stdout.strip():
         for line in _nothing_staged_lines(named):
             print(line)
