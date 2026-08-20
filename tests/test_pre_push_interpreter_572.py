@@ -107,6 +107,14 @@ class _Sandbox:
             "PATH": str(self.bin),
             "HOME": str(self.work),
             "STUB_LOG": str(self.log),
+            # This file is about interpreter resolution, not about which pushes
+            # are gated, and it invokes the hook with no argv and no stdin. That
+            # used to reach the suite through the not-git fallback arm, which
+            # #1802 retired — an incidental dependency that made eight tests here
+            # fail on a change to a question they do not ask. `PREPUSH_FULL=1` is
+            # the supported "run it anyway" and states the dependency instead of
+            # inheriting it from whatever the zero-ref default happens to be.
+            "PREPUSH_FULL": "1",
         }
         if python is not None:
             env["PYTHON"] = python
