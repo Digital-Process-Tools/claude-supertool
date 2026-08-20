@@ -201,17 +201,32 @@ def probe_repo(git_fn=None, args: list[str] | None = None) -> tuple[bool | None,
     false claim's silence with a real refusal's silence, which is the more
     expensive of the two.
 
-    *why* is never git's own stderr: this arm is reached only on `TIMEOUT_RC`,
-    where the stderr was written by `_git` itself (`timed out after Ns`). So it
-    carries no child text and needs no flattening.
+    *why* is flattened even though this arm is reached only on `TIMEOUT_RC`,
+    where the stderr is `_git`'s own (`timed out after Ns`). The first cut said
+    so and left it raw, and #1475's census caught it: "our own text by
+    construction" is a claim about a call graph, and the whole point of that
+    census is that such claims go stale one refactor later. `flat` is
+    idempotent, so being right costs nothing and being wrong costs a forged
+    line at column 0 in a receipt.
     """
     run = _git if git_fn is None else git_fn
     res = run(args or ["rev-parse", "--git-dir"])
     if res.returncode == TIMEOUT_RC:
-        return None, (res.stderr.strip() or f"git exited {TIMEOUT_RC}")
+        return None, (_untrusted.flat(res.stderr.strip())
+                      or f"git exited {TIMEOUT_RC}")
     if res.returncode != 0:
         return False, ""
-    return True, res.stdout.strip()
+    # Flattened by the same argument `repo_label` uses ~290 lines below (#1557,
+    # #1475): git prints the directory's real name here, and a repository whose
+    # path carries a line separator turns any line rendering it into two, the
+    # second at column 0. Today `commit.py` only joins `MERGE_HEAD` onto this
+    # and never prints it — but "no caller renders it" is a claim about a call
+    # graph, which is exactly what the census exists to stop anyone relying on.
+    #
+    # The failure direction is checked, not assumed: on a path `flat` would
+    # alter, the join stops matching, `in_merge` reads False, the pathspec
+    # scoping stays on, and git refuses the partial commit outright. Loud.
+    return True, _untrusted.flat(res.stdout.strip())
 
 
 def unanswered_repo_lines(why: str, probe: str = "git rev-parse --git-dir") -> list[str]:
@@ -223,9 +238,12 @@ def unanswered_repo_lines(why: str, probe: str = "git rev-parse --git-dir") -> l
     `not inside a git repository`, so a reader — and a test — cannot mistake one
     for the other by substring.
     """
+    # `why` is flattened here as well as at its source: `status.py` builds its
+    # own from `branch_result.stderr` and never passes through `probe_repo`, so
+    # the render is the only place that covers every caller. Idempotent (#1475).
     return [
         f"ERROR: could not tell whether this is a git repository — "
-        f"`{probe}` did not answer ({why}).",
+        f"`{probe}` did not answer ({_untrusted.flat(why)}).",
         "  Nothing was inspected. That is not the same as being outside a "
         "repository, so re-run rather than acting on this.",
     ]

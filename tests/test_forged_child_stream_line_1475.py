@@ -8,7 +8,7 @@ so a U+2028 survives *inside* a relayed line and everything the reader anchors
 at column 0 becomes the writer's to choose.
 
 **The fix is at the seam, not at the sites.** Seven sites were named and the
-sweep below finds 146 sites in 32 files, which is what a per-site fix earns:
+sweep below finds 145 sites in 32 files, which is what a per-site fix earns:
 the same defect re-filed once per call. So
 
 * `_git_common._first_error_line` flattens what it returns. Every caller —
@@ -205,7 +205,7 @@ def test_a_tab_survives_the_commit_relay() -> None:
 # grows quietly — which is the failure mode of the thing it would be guarding".
 #
 # **So this is not a zero-assertion, and pretending otherwise is what would
-# make it useless.** Measured on this branch: 146 candidate sites in 32 files
+# make it useless.** Measured on this branch: 145 candidate sites in 32 files
 # across `presets/git`, `presets/github` and `presets/gitlab`. Not all are
 # defects — `push._local_head` returns `r.stdout.strip()`, and that is a SHA —
 # and closing them is four lanes of work this PR is not.
@@ -363,7 +363,10 @@ CENSUS = {
     "presets/git/_git_common.py": 7,
     "presets/git/blame.py": 2,
     "presets/git/checkout.py": 13,  # +3, #1626: three `.write` / `.append` sinks
-    "presets/git/commit.py": 11,  # +2, #1626: `_failure_receipt`'s appends (#1570)
+    "presets/git/commit.py": 10,  # -1, #1858: the git-dir read moved to
+    # `_git_common.probe_repo`, which flattens it. One site, not zero: the
+    # value did not stop existing, it stopped being raw HERE. The seam is where
+    # this file's own opening paragraph says the fix belongs.
     "presets/git/conflicts.py": 2,
     "presets/git/diff.py": 2,  # -2, #1569: both `Repo:` renders -> repo_label()
     "presets/git/diverge.py": 3,

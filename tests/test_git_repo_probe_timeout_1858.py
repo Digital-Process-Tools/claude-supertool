@@ -137,12 +137,21 @@ def _slow_git_path_after_first_call(tmp_path: Path, subcommand: str) -> str:
 
 
 def _git_only_path(tmp_path: Path) -> str:
-    """A real, unshimmed `git` — and nothing else, so no `gh` reaches a network."""
+    """A real, unshimmed `git` — and nothing else, so no `gh` reaches a network.
+
+    An `exec` wrapper rather than a symlink, deliberately. A symlink here would
+    be a new symlink-creating call site under `tests/`, which #1232 requires be
+    gated on the privilege and registered — and the privilege is absent on
+    Windows without developer mode, which would cost these controls a platform
+    for no gain. `exec "$@"` forwards argv and the exit status unchanged, so
+    what runs is still real git with nothing added.
+    """
+    real = _require_git()
     bindir = tmp_path / "gitonlybin"
     bindir.mkdir(exist_ok=True)
     shim = bindir / "git"
-    if not shim.exists():
-        shim.symlink_to(_require_git())
+    shim.write_text("#!/bin/sh" + chr(10) + f'exec {real} "$@"' + chr(10))
+    shim.chmod(0o755)
     return str(bindir)
 
 
