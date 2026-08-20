@@ -113,13 +113,37 @@ done
 # nothing. An absence the tool produced, read as an absence in the world.
 #
 # With no argv, the caller is not git and the question really was never
-# answered — some callers invoke the hook with stdin closed. That is the case
-# the fallback below was written for and it keeps it: say so, then run the
-# suite, because the cost of being wrong that way is three minutes and the
-# other way is master.
+# answered — some callers invoke the hook with stdin closed. That used to run
+# the suite, on "being wrong that way costs three minutes and the other way
+# costs master". #1802 retired that arm, because the reasoning inverts the odds
+# it rests on: the arm fires exactly when the destination is *unknown*, and the
+# destination of a push in this repo is overwhelmingly a feature branch, which
+# #893 already decided is not worth gating. It was spending ~5 minutes,
+# serially, on the author's machine, on one platform out of CI's three, to gate
+# a push it had no reason to believe was going anywhere shared — in a suite
+# that rewrites the index of the live worktree it runs in.
+#
+# The state is still reported and still distinct from the other two: "I could
+# not establish the destination" is not "there is nothing to push" and not
+# "this is a feature branch". #1242's split stands; only the verdict moved.
+#
+# The override is asked inside each state rather than ahead of both, so the
+# banner still names which state it overrode. Hoisting it would print one
+# message for both, which is #1242's conflation rebuilt one layer up.
 if [ "$saw_ref" -eq 0 ]; then
     if [ "$#" -lt 2 ]; then
-        echo "── pre-push: could not read the push refs from stdin — running the suite ──"
+        if [ -n "${PREPUSH_FULL:-}" ]; then
+            echo "── pre-push: could not read the push refs, but PREPUSH_FULL=1 — running the suite ──"
+        else
+            echo "── pre-push: could not read the push refs from stdin — suite NOT run here ──"
+            echo "   git always runs this hook with '<remote-name> <remote-url>' in argv, and"
+            echo "   this call had none, so the caller is not git and the destination is"
+            echo "   unknown. Unknown is not master (#1802): this arm used to spend the"
+            echo "   whole suite on every scripted push regardless of its target. CI gates"
+            echo "   the commit on all three platforms either way."
+            echo "   Force it locally with: PREPUSH_FULL=1 git push"
+            exit 0
+        fi
     elif [ -n "${PREPUSH_FULL:-}" ]; then
         echo "── pre-push: no refs to update, but PREPUSH_FULL=1 — running the suite ──"
     else

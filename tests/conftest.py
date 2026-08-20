@@ -1388,29 +1388,110 @@ PRESET_OP_ROUTE_NONE = "no-payload-route"
 PRESET_OP_ROUTE_LOST = "route-declared-but-lost"
 
 
-@functools.lru_cache(maxsize=1)
-def _shipped_ops_cached() -> dict:
-    """Every op this repo's own config resolves to, through the real loader.
+def _load_shipped_config(root: Path) -> dict:
+    """*root*'s `.supertool.json`, presets resolved by the product's own loader.
 
     `supertool._merge_presets` rather than a walk over `presets/*.json`: the
     resolution order (project over user over shipped) and the key-by-key merge
     of a partial project override are the product's, and a hand-rolled walk
     gets both wrong.
+
+    Takes *root* rather than closing over `REPO_ROOT` so that the refusal below
+    is reachable from a test. A guard whose failing branch can only be produced
+    by breaking the developer's checkout is a guard nobody ever sees run.
     """
-    cfg = json.loads((REPO_ROOT / ".supertool.json").read_text(encoding="utf-8"))
-    supertool._merge_presets(cfg, str(REPO_ROOT))
+    cfg = json.loads((root / ".supertool.json").read_text(encoding="utf-8"))
+    declared_presets = [p for p in (cfg.get("presets") or [])
+                        if isinstance(p, str)]
+    supertool._merge_presets(cfg, str(root))
     ops = cfg.get("ops") or {}
+
+    # Three separate ways the manifests fail to answer, and none of them is a
+    # skip. They are listed loudest-first because the first is the only one
+    # that names *which* manifest went missing.
+    warnings = cfg.get("_preset_warnings") or []
+    assert not warnings, (
+        f"`_merge_presets` could not resolve every declared preset from "
+        f"{root}: {'; '.join(str(w) for w in warnings)}. `presets/*.json` are "
+        f"tracked files one directory from `conftest.py`, so this is a broken "
+        f"checkout and not an under-provisioned machine -- it fails rather "
+        f"than skipping, because a skip would report an environment quirk for "
+        f"a suite that has stopped exercising the shipped registry (#1829)."
+    )
     assert ops, (
         "`.supertool.json` + `_merge_presets` resolved zero ops. Nothing can be "
         "installed from that, and a fixture that returned it would hand every "
-        "caller a config-shaped absence instead of a route (#1812)."
+        "caller a config-shaped absence instead of a route (#1812, #1829)."
     )
-    return ops
+    # The one the obvious `assert ops` cannot see. This repo's own
+    # `.supertool.json` declares eight ops directly, so `ops` stays non-empty
+    # with every preset manifest deleted -- a guard reporting a healthy
+    # registry for a checkout that resolved none of it, which is this
+    # repository's own defect class sitting inside the guard against it.
+    #
+    # Asked per declared preset, via the provenance the loader stamps itself,
+    # rather than by counting op names the merge added. Counting names cannot
+    # see a preset whose whole contribution collides by key with an op the
+    # project also declares -- and that is not hypothetical here: this repo's
+    # own eight direct `ops` entries are exactly the keys `git`, `watch` and
+    # `dashboard` ship, so all three are invisible to a name-set difference.
+    # `_op_sources` records the originating preset even for an op the project
+    # overrode, so it answers the question that was actually being asked.
+    sources = cfg.get("_op_sources") or {}
+    contributed = {s.get("preset") for s in sources.values()
+                   if isinstance(s, dict) and s.get("preset")}
+    silent = [p for p in declared_presets if p not in contributed]
+    assert not silent, (
+        f"{root}'s config declares presets {silent} that resolved without a "
+        f"warning and contributed no op to the registry, so those routes are "
+        f"absent while `ops` is still truthy. That is the absence the tool "
+        f"produced being read as an absence in the world (#1829)."
+    )
+    return cfg
+
+
+@functools.lru_cache(maxsize=1)
+def _shipped_config_cached() -> dict:
+    """This repo's own config, loaded once per process."""
+    return _load_shipped_config(REPO_ROOT)
+
+
+def _shipped_ops_cached() -> dict:
+    """Every op this repo's own config resolves to, through the real loader."""
+    return _shipped_config_cached()["ops"]
 
 
 def _shipped_ops() -> dict:
     """A private copy per call -- callers install these into a module global."""
     return copy.deepcopy(_shipped_ops_cached())
+
+
+@pytest.fixture
+def shipped_config(monkeypatch: pytest.MonkeyPatch) -> dict:
+    """This repo's own `.supertool.json`, presets merged, installed as `_CONFIG`.
+
+        def test_something(shipped_config):
+            assert "gh-pr" in supertool._load_config()["ops"]
+
+    The **whole** registry -- which is exactly what `with_preset_op` above
+    withholds, and the two must not be collapsed. A test asking for one route
+    must not silently acquire the other forty; a test about the shipped
+    listing, the guard's word list or the op roster needs all of them. Those
+    are different questions, so they are different fixtures. They share the
+    loader and nothing else: `with_preset_op` still installs only the entries
+    it was asked for, and `tests/test_shipped_config_1829.py` pins that the
+    sharing has not turned into leaking.
+
+    Eight files hand-rolled this and each rediscovered `_merge_presets` (#1829).
+    Returns a private deep copy, so a consumer that mutates the config it was
+    handed cannot poison the process-wide cache for the next test.
+    """
+    cfg = copy.deepcopy(_shipped_config_cached())
+    monkeypatch.setattr(supertool, "_CONFIG", cfg)
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+    monkeypatch.setattr(supertool, "_CONFIG_PATH",
+                        str(REPO_ROOT / ".supertool.json"))
+    return cfg
 
 
 def preset_op_route_state(name: str, entry: dict) -> "tuple[str, str]":
