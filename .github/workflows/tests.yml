@@ -312,12 +312,23 @@ jobs:
     # 22/22 green with three unreachable imports in a file it created, every
     # edit to which reported `ruff : ok (no new errors)`.
     #
-    # Scoped to the diff, never the tree: the paths this PR adds, copies or
-    # renames, where "pre-existing" is not a category a path with no history
-    # can be in. A new rule in a ruff release then reds only a PR that is
-    # already touching the file, which is the cost the pytest job's comment
-    # refuses to socialise onto whoever pushes next.
-    name: lint (files this PR adds or renames)
+    # Scoped to the diff, never the tree, in two halves. A path this PR adds,
+    # copies or renames has no history, so "pre-existing" is not a category it
+    # can be in and it is checked whole. A path this PR *modifies* has a
+    # history and a share of the 263 findings the tree-wide ignore holds back,
+    # so it is checked only against its own merge-base revision: a finding
+    # already there is not reported. Either way a new rule in a ruff release
+    # reds only a PR already touching the file, which is the cost the pytest
+    # job's comment refuses to socialise onto whoever pushes next.
+    #
+    # The second half is #1849, and it was a hole in this job rather than an
+    # extension of it. Measured on PR #1843: this leg reported one finding, in
+    # the only file that PR adds; the same rule set over the whole diff found
+    # five. The other four were in modified files -- hidden by the tree-wide
+    # ignore locally and by the ACR scope here, simultaneously -- and would
+    # have shipped. Whole-file linting of modified paths is NOT the fix: it
+    # re-surfaces the 263 and the leg goes permanently red.
+    name: lint (files this PR adds, renames or modifies)
     runs-on: ubuntu-latest
     # Not sized from observation — this job has never run. It is a checkout, a
     # pip install and one ruff invocation over a handful of files, i.e. the
@@ -350,10 +361,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e .[dev]
-      - name: Lint the files this PR adds, copies or renames
+      - name: Lint the files this PR touches
         # Three states on every run, pass or fail — `ok`, `finding`, `declined`
         # — because "nothing to report" and "I could not look" print the same
         # way otherwise, and that equivalence is the whole of #1481.
+        #
+        # The report states both scopes in full on every run. `1 of 1 file(s)
+        # this PR adds, copies or renames` was accurate and was read, by two
+        # people in one session, as `1 of 1 file(s) in this PR` — a whole-diff
+        # verdict the leg had never formed (#1849).
         run: python -X utf8 .github/scripts/lint_new_files.py
   notifiers:
     # #557: the matrix above runs pytest and nothing else, so
