@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _board, _proc
 import _board  # noqa: E402
 import _filter_tokens  # noqa: E402  (the one tokenizer + refusal, shared with gh-issues / gh-prs)
 import _untrusted  # noqa: E402  (the repo's remote-text convention)
+import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _checks  # noqa: E402  (the one check classifier, shared with gh-pr / gh-prs)
 import _proc  # noqa: E402  (the one liveness probe, shared with watch / gh-prs)
@@ -649,7 +650,10 @@ def main() -> int:
         # appends a failing preset's stderr to it (`_supertool.py`), and the
         # writer of the text is the GitLab API (#1485).
         err = _untrusted.flat(result.stderr.strip()) or "unknown error"
-        if "not logged in" in err.lower() or "401" in err:
+        # A status, never a number (#1846). go-gitlab echoes the request URL into
+        # every error string, so a project, job or pipeline id containing `401`
+        # made a 500 or a throttle render as a missing credential.
+        if _auth_probe.says_not_authenticated(err, _auth_probe.GITLAB_MARKERS):
             print("ERROR: glab not authenticated. Run: glab auth login", file=sys.stderr)
         else:
             print(f"ERROR: glab mr list: {err}", file=sys.stderr)

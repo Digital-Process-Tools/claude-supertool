@@ -25,6 +25,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from _env import env_float  # noqa: E402  (the one numeric-knob reader)
 import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
+import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
@@ -42,7 +43,9 @@ def star(repo: str) -> tuple[bool, str]:
     if result.returncode == 0:
         return True, "ok"
     err = result.stderr.lower()
-    if "401" in err or "unauthorized" in err:
+    # A status, never a number (#1846): a throttle carries `401` inside its
+    # user id, and must reach the arm below that quotes what actually failed.
+    if _auth_probe.says_not_authenticated(err):
         return False, "auth (gh auth login)"
     if "404" in err:
         return False, "not found"

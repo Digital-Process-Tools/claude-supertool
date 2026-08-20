@@ -22,6 +22,7 @@ from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -
 from mrs import _conflict_label  # noqa: E402
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
+import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 import _checks  # noqa: E402  (named_disclosure/NAMED_CAP — shared with gh-pr, #619)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 import _refname  # noqa: E402  (the one ordinary-refname rule — #694/#924)
@@ -799,8 +800,10 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     # `_secrets.mentions_gitlab_token`, not a literal: this line read `glpat_`
     # until #1645, GitLab mints `glpat-`, and the only test over it used the
     # same wrong spelling. One list, cited to GitLab's docs, in one file.
-    if ("401" in s or "unauthorized" in s or "authenticate" in s
-            or "bad token" in s or "token expired" in s
+    # A status, never a number (#1846). go-gitlab echoes the request URL into
+    # every error string, so a project, job or pipeline id containing `401`
+    # made a 500 or a throttle render as a missing credential.
+    if (_auth_probe.says_not_authenticated(s, _auth_probe.GITLAB_MARKERS)
             or _secrets.mentions_gitlab_token(s)):
         return "ERROR: glab not authenticated. Run: glab auth login"
     if "403" in s or "forbidden" in s:

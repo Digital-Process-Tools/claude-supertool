@@ -17,6 +17,7 @@ import _declared_legs  # noqa: E402  (the second leg count, shared with gh-pr / 
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 import _untrusted  # noqa: E402  (a run's branch and its workflow/job names are remote text — #851/#965)
+import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 import _digits  # noqa: E402  (the one ASCII-digit test, shared with every preset that reads an id — #1727)
 
 # Parenthetical that keeps GitHub's own run-level field visible next to the
@@ -509,7 +510,15 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
         return (f"ERROR: {resource} #{identifier} not found "
                 f"{_repo_target.not_found_scope()}. "
                 f"{_repo_target.not_found_hint()}")
-    if "401" in s or "unauthorized" in s or "not logged in" in s or "token" in s:
+    # A status, never a number (#1846). `401` sits inside a GitHub user id
+    # (`API rate limit exceeded for user ID 44012345`) and inside a request id,
+    # and this arm is above the rate-limit and permission arms -- so a throttle
+    # printed `gh auth login`, a remedy for a cause nothing established, and
+    # never reached the arm that says "retry".
+    # A bare `token` went the same way: `Resource not accessible by personal
+    # access token` is a 403 about scopes, and the permission arm below was
+    # unreachable for it.
+    if _auth_probe.says_not_authenticated(s):
         return f"ERROR: gh CLI not authenticated. Run: gh auth login (verify with: gh auth status)"
     if "rate limit" in s or "429" in s:
         return "ERROR: GitHub API rate limit exceeded. Wait a few minutes and retry."

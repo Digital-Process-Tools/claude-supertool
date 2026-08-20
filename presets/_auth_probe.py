@@ -33,6 +33,22 @@ lists of what "not authenticated" looks like is how they drift, and they had
 already drifted (`gh_prs` grew exit-code 4 and a transport whitelist in #1568;
 `gl_mrs` still has neither).
 
+**Why this is in `presets/` and not in `presets/watch/tiers/`, where it landed
+two hours earlier.** #1846 counted the same predicate in 23 more call sites --
+16 under `presets/github/` (15 files; `issues.py` carries two) and 7 under
+`presets/gitlab/` -- and none of them can reach a module nested under `watch/`. They import
+`presets/_*.py` through the `sys.path` insert every preset script already does.
+A second copy under `presets/` would have been the drift this module exists to
+prevent, on its first day; moving it cost two `_load` call sites and a line of
+prose in `docs/presets/watch.md`.
+
+**The GitLab markers are separate, and stay separate.** `glab` writes prose
+`gh` does not (``unauthenticated``, ``could not authenticate``), and folding it
+into the shared tuple would widen the GitHub sites and both radar tiers for a
+vocabulary neither platform emits. It is still one copy of the GitLab list,
+which is the property that matters -- seven `presets/gitlab/` sites had seven
+hand-written copies of it.
+
 What this module deliberately does NOT decide is what to do about a failure it
 declines. Saying "this did not establish an auth problem" is the whole of its
 job; whether the caller then calls that unreachable, throttled or a plain
@@ -61,12 +77,33 @@ NOT_AUTHENTICATED_MARKERS = (
 )
 
 
-def says_not_authenticated(stderr: str) -> bool:
+#: What `glab` and the GitLab API write and `gh` does not. Passed by the
+#: `presets/gitlab/` sites as `extra`; kept out of the shared tuple so that
+#: adding a GitLab phrase cannot silently widen the GitHub sites.
+#:
+#: `authenticate` is a stem on purpose -- it covers ``unauthenticated``,
+#: ``could not authenticate`` and ``authentication failed`` in one entry, and
+#: it is prose about a credential rather than a number, which is the property
+#: the rule above is actually about. The same **no bare status number** rule
+#: applies here, and the same structural test checks it.
+GITLAB_MARKERS = (
+    "unauthenticated",    # GitLab's API body for a request with no token
+    "authenticate",       # the stem: glab's own prose, and `authentication`
+)
+
+
+def says_not_authenticated(stderr: str, extra: tuple[str, ...] = ()) -> bool:
     """Did this stderr *state* that the credential is unusable?
 
     False is not "the credential is fine". It is "this text did not establish
     an answer either way", which is the third state the caller owes its reader
     -- and the one the caller must not print a re-authentication remedy for.
+
+    `extra` is a caller's platform vocabulary -- `GITLAB_MARKERS` today. It is
+    a parameter rather than a second function because the rule that matters
+    (a marker states a status, never a number) has to hold over whatever is
+    passed, and one predicate is the only place to say so.
     """
     low = (stderr or "").lower()
-    return any(marker in low for marker in NOT_AUTHENTICATED_MARKERS)
+    markers = NOT_AUTHENTICATED_MARKERS + tuple(extra)
+    return any(marker in low for marker in markers)

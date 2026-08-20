@@ -67,6 +67,7 @@ from pr import (  # noqa: E402  (reuse the gh-pr helper and the cap it fetched u
 import _board  # noqa: E402  (the board layout shared with gl-mrs / radar)
 import _filter_tokens  # noqa: E402  (the one tokenizer + refusal, shared with gh-issues / gl-mrs)
 import _untrusted  # noqa: E402  (the repo's remote-text convention)
+import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _checks  # noqa: E402  (the one check classifier, shared with gh-pr / gl-mrs)
 import _proc  # noqa: E402  (the one liveness probe, shared with watch / gl-mrs)
@@ -971,7 +972,9 @@ def main_with_args(arg_str: str) -> int:
         # the writer of the text is the GitHub API (#1606).
         err = _untrusted.flat(result.stderr.strip()) or "unknown error"
         low = err.lower()
-        if "not logged in" in low or "401" in err:
+        # A status, never a number (#1846): a throttle carries `401` inside its
+        # user id, and must reach the arm below that quotes what actually failed.
+        if _auth_probe.says_not_authenticated(err):
             print("ERROR: gh not authenticated. Run: gh auth login", file=sys.stderr)
         elif ("github host" in low or "not a git repository" in low
                 or "git remotes" in low):

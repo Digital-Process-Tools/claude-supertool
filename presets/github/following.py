@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
+import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
 
 
@@ -26,7 +27,9 @@ def main(arg: str) -> int:
     )
     if result.returncode != 0:
         err = result.stderr.lower()
-        if "401" in err or "unauthorized" in err:
+        # A status, never a number (#1846): a throttle carries `401` inside its
+        # user id, and must reach the arm below that quotes what actually failed.
+        if _auth_probe.says_not_authenticated(err):
             sys.stderr.write("ERROR: gh not authenticated. Run: gh auth login\n")
         else:
             # The relay #981 walked past on its way to the logins below: the

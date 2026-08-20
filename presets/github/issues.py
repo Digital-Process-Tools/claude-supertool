@@ -90,6 +90,7 @@ import _board  # noqa: E402  (the board layout shared with gh-prs / gl-mrs)
 import _filter_tokens  # noqa: E402  (the one tokenizer + refusal, shared with gh-prs / gl-mrs)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _untrusted  # noqa: E402  (where tracker text starts and stops)
+import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 from _env import env_int  # noqa: E402
 
 DEFAULT_PER_PAGE = 50
@@ -505,7 +506,9 @@ def _lookup_repo() -> tuple[tuple[str, str] | None, str | None]:
         # Flattened before either use: the writer is the GitHub API (#1606).
         err = _untrusted.flat((result.stderr or "").strip()) or "unknown error"
         low = err.lower()
-        if "not logged in" in low or "401" in err:
+        # A status, never a number (#1846): a throttle carries `401` inside its
+        # user id, and must reach the arm below that quotes what actually failed.
+        if _auth_probe.says_not_authenticated(err):
             return None, "ERROR: gh not authenticated. Run: gh auth login"
         if ("github host" in low or "not a git repository" in low
                 or "git remotes" in low or "could not determine" in low):
@@ -1246,7 +1249,9 @@ def main_with_args(arg_str: str) -> int:
             # Flattened before either use: the writer is the GitHub API (#1606).
             err = _untrusted.flat((result.stderr or "").strip()) or "unknown error"
             low = err.lower()
-            if "not logged in" in low or "401" in err:
+            # A status, never a number (#1846): a throttle carries `401` inside its
+            # user id, and must reach the arm below that quotes what actually failed.
+            if _auth_probe.says_not_authenticated(err):
                 print("ERROR: gh not authenticated. Run: gh auth login", file=sys.stderr)
             elif ("github host" in low or "not a git repository" in low
                     or "git remotes" in low):

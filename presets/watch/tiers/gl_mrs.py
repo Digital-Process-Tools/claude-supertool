@@ -172,10 +172,18 @@ snapshot = _load("radar_snapshot", _HERE / "_snapshot.py")
 # "Did the probe establish that there is no usable credential?" — shared with
 # the GitHub tier for the snapshot's reason, and because both tiers had the
 # same bare-`401` collapse and would drift apart while being fixed (#1823).
-_auth_probe = _load("radar_auth_probe", _HERE / "_auth_probe.py")
+_auth_probe = _load("radar_auth_probe", _WATCH.parent / "_auth_probe.py")
 
-#: This tier's not-authenticated vocabulary, from the one copy.
-NOT_AUTHENTICATED_MARKERS = _auth_probe.NOT_AUTHENTICATED_MARKERS
+#: This tier's not-authenticated vocabulary, from the one copy: the shared
+#: markers plus the GitLab ones. This tier speaks GitLab, so it reads the
+#: GitLab vocabulary -- the rule is *whoever speaks GitLab passes
+#: `GITLAB_MARKERS`*, and it holds for the seven `presets/gitlab/` ops and for
+#: this tier alike (#1846). Leaving it off here would have made radar and its
+#: own op-level twin `presets/gitlab/mrs.py` disagree about what `glab` means
+#: by `could not authenticate` -- the exact drift #1823 put the predicate in
+#: one file to prevent, reintroduced one argument along.
+NOT_AUTHENTICATED_MARKERS = (_auth_probe.NOT_AUTHENTICATED_MARKERS
+                             + _auth_probe.GITLAB_MARKERS)
 
 SOURCE = defaults.DEFAULT_SOURCE
 FEED_SOURCE = defaults.DEFAULT_FEED_SOURCE
@@ -384,7 +392,7 @@ def _query(filters: dict[str, str], per_page: int) -> list[dict]:
         # of its own stderr. `presets/gitlab/mrs.py` already flattens exactly
         # this value; this tier did not.
         err = mrs._untrusted.flat((result.stderr or "").strip()) or "unknown error"
-        if _auth_probe.says_not_authenticated(err):
+        if _auth_probe.says_not_authenticated(err, _auth_probe.GITLAB_MARKERS):
             # The probe got an answer saying the credential is unusable, so
             # the remedy names a cause something established (#1823).
             raise RadarError(

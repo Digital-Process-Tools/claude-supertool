@@ -49,6 +49,7 @@ from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -
 import _checks  # noqa: E402  (NAMED_CAP — the repo's disclosure cap, #605/#619)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _untrusted  # noqa: E402  (every field below is written by the check's App — #851)
+import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
@@ -98,7 +99,15 @@ def _gh_error_kind(stderr: str) -> str:
         return "repo"
     if "could not resolve" in s or "404" in s or "not found" in s:
         return "notfound"
-    if "401" in s or "unauthorized" in s or "not logged in" in s or "token" in s:
+    # A status, never a number (#1846). `401` sits inside a GitHub user id
+    # (`API rate limit exceeded for user ID 44012345`) and inside a request id,
+    # and this arm is above the rate-limit and permission arms -- so a throttle
+    # printed `gh auth login`, a remedy for a cause nothing established, and
+    # never reached the arm that says "retry".
+    # A bare `token` went the same way: `Resource not accessible by personal
+    # access token` is a 403 about scopes, and the permission arm below was
+    # unreachable for it.
+    if _auth_probe.says_not_authenticated(s):
         return "auth"
     if "rate limit" in s or "429" in s:
         return "ratelimit"
