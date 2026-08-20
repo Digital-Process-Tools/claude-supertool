@@ -34,24 +34,6 @@ import supertool
 REPO_ROOT = Path(__file__).parent.parent
 
 
-@pytest.fixture
-def shipped_config(monkeypatch: pytest.MonkeyPatch):
-    """Load the repo's own .supertool.json.
-
-    conftest deliberately hands every test ``_CONFIG = {}`` (#1030). Without
-    this fixture ``op_ops`` takes its no-config fallback and ``op_help`` reports
-    every op as undocumented — so a test of the *listing* would go red for the
-    isolation rather than for the defect, and stay red after the fix. That is
-    the mirror image of a test that passes when the code does nothing, and it
-    cost this file one rewrite before the RED output was believable.
-    """
-    cfg = json.loads((REPO_ROOT / ".supertool.json").read_text(encoding="utf-8"))
-    monkeypatch.setattr(supertool, "_CONFIG", cfg)
-    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
-    monkeypatch.setattr(supertool, "_CONFIG_PATH", str(REPO_ROOT / ".supertool.json"))
-    return cfg
-
-
 def _declared_names(listing: str) -> set:
     """Op names the listing actually accounts for.
 

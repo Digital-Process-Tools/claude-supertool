@@ -897,6 +897,52 @@ payload route" and "it declared one and the derivation lost it" are different
 facts with different suspects. It asks `_build_at_file_registry` rather than
 re-implementing its rules, so a change to how routes are derived reaches it.
 
+#### When you want the whole registry instead: `shipped_config`
+
+`with_preset_op` installs a **subset**, and that is the property that keeps it
+honest — a test asking for `git-commit` must not silently acquire `gh-pr` too,
+or every other op's presence in that test becomes an accident of the fixture.
+
+Some tests want the other thing: this repo's own `.supertool.json` with every
+preset resolved, because the thing under test *is* the whole registry — the
+`ops` listing, the roster, the guard's word list, the shipped reference.
+
+```python
+def test_the_listing_names_every_op(shipped_config):
+    assert "gh-pr" in supertool._load_config()["ops"]
+```
+
+`shipped_config` installs it as `_CONFIG` for the duration of one test and
+returns it. Eight files hand-rolled this before
+[#1829](https://github.com/Digital-Process-Tools/claude-supertool/issues/1829),
+each rediscovering `_merge_presets`. The two fixtures share the loader and
+nothing else; `tests/test_shipped_config_1829.py` pins that the sharing has not
+turned into leaking.
+
+**It fails rather than skips too**, for the same reason, and the guard is not
+the one the obvious implementation writes. `.supertool.json` declares eight ops
+*directly*, so `assert config["ops"]` stays true with every `presets/*.json`
+deleted — a guard reporting a healthy registry for a checkout that resolved
+none of it. It refuses on three separate conditions instead: a
+`_preset_warnings` entry, an empty `ops`, and **a declared preset that
+contributed no op to the registry**. Each is individually load-bearing;
+neutering any one of the three reddens exactly one test and no other.
+
+That third one is asked per preset against `_op_sources` — the provenance the
+loader stamps as it merges — and not by counting the op names the merge added.
+Counting names cannot see a preset whose whole contribution collides by key
+with an op the project also declares, which is not hypothetical: this repo's
+eight direct `ops` entries are exactly the keys `git`, `watch` and `dashboard`
+ship, so all three are invisible to a name-set difference. `_op_sources`
+records the originating preset even for an op the project overrode.
+
+One trap if you write a test against it. `_find_preset_file` resolves a name in
+three places — the project, `~/.config/supertool/presets/`, then the **supertool
+install directory** — so a throwaway `tmp_path` project declaring
+`presets: ["git"]` loads *this repository's* `presets/git.json` and merges
+perfectly. Simulating a broken checkout needs a name nothing in that chain
+declares.
+
 ### Coverage
 
 ```bash
