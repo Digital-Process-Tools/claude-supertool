@@ -214,17 +214,40 @@ ABSENT = "absent"
 UNKNOWN = "unknown"
 
 #: Substrings of gh's own stderr that mean *asked, and there is no repository
-#: here* rather than *could not ask*. The same phrases the twelve classifying
-#: call sites already match on — `pr.py`, `issue.py`, `issues.py` (three),
-#: `run.py`, `job.py`, `labels.py`, `prs.py`, `branch.py`, `check.py` (two) —
-#: kept here so the one caller that has NOT classified reaches the same
-#: verdict rather than a thirteenth spelling of it.
+#: here* rather than *could not ask*.
 #:
-#: Deliberately short of a full taxonomy: anything unrecognised falls to
+#: **Deliberately narrower than the twelve classifying call sites**, not a copy
+#: of them — `pr.py`, `issue.py`, `issues.py` (three), `run.py`, `job.py`,
+#: `labels.py`, `prs.py`, `branch.py`, `check.py` (two). Every marker here
+#: refines one of theirs, so the one caller that has NOT classified cannot
+#: reach a thirteenth spelling of the verdict; but the refinement is strict.
+#: `no git remotes` and `git remotes found` narrow their bare `git remotes`,
+#: `could not determine base repository` narrows their `could not determine`,
+#: and :data:`_ABSENT_TARGET` drops their broadest marker, `not found`,
+#: altogether. Until #1807 this comment claimed the two lists held the same
+#: phrases, which sent the next reader to widen the wrong one.
+#:
+#: The narrowing is load-bearing, because these are not the same kind of
+#: classifier. A call site is an **ordered if-chain** over one lookup: its
+#: `repo` arm is tried before `notfound`, `auth` and `ratelimit`, and it runs
+#: only after the caller has turned a missing binary and a timeout into their
+#: own messages (`run.py`'s `except FileNotFoundError`). Its broad phrases are
+#: fenced by everything tried ahead of them. This is a **standalone two-way**
+#: classifier with no ordering and nothing filtered out first, so the same
+#: words carry a different risk: borrowing their bare `not found` would call
+#: `gh not found - install from ...` ABSENT, which is #1789 reintroduced in
+#: the module written to fix it.
+#:
+#: So the list stays short of a full taxonomy: anything unrecognised falls to
 #: :data:`UNKNOWN`, because the two mistakes do not cost the same. Calling a
 #: real non-repo `unknown` prints a hedged sentence; calling a 503 `absent`
 #: prints a false claim about the reader's machine and sends them to fix
-#: something that was never broken.
+#: something that was never broken. A gh rewording that satisfies only a broad
+#: marker therefore lands on `unknown` here and `absent` at a call site — a
+#: real divergence, in the direction that asserts nothing false.
+#:
+#: `tests/test_repo_target_marker_vocabulary_1807.py` derives both
+#: vocabularies from the tree and fails if these paragraphs stop being true.
 _ABSENT_CWD = (
     "not a git repository",
     "no git remotes",
