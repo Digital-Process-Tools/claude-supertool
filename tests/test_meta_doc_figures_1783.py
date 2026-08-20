@@ -72,8 +72,17 @@ def test_the_roster_size_is_stated_once(shipped_config) -> None:
 
     Path-independent: it compares the file's claims with each other, so it
     fails for the reason it is named after and not for where CI checked out.
+
+    Three states, not two. `len(claims) <= 1` is satisfied by the empty set, so
+    a reworded sentence the pattern no longer matches would render as "stated
+    once" — an absence this test produced, read as an absence in the file, in
+    the test written to stop exactly that. The sibling below happens to carry
+    the same positive control, which makes the suite safe and this test's own
+    verdict wrong; a `-k` selection or a later refactor that drops the sibling
+    would leave nothing looking.
     """
     claims = set(re.findall(r"`ops:roster`[^.\n]*?~([\d.]+)KB", _meta()))
+    assert claims, "meta.md states no size for ops:roster at all"
     assert len(claims) <= 1, f"meta.md states {sorted(claims)} for ops:roster"
 
 
@@ -90,7 +99,12 @@ def test_the_roster_size_is_this_checkouts(shipped_config) -> None:
     """
     claims = set(re.findall(r"`ops:roster`[^.\n]*?~([\d.]+)KB", _meta()))
     assert claims, "meta.md no longer states a size for ops:roster"
-    stated = float(claims.pop())
+    # Not `claims.pop()`: on a set of two, which one it grades against is
+    # arbitrary and the same file would pass or fail run to run. The sibling
+    # above already refuses a second value; this one refuses to *guess* which
+    # of them it was asked about, rather than quietly grading one at random.
+    assert len(claims) == 1, f"meta.md states {sorted(claims)} for ops:roster"
+    stated = float(next(iter(claims)))
     actual = len(supertool.op_ops_roster().encode("utf-8")) / 1000
     assert abs(stated - actual) < 0.1, (
         f"meta.md says ~{stated}KB, this checkout renders {actual:.2f}KB")
