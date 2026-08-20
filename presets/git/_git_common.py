@@ -162,7 +162,9 @@ def _git_verbatim(args: list[str], timeout: int | None = None) -> subprocess.Com
     )
 
 
-#: The sentence six ops print when git says this is not a repository.
+#: The sentence seven ops print when git says this is not a repository. Three
+#: more print it too — `trail.py`, `investigate.py`, `checkout.py` — but reach
+#: it by matching git's own stderr, so they are not callers of `probe_repo`.
 NOT_A_REPO = "ERROR: not inside a git repository."
 
 
@@ -187,7 +189,7 @@ def probe_repo(git_fn=None, args: list[str] | None = None) -> tuple[bool | None,
     * `(None, <why>)` — **the call did not answer**, and nothing has been
       established about the repository at all.
 
-    The third one is the whole point. Six ops opened by reading this probe's
+    The third one is the whole point. Seven ops opened by reading this probe's
     `returncode != 0` as *no* and printing `not inside a git repository` — over
     a repository that was mid-merge with live conflict markers on disk. That is
     not a missing section, it is a positive false claim about the world, and a

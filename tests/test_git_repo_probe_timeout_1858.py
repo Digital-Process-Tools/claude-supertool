@@ -1,6 +1,6 @@
 """#1858 — a git call that did not answer is not a git repository that is absent.
 
-Six ops open with the same question — *am I inside a git repository?* — asked as
+Seven ops open with the same question — *am I inside a git repository?* — asked as
 `git rev-parse --git-dir` (`git branch -vv` in `git-status`, which runs it for
 its return code only). Every one of them read a non-zero return as **no**, and
 `_git` hands back `TIMEOUT_RC` (124) for a call that never answered. So a stalled
@@ -20,9 +20,16 @@ optional section, or relay `exit N: <stderr>` verbatim, and a timeout's stderr
 says `timed out after Ns`. The sub-population fixed here is the one whose
 non-zero arm makes a **positive claim about the repository** that a timeout does
 not license — the repo probe in `conflicts.py`, `resolve.py`, `push.py`,
-`diff.py`, `commit.py` and `status.py`, plus `conflicts.py::_detect_state`,
-whose empty return prints as `State: no merge/rebase/cherry-pick in progress`
-over a repository that is mid-merge.
+`diff.py`, `commit.py`, `status.py` and `blame.py`, plus
+`conflicts.py::_detect_state`, whose empty return prints as `State: no
+merge/rebase/cherry-pick in progress` over a repository that is mid-merge.
+
+`blame.py` is here because the sweep was re-run rather than trusted: the first
+pass named six sites, and grepping `presets/` for the printed sentence found
+ten. Three of the four extras (`trail.py`, `investigate.py`, `checkout.py`) are
+honest — they gate on git's own stderr saying `not a git repository`, which a
+timeout's `timed out after Ns` does not — and the fourth was the same defect,
+under a comment that named `TIMEOUT_RC` two lines above the arm ignoring it.
 
 **The control that matters, and it is half of every test here.** A fix that
 treats every non-zero return as *could not tell* trades the loud bug for the
@@ -174,9 +181,16 @@ def _conflicted_repo(tmp_path: Path) -> Path:
 
 
 def _not_a_repo(tmp_path: Path) -> Path:
-    """A directory with no repository at or above it, established rather than assumed."""
+    """A directory with no repository at or above it, established rather than assumed.
+
+    Holds an `f`, because `blame.py` checks that its PATH is a file BEFORE it
+    probes for a repository. Without the file it would refuse with `file not
+    found` and never reach the arm this control exists to pin — a green that
+    proves nothing, in the exact shape this repository is named for.
+    """
     outside = tmp_path / "outside"
     outside.mkdir()
+    (outside / "f").write_text("x" + chr(10), encoding="utf-8")
     probe = subprocess.run(["git", "rev-parse", "--git-dir"], cwd=str(outside),
                            capture_output=True, text=True,
                            encoding="utf-8", errors="replace")
@@ -234,6 +248,15 @@ def _run(mod, argv, cwd: Path, monkeypatch, *, expect_stall: bool) -> tuple[str,
 
 #: (module name, argv, which subcommand the repo probe issues).
 #: `git-status` probes with `branch -vv`, run for its return code only.
+#:
+#: `blame` was missed by the first sweep of this fix and found by re-running the
+#: issue's own work item — `grep` for the printed sentence across `presets/`
+#: rather than for the sites already known. It has the identical shape, and its
+#: own comment named `TIMEOUT_RC` two lines above the arm that ignored it. The
+#: other three sites that print the sentence — `trail.py`, `investigate.py`,
+#: `checkout.py` — are deliberately absent: each gates it on `not a git
+#: repository` appearing in git's stderr, which a timeout's `timed out after Ns`
+#: does not satisfy, so they already relay the timeout verbatim instead.
 PROBES = [
     ("conflicts", ["conflicts.py"], "rev-parse"),
     ("resolve", ["resolve.py", "ours", "f"], "rev-parse"),
@@ -241,6 +264,7 @@ PROBES = [
     ("commit", ["commit.py", "a message", "f"], "rev-parse"),
     ("push", ["push.py"], "rev-parse"),
     ("status", ["status.py"], "branch"),
+    ("blame", ["blame.py", "f", "1"], "rev-parse"),
 ]
 
 
