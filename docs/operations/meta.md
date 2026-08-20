@@ -8,10 +8,10 @@ Ops for self-documentation and version introspection. Used primarily in session-
 |----|--------|--------------|
 | `introduction` | `introduction` | Output the project introduction text from `.supertool.json`. No `---` dispatch header — clean markdown. |
 | `output-format` | `output-format` | Output format examples from `.supertool.json`. Shows what responses look like. |
-| `ops` | `ops` | Every op's **signature** — built-in ops, custom ops and aliases, one row each, no descriptions and no examples (~3.7KB here). Its footer says how many bytes the descriptions cost and names the two ops that fetch them (#1774). |
-| `ops:full` | `ops:full` | The same rows carrying their descriptions and examples — what `ops` was before #1774, ~75KB here. This is the full reference; nothing was deleted when the default changed. |
+| `ops` | `ops` | Every op's **signature** — built-in ops, custom ops and aliases, one row each, no descriptions and no examples (~3.7KB here). Its footer says what the **whole `ops:full` render** costs, not what the descriptions cost: that is the footer's number minus this listing, 68,988 bytes here. It also names the two ops that fetch them (#1774). |
+| `ops:full` | `ops:full` | The same rows carrying their descriptions and examples — what `ops` was before #1774, ~73KB here. This is the full reference; nothing was deleted when the default changed. |
 | `ops-compact` | `ops-compact` | The descriptive listing with per-op detail trimmed except where an entry declares `hint` (~15KB). Still over the ~7KB SessionStart hook cap; it says so in its first line rather than letting the tail be cut silently. |
-| `ops:roster` | `ops:roster` | Every op name plus a safety class and nothing else (~1.4KB) — the only listing that fits the SessionStart cap, so it is what the hook prints. Unmarked = read-only, `*` = writes in this tree, `!` = acts outside it or outlives the call. |
+| `ops:roster` | `ops:roster` | Every op name plus a safety class and nothing else (~2.0KB) — the only listing that fits the SessionStart cap, so it is what the hook prints. Unmarked = read-only, `*` = writes in this tree, `!` = acts outside it or outlives the call. |
 | `version` | `version` | Show supertool version. |
 | `help` | `help:OP` | Print the full reference for a single op — syntax, full (uncompacted) description, example, and **the `@-` payload route with the field names it derives** (#1400). Both invocation forms, because an entry showing one of two reads as complete: `help:paste` printed `paste:::PATH:::CONTENT` and stopped, and the agents that needed `path` / `content` guessed them. The fields are rendered from the same registry that drives the route, so they cannot describe a shape the loader would reject. Errors with a pointer to `ops` for an unknown or undocumented op. |
 | `registry` | `registry[:OP]` | Which ops this project loads, and where each definition came from — preset, project config, or a project entry merged over a preset one. `registry:OP` shows one op's merged definition with the source of every key. See below. |
@@ -229,11 +229,13 @@ What the session-start hook actually runs, and it fits the ~7KB hook-output cap:
 ./supertool 'introduction' 'output-format' 'ops:roster'
 ```
 
-Measured in this checkout (`python3 supertool.py 'ops:full' > /tmp/o; wc -c /tmp/o`): `ops:full` is 74,838 bytes and `ops-compact` 14,708, against a cap of ~7,168 — so **no descriptive listing fits, and the startup listing was truncated on every session**, hiding everything alphabetically after `grep`: the whole `gh-*` and `git-*` families, `radar`, `watch`, `read`, `paste`, `tree`. It disclosed the truncation honestly and that did not help, because what was hidden was *existence*, and a reader cannot miss what they never learned about. Three agents in one session reported `write:` is not an op without being told `paste:` is.
+Measured in this checkout (`python3 supertool.py 'ops:full' > /tmp/o; wc -c /tmp/o`): `ops:full` is 72,715 bytes and `ops-compact` 14,708, against a cap of ~7,168 — so **no descriptive listing fits, and the startup listing was truncated on every session**, hiding everything alphabetically after `grep`: the whole `gh-*` and `git-*` families, `radar`, `watch`, `read`, `paste`, `tree`. It disclosed the truncation honestly and that did not help, because what was hidden was *existence*, and a reader cannot miss what they never learned about. Three agents in one session reported `write:` is not an op without being told `paste:` is.
 
 Two things have changed under that paragraph since it was written, and both are why it is dated. Bare `ops` is signatures only since #1774 and does fit, at ~3.7KB — the numbers above now describe `ops:full`, which is where the descriptions went. And the numbers themselves read 47,254 and 9,067 here until 2026-08-16: a measurement written into prose is a measurement nothing re-runs, so quote the command beside it and expect to re-take it.
 
-`ops:roster` is ~1.7KB — every op name, each carrying a safety class, and nothing else, plus the same "N shipped presets are not loaded here" line `ops` carries. The whole hook payload is ~2.7KB against the ~7.2KB cap. Not quoted to the byte: the disclosure names the absolute path of the config it read, so the size moves with the checkout.
+`ops:roster` is ~2.0KB — every op name, each carrying a safety class, and nothing else, plus the same "N shipped presets are not loaded here" line `ops` carries. The whole hook payload is ~2.9KB against the ~7.2KB cap. Not quoted to the byte: the disclosure names the absolute path of the config it read, so the size moves with the checkout.
+
+**How far it moves, measured, because a stale-looking figure here is usually neither.** The same tree at `…/claude-supertool` (46 characters) and at `…/st-wt/1783` (40) renders `ops:roster` at 1,969 and 1,963 bytes — the six-character difference, exactly, and the same six bytes in `ops`, `ops:full` and `ops-compact`. So a byte count read against one of these figures can disagree by tens of bytes and mean nothing at all, while a KB approximation is stable. One exact number is stable too, and it is the one worth quoting: `ops:full` minus `ops` cancels the disclosure each carries once, giving 68,988 bytes of description at either path. `tests/test_meta_doc_figures_1783.py` pins these against the live renders so the paragraph stops being something only an audit re-reads (#1783).
 
 ```
   append* around around_line batch* between channel check cwd dashboard diag
@@ -256,7 +258,7 @@ Descriptions are one call away and richer there — `help:OP` carries the full c
 $ ./supertool 'ops:gh-labels'
 ERROR: `ops` takes no filter, and 'gh-labels' is an op name.
   Its full entry: `help:gh-labels` — more than the listing row carries.
-  Every name plus its safety class: `ops:roster`. Every entry: `ops`.
+  Every name plus its safety class: `ops:roster`. Every signature: `ops`. Every description: `ops:full`.
 ```
 
 There is deliberately no `ops:PATTERN` filter. `help:OP` already answers what a filter would and answers it with more, and a filter would re-create this issue in miniature: `ops:gh-labl` matching nothing renders identically to an op that does not exist. `ops:full` and `ops:roster` are modes rather than filters — a fixed set of three words, each rendering every op, and a fourth word is refused naming the three (#1774).
