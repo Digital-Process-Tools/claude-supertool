@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import copy
+import functools
+import json
 import re
 import sys
 import time
@@ -1345,6 +1347,192 @@ def _disable_rtk_and_config():
     # flag absent for subsequent tests (pytest does not restore env vars set
     # via os.environ directly — only monkeypatch does).
     os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
+
+
+# ---------------------------------------------------------------------------
+# Preset-derived ops: the opt-in for the autouse config reset (#1812)
+# ---------------------------------------------------------------------------
+
+#: `_disable_rtk_and_config` above hands every test `supertool._CONFIG = {}`.
+#: That reset is deliberate and load-bearing -- `_load_config()` walks up from
+#: the **cwd**, so without it a test's behaviour would depend on which checkout
+#: it was run from and on whatever `.supertool.json` happened to sit above it.
+#: Its cost is that **every op whose route comes from a preset manifest rather
+#: than the builtin table does not exist in any test**: `git-commit`,
+#: `git-push`, the whole `gh-*` family. Not intermittently -- the condition is
+#: never false, in CI included.
+#:
+#: The failure mode is the one this repository keeps filing. On #1776 a test
+#: asserting that the `@-` guard refuses `git-commit` -- the most destructive
+#: op the guard covers -- armed a `pytest.skip` on the absent route and
+#: reported `git-commit has no payload route in this environment` on every
+#: invocation. A well-written message that reads as a local quirk, for an
+#: assertion that had never run anywhere.
+#:
+#: So this opt-in is loud by construction: `with_preset_op` **fails** where
+#: those hand-rolled arms skipped. A preset manifest that cannot answer is a
+#: broken checkout, not an under-equipped machine -- `presets/*.json` are
+#: tracked files one directory from this one, not a `hadolint` on PATH -- and a
+#: fixture that skipped would reproduce, one layer up, the exact defect it
+#: exists to remove. `tests/test_with_preset_op_1812.py` pins that decision as
+#: a behaviour rather than leaving it to this comment.
+
+REPO_ROOT = Path(__file__).parent.parent
+
+#: Three states, because "this op declares no payload route" and "this op
+#: declared one and the derivation lost it" are different facts with different
+#: suspects, and collapsing them is how a reworded `syntax` deletes a route
+#: silently (#770).
+PRESET_OP_ROUTE_OK = "ok"
+PRESET_OP_ROUTE_NONE = "no-payload-route"
+PRESET_OP_ROUTE_LOST = "route-declared-but-lost"
+
+
+@functools.lru_cache(maxsize=1)
+def _shipped_ops_cached() -> dict:
+    """Every op this repo's own config resolves to, through the real loader.
+
+    `supertool._merge_presets` rather than a walk over `presets/*.json`: the
+    resolution order (project over user over shipped) and the key-by-key merge
+    of a partial project override are the product's, and a hand-rolled walk
+    gets both wrong.
+    """
+    cfg = json.loads((REPO_ROOT / ".supertool.json").read_text(encoding="utf-8"))
+    supertool._merge_presets(cfg, str(REPO_ROOT))
+    ops = cfg.get("ops") or {}
+    assert ops, (
+        "`.supertool.json` + `_merge_presets` resolved zero ops. Nothing can be "
+        "installed from that, and a fixture that returned it would hand every "
+        "caller a config-shaped absence instead of a route (#1812)."
+    )
+    return ops
+
+
+def _shipped_ops() -> dict:
+    """A private copy per call -- callers install these into a module global."""
+    return copy.deepcopy(_shipped_ops_cached())
+
+
+def preset_op_route_state(name: str, entry: dict) -> "tuple[str, str]":
+    """Classify *entry*'s payload route, using the product's own registry build.
+
+    Not a re-implementation of `_build_at_file_registry`'s rules: this installs
+    the single entry, asks that function, and reads the answer back -- so a
+    change to how routes are derived reaches this classifier instead of
+    drifting away from it. The globals it moves are restored before returning;
+    `tests/test_with_preset_op_1812.py` pins that.
+    """
+    saved = {n: getattr(supertool, n) for n in (
+        "_CONFIG", "_CONFIG_CHECKED", "_AT_FILE_REGISTRY",
+        "_AT_FILE_REGISTRY_BUILT")}
+    saved_dropped = list(supertool._AT_FILE_DROPPED_ROUTES)
+    try:
+        supertool._CONFIG = {"ops": {name: entry}}
+        supertool._CONFIG_CHECKED = True
+        supertool._AT_FILE_REGISTRY_BUILT = False
+        supertool._build_at_file_registry()
+        syntax = (entry or {}).get("syntax", "")
+        if supertool._at_file_fields(name):
+            return PRESET_OP_ROUTE_OK, syntax
+        if name in dict(supertool._at_file_dropped_routes()):
+            return PRESET_OP_ROUTE_LOST, syntax
+        return PRESET_OP_ROUTE_NONE, syntax
+    finally:
+        for n, value in saved.items():
+            setattr(supertool, n, value)
+        supertool._AT_FILE_DROPPED_ROUTES[:] = saved_dropped
+
+
+@pytest.fixture
+def with_preset_op():
+    """Install one or more preset-derived ops for the duration of one test.
+
+        def test_something(with_preset_op):
+            with_preset_op("git-commit", payload_route=True)
+
+    Returns `{name: entry}`, read off the shipped manifests rather than typed,
+    so a test stays joined to the artifact it is about.
+
+    Three ways this refuses, and none of them is a skip:
+
+    * **no shipped config declares the name** -- the request can never be
+      honoured, in any environment;
+    * **the entry's `syntax` declares a payload route (`:::`) and derives no
+      fields** -- the route was deleted by a rewording, which is a defect in
+      the manifest and must not reach a test as a working install;
+    * **`payload_route=True` and the op has no route at all** -- the caller
+      said it needed one.
+
+    `payload_route` defaults to False because dispatchability and a payload
+    route are different questions: most preset ops have the first and not the
+    second, and demanding the second by default would refuse them all.
+    """
+    saved = {n: getattr(supertool, n) for n in (
+        "_CONFIG", "_CONFIG_CHECKED", "_AT_FILE_REGISTRY",
+        "_AT_FILE_REGISTRY_BUILT")}
+    saved_dropped = list(supertool._AT_FILE_DROPPED_ROUTES)
+    installed: dict = {}
+
+    def _install(*names: str, payload_route: bool = False) -> dict:
+        assert names, (
+            "with_preset_op() was called with no op name. That is a mistake in "
+            "the test, not a no-op: it would install nothing and leave every "
+            "assertion downstream measuring the autouse reset (#1812)."
+        )
+        ops = _shipped_ops()
+        entries = {}
+        for name in names:
+            entry = ops.get(name)
+            assert isinstance(entry, dict), (
+                f"no shipped preset or project config declares an op named "
+                f"{name!r}, so its route cannot be installed. This is a failure "
+                f"and not a skip on purpose (#1812): the request cannot be "
+                f"honoured in any environment, so skipping would report an "
+                f"environment quirk for an assertion that never runs."
+            )
+            state, syntax = preset_op_route_state(name, entry)
+            assert state != PRESET_OP_ROUTE_LOST, (
+                f"{name!r} declares a payload route and derives no field names "
+                f"from it -- {PRESET_OP_ROUTE_LOST}. The manifest's syntax is "
+                f"{syntax!r}; rewording one until `_fields_from_syntax` stops "
+                f"yielding clean identifiers is the documented way to delete an "
+                f"op's payload route without an error (#770)."
+            )
+            if payload_route:
+                assert state == PRESET_OP_ROUTE_OK, (
+                    f"{name!r} was requested with payload_route=True and has "
+                    f"{state}. Its syntax is {syntax!r}."
+                )
+            entries[name] = entry
+
+        installed.update(entries)
+        supertool._CONFIG = {"ops": copy.deepcopy(installed)}
+        supertool._CONFIG_CHECKED = True
+        supertool._AT_FILE_REGISTRY_BUILT = False
+        supertool._build_at_file_registry()
+
+        # Verify the install rather than assuming it. A fixture that returned
+        # a non-working route quietly would be the same defect wearing the
+        # costume of a fix -- and for a name that collides with a builtin
+        # default, `_at_file_fields` would answer from the builtin table and
+        # look like a success.
+        for name, entry in entries.items():
+            assert name in (supertool._load_config().get("ops") or {}), (
+                f"{name!r} was installed and is still not visible to "
+                f"`_load_config()`")
+            expected = [spec[0] for spec in
+                        supertool._fields_from_syntax(entry.get("syntax", ""))]
+            assert supertool._at_file_fields(name) == expected, (
+                f"{name!r}'s installed route is not the manifest's: expected "
+                f"{expected} from the shipped syntax, got "
+                f"{supertool._at_file_fields(name)}")
+        return entries
+
+    yield _install
+
+    for name, value in saved.items():
+        setattr(supertool, name, value)
+    supertool._AT_FILE_DROPPED_ROUTES[:] = saved_dropped
 
 
 @pytest.fixture

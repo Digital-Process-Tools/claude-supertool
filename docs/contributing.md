@@ -843,6 +843,56 @@ python3 -m pytest tests/
 ~4000 tests. The `--cov` in `addopts` prints a term report and **enforces
 nothing** — see below for why that is deliberate.
 
+### A preset-derived op does not exist in a test until you ask for it
+
+`tests/conftest.py`'s autouse `_disable_rtk_and_config` hands every test
+`supertool._CONFIG = {}`. That is deliberate: `_load_config()` walks up from the
+**cwd**, so without the reset a test's behaviour would depend on which checkout
+it was run from and on whatever `.supertool.json` happened to sit above it.
+
+The cost is that **every op whose route comes from a preset manifest rather than
+the builtin table does not exist in any test** — `git-commit`, `git-push`, the
+whole `gh-*` family. Not intermittently, and not only on your machine: the
+condition is never false, CI included.
+
+```python
+def test_the_guard_covers_git_commit(with_preset_op):
+    with_preset_op("git-commit", payload_route=True)
+    assert supertool._at_file_fields("git-commit") == ["message", "paths"]
+```
+
+`with_preset_op(*names, payload_route=False)` reads the entries off the shipped
+manifests through the real loader (`_merge_presets`, so `{path}` is resolved and
+a project override merges key-by-key), installs only the ops you named, and
+returns `{name: entry}`. Pass `payload_route=True` when the test needs the
+`@-` route and not merely the op — the two are different questions, and most
+preset ops have the second without the first.
+
+**It fails rather than skips, on purpose** ([#1812](https://github.com/Digital-Process-Tools/claude-supertool/issues/1812)).
+Three refusals, all `AssertionError`: no shipped config declares the name; the
+entry's `syntax` carries `:::` and derives no field names, so the route was
+deleted by a rewording ([#770](https://github.com/Digital-Process-Tools/claude-supertool/issues/770));
+or `payload_route=True` was asked of an op that has none. A preset manifest that
+cannot answer is a broken checkout, not an under-equipped machine —
+`presets/*.json` are tracked files, not a `hadolint` on PATH — so there is no
+environment in which skipping would be the honest answer.
+
+That distinction is not academic. On
+[#1776](https://github.com/Digital-Process-Tools/claude-supertool/issues/1776) a
+test asserting that the `@-` guard refuses `git-commit`, the most destructive op
+the guard covers, armed a `pytest.skip` on the absent route and reported
+`git-commit has no payload route in this environment` on every single run. A
+well-written message that reads as a local quirk, for an assertion that had
+never executed anywhere. **Do not write that arm.** If you find yourself
+reaching for one, the op is telling you it needs `with_preset_op`.
+
+`conftest.preset_op_route_state(name, entry)` is the classifier behind the
+refusals, and it answers in three states rather than two — `ok`,
+`no-payload-route`, `route-declared-but-lost` — because "this op declares no
+payload route" and "it declared one and the derivation lost it" are different
+facts with different suspects. It asks `_build_at_file_registry` rather than
+re-implementing its rules, so a change to how routes are derived reaches it.
+
 ### Coverage
 
 ```bash
