@@ -51,7 +51,7 @@ The marker said a cut had happened and nothing about undoing it, which is what a
 | ---------------------------------------------------------- | -------------------------------------------------------- |
 | `— TRUNCATED, 137 matches total`                           | Counted, and that is all of them                         |
 | `— TRUNCATED, 1000+ matches total (count capped at 1000)`  | Counting stopped at the ceiling; the number is a floor   |
-| `— TRUNCATED, more matches exist (total not counted)`      | Nothing counted — the delegated rtk path, see below      |
+| `— TRUNCATED, more matches exist, total unknown (…)`       | Nothing counted, and why — the delegated rtk path when its census could not answer, see below |
 | no marker at all                                           | The answer is complete; the count above it is exact      |
 
 ## `all` says which question you are asking
@@ -71,7 +71,7 @@ The marker said a cut had happened and nothing about undoing it, which is what a
 
 Notes:
 
-- **It never delegates to rtk.** The delegated report has no candidate list to count over, so its truncation clause is `total not counted` — the one state a completeness sweep must not come back in.
+- **It never delegates to rtk.** `all` is a completeness question and the delegated path answers it by trimming, not by walking; the native walker is the only engine that can say `all` and mean it. (A *capped* delegated grep does now report an exact total — see [Delegated to rtk](#delegated-to-rtk) — but that is a count beside a trimmed body, not the whole body.)
 - **`all` is a LIMIT and only a LIMIT.** `grep:PATTERN:PATH:5:all` is refused rather than read as either "limit 5" or "limit all": one of those runs a call nobody typed, the other ignores a token the caller believes changed something. Same for a third trailing token (`:5:2:all`), which the parser peels and never reads. **A third trailing *integer* is refused too, since [#1345](https://github.com/Digital-Process-Tools/claude-supertool/issues/1345)**: `grep:PAT:PATH:5:3:2` used to run limit 5 / context 3 and drop the `2` at exit 0 with no note — a well-formed answer to a slightly different question, which is the house defect in its quietest form. The identical argument had already been written down beside the `all` case and only `all` was closed. `all` outside the LIMIT slot keeps its own, more specific message. `grep_around` is `PATTERN:PATH:N:LIMIT` — context **first** — so `grep_around:PATTERN:PATH:all` is refused with the slot order named rather than an `int()` error. The token is matched exactly (`all`, not `All`) on both the colon CLI and the payload route.
 - **`grep_around` keeps PATTERN and PATH in fixed slots, and a colon-bearing pattern is refused rather than rejoined** ([#1826](https://github.com/Digital-Process-Tools/claude-supertool/issues/1826)). `grep:PAT:WITH:COLON:PATH` peels the trailing numbers and rejoins everything left as the pattern; `grep_around` cannot, because three shipped guards read its slots by position — the containment gate takes the path from slot 2 statically, the `all`-in-N-slot refusal reads slot 3, and the fifth-token refusal counts them. So `grep_around:Class::CONST:PATH` puts `CONST` in the N slot, and until #1826 that surfaced as `ERROR: argument parsing: invalid literal for int() with base 10: 'CONST'` — the interpreter talking about the caller's search term. It is now a refusal that says how the call was read (`pattern=` / `path=`) and gives the payload spelling, `grep_around:@-` with `pattern`, `path`, `n`, `limit`. Note that `_colon_split_hint`'s `pattern read as` disclosure can never fire for this op — it needs a `:` in slot 1, and slot 1 cannot hold one — so the refusal carries the disclosure itself.
 - **`grep:…:count` never needed it** — count mode has no cap and its header claims none.
@@ -186,9 +186,27 @@ When [rtk](https://github.com/wilpel/rtk) is installed and `rtk` is not set to `
 ./a.txt:3:alpha again
 ```
 
-rtk shells out to the system `grep` and reports no scanned-file count, and re-walking the tree to compute one is the traversal delegation exists to avoid — so the denominator is stated as unknown rather than quietly omitted. **A `?` never appears next to a zero result.** rtk exits non-zero when it matches nothing, and an empty result falls through to the native walker, so every zero-result grep — the case the denominator was added for — comes back with a real count and the `— nothing matched the path/glob` marker where it applies. A `?` therefore always sits beside at least one result, which is itself proof that files were searched.
+rtk shells out to the system `grep` and reports no scanned-file count, and re-walking the tree *in Python* to compute one is the traversal delegation exists to avoid — so on a complete result the denominator is stated as unknown rather than quietly omitted. (On a **truncated** one it is computed after all, by a second delegated `grep -rc` rather than a walk — see below.) **A `?` never appears next to a zero result.** rtk exits non-zero when it matches nothing, and an empty result falls through to the native walker, so every zero-result grep — the case the denominator was added for — comes back with a real count and the `— nothing matched the path/glob` marker where it applies. A `?` therefore always sits beside at least one result, which is itself proof that files were searched.
 
-The report line carries the same truncation disclosure as the native walker — rtk is asked for `limit + 1` matches and the extra one is trimmed before output — but **not** the total: rtk reports no candidate list, so there is nothing to count over without the re-walk delegation exists to avoid. It says `— TRUNCATED, more matches exist (total not counted)`, which is the third state above and is deliberately not the same sentence as a count that came back small. "We did not count" must not read as "we counted and there are some", the same reason the `?` denominator is printed rather than omitted.
+**A truncated delegated grep counts, and it counts exactly** ([#1771](https://github.com/Digital-Process-Tools/claude-supertool/issues/1771)). rtk is asked for `limit + 1` matches and the extra one is trimmed, which settles *whether* the answer is partial. It used to leave *how* partial unanswered — `(total not counted)`, over a `?` denominator — so a sweep whose whole purpose was completeness came back unquantified in both halves at once. That matters more here than in an ordinary grep: a rule shipped in `claude-jit-context` refuses the harness `Grep` tool and names this op as the replacement, so every completeness sweep an agent runs lands on this path.
+
+When the first pass comes back truncated, a **second delegated pass** runs — `grep -rc`, the same engine over the same tree, minus the `-m` cap. `-rc` names every file it scanned, zero-match ones included, so one call answers the numerator and the denominator together:
+
+```
+(10 results in 3 files, scanned 1154 files — delegated to rtk, limit 10 — TRUNCATED, 47 matches total)
+```
+
+The total is **exact**, never the native walker's `N+ … (count capped at N)`: that spelling exists because a Python walk has to stop counting somewhere, and `-c` counts in C.
+
+**Three things the census refuses to do.**
+
+- **It does not run on a complete result.** No `TRUNCATED`, no second pass — the fast path keeps the single call it has always had, and a complete answer already shows every match there is.
+- **It does not count what the report hides.** The default exclude list carries negations, which system grep cannot express, so a `server.pem` really is read by the census pass — and dropped from both the total and the denominator by the same `_is_excluded` the native walker applies. Otherwise the total would count matches the caller was told were not there.
+- **It does not guess.** rtk absent, failing or timing out; `-rc` output that is not `path:N`; a total at or below the number of rows printed under it (the tree can change between the two passes); or the switch below turned off — any of those and the report says `— TRUNCATED, more matches exist, total unknown (the delegated count pass did not run)` and prints no number at all. That is the third state in the table above, and it is deliberately not the same sentence as a count that came back small.
+
+**What it costs, and how to decline it.** A second full scan of the tree, bought only on a truncated result. Measured on this repository (1,159 files, dense pattern): 0.47s for the `-m`-capped match pass, 0.65s for the census. Set `builtin-ops.grep.count_truncated` to `0` in `.supertool.json` (or `SUPERTOOL_GREP_COUNT_TRUNCATED=0`) to skip it — which returns you the honest unknown, not the old aside.
+
+**The `?` denominator survives on a complete result, and there it is not load-bearing.** With no `TRUNCATED` marker every match is on the screen, which is the only thing a breadth question needed the denominator for; and a `?` never appears next to a zero result, since those fall through to the native walker.
 
 **Delegation is skipped when git ignores a directory the exclude list would still walk.** rtk shells out to the system `grep`, whose `--exclude-dir` takes bare directory names and cannot express a nested path like `.claude/worktrees/` — a delegated grep would return exactly the copies the native walker prunes, and which backend ran must never change the answer. The test is *residual*: an ignore set already covered by `exclude-paths` (a lone `node_modules/`, say) costs you nothing.
 

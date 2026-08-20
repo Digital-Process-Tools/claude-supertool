@@ -5887,7 +5887,12 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
             if rtk_out is not None and rtk_out.strip():
                 rtk_out, rtk_dropped = _rtk_drop_excluded(rtk_out, excl)
                 if not rtk_dropped:
-                    return _rtk_grep_report(rtk_out, limit)
+                    # The census is a *callable*, not a value: it is a second
+                    # full grep over the tree and must not be paid for on a
+                    # complete result, which needs no total (#1771).
+                    return _rtk_grep_report(
+                        rtk_out, limit,
+                        census=lambda: _rtk_grep_census(pattern, path, excl))
                 # An excluded file came back anyway — expected whenever the
                 # list carries a negation, since those wildcards are withheld
                 # from the argv. Printing the filtered lines under the
@@ -7980,24 +7985,84 @@ def op_map(path: str, no_exclude: bool = False) -> str:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _rtk_grep_report(rtk_out: str, limit: int) -> str:
+def _rtk_grep_census(pattern: str, path: str,
+                     exclude_paths: Tuple[str, ...]) -> Optional[Tuple[int, int]]:
+    """`(total matches, files scanned)` for a delegated grep, or None (#1771).
+
+    A second delegated pass — `grep -rc`, the same engine, the same argv minus
+    the `-m` cap — because a truncated sweep with no total is the defect this
+    whole file is otherwise careful about: a bounded presence read as a
+    complete one. `grep` is the op a shipped `claude-jit-context` rule names as
+    the replacement for the refused `Grep` tool, so every completeness sweep an
+    agent runs lands here, and `(total not counted)` was the one state such a
+    sweep must not come back in.
+
+    **Why a count pass and not a re-walk.** #414 declined to compute the
+    denominator because producing it meant walking the tree in Python, which is
+    exactly what delegation exists to avoid. `-c` is not that walk: it is the
+    same C engine over the same tree, and `-rc` names *every* file it scanned,
+    zero-match ones included — so one call answers both the numerator and the
+    denominator. Measured on this repo (1,159 files, dense pattern): 0.47s for
+    the `-m`-capped match pass, 0.65s for the census. It is bought only when the
+    match pass came back truncated, and `builtin-ops.grep.count_truncated: 0`
+    declines it for a tree where that trade is wrong.
+
+    **Excluded files are subtracted here, not left to the argv.** The default
+    exclude list carries negations, and system grep cannot express one, so
+    `_grep_exclude_flags` withholds every wildcard entry — a `server.pem` really
+    is read by the census. Counting it would put matches in the total that the
+    caller was told were not there, and a file in the denominator that nobody
+    searched. `_is_excluded` is the same test the native walker applies.
+
+    **Three states, and the third is the point.** Anything this cannot answer
+    exactly returns None and the report says the total is unknown: rtk failing
+    or timing out, a `-rc` output line that is not `path:N`, or a tree with no
+    countable file left. A guessed total is worse than an admitted gap, because
+    nothing downstream knows to distrust it.
+    """
+    if not _get_op_bool("grep", "count_truncated", True):
+        return None
+    # -H: with a single-file PATH, grep drops the `path:` prefix and the census
+    # becomes unparseable — the one shape where declining would be an artefact
+    # of the argv rather than of the tree.
+    args = ["grep", "-rc", "-H", "-E"]
+    args.extend(_grep_exclude_flags(exclude_paths))
+    args.extend([pattern, path])
+    out = _rtk_run(args)
+    if out is None:
+        return None
+    cwd = os.getcwd()
+    total = 0
+    scanned = 0
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        fpath, sep, num = line.rpartition(":")
+        num = num.strip()
+        # _is_ascii_int, not str.isdigit: `int()` happily converts U+0662 and
+        # friends, so `isdigit` would turn a line the parser does not actually
+        # understand into a confident number (#1727, #1748). Declining is the
+        # third state this whole helper exists to protect.
+        if not sep or not fpath or not _is_ascii_int(num):
+            return None
+        if exclude_paths and _is_excluded(_safe_relpath(fpath, cwd), exclude_paths):
+            continue
+        scanned += 1
+        total += int(num)
+    if scanned == 0:
+        return None
+    return total, scanned
+
+
+def _rtk_grep_report(rtk_out: str, limit: int,
+                     census: Optional[Callable[[], Optional[Tuple[int, int]]]] = None
+                     ) -> str:
     """Wrap rtk's delegated grep output in supertool's report line (#414).
 
     rtk emits bare ``path:lineno:content`` lines and no report line at all, so
     a delegated grep — `grep:PATTERN:PATH`, the plainest invocation there is —
     silently dropped the result count, the limit disclosure, and #407's
     scanned-file denominator together.
-
-    The denominator is reported as ``?`` rather than computed. rtk (0.35) shells
-    out to the system grep and exposes no scanned-file count, and walking the
-    tree to produce one is exactly the traversal delegation exists to avoid.
-    Per #407's own principle, a gap the caller can see beats one they cannot.
-
-    The ``?`` is never load-bearing. rtk exits non-zero when it matches nothing,
-    and op_grep now falls through on empty output too, so a delegated report
-    always carries at least one result — which is itself proof that files were
-    scanned. The ambiguous case, zero results, always reaches the native walker
-    and a real count.
 
     The body is passed through verbatim: re-rendering it into supertool's
     grouped layout would mean re-parsing content that may itself contain
@@ -8006,8 +8071,28 @@ def _rtk_grep_report(rtk_out: str, limit: int) -> str:
     op_grep asks rtk for `limit + 1` matches, so this sees one line past the
     cap whenever more exist (#448). The extra line is dropped and the report
     says so, which keeps the delegated path's completeness disclosure identical
-    to the native walker's — the same reason the `?` denominator is printed
-    rather than omitted.
+    to the native walker's.
+
+    **The `?` denominator, and where it stopped being acceptable (#1771).** On a
+    *complete* delegated result the `?` is not load-bearing and stays: rtk exits
+    non-zero when it matches nothing and op_grep falls through on empty output,
+    so a delegated report always carries at least one result — and with no
+    TRUNCATED marker, every match there is is on the screen, which is the only
+    thing a breadth question needed the denominator for. The ambiguous case,
+    zero results, always reaches the native walker and a real count.
+
+    On a *truncated* result it was load-bearing and wrong in both halves at
+    once: an unknown numerator over an unknown denominator. So `census` — a
+    callable, invoked only on truncation, so the complete path keeps the single
+    pass it has always had. When it answers, the report carries the exact total
+    and a real `scanned N files`, in the native walker's own vocabulary. When it
+    declines, `_truncation_suffix` names the total as unknown rather than
+    filing it as an aside.
+
+    A census that does not exceed the rows printed under it is refused rather
+    than printed. The two passes are separate reads of a tree that can change
+    between them, and a total at or below the visible row count is not a
+    smaller answer, it is an incoherent one.
     """
     lines = [ln for ln in rtk_out.splitlines() if ln.strip()]
     truncated = len(lines) > limit
@@ -8017,9 +8102,16 @@ def _rtk_grep_report(rtk_out: str, limit: int) -> str:
         m = re.match(r"^(.+?):\d+:", ln)
         if m:
             files.add(m.group(1))
+    total: Optional[int] = None
+    scanned_clause = ", scanned ? files"
+    if truncated and census is not None:
+        counted = census()
+        if counted is not None and counted[0] > len(lines):
+            total, scanned = counted
+            scanned_clause = _scanned_suffix(scanned)
     header = (f"({len(lines)} results in {len(files)} files"
-              ", scanned ? files — delegated to rtk"
-              f", limit {limit}{_truncation_suffix(truncated)})\n")
+              f"{scanned_clause} — delegated to rtk"
+              f", limit {limit}{_truncation_suffix(truncated, total)})\n")
     return header + "".join(ln + "\n" for ln in lines) + "\n"
 
 
@@ -8041,14 +8133,24 @@ def _truncation_suffix(truncated: bool, total: Optional[int] = None,
     * `N matches total`                  — counted, and this is all of them;
     * `N+ matches total (count capped…)` — counting stopped at the ceiling, so
       the number is a floor rather than a total;
-    * `more matches exist (total not counted)` — nothing counted. The delegated
-      rtk report has no candidate list to count over, and "we did not count"
-      must not render as "we counted and there are some".
+    * `more matches exist, total unknown (…)` — nothing counted, and the
+      reason. "We did not count" must not render as "we counted and there are
+      some", and it must not render as an aside either (#1771): a caller told
+      the answer is partial and not how partial has an unquantified answer, so
+      the gap belongs in the sentence rather than in a trailing parenthesis.
+
+    Only the delegated rtk path can reach the third state, and since #1771 it
+    reaches it only when the `grep -rc` census could not answer — rtk absent or
+    failing, output that is not `path:N`, or the second pass switched off with
+    `builtin-ops.grep.count_truncated: 0`. The delegated total is exact rather
+    than capped when it arrives: `-c` counts in C, so there is no walker to stop
+    early and nothing to clamp.
     """
     if not truncated:
         return ""
     if total is None:
-        return " — TRUNCATED, more matches exist (total not counted)"
+        return (" — TRUNCATED, more matches exist, total unknown "
+                "(the delegated count pass did not run)")
     if capped:
         return (f" — TRUNCATED, {total}+ matches total "
                 f"(count capped at {total})")

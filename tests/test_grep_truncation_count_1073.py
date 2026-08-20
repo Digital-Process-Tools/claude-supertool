@@ -11,10 +11,12 @@ Three states, and the tests keep them apart:
 
 * counted, exact          -> `TRUNCATED, N matches total`
 * counted, hit the ceiling -> `TRUNCATED, N+ matches total (count capped at N)`
-* not counted at all       -> `TRUNCATED, more matches exist (total not counted)`
+* not counted at all       -> `TRUNCATED, more matches exist, total unknown (…)`
 
-The last one is the rtk-delegated report, which has no candidate list to count
-over. "We did not count" must not render as "we counted and there are some".
+The last one is the rtk-delegated report when its `grep -rc` census could not
+answer. "We did not count" must not render as "we counted and there are some" —
+and since #1771 it must not render as a trailing aside either, because a caller
+told the answer is partial and not how partial has an unquantified answer.
 
 The happy path is pinned too: a complete answer prints no total and no marker,
 so the marker's absence stays a positive statement that the count is exact.
@@ -174,14 +176,28 @@ def test_context_mode_overshoots_the_ceiling_so_the_clamp_is_load_bearing(
     assert _supertool._grep_total(seen, ceiling) == (4, True)
 
 
-def test_delegated_report_says_the_total_was_not_counted() -> None:
-    """rtk answers without a candidate list, so there is nothing to count over.
-    Not-counted is a third state, not a quiet version of counted."""
+def test_delegated_report_with_no_census_names_the_total_unknown() -> None:
+    """No `census` callable is passed, so nothing counted. Uncounted is a third
+    state, not a quiet version of counted — and #1771 moved it out of the
+    trailing parenthesis it was easy to skim past."""
     rtk_out = "\n".join(f"a.py:{i}:needle" for i in range(1, 8))
     head = _header(_supertool._rtk_grep_report(rtk_out, limit=3))
     assert "TRUNCATED" in head, head
-    assert "total not counted" in head, head
+    assert "total unknown" in head, head
     assert "matches total" not in head, head
+
+
+def test_a_delegated_report_with_a_census_carries_the_exact_total() -> None:
+    """The counted half of the same three states (#1771). `-c` counts in C, so
+    the delegated total is exact and never wears the `N+ … (count capped)`
+    spelling the native walker's ceiling produces."""
+    rtk_out = "\n".join(f"a.py:{i}:needle" for i in range(1, 8))
+    head = _header(_supertool._rtk_grep_report(
+        rtk_out, limit=3, census=lambda: (41, 12)))
+    assert "TRUNCATED, 41 matches total" in head, head
+    assert "scanned 12 files" in head, head
+    assert "total unknown" not in head, head
+    assert "count capped" not in head, head
 
 
 def test_truncation_suffix_keeps_its_three_states() -> None:
@@ -190,4 +206,4 @@ def test_truncation_suffix_keeps_its_three_states() -> None:
     assert f(False, total=99) == ""
     assert "137 matches total" in f(True, total=137)
     assert "500+ matches total" in f(True, total=500, capped=True)
-    assert "total not counted" in f(True)
+    assert "total unknown" in f(True)
