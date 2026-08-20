@@ -95,7 +95,9 @@ Apply it to your own reading too. When a result would let you report a negative 
 
 ## Releasing
 
-The version lives in five places and only four are guarded by tests: `.claude-plugin/plugin.json`, `_supertool.py`'s `VERSION`, `pyproject.toml`, `CHANGELOG.md`, and the `README.md` badge. Sweep with no path filter — an allowlist by extension is why the badge sat fifteen releases stale:
+The version lives in five places, declared in one machine-readable list — `.oss.json`'s `version_sites` — and `tests/test_version_sites_agree_1854.py` reads that list and asserts every site agrees with `supertool.VERSION`. **Add a site to that list and the suite goes red until you say how to read a version out of it**, which is the sixth-site case this section used to leave to whoever remembered to sweep.
+
+This line said "only four are guarded by tests" until #1854, and by then it was false in the way that matters: the `README.md` badge it implied was unguarded had been pinned by `test_readme_version_badge_matches_code` since the drift was found. An agent read the sentence, filed the issue, and the fix turned out to be a guard on the *set* rather than on the badge. Sweeping by hand is still worth it — an allowlist by extension is why the badge sat fifteen releases stale — but it is now a second opinion rather than the only one:
 
 ```bash
 git grep -n "0\.31\.0"
