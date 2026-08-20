@@ -1040,10 +1040,11 @@ somebody else's machine. The measured cost it removes from a feature push is
 
 Four states, and each announces itself: destination is master → run;
 destination is a feature branch → skip, and say so; **git handed us no refs at
-all → skip, and say so**; **something that is not git ran the hook and stdin
-was unreadable → run the suite**, because "the question was never answered"
-must not render as "feature branch, skip it". Being wrong that way costs three
-minutes; being wrong the other way costs master.
+all → skip, and say so**; **something that is not git ran the hook, so the
+destination was never established → skip, and say which of the three it is**.
+The four stay four — telling them apart is the point, and "the question was
+never answered" must not render as "feature branch, skip it" — but only the
+first now runs anything.
 
 The third and fourth used to be one state, and merging them was the bug
 ([#1242](https://github.com/Digital-Process-Tools/claude-supertool/issues/1242)).
@@ -1058,7 +1059,33 @@ with `<remote-name> <remote-url>` in argv**, so two args and no ref lines means
 git asked and there is nothing to gate, while no args at all means the caller
 was not git and the question really is open.
 
-- `PREPUSH_FULL=1 git push` — force the suite on a feature branch.
+**The fourth state stopped running the suite in
+[#1802](https://github.com/Digital-Process-Tools/claude-supertool/issues/1802).**
+It used to, on "being wrong that way costs three minutes and being wrong the
+other way costs master". That trades on odds it has backwards: the arm fires
+precisely when the destination is *unknown*, and a push in this repo is
+overwhelmingly to a feature branch — which the second state already declines to
+gate. So it was buying a macOS-only verdict, serially, in a suite that rewrites
+the index of the live worktree it runs in, for a push it had no reason to think
+was going anywhere shared. CI gates the commit on all three platforms
+regardless. `PREPUSH_FULL=1` still forces it, and the banner names which state
+it overrode — asking the override *inside* each state rather than ahead of both
+is deliberate, since hoisting it prints one message for two states and rebuilds
+#1242's conflation one layer up.
+
+**The master arm stays, and that is the half of #1802 that was not taken.** The
+issue proposed removing the hook's suite run entirely, on the grounds that
+"almost nothing reaches master by direct push". Measured 2026-08-20 over the
+last 400 commits on `origin/master`: **30 arrived by direct push, 15 of those
+touching `.py` or `presets/`, the most recent two days old.** (The squash-merge
+path commits as `GitHub <noreply@github.com>`; anything else was pushed by
+hand.) Thirteen of the fifteen are release commits — the one path that never
+goes through a PR, and the one where the four tested version sites are all that
+stand between a typo and a published artifact. That arm is live, not vestigial,
+so it keeps its job.
+
+- `PREPUSH_FULL=1 git push` — force the suite in any of the three states that
+  skip it: a feature branch, no refs to update, or a caller that is not git.
 - `git push --no-verify` — the blunt instrument: skips this hook and every
   other one. Discouraged, and not the right tool for "I want the suite here".
 
