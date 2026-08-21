@@ -177,7 +177,21 @@ echo "── pre-push: running full test suite (mirrors CI) ──"
 # benchmarks in the suite read an absolute path in one maintainer's home
 # directory and skip everywhere else, so CI has never run them. Ask for them
 # deliberately, on a machine whose load you control: `pytest -m benchmark -n0`.
-if ! "$PYTHON" -m pytest -m 'not slow and not benchmark' --no-cov --tb=short; then
+#
+# `-X utf8` mirrors the workflow, which carries it deliberately (#546), and
+# #1875 is what its absence here cost: the hook and CI disagreed about the one
+# flag that decides how a non-ASCII failure message is rendered, and the hook
+# is the exposed half — CI's Windows leg has the flag, a local `git push` did
+# not. pytest writes failure lines on a stream whose codec is the console
+# codepage; where that codec cannot carry the character, pytest's own
+# `TerminalWriter.write_raw` fallback degrades it to a backslash-u escape, and
+# a Windows console that substitutes instead of raising destroys it outright as
+# U+FFFD (the before-state #546 measured). `-X` and NOT `PYTHONUTF8` /
+# `PYTHONIOENCODING`: a flag applies to this interpreter only, an env var is
+# inherited by every subprocess the suite spawns — including the tests that
+# reproduce Windows encoding defects precisely by leaving the environment
+# alone. Pinned by `tests/test_prepush_utf8_mode_1875.py`.
+if ! "$PYTHON" -X utf8 -m pytest -m 'not slow and not benchmark' --no-cov --tb=short; then
     echo ""
     echo "✗ Tests failed. Push aborted."
     echo "  Fix failures or run: git push --no-verify  (to bypass, discouraged)"
