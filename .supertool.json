@@ -416,7 +416,7 @@
         "vim"
       ],
       "rollback_on_fail": false,
-      "timeout": 5
+      "timeout": 30
     }
   }
 }

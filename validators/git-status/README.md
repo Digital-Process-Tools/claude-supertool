@@ -41,9 +41,18 @@ Reports the working-tree delta (lines added/removed) and file state after every 
 
 ## Env vars
 
-| Var       | Default | Notes                              |
-|-----------|---------|------------------------------------|
-| `GIT_BIN` | `git`   | Override if git is not on `PATH`   |
+| Var                     | Default | Notes                                                                 |
+|-------------------------|---------|-----------------------------------------------------------------------|
+| `GIT_BIN`               | `git`   | Override if git is not on `PATH`                                       |
+| `SUPERTOOL_GIT_TIMEOUT` | `15`    | Seconds for the **whole adapter**, not per git call. Raise it on a large, cold or network-mounted repository. Values below `1` and anything unparseable fall back to the default, silently — this adapter's stdout is parsed as JSON, so it has no channel to complain on. Same knob every other git call in supertool reads. |
+
+A git call that outlives the budget is **not** reported as a clean working
+tree. It declines with `code: "adapter"` — rendered `NOT CHECKED`, never cached,
+never able to roll an edit back — and the stalled git is sent `SIGTERM` before
+`SIGKILL` so it can remove its own `.git/index.lock` (#1882). Keep the
+registered `timeout` below comfortably above `SUPERTOOL_GIT_TIMEOUT`; if the
+core's budget fires first, the adapter is killed mid-git and cannot report
+anything at all.
 
 ## Registration
 
@@ -55,6 +64,11 @@ Add to `.supertool.json` under `validators`:
   "match": "*",
   "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
   "rollback_on_fail": false,
-  "timeout": 5
+  "timeout": 30
 }
 ```
+
+`timeout` is the **core's** budget for this adapter. It must exceed the
+adapter's own (`SUPERTOOL_GIT_TIMEOUT`, default 15s) plus its 2s SIGTERM grace,
+or the core kills the adapter before it can decline and you get no verdict
+instead of a stated one. Both were 5 until #1882, and a tie is a race.

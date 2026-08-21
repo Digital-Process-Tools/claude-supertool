@@ -781,7 +781,8 @@
         "vim"
       ],
       "rollback_on_fail": false,
-      "timeout": 5
+      "timeout": 30,
+      "_doc": "Must stay above the adapter's own GIT_TIMEOUT_DEFAULT (15s) plus its SIGTERM grace (2s), so the adapter declines with `code: adapter` rather than being killed mid-git by the core. It was 5 against an inner 5 until #1882, and a tie is a race."
     },
     "prettier-check": {
       "cmd": "{python} {supertool_dir}/validators/prettier-check/prettier-check.py {file}",
