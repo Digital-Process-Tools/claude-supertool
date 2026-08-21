@@ -49,10 +49,9 @@ Reports the working-tree delta (lines added/removed) and file state after every 
 A git call that outlives the budget is **not** reported as a clean working
 tree. It declines with `code: "adapter"` — rendered `NOT CHECKED`, never cached,
 never able to roll an edit back — and the stalled git is sent `SIGTERM` before
-`SIGKILL` so it can remove its own `.git/index.lock` (#1882). Keep the
-registered `timeout` below comfortably above `SUPERTOOL_GIT_TIMEOUT`; if the
-core's budget fires first, the adapter is killed mid-git and cannot report
-anything at all.
+`SIGKILL` so it can remove its own `.git/index.lock` (#1882). Raising
+`SUPERTOOL_GIT_TIMEOUT` past the registered `timeout` below makes that decline
+unreachable — see **Registration**.
 
 ## Registration
 
