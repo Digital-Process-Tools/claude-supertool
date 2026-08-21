@@ -1389,13 +1389,17 @@ def scan_poller_pids() -> tuple[dict[tuple[str, str], list[int]], bool]:
     a different severity from a cross-channel listing.
 
     What the exclusion costs, stated rather than hidden: a poller carrying no
-    channel token is one started before this label existed, and it becomes
-    invisible to the scan. That is not a new blind spot — it is the one
-    `docs/presets/watch.md` already describes for pollers predating the #511
-    labelling, one generation later, and it clears the same way (`pkill -f
-    presets/watch/` once, or a `radar` tick that respawns the fleet). A
-    *tracked* one is unaffected: `watcher_pids` unions the pid file's own PID,
-    and the pid file is per state directory by construction.
+    channel token is one started before this label existed, and it is invisible
+    **to this function's return value** — not to the scan, which since #1881
+    keeps it. `poller_census` buckets it under `unknown` and `watches` prints a
+    count for it, because being unactionable is not a reason to be undisclosed;
+    it stays out of here because every caller of *this* function acts. It is
+    also not a new blind spot — it is the one `docs/presets/watch.md` already
+    describes for pollers predating the #511 labelling, one generation later,
+    and it clears the same way (`pkill -f presets/watch/` once, or a `radar`
+    tick that respawns the fleet). A *tracked* one is unaffected: `watcher_pids`
+    unions the pid file's own PID, and the pid file is per state directory by
+    construction.
     """
     census = poller_census()
     return census["mine"], census["scan_ok"]

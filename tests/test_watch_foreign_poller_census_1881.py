@@ -37,8 +37,10 @@ list, liveness is a set.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
+import posixpath
 import sys
 from pathlib import Path
 
@@ -167,6 +169,30 @@ def _scanned(census: dict) -> dict:
 # the arithmetic that refutes the reported mechanism
 # ---------------------------------------------------------------------------
 
+#: The two state directories the report lists for the same project, and the one
+#: token all 564 pollers carried.
+REPORTED_DIR = "/tmp/supertool-watch-fdavid-dvsi-5535f2d5"
+OTHER_DIR = "/tmp/supertool-watch-fdavid-dvsi-08e9bc4b"
+REPORTED_TOKEN = "43b6d3f23b71"
+
+
+def _posix_channel_key(state_dir: str) -> str:
+    """`channel_key`'s arithmetic with POSIX path semantics pinned explicitly.
+
+    `channel_key` normalises with `os.path.normpath`, which is `ntpath` on
+    Windows: it turns `/tmp/x` into `\\tmp\\x`, a different string and therefore
+    a different digest — `820a44249a9a` rather than `43b6d3f23b71`, measured
+    rather than reasoned. The fact under test is about a macOS machine's
+    directory, so the normalisation has to be the one *that* machine used.
+    Reading it off the host would quietly turn this into a claim about the
+    runner, and the assertion would fail on the Windows leg for a reason that
+    has nothing to do with what it is asserting.
+    """
+    normalised = posixpath.normpath(state_dir)
+    return hashlib.sha256(
+        os.fsencode(normalised)).hexdigest()[:transport._CHANNEL_KEY_CHARS]
+
+
 def test_the_reported_channel_token_is_this_state_dirs_own() -> None:
     """`chan=43b6d3f23b71` is the current directory's hash, not a stale one.
 
@@ -174,15 +200,32 @@ def test_the_reported_channel_token_is_this_state_dirs_own() -> None:
     each generation would carry a different token, because the token is a hash
     of the state directory the name derives. One token across 564 pollers means
     one directory spawned every one of them.
+
+    Platform-independent: the digest is computed here with POSIX semantics on
+    every host, because the machine in the report was one.
     """
-    reported_dir = "/tmp/supertool-watch-fdavid-dvsi-5535f2d5"
-    assert transport.channel_key(reported_dir) == "43b6d3f23b71"
+    assert _posix_channel_key(REPORTED_DIR) == REPORTED_TOKEN
 
     # must-fire, same fact: the *other* directory the report lists on the same
     # machine hashes elsewhere. Without this the assertion above would pass on a
-    # `channel_key` that returned a constant.
-    other_dir = "/tmp/supertool-watch-fdavid-dvsi-08e9bc4b"
-    assert transport.channel_key(other_dir) != "43b6d3f23b71"
+    # helper that returned a constant.
+    assert _posix_channel_key(OTHER_DIR) != REPORTED_TOKEN
+
+
+@pytest.mark.skipif(
+    os.path is not posixpath,
+    reason="channel_key normalises with this host's os.path, and the fact under "
+           "test is about a POSIX machine's directory. What goes untested here "
+           "is only that channel_key and the POSIX arithmetic agree on THIS "
+           "host; the arithmetic itself is asserted on every platform above.")
+def test_channel_key_agrees_with_that_arithmetic_on_a_posix_host() -> None:
+    """Ties the helper back to the production function it is standing in for.
+
+    Without this the test above could drift into asserting a hash that
+    `channel_key` no longer computes, and would keep passing.
+    """
+    assert transport.channel_key(REPORTED_DIR) == REPORTED_TOKEN
+    assert transport.channel_key(OTHER_DIR) != REPORTED_TOKEN
 
 
 # ---------------------------------------------------------------------------

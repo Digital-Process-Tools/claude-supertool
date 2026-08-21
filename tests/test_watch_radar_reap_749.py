@@ -61,6 +61,11 @@ def fleet(tmp_path, monkeypatch):
     monkeypatch.setattr(transport, "scan_poller_pids",
                         lambda: ({k: sorted(v) for k, v in state["scan"].items()},
                                  state["scan_ok"]))
+    # The reap reads `scan_poller_pids`, so that stub stays. `cmd_list` reads
+    # `poller_census` since #1881 and would otherwise reach the machine's real
+    # process table, putting another project's pollers into these renders.
+    monkeypatch.setattr(transport, "poller_census",
+                        lambda: transport.empty_census(state["scan_ok"]))
     monkeypatch.setattr(transport, "_pid_alive", lambda pid: pid in state["live"])
 
     def _fake_stop(pid: int) -> str:

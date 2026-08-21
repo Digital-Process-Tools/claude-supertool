@@ -54,12 +54,15 @@ UNSETTLED = {"state": "unknown", "ts": "2026-08-09T09:00:00Z"}
 def fleet(tmp_path, monkeypatch):
     """A state directory of this test's own, and a fleet that is all ours.
 
-    `scan_poller_pids` is stubbed empty so no poller on the developer's machine
-    can wander onto the board, and `_pid_alive` answers only for PIDs this file
-    planted.
+    `poller_census` is stubbed empty so no poller on the developer's machine can
+    wander onto the board, and `_pid_alive` answers only for PIDs this file
+    planted. It is the census and not `scan_poller_pids` since #1881: the board
+    renders three buckets and that function is one of them, so the narrow stub
+    left the other two reading the real process table.
     """
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(transport, "scan_poller_pids", lambda: ({}, True))
+    monkeypatch.setattr(transport, "poller_census",
+                        lambda: transport.empty_census(True))
     monkeypatch.setattr(transport, "ps_scan_supported", lambda: True)
     monkeypatch.setattr(transport, "_pid_alive", lambda pid: pid == os.getpid())
     return tmp_path

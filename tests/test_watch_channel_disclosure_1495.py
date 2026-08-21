@@ -145,7 +145,9 @@ def test_one_accessor_so_the_two_boards_cannot_disagree(
     reader, which is what "cannot disagree" means to the operator.
     """
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(transport, "scan_poller_pids", lambda: ({}, True))
+    # See `_quiet_fleet` below: the census is the seam since #1881.
+    monkeypatch.setattr(transport, "poller_census",
+                        lambda: transport.empty_census(True))
     monkeypatch.setattr(transport, "ps_scan_supported", lambda: True)
     monkeypatch.setattr(transport, "RESOLVED", naming.resolve(STALE_OVERRIDE))
 

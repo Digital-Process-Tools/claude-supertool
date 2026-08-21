@@ -10,8 +10,7 @@ Claude Code.
 ```
 watch:SOURCE:ID[:only=event1,event2]    spawn poller (fire-and-forget)
 unwatch:SOURCE:ID                       kill poller, remove PID file
-watches                                 list active pollers (table), and count the ones
-                                        on other channels it may not touch (#1881)
+watches                                 list active pollers (table), and count the ones on other channels (#1881)
 channel:health                          is the bridge to the session actually delivering?
 channel:probe                           put one synthetic event through the path, now, and say what moved
 radar                                   reconcile registered tiers against live truth, report

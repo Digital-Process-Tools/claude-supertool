@@ -73,11 +73,17 @@ def state_dir(tmp_path, monkeypatch):
     """A state directory of our own, and no process scan.
 
     The scan is stubbed to empty because this machine has real pollers in the
-    real `/tmp`: `scan_poller_pids` reads `ps`, not `STATE_DIR`, so without
-    this the board under test carries rows these tests did not write.
+    real `/tmp`: the scan reads `ps`, not `STATE_DIR`, so without this the board
+    under test carries rows these tests did not write.
+
+    `poller_census` rather than `scan_poller_pids` since #1881: the board
+    renders all three of the scan's buckets and that function is only one of
+    them, so stubbing it alone left the other two reading the real process
+    table and the isolation this fixture promises was not real.
     """
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(transport, "scan_poller_pids", lambda: ({}, True))
+    monkeypatch.setattr(transport, "poller_census",
+                        lambda: transport.empty_census(True))
     return tmp_path
 
 
