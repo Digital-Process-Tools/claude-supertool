@@ -74,17 +74,22 @@ fi
 # what is lost is the roster, and the line below names what was tried so the
 # reader looks for the right absence.
 #
-# 'ops:roster' rather than 'ops-compact' (#1231). Measured in this checkout:
-# ops 47,254 bytes, ops-compact 9,067, cap ~7,168 — so the compact listing was
+# 'ops:roster' rather than 'ops-compact' (#1231). `ops-compact` is ~14.7KB and
+# `ops:full` ~72.7KB against a 7,168-byte cap — so the compact listing was
 # truncated on *every* session and everything alphabetically after `grep` was
 # hidden: the whole gh-*/git-* families, radar, watch, read, paste, tree. It
 # disclosed the truncation honestly and that did not help, because what was
 # hidden was existence and a reader cannot miss what they never learned about.
+# (Bare `ops` is signatures-only since #1774 and fits on its own at ~3.7KB. The
+# figures here read 47,254 and 9,067 until #1877, because a measurement written
+# into a comment is a measurement nothing re-runs — hence the pin below.)
 #
-# The roster is ~1.7KB — every op name plus a safety class, no descriptions,
-# plus the same "presets not loaded here" line `ops` carries. Whole hook: ~2.7KB
-# against a ~7.2KB cap. (Not an exact figure: the disclosure names the absolute
-# config path, so it moves with the checkout.) Descriptions are
+# `ops:roster` is ~2.0KB — every op name plus a safety class, no descriptions,
+# plus the same "presets not loaded here" line `ops` carries. Whole hook: ~2.9KB
+# against a ~7.2KB cap. (Not exact figures: the disclosure names the absolute
+# config path, so they move with the checkout — which is why
+# tests/test_render_size_claims_1877.py grades them with a tolerance rather than
+# to the byte.) Descriptions are
 # one call away and richer there: `help:OP` carries the full contract, the
 # semantics and a worked example, where the listing row carried one line.
 LADDER="$(cd "$(dirname "$0")" && pwd)/python-ladder.sh"
