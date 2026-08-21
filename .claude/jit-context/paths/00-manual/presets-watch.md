@@ -27,6 +27,23 @@ positive identification. `list_active_pids` (`transport.py:707`) does **not** un
 could not read — omits the row instead; `list_watchers`' process scan still surfaces the real
 poller as `orphan`.
 
+# the scan has three buckets — `poller_census` (#1881)
+
+`scan_poller_pids` returns **only this channel's** pollers and that contract is fixed: every
+caller of it acts (unwatch's multi-kill, the reap's signal), and widening it is a cross-channel
+kill (#1514). `transport.poller_census()` is the whole scan — `mine` / `other` (keyed by channel
+token) / `unknown` (no `chan=`) / `scan_ok`. `watches` renders the last two as **counts, never
+rows**; naming a SOURCE/ID there is what invites `unwatch` against somebody else's slot.
+
+**A test that renders the board must stub `poller_census`, not `scan_poller_pids`.** Stubbing the
+narrow one leaves the other two buckets reading the real process table, so the test is green on a
+quiet machine and red whenever anything is polling — including this repo's own PR watchers. Both
+`_quiet_fleet` helpers had exactly that hole. `transport.empty_census(scan_ok)` is the seam.
+
+`empty_census(False)` and `empty_census(True)` are different answers: nobody looked vs. looked and
+found nothing. When `scan_ok` is False the board prints no count at all, because `0 pollers
+elsewhere` off a scan that never ran is the defect this preset keeps filing.
+
 # poller identity — DECIDED, do not re-derive
 
 `dispatcher._exec_labelled` (`dispatcher.py:612`) execs into a labelled argv (#511). This is

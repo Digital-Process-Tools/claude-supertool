@@ -51,8 +51,18 @@ channel = _module("watch_channel_1502", WATCH_DIR / "channel.py")
 
 
 def _quiet_fleet(monkeypatch) -> None:
-    """No poller on the developer's machine may wander onto the board."""
-    monkeypatch.setattr(transport, "scan_poller_pids", lambda: ({}, True))
+    """No poller on the developer's machine may wander onto the board.
+
+    Stubs `poller_census` and not `scan_poller_pids`, because since #1881 the
+    board renders all three of the scan's buckets and only one of them is that
+    function. Stubbing the narrow one left every render here reading the real
+    process table for the other two, so these tests passed on a quiet machine
+    and failed on one with any poller running — including this repo's own. A
+    test whose verdict depends on unrelated processes is worse than a failing
+    one, because it is green in exactly the sessions nobody re-reads.
+    """
+    monkeypatch.setattr(transport, "poller_census",
+                        lambda: transport.empty_census(True))
     monkeypatch.setattr(transport, "ps_scan_supported", lambda: True)
 
 
@@ -204,7 +214,8 @@ def test_an_absent_directory_still_discloses_an_unavailable_process_scan(
         monkeypatch, tmp_path, capsys) -> None:
     """Two independent gaps. The new arm must not swallow the older disclosure -
     an untracked poller cannot be ruled out on either."""
-    monkeypatch.setattr(transport, "scan_poller_pids", lambda: ({}, False))
+    monkeypatch.setattr(transport, "poller_census",
+                        lambda: transport.empty_census(False))
     monkeypatch.setattr(transport, "ps_scan_supported", lambda: False)
     monkeypatch.setattr(transport, "STATE_DIR", str(_absent(tmp_path)))
     assert dispatcher.cmd_list() == 0

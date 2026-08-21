@@ -145,7 +145,9 @@ def test_one_accessor_so_the_two_boards_cannot_disagree(
     reader, which is what "cannot disagree" means to the operator.
     """
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(transport, "scan_poller_pids", lambda: ({}, True))
+    # See `_quiet_fleet` below: the census is the seam since #1881.
+    monkeypatch.setattr(transport, "poller_census",
+                        lambda: transport.empty_census(True))
     monkeypatch.setattr(transport, "ps_scan_supported", lambda: True)
     monkeypatch.setattr(transport, "RESOLVED", naming.resolve(STALE_OVERRIDE))
 
@@ -161,8 +163,16 @@ def test_one_accessor_so_the_two_boards_cannot_disagree(
 # --- watches ----------------------------------------------------------------
 
 def _quiet_fleet(monkeypatch, tmp_path) -> None:
+    """`poller_census`, not `scan_poller_pids` — see the note in #1502's copy.
+
+    The board renders all three of the scan's buckets since #1881; stubbing the
+    this-channel one alone leaves the other two reading the real process table,
+    and the banner assertions below then depend on whether anything happens to
+    be polling on this machine.
+    """
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(transport, "scan_poller_pids", lambda: ({}, True))
+    monkeypatch.setattr(transport, "poller_census",
+                        lambda: transport.empty_census(True))
     monkeypatch.setattr(transport, "ps_scan_supported", lambda: True)
 
 

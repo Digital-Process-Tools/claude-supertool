@@ -205,9 +205,20 @@ def test_another_channels_poller_is_not_this_channels_orphan(machine, capsys) ->
     # The board's own statement that it has no rows, then the row itself.
     # `"33698" not in out` was satisfied just as well by a board that printed
     # nothing at all -- and nothing in this fixture said it printed.
-    assert "No active watchers" in out
+    #
+    # The sentence is scoped since #1881. What this issue settled was that
+    # another channel's poller is not this channel's *row* and not this
+    # channel's to stop, and both of those still hold below. It did not settle
+    # that the board may deny such a poller exists, and the unqualified
+    # `No active watchers` did exactly that -- on a machine with 564 of them
+    # live, read off a scan that had seen every one. So the board now counts
+    # them above and scopes the sentence to the channel it can speak for.
+    assert "No watchers on this channel" in out
     assert "no pidfile" not in out
     assert _slot_rows(out, *SLOT) == []
+    # Disclosed as a count, never as something to act on.
+    assert "2 on channel" in out
+    assert "unwatch:gitlab-mr:33698" not in out
 
     # must-fire, same fixture: this channel's own poller on the same slot, also
     # without a pid file, produces exactly the row asserted absent above. So the

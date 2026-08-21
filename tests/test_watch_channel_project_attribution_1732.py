@@ -348,7 +348,11 @@ def test_the_one_accessor_carries_the_attribution_to_the_boards(
     root = _project(tmp_path / "repo", {"git-push": {"budget": 1500}})
     monkeypatch.chdir(root)
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path / "slots"))
-    monkeypatch.setattr(transport, "scan_poller_pids", lambda: ({}, True))
+    # The census, not `scan_poller_pids` (#1881): the board renders three
+    # buckets of the scan and that function is one of them, so the narrow stub
+    # left this attribution render reading the machine's real process table.
+    monkeypatch.setattr(transport, "poller_census",
+                        lambda: transport.empty_census(True))
     monkeypatch.setattr(transport, "ps_scan_supported", lambda: True)
     monkeypatch.setattr(transport, "RESOLVED", naming.resolve(NAMED))
 

@@ -73,10 +73,13 @@ def state_dir(tmp_path, monkeypatch):
     """A state directory of our own, and no process scan.
 
     The scan is stubbed empty because this machine has real pollers in the
-    real `/tmp`: `scan_poller_pids` reads `ps`, not `STATE_DIR`.
+    real `/tmp`: the scan reads `ps`, not `STATE_DIR`. `poller_census` and not
+    `scan_poller_pids` since #1881, for the reason given in that issue's own
+    test file — the board renders three buckets and the narrow stub covers one.
     """
     monkeypatch.setattr(transport, "STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(transport, "scan_poller_pids", lambda: ({}, True))
+    monkeypatch.setattr(transport, "poller_census",
+                        lambda: transport.empty_census(True))
     return tmp_path
 
 
@@ -276,8 +279,9 @@ def test_the_watches_board_still_shows_a_slot_whose_pid_file_is_unreadable(
     is the surface that keeps it on the board, as an orphan row."""
     _hostile_symlink(state_dir)
     monkeypatch.setattr(
-        transport, "scan_poller_pids",
-        lambda: ({(SOURCE, WATCHER): [os.getpid()]}, True))
+        transport, "poller_census",
+        lambda: dict(transport.empty_census(True),
+                     mine={(SOURCE, WATCHER): [os.getpid()]}))
     assert dispatcher.cmd_list() == 0
     assert WATCHER in capsys.readouterr().out
 

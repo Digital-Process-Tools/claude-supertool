@@ -2405,7 +2405,7 @@ So the reap acts only on what a PID proves about itself:
 | A slot with **2+ labelled pollers** | all but one stopped, each named | Their own argv names the same slot as whole tokens, so they are duplicates *of each other* — stopping all but one provably leaves the slot covered. |
 | A slot with **one** poller, tracked or orphan | untouched | A lone orphan is the only thing polling that slot. Killing it trades a duplicate nobody has for a blind spot, which is the trade [#513](https://github.com/Digital-Process-Tools/claude-supertool/issues/513) says is the wrong way round. |
 | A poller **from before the labelling** | untouched, and invisible | It wears its parent's argv; nothing can tell it from the process that forked it. `pkill -f 'presets/watch/'` once — that call is an operator's, not the tool's. |
-| A poller **on another channel**, or one from before the `chan=` token | untouched, and invisible | Its slot is a different pid file, or nobody can say which pid file it is. Two channels each running one poller for the same `(source, id)` are not two pollers on one slot ([#1514](https://github.com/Digital-Process-Tools/claude-supertool/issues/1514)). |
+| A poller **on another channel**, or one from before the `chan=` token | untouched, and **counted on the board** | Its slot is a different pid file, or nobody can say which pid file it is. Two channels each running one poller for the same `(source, id)` are not two pollers on one slot ([#1514](https://github.com/Digital-Process-Tools/claude-supertool/issues/1514)). Untouched is not unmentioned: `watches` discloses the count ([#1881](https://github.com/Digital-Process-Tools/claude-supertool/issues/1881)). |
 | **Any**, when a present `ps` did not answer | untouched, and said out loud, every time | See the decline below. |
 | **Any**, on a machine whose `ps` can never answer | untouched, and said by `watches` instead | The scan can never answer here, so the board would carry the same line forever. See below. |
 
@@ -2501,7 +2501,33 @@ Every row belonged to the default channel, `channel:health` in the same call sai
 
 **Three states, and only one is acted on.** A poller's argv says this channel, another channel, or nothing at all. Only the first is returned by the scan, because every caller of it decides an action — `unwatch`'s multi-kill, the reap's signal, the `no pidfile` marker on the board. A PID is acted on only when its own argv proves it is ours.
 
-The third state is the cost, stated rather than hidden: **a poller started before this token existed carries no channel and becomes invisible to the scan.** That is not a new blind spot — it is exactly the pre-#511 population described above, one generation later, and it clears the same way: `pkill -f 'presets/watch/'` once, or a `radar` tick that respawns the fleet. A poller whose pid file this channel holds is unaffected, because `watcher_pids` unions the pid file's own PID and the pid file is per state directory by construction.
+The third state is the cost, stated rather than hidden: **a poller started before this token existed carries no channel and is left out of what the scan returns to a caller that acts.** It is not invisible — since [#1881](https://github.com/Digital-Process-Tools/claude-supertool/issues/1881) the board counts it, in its own line, as a poller whose channel cannot be told; the paragraph below is about what may be *stopped*, not about what may be *said*. That is not a new blind spot — it is exactly the pre-#511 population described above, one generation later, and it clears the same way: `pkill -f 'presets/watch/'` once, or a `radar` tick that respawns the fleet. A poller whose pid file this channel holds is unaffected, because `watcher_pids` unions the pid file's own PID and the pid file is per state directory by construction.
+
+#### Untouched is not unmentioned ([#1881](https://github.com/Digital-Process-Tools/claude-supertool/issues/1881))
+
+The paragraph above says only this channel's pollers are ever **acted on**, and that is still true. It said nothing about whether the other two may be **spoken of**, and the render took the strongest available reading: it dropped them. A machine then reached load average 409 with 564 orphaned pollers live across five slots, and `watches` said:
+
+```
+No active watchers. None recorded as lost either.
+```
+
+The scan had run, had succeeded, and had seen all 564. Every one of them was another channel's, so the render deleted them and then made a claim about the fleet that the evidence in the same function contradicted. The operator's documented path — `watches`, then `unwatch:SOURCE:ID` — had nothing to offer, which left the `pkill` this page tells operators not to use as the only tool that worked.
+
+So the scan now returns all three buckets (`transport.poller_census`), and `watches` renders the two it may not act on as **counts, never rows**:
+
+```
+watches: the process scan also saw 564 labelled poller(s) that this board may not list or stop:
+watches:   564 on channel 43b6d3f23b71, 5 slot(s) — state dir /tmp/supertool-watch-fdavid-dvsi-5535f2d5
+watches:   2 whose channel cannot be told from their argv (started before the channel token existed), 2 slot(s)
+watches: `unwatch` here reaches only this channel's slots. To act on another channel's, run `watches` under the SUPERTOOL_WATCH_NAME that derives its state dir.
+No watchers on this channel. None recorded as lost either.
+```
+
+**No SOURCE or ID is printed, deliberately.** Naming one is what invites `unwatch:SOURCE:ID` against a slot this channel does not own, and removing that offer is the whole of #1514. A count is a disclosure; a row is a handle.
+
+**The state directory is resolved forward.** A channel token is `sha256(normpath(STATE_DIR))[:12]` and cannot be reversed, so a bare token tells an operator nothing they can act on. The sibling directories under `/tmp` can each be hashed, which turns the token back into the path — and so into the `SUPERTOOL_WATCH_NAME` whose own board *can* stop those pollers. Three states there too: a directory that matches, no directory that matches (printed as that), and a `/tmp` that could not be listed, which is *not* the same answer and says so.
+
+**The last line is scoped, and the unqualified one survives.** `No active watchers. None recorded as lost either.` is a claim about everything and is still printed when the census is genuinely clean. When pollers were counted above it, the board says `No watchers on this channel` instead — because disclosing 564 processes and denying them in consecutive lines is the defect arriving twice in one render. And when the scan did not run at all, neither sentence is printed: `0 poller(s) on another channel` read off a scan that never happened is this same substitution one layer in.
 
 ### A watcher that died keeps saying so ([#513](https://github.com/Digital-Process-Tools/claude-supertool/issues/513))
 
