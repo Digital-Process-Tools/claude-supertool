@@ -484,38 +484,92 @@ if p.poll() is None:
 """
 
 
-def test_a_real_child_with_a_real_broken_fd_is_really_killed(
-        tmp_path: Path) -> None:
-    """MUST FIRE, against a real process and a real closed descriptor.
-
-    The class above asserts `_stop`'s intent. This asserts the premise that
-    made the original intent wrong -- that CPython really does raise `OSError`
-    out of `communicate()` with the child still running -- because a pin whose
-    premise has quietly stopped holding is a test that passes while measuring
-    nothing. If a future CPython stops doing this, `raised=` changes and this
-    fails here rather than going green for the wrong reason.
-
-    No shell shim, so unlike the SIGTERM tests below this one runs on Windows.
-    """
-    probe = tmp_path / "probe.py"
+@pytest.fixture(scope="module")
+def broken_fd_probe(tmp_path_factory: pytest.TempPathFactory) -> "dict[str, str]":
+    """One probe run, read by the two tests below. Spawns once, not twice."""
+    probe = tmp_path_factory.mktemp("probe") / "probe.py"
     probe.write_text(_BROKEN_FD_PROBE, encoding="utf-8")
     done = subprocess.run(
         [sys.executable, str(probe), str(ADAPTER)],
         capture_output=True, text=True, timeout=BUDGET,
         encoding="utf-8", errors="replace")
     assert done.returncode == 0, done.stderr
-    out = dict(line.split("=", 1) for line in done.stdout.split()
-               if "=" in line)
+    out = dict(line.split("=", 1) for line in done.stdout.split() if "=" in line)
+    out["_raw"] = done.stdout
+    return out
 
-    assert out.get("raised") == "OSError", (
+
+def test_a_real_child_with_broken_pipes_is_really_killed(
+        broken_fd_probe: "dict[str, str]") -> None:
+    """MUST FIRE on every platform: a live child whose pipes stopped answering
+    is stopped rather than left running.
+
+    **This test does not discriminate the fix on every platform, and that is
+    stated rather than implied.** What the broken-fd setup produces differs:
+    `OSError` on POSIX, `TimeoutExpired` on Windows (observed, CI job
+    96847043189). Only the first reaches the reviewed defect, because the old
+    `_stop` already fell through to the kill on a `TimeoutExpired` -- measured
+    both ways against the old function verbatim:
+
+        POSIX  (OSError)         old_stop -> ['terminate']          LEAKED
+        POSIX  (OSError)         new_stop -> ['terminate','kill']   killed
+        Windows(TimeoutExpired)  old_stop -> ['terminate','kill']   killed
+        Windows(TimeoutExpired)  new_stop -> ['terminate','kill']   killed
+
+    So on Windows this is coverage of the kill path -- worth having, and worth
+    having under CI -- but it would pass against the unfixed code there. The
+    thing that discriminates the fix on EVERY platform is
+    `test_a_child_whose_pipes_broke_is_still_killed`, which injects the
+    `OSError` directly and does not depend on which exception a real broken
+    descriptor happens to raise.
+    """
+    assert broken_fd_probe.get("alive_before") == "True", (
+        "the child was already dead before _stop ran, so nothing was stopped: "
+        + broken_fd_probe["_raw"])
+    assert broken_fd_probe.get("stopped") == "True", (
+        "a child whose pipes stopped answering survived _stop() -- it would "
+        "still be holding .git/index.lock: " + broken_fd_probe["_raw"])
+
+
+def test_the_broken_fd_route_really_raises_oserror(
+        broken_fd_probe: "dict[str, str]") -> None:
+    """The premise the injected-`OSError` pin rests on: that the shape is real.
+
+    A fake that raises `OSError` proves what `_stop` does with one. It cannot
+    prove CPython ever produces one with a live child -- and if it never did,
+    the whole `except OSError` branch of `_settled` would be dead code pinned
+    by fiction. This is the test that stops that.
+
+    **Gated on the platform, deliberately, not on what the probe returned.**
+    Skipping because the observed value was not `OSError` would be a test that
+    shrugs: it could never fail, and a CPython that stopped raising here would
+    be met with a green skip instead of a red. Gating on `sys.platform` keeps
+    it strict everywhere it is known to hold -- so a POSIX change fails loudly
+    -- and makes the one exemption explicit, evidence-backed and narrow.
+    """
+    if sys.platform.startswith("win"):
+        pytest.skip(
+            "NOT TESTED ON WINDOWS: closing the raw fd under a live child "
+            "raises TimeoutExpired there, not OSError (observed, CI job "
+            "96847043189, windows-latest/3.10), so this platform cannot reach "
+            "the reviewed shape by this route. Consequence: the `except "
+            "OSError` arm of `_settled` is exercised on Windows only by the "
+            "injected fake in "
+            "test_a_child_whose_pipes_broke_is_still_killed, and whether a "
+            "real Windows descriptor can produce an OSError with a live child "
+            "is UNESTABLISHED rather than false. The probe still ran here and "
+            "its behaviour half is asserted by the sibling test above; what "
+            "goes untested is only the premise. Probe said: "
+            + broken_fd_probe["_raw"].replace(chr(10), " "))
+
+    assert broken_fd_probe.get("raised") == "OSError", (
         "the premise no longer holds -- communicate() raised "
-        + repr(out.get("raised")) + " rather than OSError, so this test is no "
-        "longer exercising the reviewed shape: " + done.stdout)
-    assert out.get("alive_before") == "True", (
-        "the child was already dead before _stop ran: " + done.stdout)
-    assert out.get("stopped") == "True", (
-        "a child whose pipes raised OSError survived _stop() -- it would still "
-        "be holding .git/index.lock: " + done.stdout)
+        + repr(broken_fd_probe.get("raised")) + " rather than OSError on "
+        + sys.platform + ", so the injected-OSError pin is no longer backed by "
+        "anything real: " + broken_fd_probe["_raw"])
+    assert broken_fd_probe.get("alive_before") == "True", (
+        "communicate() raised OSError but the child was already dead, so this "
+        "is not the reviewed shape: " + broken_fd_probe["_raw"])
 
 
 def test_settled_asks_the_process_when_the_pipes_cannot_answer() -> None:

@@ -164,12 +164,27 @@ def _stop(proc: "subprocess.Popen") -> None:
     wait — a child that ignores SIGTERM is killed anyway, one grace period
     later.
 
-    **Windows: reasoned, not observed.** `Popen.terminate()` and `Popen.kill()`
-    are both `TerminateProcess` there, so the grace period costs one extra
-    bounded wait and buys nothing. That is a property of the platform rather
-    than of this adapter, so it is not branched on: a `sys.platform` test here
-    would make the Windows path a different, less exercised shape to save two
-    seconds on a path that has already blown its budget.
+    **Windows, and the two halves now carry different grades.** *Observed* (CI
+    job 96847043189, windows-latest/3.10): a live child whose pipes stop
+    answering is stopped by this function on Windows. *Still reasoned*:
+    that `Popen.terminate()` and `Popen.kill()` are both `TerminateProcess`
+    there, so the grace period costs one extra bounded wait and buys nothing --
+    CI observed the outcome, not the mechanism. Either way it is a property of
+    the platform rather than of this adapter, so it is not branched on: a
+    `sys.platform` test here would make the Windows path a different, less
+    exercised shape to save two seconds on a path that has already blown its
+    budget.
+
+    **One assumption of the test suite was falsified by that same run**, and it
+    is recorded here because it is about this function's inputs: closing a raw
+    fd under a live child does NOT raise `OSError` everywhere. On Windows it
+    surfaces as `TimeoutExpired`. Both routes reach `_settled` and both end in
+    the child being stopped, but only the `OSError` route reaches the defect
+    this function was changed to fix -- so whether a real Windows descriptor
+    can produce an `OSError` here is *unestablished*, not false, and the
+    `except OSError` arm is exercised on that platform only by an injected
+    fake. `tests/test_the_broken_fd_route_really_raises_oserror` says so in its
+    own skip message rather than leaving it to be inferred.
     """
     try:
         proc.terminate()
