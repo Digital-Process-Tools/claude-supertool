@@ -362,7 +362,7 @@ def test_watches_says_the_platform_can_never_scan(fleet, capsys):
     fleet["ps"] = False
     fleet["monkeypatch"].setattr(
         transport, "list_watchers",
-        lambda: ([{"source": "gitlab-mr", "id": "33311", "pid": 101, "pids": [101],
+        lambda census=None: ([{"source": "gitlab-mr", "id": "33311", "pid": 101, "pids": [101],
                    "extra": [], "orphan": False, "dead": False, "deaths": [],
                    "started": "", "last_event": ""}], False))
 
@@ -377,7 +377,7 @@ def test_watches_says_a_present_ps_failed_this_time(fleet, capsys):
     fleet["ps"] = True
     fleet["monkeypatch"].setattr(
         transport, "list_watchers",
-        lambda: ([{"source": "gitlab-mr", "id": "33311", "pid": 101, "pids": [101],
+        lambda census=None: ([{"source": "gitlab-mr", "id": "33311", "pid": 101, "pids": [101],
                    "extra": [], "orphan": False, "dead": False, "deaths": [],
                    "started": "", "last_event": ""}], False))
 

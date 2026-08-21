@@ -344,6 +344,59 @@ def _scan_unavailable_reason() -> str:
             "duplicate pollers.")
 
 
+def _foreign_poller_lines(census: dict) -> list[str]:
+    """What the scan saw that this board may not act on. [] when there is none.
+
+    #1881: 564 orphaned pollers on one other channel, `watches` printing `No
+    active watchers. None recorded as lost either.`, and an operator whose only
+    remaining tool was the `pkill` this preset tells them not to use. The scan
+    had seen all 564 and `scan_poller_pids` dropped them, which is right for
+    every caller that *acts* — the reap on that set is a cross-channel kill
+    (#1514) — and wrong for the one that only speaks.
+
+    So: counts, never rows. No SOURCE/ID is named here, because naming one is
+    what invites `unwatch:SOURCE:ID` against a slot this channel does not own,
+    and that offer is the exact render #1514 was filed to remove. The route out
+    is the other channel's own board, and the state directory is printed so the
+    operator can get there.
+
+    Empty when the scan did not run: a disclosure reading `0 pollers on another
+    channel` off a scan that never happened is this issue one layer in. The
+    caller prints `_scan_unavailable_reason()` for that case instead.
+    """
+    if not census["scan_ok"]:
+        return []
+    other, unknown = census["other"], census["unknown"]
+    if not other and not unknown:
+        return []
+    dirs, dir_state, dir_why = transport.channel_dirs()
+    total = sum(len(p) for slots in other.values() for p in slots.values())
+    total += sum(len(p) for p in unknown.values())
+    out = [f"the process scan also saw {total} labelled poller(s) that this "
+           f"board may not list or stop:"]
+    for channel, slots in sorted(other.items()):
+        count = sum(len(pids) for pids in slots.values())
+        if channel in dirs:
+            where = f"state dir {naming.flat_path(dirs[channel])}"
+        elif dir_state != transport.STATE_DIR_OK:
+            # Not "no directory matches" — nobody could look. The two answers
+            # send an operator to different places.
+            where = f"could not be resolved to a directory ({dir_why})"
+        else:
+            where = (f"no state directory under "
+                     f"{naming.flat_path(naming.BASE_DIR)} hashes to it")
+        out.append(f"  {count} on channel {channel}, {len(slots)} slot(s) — {where}")
+    if unknown:
+        count = sum(len(pids) for pids in unknown.values())
+        out.append(f"  {count} whose channel cannot be told from their argv "
+                   f"(started before the channel token existed), "
+                   f"{len(unknown)} slot(s)")
+    out.append("`unwatch` here reaches only this channel's slots. To act on "
+               "another channel's, run `watches` under the "
+               "SUPERTOOL_WATCH_NAME that derives its state dir.")
+    return out
+
+
 def cmd_list() -> int:
     """The authoritative view of the watcher fleet.
 
@@ -361,7 +414,14 @@ def cmd_list() -> int:
     # reads. One accessor, so this and `radar` cannot disagree.
     for line in transport.channel_disclosure():
         print(f"watches: {line}")
-    rows, scan_ok = transport.list_watchers()
+    census = transport.poller_census()
+    rows, scan_ok = transport.list_watchers(census)
+    # Above every early return below, because a fleet running on another channel
+    # is news whether or not this one has rows — and the arms that return early
+    # are precisely the ones #1881 was filed against. One `ps` feeds both.
+    foreign = _foreign_poller_lines(census)
+    for line in foreign:
+        print(f"watches: {line}")
     dir_state, dir_why = transport.state_dir_status()
     if dir_state == transport.STATE_DIR_UNREADABLE:
         # Printed whether or not there are rows: the pid files are the primary
@@ -398,6 +458,15 @@ def cmd_list() -> int:
             print("No watchers by PID file — and the process scan was "
                   "unavailable, so an untracked poller could not be ruled out.")
             print(_scan_unavailable_reason())
+            return 0
+        if foreign:
+            # The unqualified sentence is a claim about the *fleet*, and the
+            # lines just above it counted pollers that are part of one. Printing
+            # both is how #1881's board managed to disclose 564 processes and
+            # deny them in consecutive lines. Two sentences, each true of what
+            # it is about: this one is scoped, and the clean case below keeps
+            # the strong wording it has earned.
+            print("No watchers on this channel. None recorded as lost either.")
             return 0
         print("No active watchers. None recorded as lost either.")
         return 0

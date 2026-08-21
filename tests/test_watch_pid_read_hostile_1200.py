@@ -276,8 +276,9 @@ def test_the_watches_board_still_shows_a_slot_whose_pid_file_is_unreadable(
     is the surface that keeps it on the board, as an orphan row."""
     _hostile_symlink(state_dir)
     monkeypatch.setattr(
-        transport, "scan_poller_pids",
-        lambda: ({(SOURCE, WATCHER): [os.getpid()]}, True))
+        transport, "poller_census",
+        lambda: dict(transport.empty_census(True),
+                     mine={(SOURCE, WATCHER): [os.getpid()]}))
     assert dispatcher.cmd_list() == 0
     assert WATCHER in capsys.readouterr().out
 

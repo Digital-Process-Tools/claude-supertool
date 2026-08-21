@@ -1397,22 +1397,118 @@ def scan_poller_pids() -> tuple[dict[tuple[str, str], list[int]], bool]:
     *tracked* one is unaffected: `watcher_pids` unions the pid file's own PID,
     and the pid file is per state directory by construction.
     """
+    census = poller_census()
+    return census["mine"], census["scan_ok"]
+
+
+def empty_census(scan_ok: bool) -> dict[str, Any]:
+    """A census with nothing in it — and `scan_ok` says which kind of nothing.
+
+    The two are not interchangeable and the whole of #1881 is what happens when
+    a reader treats them as one, so the shape refuses to be built without an
+    answer to that question. Also the seam the tests stub `poller_census` at:
+    a literal four-key dict copied into five files is five places for a fifth
+    bucket to be forgotten.
+    """
+    return {"mine": {}, "other": {}, "unknown": {}, "scan_ok": scan_ok}
+
+
+def poller_census() -> dict[str, Any]:
+    """All three of `_labelled`'s answers, from one `ps`. Read-only.
+
+    Keys: `mine` and `unknown` are {(source, id): [pid, ...]}; `other` is
+    {channel token: {(source, id): [pid, ...]}}; `scan_ok` is whether the scan
+    ran at all.
+
+    `scan_poller_pids` is this function's `mine` bucket and nothing else, which
+    is the contract every *acting* caller needs and #1514 argued for at length.
+    What that issue settled was which pollers may be listed as rows and signalled;
+    it did not settle whether their existence may be **stated**, and the render
+    took the stronger reading. So #1881: 564 live pollers on one other channel,
+    a scan that saw every one of them, and a board that printed `No active
+    watchers. None recorded as lost either.` — a claim about the fleet built on
+    evidence that said the opposite. Disclosing a count is not acting on it.
+
+    No `_pid_alive` re-check, deliberately. These rows came out of `ps`
+    microseconds ago and `ps` is the liveness source; asking the kernel 564 more
+    times would re-answer its own question. `list_watchers` does re-check because
+    it *merges* pid-file PIDs, which can name a process that died last week.
+
+    Spawns nothing, signals nothing.
+    """
     rows = _ps_rows()
     if rows is None:
-        return {}, False
-    mine = channel_key()
-    found: dict[tuple[str, str], list[int]] = {}
+        # Not "no pollers anywhere". Every count in this dict is zero because
+        # nobody looked, and `scan_ok` is the only thing that tells a caller
+        # which of the two it is holding.
+        return empty_census(False)
+    mine_key = channel_key()
+    mine: dict[tuple[str, str], list[int]] = {}
+    other: dict[str, dict[tuple[str, str], list[int]]] = {}
+    unknown: dict[tuple[str, str], list[int]] = {}
     for pid, tokens in rows:
         label = _labelled(tokens)
         if label is None:
             continue
         channel, source, watcher_id = label
-        if channel != mine:
+        slot = (source, watcher_id)
+        if channel is None:
+            # A poller started before the channel token existed. It may be on
+            # this channel or on any other and its own argv cannot tell them
+            # apart, so it is neither claimed nor written off (#1514).
+            unknown.setdefault(slot, []).append(pid)
+        elif channel == mine_key:
+            mine.setdefault(slot, []).append(pid)
+        else:
+            other.setdefault(channel, {}).setdefault(slot, []).append(pid)
+    for bucket in (mine, unknown):
+        for pids in bucket.values():
+            pids.sort()
+    for slots in other.values():
+        for pids in slots.values():
+            pids.sort()
+    return {"mine": mine, "other": other, "unknown": unknown, "scan_ok": True}
+
+
+def channel_dirs() -> tuple[dict[str, str], str, str]:
+    """({channel token: state directory}, listing state, why not) under BASE_DIR.
+
+    A channel token is `sha256(normpath(STATE_DIR))[:12]`, so it cannot be
+    reversed and a disclosure that prints one is not by itself actionable — the
+    operator in #1881 had five slots and 564 processes and no route from the
+    token to the thing that could stop them. The directories are all right here,
+    though, and hashing *forward* over them turns the token back into a path,
+    and so into the `SUPERTOOL_WATCH_NAME` whose own board can act on it.
+
+    Three states, like every other listing in this preset. An empty mapping
+    because BASE_DIR could not be listed must not render as "no other channel
+    exists on this machine", which is the defect this whole issue is about
+    arriving one layer down.
+
+    Creates nothing.
+    """
+    base = naming.BASE_DIR
+    names, state, why = naming.state_dir_listing(base)
+    found: dict[str, str] = {}
+    if state != naming.STATE_DIR_OK:
+        return found, state, why
+    # The default channel's state directory *is* BASE_DIR, so it is a sibling of
+    # the named ones without being an entry in the listing. Omitting it would
+    # make the one channel every unnamed project shares the only unresolvable
+    # one.
+    found[channel_key(base)] = base
+    prefix = "supertool-watch-"
+    for name in names:
+        if not name.startswith(prefix):
             continue
-        found.setdefault((source, watcher_id), []).append(pid)
-    for pids in found.values():
-        pids.sort()
-    return found, True
+        path = os.path.join(base, name)
+        # BASE_DIR holds the default channel's own `.state.json` files and the
+        # `.sock` endpoints beside the named directories. `isdir` is what tells
+        # a channel from a file that shares its prefix.
+        if not os.path.isdir(path):
+            continue
+        found[channel_key(path)] = path
+    return found, state, why
 
 
 def watcher_pids(
@@ -1458,7 +1554,7 @@ def live_poller_pids(source: str, watcher_id: str) -> tuple[list[int], bool]:
     return [pid for pid in found.get((source, watcher_id), []) if _pid_alive(pid)], scan_ok
 
 
-def list_watchers() -> tuple[list[dict[str, Any]], bool]:
+def list_watchers(census: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], bool]:
     """`list_active_pids` widened by the process scan. ([row, ...], scanned).
 
     Adds to each row: `pids` (every live poller for that slot), `extra` (the
@@ -1471,7 +1567,12 @@ def list_watchers() -> tuple[list[dict[str, Any]], bool]:
     renders.
     """
     rows = list_active_pids()
-    found, scan_ok = scan_poller_pids()
+    # `census` is threaded in by callers that also render the other two buckets,
+    # so `watches` pays for one `ps` rather than two. Same shape as
+    # `watcher_pids`' own `scan` parameter, and for the same reason.
+    if census is None:
+        census = poller_census()
+    found, scan_ok = census["mine"], census["scan_ok"]
     seen: set[tuple[str, str]] = set()
     for row in rows:
         key = (str(row["source"]), str(row["id"]))
