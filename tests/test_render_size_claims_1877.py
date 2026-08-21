@@ -183,16 +183,37 @@ def graded_bytes(text: str) -> int:
     genuine staleness. Taking the variable out instead leaves `TOLERANCE_KB`
     free to mean only what #1884 argued it meant -- room for prose to round.
 
-    Not silent when it substitutes nothing. A render that stopped naming the
-    path would simply pass through here, and
-    `test_the_graded_size_does_not_move_with_the_checkout_path` is where that
-    arrives as a red line: it requires the raw sizes at two config paths to
-    differ by exactly the path difference before it grades anything.
+    Two ways this can fail to normalise, and neither may return a number.
+
+    The first is *no config path at all*. `_preset_disclosure` falls back to
+    naming `os.getcwd()` when `_CONFIG_PATH` is falsy, so the render still
+    carries a checkout-dependent absolute path -- and the one string that would
+    have located it is gone. Returning `len(text)` there is the raw count
+    wearing the shape of a normalised one, which is this repository's own
+    defect class sitting inside the guard against it, and the failure it
+    produces is the same sentence ("this checkout renders N bytes") that sent a
+    maintainer after the wrong pull request in the first place. So it refuses.
+    Every row reaches this through the `shipped_config` fixture, which always
+    sets the path, so the refusal costs nothing until a caller arrives without
+    one -- which is exactly when it is worth having.
+
+    The second is *the path is set but never appears in the render*. That one
+    is legitimate here -- a render carrying no disclosure has nothing to
+    normalise -- so it passes through, and
+    `test_the_graded_size_does_not_move_with_the_checkout_path` is what turns it
+    red for the renders that are supposed to carry one: it requires the raw
+    sizes at two config paths to differ by exactly the path difference before
+    it grades anything.
     """
     path = supertool._CONFIG_PATH or ""
-    if path:
-        text = text.replace(path, CANONICAL_CONFIG_PATH)
-    return len(text.encode("utf-8"))
+    assert path, (
+        "graded_bytes was asked to normalise a render with no `_CONFIG_PATH` "
+        "set. The disclosure names os.getcwd() in that state, so the render is "
+        "still checkout-dependent and the substitution below cannot find it -- "
+        "returning a byte count here would be the un-normalised number in the "
+        "shape of a normalised one. Install a config path (the "
+        "`shipped_config` fixture does) rather than grading blind.")
+    return len(text.replace(path, CANONICAL_CONFIG_PATH).encode("utf-8"))
 
 
 def _hook_payload() -> str:
@@ -464,6 +485,33 @@ def test_the_graded_size_does_not_move_with_the_checkout_path(
         "not about where this checkout sits on disk."
         % (claim.subject, graded_short, len(_SHORT_CONFIG_PATH), graded_long,
            len(_LONG_CONFIG_PATH)))
+
+
+def test_grading_without_a_config_path_refuses_rather_than_answering(
+        shipped_config, monkeypatch) -> None:
+    """The third state, asserted rather than assumed.
+
+    `_preset_disclosure` names `os.getcwd()` when `_CONFIG_PATH` is falsy, so
+    the render is still checkout-dependent while the string that locates it is
+    gone. A `graded_bytes` that returned a length there would hand every row
+    the raw count in the shape of a normalised one -- and the assertion it
+    fails is worded "this checkout renders N bytes", the exact sentence that
+    sent a maintainer after the wrong pull request.
+
+    Every row reaches `graded_bytes` through `shipped_config`, which always
+    sets a path, so this branch is unreachable from the suite as it stands.
+    That is precisely why it is pinned here: a refusal nobody can produce is
+    indistinguishable from one that was never written.
+    """
+    monkeypatch.setattr(supertool, "_CONFIG_PATH", "")
+    with pytest.raises(AssertionError, match="rather than grading blind"):
+        graded_bytes("`ops` renders something at /some/checkout/path.")
+
+    # ...and the same call answers normally once a path is installed, so the
+    # refusal above is about the missing path rather than the helper refusing
+    # everything it is handed.
+    monkeypatch.setattr(supertool, "_CONFIG_PATH", "/x/.supertool.json")
+    assert graded_bytes("no path in here") == len("no path in here")
 
 
 def test_no_ungraded_figure_in_a_registered_file(shipped_config) -> None:
