@@ -15,10 +15,33 @@ same sentence. It finds 40 hits in 11 files across this tree, and they are at
 least five kinds that no regex separates:
 
     a live claim          README.md  "`ops:full` is 74,838 bytes here"
-    a historical record   CHANGELOG.md, changelog.d/1783.fixed.md
+    a historical record   CHANGELOG.md, and the changelog.d/ fragments
     a past-tense sentence meta.md    "`ops` was before #1774, ~73KB"
     a cap, not a render   contributing.md "the ~7KB SessionStart cap"
     pinned somewhere else meta.md, by test_meta_doc_figures_1783.py
+
+That second row names the *directory* rather than the fragment file this survey
+actually read, and the reason is this file's own subject matter arriving one
+level up. The draft named #1783's own pending fragment by filename, which was
+true when it was written and stops being true on a scheduled future event: the
+tag that ships #1783 folds that fragment into `CHANGELOG.md` and deletes it, so
+the citation is green in this pull request and red on the release and every
+release after. Naming it in this paragraph would have had the same fault, so
+this paragraph does not either: `tests/test_changelog_findable_1293.py` refuses
+the filename even in prose explaining the filename, and it is right to.
+It caught this one, and
+its refusal records that the same mistake cost five CI legs on v0.26.0 and
+thirteen of twenty on v0.27.0, none of them visible from inside the pull request
+that wrote them. A citation whose target is scheduled for deletion is exactly the
+"correct today, wrong later, and nothing re-reads it" shape every figure in
+`SITES` is about; it just rots on a release rather than on an edit.
+
+No count of those rows appears in this docstring, deliberately. The first draft
+of the paragraph above said "the fourteen figures below" while `SITES` held
+fifteen -- a receipt about the change stating a number the change contradicts,
+written into the file whose whole subject is that failure. `SITES` is in this
+file and `len(SITES)` cannot disagree with it, so the prose points at the list
+instead of counting it.
 
 A dated measurement is a record and stays; an undated present-tense one is a
 claim and gets graded. Nothing in the text marks which is which, so a walker
