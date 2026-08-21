@@ -448,6 +448,101 @@ def test_a_child_that_ignores_sigterm_is_still_killed(tmp_path: Path) -> None:
     assert "timed out" in payload["errors"][0]["msg"].lower(), payload
 
 
+#: Deletion vocabulary, matched as an attribute (`os.unlink`, `p.unlink()`,
+#: `shutil.rmtree`) AND as a bare name, which is what a `from os import remove`
+#: leaves behind. Matching only the attribute form was the first version of
+#: this guard and it missed every from-import spelling.
+_DELETE_NAMES = frozenset({"remove", "unlink", "rmtree", "rmdir", "removedirs"})
+
+#: A shell is a deletion primitive wearing a costume: `os.system("rm -f " +
+#: lock)` is the shape this guard exists to refuse and the one an AST walk for
+#: `unlink` sails straight past. This adapter has no legitimate use for either.
+_SHELL_NAMES = frozenset({"system", "popen"})
+
+#: Every way this file could start a process. The rule below is not "do not
+#: spawn" -- it spawns git, that is its job -- it is that the argv of every
+#: spawn must begin with `git_bin`, which refuses `subprocess.run(["rm", ...])`
+#: without needing to recognise `rm` as dangerous.
+_SPAWN_NAMES = frozenset({"run", "call", "check_call", "check_output", "Popen"})
+
+
+#: argv[0] spellings that mean "this spawn is git". `git_bin` is the adapter's
+#: own variable; the bare string is allowed so that hoisting or inlining the
+#: binary name is not refused as if it were an attack.
+_GIT_ARGV0 = frozenset({"git_bin", "git"})
+
+
+def _deletion_aliases(tree: ast.Module) -> "set[str]":
+    """Local names bound to a deletion primitive by a from-import.
+
+    `from os import remove as rm2` binds `rm2`, and a guard keyed on the
+    vocabulary alone never sees it again. Written because the must-fire control
+    for exactly this shape failed on the first draft of this guard.
+    """
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name in _DELETE_NAMES:
+                    names.add(alias.asname or alias.name)
+    return names
+
+
+def _lock_deletion_routes(src: str) -> "list[str]":
+    """Every route to deleting a file this walk can see, as readable strings.
+
+    Returns [] for source that only spawns git. See
+    `test_no_lock_is_ever_deleted_by_the_adapter` for what this deliberately
+    cannot see.
+    """
+    tree = ast.parse(src)
+    delete_names = _DELETE_NAMES | _deletion_aliases(tree)
+    found: list = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        attr = func.attr if isinstance(func, ast.Attribute) else None
+        bare = func.id if isinstance(func, ast.Name) else None
+        name = attr or bare
+        if name is None:
+            continue
+
+        if any(kw.arg == "shell" and getattr(kw.value, "value", False) is True
+               for kw in node.keywords):
+            found.append("spawn with shell=True: " + name)
+            continue
+        if name in delete_names:
+            found.append("deletion call: " + name)
+            continue
+        if name in _SHELL_NAMES:
+            found.append("shell call: " + name)
+            continue
+        if name not in _SPAWN_NAMES:
+            continue
+
+        argv = node.args[0] if node.args else None
+        # A BARE name is only treated as a spawn when it is shaped like one.
+        # This adapter's own inner helper is called `run`, and reading
+        # `run("rev-parse", ...)` as an un-gitlike spawn made the guard fire
+        # four times on the very file it is guarding. An attribute call
+        # (`subprocess.run`) is always checked, because that is how a spawn is
+        # actually written and there is no local-helper collision to protect.
+        if bare is not None and not isinstance(argv, ast.List):
+            continue
+
+        head = None
+        if isinstance(argv, ast.List) and argv.elts:
+            first = argv.elts[0]
+            head = (first.id if isinstance(first, ast.Name)
+                    else first.value if isinstance(first, ast.Constant)
+                    else None)
+        if head not in _GIT_ARGV0:
+            found.append("spawn whose argv[0] is not git: "
+                         + name + "(" + repr(head) + ")")
+    return sorted(found)
+
+
 def test_no_lock_is_ever_deleted_by_the_adapter() -> None:
     """The issue's fourth suggestion, refused on purpose.
 
@@ -458,25 +553,109 @@ def test_no_lock_is_ever_deleted_by_the_adapter() -> None:
     The grace period above fixes the damage without guessing. If this ever
     becomes wanted it needs its own issue and its own argument, not a rider
     here.
-    """
-    tree = ast.parse(ADAPTER.read_text(encoding="utf-8"))
-    forbidden = {"remove", "unlink", "rmtree", "rmdir"}
-    called = sorted(
-        node.func.attr for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        and node.func.attr in forbidden
-    )
-    assert called == [], (
-        "git-status.py CALLS " + str(called) + " — see this test's docstring "
-        "before adding lock removal")
 
-    # The mention in the module docstring is the REASON it does not, so a check
-    # keyed on the word would fire on the explanation. Pair the negative with a
-    # positive: the deletion vocabulary really is what this looks for.
-    sample = ast.parse("import os" + chr(10) + "os.unlink('x')" + chr(10))
-    assert [n.func.attr for n in ast.walk(sample)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-            and n.func.attr in forbidden] == ["unlink"]
+    **What this guard covers, and what it cannot (#1883 review).** The first
+    version walked only for `ast.Attribute` calls named `unlink`/`remove`/
+    `rmtree`/`rmdir`, and its single positive control fed it `os.unlink('x')`.
+    Measured against seven realistic spellings, five walked straight through:
+    `os.system("rm -f " + lock)`, `subprocess.run(["rm", "-f", p])`,
+    `subprocess.call(...)`, `from os import remove as rm2; rm2(p)` and
+    `from os import unlink; unlink(p)`. A green guard read as "this adapter
+    cannot delete a lock" while proving only "not via four attribute
+    spellings" -- this repository's own defect class, an absence produced by
+    the checker read as an absence in the world, inside the test written to
+    stop that very drift.
+
+    It now covers four routes: the deletion vocabulary as an attribute OR a
+    bare name, **with from-import aliases resolved** (`from os import remove as
+    rm2` binds `rm2`); any call to a shell (`os.system`, `os.popen`); any call
+    passing `shell=True`, which turns an arbitrary string into a command; and
+    any spawn whose `argv[0]` is not git, which refuses `subprocess.run(["rm",
+    ...])` without this test having to know that `rm` deletes things.
+
+    **Two of those branches exist because the must-fire controls below failed
+    on the first draft of this same fix.** The alias branch was claimed in this
+    docstring and absent from the code; and treating every bare `run(...)` as a
+    spawn made the guard fire four times on the adapter itself, whose own inner
+    helper is named `run`. A bare name is therefore only read as a spawn when
+    its first argument is a list literal -- which is the deliberate hole that
+    lets `run("rev-parse", ...)` through, and it is stated rather than hidden.
+
+    **It still cannot close the class, and saying so is the point.** A name
+    assembled at runtime (`getattr(os, "unl" + "ink")(p)`), an `eval`, a
+    deletion reached through a helper defined elsewhere, or a **git subcommand
+    that deletes for us** (`git clean -fdx` has a git argv[0] and is allowed by
+    every branch above) reaches none of these checks. No AST walk closes that
+    set. This is a tripwire on the routes a real patch would actually take, not
+    a proof of impossibility, and a reader who needs the stronger claim does
+    not have it.
+    """
+    routes = _lock_deletion_routes(ADAPTER.read_text(encoding="utf-8"))
+    assert routes == [], (
+        "git-status.py can reach a file deletion -- " + str(routes)
+        + " -- see this test's docstring before adding lock removal")
+
+
+@pytest.mark.parametrize("label,src", [
+    ("attribute deletion", "import os" + chr(10) + "os.unlink(p)"),
+    ("pathlib method", "import pathlib" + chr(10) + "pathlib.Path(p).unlink()"),
+    ("shutil.rmtree", "import shutil" + chr(10) + "shutil.rmtree(p)"),
+    ("from-import, plain", "from os import unlink" + chr(10) + "unlink(p)"),
+    ("from-import, aliased", "from os import remove as rm2" + chr(10) + "rm2(p)"),
+    ("os.system", "import os" + chr(10) + "os.system('rm -f ' + lock)"),
+    ("os.popen", "import os" + chr(10) + "os.popen('rm ' + lock)"),
+    ("subprocess.run rm", "import subprocess"
+                          + chr(10) + "subprocess.run(['rm', '-f', p])"),
+    ("subprocess.call rm", "import subprocess"
+                           + chr(10) + "subprocess.call(['rm', p])"),
+    ("subprocess.Popen rm", "import subprocess"
+                            + chr(10) + "subprocess.Popen(['rm', p])"),
+    ("shell=True at all", "import subprocess"
+                          + chr(10) + "subprocess.run('rm -f ' + p, shell=True)"),
+    ("a bare spawn name with a list argv", "from subprocess import run"
+                                           + chr(10) + "run(['rm', p])"),
+    ("git spawn that deletes via a subcommand is NOT covered -- see the "
+     "docstring; this row asserts the shell keyword, not the subcommand",
+     "import subprocess" + chr(10)
+     + "subprocess.run(['git', 'clean', '-fdx'], shell=True)"),
+])
+def test_the_lock_guard_fires_on_every_shape_it_claims(label: str, src: str) -> None:
+    """MUST FIRE, one control per covered shape.
+
+    The rule this file applies everywhere else, applied to the guard itself: a
+    negative assertion passes when the matcher is broken, so every branch the
+    docstring above claims has to be shown catching something. Five of these
+    ten were silently uncovered until #1883.
+    """
+    assert _lock_deletion_routes(src) != [], label
+
+
+@pytest.mark.parametrize("label,src", [
+    ("the adapter's own git spawn",
+     "import subprocess" + chr(10)
+     + "subprocess.Popen([git_bin, *args], cwd=d)"),
+    ("a git spawn by literal name",
+     "import subprocess" + chr(10) + "subprocess.run(['git', 'status'])"),
+    ("prose naming index.lock",
+     '"""We deliberately do not remove .git/index.lock here."""'),
+    ("terminate and kill, which are not deletions",
+     "proc.terminate()" + chr(10) + "proc.kill()"),
+    ("the adapter's own inner helper, which is called `run`",
+     "run('rev-parse', '--is-inside-work-tree')"),
+    ("a local helper named `call` taking a string",
+     "call('status')"),
+])
+def test_the_lock_guard_stays_quiet_on_what_it_must_not_refuse(
+        label: str, src: str) -> None:
+    """MUST NOT FIRE. A guard that refuses the adapter's own git spawn, or its
+    own docstring, gets routed around within a week -- and `kill` sits one
+    keyword away from the deletion vocabulary in both senses.
+
+    The literal-`git` case is deliberately allowed: the rule is argv[0] is
+    `git_bin` or the string `git`, so an author hoisting the binary name to a
+    constant has to say so rather than being refused for tidying.
+    """
+    assert _lock_deletion_routes(src) == [], label
 
 
 def test_signal_module_is_not_needed_for_the_grace_period() -> None:

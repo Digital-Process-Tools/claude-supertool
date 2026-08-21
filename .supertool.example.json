@@ -782,7 +782,7 @@
       ],
       "rollback_on_fail": false,
       "timeout": 30,
-      "_doc": "Must stay above the adapter's own GIT_TIMEOUT_DEFAULT (15s) plus its SIGTERM grace (2s), so the adapter declines with `code: adapter` rather than being killed mid-git by the core. It was 5 against an inner 5 until #1882, and a tie is a race."
+      "_doc": "Must stay above the adapter's own GIT_TIMEOUT_DEFAULT (15s) plus its SIGTERM grace (2s), so the adapter declines with `code: adapter` rather than being killed mid-git by the core. It was 5 against an inner 5 until #1882, and a tie is a race. THIS IS INTERACTIVE LATENCY: every mutating op blocks on its slowest validator, so on a repository whose git does not answer an edit blocks ~19s (measured) before the decline prints, against ~5s and a wrong answer before #1882. Set SUPERTOOL_GIT_TIMEOUT lower (3 is reasonable) if you would rather have a fast honest NOT CHECKED than a slow correct measurement."
     },
     "prettier-check": {
       "cmd": "{python} {supertool_dir}/validators/prettier-check/prettier-check.py {file}",
