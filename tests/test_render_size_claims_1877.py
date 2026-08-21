@@ -9,10 +9,10 @@ tree as it was before #1774 moved the descriptions out of `ops` into `ops:full`.
 
 **Why this is a registry and not a walker.** The issue asks for "a single test
 that walks every file stating a ~N.NKB or bare byte count for a named render".
-Measured before writing this: a deliberately narrow regex -- a render name in
-backticks, then a size within 80 characters on the same sentence -- finds 40
-hits in 11 files across this tree, and they are at least five kinds that no
-regex separates:
+Measured before writing this, with a survey probe rather than the pattern below
+-- a render name in backticks, then a size within 80 characters of it on the
+same sentence. It finds 40 hits in 11 files across this tree, and they are at
+least five kinds that no regex separates:
 
     a live claim          README.md  "`ops:full` is 74,838 bytes here"
     a historical record   CHANGELOG.md, changelog.d/1783.fixed.md
@@ -134,6 +134,7 @@ SITES = (
     Claim("README.md", "ops-compact", _r("ops-compact")),
     Claim("README.md", "ops:roster", _r("ops:roster")),
     Claim("README.md", "ops", _r("ops")),
+    Claim("docs/operations/index.md", "ops", _r("ops")),
     Claim("docs/operations/index.md", "ops:roster", _r("ops:roster")),
     Claim("docs/operations/index.md", "ops-compact", _r("ops-compact")),
     Claim("docs/operations/index.md", "ops:full", _r("ops:full")),

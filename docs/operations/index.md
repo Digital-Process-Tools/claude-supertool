@@ -49,7 +49,7 @@ Both say `path escapes cwd` and carry the same opt-out as every other refusal. *
 | `map` | `map:PATH` | Symbol map of a file or directory. Shows classes, functions, methods, constants as an indented tree with line numbers. Three-tier: tree-sitter → ctags → regex. Supports PHP, Python, JS, TS, Go, Rust, Java, Ruby. |
 | `introduction` | `introduction` | Output the project introduction text from `.supertool.json`. No `---` dispatch header — clean markdown. |
 | `output-format` | `output-format` | Output format examples from `.supertool.json`. Shows what responses look like. |
-| `ops` | `ops` | Full operations reference from `.supertool.json` — built-in ops, custom ops, and aliases with descriptions and examples. An unrecognised argument is refused, not dropped. |
+| `ops` | `ops` | Every op's **signature** — built-in, custom and aliases — and nothing else, at ~3.7KB. Descriptions and examples moved to `ops:full` in #1774; `help:OP` carries one op's in full. An unrecognised argument is refused, not dropped. |
 | `ops:roster` | `ops:roster` | Every op name plus a safety class, nothing else (~2.0KB) — the only listing form that fits the ~7KB SessionStart cap, so it is what the hook prints. Unmarked = read-only, `*` = writes in this tree, `!` = acts outside it or outlives the call. |
 | `diff` | `diff:PATH1:PATH2` | Unified diff between two files. |
 | `stat` | `stat:PATH` | File/directory metadata: size (bytes), last modified (ISO datetime), type (file/dir). |
