@@ -376,6 +376,160 @@ def test_a_stalled_git_is_terminated_before_it_is_killed(
         + str(children[0].signals))
 
 
+class _BrokenPipeProcess:
+    """A child that is ALIVE but whose pipes raise. The #1883 review shape.
+
+    `communicate()` raising is a fact about the pipes, not about the process.
+    The first `_stop()` read that `OSError` as "the child is gone" and returned
+    without killing it. This stands in for that, and `alive` is the assertion.
+    """
+
+    def __init__(self) -> None:
+        self.args = ["git"]
+        self.returncode = None
+        self.signals: list = []
+        self.alive = True
+
+    def communicate(self, timeout=None):  # noqa: ANN001
+        raise OSError(9, "Bad file descriptor")
+
+    def wait(self, timeout=None):  # noqa: ANN001
+        if "kill" in self.signals:
+            self.alive = False
+            self.returncode = -9
+            return -9
+        raise subprocess.TimeoutExpired(cmd=self.args, timeout=timeout or 0)
+
+    def terminate(self) -> None:
+        self.signals.append("terminate")
+
+    def kill(self) -> None:
+        self.signals.append("kill")
+
+
+def test_a_child_whose_pipes_broke_is_still_killed() -> None:
+    """MUST FIRE. The #1883 review finding, as a regression pin.
+
+    Measured on CPython 3.13.15 before writing this: closing the stdout fd
+    under a live `sleep 600` makes `communicate(timeout=1)` raise
+    `OSError(9)` with the child still running and `returncode is None`. The
+    original `_stop()` had `except OSError: return`, so that child kept
+    running -- holding the `.git/index.lock` this whole change exists to stop
+    stranding, in the one function whose job is to stop stranding it.
+    """
+    mod = _load()
+    proc = _BrokenPipeProcess()
+    mod._stop(proc)
+    assert "kill" in proc.signals, (
+        "a child whose pipes raised OSError was never killed; signals: "
+        + str(proc.signals))
+    assert proc.alive is False, "the child survived _stop()"
+
+
+def test_a_child_that_goes_on_sigterm_is_not_killed() -> None:
+    """MUST NOT FIRE. The pair for the test above.
+
+    Without this, `_stop` could pass by killing unconditionally -- which would
+    defeat the grace period and re-strand every lock.
+    """
+    mod = _load()
+
+    class _Obedient(_BrokenPipeProcess):
+        def communicate(self, timeout=None):  # noqa: ANN001
+            if "terminate" in self.signals:
+                self.alive = False
+                self.returncode = 0
+                return "", ""
+            raise subprocess.TimeoutExpired(cmd=["git"], timeout=timeout or 0)
+
+    proc = _Obedient()
+    mod._stop(proc)
+    assert proc.signals == ["terminate"], (
+        "a child that stopped on SIGTERM was killed anyway: " + str(proc.signals))
+
+
+#: Reproduces the reviewed shape against a REAL process, inside a throwaway
+#: interpreter. It closes a raw fd out from under a live child, which is the
+#: only way to make `communicate()` raise while the process is still running --
+#: and is also why it must not run in the pytest process: the file object still
+#: believes it owns that descriptor, so its eventual close targets a number the
+#: runtime may have handed to something else by then. In a shared xdist runner
+#: that is a silent cross-test flake, which is this repository's own defect
+#: class introduced by the test written to prevent it. Confining it to a
+#: subprocess costs one spawn and bounds the damage at a process that is about
+#: to exit anyway.
+_BROKEN_FD_PROBE = """
+import importlib.util, os, subprocess, sys, time
+spec = importlib.util.spec_from_file_location("m", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"],
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+time.sleep(0.2)
+os.close(p.stdout.fileno())
+try:
+    p.communicate(timeout=1)
+    raised = "none"
+except OSError as exc:
+    raised = "OSError"
+except subprocess.TimeoutExpired:
+    raised = "TimeoutExpired"
+alive_before = p.returncode is None
+m._stop(p)
+print("raised=" + raised)
+print("alive_before=" + str(alive_before))
+print("stopped=" + str(p.poll() is not None))
+if p.poll() is None:
+    p.kill()
+"""
+
+
+def test_a_real_child_with_a_real_broken_fd_is_really_killed(
+        tmp_path: Path) -> None:
+    """MUST FIRE, against a real process and a real closed descriptor.
+
+    The class above asserts `_stop`'s intent. This asserts the premise that
+    made the original intent wrong -- that CPython really does raise `OSError`
+    out of `communicate()` with the child still running -- because a pin whose
+    premise has quietly stopped holding is a test that passes while measuring
+    nothing. If a future CPython stops doing this, `raised=` changes and this
+    fails here rather than going green for the wrong reason.
+
+    No shell shim, so unlike the SIGTERM tests below this one runs on Windows.
+    """
+    probe = tmp_path / "probe.py"
+    probe.write_text(_BROKEN_FD_PROBE, encoding="utf-8")
+    done = subprocess.run(
+        [sys.executable, str(probe), str(ADAPTER)],
+        capture_output=True, text=True, timeout=BUDGET,
+        encoding="utf-8", errors="replace")
+    assert done.returncode == 0, done.stderr
+    out = dict(line.split("=", 1) for line in done.stdout.split()
+               if "=" in line)
+
+    assert out.get("raised") == "OSError", (
+        "the premise no longer holds -- communicate() raised "
+        + repr(out.get("raised")) + " rather than OSError, so this test is no "
+        "longer exercising the reviewed shape: " + done.stdout)
+    assert out.get("alive_before") == "True", (
+        "the child was already dead before _stop ran: " + done.stdout)
+    assert out.get("stopped") == "True", (
+        "a child whose pipes raised OSError survived _stop() -- it would still "
+        "be holding .git/index.lock: " + done.stdout)
+
+
+def test_settled_asks_the_process_when_the_pipes_cannot_answer() -> None:
+    """The helper on its own, both verdicts, so neither is assumed."""
+    mod = _load()
+
+    live = _BrokenPipeProcess()
+    assert mod._settled(live, 0) is False, "a live child read as settled"
+
+    gone = _BrokenPipeProcess()
+    gone.signals.append("kill")
+    assert mod._settled(gone, 0) is True, "a dead child read as still running"
+
+
 @pytest.mark.skipif(sys.platform.startswith("win"),
                     reason="POSIX signals: Windows terminate() and kill() are "
                            "both TerminateProcess, so there is no grace period "

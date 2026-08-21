@@ -119,6 +119,42 @@ def _budget() -> int:
     return value if value >= 1 else GIT_TIMEOUT_DEFAULT
 
 
+def _settled(proc: "subprocess.Popen", grace: int) -> bool:
+    """Did the child stop within `grace` seconds? Reaps it if so.
+
+    **`communicate()` failing says nothing about the child** (#1883 review).
+    It is the PIPES that broke, and a broken pipe is a different event from a
+    dead process. Measured on CPython 3.13.15: closing the stdout fd under a
+    live `sleep 600` makes `communicate(timeout=1)` raise
+    `OSError(9, "Bad file descriptor")` with the child still running and
+    `returncode is None`.
+
+    That matters because the first version of `_stop` treated that `OSError`
+    as "the child is gone" and returned without killing it -- leaving a live
+    git holding the `.git/index.lock`, which is the exact bug this adapter was
+    changed to stop causing. So the pipe failure falls back to `wait()`, which
+    touches no pipe and answers the question actually being asked.
+    """
+    try:
+        proc.communicate(timeout=grace)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+    except (OSError, ValueError):
+        # The pipes are unusable -- an fd closed underneath us, or a file
+        # object already closed (`ValueError: I/O operation on closed file`).
+        # Neither is evidence about the process, so ask the process.
+        try:
+            proc.wait(timeout=grace)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+        except OSError:
+            # `wait()` itself failed. Nothing further this function can learn
+            # or do; the caller escalates from terminate to kill on a False.
+            return False
+
+
 def _stop(proc: "subprocess.Popen") -> None:
     """Ask the child to stop, then insist (#1882).
 
@@ -138,18 +174,26 @@ def _stop(proc: "subprocess.Popen") -> None:
     try:
         proc.terminate()
     except OSError:
+        # The child is already gone, or the platform refused the signal.
+        # Either way there is nothing to ask, and the kill below is a no-op
+        # on a dead child (measured: `Popen.kill()` on an exited, reaped
+        # child raises nothing). Falling through costs one bounded wait.
         pass
-    try:
-        proc.communicate(timeout=TERM_GRACE_S)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    except OSError:
+    if _settled(proc, TERM_GRACE_S):
         return
     try:
         proc.kill()
-        proc.communicate(timeout=TERM_GRACE_S)
-    except (OSError, subprocess.TimeoutExpired, ValueError):
+    except OSError:
+        # Same three cases as the terminate above, and the same answer. The
+        # `_settled` call below still runs, so a child that IS alive gets
+        # reaped rather than left as this function's problem.
+        pass
+    if not _settled(proc, TERM_GRACE_S):
+        # Killed and not reaped inside the grace: a zombie until this
+        # short-lived process exits and init reaps it. Deliberately not
+        # escalated -- the adapter is about to emit its decline and exit,
+        # and blocking longer to tidy a zombie would spend the caller's
+        # edit latency on something the OS finishes for free.
         pass
 
 
