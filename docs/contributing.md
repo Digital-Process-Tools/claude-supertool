@@ -131,7 +131,7 @@ Measured across the 128 documented ops in the shipped tree:
 | max | 6,578 (`channel`) |
 | top 10 rows | 37,739 = **49% of the corpus, in 8% of the ops** |
 
-The assembled `ops` render is 74,838 bytes against `_HOOK_OUTPUT_CAP_BYTES` = 7,168, which is why this repo's own SessionStart injection has fallen back to a bare alphabetical list of op names carrying no signatures at all.
+The assembled descriptive render, `ops:full`, is ~72.7KB against `_HOOK_OUTPUT_CAP_BYTES` = 7,168, which is why this repo's own SessionStart injection has fallen back to `ops:roster`, a bare alphabetical list of op names carrying no signatures at all. Bare `ops` has been signatures-only since #1774 and fits on its own at ~3.7KB; it is the *descriptions* that have never fitted, and this section is about what they cost.
 
 **The line to draw.** A `description` says what the op does, what it will refuse, and what it declines to tell you — the three things a caller cannot get from the `syntax` field and cannot afford to learn from a failed call. What it is *not* is the record of how the op got here. These, from one entry, are all true and none of them belong on a line printed to every reader of the roster:
 
