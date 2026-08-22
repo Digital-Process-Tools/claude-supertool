@@ -229,10 +229,169 @@ def test_ghs_text_is_delimited_so_the_tools_sentence_resumes_visibly(
         assert repr(awkward) in rt.no_repo_error(EXAMPLE, detail=awkward)
 
 
+#: The tool's own contribution to the "did not answer" sentence, measured with
+#: the reason capped: fixed prose plus at most `_DETAIL_CAP` characters of gh's
+#: stderr. Remove the cap and the same measurement is 5307, so this bound still
+#: fails loudly for the reason it was written -- it just no longer fails for a
+#: reason that is nobody's defect.
+_TOOL_PROSE_BOUND = 600
+
+
+def _reason_capped_length(msg: str) -> int:
+    """`msg` minus the runnable invocation inside it.
+
+    The cap is on the REASON, which is gh's output and the only unbounded
+    input here. It was measured as a cap on the TOTAL until #905 put
+    `sys.executable` in the printed hint, at which point the total became a
+    property of the machine -- 561 characters under `/usr/bin/python3`, 606
+    under the macOS runner's `/Library/Frameworks/...` path, 771 under a nix
+    store prefix. The first of those passed and the second did not, so the
+    assertion was reporting the length of an interpreter path as a failure to
+    cap gh's stderr.
+
+    Shortening the hint instead was the other option and is worse: whatever it
+    prints has to be runnable by whoever pastes it, which is the whole of #905.
+    Raising the number was the third and moves again on the next deeper prefix.
+
+    Asked of `rt`'s OWN `_st_hint`, not this module's second copy of it: the
+    two agree on an unmodified tree, and a test that patches the install dir
+    under one of them while the product reads the other measures nothing.
+    """
+    example = rt._st_hint.st_hint("repo:OWNER/NAME", EXAMPLE)
+    assert example in msg, (example, msg)
+    return len(msg) - len(example)
+
+
 def test_a_very_long_reason_is_capped(monkeypatch) -> None:
     monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
     msg = rt.no_repo_error(EXAMPLE, detail="HTTP 503 " + "x" * 5000)
-    assert len(msg) < 600, len(msg)
+    assert _reason_capped_length(msg) < _TOOL_PROSE_BOUND, len(msg)
+
+
+def test_the_cap_is_not_a_property_of_the_interpreters_path(
+        monkeypatch, tmp_path) -> None:
+    """The pin the macOS 3.10 leg of #905's own pull request earned.
+
+    Every other platform passed and that one did not, because
+    `sys.executable` is 16 characters on one runner and 61 on another. A
+    length assertion that holds on Linux and breaks on macOS is measuring the
+    host, and this repo's cross-platform checklist names that shape.
+
+    So both halves of the hint are moved here rather than accepted from
+    whatever is running the suite. The install dir is a `tmp_path` holding
+    `supertool.py` and no wrapper, which pins the interpreter arm on every
+    host -- a checkout that DOES carry a `./supertool` symlink would otherwise
+    take the other arm, where `sys.executable` never appears and every
+    assertion below is vacuously true. That is the same defect as the one
+    being fixed, one level up.
+    """
+    monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
+    (tmp_path / "supertool.py").write_text("")
+    monkeypatch.setattr(rt._st_hint, "install_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        sys, "executable", "/nix/store/" + "q" * 200 + "/bin/python3.13")
+
+    msg = rt.no_repo_error(EXAMPLE, detail="HTTP 503 " + "x" * 5000)
+
+    # The interpreter arm really is the one under test.
+    assert "supertool.py" in msg and "./supertool " not in msg, msg
+
+    # The reason is still capped -- the invariant the test above names. Read
+    # BEFORE the interpreter moves again below: the helper re-derives the hint
+    # from whatever `sys.executable` says at the moment it is called, so a
+    # remainder taken afterwards would be measured against a hint this message
+    # does not contain.
+    long_remainder = _reason_capped_length(msg)
+    assert long_remainder < _TOOL_PROSE_BOUND, len(msg)
+
+    # And the hint is still whole, because a truncated one does not run. The
+    # total IS over 600 here, deliberately: that is the environment paying for
+    # a remedy that works, not a cap that failed.
+    assert len(msg) > _TOOL_PROSE_BOUND, len(msg)
+    assert msg.endswith("supertool.py 'repo:OWNER/NAME' '" + EXAMPLE + "').")
+
+    # Same measurement, ordinary path: the tool's own half does not move, so
+    # every character of the difference is interpreter path and none of it is
+    # gh's stderr escaping the cap.
+    monkeypatch.setattr(sys, "executable", "/usr/bin/python3")
+    short = rt.no_repo_error(EXAMPLE, detail="HTTP 503 " + "x" * 5000)
+    assert len(short) < len(msg)
+    assert _reason_capped_length(short) == long_remainder
+
+
+#: The three runners #1917 actually ran on, with the interpreter path each one
+#: reports. Real paths, copied from the failing legs rather than invented,
+#: because the whole point below is that the number the old assertion produced
+#: was a property of these strings and of nothing else.
+_RUNNER_INTERPRETERS = {
+    "ubuntu": "/opt/hostedtoolcache/Python/3.11.9/x64/bin/python",
+    "windows": "C:" + chr(92) + "hostedtoolcache" + chr(92) + "windows"
+               + chr(92) + "Python" + chr(92) + "3.9.13" + chr(92) + "x64"
+               + chr(92) + "python.exe",
+    "macos": "/Library/Frameworks/Python.framework/Versions/3.10/bin/python",
+}
+
+
+def test_600_was_never_a_boundary_the_code_produces(monkeypatch, tmp_path):
+    """Why the fix is not `<` becoming `<=`, asked because it looked like it.
+
+    #1917 went red on seven legs. macOS came out at 606, over the bound. The
+    windows-latest 3.9 leg came out at **exactly 600** and failed `600 < 600`,
+    which reads as an off-by-one between the test and a cap that clamps at
+    600 -- so read, the fix is one character.
+
+    There is no such cap. The only clamp in `no_repo_error` is `_DETAIL_CAP`,
+    it is 200, and it applies to gh's stderr, not to the message. The total is
+    a straight line in the length of the interpreter path -- the three real
+    runner paths below are 49, 55 and 61 characters and produce 594, 600 and
+    606 -- so the windows leg landed on 600 because its interpreter path is 55
+    characters, and for no other reason. `<=` would pass that runner and fail
+    the next one at 56. It would encode a coincidence as a contract.
+
+    The two failures are therefore one failure. Both are the total being a
+    property of the host, and both are fixed by measuring the reason instead.
+    """
+    monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
+    (tmp_path / "supertool.py").write_text("")
+    monkeypatch.setattr(rt._st_hint, "install_dir", lambda: str(tmp_path))
+
+    totals, remainders = {}, set()
+    for leg, exe in _RUNNER_INTERPRETERS.items():
+        monkeypatch.setattr(sys, "executable", exe)
+        msg = rt.no_repo_error(EXAMPLE, detail="HTTP 503 " + "x" * 5000)
+        totals[leg] = len(msg)
+        remainders.add(_reason_capped_length(msg))
+
+    # The line, not a clamp: every leg is the same constant plus its own path,
+    # which is exactly the claim that 600 is not a boundary. Asserted as a
+    # difference so that rewording the sentence moves all three together and
+    # does not turn a prose edit into a failure here.
+    for leg, exe in _RUNNER_INTERPRETERS.items():
+        assert totals[leg] - len(exe) == totals["ubuntu"] - len(
+            _RUNNER_INTERPRETERS["ubuntu"]), (leg, totals)
+
+    # The old assertion split these three. The new one does not, and that is
+    # the whole of the fix: one measurement, three hosts.
+    assert len(remainders) == 1, remainders
+    assert remainders.pop() < _TOOL_PROSE_BOUND
+
+    # The spread is exactly the spread of the interpreter paths -- nothing
+    # else in the message moved between the legs.
+    lengths = [len(e) for e in _RUNNER_INTERPRETERS.values()]
+    assert max(totals.values()) - min(totals.values()) == max(
+        lengths) - min(lengths)
+
+    # The incident itself, reproduced rather than described: on the prose as
+    # it stands the ubuntu leg is under 600 and the other two are not, which
+    # is the seven-legs-red distribution #1917 reported. Deliberately NOT
+    # asserted as the literal 594/600/606 -- those are a property of today's
+    # wording, and a sentence edit would land here as a failure about a cap.
+    # If this ever fires, check the prose length before checking the cap.
+    if not all(t < _TOOL_PROSE_BOUND for t in totals.values()):
+        assert totals["ubuntu"] < _TOOL_PROSE_BOUND <= totals["windows"], (
+            "the old total-length assertion is expected to split these legs "
+            "at today's prose length; if it no longer does, the prose moved "
+            f"and this note is stale, not the cap: {totals}")
 
 
 # ===========================================================================
