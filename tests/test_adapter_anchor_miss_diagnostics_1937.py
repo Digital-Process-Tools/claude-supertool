@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import sys
 from pathlib import Path
 
 VALIDATORS = Path(__file__).parent.parent / "validators"
