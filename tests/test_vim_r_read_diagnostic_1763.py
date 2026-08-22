@@ -3,10 +3,10 @@
 A single-platform CI red (windows-latest, 3.9) showed op_vim's `:r` failing
 with ENOENT on a path the test itself had just written and closed three
 statements earlier. The failure was never reproduced. Rather than chase the
-flake, the receipt on that failure arm now carries enough extra fact -- does
-the parent directory exist, what does a fresh os.stat say about the path --
-that the *next* occurrence can settle, from the log alone, whether the file
-was reaped after we closed it or the path never resolved at all.
+flake, the receipt on that failure arm now carries enough extra fact --
+whether the parent directory exists -- that the *next* occurrence can
+settle, from the log alone, whether the file was reaped after we closed
+it or the path never resolved at all.
 
 These tests do not reproduce the race. They simulate the two shapes the
 receipt must be able to tell apart:
