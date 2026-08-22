@@ -44,7 +44,7 @@ Reports the working-tree delta (lines added/removed) and file state after every 
 | Var                     | Default | Notes                                                                 |
 |-------------------------|---------|-----------------------------------------------------------------------|
 | `GIT_BIN`               | `git`   | Override if git is not on `PATH`                                       |
-| `SUPERTOOL_GIT_TIMEOUT` | `15`    | Seconds for the **whole adapter**, not per git call. Values below `1` and anything unparseable fall back to the default, silently — this adapter's stdout is parsed as JSON, so it has no channel to complain on. Same knob every other git call in supertool reads. **Set it in either direction** — see the latency note below. |
+| `SUPERTOOL_GIT_TIMEOUT` | `15`    | Seconds for the **whole adapter**, not per git call. Values below `1` and anything unparseable fall back to the default, silently — this adapter's stdout is parsed as JSON, so it has no channel to complain on. **The same variable, three different defaults** (#1886): `presets/git/status.py`'s courtesy calls default to 5s, six other presets share `_git_common.git_timeout()`'s 10s, this adapter's own is 15s because it has to survive four sequential calls on a cold repository rather than one fast one. Exporting the variable moves all three together — that is the point — but do not read any single number here as "the" default for supertool's git calls. **Set it in either direction** — see the latency note below. |
 
 **This budget is interactive latency you pay.** Every mutating op blocks on its
 slowest validator, so on a repository whose git does not answer, an edit blocks

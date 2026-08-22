@@ -263,13 +263,13 @@ def _parse_state(porcelain: str) -> str:
 
 def main() -> None:
     if len(sys.argv) < 2 or not sys.argv[1]:
-        emit({
-            "tool": "git-status", "file": "", "ok": True, "count": 0,
-            "errors": [], "duration_ms": 0,
-            "metrics": {"lines_added": 0, "lines_removed": 0,
-                        "lines_staged_added": 0, "lines_staged_removed": 0,
-                        "state": "clean"},
-        })
+        # Not `state: "clean"` (#1885). Every sibling adapter that takes a
+        # single file argument (`ruff`, `eslint`, `tsc-check`, `phpstan`,
+        # `xmllint`, `yaml-check`, ...) routes a missing argument to
+        # `code: "adapter"` -- this was the one adapter still spelling it as
+        # a positive measurement of a working tree nothing had been asked
+        # about.
+        emit(_adapter_error("", "no file arg", 0))
         return
 
     file = sys.argv[1]
@@ -330,6 +330,23 @@ def main() -> None:
 
     try:
         # Check we're inside a git repo (fast — runs rev-parse)
+        #
+        # `rev.strip() != "true"` reads as "not a repository" for two
+        # different causes: the file is genuinely outside any git repository
+        # (endorsed as clean by this README and by docs/validators.md), and
+        # a real repository whose rev-parse faulted (a corrupt `.git`, a
+        # permissions problem). #1885 asked whether these can be told apart
+        # from what `run()` returns. Measured: they cannot. `git
+        # rev-parse --is-inside-work-tree` answers a corrupt `.git/HEAD` and
+        # a directory with no repository above it with the byte-identical
+        # signal — exit 128, empty stdout, "fatal: not a git repository" on
+        # stderr (pinned by
+        # test_rev_parse_cannot_tell_outside_a_repo_from_a_faulted_one).
+        # `run()` returns stdout only and always has, so capturing the exit
+        # code here would not add a distinction git itself does not expose —
+        # it would only let this arm start guessing, and guessing wrong
+        # here means misrouting the endorsed case, which is the regression
+        # #1883 declined. So this stays unchanged: a finding, not a fix.
         rev = run("rev-parse", "--is-inside-work-tree")
         if rev.strip() != "true":
             emit({

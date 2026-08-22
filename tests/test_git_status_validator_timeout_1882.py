@@ -303,6 +303,136 @@ def test_the_adapter_stops_at_the_first_stall(repo: Path,
 
 
 # ---------------------------------------------------------------------------
+# #1885: the other two arms that answered "clean" for a file nothing measured
+# ---------------------------------------------------------------------------
+#
+# `test_a_stall_is_not_reported_as_a_clean_working_tree` above pins the
+# timeout arm #1883 fixed. Two more arms of this same adapter still emitted
+# `ok: true, state: "clean"` for a working tree nothing had measured -- the
+# no-argument arm, and the `rev-parse --is-inside-work-tree` arm.
+#
+# The no-argument arm is a genuine fix: every sibling adapter that takes a
+# single file argument (`ruff`, `eslint`, `tsc-check`, `phpstan`, `xmllint`,
+# `yaml-check`, ... -- 31 occurrences of the string "no file arg" across
+# `validators/`) routes a missing argument to `code: "adapter"`. This one
+# adapter alone answered a fabricated `clean` instead.
+#
+# The `rev-parse` arm is NOT a fix here, and the test below pins the reason
+# rather than changing behaviour. #1883's own author argued this out of scope
+# because `docs/validators.md` / `validators/git-status/README.md` endorse
+# treating "not inside a work tree" as a genuine clean answer, and changing
+# that verdict is a design decision. What #1885 asks is narrower: can the
+# endorsed case (genuinely outside a repository) be told apart from the
+# feared one (inside a real, but faulted, repository -- corrupt `.git`, a
+# permissions problem) using only what `git rev-parse --is-inside-work-tree`
+# exposes? Measured on this machine (macOS/Darwin 24.3.0, git installed via
+# Xcode CLT) -- both a directory with no `.git` anywhere above it, and a real
+# repository whose `.git/HEAD` was overwritten with garbage, produce the
+# identical signal: exit 128, empty stdout, and a stderr message containing
+# "not a git repository". Git itself does not expose the distinction the
+# issue asks for, so the adapter cannot manufacture one from information git
+# does not provide -- capturing `rev-parse`'s exit code would not let it
+# route a corrupt-`.git` fault differently from the endorsed case without
+# also misrouting the endorsed case itself, which is the regression #1883's
+# author was right to decline. The verdict for this arm is therefore
+# unchanged.
+
+
+def test_the_no_argument_arm_declines_rather_than_reporting_clean() -> None:
+    """MUST FIRE. #1885: no file arg is an adapter fault, not a measurement.
+
+    Matches every sibling adapter's own convention -- see
+    `tests/test_validators_tier2.py::test_gofmt_check_no_arg_returns_schema_error`
+    and its 30 siblings, all asserting `"no file arg" in ...["msg"]` on
+    `code: "adapter"`.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(ADAPTER)],
+        capture_output=True, text=True, timeout=BUDGET,
+        encoding="utf-8", errors="replace",
+    )
+    payload = json.loads(proc.stdout.strip())
+    assert payload.get("ok") is not True, payload
+    metrics = payload.get("metrics") or {}
+    assert metrics.get("state") != "clean", payload
+    assert payload.get("errors"), payload
+    assert payload["errors"][0]["code"] == "adapter", payload
+    assert "no file arg" in payload["errors"][0]["msg"], payload
+
+
+def test_an_empty_string_argument_declines_the_same_way() -> None:
+    """MUST FIRE. `sys.argv[1] == ""` takes the same branch as a missing argv[1]."""
+    proc = subprocess.run(
+        [sys.executable, str(ADAPTER), ""],
+        capture_output=True, text=True, timeout=BUDGET,
+        encoding="utf-8", errors="replace",
+    )
+    payload = json.loads(proc.stdout.strip())
+    assert payload.get("ok") is not True, payload
+    assert payload["errors"][0]["code"] == "adapter", payload
+    assert "no file arg" in payload["errors"][0]["msg"], payload
+
+
+def test_a_real_file_still_reports_clean_with_an_argument(repo: Path) -> None:
+    """MUST NOT FIRE -- the positive control for the two tests above.
+
+    Pairs with them in the same fixture family: a harness that always
+    declines would pass both "must fire" tests above for free. This one only
+    passes if a real, present argument still reaches the real clean answer.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(ADAPTER), str(repo / "base.txt")],
+        capture_output=True, text=True, timeout=BUDGET,
+        encoding="utf-8", errors="replace",
+    )
+    payload = json.loads(proc.stdout.strip())
+    assert payload["ok"] is True, payload
+    assert payload["metrics"]["state"] == "clean", payload
+
+
+def test_rev_parse_cannot_tell_outside_a_repo_from_a_faulted_one(
+        tmp_path: Path) -> None:
+    """Evidence, not a fix. #1885's own decision criterion, checked directly.
+
+    "If they can be separated [via the exit code], the fault arm routes to
+    `code: 'adapter'` ... If they cannot, say so -- that is a finding, not a
+    failure." This drives real `git rev-parse --is-inside-work-tree` against
+    two fixtures and asserts they answer identically: a plain directory with
+    no repository above it (the endorsed clean case), and a real repository
+    whose `.git/HEAD` is corrupted (the feared fault case #1885 names). If a
+    future git version starts telling these apart, this test goes red and the
+    verdict above is worth revisiting; today it pins that it does not.
+
+    Observed on macOS/Darwin 24.3.0. Reasoned, not observed, for other
+    platforms: the message text comes from git's own portable C source, not
+    from this adapter or from Python, so there is no known reason for it to
+    differ under `windows-latest` -- this suite's CI matrix will say so.
+    """
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_proc = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"], cwd=outside,
+        capture_output=True, text=True, timeout=BUDGET)
+
+    faulted = tmp_path / "faulted"
+    faulted.mkdir()
+    _git(faulted, "init", "-b", "main")
+    (faulted / ".git" / "HEAD").write_text("garbage\n", encoding="utf-8")
+    faulted_proc = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"], cwd=faulted,
+        capture_output=True, text=True, timeout=BUDGET)
+
+    assert outside_proc.returncode != 0, outside_proc
+    assert faulted_proc.returncode != 0, faulted_proc
+    assert outside_proc.returncode == faulted_proc.returncode, (
+        outside_proc, faulted_proc)
+    assert outside_proc.stdout == "" and faulted_proc.stdout == "", (
+        outside_proc, faulted_proc)
+    assert "not a git repository" in outside_proc.stderr.lower(), outside_proc
+    assert "not a git repository" in faulted_proc.stderr.lower(), faulted_proc
+
+
+# ---------------------------------------------------------------------------
 # The budget: configurable, and above 5
 # ---------------------------------------------------------------------------
 

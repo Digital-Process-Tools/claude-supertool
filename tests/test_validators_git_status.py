@@ -41,17 +41,24 @@ def _init_repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_no_arg_emits_ok_zero_metrics() -> None:
-    """No file arg → ok=true, zero metrics, clean state."""
+def test_no_arg_declines_rather_than_reporting_clean() -> None:
+    """No file arg → `code: "adapter"`, not a fabricated clean measurement.
+
+    This asserted `ok is True` alongside a zeroed `metrics` block reading
+    `state: "clean"` — a measurement of a working tree nothing had been
+    asked about, and indistinguishable from a file with genuinely no
+    changes (#1885). Every sibling adapter that takes a single file
+    argument already routes this to `code: "adapter"`; this was the one
+    still spelling it as a positive answer.
+    """
     data = _run()
     assert data["tool"] == "git-status"
-    assert data["ok"] is True
-    assert data["count"] == 0
-    assert data["errors"] == []
-    m = data["metrics"]
-    assert m["lines_added"] == 0
-    assert m["lines_removed"] == 0
-    assert m["state"] == "clean"
+    assert data["ok"] is False, data
+    assert data["count"] == 1, data
+    assert "metrics" not in data, data
+    codes = [e["code"] for e in data["errors"]]
+    assert codes == ["adapter"], data
+    assert "no file arg" in data["errors"][0]["msg"], data
 
 
 def test_clean_file(tmp_path: Path) -> None:
