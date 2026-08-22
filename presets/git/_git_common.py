@@ -110,7 +110,17 @@ def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedPro
     nothing depended on it.
     """
     budget = git_timeout() if timeout is None else timeout
-    cmd = ["git"] + args
+    # --no-optional-locks precedes the subcommand -- it is a git global flag
+    # (#1945, same mechanism as #1944 one file over). git diff/status refresh
+    # the on-disk index and take .git/index.lock to do it; `_git`'s own
+    # TimeoutExpired arm below reaches `Popen.kill()` -- SIGKILL, no grace --
+    # so a stalled call never gets the chance to unlink a lock it holds. The
+    # flag removes the lock from existence instead: git treats the call as
+    # read-only and skips the index writeback, so killing the process at any
+    # point leaves nothing behind. It is a no-op on the write commands this
+    # same chokepoint also runs (commit, checkout, stash push, push, merge)
+    # -- it suppresses OPTIONAL locks only, verified against real git 2.46.2.
+    cmd = ["git", "--no-optional-locks"] + args
     try:
         return subprocess.run(
             cmd,
@@ -147,7 +157,9 @@ def _git_verbatim(args: list[str], timeout: int | None = None) -> subprocess.Com
     content, and a new caller should have that reason.
     """
     budget = git_timeout() if timeout is None else timeout
-    cmd = ["git"] + args
+    # --no-optional-locks precedes the subcommand -- see `_git`'s own comment
+    # on the same flag (#1945) for the mechanism; it applies identically here.
+    cmd = ["git", "--no-optional-locks"] + args
     try:
         done = subprocess.run(cmd, capture_output=True, timeout=budget)
     except subprocess.TimeoutExpired:

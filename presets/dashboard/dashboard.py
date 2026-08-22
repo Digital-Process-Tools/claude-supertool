@@ -606,9 +606,16 @@ def _json_cmd(argv: list, timeout: int = 30):
 
 
 def _git(args: list, timeout: int = 15):
-    """`(stdout, error)` for a read-only git command."""
+    """`(stdout, error)` for a read-only git command.
+
+    `--no-optional-locks` precedes the subcommand -- a git global flag (#1945,
+    the same mechanism as #1944). This function's own contract already says
+    "read-only", so the flag matches what it claims: git skips the index
+    writeback rather than taking `.git/index.lock`, and a call killed by its
+    own timeout below leaves nothing behind.
+    """
     try:
-        res = _run(["git"] + args, timeout=timeout)
+        res = _run(["git", "--no-optional-locks"] + args, timeout=timeout)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
         return "", f"git {' '.join(args[:2])}: {exc}"
     if res.returncode != 0:

@@ -38,7 +38,10 @@ def _runs(cli):
     each test below would stop reaching the arm it is named after.
     """
     def run(cmd, *_a, **_k):
-        if list(cmd[:2]) == ["git", "remote"]:
+        # `_git` prepends `--no-optional-locks` ahead of the subcommand
+        # (#1945), so the discriminator can no longer assume the subcommand
+        # sits at cmd[1] -- it looks for "remote" anywhere in a `git` argv.
+        if cmd and cmd[0] == "git" and "remote" in cmd:
             return _proc(_HOSTED_REMOTE)
         # `hasattr(..., "returncode")`, not `callable(...)`: a `mock.Mock`
         # stub result is itself callable, and calling it returns another Mock.
