@@ -12705,6 +12705,24 @@ def op_vim(path: str, script: str) -> str:
     return out
 
 
+def _r_missing_file_diagnostic(path_arg: str) -> str:
+    """Extra context for a `:r` read that failed because the file was not
+    there (#1763). A single CI leg went red once with ENOENT on a path the
+    test itself had just written and closed three statements earlier, and
+    was never reproduced. Bare ENOENT does not say whether the path never
+    resolved at all or whether something was there and is now gone --
+    the shape a reap-after-close would leave. This adds the one fact that
+    tells them apart: does the parent directory exist.
+
+    Deliberately not a stat dump: most `:r` failures are an ordinary
+    typo'd path, and those callers do not need more than this one clause.
+    """
+    parent = os.path.dirname(os.path.abspath(path_arg)) or os.sep
+    if os.path.isdir(parent):
+        return " (parent directory exists; the file itself does not)"
+    return " (parent directory does not exist)"
+
+
 def _op_vim_impl(path: str, script: str) -> str:
     """vim-flavored cursor-based multi-action edit op.
 
@@ -15077,7 +15095,13 @@ def _op_vim_impl(path: str, script: str) -> str:
                               errors="surrogateescape") as _fh:
                         file_text = _fh.read()
                 except OSError as e:
-                    return f"ERROR: action {i} '{action}': :r failed to read {path_arg!r}: {e}\n"
+                    detail = ""
+                    if isinstance(e, FileNotFoundError):
+                        detail = _r_missing_file_diagnostic(path_arg)
+                    return (
+                        f"ERROR: action {i} '{action}': :r failed to read "
+                        f"{path_arg!r}: {e}{detail}\n"
+                    )
             # vim :r inserts AFTER the current line. Ensure a newline boundary.
             eol = _line_end(content, cursor)
             bol = _line_start(content, cursor)
