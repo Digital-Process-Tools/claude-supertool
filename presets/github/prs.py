@@ -59,6 +59,7 @@ from typing import NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "watch"))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 from pr import (  # noqa: E402  (reuse the gh-pr helper and the cap it fetched under)
     _fetch_review_threads_detailed,
@@ -73,9 +74,15 @@ import _checks  # noqa: E402  (the one check classifier, shared with gh-pr / gl-
 import _proc  # noqa: E402  (the one liveness probe, shared with watch / gl-mrs)
 import _release_gate  # noqa: E402  (the release gate, folded in here — #1405)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
+import transport  # noqa: E402  (STATE_DIR resolution shared with radar/watches, #1922)
 
 WATCH_SOURCE = "github-pr"
-STATE_DIR = "/tmp"
+# The resolved state dir, not a bare "/tmp" (#1922): under a named channel
+# (SUPERTOOL_WATCH_NAME) or an explicit SUPERTOOL_WATCH_STATE_DIR, pollers'
+# pid files live in transport.STATE_DIR, which can differ from "/tmp". A
+# stale local default here made this footer disagree with `radar` and
+# `watches`, both of which already read `transport.STATE_DIR`.
+STATE_DIR = transport.STATE_DIR
 DEFAULT_PER_PAGE = 50
 ENRICH_CAP = 40  # never fire more than this many per-PR thread fetches
 ENRICH_WORKERS = 8  # parallel thread fetches
@@ -1061,7 +1068,10 @@ def main_with_args(arg_str: str) -> int:
         if floor_note:
             print(f"({floor_note})")
 
-    watched = _watched_numbers()
+    # transport.STATE_DIR is read live (#1922) rather than relying on the
+    # module-level STATE_DIR default, which is a value bound once at import
+    # and would go stale under a monkeypatched or re-resolved channel.
+    watched = _watched_numbers(transport.STATE_DIR)
     if prs:
         # Header as well as footer, for the absences the caller did not ask
         # for. A footer is lost by exactly the consumer that truncates (#633,
