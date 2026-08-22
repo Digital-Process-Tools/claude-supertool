@@ -327,7 +327,7 @@ Every mutating op (`edit`, `replace`, `replace_lines`, `paste`, `append`, `vim`)
 
 Example: edit a `.json` file with a missing comma → `jsonlint` catches it → file reverts → receipt shows the parse error with line/col.
 
-19 validators bundled out of the box (PHP, XML, JSON, YAML, INI, Python syntax + types, Bash, JS, TS, HTML inline `<script>`, SCSS, Markdown, Ruby, Dockerfile, Go, Terraform, Rust, TOML). Graceful skip when toolchain missing.
+20 validators bundled out of the box (PHP, XML, JSON, YAML, INI, Python syntax + types, Bash, JS, TS, HTML inline `<script>`, SCSS, Markdown, Ruby, Dockerfile, Go, Terraform, Rust, TOML, GitHub Actions workflows). Graceful skip when toolchain missing.
 
 Results are cached per file-content hash **plus a fingerprint of the tools themselves** (adapter scripts, binaries, and any `validator_fingerprint_paths` such as your lockfile), so upgrading an analyser invalidates the answers it produced instead of replaying them. The key also carries a **meaning version** — a hash of `validators/SCHEMA.md` and the core-only field set — so a change to what a cached field *means* misses instead of being read under the new rules. A TTL (`validator_cache_ttl_hours`, default 24h) backstops whatever the key still can't see. Non-deterministic engine failures are never cached.
 

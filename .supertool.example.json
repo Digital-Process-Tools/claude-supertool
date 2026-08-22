@@ -734,6 +734,19 @@
       "rollback_on_fail": false,
       "timeout": 30
     },
+    "actionlint": {
+      "cmd": "{python} {supertool_dir}/validators/actionlint/actionlint.py {file}",
+      "match": ".github/workflows/*.{yml,yaml}",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": true,
+      "timeout": 30
+    },
     "psr": {
       "cmd": "{python} {supertool_dir}/validators/psr/psr.py {file}",
       "match": "*.php",
