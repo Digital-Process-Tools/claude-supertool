@@ -33,6 +33,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _untrusted  # noqa: E402  (branch names and worktree paths are not our text — #851/#876)
 import _refname  # noqa: E402  (the ordinary-refname rule this line prints into — #694/#924)
+import _st_hint  # noqa: E402  (a runnable invocation, not a relative path that may not exist — #905)
 
 #: `git worktree list` is a local read of one file; a slow answer means
 #: something is wrong with the repo, not that we should wait longer.
@@ -160,7 +161,8 @@ def check(source: str, actionable: bool = True) -> str:
                 f"outside the ordinary-refname set (letters, digits, "
                 f"`. _ / -`, no leading `-`), so no switch command is "
                 f"suggested — check it out yourself, deliberately")
-    return f"You are on: {local} ⚠ MISMATCH — switch with: ./supertool 'git-checkout:{named}'"
+    return (f"You are on: {local} ⚠ MISMATCH — switch with: "
+            f"{_st_hint.st_hint('git-checkout:' + named)}")
 
 
 def describe(source: str) -> str:

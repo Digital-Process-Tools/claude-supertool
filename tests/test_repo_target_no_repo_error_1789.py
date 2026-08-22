@@ -54,6 +54,7 @@ def _load(rel: str, name: str) -> Any:
 
 
 rt = _load("presets/_repo_target.py", "_repo_target")
+_hint = _load("presets/_st_hint.py", "_st_hint_1789")
 
 SLUG = "jbkkz/requivo"
 EXAMPLE = "gh-pr-merge:1"
@@ -127,10 +128,16 @@ def test_a_real_non_repo_still_gets_the_original_sentence(monkeypatch) -> None:
     sentence, and it must survive verbatim - through the new parameter as well
     as without it."""
     monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
+    # The invocation itself is `_st_hint`'s claim, not this test's (#905): a
+    # literal `./supertool` here would be wrong the moment this suite runs in
+    # a worktree, which has no wrapper. Built the same way the production code
+    # builds it, so this pins the SENTENCE and leaves the spelling to the one
+    # place that is allowed to decide it.
+    example = _hint.st_hint("repo:OWNER/NAME", EXAMPLE)
     expected = ("ERROR: cwd is not a GitHub repo and no repo target was "
                 "given. cd into a GitHub-cloned repo, name one with a "
-                f"leading repo: op (./supertool 'repo:OWNER/NAME' "
-                f"'{EXAMPLE}'), or run gh directly with --repo OWNER/REPO.")
+                f"leading repo: op ({example}), or run gh directly with "
+                "--repo OWNER/REPO.")
     assert rt.no_repo_error(EXAMPLE, detail=NOT_A_REPO) == expected
     assert rt.no_repo_error(EXAMPLE, detail=NOT_A_GIT_REPO) == expected
 
