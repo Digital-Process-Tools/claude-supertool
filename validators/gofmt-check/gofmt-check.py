@@ -43,7 +43,16 @@ INSTALL_HINT = ("gofmt not found on PATH — this file was NOT format-checked "
 #
 # The marker is a located `path:line:col: message`. `stat ...: no such file`
 # carries no line, which is precisely what distinguishes it.
-DIAGNOSTIC = re.compile(r"^(?P<path>.+?):(?P<line>\d+):(?P<col>\d+):\s*(?P<msg>.+)$")
+#
+# Anchored on the invoked path itself (#1934) rather than a bare `.+?`: the
+# non-greedy wildcard used to discard the path instead of matching it, so it
+# bound to the *earliest* `:digit:digit:` anywhere in the line — including
+# one supplied by a filename crafted to contain its own `N:M: ` sequence.
+# Building the pattern from `file` means only the path gofmt was actually
+# invoked against can start a match.
+def _diagnostic_re(file: str) -> re.Pattern[str]:
+    return re.compile(r"^(?P<path>" + re.escape(file)
+                       + r"):(?P<line>\d+):(?P<col>\d+):\s*(?P<msg>.+)$")
 
 
 def parse_diagnostics(out: str, file: str) -> list[dict]:
@@ -53,9 +62,10 @@ def parse_diagnostics(out: str, file: str) -> list[dict]:
     Extracted so the rule can be driven in process on every platform; the
     fake-binary fixture is POSIX-only (see tests/test_adapter_tool_vs_file_753.py).
     """
+    pattern = _diagnostic_re(file)
     errors = []
     for raw in split_lines(out):
-        m = DIAGNOSTIC.match(raw)
+        m = pattern.match(raw)
         if m:
             ln = int(m.group("line"))
             errors.append({

@@ -16,6 +16,7 @@ Usage:  actionlint.py <file>
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -57,7 +58,57 @@ COUNT_CONTRACT = {"count_basis": "measured", "errors_truncated": False}
 # line ends in a bracketed rule (a parse-level failure can omit it), so the
 # rule group is optional and a match with no rule falls back to "syntax-check"
 # rather than losing the whole line to the fallback branch below it.
-_LINE_RE = re.compile(r"^(?:.*?):(\d+):(\d+):\s+(.+?)(?:\s+\[([\w-]+)\])?$")
+#
+# Anchored on the invoked path itself (#1934) rather than a bare `.*?`: the
+# non-greedy wildcard used to discard the path instead of matching it, so it
+# bound to the *earliest* `:digit:digit:` anywhere in the line — including
+# one supplied by a workflow filename crafted to contain its own `N:M: `
+# sequence, reachable end to end because `_supertool.py` `shlex.quote()`s the
+# file before substituting it into this adapter's argv. Building the pattern
+# from `file` means only the path actionlint was actually invoked against can
+# start a match.
+#
+# actionlint does not echo back the literal argv path — verified against
+# 1.7.12: given an absolute path it always prints that path relativised
+# against its own CWD (which this adapter never overrides, so it is the
+# process's `os.getcwd()`), even walking up with `../` when the file sits
+# outside it. `os.path.relpath` is a no-op when `file` is already relative to
+# that CWD, so this matches every path shape the adapter is handed.
+def _line_re(file: str) -> re.Pattern[str]:
+    try:
+        reported = os.path.relpath(file)
+    except ValueError:
+        # Windows: relpath cannot express one drive letter in terms of
+        # another (C:\ vs D:\). actionlint has no more useful path to print
+        # in that case either, so fall back to the path as given.
+        reported = file
+    return re.compile(r"^" + re.escape(reported)
+                       + r":(\d+):(\d+):\s+(.+?)(?:\s+\[([\w-]+)\])?$")
+
+
+def parse_diagnostics(output: str, file: str) -> list[dict]:
+    """Every located actionlint diagnostic about `file`.
+
+    Extracted so the rule can be driven in process on every platform,
+    matching the sibling adapters this class was found across (#1934).
+    """
+    line_re = _line_re(file)
+    errors = []
+    for line in split_lines(output):
+        m = line_re.match(line)
+        if m:
+            lineno, col, msg, rule = m.groups()
+            ln = int(lineno)
+            err = {
+                "line": ln,
+                "col": int(col),
+                "severity": "error",
+                "code": rule or "syntax-check",
+                "msg": msg.strip()[:300],
+            }
+            err.update(context_fields(file, ln))
+            errors.append(err)
+    return errors
 
 
 def emit(d: dict) -> None:
@@ -114,22 +165,8 @@ def main() -> None:
               "errors": [], "duration_ms": duration, **COUNT_CONTRACT})
         return
 
-    errors = []
     output = (result.stdout + result.stderr).strip()
-    for line in split_lines(output):
-        m = _LINE_RE.match(line)
-        if m:
-            lineno, col, msg, rule = m.groups()
-            ln = int(lineno)
-            err = {
-                "line": ln,
-                "col": int(col),
-                "severity": "error",
-                "code": rule or "syntax-check",
-                "msg": msg.strip()[:300],
-            }
-            err.update(context_fields(file, ln))
-            errors.append(err)
+    errors = parse_diagnostics(output, file)
 
     if not errors and output:
         errors = [{"line": None, "col": None, "severity": "error",

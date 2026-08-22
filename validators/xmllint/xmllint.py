@@ -35,15 +35,24 @@ from linebreaks import split_lines
 # `file:LINE: message`. Extracted so the rule can be driven in process on every
 # platform — the fake-binary fixture that drives the whole adapter is POSIX-only
 # (see tests/test_adapter_tool_vs_file_753.py).
-DIAGNOSTIC = re.compile(r"^.+?:(\d+):\s*(.+)")
+#
+# Anchored on the invoked path itself (#1934) rather than a bare `.+?`: the
+# non-greedy wildcard used to discard the path instead of matching it, so it
+# bound to the *earliest* `:digit:` anywhere in the line — including one
+# supplied by a filename crafted to contain its own `N: ` sequence. Building
+# the pattern from `file` means only the path libxml was actually invoked
+# against can start a match.
+def _diagnostic_re(file: str) -> re.Pattern[str]:
+    return re.compile(r"^" + re.escape(file) + r":(\d+):\s*(.+)")
 
 
 def parse_diagnostics(out: str, file: str) -> list[dict]:
     """Every located diagnostic in libxml's stderr. Empty means it did not
     speak about the document."""
+    pattern = _diagnostic_re(file)
     errors = []
     for line in split_lines(out):
-        m = DIAGNOSTIC.match(line)
+        m = pattern.match(line)
         if m:
             ln = int(m.group(1))
             errors.append({"line": ln, "col": None, "severity": "error",

@@ -36,6 +36,43 @@ INSTALL_HINT = ("hadolint not found on PATH — this Dockerfile was NOT linted "
 TIMEOUT_S = 30
 
 
+# hadolint tty output: `file:line RULE severity: message`.
+#
+# Anchored on the invoked path itself (#1934) rather than a bare `.*?`: the
+# non-greedy wildcard used to discard the path instead of matching it, so it
+# bound to the *earliest* `:digit` run anywhere in the line — including one
+# supplied by a Dockerfile filename crafted to contain its own
+# `N RULE severity: ` sequence. Building the pattern from `file` means only
+# the path hadolint was actually invoked against can start a match.
+def _pattern(file: str) -> re.Pattern[str]:
+    return re.compile(r"^" + re.escape(file) + r":(\d+)\s+((?:DL|SC)\d+)\s+(\w+):\s+(.+)$")
+
+
+def parse_diagnostics(output: str, file: str) -> list[dict]:
+    """Every located hadolint diagnostic about `file`.
+
+    Extracted so the rule can be driven in process on every platform,
+    matching the sibling adapters this class was found across (#1934).
+    """
+    pattern = _pattern(file)
+    errors = []
+    for line in split_lines(output):
+        m = pattern.match(line)
+        if m:
+            lineno, code, severity, msg = m.groups()
+            ln = int(lineno)
+            err = {
+                "line": ln,
+                "col": None,
+                "severity": severity if severity in ("error", "warning", "info", "style") else "error",
+                "code": code,
+                "msg": msg.strip()[:300],
+            }
+            err.update(context_fields(file, ln))
+            errors.append(err)
+    return errors
+
+
 def emit(d: dict) -> None:
     print(json.dumps(d))
 
@@ -96,24 +133,8 @@ def main() -> None:
               "errors": [], "duration_ms": duration})
         return
 
-    # Parse hadolint tty output: "file:line DL1234 severity: message"
-    errors = []
-    pattern = re.compile(r"^(?:.*?):(\d+)\s+((?:DL|SC)\d+)\s+(\w+):\s+(.+)$")
     output = (result.stdout + result.stderr).strip()
-    for line in split_lines(output):
-        m = pattern.match(line)
-        if m:
-            lineno, code, severity, msg = m.groups()
-            ln = int(lineno)
-            err = {
-                "line": ln,
-                "col": None,
-                "severity": severity if severity in ("error", "warning", "info", "style") else "error",
-                "code": code,
-                "msg": msg.strip()[:300],
-            }
-            err.update(context_fields(file, ln))
-            errors.append(err)
+    errors = parse_diagnostics(output, file)
 
     if not errors and output:
         errors = [{"line": None, "col": None, "severity": "error",

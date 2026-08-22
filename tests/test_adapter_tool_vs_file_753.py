@@ -144,6 +144,28 @@ GO_STAT_FAILURE = "stat subject.go: no such file or directory\n"
 RB_SYNTAX = "subject.rb:2: syntax error, unexpected end-of-input\n"
 RB_LOAD_ERROR = "ruby: No such file or directory -- subject.rb (LoadError)\n"
 
+# #1934: xmllint/gofmt/ruby echo back the exact path they were invoked with,
+# and the adapters now anchor their line-parsing regex on that same path
+# (`re.escape(file)`) rather than a bare wildcard. The three flat transcripts
+# above use the bare relative filename captured from a real run, which no
+# longer matches the *absolute* path the layer-2 fixture below invokes with —
+# so, matching the `node_syntax_error` convention already used for node's
+# path-sensitive output, these three are built against the real target path
+# at call time instead of stored flat.
+
+
+def xml_parser_error(target: Path) -> str:
+    return (f"{target}:2: parser error : Opening and ending tag "
+            "mismatch: b line 2 and a\n  <b></a>\n         ^\n")
+
+
+def go_parse_error(target: Path) -> str:
+    return f"{target}:3:12: expected ')', found '{{'\n"
+
+
+def rb_syntax_error(target: Path) -> str:
+    return f"{target}:2: syntax error, unexpected end-of-input\n"
+
 # cargo check --message-format=short --quiet (rust 1.9x)
 RS_MANIFEST_ERROR = ("error: unclosed table, expected `]`\n"
                      " --> Cargo.toml:1:9\n  |\n1 | [package\n  |         ^\n")
@@ -548,8 +570,9 @@ def test_xmllint_non_verdict_exits_become_tool_faults(
 @posix_only
 def test_xmllint_a_real_parser_error_is_still_a_finding(tmp_path: Path) -> None:
     """The regression guard: reclassifying is only safe if genuine findings stay."""
-    bindir = _fake_tool(tmp_path, "xmllint", exit_code=1, stderr=XML_PARSER_ERROR)
-    data = _run("xmllint", bindir, _target(tmp_path, "xmllint"))
+    target = _target(tmp_path, "xmllint")
+    bindir = _fake_tool(tmp_path, "xmllint", exit_code=1, stderr=xml_parser_error(target))
+    data = _run("xmllint", bindir, target)
     assert data["ok"] is False, describe(data)
     assert data["errors"][0]["code"] == "xml", describe(data)
     assert data["errors"][0]["line"] == 2, describe(data)
@@ -649,8 +672,9 @@ def test_gofmt_non_verdict_exits_become_tool_faults(
 
 @posix_only
 def test_gofmt_a_real_parse_error_is_a_finding_with_its_line_and_col(tmp_path: Path) -> None:
-    bindir = _fake_tool(tmp_path, "gofmt", exit_code=2, stderr=GO_PARSE_ERROR)
-    data = _run("gofmt-check", bindir, _target(tmp_path, "gofmt-check"))
+    target = _target(tmp_path, "gofmt-check")
+    bindir = _fake_tool(tmp_path, "gofmt", exit_code=2, stderr=go_parse_error(target))
+    data = _run("gofmt-check", bindir, target)
     assert data["ok"] is False, describe(data)
     assert data["errors"][0]["code"] == "syntax", describe(data)
     assert data["errors"][0]["line"] == 3, describe(data)
@@ -692,8 +716,9 @@ def test_ruby_non_verdict_exits_become_tool_faults(
 
 @posix_only
 def test_ruby_a_real_syntax_error_is_still_a_finding(tmp_path: Path) -> None:
-    bindir = _fake_tool(tmp_path, "ruby", exit_code=1, stderr=RB_SYNTAX)
-    data = _run("ruby-check", bindir, _target(tmp_path, "ruby-check"))
+    target = _target(tmp_path, "ruby-check")
+    bindir = _fake_tool(tmp_path, "ruby", exit_code=1, stderr=rb_syntax_error(target))
+    data = _run("ruby-check", bindir, target)
     assert data["errors"][0]["code"] == "syntax", describe(data)
     assert data["errors"][0]["line"] == 2, describe(data)
 
