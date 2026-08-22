@@ -63,6 +63,7 @@ ABSENT_TOOL_ADAPTERS = [
     ("terraform-check", "s.tf", "variable \"x\" {}\n"),
     ("git-status", "s.txt", "x\n"),
     ("html-check", "s.html", "<p>hi</p>\n"),
+    ("actionlint", "s.yml", "on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n"),
 ]
 
 
@@ -255,6 +256,7 @@ EXEC_FAILS_ADAPTERS = [
     ("gofmt-check", "s.go", "package main\n"),
     ("terraform-check", "s.tf", "variable \"x\" {}\n"),
     ("cargo-check", "src/main.rs", "fn main() {}\n"),
+    ("actionlint", "s.yml", "on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n"),
 ]
 
 

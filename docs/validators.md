@@ -192,6 +192,7 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | Markdown            | `markdownlint`   | `markdownlint` CLI                 | `npm install -g markdownlint-cli`          |
 | Ruby                | `ruby-check`     | `ruby` on PATH                     | Uses `ruby -c`                             |
 | Dockerfile          | `hadolint`       | `hadolint` on PATH                 | Catches both syntax and best-practice lint |
+| GitHub Actions workflows | `actionlint` | `actionlint` on PATH (`brew install actionlint`) | Unknown keys, invalid `runs-on` labels, broken `needs:` refs, bad `${{ }}` expressions; also lints `run:` blocks when `shellcheck` is on PATH. Matches `.github/workflows/*.{yml,yaml}` |
 | TypeScript (`.ts`)  | `tsc-check`      | `tsc` (`npm install -g typescript`)| `--noEmit` — no output files written; `--pretty false`, without which nothing parses (#1499). Program-scoped, and the target is contained before it reaches argv (#1519) — see below |
 | TypeScript (`.tsx`) | `tsc-check-tsx`  | `tsc` (`npm install -g typescript`)| Separate entry needed for `.tsx`           |
 | Go                  | `gofmt-check`    | `gofmt` (ships with Go)            | Fails on formatting diff, not just syntax  |
