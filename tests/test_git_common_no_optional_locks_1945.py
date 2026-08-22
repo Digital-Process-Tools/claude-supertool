@@ -106,6 +106,7 @@ def test_the_flag_does_not_block_a_real_write(monkeypatch, tmp_path) -> None:
     def _run(*args):
         r = subprocess.run(
             ["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
             env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.com",
                  "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.com"},
         )
