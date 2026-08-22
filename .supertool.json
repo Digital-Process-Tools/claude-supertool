@@ -2,7 +2,6 @@
   "defaults": { "github_repo": "Digital-Process-Tools/claude-supertool" },
   "compact": false,
   "rtk": false,
-  "no_publish_confirm": true,
   "allow_outside_cwd": true,
   "allow_vim_shell": true,
   "presets": [
