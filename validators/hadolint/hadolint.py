@@ -60,7 +60,10 @@ TIMEOUT_S = 30
 # silent one.
 #
 # Tolerant of the spellings a real hadolint can echo that back in (#1937),
-# whatever they turn out to be -- see validators/common/path_anchor.py.
+# whatever they turn out to be -- and of hadolint (or something upstream)
+# reporting a symlinked invoked path's RESOLVED form instead, via
+# `extra_paths=[realpath]` below -- see validators/common/path_anchor.py
+# for both widenings.
 def _pattern(file: str) -> re.Pattern[str]:
     real = _safe_realpath(file)
     extra = [real] if real and real != file else []

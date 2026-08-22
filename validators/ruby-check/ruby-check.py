@@ -52,8 +52,13 @@ TIMEOUT_S = 30
 # plain re.escape(file) anchor, matching nothing. Reasoned, not directly
 # observed against a Windows machine here -- Ruby on Windows is known to
 # normalise path separators to `/` in some of its own output, which this
-# widens the anchor to tolerate either way. See
-# validators/common/path_anchor.py.
+# widens the anchor to tolerate either way.
+#
+# The SAME two tests then went red identically on ubuntu-latest, which
+# ruled out a Windows-only cause for them: also tolerant of ruby (or
+# something upstream) reporting a symlinked invoked path's RESOLVED form
+# instead, via `extra_paths=[realpath]` below, ungated (every platform).
+# See validators/common/path_anchor.py for both widenings.
 def _diagnostic_re(file: str) -> re.Pattern[str]:
     real = _safe_realpath(file)
     extra = [real] if real and real != file else []

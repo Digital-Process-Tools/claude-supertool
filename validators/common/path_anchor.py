@@ -80,14 +80,24 @@ def safe_realpath(file: str) -> str | None:
     separately-callable opt-in rather than folded into `path_variants`/
     `anchor` themselves, so those stay pure and callable with no filesystem
     at all -- what most of this module's own tests rely on. `realpath`
-    itself essentially never raises (it resolves as far as it can even for
-    a path that does not exist), but a caller building an anchor from
-    output already in hand should not itself die on a filesystem surprise;
-    `None` here means "no extra candidate", not "an error".
+    resolves as far as it can even for a path that does not exist, but it
+    is NOT exception-free: an embedded NUL byte raises `ValueError`
+    (verified: `os.path.realpath("a\\x00b")` -> `ValueError: lstat:
+    embedded null character in path`), not `OSError` -- a gap a self-review
+    caught in the first cut of this function, which caught only `OSError`
+    and let that one through uncaught, contradicting its own claim to never
+    do so. `guard_main` (`refusal.py`) is a second, independent net around
+    every adapter's whole `main()` and would have turned that escape into a
+    distinguishable crash receipt rather than a silent clean result -- so
+    this was defended in depth, not reachable end to end from the adapter
+    CLI (a NUL byte cannot appear in a POSIX argv element at all) -- but a
+    caller building an anchor from output already in hand should not have
+    to rely on a second net for a filesystem surprise this function exists
+    to absorb. `None` here means "no extra candidate", not "an error".
     """
     try:
         return os.path.realpath(file)
-    except OSError:
+    except (OSError, ValueError):
         return None
 
 

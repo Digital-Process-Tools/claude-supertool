@@ -47,7 +47,9 @@ from path_anchor import anchor as _anchor, safe_realpath as _safe_realpath
 # written).
 #
 # Tolerant of the spellings a real libxml can echo that back in (#1937) --
-# see validators/common/path_anchor.py.
+# and of libxml (or something upstream) reporting a symlinked invoked
+# path's RESOLVED form instead, via `extra_paths=[realpath]` below -- see
+# validators/common/path_anchor.py for both widenings.
 def _diagnostic_re(file: str) -> re.Pattern[str]:
     real = _safe_realpath(file)
     extra = [real] if real and real != file else []

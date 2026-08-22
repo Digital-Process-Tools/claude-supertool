@@ -132,6 +132,17 @@ def test_path_variants_does_not_widen_on_a_non_windows_platform():
     assert pa.path_variants("weird\\name.xml", platform="darwin") == ["weird\\name.xml"]
 
 
+def test_safe_realpath_does_not_raise_on_an_embedded_nul_byte():
+    """A self-review finding: the first cut of `safe_realpath` caught only
+    `OSError`, but `os.path.realpath` raises `ValueError` for an embedded
+    NUL byte -- verified directly, not assumed. `guard_main` would have
+    absorbed the escape at the adapter level (defence in depth, confirmed
+    by the paired review), but this function's own contract ("or None if
+    the OS refuses to answer") should not depend on a second net."""
+    pa = _load_common_module()
+    assert pa.safe_realpath("a\x00b") is None
+
+
 def test_path_variants_does_not_collide_two_distinct_posix_paths():
     """The regression this file exists to guard: on a real POSIX machine
     (no `platform=` override -- this is what production code gets), a `\\\\`

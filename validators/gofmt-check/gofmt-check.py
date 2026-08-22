@@ -55,9 +55,11 @@ INSTALL_HINT = ("gofmt not found on PATH — this file was NOT format-checked "
 # written).
 #
 # Tolerant of the spellings a real gofmt can echo that back in (#1937) --
-# see validators/common/path_anchor.py. The `path` capture group this used to
-# carry is dropped: nothing downstream ever read `m.group("path")`, only
-# "line", "col" and "msg".
+# and of gofmt (or something upstream) reporting a symlinked invoked path's
+# RESOLVED form instead, via `extra_paths=[realpath]` below -- see
+# validators/common/path_anchor.py for both widenings. The `path` capture
+# group this used to carry is dropped: nothing downstream ever read
+# `m.group("path")`, only "line", "col" and "msg".
 def _diagnostic_re(file: str) -> re.Pattern[str]:
     real = _safe_realpath(file)
     extra = [real] if real and real != file else []
