@@ -137,7 +137,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, FrozenSet, Iterable, List, MutableMapping, NamedTuple, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, MutableMapping, NamedTuple, Optional, Sequence, Tuple, Union
 
 VERSION = "0.48.0"
 
@@ -24619,18 +24619,45 @@ _PAYLOAD_DBS_WRITE_KEYS = frozenset({"new", "content"})
 _PAYLOAD_LITERAL_BS_KEY = "literal_backslashes"
 
 
-def _payload_literal_backslashes_optin(parsed: Any) -> bool:
-    """True if the payload declares its doubled backslashes deliberate (#1096).
+def _payload_literal_backslashes_scope(parsed: Any) -> Union[bool, FrozenSet[str]]:
+    """What `literal_backslashes` exempts from the doubled-backslash refusal (#1096, #1839).
 
-    Top level only, and payload-wide. A per-field key multiplies with every
-    content field an op has; a key inside an `[[ops]]` table READS as scoped to
-    that op and could not be -- the detector works off the raw source, where op
-    boundaries are a line-counting heuristic rather than a fact. Shipping a flag
-    whose apparent scope is not its real scope would be a worse lie than the
-    one being fixed, so a payload whose ops genuinely differ in intent is two
-    payloads. `_payload_literal_backslashes_misplaced` says so out loud.
+    Top level only, in either of two shapes. `= true` exempts every field in
+    the payload. A list of field NAMES -- `= ["new"]` -- exempts only the
+    fields it names, everywhere their bare key occurs.
+
+    Neither shape locates an `[[ops]]` boundary, which is what #1096's
+    original reasoning turned on: a key placed INSIDE an ops table reads as
+    scoped to that op and could not be, because the detector works off the
+    raw source, where op boundaries are a line-counting heuristic rather than
+    a fact. That argument is about POSITION -- a key whose apparent scope was
+    a specific op it could not actually be pinned to. Matching on the bare
+    field NAME instead needs no such heuristic: the scanner already carries
+    that name (`new`, `content`, ...) on every finding it produces, so
+    filtering the findings by name is exact, not a claimed scope that could
+    turn out to be a lie. That is what #1839 supersedes; the rest of the
+    original reasoning still holds and is why the misplaced-key refusal below
+    is unchanged.
+
+    What the list form does NOT solve: two ops that both carry a `new` field
+    and disagree with EACH OTHER about that field's own intent still share
+    one name, and there is still no honest way to tell them apart from the
+    raw source. That payload is still two payloads.
+
+    Returns `True` for the whole-payload form, a lowercase frozenset of field
+    names for the list form, or an empty frozenset for anything else --
+    unset, a bare list of non-strings, or any other malformed value, all of
+    which opt in to nothing rather than guessing at an intent that was not
+    stated cleanly.
     """
-    return isinstance(parsed, dict) and parsed.get(_PAYLOAD_LITERAL_BS_KEY) is True
+    if not isinstance(parsed, dict):
+        return frozenset()
+    value = parsed.get(_PAYLOAD_LITERAL_BS_KEY)
+    if value is True:
+        return True
+    if isinstance(value, list) and value and all(isinstance(v, str) for v in value):
+        return frozenset(v.lower() for v in value)
+    return frozenset()
 
 
 def _payload_literal_backslashes_misplaced(parsed: Any) -> str:
@@ -24660,6 +24687,24 @@ def _payload_literal_backslashes_misplaced(parsed: Any) -> str:
     return ""
 
 
+def _literal_bs_field_list_example(
+        findings: List[Tuple[str, str, str, int,
+                              List[Tuple[int, int, str, Optional[int], int]]]]) -> str:
+    """A ready-to-paste `literal_backslashes = [...]` naming the fields THIS
+    refusal flagged, deduplicated and in first-seen order (#1839).
+
+    Built from the caller's own payload rather than a generic `["new"]`: the
+    caller can paste it rather than adapt it, and it never suggests a name
+    that is not actually one of the fields in front of them.
+    """
+    seen: List[str] = []
+    for f in findings:
+        key = f[0].lower()
+        if key not in seen:
+            seen.append(key)
+    return "[" + ", ".join(chr(34) + k + chr(34) for k in seen) + "]"
+
+
 def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
     """Refuse a payload that would WRITE a doubled backslash (#1087).
 
@@ -24682,10 +24727,12 @@ def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
     legal in every language this repo edits), and the author found out from
     behaviour a CI round later.
     """
-    if _payload_literal_backslashes_optin(parsed):
+    scope = _payload_literal_backslashes_scope(parsed)
+    if scope is True:
         return ""
     findings = [f for f in _toml_literal_double_backslashes(raw)
-                if f[0].lower() in _PAYLOAD_DBS_WRITE_KEYS]
+                if f[0].lower() in _PAYLOAD_DBS_WRITE_KEYS
+                and f[0].lower() not in scope]
     if not findings:
         return ""
     bs = chr(92)
@@ -24720,6 +24767,7 @@ def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
                 if occs else ""
             ) + chr(10)
         )
+    field_example = _literal_bs_field_list_example(findings)
     out.append(
         "  " + arrow + " TWO OPPOSITE fixes, and nothing here can tell which you "
         "meant -- decide per occurrence, then send the payload once:" + chr(10)
@@ -24728,9 +24776,11 @@ def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
         "half of what is caretted above." + chr(10)
         + "      meant the run AS WRITTEN (a shell printf format, a Windows "
         "path, a LaTeX line break): add `" + _PAYLOAD_LITERAL_BS_KEY + " = true` at the top level "
-        "of the payload, and this refusal becomes a decision you recorded. It "
-        "applies to the WHOLE payload -- every op, every field." + chr(10)
-        + "  (#1087, #1096, #1808, #1814, #1819)"
+        "of the payload to exempt EVERY field, or name only the field(s) above -- `"
+        + _PAYLOAD_LITERAL_BS_KEY + " = " + field_example + "` -- to leave any other "
+        "field's own doubled runs refused (#1839). Either way, this refusal becomes "
+        "a decision you recorded." + chr(10)
+        + "  (#1087, #1096, #1808, #1814, #1819, #1839)"
     )
     return "".join(out)
 

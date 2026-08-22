@@ -323,6 +323,23 @@ does. Setting it inside an `[[ops]]` table is refused rather than ignored: a fla
 whose apparent scope is not its real scope is a worse lie than the one being
 fixed, and a payload whose ops differ in intent is two payloads.
 
+**A list of field names, instead of `true`, exempts only those fields**
+([#1839](https://github.com/Digital-Process-Tools/claude-supertool/issues/1839)):
+
+```
+literal_backslashes = ["new"]
+```
+
+One call can then write a payload whose fields genuinely disagree about
+escapes — a `new` that wants the run as written and a `content` in the same
+batch that does not — without opting the whole payload in. The refusal
+message names exactly which fields it flagged, and that line is a ready
+`literal_backslashes = [...]` you can paste as-is. This does not solve two
+ops that both carry a `new` field and disagree with EACH OTHER about that
+field's own intent — the scan matches on the bare field name across the
+whole payload, not on which op it sits in, so that payload is still two
+payloads.
+
 This replaces the earlier note that no such field existed. That was right while
 the alternative was a post-write warning and a `"""basic"""` block; it stopped
 being right once the pattern was refused, because a refusal with no way out
