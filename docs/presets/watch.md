@@ -2376,6 +2376,16 @@ Four absences are four different sentences, because they call for different acti
 
 `watches` keeps the slot visible in that last case: the row is dropped from `list_active_pids`, because the only PID available came out of a file this slot never wrote, but the `ps` scan still finds a real poller and the union renders it as `no pidfile`.
 
+**Three of those four sentences also carry a fifth, conditional line since [#1893](https://github.com/Digital-Process-Tools/claude-supertool/issues/1893)** — every one of them except `… the process scan was unavailable` (which already says the scan could not rule anything out). `scan_poller_pids` answers only for **this channel** ([#1514](https://github.com/Digital-Process-Tools/claude-supertool/issues/1514) settled that a cross-channel kill is a wrong kill), so reaching zero of this channel's pollers used to read exactly like a slot nobody was polling at all — the same reading [#1890](https://github.com/Digital-Process-Tools/claude-supertool/issues/1890) fixed on `watches` itself, one surface over. `cmd_unwatch` now threads the same `poller_census()` through, and when the scan also saw a poller for this exact slot elsewhere, it says so as a count, never a PID:
+
+```
+The process scan also saw poller(s) for gitlab-mr:33698 on another channel, unaffected by this unwatch:
+  2 on channel a1b2c3d4e5f6 — state dir /tmp/supertool-watch-oss
+To act on those, run `unwatch` under the SUPERTOOL_WATCH_NAME that derives their state dir.
+```
+
+A poller whose argv predates the channel token cannot be placed on any channel — possibly including this one — so that case gets its own wording (`whose channel could not be established`) rather than the categorical `on another channel`. And when the scan itself did not run, the disclosure cannot say "found nothing" (that would be the absence-read-as-absence defect one layer in): it says the scan was unavailable instead, so a foreign poller could not be ruled out.
+
 ### `radar` reaps duplicates before it respawns ([#749](https://github.com/Digital-Process-Tools/claude-supertool/issues/749))
 
 `radar` spawned and healed and never stopped anything, so nothing in the tool ever removed a poller. Over a ~28h session that produced **36 live processes against 18 tracked**, each survivor emitting every event independently: one `mr_opened` arrived 13 times, and the duplicate rate ranged 2–14 copies per event depending on the tick.

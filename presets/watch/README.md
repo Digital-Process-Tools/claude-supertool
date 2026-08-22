@@ -417,7 +417,11 @@ Each `watch` invocation forks a detached poller process. The process IS the
 subscription — no central config to manage:
 
 - PID file per active watcher: `/tmp/supertool-watch-{source}__{id}.pid`
-- `unwatch` reads the PID file, SIGTERM (then SIGKILL after 500ms), removes the file
+- `unwatch` stops every **live** poller for the slot — the tracked one from
+  the PID file and any untracked ones a process scan finds — SIGTERM then
+  SIGKILL after 500ms each, and removes the PID file. A PID-file-only read
+  would miss exactly the untracked survivors #511 was filed over; see
+  `dispatcher.cmd_unwatch` and `docs/presets/watch.md`.
 - Stale PIDs swept by the `watches` op automatically
 - Pollers auto-stop when the source declares the target terminal
   (`is_terminal(state) -> bool`)

@@ -183,7 +183,86 @@ def _stop_pid(pid: int) -> str:
     return "" if not transport._pid_alive(pid) else "still running after SIGKILL"
 
 
-def _report_nothing_stopped(source: str, watcher_id: str, info: dict[str, Any]) -> None:
+def _foreign_slot_lines(census: dict, source: str, watcher_id: str) -> list[str]:
+    """Foreign pollers on exactly this slot — the #1893 disclosure.
+
+    `_foreign_poller_lines` answers "what does this board not show at all",
+    which is a fleet-wide question. This one answers "is *this* slot covered
+    by somebody else's poller", which is the question an operator staring at
+    an `unwatch` that reached zero of this channel's pollers actually has.
+    Same rule as #1881/#1890: this channel may not act on what it finds here,
+    so it is stated, never offered — no PID is printed, because a printed PID
+    reads as a target.
+
+    [] when the scan did not run (nothing here is evidence of absence) or when
+    it ran and found nothing on this slot on another channel.
+    """
+    if not census["scan_ok"]:
+        return []
+    key = (source, watcher_id)
+    other, unknown = census["other"], census["unknown"]
+    lines: list[str] = []
+    dirs: dict[str, str] | None = None
+    dir_state = dir_why = ""
+    for channel, slots in sorted(other.items()):
+        pids = slots.get(key)
+        if not pids:
+            continue
+        if dirs is None:
+            dirs, dir_state, dir_why = transport.channel_dirs()
+        if channel in dirs:
+            where = f"state dir {naming.flat_path(dirs[channel])}"
+        elif dir_state != transport.STATE_DIR_OK:
+            where = f"could not be resolved to a directory ({dir_why})"
+        else:
+            where = (f"no state directory under "
+                     f"{naming.flat_path(naming.BASE_DIR)} hashes to it")
+        lines.append(f"  {len(pids)} on channel {channel} — {where}")
+    other_lines = list(lines)
+    unk_pids = unknown.get(key)
+    if unk_pids:
+        lines.append(f"  {len(unk_pids)} whose channel cannot be told from "
+                     f"their argv (started before the channel token existed)")
+    if not lines:
+        return []
+    # Not "on another channel" unconditionally: an `unknown` entry is a
+    # poller whose argv predates the channel token, and its true channel is
+    # not established -- it could in fact be this one's, wearing a stale
+    # label. Categorical wording here would assert more than the census
+    # knows, which is exactly the shape #1881 was filed against one layer up.
+    header = (f"The process scan also saw poller(s) for {source}:{watcher_id} "
+              + ("on another channel, " if other_lines else "whose channel "
+                 "could not be established, ")
+              + "unaffected by this unwatch:")
+    return ([header] + lines
+            + ["To act on those, run `unwatch` under the SUPERTOOL_WATCH_NAME "
+               "that derives their state dir."])
+
+
+def _disclose_or_decline_foreign(census: dict[str, Any], source: str,
+                                  watcher_id: str) -> None:
+    """`_foreign_slot_lines`, plus the third state its own `[]` return hides.
+
+    `[] ` out of `_foreign_slot_lines` means two different things — the scan
+    ran and found nothing on this slot elsewhere, or the scan never ran at
+    all — and only the caller holds `census["scan_ok"]` to tell them apart.
+    Printing nothing in both cases is the absence-read-as-absence defect this
+    whole issue is about, one call deeper: a caller that reached one of the
+    two early "nothing stopped" branches below with a broken scan got no
+    signal that a foreign poller could not be ruled out, where the plain
+    "no PID file, no process" branch already said so.
+    """
+    if not census["scan_ok"]:
+        print("The process scan for other channels was unavailable, so a "
+              "poller covering this slot on another channel could not be "
+              "ruled out.")
+        return
+    for line in _foreign_slot_lines(census, source, watcher_id):
+        print(line)
+
+
+def _report_nothing_stopped(source: str, watcher_id: str, info: dict[str, Any],
+                             census: dict[str, Any]) -> None:
     """Say which kind of nothing this is. There are three, and they differ."""
     if info.get("tracked_refusal"):
         # Not "no PID file": there is a name here and this process would not
@@ -193,12 +272,14 @@ def _report_nothing_stopped(source: str, watcher_id: str, info: dict[str, Any]) 
               f"{info['tracked_refusal']}. Nothing was stopped, and whether a "
               f"poller holds this slot is not known from here. Inspect the "
               f"path before re-arming.")
+        _disclose_or_decline_foreign(census, source, watcher_id)
         return
     if info["tracked"] and not info["tracked_alive"]:
         print(f"Tracked PID {info['tracked']} for {source}:{watcher_id} is not "
               f"running — the watcher died without anything reporting it, and "
               f"this id has been unwatched since. Stale PID file removed.")
         transport.record_death(source, watcher_id, info["tracked"])
+        _disclose_or_decline_foreign(census, source, watcher_id)
         return
     if not info["scan_ok"]:
         print(f"No PID file for {source}:{watcher_id}, and the process scan was "
@@ -207,6 +288,8 @@ def _report_nothing_stopped(source: str, watcher_id: str, info: dict[str, Any]) 
         return
     print(f"No active watcher for {source}:{watcher_id} "
           f"(no PID file, and no matching process).")
+    for line in _foreign_slot_lines(census, source, watcher_id):
+        print(line)
 
 
 def cmd_unwatch(parts: list[str]) -> int:
@@ -242,7 +325,13 @@ def cmd_unwatch(parts: list[str]) -> int:
     except ValueError as e:
         print(f"ERROR: {e}")
         return 1
-    info = transport.watcher_pids(source, watcher_id)
+    # One `ps` for both: `watcher_pids` needs only the `mine` bucket to decide
+    # what it may act on, and the #1893 disclosure below needs the other two.
+    # `poller_census` is what `scan_poller_pids` already computes internally,
+    # so threading it through costs nothing extra.
+    census = transport.poller_census()
+    info = transport.watcher_pids(
+        source, watcher_id, scan=(census["mine"], census["scan_ok"]))
     pids = [pid for pid in info["pids"] if pid > 1 and pid != os.getpid()]
     skipped = [pid for pid in info["pids"] if pid not in pids]
     if skipped:
@@ -255,7 +344,7 @@ def cmd_unwatch(parts: list[str]) -> int:
     # unlink back on the one path #1200 took it off everywhere else.
     releasable = not info.get("tracked_refusal")
     if not pids:
-        _report_nothing_stopped(source, watcher_id, info)
+        _report_nothing_stopped(source, watcher_id, info, census)
         if releasable:
             transport.release_pidfile(source, watcher_id)
         _acknowledge_deaths(source, watcher_id)

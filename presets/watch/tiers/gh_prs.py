@@ -470,16 +470,29 @@ def live_open_prs(filters: dict[str, str]) -> list[dict]:
         # string. One call at the point `err` is bound covers every arm below.
         err = _untrusted.flat((result.stderr or "").strip()) or "unknown error"
         if result.returncode < 0:
-            # Killed by a signal. `subprocess` reports `-N` for that, and a
-            # process that was killed did not finish deciding anything — under
-            # a loaded `-n auto` run the OOM killer and a runner's own reaper
-            # both land here, usually with empty stderr, which the arm below
-            # would render as `gh pr list: unknown error` and read as a verdict
-            # about the board. Not a prose match: the sign of the return code
-            # is the whole predicate (#1568).
+            # Not a finished answer. `subprocess` reports `-N` for a POSIX
+            # signal, and a process that was killed did not finish deciding
+            # anything — under a loaded `-n auto` run the OOM killer and a
+            # runner's own reaper both land here, usually with empty stderr,
+            # which the arm below would render as `gh pr list: unknown error`
+            # and read as a verdict about the board. Not a prose match: the
+            # sign of the return code is the whole predicate (#1568).
+            #
+            # The word "signal" is not asserted, deliberately (#1871). On
+            # Windows the same field is the process exit status —
+            # `_winapi.GetExitCodeProcess` is declared `unsigned long`, so a
+            # negative value there is unexpected — but the negative spelling
+            # of an NT status DWORD circulates widely enough (shells, Python
+            # 2) that nobody here trusts the premise without a Windows runner
+            # to check it on. Reasoned, not observed either way. The
+            # classification below — the process did not finish, retry — is
+            # right regardless; only the mechanism word would be wrong, so it
+            # is hedged rather than stated. `gl_mrs` carries the same wording
+            # for the same reason: one change to both tiers, not a divergence.
             raise RadarUnreachable(
-                f"gh pr list was killed by signal {-result.returncode} "
-                f"before it answered: {err}")
+                f"gh pr list did not finish before it answered (returncode "
+                f"{result.returncode}, consistent with a killing signal on "
+                f"POSIX — not established on Windows, see #1871): {err}")
         if result.returncode == GH_RC_NO_CREDENTIALS:
             # Checked before the message arms below, because `gh` spells this
             # differently depending on whether it thinks it is interactive, and
