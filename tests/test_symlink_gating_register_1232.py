@@ -302,6 +302,7 @@ REGISTER = {
     'tests/test_watch_transport_read_state_hostile_1197.py::test_a_symlinked_state_file_is_not_parsed': B,
     'tests/test_watch_transport_read_state_hostile_1197.py::test_the_symlink_refusal_is_its_own_state_and_not_could_not_be_read': B,
     'tests/test_watch_transport_read_state_hostile_1197.py::test_the_symlink_refusal_reaches_the_board': B,
+    'tests/test_windows_wrapper_probe_1919.py::_real_wrapper': E,
 }
 
 #: The escape hatch, deliberately empty. A site belongs here only if failing --

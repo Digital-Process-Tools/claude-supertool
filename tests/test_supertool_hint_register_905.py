@@ -71,7 +71,7 @@ TREE = "presets"
 
 GROUNDS = ("DEFINITION - ", "PROSE - ", "REMEDY-DEBT - ")
 
-GROUND_TALLY = {"DEFINITION - ": 2, "PROSE - ": 7, "REMEDY-DEBT - ": 26}
+GROUND_TALLY = {"DEFINITION - ": 2, "PROSE - ": 9, "REMEDY-DEBT - ": 26}
 
 #: The ratchet ceiling for `test_no_new_remedy_debt_over_the_baseline`,
 #: deliberately a SEPARATE literal from `GROUND_TALLY["REMEDY-DEBT - "]`
@@ -101,6 +101,15 @@ REGISTER: dict[str, str] = {
         "module would break.",
 
     # -- prose: history and illustration, never printed ----------------------
+    "presets/_st_hint.py::_wrapper_is_runnable":
+        "PROSE - the Windows-probe helper's own docstring names "
+        "`./supertool` twice to explain what it decides is runnable and "
+        "what the probe cannot establish (#1919); the function returns a "
+        "bool, it prints nothing.",
+    "presets/git/_git_common.py::_wrapper_is_runnable":
+        "PROSE - the duplicate of the helper above, same reason: its "
+        "docstring names `./supertool` to describe the probe, and returns a "
+        "bool rather than printing anything (#1919).",
     "presets/_branch_locale.py::<module>":
         "PROSE - the module docstring's own example of the line five ops "
         "used to build by hand, kept as the before-picture #850 fixed.",
@@ -305,9 +314,9 @@ def test_no_new_remedy_debt_over_the_baseline() -> None:
 FILE_CENSUS: dict[str, int] = {
     "presets/_branch_locale.py": 2,
     "presets/_refname.py": 1,
-    "presets/_st_hint.py": 3,
+    "presets/_st_hint.py": 5,
     "presets/git.json": 1,
-    "presets/git/_git_common.py": 2,
+    "presets/git/_git_common.py": 4,
     "presets/git/commit.py": 13,
     "presets/git/conflicts.py": 1,  # a comment — invisible to the AST register
     "presets/git/diverge.py": 1,

@@ -552,6 +552,37 @@ def _quoted_interpreter() -> str:
     return '"' + exe + '"' if os.name == "nt" else shlex.quote(exe)
 
 
+def _wrapper_is_runnable(path: str) -> bool:
+    """Best-effort probe: is `path` runnable the way `./supertool` prints it?
+
+    POSIX has an execute bit -- `os.access(path, os.X_OK)` reads it straight
+    off the mode. Windows has none: `os.access` answers true for any file
+    that merely exists there, so the probe degrades to "does this name
+    exist" and the helper's third state (no runnable supertool found)
+    becomes unreachable (#1919). In its place: the first two bytes must be a
+    shebang (`#!`), matching every wrapper this project's own install
+    instructions produce (README.md) -- a symlink to `supertool.py`, itself
+    `#!/usr/bin/env python3`. This is the cheapest of the three checks the
+    issue weighed, deliberately -- this runs on a refusal path where the
+    caller is already stuck, so a spawn attempt is the most truthful answer
+    and also the most expensive one to hand a caller who is waiting. What it
+    cannot establish: that the interpreter the shebang names exists or is on
+    PATH, that a POSIX-aware shell is what receives `./supertool` on this
+    machine at all (native `cmd.exe` and PowerShell ignore shebangs
+    entirely), or that the file is not truncated past those two bytes -- only
+    that whoever put it there did not leave a stray, unrelated file wearing
+    this name. Duplicated in `presets/_st_hint.py` for the same reason
+    `st_hint` itself is -- see this module's docstring.
+    """
+    if os.name == "nt":
+        try:
+            with open(path, "rb") as fh:
+                return fh.read(2) == b"#!"
+        except OSError:
+            return False
+    return os.access(path, os.X_OK)
+
+
 def st_hint(arg: str) -> str:
     """A runnable supertool invocation for `arg`, for printed remedies.
 
@@ -582,7 +613,7 @@ def st_hint(arg: str) -> str:
     """
     root = install_dir()
     wrapper = os.path.join(root, "supertool")
-    if os.path.isfile(wrapper) and os.access(wrapper, os.X_OK):
+    if os.path.isfile(wrapper) and _wrapper_is_runnable(wrapper):
         return "./supertool " + chr(39) + arg + chr(39)
     if os.path.isfile(os.path.join(root, "supertool.py")):
         return _quoted_interpreter() + " supertool.py " + chr(39) + arg + chr(39)
