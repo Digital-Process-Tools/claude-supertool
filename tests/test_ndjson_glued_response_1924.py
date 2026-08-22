@@ -24,6 +24,26 @@ fails here.
 No 300-second wait anywhere: every adapter test injects `time.monotonic` so
 the "genuinely never answers" pair proves the deadline is honoured without
 the test itself paying for it.
+
+**Platform note.** `ndjson_call` opens with
+`socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)`, and Windows Python
+builds do not expose `socket.AF_UNIX` at all (`validators/common/refusal.py`,
+`daemon_transport_reason`). That is not a gap this file leaves untested: in
+production, `refusal.daemon_transport_reason()` makes `ensure_daemon` raise
+`DaemonUnavailable` before `ndjson_call` is ever called on such a build, so
+the real UDS connection this line makes genuinely never happens there —
+`test_windows_warm_validators_544.py` is where that gate itself is pinned.
+But `socket.AF_UNIX` is evaluated as a plain attribute lookup to build the
+call's *argument*, which happens before Python decides which `socket.socket`
+implementation to invoke — so it raises `AttributeError` even though every
+test below immediately replaces `socket.socket` with a fake that ignores its
+arguments entirely. The `_af_unix_shim` fixture below plugs in a placeholder
+only when the platform has none, exactly so these tests can exercise
+`ndjson_call`'s own control flow — buffering, scanning, the deadline loop —
+on every CI platform, the same way `find_response` itself already is
+(`test_find_response_locates_the_glued_frame` and friends touch no socket at
+all). It does not claim AF_UNIX sockets work on Windows; nothing here routes
+through a real one.
 """
 from __future__ import annotations
 
@@ -40,6 +60,15 @@ REPO = Path(__file__).resolve().parent.parent
 VALIDATORS = REPO / "validators"
 
 ADAPTERS = ["phpunit-mcp", "phpstan-mcp", "phpmd-mcp", "rector-mcp"]
+
+
+@pytest.fixture(autouse=True)
+def _af_unix_shim(monkeypatch):
+    """See the platform note in the module docstring. A no-op wherever
+    `socket.AF_UNIX` already exists; every adapter test below patches
+    `socket.socket` itself, so the placeholder value is never dereferenced."""
+    if not hasattr(socket, "AF_UNIX"):
+        monkeypatch.setattr(socket, "AF_UNIX", 1, raising=False)
 
 
 def _load(path: Path, name: str):
