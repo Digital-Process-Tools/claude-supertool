@@ -479,36 +479,39 @@ def _query(filters: dict[str, str], per_page: int) -> list[dict]:
         # construction, the same argument gh_prs makes at its own spawn.
         raise RadarUnreachable(f"glab mr list failed: {exc}") from exc
     if result.returncode < 0:
-        # Killed by a signal. `subprocess` reports `-N` for that, and a process
-        # that was killed did not finish deciding anything — under a loaded
-        # runner the OOM killer and a reaper both land here, usually with empty
-        # stderr, which the fallback arm below would render as `unknown error`
-        # and read as a verdict about the board. Not a prose match: the sign of
-        # the return code is the whole predicate (#1568, ported here by #1847).
+        # Not a finished answer. `subprocess` reports `-N` for a POSIX signal,
+        # and a process that was killed did not finish deciding anything —
+        # under a loaded runner the OOM killer and a reaper both land here,
+        # usually with empty stderr, which the fallback arm below would
+        # render as `unknown error` and read as a verdict about the board.
+        # Not a prose match: the sign of the return code is the whole
+        # predicate (#1568, ported here by #1847).
         #
         # Deliberately not branched on the platform: the predicate is the sign
         # of an integer and it is safe to evaluate anywhere, so there is nothing
         # to branch on and no way for this to go vacuous on one leg.
         #
-        # What it is *reached by* is a reasoned claim rather than an observed
-        # one, and it is stated as such. On POSIX `subprocess` documents `-N`
-        # for a signal, so the word below is exact. Windows reports the process
-        # exit status instead, and `_winapi.GetExitCodeProcess` is declared to
-        # return `unsigned long`, so an NT status like `0xC0000005` should
-        # arrive as `3221225477` and never trip this arm — the negative spelling
-        # of the same DWORD circulates widely, from shells and from Python 2, so
-        # the claim is worth distrusting. Nobody here has a Windows runner to
-        # settle it on, and the suite drives this path through a fake, so the
-        # Windows leg exercises the branch without ever establishing which side
-        # of it a real killed `glab` lands on. If it does fire there, the
-        # classification is still right — the process did not finish deciding
-        # anything — and only the word "signal" is wrong. `gh_prs` has carried
-        # the same arm and the same wording since #1568, so fixing the vocabulary
-        # is one change to both tiers rather than a divergence introduced here.
+        # The word "signal" is not asserted, deliberately (#1871 — this
+        # comment used to argue the wording was exact and then kept it
+        # anyway). On POSIX `subprocess` documents `-N` for a signal. Windows
+        # reports the process exit status instead, and
+        # `_winapi.GetExitCodeProcess` is declared to return `unsigned long`,
+        # so an NT status like `0xC0000005` should arrive as `3221225477` and
+        # never trip this arm — but the negative spelling of the same DWORD
+        # circulates widely, from shells and from Python 2, so the premise is
+        # worth distrusting. Nobody here has a Windows runner to settle it on,
+        # and the suite drives this path through a fake, so the Windows leg
+        # exercises the branch without ever establishing which side of it a
+        # real killed `glab` lands on. Reasoned, not observed either way. The
+        # classification — the process did not finish, retry — is right
+        # regardless; only the mechanism word would be wrong, so it is hedged
+        # rather than stated. `gh_prs` carries the same wording for the same
+        # reason: one change to both tiers, not a divergence.
         err = mrs._untrusted.flat((result.stderr or "").strip()) or "unknown error"
         raise RadarUnreachable(
-            f"glab mr list was killed by signal {-result.returncode} "
-            f"before it answered: {err}")
+            f"glab mr list did not finish before it answered (returncode "
+            f"{result.returncode}, consistent with a killing signal on "
+            f"POSIX — not established on Windows, see #1871): {err}")
     if result.returncode != 0:
         # Flattened for the GitHub tier's reason (#1485/#1823): `glab` echoes
         # GitLab's own error body, and radar prints a tier failure at column 0

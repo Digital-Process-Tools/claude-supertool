@@ -261,9 +261,16 @@ def test_unwatch_leaves_an_unreadable_pid_file_alone_after_stopping_pollers(
     stop something. Stopping a poller says nothing about who wrote this name."""
     path = _hostile_symlink(state_dir)
     stopped: list[int] = []
+    # `poller_census`, not `scan_poller_pids`: #1893 made `cmd_unwatch` read
+    # the census directly (for the foreign-poller disclosure) and thread its
+    # `mine` bucket into `watcher_pids` rather than let that call re-derive it
+    # through `scan_poller_pids`. The `state_dir` fixture already stubs
+    # `poller_census` to an empty one; this overrides it with the one PID this
+    # test is about.
     monkeypatch.setattr(
-        transport, "scan_poller_pids",
-        lambda: ({(SOURCE, WATCHER): [4242]}, True))
+        transport, "poller_census",
+        lambda: {"mine": {(SOURCE, WATCHER): [4242]}, "other": {},
+                 "unknown": {}, "scan_ok": True})
     monkeypatch.setattr(transport, "_pid_alive", lambda pid: pid == 4242)
     monkeypatch.setattr(dispatcher, "_stop_pid", lambda pid: stopped.append(pid) or "")
     dispatcher.cmd_unwatch([SOURCE, WATCHER])
