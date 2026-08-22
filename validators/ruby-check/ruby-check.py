@@ -46,7 +46,12 @@ TIMEOUT_S = 30
 # the pattern from `file` means only a spelling of the path ruby was
 # actually invoked against can start a match (see `path_anchor.py`, #1937,
 # for what "a spelling of" widened to after this comment was first
-# written).
+# written). "Start" no longer means column 0: real ruby, on some CI
+# runners, prints the invoked path TWICE before its own diagnostic (a bare
+# `<file>: ` prefix, then the real `<file>:<line>: `), so the match is now
+# a `.search()` anywhere in the line at a `:digit` boundary, not a
+# `.match()` at position 0 -- see `path_anchor.anchor()`'s own docstring
+# for why that does not reopen #1934's forgery.
 #
 # Tolerant of the spellings real ruby can echo that back in (#1937): two
 # tests spawning the real ruby binary went red on windows-latest CI with a
@@ -78,7 +83,7 @@ def parse_diagnostics(out: str, file: str) -> list[dict]:
     pattern = _diagnostic_re(file)
     errors = []
     for line in split_lines(out):
-        m = pattern.match(line)
+        m = pattern.search(line)
         if m:
             lineno, msg = m.groups()
             if SUMMARY.match(msg):

@@ -70,6 +70,11 @@ COUNT_CONTRACT = {"count_basis": "measured", "errors_truncated": False}
 # from `file` means only a spelling of the path actionlint was actually
 # invoked against can start a match (see `path_anchor.py`, #1937, for what
 # "a spelling of" widened to after this comment was first written).
+# "Start" no longer means column 0: a tool can print the invoked path more
+# than once before its own diagnostic, so the match is now a `.search()`
+# anywhere in the line at a `:digit:digit:` boundary, not a `.match()` at
+# position 0 -- see `path_anchor.anchor()`'s own docstring for why that
+# does not reopen #1934's forgery.
 #
 # actionlint does not echo back the literal argv path — verified against
 # 1.7.12: given an absolute path it always prints that path relativised
@@ -121,7 +126,7 @@ def parse_diagnostics(output: str, file: str) -> list[dict]:
     line_re = _line_re(file)
     errors = []
     for line in split_lines(output):
-        m = line_re.match(line)
+        m = line_re.search(line)
         if m:
             lineno, col, msg, rule = m.groups()
             ln = int(lineno)

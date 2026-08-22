@@ -47,7 +47,12 @@ TIMEOUT_S = 30
 # `N RULE severity: ` sequence. Building the pattern from `file` means only
 # a spelling of the path hadolint was actually invoked against can start a
 # match (see `path_anchor.py`, #1937, for what "a spelling of" widened to
-# after this comment was first written).
+# after this comment was first written). "Start" no longer means column 0:
+# a tool can print the invoked path more than once before its own
+# diagnostic, so the match is now a `.search()` anywhere in the line at a
+# `:digit` boundary, not a `.match()` at position 0 -- see
+# `path_anchor.anchor()`'s own docstring for why that does not reopen
+# #1934's forgery.
 #
 # Reasoned, not observed: this assumes hadolint echoes back the literal argv
 # path unmodified, the way ruby/gofmt/xmllint were verified to do (see the
@@ -81,7 +86,7 @@ def parse_diagnostics(output: str, file: str) -> list[dict]:
     pattern = _pattern(file)
     errors = []
     for line in split_lines(output):
-        m = pattern.match(line)
+        m = pattern.search(line)
         if m:
             lineno, code, severity, msg = m.groups()
             ln = int(lineno)

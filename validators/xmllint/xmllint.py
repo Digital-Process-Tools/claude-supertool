@@ -45,7 +45,11 @@ from path_anchor import (anchor as _anchor, safe_realpath as _safe_realpath,
 # the pattern from `file` means only a spelling of the path libxml was
 # actually invoked against can start a match (see `path_anchor.py`, #1937,
 # for what "a spelling of" widened to after this comment was first
-# written).
+# written). "Start" no longer means column 0: a tool can print the invoked
+# path more than once before its own diagnostic, so the match is now a
+# `.search()` anywhere in the line at a `:digit` boundary, not a `.match()`
+# at position 0 -- see `path_anchor.anchor()`'s own docstring for why that
+# does not reopen #1934's forgery.
 #
 # Tolerant of the spellings a real libxml can echo that back in (#1937) --
 # and of libxml (or something upstream) reporting a symlinked invoked
@@ -63,7 +67,7 @@ def parse_diagnostics(out: str, file: str) -> list[dict]:
     pattern = _diagnostic_re(file)
     errors = []
     for line in split_lines(out):
-        m = pattern.match(line)
+        m = pattern.search(line)
         if m:
             ln = int(m.group(1))
             errors.append({"line": ln, "col": None, "severity": "error",

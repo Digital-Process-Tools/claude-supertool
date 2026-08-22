@@ -144,12 +144,47 @@ def path_variants(file: str, platform: str | None = None) -> list[str]:
 
 def anchor(file: str, tail: str, platform: str | None = None,
            extra_paths: list[str] | None = None) -> re.Pattern[str]:
-    """`^(?:variant1|variant2|...)` + `tail`, anchored on every accepted
+    """`(?:variant1|variant2|...)` + `tail`, matched against every accepted
     spelling of `file` AND of every path in `extra_paths` (typically just
-    `os.path.realpath(file)` -- see the module docstring). `tail` is the
-    adapter's own regex for everything after the path, including its own
-    trailing `$`. `platform` overrides `sys.platform` -- see `path_variants`,
-    and applies identically to `file` and to every entry of `extra_paths`.
+    `os.path.realpath(file)` -- see the module docstring) -- ANYWHERE in the
+    line, via the caller's own `.search()`, not only at column 0 (#1937,
+    fifth CI round). `tail` is the adapter's own regex for everything after
+    the path, including its own trailing `$`. `platform` overrides
+    `sys.platform` -- see `path_variants`, and applies identically to `file`
+    and to every entry of `extra_paths`.
+
+    Callers must use `.search()`, not `.match()`, against the pattern this
+    returns -- there is no longer a leading `^` for `.match()` to lean on.
+    Real ruby, on some CI runners, prints the invoked path TWICE before its
+    own diagnostic: a bare `<file>: ` prefix (colon, space, no digits) and
+    then the genuine `<file>:<line>: `. A `^`-anchored match requires digits
+    immediately after the path at position 0, so it read the bare prefix,
+    found `: ` instead of `:digit`, and gave up on the whole line -- never
+    reaching the second, real occurrence a few characters later. This
+    changes WHERE a match can start, never WHAT it must match: the search
+    target is still the same small, fixed, enumerable set of literal
+    spellings `path_variants` produces for `file` and `extra_paths`, never a
+    wildcard. A forged filename embedding its own `:N:M:` sequence still
+    cannot fabricate a location, because the search target is the WHOLE
+    literal `file` string -- an embedded fragment of it (`x` out of
+    `x:1:1: fake .yml`) is not that string, so it is not a match candidate
+    at any position, column 0 or otherwise. See
+    tests/test_adapter_anchor_boundary_1937.py for both the doubled-prefix
+    fix and the forgery negative control, checked together rather than
+    assumed independent.
+
+    "Anywhere" still carries a LEFT boundary, found necessary by this
+    branch's own self-review round after the first cut of this change
+    shipped with none: a bare `.search()` with no boundary matched a
+    genuinely different, LONGER real path that merely ends with the
+    invoked one (a diagnostic naming `vendor/a.rb` misattributed to an
+    invoked `a.rb`, with no forged filename involved at all -- an ordinary
+    tool mentioning a sibling path). The compiled pattern requires
+    `(?<!\\S)` immediately before the match: start-of-line, or preceded by
+    whitespace, which is what every observed doubled-prefix case actually
+    looks like (ruby's own `<file>: <file>:<line>: `). A path immediately
+    preceded by `/`, a letter, or any other path-continuation character no
+    longer matches.
 
     The caller computes `extra_paths`, never this function: `os.path.realpath`
     touches the filesystem, and keeping that call at the caller means this
@@ -163,7 +198,21 @@ def anchor(file: str, tail: str, platform: str | None = None,
             if v not in all_variants:
                 all_variants.append(v)
     alternatives = "|".join(re.escape(v) for v in all_variants)
-    return re.compile(r"^(?:" + alternatives + r")" + tail)
+    # `(?<!\S)` -- not preceded by a non-whitespace character -- rather than
+    # a bare search: without SOME left boundary, a genuinely different,
+    # LONGER real path that merely ENDS with the invoked one (`vendor/a.rb`
+    # when the invoked file is `a.rb`) would match too, and its diagnostic
+    # would be silently misattributed to the invoked file -- reachable with
+    # no forged filename at all, just an ordinary tool mentioning a
+    # sibling path, found by this branch's own self-review before it
+    # shipped. `(?<!\S)` accepts start-of-line and "preceded by
+    # whitespace" (the shape every observed doubled-prefix case uses --
+    # ruby's own `<file>: <file>:<line>: `) while rejecting "preceded by a
+    # path-continuation character" (`/`, a letter, `.`, ...), which is
+    # exactly the boundary the misattribution case needed refused. A
+    # lookbehind, not a capturing boundary: it costs nothing in the match
+    # groups every adapter already reads by position/name.
+    return re.compile(r"(?<!\S)(?:" + alternatives + r")" + tail)
 
 
 # ---------------------------------------------------------------------------
