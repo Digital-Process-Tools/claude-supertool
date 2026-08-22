@@ -37,6 +37,22 @@ INSTALL_HINT = ("actionlint not found on PATH — this workflow was NOT linted "
 # adapter mirrors.
 TIMEOUT_S = 30
 
+#: How this adapter's `count` relates to `errors` (validators/SCHEMA.md, #1728).
+#:
+#: `measured`: `count` is set to `len(errors)` from the same loop that builds
+#: `errors` below, over actionlint's own diagnostic lines — it has never
+#: counted an `adapter`-coded row. The two real-verdict emits below (clean, and
+#: findings-present) never place an `adapter` row alongside a real finding: the
+#: `adapter` code appears only in the absent-tool/timeout/no-arg/crash arms,
+#: each of which is an exclusive emit carrying no findings of its own. So the
+#: two never mix, and `count` counting only real findings is a statement this
+#: constant makes rather than a coincidence of the current output.
+#:
+#: `errors_truncated: False`: the loop over `split_lines(output)` copies every
+#: line `_LINE_RE` matches, plus the single unmatched-output fallback row when
+#: none does — nothing here caps the list.
+COUNT_CONTRACT = {"count_basis": "measured", "errors_truncated": False}
+
 # actionlint's default text output: `file:line:col: message [rule]`. Not every
 # line ends in a bracketed rule (a parse-level failure can omit it), so the
 # rule group is optional and a match with no rule falls back to "syntax-check"
@@ -95,7 +111,7 @@ def main() -> None:
 
     if result.returncode == 0:
         emit({"tool": TOOL, "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": duration})
+              "errors": [], "duration_ms": duration, **COUNT_CONTRACT})
         return
 
     errors = []
@@ -120,7 +136,7 @@ def main() -> None:
                    "code": "lint", "msg": output[:300]}]
 
     emit({"tool": TOOL, "file": file, "ok": False, "count": len(errors),
-          "errors": errors, "duration_ms": duration})
+          "errors": errors, "duration_ms": duration, **COUNT_CONTRACT})
 
 
 if __name__ == "__main__":

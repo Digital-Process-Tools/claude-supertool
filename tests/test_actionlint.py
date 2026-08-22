@@ -92,7 +92,7 @@ def test_invalid_workflow_reports_findings(tmp_path: Path) -> None:
         "        bogus-key: true\n"
     )
     out = _run(str(f))
-    assert out["ok"] is False
+    assert_declined(out)
     assert out["count"] > 0
     err = out["errors"][0]
     assert err["line"] is not None
