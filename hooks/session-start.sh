@@ -87,9 +87,14 @@ fi
 # `ops:roster` is ~2.0KB — every op name plus a safety class, no descriptions,
 # plus the same "presets not loaded here" line `ops` carries. Whole hook: ~2.9KB
 # against a ~7.2KB cap. (Not exact figures: the disclosure names the absolute
-# config path, so they move with the checkout — which is why
-# tests/test_render_size_claims_1877.py grades them with a tolerance rather than
-# to the byte.) Descriptions are
+# config path, so what a session actually receives is these plus the length of
+# that path — 30 to 130 bytes, depending on where the checkout sits.
+# tests/test_render_size_claims_1877.py normalises that path away before
+# grading, so the figures above are checkout-independent and the tolerance is
+# rounding room only. It read "they move with the checkout, which is why the
+# test grades them with a tolerance rather than to the byte" until a 129-char
+# clone made four of those rows red with nothing wrong; the tolerance was the
+# first place everyone looked, and it was the wrong one.) Descriptions are
 # one call away and richer there: `help:OP` carries the full contract, the
 # semantics and a worked example, where the listing row carried one line.
 LADDER="$(cd "$(dirname "$0")" && pwd)/python-ladder.sh"

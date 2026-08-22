@@ -54,23 +54,52 @@ is simply absent from it. `test_no_ungraded_figure_in_a_registered_file` then
 closes the half a walker was wanted for -- a *new* figure written into a file
 already in the registry -- without ever opening a file that is not.
 
-**Tolerance, and why the figures are KB.** Every one of these renders carries
-`_preset_disclosure()`, which names the *absolute path* of the config it read,
-so each render's byte count is a function of where the checkout sits on disk.
-PR #1876 measured the same tree at two paths and got exactly the path-length
-difference in every render (six bytes for a six-character difference), and
-`tests/test_ops_roster_1231.py` states as policy that the roster is
-"deliberately *not* pinned to a literal in prose" for that reason. Re-measured
-here 2026-08-21 at the 40-character st-wt/1877 path, against the 46-character
-clone path:
+**The checkout path is normalised away before grading, not tolerated.** Every one of
+these renders carries `_preset_disclosure()`, which names the *absolute path*
+of the config it read, so each render's raw byte count is partly a function of
+where the checkout sits on disk. `tests/test_ops_roster_1231.py` states as
+policy that the roster is "deliberately *not* pinned to a literal in prose" for
+that reason.
 
-    ops         3,721 / 3,727      ops:full     72,709 / 72,715
-    ops-compact 14,702 / 14,708    ops:roster    1,963 /  1,969
+This file's first version absorbed that into the tolerance, on a sample of one:
+PR #1876 had measured the same tree at two paths six characters apart and got a
+six-byte difference, and 100 bytes looked like ample headroom over six. The
+sample was six; the range is not bounded by anything. Measured 2026-08-21 at
+c6dd83ae, one tree at two paths:
 
-TOLERANCE_KB = 0.1 is 100 bytes, more than an order above that variance and two
-orders below the 2,129-byte drift that produced this issue. An exact byte count
-cannot be pinned at all, which is why the prose this test grades was reworded
-into the KB form these files already used elsewhere.
+              43 chars    130 chars
+    ops          3,724       3,811
+    ops:full    72,712      72,799
+
+87 characters of path, 87 bytes of render, 87% of the tolerance -- and the
+failure it produced was not read as a path at all. A clone taken under a
+128-character scratchpad path failed four rows and was briefed as a composition
+defect between this pin and PR #1890; #1890 in fact leaves all four renders
+byte-identical, and CI never saw any of it, because a runner checks out at
+about 50 characters. A guard whose red says "this checkout renders 3,810 bytes"
+while meaning "your directory is deep" costs more than the staleness it was
+built to catch.
+
+So `graded_bytes` substitutes one fixed path for whatever this checkout is,
+and `TOLERANCE_KB = 0.1` goes back to meaning only what #1884 argued for: room
+for prose to round. Tolerating the path instead would have been worse than it
+looks in both directions -- a deep checkout false-fires, and a shallow one
+*hides* real drift byte for byte, since a figure measured 90 characters deeper
+than the reader's checkout eats 90 bytes of the same budget. 100 bytes is still
+two orders below the 2,129-byte drift that produced this issue, which is the
+class the registry exists for.
+
+Substituted rather than deleted, and that is not cosmetic: stripping the path
+grades a render nobody receives. `ops:roster` is 1.907KB stripped, which rounds
+to ~1.9 -- so the honest consequence of deleting would have been to correct
+three files away from ~2.0KB, the figure a reader at any real checkout actually
+sees. The fix would have made the prose less true in order to make the grader
+more convenient. `CANONICAL_CONFIG_PATH` keeps the graded number inside the
+sentence being graded.
+
+An exact byte count cannot be pinned even so -- prose rounds -- which is why
+the sentences this test grades were reworded into the KB form these files
+already used elsewhere.
 """
 from __future__ import annotations
 
@@ -85,7 +114,9 @@ import supertool
 
 REPO_ROOT = Path(__file__).parent.parent
 
-#: 100 bytes. See the module docstring: the measured path variance is 6 bytes.
+#: 100 bytes of room for the prose to round. The checkout path is not in here:
+#: `graded_bytes` normalises it away first. See the module docstring for why
+#: absorbing it into this number cost a false red and a wrong diagnosis.
 TOLERANCE_KB = 0.1
 
 #: Every render whose size these files talk about, and how to produce it.
@@ -117,6 +148,74 @@ def found_values(text: str, name: str) -> list:
     return re.findall(render_pattern(name), text)
 
 
+#: The config path every render is graded as if it had been produced under.
+#:
+#: A *stand-in*, not a deletion, and the difference decides four of the five
+#: figures in `SITES`. Deleting the path grades a render nobody ever receives:
+#: `ops:roster` comes to 1.907KB stripped, which rounds to ~1.9 and would have
+#: had three files corrected away from the ~2.0KB that is what a reader at any
+#: real checkout actually gets. Substituting a fixed path of realistic length
+#: keeps the graded number inside the sentence a reader is reading.
+#:
+#: This literal is CI's own checkout path, so the graded figure is the one the
+#: Linux leg renders. Any fixed string of similar length would serve -- it
+#: shifts all five figures together and none of them relative to each other --
+#: and it is pinned here rather than derived so that no environment can move
+#: it. Measured 2026-08-21 with this value: the tightest figure in `SITES`
+#: sits 68 bytes inside `TOLERANCE_KB` and the loosest 89.
+CANONICAL_CONFIG_PATH = "/home/runner/work/claude-supertool/claude-supertool/.supertool.json"
+
+
+def graded_bytes(text: str) -> int:
+    """*text*'s size, as if this checkout sat at `CANONICAL_CONFIG_PATH`.
+
+    Every render here carries `_preset_disclosure()`, which names the absolute
+    path of the config it read, so a raw byte count is partly a measurement of
+    the developer's directory layout. Substituting one fixed path for whatever
+    this checkout happens to be leaves a number that is the same in every
+    checkout and on every platform, which is the only kind of number a
+    documented figure can be graded against.
+
+    Normalised rather than tolerated. A tolerance wide enough to absorb an
+    arbitrary path is also wide enough to hide that many bytes of the drift the
+    registry exists to catch, and the two errors cancel: a checkout 90
+    characters deeper than the one a figure was measured at masks 90 bytes of
+    genuine staleness. Taking the variable out instead leaves `TOLERANCE_KB`
+    free to mean only what #1884 argued it meant -- room for prose to round.
+
+    Two ways this can fail to normalise, and neither may return a number.
+
+    The first is *no config path at all*. `_preset_disclosure` falls back to
+    naming `os.getcwd()` when `_CONFIG_PATH` is falsy, so the render still
+    carries a checkout-dependent absolute path -- and the one string that would
+    have located it is gone. Returning `len(text)` there is the raw count
+    wearing the shape of a normalised one, which is this repository's own
+    defect class sitting inside the guard against it, and the failure it
+    produces is the same sentence ("this checkout renders N bytes") that sent a
+    maintainer after the wrong pull request in the first place. So it refuses.
+    Every row reaches this through the `shipped_config` fixture, which always
+    sets the path, so the refusal costs nothing until a caller arrives without
+    one -- which is exactly when it is worth having.
+
+    The second is *the path is set but never appears in the render*. That one
+    is legitimate here -- a render carrying no disclosure has nothing to
+    normalise -- so it passes through, and
+    `test_the_graded_size_does_not_move_with_the_checkout_path` is what turns it
+    red for the renders that are supposed to carry one: it requires the raw
+    sizes at two config paths to differ by exactly the path difference before
+    it grades anything.
+    """
+    path = supertool._CONFIG_PATH or ""
+    assert path, (
+        "graded_bytes was asked to normalise a render with no `_CONFIG_PATH` "
+        "set. The disclosure names os.getcwd() in that state, so the render is "
+        "still checkout-dependent and the substitution below cannot find it -- "
+        "returning a byte count here would be the un-normalised number in the "
+        "shape of a normalised one. Install a config path (the "
+        "`shipped_config` fixture does) rather than grading blind.")
+    return len(text.replace(path, CANONICAL_CONFIG_PATH).encode("utf-8"))
+
+
 def _hook_payload() -> str:
     """What `hooks/session-start.sh` prints, by the ops it prints it with."""
     return "".join(supertool.dispatch(op) for op in
@@ -145,7 +244,7 @@ class Claim:
         return re.findall(self.regex, text)
 
     def actual_kb(self) -> float:
-        return len(self.render().encode("utf-8")) / 1000
+        return graded_bytes(self.render()) / 1000
 
 
 def _r(name: str) -> Callable[[], str]:
@@ -322,6 +421,97 @@ def test_every_exemption_still_exempts_something(shipped_config) -> None:
         "an exemption in NOT_A_RENDER_SIZE matches nothing:\n  "
         + "\n  ".join(dead)
         + "\nDelete the entry. Keeping it suppresses a figure nobody has read.")
+
+
+#: A short and a long stand-in for the config path the disclosure names. The
+#: long one is deliberately far past any plausible checkout, so that a grader
+#: absorbing the difference into `TOLERANCE_KB` cannot pass by luck.
+_SHORT_CONFIG_PATH = "/c.json"
+_LONG_CONFIG_PATH = "/" + "d" * 200 + "/c.json"
+
+
+@pytest.mark.parametrize(
+    "claim", SITES, ids=["%s:%s" % (c.path, c.subject) for c in SITES])
+def test_the_graded_size_does_not_move_with_the_checkout_path(
+        claim, shipped_config, monkeypatch) -> None:
+    """Every render names the absolute config path, so its raw byte count is a
+    fact about where the checkout sits. Grading that raw count makes each row
+    above a claim about the developer's directory layout, wearing the sentence
+    "this checkout renders N bytes".
+
+    Measured 2026-08-21 at c6dd83ae: the same tree renders `ops` at 3,724 bytes
+    from a 43-character worktree path and 3,811 from a 130-character one -- 87
+    bytes apart, for a path 87 characters longer. That is 87% of the whole
+    tolerance, spent on a variable none of these figures is about, and it had
+    already produced a false red plus a wrong diagnosis. A clone taken under a
+    128-character scratchpad path failed four of the rows above and was
+    reported as a composition defect against PR #1890 -- which in fact leaves
+    every one of these renders byte-identical (3,724 / 72,712 / 14,705 / 1,966
+    on both sides of it, re-measured at one path).
+
+    The pair of assertions is the point, and neither survives alone:
+
+    * The **positive control** first. If the disclosure ever stops naming the
+      path, both renders come back the same length and the equality below
+      passes while checking nothing -- a guard reduced to the absence it exists
+      to detect. Requiring the raw sizes to differ by exactly the path
+      difference makes "the path stopped reaching the render" a red line naming
+      this test, rather than a green tick.
+    * Then the property: with the path normalised away, the graded size is the
+      same number in every checkout and on every platform. A Windows leg checking
+      out at `D:\\a\\claude-supertool\\claude-supertool` and a Linux leg at
+      `/home/runner/work/claude-supertool/claude-supertool` differ by 12
+      characters today, and by whatever the runner images decide tomorrow.
+    """
+    monkeypatch.setattr(supertool, "_CONFIG_PATH", _SHORT_CONFIG_PATH)
+    raw_short = len(claim.render().encode("utf-8"))
+    graded_short = claim.actual_kb()
+
+    monkeypatch.setattr(supertool, "_CONFIG_PATH", _LONG_CONFIG_PATH)
+    raw_long = len(claim.render().encode("utf-8"))
+    graded_long = claim.actual_kb()
+
+    expected = len(_LONG_CONFIG_PATH) - len(_SHORT_CONFIG_PATH)
+    assert raw_long - raw_short == expected, (
+        "%s's raw size moved by %s bytes for a %s-character change of config "
+        "path. This test can say nothing about path-independence unless the "
+        "path demonstrably reaches the render, and it no longer does so the "
+        "way it did -- which is a failure here, not a pass."
+        % (claim.subject, raw_long - raw_short, expected))
+
+    assert graded_short == graded_long, (
+        "%s grades as %.3fKB from a %s-character config path and %.3fKB from "
+        "a %s-character one. The graded size must be a fact about the render, "
+        "not about where this checkout sits on disk."
+        % (claim.subject, graded_short, len(_SHORT_CONFIG_PATH), graded_long,
+           len(_LONG_CONFIG_PATH)))
+
+
+def test_grading_without_a_config_path_refuses_rather_than_answering(
+        shipped_config, monkeypatch) -> None:
+    """The third state, asserted rather than assumed.
+
+    `_preset_disclosure` names `os.getcwd()` when `_CONFIG_PATH` is falsy, so
+    the render is still checkout-dependent while the string that locates it is
+    gone. A `graded_bytes` that returned a length there would hand every row
+    the raw count in the shape of a normalised one -- and the assertion it
+    fails is worded "this checkout renders N bytes", the exact sentence that
+    sent a maintainer after the wrong pull request.
+
+    Every row reaches `graded_bytes` through `shipped_config`, which always
+    sets a path, so this branch is unreachable from the suite as it stands.
+    That is precisely why it is pinned here: a refusal nobody can produce is
+    indistinguishable from one that was never written.
+    """
+    monkeypatch.setattr(supertool, "_CONFIG_PATH", "")
+    with pytest.raises(AssertionError, match="rather than grading blind"):
+        graded_bytes("`ops` renders something at /some/checkout/path.")
+
+    # ...and the same call answers normally once a path is installed, so the
+    # refusal above is about the missing path rather than the helper refusing
+    # everything it is handed.
+    monkeypatch.setattr(supertool, "_CONFIG_PATH", "/x/.supertool.json")
+    assert graded_bytes("no path in here") == len("no path in here")
 
 
 def test_no_ungraded_figure_in_a_registered_file(shipped_config) -> None:
