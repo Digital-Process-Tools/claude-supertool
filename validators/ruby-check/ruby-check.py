@@ -24,6 +24,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import absent, guard_main, tool_fault
 from linebreaks import split_lines
+from path_anchor import (anchor as _anchor, safe_realpath as _safe_realpath,
+                          anchor_miss_message as _anchor_miss_message)
 
 TOOL = "ruby-check"
 INSTALL_HINT = "ruby not found on PATH — this file was NOT syntax-checked"
@@ -36,7 +38,39 @@ TIMEOUT_S = 30
 # `file:line: message`. Extracted so the rule can be driven in process on every
 # platform — the fake-binary fixture is POSIX-only (see
 # tests/test_adapter_tool_vs_file_753.py).
-DIAGNOSTIC = re.compile(r"^(?:.*?):(\d+):\s+(.+)$")
+#
+# Anchored on the invoked path itself (#1934) rather than a bare `.*?`: the
+# non-greedy wildcard used to discard the path instead of matching it, so it
+# bound to the *earliest* `:digit:` anywhere in the line — including one
+# supplied by a filename crafted to contain its own `N: ` sequence. Building
+# the pattern from `file` means only a spelling of the path ruby was
+# actually invoked against can start a match (see `path_anchor.py`, #1937,
+# for what "a spelling of" widened to after this comment was first
+# written). "Start" no longer means column 0: real ruby, on some CI
+# runners, prints the invoked path TWICE before its own diagnostic (a bare
+# `<file>: ` prefix, then the real `<file>:<line>: `), so the match is now
+# a `.search()` anywhere in the line at a `:digit` boundary, not a
+# `.match()` at position 0 -- see `path_anchor.anchor()`'s own docstring
+# for why that does not reopen #1934's forgery.
+#
+# Tolerant of the spellings real ruby can echo that back in (#1937): two
+# tests spawning the real ruby binary went red on windows-latest CI with a
+# plain re.escape(file) anchor, matching nothing. Reasoned, not directly
+# observed against a Windows machine here -- Ruby on Windows is known to
+# normalise path separators to `/` in some of its own output, which this
+# widens the anchor to tolerate either way.
+#
+# The SAME two tests then went red identically on ubuntu-latest, which
+# ruled out a Windows-only cause for them: also tolerant of ruby (or
+# something upstream) reporting a symlinked invoked path's RESOLVED form
+# instead, via `extra_paths=[realpath]` below, ungated (every platform).
+# See validators/common/path_anchor.py for both widenings.
+def _diagnostic_re(file: str) -> re.Pattern[str]:
+    real = _safe_realpath(file)
+    extra = [real] if real and real != file else []
+    return _anchor(file, r":(\d+):\s+(.+)$", extra_paths=extra)
+
+
 SUMMARY = re.compile(r"^\d+\s+error")
 
 
@@ -46,9 +80,10 @@ def parse_diagnostics(out: str, file: str) -> list[dict]:
     Empty means ruby exited non-zero without placing anything in the file —
     `ruby: No such file or directory -- x.rb (LoadError)` is the common shape.
     """
+    pattern = _diagnostic_re(file)
     errors = []
     for line in split_lines(out):
-        m = DIAGNOSTIC.match(line)
+        m = pattern.search(line)
         if m:
             lineno, msg = m.groups()
             if SUMMARY.match(msg):
@@ -143,9 +178,16 @@ def main() -> None:
         #   ruby -c .           ->  ruby: Is a directory -- . (LoadError)
         #
         # — so both cases now route through the same helper as its siblings (#753).
+        #
+        # #1937, third CI round: when the anchor missed but ruby DID speak,
+        # say what it saw -- the invoked path and whatever path ruby's own
+        # output appears to name -- instead of leaving the next reader to
+        # guess the transform from an assertion failure alone.
         errors = [{"line": None, "col": None, "severity": "error",
                    "code": "adapter",
-                   "msg": tool_fault("ruby -c", result.returncode, output)}]
+                   "msg": _anchor_miss_message(
+                       file, output,
+                       tool_fault("ruby -c", result.returncode, output))}]
 
     emit({"tool": "ruby-check", "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": duration})

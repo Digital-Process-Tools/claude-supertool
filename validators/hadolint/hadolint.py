@@ -23,6 +23,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import absent, guard_main
 from linebreaks import split_lines
+from path_anchor import (anchor as _anchor, safe_realpath as _safe_realpath,
+                          anchor_miss_message as _anchor_miss_message)
 
 TOOL = "hadolint"
 INSTALL_HINT = ("hadolint not found on PATH — this Dockerfile was NOT linted "
@@ -34,6 +36,70 @@ INSTALL_HINT = ("hadolint not found on PATH — this Dockerfile was NOT linted "
 # tell a hung linter from a busy machine, and the number is the first thing
 # they need to decide which (#658).
 TIMEOUT_S = 30
+
+
+# hadolint tty output: `file:line RULE severity: message`.
+#
+# Anchored on the invoked path itself (#1934) rather than a bare `.*?`: the
+# non-greedy wildcard used to discard the path instead of matching it, so it
+# bound to the *earliest* `:digit` run anywhere in the line — including one
+# supplied by a Dockerfile filename crafted to contain its own
+# `N RULE severity: ` sequence. Building the pattern from `file` means only
+# a spelling of the path hadolint was actually invoked against can start a
+# match (see `path_anchor.py`, #1937, for what "a spelling of" widened to
+# after this comment was first written). "Start" no longer means column 0:
+# a tool can print the invoked path more than once before its own
+# diagnostic, so the match is now a `.search()` anywhere in the line at a
+# `:digit` boundary, not a `.match()` at position 0 -- see
+# `path_anchor.anchor()`'s own docstring for why that does not reopen
+# #1934's forgery.
+#
+# Reasoned, not observed: this assumes hadolint echoes back the literal argv
+# path unmodified, the way ruby/gofmt/xmllint were verified to do (see the
+# siblings in this sweep) — hadolint was not installed on any machine this
+# fix was written or reviewed on, so that assumption could not be checked
+# against a real binary. actionlint was checked and turned out NOT to share
+# it (it relativises against its own CWD instead; see actionlint.py). If
+# hadolint turns out to behave like actionlint, the practical effect is not
+# a re-opened #1934 — it is every located finding falling through to the
+# unlocated `code: "lint"` branch below, a visible regression rather than a
+# silent one.
+#
+# Tolerant of the spellings a real hadolint can echo that back in (#1937),
+# whatever they turn out to be -- and of hadolint (or something upstream)
+# reporting a symlinked invoked path's RESOLVED form instead, via
+# `extra_paths=[realpath]` below -- see validators/common/path_anchor.py
+# for both widenings.
+def _pattern(file: str) -> re.Pattern[str]:
+    real = _safe_realpath(file)
+    extra = [real] if real and real != file else []
+    return _anchor(file, r":(\d+)\s+((?:DL|SC)\d+)\s+(\w+):\s+(.+)$",
+                    extra_paths=extra)
+
+
+def parse_diagnostics(output: str, file: str) -> list[dict]:
+    """Every located hadolint diagnostic about `file`.
+
+    Extracted so the rule can be driven in process on every platform,
+    matching the sibling adapters this class was found across (#1934).
+    """
+    pattern = _pattern(file)
+    errors = []
+    for line in split_lines(output):
+        m = pattern.search(line)
+        if m:
+            lineno, code, severity, msg = m.groups()
+            ln = int(lineno)
+            err = {
+                "line": ln,
+                "col": None,
+                "severity": severity if severity in ("error", "warning", "info", "style") else "error",
+                "code": code,
+                "msg": msg.strip()[:300],
+            }
+            err.update(context_fields(file, ln))
+            errors.append(err)
+    return errors
 
 
 def emit(d: dict) -> None:
@@ -96,28 +162,17 @@ def main() -> None:
               "errors": [], "duration_ms": duration})
         return
 
-    # Parse hadolint tty output: "file:line DL1234 severity: message"
-    errors = []
-    pattern = re.compile(r"^(?:.*?):(\d+)\s+((?:DL|SC)\d+)\s+(\w+):\s+(.+)$")
     output = (result.stdout + result.stderr).strip()
-    for line in split_lines(output):
-        m = pattern.match(line)
-        if m:
-            lineno, code, severity, msg = m.groups()
-            ln = int(lineno)
-            err = {
-                "line": ln,
-                "col": None,
-                "severity": severity if severity in ("error", "warning", "info", "style") else "error",
-                "code": code,
-                "msg": msg.strip()[:300],
-            }
-            err.update(context_fields(file, ln))
-            errors.append(err)
+    errors = parse_diagnostics(output, file)
 
     if not errors and output:
+        # #1937, third CI round: when the anchor missed but hadolint DID
+        # speak, say what it saw -- the invoked path and whatever path the
+        # tool's own output appears to name -- instead of leaving the next
+        # reader to guess the transform from an assertion failure alone.
         errors = [{"line": None, "col": None, "severity": "error",
-                   "code": "lint", "msg": output[:300]}]
+                   "code": "lint",
+                   "msg": _anchor_miss_message(file, output, output[:300])}]
 
     emit({"tool": "hadolint", "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": duration})

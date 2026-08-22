@@ -16,6 +16,7 @@ Usage:  actionlint.py <file>
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -27,6 +28,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import absent, guard_main
 from linebreaks import split_lines
+from path_anchor import (anchor as _anchor, safe_realpath as _safe_realpath,
+                          anchor_miss_message as _anchor_miss_message)
 
 TOOL = "actionlint"
 INSTALL_HINT = ("actionlint not found on PATH — this workflow was NOT linted "
@@ -57,7 +60,86 @@ COUNT_CONTRACT = {"count_basis": "measured", "errors_truncated": False}
 # line ends in a bracketed rule (a parse-level failure can omit it), so the
 # rule group is optional and a match with no rule falls back to "syntax-check"
 # rather than losing the whole line to the fallback branch below it.
-_LINE_RE = re.compile(r"^(?:.*?):(\d+):(\d+):\s+(.+?)(?:\s+\[([\w-]+)\])?$")
+#
+# Anchored on the invoked path itself (#1934) rather than a bare `.*?`: the
+# non-greedy wildcard used to discard the path instead of matching it, so it
+# bound to the *earliest* `:digit:digit:` anywhere in the line — including
+# one supplied by a workflow filename crafted to contain its own `N:M: `
+# sequence, reachable end to end because `_supertool.py` `shlex.quote()`s the
+# file before substituting it into this adapter's argv. Building the pattern
+# from `file` means only a spelling of the path actionlint was actually
+# invoked against can start a match (see `path_anchor.py`, #1937, for what
+# "a spelling of" widened to after this comment was first written).
+# "Start" no longer means column 0: a tool can print the invoked path more
+# than once before its own diagnostic, so the match is now a `.search()`
+# anywhere in the line at a `:digit:digit:` boundary, not a `.match()` at
+# position 0 -- see `path_anchor.anchor()`'s own docstring for why that
+# does not reopen #1934's forgery.
+#
+# actionlint does not echo back the literal argv path — verified against
+# 1.7.12: given an absolute path it always prints that path relativised
+# against its own CWD (which this adapter never overrides, so it is the
+# process's `os.getcwd()`), even walking up with `../` when the file sits
+# outside it. `os.path.relpath` is a no-op when `file` is already relative to
+# that CWD, so this matches every path shape the adapter is handed.
+def _line_re(file: str) -> re.Pattern[str]:
+    try:
+        reported = os.path.relpath(file)
+    except ValueError:
+        # Windows: relpath cannot express one drive letter in terms of
+        # another (C:\ vs D:\). Reasoned, not observed — there is no
+        # Windows machine with actionlint installed to check this branch
+        # against, unlike the CWD-relativisation claim two paragraphs up,
+        # which was checked against the real 1.7.12 binary. Falling back to
+        # the path as given cannot re-open #1934: it only changes whether a
+        # genuine finding is located or falls through to the unlocated
+        # `code: "lint"` branch below, never which path a forged one binds
+        # to. See tests/test_adapter_line_re_anchor_1934.py for a unit-level
+        # (not real-binary) check of this fallback.
+        reported = file
+    # Tolerant of the spellings a real actionlint can echo `reported` back in
+    # (#1937), on top of the relativisation above -- see
+    # validators/common/path_anchor.py.
+    #
+    # Also tolerant of a symlink actionlint resolves but this adapter's own
+    # `os.path.relpath` above does not (a symlinked temp directory is the
+    # common case) -- if the file's canonical path differs from `file`
+    # itself, its OWN CWD-relative form is a second candidate base, on top
+    # of `reported`.
+    real = _safe_realpath(file)
+    extra = []
+    if real and real != file:
+        try:
+            extra.append(os.path.relpath(real))
+        except ValueError:
+            extra.append(real)
+    return _anchor(reported, r":(\d+):(\d+):\s+(.+?)(?:\s+\[([\w-]+)\])?$",
+                    extra_paths=extra)
+
+
+def parse_diagnostics(output: str, file: str) -> list[dict]:
+    """Every located actionlint diagnostic about `file`.
+
+    Extracted so the rule can be driven in process on every platform,
+    matching the sibling adapters this class was found across (#1934).
+    """
+    line_re = _line_re(file)
+    errors = []
+    for line in split_lines(output):
+        m = line_re.search(line)
+        if m:
+            lineno, col, msg, rule = m.groups()
+            ln = int(lineno)
+            err = {
+                "line": ln,
+                "col": int(col),
+                "severity": "error",
+                "code": rule or "syntax-check",
+                "msg": msg.strip()[:300],
+            }
+            err.update(context_fields(file, ln))
+            errors.append(err)
+    return errors
 
 
 def emit(d: dict) -> None:
@@ -114,26 +196,17 @@ def main() -> None:
               "errors": [], "duration_ms": duration, **COUNT_CONTRACT})
         return
 
-    errors = []
     output = (result.stdout + result.stderr).strip()
-    for line in split_lines(output):
-        m = _LINE_RE.match(line)
-        if m:
-            lineno, col, msg, rule = m.groups()
-            ln = int(lineno)
-            err = {
-                "line": ln,
-                "col": int(col),
-                "severity": "error",
-                "code": rule or "syntax-check",
-                "msg": msg.strip()[:300],
-            }
-            err.update(context_fields(file, ln))
-            errors.append(err)
+    errors = parse_diagnostics(output, file)
 
     if not errors and output:
+        # #1937, third CI round: when the anchor missed but actionlint DID
+        # speak, say what it saw -- the invoked path and whatever path the
+        # tool's own output appears to name -- instead of leaving the next
+        # reader to guess the transform from an assertion failure alone.
         errors = [{"line": None, "col": None, "severity": "error",
-                   "code": "lint", "msg": output[:300]}]
+                   "code": "lint",
+                   "msg": _anchor_miss_message(file, output, output[:300])}]
 
     emit({"tool": TOOL, "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": duration, **COUNT_CONTRACT})

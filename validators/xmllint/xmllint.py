@@ -18,6 +18,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import guard_main, tool_fault
 from linebreaks import split_lines
+from path_anchor import (anchor as _anchor, safe_realpath as _safe_realpath,
+                          anchor_miss_message as _anchor_miss_message)
 
 # libxml announces a finding about the document as `file:LINE: parser error : ...`.
 # Every other way it exits non-zero says nothing about the document's XML:
@@ -35,15 +37,37 @@ from linebreaks import split_lines
 # `file:LINE: message`. Extracted so the rule can be driven in process on every
 # platform — the fake-binary fixture that drives the whole adapter is POSIX-only
 # (see tests/test_adapter_tool_vs_file_753.py).
-DIAGNOSTIC = re.compile(r"^.+?:(\d+):\s*(.+)")
+#
+# Anchored on the invoked path itself (#1934) rather than a bare `.+?`: the
+# non-greedy wildcard used to discard the path instead of matching it, so it
+# bound to the *earliest* `:digit:` anywhere in the line — including one
+# supplied by a filename crafted to contain its own `N: ` sequence. Building
+# the pattern from `file` means only a spelling of the path libxml was
+# actually invoked against can start a match (see `path_anchor.py`, #1937,
+# for what "a spelling of" widened to after this comment was first
+# written). "Start" no longer means column 0: a tool can print the invoked
+# path more than once before its own diagnostic, so the match is now a
+# `.search()` anywhere in the line at a `:digit` boundary, not a `.match()`
+# at position 0 -- see `path_anchor.anchor()`'s own docstring for why that
+# does not reopen #1934's forgery.
+#
+# Tolerant of the spellings a real libxml can echo that back in (#1937) --
+# and of libxml (or something upstream) reporting a symlinked invoked
+# path's RESOLVED form instead, via `extra_paths=[realpath]` below -- see
+# validators/common/path_anchor.py for both widenings.
+def _diagnostic_re(file: str) -> re.Pattern[str]:
+    real = _safe_realpath(file)
+    extra = [real] if real and real != file else []
+    return _anchor(file, r":(\d+):\s*(.+)", extra_paths=extra)
 
 
 def parse_diagnostics(out: str, file: str) -> list[dict]:
     """Every located diagnostic in libxml's stderr. Empty means it did not
     speak about the document."""
+    pattern = _diagnostic_re(file)
     errors = []
     for line in split_lines(out):
-        m = DIAGNOSTIC.match(line)
+        m = pattern.search(line)
         if m:
             ln = int(m.group(1))
             errors.append({"line": ln, "col": None, "severity": "error",
@@ -95,9 +119,14 @@ def main() -> None:
     out = r.stderr or ""
     errors = parse_diagnostics(out, file)
     if not errors:
+        # #1937, third CI round: when the anchor missed but xmllint DID
+        # speak, say what it saw -- the invoked path and whatever path the
+        # tool's own output appears to name -- instead of leaving the next
+        # reader to guess the transform from an assertion failure alone.
         errors = [{"line": None, "col": None, "severity": "error",
                    "code": "adapter",
-                   "msg": tool_fault("xmllint", r.returncode, out)}]
+                   "msg": _anchor_miss_message(
+                       file, out, tool_fault("xmllint", r.returncode, out))}]
     emit({"tool": "xmllint", "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": dur})
 
