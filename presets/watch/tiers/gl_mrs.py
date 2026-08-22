@@ -216,6 +216,60 @@ RadarUnconfigured = _radar_errors.RadarUnconfigured
 NOT_AUTHENTICATED_MARKERS = (_auth_probe.NOT_AUTHENTICATED_MARKERS
                              + _auth_probe.GITLAB_MARKERS)
 
+#: Substrings of `glab`'s own stderr that mean the request never landed --
+#: `gh_prs`'s own whitelist (#1568), ported here (#1870) rather than shared:
+#: this tier already keeps `GITLAB_MARKERS` separate from the GitHub auth
+#: list for the reason `_auth_probe.py` gives -- one CLI's vocabulary can
+#: widen without touching the other's -- and the same argument applies to a
+#: transport list once a GitLab-only entry shows up. The two are still
+#: identical today, and that duplication is deliberate rather than an
+#: oversight: see the module docstring's `gh_prs grew ... gl_mrs still has
+#: neither` line this closes.
+#:
+#: **Reasoned, not observed** (#1870's own constraint: `glab` is not
+#: authenticated on the machine this was written on, so no live GitLab
+#: transport failure was captured). Every entry below is a string Go's
+#: `net`/`net/http` standard library writes verbatim into an error it wraps;
+#: `glab`, like `gh`, is a Go binary built on that stack, so the same family
+#: is expected to surface the same way. That expectation is not pinned to a
+#: measured `glab` version -- unlike `gh 2.50.0` in `gh_prs.py` -- because
+#: nothing here was run against a real `glab` to measure it against.
+#:
+#: A whitelist, and the direction matters exactly as it does in `gh_prs`: an
+#: UNRECOGNISED failure stays a plain `RadarError`, never gets promoted into
+#: a transport claim -- widening the other way would swallow a genuine
+#: product failure (a bad filter, a renamed project) as a flake.
+#:
+#: **Every entry is prose, never a bare status number** (#1864): `"429" in
+#: err` would match a project id, a job id or any other digit string GitLab's
+#: error wrapper writes into the request URL it echoes -- the exact mechanism
+#: #1846 found behind the bare-`401` collapse this module's own auth markers
+#: were tightened against. `"429 too many requests"` is the rendered status
+#: line, not the number alone, for the same reason `_auth_probe.py` refuses a
+#: bare `401`.
+TRANSPORT_MARKERS = (
+    "dial tcp",
+    "no such host",
+    "connection refused",
+    "connection reset",
+    "network is unreachable",
+    "i/o timeout",
+    "tls handshake timeout",
+    "client.timeout",
+    "error connecting to",
+    # GitLab's own rate-limit status. `gh_prs` folds "rate limit"/"http 403"
+    # into one arm; GitLab's API answers 429 for throttling, not 403, so this
+    # is GitLab's own status line rather than a port of `gh`'s.
+    "429 too many requests",
+    "rate limit",
+)
+
+
+def _transport_unreachable(err: str) -> bool:
+    """Does this `glab` stderr describe a request that never landed?"""
+    low = err.lower()
+    return any(marker in low for marker in TRANSPORT_MARKERS)
+
 SOURCE = defaults.DEFAULT_SOURCE
 FEED_SOURCE = defaults.DEFAULT_FEED_SOURCE
 FEED_SCOPE = defaults.DEFAULT_FEED_SCOPE
@@ -473,6 +527,17 @@ def _query(filters: dict[str, str], per_page: int) -> list[dict]:
             raise RadarUnreachable(
                 f"glab says this request was not authenticated (exit "
                 f"{result.returncode}): {err}. Run: glab auth login")
+        if _transport_unreachable(err):
+            # The stderr names a transport failure or a throttle rather than
+            # a product answer (#1870): the request never landed, or landed
+            # and was refused for load reasons, so a caller should retry
+            # rather than treat this as a verdict about the board. Checked
+            # after the auth arm for the same reason `gh_prs` orders its own
+            # arms this way -- an auth failure is the more specific claim
+            # and must win when both could match.
+            raise RadarUnreachable(
+                f"glab could not reach the API (exit {result.returncode}): "
+                f"{err}")
         # Nothing established a cause. Quote the exit status and the stderr of
         # the call that did not answer rather than name one: `"401" in err`
         # used to match a correlation id and send the reader to `glab auth
