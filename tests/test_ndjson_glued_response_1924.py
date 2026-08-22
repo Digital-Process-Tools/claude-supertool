@@ -177,15 +177,27 @@ def test_adapter_does_not_hang_and_does_not_fabricate_when_id_never_arrives(
     """The negative control for the fix above: a buffer that never carries
     the awaited id must still raise, and must do so without the test paying
     for the real 120-300s deadline — `time.monotonic` is advanced past the
-    adapter's own `CALL_TIMEOUT_SEC` after the first chunk."""
+    adapter's own `CALL_TIMEOUT_SEC` only after one chunk has been read, so
+    the run actually reaches the scanner with real bytes in `buf` rather
+    than exiting before the first `recv()`. The error must say bytes were
+    received with no matching frame — not the "no bytes received" shape a
+    buffer that never got that far would also raise with."""
     mod = adapter(name)
     noise = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode() + b"\n"
     fake = FakeSocket([noise, b""])
     monkeypatch.setattr(mod.socket, "socket", lambda *a, **k: fake)
 
-    times = iter([0.0, mod.CALL_TIMEOUT_SEC + 1])
+    # [0]: deadline = monotonic() + CALL_TIMEOUT_SEC. [1]: first `remaining`
+    # check — still 0.0, so the loop is entered and `noise` is read. [2]:
+    # second `remaining` check, now past the deadline, so the loop exits
+    # with `buf` holding `noise` rather than empty.
+    times = iter([0.0, 0.0, mod.CALL_TIMEOUT_SEC + 1])
     monkeypatch.setattr(mod.time, "monotonic",
                          lambda: next(times, mod.CALL_TIMEOUT_SEC + 2))
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError) as excinfo:
         mod.ndjson_call("/fake/sock", "/fake/test.php")
+
+    msg = str(excinfo.value)
+    assert "no bytes received" not in msg, msg
+    assert str(len(noise)) in msg, msg
