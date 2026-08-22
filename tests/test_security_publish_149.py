@@ -22,10 +22,19 @@ import _publish_safety  # noqa: E402
 
 
 @pytest.fixture
-def strict_publish(monkeypatch):
-    """Force strict mode for this test."""
+def strict_publish(monkeypatch, tmp_path):
+    """Force strict mode for this test.
+
+    Env AND cwd both feed the gate (`.supertool.json` is found by walking up
+    from cwd — see `_publish_safety._supertool_config`), so both have to be
+    isolated or "strict" silently means "whatever this checkout's own
+    `.supertool.json` happens to say" (#1897). The chdir here is what makes
+    that isolation apply to every test using this fixture, not just the
+    ones that remember to chdir themselves.
+    """
     monkeypatch.delenv("SUPERTOOL_PUBLISH_BODY_ALLOWLIST", raising=False)
     monkeypatch.delenv("SUPERTOOL_NO_PUBLISH_CONFIRM", raising=False)
+    monkeypatch.chdir(tmp_path)
     # Reset cached config so changes to monkeypatched cwd take effect.
     if hasattr(_publish_safety, "_CACHED_CONFIG"):
         delattr(_publish_safety, "_CACHED_CONFIG")
