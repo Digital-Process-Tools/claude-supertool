@@ -333,12 +333,13 @@ literal_backslashes = ["new"]
 One call can then write a payload whose fields genuinely disagree about
 escapes — a `new` that wants the run as written and a `content` in the same
 batch that does not — without opting the whole payload in. The refusal
-message names exactly which fields it flagged, and that line is a ready
-`literal_backslashes = [...]` you can paste as-is. This does not solve two
-ops that both carry a `new` field and disagree with EACH OTHER about that
-field's own intent — the scan matches on the bare field name across the
-whole payload, not on which op it sits in, so that payload is still two
-payloads.
+message names exactly which fields it flagged, unioned with any it already
+had, and that line is a ready `literal_backslashes = [...]` you can paste
+as-is over an existing one — pasting it never drops a field the payload had
+already exempted. This does not solve two ops that both carry a `new` field
+and disagree with EACH OTHER about that field's own intent — the scan
+matches on the bare field name across the whole payload, not on which op it
+sits in, so that payload is still two payloads.
 
 This replaces the earlier note that no such field existed. That was right while
 the alternative was a post-write warning and a `"""basic"""` block; it stopped

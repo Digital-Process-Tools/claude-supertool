@@ -156,3 +156,27 @@ def test_the_list_form_inside_an_ops_table_is_refused_not_ignored(
     assert "ERROR" in out, out
     assert "top level" in out.lower(), out
     assert target.read_text(encoding="utf-8") == 'PAT = "x"' + NL
+
+
+def test_the_suggested_list_keeps_an_already_exempted_field(tmp_path: Path) -> None:
+    """The suggested `literal_backslashes = [...]` is explicitly documented as
+    something to PASTE, not adapt. If it were built only from the fields still
+    refused, pasting it over an existing list-form exemption would silently
+    drop the field the payload had already settled -- the caller follows the
+    tool's own instruction and gets a payload that refuses on the very next
+    submission, which is the round-trip this whole feature exists to remove.
+
+    `new` is already exempted here (`literal_backslashes = ["new"]`); `content`
+    is not, so the refusal fires -- but its suggested list must carry BOTH."""
+    edit_target = tmp_path / "e.py"
+    edit_target.write_text('PAT = "x"' + NL, encoding="utf-8")
+    paste_target = tmp_path / "p.py"
+    body = _batch_body(
+        edit_target, paste_target,
+        "literal_backslashes = " + repr(["new"]).replace("'", '"') + NL,
+    )
+    out = supertool.dispatch("batch:" + _payload(tmp_path, body))
+    assert "ERROR" in out, out
+    assert 'literal_backslashes = ["new", "content"]' in out, (
+        "the suggested list dropped the field already exempted: " + out
+    )

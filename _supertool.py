@@ -24689,15 +24689,26 @@ def _payload_literal_backslashes_misplaced(parsed: Any) -> str:
 
 def _literal_bs_field_list_example(
         findings: List[Tuple[str, str, str, int,
-                              List[Tuple[int, int, str, Optional[int], int]]]]) -> str:
+                              List[Tuple[int, int, str, Optional[int], int]]]],
+        already: FrozenSet[str] = frozenset()) -> str:
     """A ready-to-paste `literal_backslashes = [...]` naming the fields THIS
-    refusal flagged, deduplicated and in first-seen order (#1839).
+    refusal flagged, PLUS any the payload had already exempted, deduplicated
+    and in first-seen order (#1839).
 
     Built from the caller's own payload rather than a generic `["new"]`: the
     caller can paste it rather than adapt it, and it never suggests a name
     that is not actually one of the fields in front of them.
+
+    `already` is the payload's OWN prior list-form scope, when it has one. A
+    caller who follows the "paste it as-is" instruction is replacing their
+    existing `literal_backslashes = [...]` with this suggestion -- if it were
+    built from `findings` alone (the fields STILL refused, which by
+    definition excludes anything already exempted), pasting it would silently
+    drop every exemption the payload had already recorded, and the very next
+    submission would refuse a field the caller had already settled. Union,
+    not replacement, is what "paste it as-is" has to mean.
     """
-    seen: List[str] = []
+    seen: List[str] = [k.lower() for k in already]
     for f in findings:
         key = f[0].lower()
         if key not in seen:
@@ -24767,7 +24778,7 @@ def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
                 if occs else ""
             ) + chr(10)
         )
-    field_example = _literal_bs_field_list_example(findings)
+    field_example = _literal_bs_field_list_example(findings, scope)
     out.append(
         "  " + arrow + " TWO OPPOSITE fixes, and nothing here can tell which you "
         "meant -- decide per occurrence, then send the payload once:" + chr(10)
