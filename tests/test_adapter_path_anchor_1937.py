@@ -54,6 +54,8 @@ import os
 import sys
 from pathlib import Path
 
+from _symlink import require_symlink
+
 VALIDATORS = Path(__file__).parent.parent / "validators"
 
 _ADAPTERS = {
@@ -252,6 +254,98 @@ def test_actionlint_finds_the_location_when_echoed_with_forward_slashes(monkeypa
 
 
 # ---------------------------------------------------------------------------
+# Canonicalisation tolerance (a symlinked invoked path, the tool's own
+# diagnostic naming the resolved form instead) -- ungated, every platform,
+# via a REAL local symlink. This is the class ubuntu-latest CI hit twice
+# with the identical `assert None is not None` shape #1937's Windows-only
+# fix did not cover: the same two tests, on Linux, with real ruby, ruling
+# out "Windows-specific" as the whole story. Needs no particular CI
+# platform -- a symlink is a symlink on any OS this suite runs on.
+# ---------------------------------------------------------------------------
+
+def _make_symlinked_file(tmp_path: Path, name: str, body: str) -> tuple[Path, Path]:
+    """A `link/name` path whose target is `real/name` -- returns (linked,
+    real), both existing files with the same content.
+
+    `require_symlink()` (#1143) skips rather than raising `OSError` on a
+    runner without the create-symlink privilege -- a contributor's Windows
+    without Developer Mode, most notably (see
+    tests/test_symlink_gating_register_1232.py, which is the build gate that
+    would otherwise flag this call site as ungated)."""
+    require_symlink()
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(real_dir)
+    real_file = real_dir / name
+    real_file.write_text(body, encoding="utf-8")
+    return link_dir / name, real_file.resolve()
+
+
+def test_ruby_check_finds_the_location_when_the_tool_reports_the_realpath(tmp_path: Path):
+    """The invoked path traverses a symlink; the tool's own diagnostic names
+    the RESOLVED path instead -- the exact shape a symlinked temp directory
+    produces if the tool (or something upstream of it) canonicalises."""
+    invoked, real = _make_symlinked_file(tmp_path, "bad.rb", "x = 1\n")
+    line = f'{real}:1: syntax error, unexpected end near "x"'
+    found = ruby_check.parse_diagnostics(line, str(invoked))
+    assert len(found) == 1, found
+    assert found[0]["line"] == 1, found
+
+
+def test_xmllint_finds_the_location_when_the_tool_reports_the_realpath(tmp_path: Path):
+    invoked, real = _make_symlinked_file(tmp_path, "a.xml", "<a>\n")
+    line = f'{real}:2: parser error : Opening and ending tag mismatch'
+    found = xmllint.parse_diagnostics(line, str(invoked))
+    assert len(found) == 1, found
+    assert found[0]["line"] == 2, found
+
+
+def test_gofmt_check_finds_the_location_when_the_tool_reports_the_realpath(tmp_path: Path):
+    invoked, real = _make_symlinked_file(tmp_path, "a.go", "package p\n")
+    line = f'{real}:3:12: expected close paren, found brace'
+    found = gofmt_check.parse_diagnostics(line, str(invoked))
+    assert len(found) == 1, found
+    assert found[0]["line"] == 3 and found[0]["col"] == 12, found
+
+
+def test_hadolint_finds_the_location_when_the_tool_reports_the_realpath(tmp_path: Path):
+    invoked, real = _make_symlinked_file(tmp_path, "Dockerfile", "FROM x\n")
+    line = f'{real}:5 DL3007 warning: using latest is prone to errors'
+    found = hadolint.parse_diagnostics(line, str(invoked))
+    assert len(found) == 1, found
+    assert found[0]["line"] == 5 and found[0]["code"] == "DL3007", found
+
+
+def test_actionlint_finds_the_location_when_the_tool_reports_the_realpath(tmp_path: Path):
+    """actionlint's own relpath-relativisation happens first; the second
+    candidate this test needs is the REALPATH's own relative form (never an
+    absolute one -- actionlint always relativises against CWD, established
+    by #1934, so a resolved-and-relativised path is what real actionlint
+    would print if it also resolves the symlink), which is what
+    `extra_paths` in actionlint.py's `_line_re` supplies."""
+    import os
+    invoked, real = _make_symlinked_file(tmp_path, "deploy.yml", "on: push\n")
+    reported_real = os.path.relpath(real)
+    line = f'{reported_real}:7:15: specifying action "bogus" is not allowed [action]'
+    found = actionlint.parse_diagnostics(line, str(invoked))
+    assert len(found) == 1, found
+    assert found[0]["line"] == 7 and found[0]["col"] == 15, found
+
+
+def test_xmllint_does_not_locate_an_unrelated_files_diagnostic_via_realpath(tmp_path: Path):
+    """The realpath widening must not become a second collision channel:
+    a diagnostic naming some OTHER real file's canonical path -- not the
+    invoked file's own -- must still be rejected."""
+    invoked, _real = _make_symlinked_file(tmp_path, "a.xml", "<a>\n")
+    other = tmp_path / "real" / "unrelated.xml"
+    other.write_text("<b>\n", encoding="utf-8")
+    line = f'{other.resolve()}:2: parser error : a different files diagnostic'
+    found = xmllint.parse_diagnostics(line, str(invoked))
+    assert found == [], found
+
+
+# ---------------------------------------------------------------------------
 # The negative control: without path_anchor's tolerance, none of the above
 # would be found. Proven directly against the OLD exact-match shape (#1934's
 # original anchor), not inferred -- this is the red half of this file's own
@@ -267,3 +361,13 @@ def test_a_plain_exact_anchor_would_have_missed_all_of_the_above():
     assert exact.match(line) is None, (
         "the exact-match anchor this file replaces would already have found "
         "this -- the control below proves nothing")
+
+
+def test_a_plain_exact_anchor_would_have_missed_the_realpath_cases_too(tmp_path: Path):
+    import re
+    invoked, real = _make_symlinked_file(tmp_path, "bad.rb", "x = 1\n")
+    line = f'{real}:1: syntax error, unexpected end near "x"'
+    exact = re.compile(r"^" + re.escape(str(invoked)) + r":(\d+):\s+(.+)$")
+    assert exact.match(line) is None, (
+        "the exact-match anchor this file replaces would already have found "
+        "this -- the control above proves nothing")

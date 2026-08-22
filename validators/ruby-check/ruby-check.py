@@ -24,7 +24,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import absent, guard_main, tool_fault
 from linebreaks import split_lines
-from path_anchor import anchor as _anchor
+from path_anchor import anchor as _anchor, safe_realpath as _safe_realpath
 
 TOOL = "ruby-check"
 INSTALL_HINT = "ruby not found on PATH — this file was NOT syntax-checked"
@@ -55,7 +55,9 @@ TIMEOUT_S = 30
 # widens the anchor to tolerate either way. See
 # validators/common/path_anchor.py.
 def _diagnostic_re(file: str) -> re.Pattern[str]:
-    return _anchor(file, r":(\d+):\s+(.+)$")
+    real = _safe_realpath(file)
+    extra = [real] if real and real != file else []
+    return _anchor(file, r":(\d+):\s+(.+)$", extra_paths=extra)
 
 
 SUMMARY = re.compile(r"^\d+\s+error")

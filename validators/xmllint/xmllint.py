@@ -18,7 +18,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import guard_main, tool_fault
 from linebreaks import split_lines
-from path_anchor import anchor as _anchor
+from path_anchor import anchor as _anchor, safe_realpath as _safe_realpath
 
 # libxml announces a finding about the document as `file:LINE: parser error : ...`.
 # Every other way it exits non-zero says nothing about the document's XML:
@@ -49,7 +49,9 @@ from path_anchor import anchor as _anchor
 # Tolerant of the spellings a real libxml can echo that back in (#1937) --
 # see validators/common/path_anchor.py.
 def _diagnostic_re(file: str) -> re.Pattern[str]:
-    return _anchor(file, r":(\d+):\s*(.+)")
+    real = _safe_realpath(file)
+    extra = [real] if real and real != file else []
+    return _anchor(file, r":(\d+):\s*(.+)", extra_paths=extra)
 
 
 def parse_diagnostics(out: str, file: str) -> list[dict]:

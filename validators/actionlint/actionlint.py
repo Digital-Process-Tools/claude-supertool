@@ -28,7 +28,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import absent, guard_main
 from linebreaks import split_lines
-from path_anchor import anchor as _anchor
+from path_anchor import anchor as _anchor, safe_realpath as _safe_realpath
 
 TOOL = "actionlint"
 INSTALL_HINT = ("actionlint not found on PATH — this workflow was NOT linted "
@@ -94,7 +94,21 @@ def _line_re(file: str) -> re.Pattern[str]:
     # Tolerant of the spellings a real actionlint can echo `reported` back in
     # (#1937), on top of the relativisation above -- see
     # validators/common/path_anchor.py.
-    return _anchor(reported, r":(\d+):(\d+):\s+(.+?)(?:\s+\[([\w-]+)\])?$")
+    #
+    # Also tolerant of a symlink actionlint resolves but this adapter's own
+    # `os.path.relpath` above does not (a symlinked temp directory is the
+    # common case) -- if the file's canonical path differs from `file`
+    # itself, its OWN CWD-relative form is a second candidate base, on top
+    # of `reported`.
+    real = _safe_realpath(file)
+    extra = []
+    if real and real != file:
+        try:
+            extra.append(os.path.relpath(real))
+        except ValueError:
+            extra.append(real)
+    return _anchor(reported, r":(\d+):(\d+):\s+(.+?)(?:\s+\[([\w-]+)\])?$",
+                    extra_paths=extra)
 
 
 def parse_diagnostics(output: str, file: str) -> list[dict]:

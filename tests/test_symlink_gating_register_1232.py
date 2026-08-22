@@ -226,6 +226,7 @@ def _mechanisms():
 #: not by line number, so an unrelated edit above does not make it stale.
 REGISTER = {
     'tests/_symlink.py::_probe': E,
+    'tests/test_adapter_path_anchor_1937.py::_make_symlinked_file': B,
     'tests/test_append_op_383.py::test_append_through_symlink_writes_to_the_target': B,
     'tests/test_attachment_root_ownership_1493.py::test_a_symlinked_root_gets_no_bytes_written_through_it': B,
     'tests/test_claims_path_containment_1283.py::test_a_symlink_inside_the_root_pointing_out_is_refused': B,

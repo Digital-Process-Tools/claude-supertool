@@ -23,7 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import absent, guard_main, tool_fault
 from linebreaks import split_lines
-from path_anchor import anchor as _anchor
+from path_anchor import anchor as _anchor, safe_realpath as _safe_realpath
 
 TOOL = "gofmt-check"
 INSTALL_HINT = ("gofmt not found on PATH — this file was NOT format-checked "
@@ -59,7 +59,10 @@ INSTALL_HINT = ("gofmt not found on PATH — this file was NOT format-checked "
 # carry is dropped: nothing downstream ever read `m.group("path")`, only
 # "line", "col" and "msg".
 def _diagnostic_re(file: str) -> re.Pattern[str]:
-    return _anchor(file, r":(?P<line>\d+):(?P<col>\d+):\s*(?P<msg>.+)$")
+    real = _safe_realpath(file)
+    extra = [real] if real and real != file else []
+    return _anchor(file, r":(?P<line>\d+):(?P<col>\d+):\s*(?P<msg>.+)$",
+                    extra_paths=extra)
 
 
 def parse_diagnostics(out: str, file: str) -> list[dict]:

@@ -23,7 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import absent, guard_main
 from linebreaks import split_lines
-from path_anchor import anchor as _anchor
+from path_anchor import anchor as _anchor, safe_realpath as _safe_realpath
 
 TOOL = "hadolint"
 INSTALL_HINT = ("hadolint not found on PATH — this Dockerfile was NOT linted "
@@ -62,7 +62,10 @@ TIMEOUT_S = 30
 # Tolerant of the spellings a real hadolint can echo that back in (#1937),
 # whatever they turn out to be -- see validators/common/path_anchor.py.
 def _pattern(file: str) -> re.Pattern[str]:
-    return _anchor(file, r":(\d+)\s+((?:DL|SC)\d+)\s+(\w+):\s+(.+)$")
+    real = _safe_realpath(file)
+    extra = [real] if real and real != file else []
+    return _anchor(file, r":(\d+)\s+((?:DL|SC)\d+)\s+(\w+):\s+(.+)$",
+                    extra_paths=extra)
 
 
 def parse_diagnostics(output: str, file: str) -> list[dict]:
