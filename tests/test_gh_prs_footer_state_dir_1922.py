@@ -139,3 +139,111 @@ def test_gl_mrs_footer_still_flags_a_genuinely_bare_mr(tmp_path, monkeypatch) ->
     watched = mrs._watched_iids(mrs.transport.STATE_DIR)
     footer = mrs._footer([_mr(34129)], watched, show_pipe=True)
     assert "1 unwatched → watch:gitlab-mr:34129" in footer, footer
+
+
+# ---------------------------------------------------------------------------
+# end-to-end through main()/main_with_args() -- the actual call site the fix
+# touched, not just the helper it calls. A test that only calls
+# `_watched_numbers(transport.STATE_DIR)` directly would still pass if the
+# call site in `main()` had never been changed back to the bare, argument-
+# less `_watched_numbers()` -- these two drive the real entry point instead.
+# ---------------------------------------------------------------------------
+
+import contextlib
+import io
+import json
+import subprocess
+
+
+def _github_pr_row(number: int) -> dict:
+    return {
+        "number": number,
+        "title": f"pr {number}",
+        "state": "OPEN",
+        "author": {"login": "someone"},
+        "headRefName": f"feat/{number}",
+        "headRefOid": "0" * 40,
+        "baseRefName": "master",
+        "labels": [],
+        "assignees": [],
+        "isDraft": False,
+        "mergeable": "MERGEABLE",
+        "reviewDecision": "",
+        "statusCheckRollup": [
+            {"__typename": "CheckRun", "name": "ci", "status": "COMPLETED",
+             "conclusion": "FAILURE"},
+        ],
+        "additions": 1,
+        "deletions": 0,
+        "changedFiles": 1,
+        "createdAt": "2026-01-01T00:00:00Z",
+        "updatedAt": "2026-01-01T00:00:00Z",
+        "url": f"https://github.com/o/n/pull/{number}",
+    }
+
+
+def _drive_gh_prs(monkeypatch, arg_str: str, rows: list[dict]) -> str:
+    def fake_run(cmd: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
+
+    monkeypatch.setattr(prs.subprocess, "run", fake_run)
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        prs.main_with_args(arg_str)
+    return out.getvalue()
+
+
+def test_gh_prs_main_reads_a_poller_armed_under_a_named_channel(
+        tmp_path, monkeypatch) -> None:
+    """The reported shape, end to end: `main_with_args` -- not the helper in
+    isolation -- must see a poller armed under a resolved, non-default state
+    dir and not call it unwatched."""
+    monkeypatch.setattr(prs.transport, "STATE_DIR", str(tmp_path))
+    (tmp_path / "supertool-watch-github-pr__1917.pid").write_text(
+        str(os.getpid()), encoding="utf-8")
+    out = _drive_gh_prs(monkeypatch, "nopipe", [_github_pr_row(1917)])
+    assert "unwatched" not in out, out
+
+
+def test_gh_prs_main_still_flags_a_bare_pr(tmp_path, monkeypatch) -> None:
+    """Same call, same directory, no poller armed -- must still flag it. The
+    negative half of the control pair, run through `main_with_args` too."""
+    monkeypatch.setattr(prs.transport, "STATE_DIR", str(tmp_path))
+    out = _drive_gh_prs(monkeypatch, "nopipe", [_github_pr_row(1917)])
+    assert "1 unwatched → watch:github-pr:1917" in out, out
+
+
+def _drive_gl_mrs(monkeypatch, arg_str: str, rows: list[dict]) -> str:
+    def fake_run(cmd: list[str], timeout: int = 25) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(rows), "")
+
+    def fake_enrich(mrs_list, cap=mrs.ENRICH_CAP, workers=mrs.ENRICH_WORKERS,
+                    with_approvals=True) -> None:
+        for m in mrs_list:
+            m["_pipeline"] = "failed"
+            m["_pipeline_id"] = 1
+            m["_approved"] = True
+            m["_enriched"] = True
+
+    monkeypatch.setattr(mrs, "_run", fake_run)
+    monkeypatch.setattr(mrs, "_enrich", fake_enrich)
+    monkeypatch.setattr(mrs.sys, "argv", ["mrs.py", arg_str])
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        mrs.main()
+    return out.getvalue()
+
+
+def test_gl_mrs_main_reads_a_poller_armed_under_a_named_channel(
+        tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(mrs.transport, "STATE_DIR", str(tmp_path))
+    (tmp_path / "supertool-watch-gitlab-mr__34129.pid").write_text(
+        str(os.getpid()), encoding="utf-8")
+    out = _drive_gl_mrs(monkeypatch, "", [_mr(34129)])
+    assert "unwatched" not in out, out
+
+
+def test_gl_mrs_main_still_flags_a_bare_mr(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(mrs.transport, "STATE_DIR", str(tmp_path))
+    out = _drive_gl_mrs(monkeypatch, "", [_mr(34129)])
+    assert "1 unwatched → watch:gitlab-mr:34129" in out, out
