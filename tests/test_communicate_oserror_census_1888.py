@@ -24,12 +24,12 @@ control. So the population outside git-status.py is `does not have the
 shape` across the board, not `cannot tell` — the shape (an adapter's own
 teardown path making that call) is simply absent.
 
-**A third state was still findable, and it turned up inside the reference
-file itself.** `git-status.py`'s outer `run()` wraps its *first*
-`proc.communicate(timeout=remaining)` call (not the one inside `_settled`,
-which is only reached after a `TimeoutExpired` has already fired) in a `try`
-that catches `subprocess.TimeoutExpired` alone — not `OSError`. Measured
-against a real child on this platform:
+**A third state was findable, and it turned up inside the reference file
+itself — since fixed by #1912.** `git-status.py`'s outer `run()` wrapped
+its *first* `proc.communicate(timeout=remaining)` call (not the one inside
+`_settled`, which is only reached after a `TimeoutExpired` has already
+fired) in a `try` that caught `subprocess.TimeoutExpired` alone — not
+`OSError`. Measured against a real child on this platform:
 
     p = subprocess.Popen(["sleep", "5"], stdout=PIPE, stderr=PIPE)
     os.close(p.stdout.fileno())
@@ -37,12 +37,15 @@ against a real child on this platform:
     p.poll() is None           # True -- the child is alive
 
 so the same broken-pipe-not-dead-child event the whole file exists to handle
-can still reach `run()` directly, bypass `_stop()` entirely (it is only
-called from the `except TimeoutExpired` arm), and propagate uncaught out of
-`main()` — leaking the child instead of stopping it. `git-status/` is held
+could reach `run()` directly, bypass `_stop()` entirely (it was only called
+from the `except TimeoutExpired` arm), and propagate uncaught out of
+`main()` — leaking the child instead of stopping it. `git-status/` was held
 by the #1888 brief as the reference implementation, not a site to fix in
-this diff, so that gap is filed rather than patched here (see the #1888
-report). This test does not re-litigate it; `test_only_git_status_spawns_
+that diff, so the gap was filed rather than patched there (see the #1888
+report). It is now fixed (#1912, PR #1914): `run()`'s `communicate()` call
+catches `(OSError, ValueError)` alongside `TimeoutExpired` and asks
+`_settled`/`_stop` the same question `_stop`'s own call site already did.
+This test does not re-litigate it; `test_only_git_status_spawns_
 via_popen_with_its_own_teardown` below only pins that git-status.py is still
 the one file with the *shape*, so a second adapter growing its own `Popen`
 teardown does not pass silently as "does not have the shape" the next time

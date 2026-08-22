@@ -327,6 +327,23 @@ def main() -> None:
         except subprocess.TimeoutExpired:
             _stop(proc)
             raise _NoAnswer(args, timed_out) from None
+        except (OSError, ValueError) as exc:
+            # `communicate()` failing says nothing about the child (#1883,
+            # `_settled`'s own docstring) -- it is the PIPES that broke, one
+            # call earlier than the `_settled`/`_stop` helpers that fix knew
+            # about (#1912). Reproduced against a real child: closing a live
+            # `sleep`'s stdout fd raises `OSError(9, "Bad file descriptor")`
+            # with the child still running. Treating that as "the child is
+            # gone" is exactly the bug #1883 fixed inside `_settled` -- it
+            # left a live `git status` holding `.git/index.lock`. So this
+            # asks the process directly, the same fallback `_settled` uses,
+            # rather than assuming either death or survival from a broken
+            # pipe.
+            if not _settled(proc, TERM_GRACE_S):
+                _stop(proc)
+            raise _NoAnswer(args, "communicate() failed: "
+                            + exc.__class__.__name__ + " - "
+                            + (str(exc) or "no reason given")) from exc
 
     try:
         # Check we're inside a git repo (fast — runs rev-parse)
