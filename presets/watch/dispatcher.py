@@ -217,7 +217,7 @@ def _foreign_slot_lines(census: dict, source: str, watcher_id: str) -> list[str]
         else:
             where = (f"no state directory under "
                      f"{naming.flat_path(naming.BASE_DIR)} hashes to it")
-        lines.append(f"  {len(pids)} on channel {channel} — {where}")
+        lines.append(f"  {len(pids)} on channel {_untrusted.flat(channel)} — {where}")
     other_lines = list(lines)
     unk_pids = unknown.get(key)
     if unk_pids:
@@ -474,7 +474,7 @@ def _foreign_poller_lines(census: dict) -> list[str]:
         else:
             where = (f"no state directory under "
                      f"{naming.flat_path(naming.BASE_DIR)} hashes to it")
-        out.append(f"  {count} on channel {channel}, {len(slots)} slot(s) — {where}")
+        out.append(f"  {count} on channel {_untrusted.flat(channel)}, {len(slots)} slot(s) — {where}")
     if unknown:
         count = sum(len(pids) for pids in unknown.values())
         out.append(f"  {count} whose channel cannot be told from their argv "

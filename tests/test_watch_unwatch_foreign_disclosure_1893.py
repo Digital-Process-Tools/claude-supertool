@@ -257,5 +257,45 @@ def test_unwatch_does_not_call_an_unlabelled_poller_another_channels(
     assert "on another channel" not in out, out
 
 
+# ---------------------------------------------------------------------------
+# the channel token is untrusted text, not the tool's own -- #1925
+# ---------------------------------------------------------------------------
+
+def test_a_csi_sequence_in_the_channel_token_is_neutralised(machine, capsys) -> None:
+    """A local process can name its own argv, so `chan=` is as untrusted as any
+    field #1197 already flattens -- and `_ps_rows` splits on whitespace, which
+    blocks a newline but lets a CSI sequence (no whitespace in it) straight
+    through. `ESC[1G` moves the cursor to column 1, `ESC[2K` erases the line:
+    together they let another process rewrite this exact disclosure from
+    column 0, on the surface whose only job is to say a poller survived
+    `unwatch`.
+    """
+    hostile = "aa\x1b[1G\x1b[2Kpwned"
+    pid = 909
+    machine.rows.append((pid, [
+        sys.executable, str(WATCH_DIR / "dispatcher.py"),
+        transport.POLL_SUBOP, *SLOT,
+        transport.CHANNEL_PREFIX + hostile,
+    ]))
+    machine.alive.add(pid)
+    assert dispatcher.cmd_unwatch(list(SLOT)) == 0
+    out = capsys.readouterr().out
+    assert "\x1b" not in out, out  # the raw escape must never reach the stream
+    assert "␛" in out, out  # flat()'s visible glyph for ESC (#1557)
+
+
+def test_an_ordinary_hex_channel_token_renders_unchanged(machine, capsys) -> None:
+    """The must-fire control half: neutralising must not turn into mangling.
+
+    Without this, a fix that ran every channel token through something coarser
+    than `flat()` -- hashing it again, or replacing it outright -- would still
+    pass the test above while breaking the token every real poller sends.
+    """
+    theirs = machine.add_resolvable_channel("theirs", 202, *SLOT)
+    assert dispatcher.cmd_unwatch(list(SLOT)) == 0
+    out = capsys.readouterr().out
+    assert transport.channel_key(theirs) in out, out
+
+
 def test_the_change_is_findable():
     assert_change_is_findable(1893)
