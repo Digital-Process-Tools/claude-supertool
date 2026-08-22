@@ -141,7 +141,19 @@ def test_invalid_ruby_error_has_line(tmp_path: Path) -> None:
     out = _run(str(f))
     assert_declined(out)
     err = out["errors"][0]
-    assert err["line"] is not None
+    # `line: None` here has more than one possible cause -- an anchor miss
+    # (#1937), ruby exiting non-zero with nothing locatable in its output, or
+    # something else entirely -- and CI runs pytest with --tb=no, so no
+    # traceback ever reaches the log (CLAUDE.md); junit_summary.py prints
+    # ONLY this message, untruncated, which is the one place that can say
+    # which. Built with repr(), not the shared describe() helper: that
+    # helper clips each field at 200 chars, short enough on a real CI temp
+    # path to cut off exactly the comparison this exists to show.
+    assert err["line"] is not None, (
+        f"invoked path: {str(f)!r}\n"
+        f"full error entry: {err!r}\n"
+        f"full verdict: {out!r}"
+    )
     assert err["severity"] == "error"
     assert err["code"] == "syntax"
     assert err["msg"]
@@ -200,7 +212,13 @@ def test_source_context_present_on_error(tmp_path: Path) -> None:
     out = _run(str(f))
     assert_declined(out)
     err = out["errors"][0]
-    assert err["line"] is not None
+    # See test_invalid_ruby_error_has_line's comment: --tb=no means this
+    # message, untruncated, is the only thing that reaches the CI log.
+    assert err["line"] is not None, (
+        f"invoked path: {str(f)!r}\n"
+        f"full error entry: {err!r}\n"
+        f"full verdict: {out!r}"
+    )
     assert "source_context" in err
     assert isinstance(err["source_context"], list)
     assert len(err["source_context"]) > 0
