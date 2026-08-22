@@ -1045,5 +1045,5 @@ class TestSocketRecvUnboundedAccumulation:
         times = iter([0.0, phpunit_adapter.CALL_TIMEOUT_SEC + 1])
         monkeypatch.setattr(time, "monotonic", lambda: next(times, phpunit_adapter.CALL_TIMEOUT_SEC + 2))
 
-        with pytest.raises(RuntimeError, match="no id=2 response received within timeout"):
+        with pytest.raises(RuntimeError, match="no id=2 response within"):
             phpunit_adapter.ndjson_call("/fake/sock", "/fake/test.php")

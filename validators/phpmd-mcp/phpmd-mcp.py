@@ -41,6 +41,7 @@ import _spawn  # noqa: E402  (#451: one daemon per (kind, config fingerprint))
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "common"))
 import refusal as _refusal  # noqa: E402
+import ndjson_scan as _ndjson_scan  # noqa: E402  (#1924: a response glued to noise)
 
 SKIP_PATTERNS_ENV = "PHPMD_MCP_SKIP_PATTERNS"
 
@@ -134,21 +135,28 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
 
         buf = b""
         deadline = time.monotonic() + CALL_TIMEOUT_SEC
-        while time.monotonic() < deadline:
-            chunk = s.recv(65536)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            s.settimeout(remaining)
+            try:
+                chunk = s.recv(65536)
+            except (socket.timeout, TimeoutError):
+                break
             if not chunk:
                 break
             buf += chunk
-            for line in buf.splitlines():
-                if not line.strip():
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(obj, dict) and obj.get("id") == 2:
-                    return obj
-        raise RuntimeError("no id=2 response received within timeout")
+            # #1924: scan the whole buffer, not one LF-delimited line at a
+            # time — a fatal analysis run's HTML error page can glue the real
+            # response to the end of the last HTML line with no separator,
+            # and a line-anchored parser never sees it.
+            obj = _ndjson_scan.find_response(buf, 2)
+            if obj is not None:
+                return obj
+        raise RuntimeError(
+            f"no id=2 response within {CALL_TIMEOUT_SEC}s "
+            f"({_ndjson_scan.describe_buffer(buf, 2)})")
 
 
 def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
