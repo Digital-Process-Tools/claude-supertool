@@ -63,10 +63,6 @@ gl_issue = _module("gl_issue_1864", "gitlab/issue.py")
 gl_runners = _module("gl_runners_1864", "gitlab/runners.py")
 gl_api = _module("gl_api_1864", "gitlab/api.py")
 
-# Loaded last -- it has no `sys.path.insert` of its own and relies on one of
-# the modules above (any `presets/github/*.py` or `presets/gitlab/*.py`) to
-# have already put `presets/` on `sys.path`, exactly as `branch.py` does for
-# it at production time (#1864).
 declared_workflows = _module("declared_workflows_1864", "_declared_workflows.py")
 
 
