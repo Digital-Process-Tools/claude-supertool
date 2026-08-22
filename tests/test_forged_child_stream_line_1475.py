@@ -628,10 +628,18 @@ def _comprehension_keys(node: ast.AST, tainted: dict) -> set:
     `key`/`value` for a `DictComp` — never its generators' `iter`/`ifs`
     directly. A loop target is tainted inside that value exactly when the
     `iter` it is bound from was, the same rule an assignment already gets.
+
+    Each generator's `iter` is checked against `local`, not the original
+    `tainted` — `[y for x in r.stdout.splitlines() for y in x.split()]`'s
+    second `iter` (`x.split()`) reads `x`, which the *first* generator
+    just bound in `local`. `x`'s taint is never written back into
+    `tainted` (that dict belongs to the enclosing scope); checking the
+    second `iter` against `tainted` instead of `local` would silently
+    lose it and score `y` — genuine `stdout` content — as clean.
     """
     local = dict(tainted)
     for gen in node.generators:
-        iter_keys = _unmarked(gen.iter, tainted)
+        iter_keys = _unmarked(gen.iter, local)
         if isinstance(gen.target, ast.Name):
             if iter_keys:
                 local[gen.target.id] = sorted(iter_keys)[0]
@@ -881,6 +889,27 @@ def test_the_same_sink_with_only_the_marked_value_counts_zero(
         encoding="utf-8",
     )
     assert raw_child_stream_sinks(sample) == []
+
+
+def test_a_later_generator_inherits_an_earlier_generators_taint(
+        tmp_path: Path) -> None:
+    """A second `for` clause whose `iter` reads an earlier clause's loop
+    target must see that target's taint, not the taint the enclosing scope
+    had before the comprehension started. `_comprehension_keys` builds
+    `local` precisely so each generator's target is tainted in turn; a
+    later generator's `iter` has to be checked against `local` as it
+    stands at that point; checking it against the original `tainted`
+    instead loses `x`'s taint (never added to `tainted`, only to `local`)
+    and would score `y` — genuinely `r.stdout` data, unmarked — as clean.
+    """
+    sample = tmp_path / "nested.py"
+    sample.write_text(
+        "def render(r):" + chr(10)
+        + "    print([y for x in r.stdout.splitlines() for y in x.split()])"
+        + chr(10),
+        encoding="utf-8",
+    )
+    assert len(raw_child_stream_sinks(sample)) == 1
 
 
 # ---------------------------------------------------------------------------
