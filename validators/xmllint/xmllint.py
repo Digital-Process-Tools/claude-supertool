@@ -41,8 +41,10 @@ from path_anchor import anchor as _anchor
 # non-greedy wildcard used to discard the path instead of matching it, so it
 # bound to the *earliest* `:digit:` anywhere in the line — including one
 # supplied by a filename crafted to contain its own `N: ` sequence. Building
-# the pattern from `file` means only the path libxml was actually invoked
-# against can start a match.
+# the pattern from `file` means only a spelling of the path libxml was
+# actually invoked against can start a match (see `path_anchor.py`, #1937,
+# for what "a spelling of" widened to after this comment was first
+# written).
 #
 # Tolerant of the spellings a real libxml can echo that back in (#1937) --
 # see validators/common/path_anchor.py.

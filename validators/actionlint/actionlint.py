@@ -66,8 +66,9 @@ COUNT_CONTRACT = {"count_basis": "measured", "errors_truncated": False}
 # one supplied by a workflow filename crafted to contain its own `N:M: `
 # sequence, reachable end to end because `_supertool.py` `shlex.quote()`s the
 # file before substituting it into this adapter's argv. Building the pattern
-# from `file` means only the path actionlint was actually invoked against can
-# start a match.
+# from `file` means only a spelling of the path actionlint was actually
+# invoked against can start a match (see `path_anchor.py`, #1937, for what
+# "a spelling of" widened to after this comment was first written).
 #
 # actionlint does not echo back the literal argv path — verified against
 # 1.7.12: given an absolute path it always prints that path relativised

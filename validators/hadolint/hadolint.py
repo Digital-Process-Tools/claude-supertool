@@ -44,7 +44,9 @@ TIMEOUT_S = 30
 # bound to the *earliest* `:digit` run anywhere in the line — including one
 # supplied by a Dockerfile filename crafted to contain its own
 # `N RULE severity: ` sequence. Building the pattern from `file` means only
-# the path hadolint was actually invoked against can start a match.
+# a spelling of the path hadolint was actually invoked against can start a
+# match (see `path_anchor.py`, #1937, for what "a spelling of" widened to
+# after this comment was first written).
 #
 # Reasoned, not observed: this assumes hadolint echoes back the literal argv
 # path unmodified, the way ruby/gofmt/xmllint were verified to do (see the

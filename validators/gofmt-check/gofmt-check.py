@@ -49,8 +49,10 @@ INSTALL_HINT = ("gofmt not found on PATH — this file was NOT format-checked "
 # non-greedy wildcard used to discard the path instead of matching it, so it
 # bound to the *earliest* `:digit:digit:` anywhere in the line — including
 # one supplied by a filename crafted to contain its own `N:M: ` sequence.
-# Building the pattern from `file` means only the path gofmt was actually
-# invoked against can start a match.
+# Building the pattern from `file` means only a spelling of the path gofmt
+# was actually invoked against can start a match (see `path_anchor.py`,
+# #1937, for what "a spelling of" widened to after this comment was first
+# written).
 #
 # Tolerant of the spellings a real gofmt can echo that back in (#1937) --
 # see validators/common/path_anchor.py. The `path` capture group this used to

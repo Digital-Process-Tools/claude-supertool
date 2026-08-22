@@ -1,5 +1,8 @@
 """A real diagnostic silently loses its location when a tool's own path
-echo does not byte-match the invoked argv string (#1937).
+echo does not byte-match the invoked argv string (#1937) -- and the first
+cut of the fix for that reopened #1934's own misattribution one layer over,
+found by this branch's own self-review before it shipped (see the second
+half of this file).
 
 #1934 anchored xmllint/ruby-check/hadolint/gofmt-check/actionlint's line
 parser on `re.escape(file)` -- the literal path each adapter invoked its
@@ -7,35 +10,47 @@ tool with -- so a crafted filename could no longer forge its own reported
 line/col. On windows-latest CI, real ruby's own diagnostic output did not
 echo that literal string back: the anchor then matched nothing, and a real,
 located diagnostic degraded to an unlocated one (never a bare `count: 0` --
-every adapter's `main()` already has a `if not errors and output:` fallback
-for "found output, could not place it in the file" -- but the line and
-column a real diagnostic carried were lost all the same, which is the
-"absence the tool produced, rendered as an absence in the world" defect
-class this repository names as its own).
+every adapter's `main()` already has a fallback for "found output, could not
+place it in the file" -- but the line and column a real diagnostic carried
+were lost all the same, which is the "absence the tool produced, rendered as
+an absence in the world" defect class this repository names as its own).
 
 `validators/common/path_anchor.py` widens each adapter's anchor to accept a
 small, FIXED set of spellings of the invoked path -- separator direction and
-a leading drive letter's case -- rather than requiring an exact byte match.
-It is pure string manipulation: no `os.path`, no filesystem access, nothing
-platform-native. So this file drives it, and every adapter using it, with
-Windows-shaped paths (backslashes, a drive letter) DIRECTLY through the
-parser, on whatever platform this test happens to run on. The CI failure
-that found this was a Windows leg; this control does not need one.
+a leading drive letter's case -- rather than requiring an exact byte match,
+GATED TO WINDOWS: both transforms are unsafe on POSIX, where the characters
+they key off (`\\\\`, a leading `X:`) are ordinary filename content, and the
+first version of this module did not gate on that, so this file's own
+`test_path_variants_never_introduces_a_different_path` originally asserted a
+weakened, self-normalizing version of the property it claimed to check and
+would not have caught it. Both are fixed together here.
 
-actionlint is the one adapter not exercised here with an ABSOLUTE
-Windows-shaped path: its own anchor additionally calls `os.path.relpath`
-first (#1934's fix for actionlint's CWD-relativisation), and `relpath` is
-itself platform-native -- feeding it a Windows-shaped absolute path on a
-POSIX runner exercises POSIX's own (irrelevant) interpretation of that
-string, not Windows's. actionlint's separator/case tolerance is exercised
-here with a RELATIVE Windows-shaped path instead, for which `relpath` is a
-no-op on every platform (`os.path.relpath(p) == p` when `p` is already
-relative to the process's own CWD), so what is left to test is exactly the
-`path_anchor` behaviour this file is about, with no relpath confound.
+It is pure string manipulation: no filesystem access. So the Windows-only
+widening is driven with Windows-shaped paths DIRECTLY through the parser, on
+whatever platform this test happens to run on, via the explicit
+`platform="win32"` override every function in `path_anchor` accepts for
+exactly this reason -- production code never passes it and falls back to the
+real `sys.platform`. The CI failure that found this was a Windows leg; this
+control does not need one.
+
+actionlint is the one adapter exercised here with a RELATIVE Windows-shaped
+path rather than an absolute one: its own anchor additionally calls
+`os.path.relpath` first (#1934's fix for actionlint's CWD-relativisation),
+and `relpath` is itself platform-native. On POSIX, `os.path.relpath` is a
+no-op for an already-relative input -- verified directly below, not assumed
+-- but that is NOT true on every platform: CPython's own `ntpath.relpath`
+always rejoins its result with `\\\\`, so on real Windows it is not a no-op
+even for a relative input (a claim this file used to make and #1937's own
+self-review found wrong). A relative path sidesteps the OS-native
+relativisation LOGIC (nothing to walk up or resolve), which is the actual
+reason it isolates `path_anchor`'s own behaviour here; it does not sidestep
+separator normalisation on Windows, and the assertion below pins the POSIX
+half of that claim rather than leaving it merely asserted in prose.
 """
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -56,18 +71,18 @@ def _load(name: str):
     return mod
 
 
-path_anchor = _load_common = None
+_path_anchor_cache = None
 
 
 def _load_common_module():
-    global path_anchor
-    if path_anchor is None:
+    global _path_anchor_cache
+    if _path_anchor_cache is None:
         spec = importlib.util.spec_from_file_location(
             "path_anchor_1937", VALIDATORS / "common" / "path_anchor.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        path_anchor = mod
-    return path_anchor
+        _path_anchor_cache = mod
+    return _path_anchor_cache
 
 
 xmllint = _load("xmllint")
@@ -77,41 +92,88 @@ hadolint = _load("hadolint")
 actionlint = _load("actionlint")
 
 
+def test_relpath_is_a_no_op_for_an_already_relative_path_on_posix():
+    """Pinned rather than only asserted in prose -- the half of the module
+    docstring's claim that IS true on the platform this suite actually runs
+    on. Windows' `ntpath.relpath` rejoining with `\\\\` regardless is the
+    other half, and is not (and cannot be) pinned here; see the docstring."""
+    assert os.path.relpath("workflows\\deploy.yml") == "workflows\\deploy.yml"
+
+
 # ---------------------------------------------------------------------------
-# The shared helper itself -- pure, portable, no filesystem access.
+# The shared helper itself -- pure, portable, no filesystem access. Every
+# call below is explicit about which platform it means: `platform="win32"`
+# where the Windows-only widening is under test, and no override (so the
+# real `sys.platform` of whatever machine runs this suite decides) where the
+# POSIX-safety of NOT widening is under test.
 # ---------------------------------------------------------------------------
 
-def test_path_variants_covers_separator_direction():
+def test_path_variants_covers_separator_direction_on_windows():
     pa = _load_common_module()
-    variants = pa.path_variants("C:\\Users\\dev\\a.xml")
+    variants = pa.path_variants("C:\\Users\\dev\\a.xml", platform="win32")
     assert "C:\\Users\\dev\\a.xml" in variants
     assert "C:/Users/dev/a.xml" in variants
 
 
-def test_path_variants_covers_drive_letter_case():
+def test_path_variants_covers_drive_letter_case_on_windows():
     pa = _load_common_module()
-    variants = pa.path_variants("c:/users/dev/a.rb")
+    variants = pa.path_variants("c:/users/dev/a.rb", platform="win32")
     assert "c:/users/dev/a.rb" in variants
     assert "C:/users/dev/a.rb" in variants
 
 
-def test_path_variants_never_introduces_a_different_path():
-    """The tolerance is spelling-only. A genuinely different path -- not a
-    separator/case respelling of the same one -- must never appear."""
+def test_path_variants_does_not_widen_on_a_non_windows_platform():
+    """The gate itself, pinned directly -- explicit non-Windows platform
+    strings, not relying on whatever this suite happens to run on."""
     pa = _load_common_module()
-    variants = pa.path_variants("C:\\Users\\dev\\a.xml")
-    assert "C:\\Users\\dev\\evil.xml" not in variants
-    assert all(v.lower().replace("\\", "/").endswith("users/dev/a.xml") for v in variants)
+    assert pa.path_variants("weird\\name.xml", platform="linux") == ["weird\\name.xml"]
+    assert pa.path_variants("weird\\name.xml", platform="darwin") == ["weird\\name.xml"]
+
+
+def test_path_variants_does_not_collide_two_distinct_posix_paths():
+    """The regression this file exists to guard: on a real POSIX machine
+    (no `platform=` override -- this is what production code gets), a `\\\\`
+    or a leading `X:` in an INVOKED filename is ordinary content, not a
+    separator or a drive letter, and must never manufacture a variant that
+    is actually a DIFFERENT real path. Both halves of the collision found in
+    this branch's own self-review, pinned directly rather than only through
+    an adapter."""
+    pa = _load_common_module()
+    if sys.platform.startswith("win"):
+        import pytest
+        pytest.skip("this is a POSIX-safety regression test; on real "
+                    "Windows both paths below are the same path")
+    assert pa.path_variants("weird\\name.xml") == ["weird\\name.xml"]
+    assert "weird/name.xml" not in pa.path_variants("weird\\name.xml")
+    assert pa.path_variants("X:secret") == ["X:secret"]
+    assert "x:secret" not in pa.path_variants("X:secret")
+
+
+def test_xmllint_does_not_attribute_a_different_posix_files_diagnostic():
+    """The adapter-level shape of the same regression: a file genuinely
+    named `weird\\name.xml` must not accept a diagnostic that names the
+    genuinely different file `weird/name.xml` -- on real POSIX, both are
+    real, distinct filenames."""
+    if sys.platform.startswith("win"):
+        import pytest
+        pytest.skip("weird\\\\name.xml and weird/name.xml are the same path on Windows")
+    invoked = "weird\\name.xml"
+    out = "weird/name.xml:99: parser error : a different file's diagnostic"
+    found = xmllint.parse_diagnostics(out, invoked)
+    assert found == [], found
 
 
 # ---------------------------------------------------------------------------
 # Windows-shaped absolute paths through xmllint / ruby-check / gofmt-check /
-# hadolint -- none of these adapters transform the path before anchoring, so
-# an absolute Windows-shaped path is a fair, portable stand-in for what real
-# CI hit.
+# hadolint, with the widening explicitly turned on via `monkeypatch` on
+# `sys.platform` -- the only lever available at the adapter level, since
+# `parse_diagnostics(out, file)`'s public signature does not carry a
+# `platform=` override of its own. `monkeypatch` reverts automatically, so
+# this cannot leak into another test even under a shared worker process.
 # ---------------------------------------------------------------------------
 
-def test_xmllint_finds_the_location_when_echoed_with_forward_slashes():
+def test_xmllint_finds_the_location_when_echoed_with_forward_slashes(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
     invoked = "C:\\Users\\dev\\project\\a.xml"
     echoed = "C:/Users/dev/project/a.xml"
     line = f'{echoed}:2: parser error : Opening and ending tag mismatch'
@@ -120,7 +182,8 @@ def test_xmllint_finds_the_location_when_echoed_with_forward_slashes():
     assert found[0]["line"] == 2, found
 
 
-def test_ruby_check_finds_the_location_when_echoed_with_forward_slashes():
+def test_ruby_check_finds_the_location_when_echoed_with_forward_slashes(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
     invoked = "C:\\Users\\dev\\project\\bad.rb"
     echoed = "C:/Users/dev/project/bad.rb"
     line = f'{echoed}:2: syntax error, unexpected end-of-input'
@@ -129,7 +192,8 @@ def test_ruby_check_finds_the_location_when_echoed_with_forward_slashes():
     assert found[0]["line"] == 2, found
 
 
-def test_gofmt_check_finds_the_location_when_echoed_with_forward_slashes():
+def test_gofmt_check_finds_the_location_when_echoed_with_forward_slashes(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
     invoked = "C:\\Users\\dev\\project\\bad.go"
     echoed = "C:/Users/dev/project/bad.go"
     line = f'{echoed}:3:12: expected close paren, found brace'
@@ -138,7 +202,8 @@ def test_gofmt_check_finds_the_location_when_echoed_with_forward_slashes():
     assert found[0]["line"] == 3 and found[0]["col"] == 12, found
 
 
-def test_hadolint_finds_the_location_when_echoed_with_forward_slashes():
+def test_hadolint_finds_the_location_when_echoed_with_forward_slashes(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
     invoked = "C:\\Users\\dev\\project\\Dockerfile"
     echoed = "C:/Users/dev/project/Dockerfile"
     line = f'{echoed}:5 DL3007 warning: using latest is prone to errors'
@@ -147,7 +212,8 @@ def test_hadolint_finds_the_location_when_echoed_with_forward_slashes():
     assert found[0]["line"] == 5 and found[0]["code"] == "DL3007", found
 
 
-def test_ruby_check_finds_the_location_with_a_lowercase_drive_letter():
+def test_ruby_check_finds_the_location_with_a_lowercase_drive_letter(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
     invoked = "C:/Users/dev/project/bad.rb"
     echoed = "c:/Users/dev/project/bad.rb"
     line = f'{echoed}:2: syntax error, unexpected end-of-input'
@@ -156,12 +222,27 @@ def test_ruby_check_finds_the_location_with_a_lowercase_drive_letter():
     assert found[0]["line"] == 2, found
 
 
+def test_xmllint_does_not_widen_when_the_real_platform_is_not_windows(monkeypatch):
+    """The other half of the gate, at the adapter level: with `sys.platform`
+    left alone (or explicitly pinned to a POSIX value), the forward-slash
+    echo above must NOT be found -- proving the widening in the tests above
+    is doing the work, not something else in the adapter."""
+    monkeypatch.setattr(sys, "platform", "linux")
+    invoked = "C:\\Users\\dev\\project\\a.xml"
+    echoed = "C:/Users/dev/project/a.xml"
+    line = f'{echoed}:2: parser error : Opening and ending tag mismatch'
+    found = xmllint.parse_diagnostics(line, invoked)
+    assert found == [], found
+
+
 # ---------------------------------------------------------------------------
-# actionlint, with a RELATIVE Windows-shaped path so `os.path.relpath` is a
-# no-op on every platform and what is left to exercise is path_anchor alone.
+# actionlint, with a RELATIVE Windows-shaped path -- see the module
+# docstring for why relative sidesteps relpath's own relativisation LOGIC
+# without claiming it sidesteps separator normalisation too.
 # ---------------------------------------------------------------------------
 
-def test_actionlint_finds_the_location_when_echoed_with_forward_slashes():
+def test_actionlint_finds_the_location_when_echoed_with_forward_slashes(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
     invoked = "workflows\\deploy.yml"
     echoed = "workflows/deploy.yml"
     line = f'{echoed}:7:15: specifying action "bogus" is not allowed [action]'
