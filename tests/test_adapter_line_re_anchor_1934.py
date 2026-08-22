@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from _adapter_budget import adapter_budget
+
 VALIDATORS = Path(__file__).parent.parent / "validators"
 
 _IN_PROCESS = {
@@ -150,7 +152,7 @@ def _run_with_fake(tmp_path: Path, adapter: str, binary: str,
     result = subprocess.run(
         [sys.executable, str(_SPAWNED[adapter]), str(target)],
         capture_output=True, text=True, env=env,
-        timeout=30, encoding="utf-8", errors="replace",
+        timeout=adapter_budget(_SPAWNED[adapter]), encoding="utf-8", errors="replace",
     )
     return json.loads(result.stdout)
 

@@ -23,6 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import absent, guard_main
 from linebreaks import split_lines
+from path_anchor import anchor as _anchor
 
 TOOL = "hadolint"
 INSTALL_HINT = ("hadolint not found on PATH — this Dockerfile was NOT linted "
@@ -55,8 +56,11 @@ TIMEOUT_S = 30
 # a re-opened #1934 — it is every located finding falling through to the
 # unlocated `code: "lint"` branch below, a visible regression rather than a
 # silent one.
+#
+# Tolerant of the spellings a real hadolint can echo that back in (#1937),
+# whatever they turn out to be -- see validators/common/path_anchor.py.
 def _pattern(file: str) -> re.Pattern[str]:
-    return re.compile(r"^" + re.escape(file) + r":(\d+)\s+((?:DL|SC)\d+)\s+(\w+):\s+(.+)$")
+    return _anchor(file, r":(\d+)\s+((?:DL|SC)\d+)\s+(\w+):\s+(.+)$")
 
 
 def parse_diagnostics(output: str, file: str) -> list[dict]:

@@ -155,10 +155,16 @@ def test_go_vet_skip_reason_quotes_the_whole_line(monkeypatch, capsys, tmp_path)
 
 @pytest.mark.parametrize("sep", SEPS, ids=SEP_IDS)
 def test_xmllint_one_diagnostic_stays_one_record(sep, tmp_path):
+    # The diagnostic's path must be the path parse_diagnostics was actually
+    # invoked with (#1934, #1937): its own regex is anchored on that path
+    # since #1934, so a diagnostic naming a DIFFERENT filename -- however
+    # innocently, as this fixture did before #1934 made it matter -- no
+    # longer matches at all, and this test would then be asserting the
+    # #1486 separator behaviour against zero records instead of one.
     mod = adapter("xmllint")
     f = tmp_path / "a.xml"
     f.write_text("<a>\n", encoding="utf-8")
-    out = f'a.xml:1: parser error : Start tag expected near "x{sep}a.xml:9: FORGED"'
+    out = f'{f}:1: parser error : Start tag expected near "x{sep}{f}:9: FORGED"'
     errors = mod.parse_diagnostics(out, str(f))
     assert len(errors) == 1, errors
     assert errors[0]["line"] == 1
@@ -169,7 +175,7 @@ def test_ruby_check_one_diagnostic_stays_one_record(sep, tmp_path):
     mod = adapter("ruby-check")
     f = tmp_path / "a.rb"
     f.write_text("x = 1\n", encoding="utf-8")
-    out = f'a.rb:1: syntax error, unexpected end near "x{sep}a.rb:9: FORGED"'
+    out = f'{f}:1: syntax error, unexpected end near "x{sep}{f}:9: FORGED"'
     errors = mod.parse_diagnostics(out, str(f))
     assert len(errors) == 1, errors
     assert errors[0]["line"] == 1
@@ -180,7 +186,7 @@ def test_gofmt_check_one_diagnostic_stays_one_record(sep, tmp_path):
     mod = adapter("gofmt-check")
     f = tmp_path / "a.go"
     f.write_text("package p\n", encoding="utf-8")
-    out = f'a.go:1:1: expected declaration near "x{sep}a.go:9:9: FORGED"'
+    out = f'{f}:1:1: expected declaration near "x{sep}{f}:9:9: FORGED"'
     errors = mod.parse_diagnostics(out, str(f))
     assert len(errors) == 1, errors
     assert errors[0]["line"] == 1
@@ -327,15 +333,25 @@ def test_markdownlint_one_diagnostic_stays_one_record(sep, monkeypatch, capsys, 
 
 @pytest.mark.parametrize("sep", SEPS, ids=SEP_IDS)
 def test_hadolint_one_diagnostic_stays_one_record(sep, monkeypatch, capsys, tmp_path):
+    # The diagnostic's path must be the path this adapter was actually
+    # invoked with (#1934, #1937) -- see the comment on
+    # test_xmllint_one_diagnostic_stays_one_record above. Before this fix
+    # the bare "Dockerfile" text here did not match `str(f)` either, but the
+    # assertion below (count == 1) could not see it: hadolint's main()
+    # falls back to an UNLOCATED single record whenever nothing anchors, so
+    # a lost location and a real one both satisfy "one record" -- checking
+    # `errors[0]["line"]` is what tells them apart.
     mod = adapter("hadolint")
     f = tmp_path / "Dockerfile"
     f.write_text("FROM x\n", encoding="utf-8")
     out = drive_main(
         mod, monkeypatch, capsys, ["hadolint.py", str(f)],
-        FakeProc(1, f'Dockerfile:1 DL3006 warning: bad "x{sep}'
-                    f'Dockerfile:9 DL9999 error: FORGED"', ""))
+        FakeProc(1, f'{f}:1 DL3006 warning: bad "x{sep}'
+                    f'{f}:9 DL9999 error: FORGED"', ""))
     assert out["count"] == 1, out
     assert len(out["errors"]) == 1
+    assert out["errors"][0]["line"] == 1, out
+    assert out["errors"][0]["code"] == "DL3006", out
 
 
 @pytest.mark.parametrize("sep", SEPS, ids=SEP_IDS)

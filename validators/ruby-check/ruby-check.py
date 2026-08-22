@@ -24,6 +24,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import absent, guard_main, tool_fault
 from linebreaks import split_lines
+from path_anchor import anchor as _anchor
 
 TOOL = "ruby-check"
 INSTALL_HINT = "ruby not found on PATH — this file was NOT syntax-checked"
@@ -43,8 +44,16 @@ TIMEOUT_S = 30
 # supplied by a filename crafted to contain its own `N: ` sequence. Building
 # the pattern from `file` means only the path ruby was actually invoked
 # against can start a match.
+#
+# Tolerant of the spellings real ruby can echo that back in (#1937): two
+# tests spawning the real ruby binary went red on windows-latest CI with a
+# plain re.escape(file) anchor, matching nothing. Reasoned, not directly
+# observed against a Windows machine here -- Ruby on Windows is known to
+# normalise path separators to `/` in some of its own output, which this
+# widens the anchor to tolerate either way. See
+# validators/common/path_anchor.py.
 def _diagnostic_re(file: str) -> re.Pattern[str]:
-    return re.compile(r"^" + re.escape(file) + r":(\d+):\s+(.+)$")
+    return _anchor(file, r":(\d+):\s+(.+)$")
 
 
 SUMMARY = re.compile(r"^\d+\s+error")

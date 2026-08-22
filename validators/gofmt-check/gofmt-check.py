@@ -23,6 +23,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import absent, guard_main, tool_fault
 from linebreaks import split_lines
+from path_anchor import anchor as _anchor
 
 TOOL = "gofmt-check"
 INSTALL_HINT = ("gofmt not found on PATH — this file was NOT format-checked "
@@ -50,9 +51,13 @@ INSTALL_HINT = ("gofmt not found on PATH — this file was NOT format-checked "
 # one supplied by a filename crafted to contain its own `N:M: ` sequence.
 # Building the pattern from `file` means only the path gofmt was actually
 # invoked against can start a match.
+#
+# Tolerant of the spellings a real gofmt can echo that back in (#1937) --
+# see validators/common/path_anchor.py. The `path` capture group this used to
+# carry is dropped: nothing downstream ever read `m.group("path")`, only
+# "line", "col" and "msg".
 def _diagnostic_re(file: str) -> re.Pattern[str]:
-    return re.compile(r"^(?P<path>" + re.escape(file)
-                       + r"):(?P<line>\d+):(?P<col>\d+):\s*(?P<msg>.+)$")
+    return _anchor(file, r":(?P<line>\d+):(?P<col>\d+):\s*(?P<msg>.+)$")
 
 
 def parse_diagnostics(out: str, file: str) -> list[dict]:

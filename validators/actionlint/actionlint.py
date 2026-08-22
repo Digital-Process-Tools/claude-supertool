@@ -28,6 +28,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import absent, guard_main
 from linebreaks import split_lines
+from path_anchor import anchor as _anchor
 
 TOOL = "actionlint"
 INSTALL_HINT = ("actionlint not found on PATH — this workflow was NOT linted "
@@ -89,8 +90,10 @@ def _line_re(file: str) -> re.Pattern[str]:
         # to. See tests/test_adapter_line_re_anchor_1934.py for a unit-level
         # (not real-binary) check of this fallback.
         reported = file
-    return re.compile(r"^" + re.escape(reported)
-                       + r":(\d+):(\d+):\s+(.+?)(?:\s+\[([\w-]+)\])?$")
+    # Tolerant of the spellings a real actionlint can echo `reported` back in
+    # (#1937), on top of the relativisation above -- see
+    # validators/common/path_anchor.py.
+    return _anchor(reported, r":(\d+):(\d+):\s+(.+?)(?:\s+\[([\w-]+)\])?$")
 
 
 def parse_diagnostics(output: str, file: str) -> list[dict]:
