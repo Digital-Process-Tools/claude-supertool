@@ -894,8 +894,13 @@ def main() -> int:
         mr_iid = mr.get("iid", "?")
         mr_title = _untrusted.flat(str(mr.get("title", "?")))
         mr_state = mr.get("state", "?")
-        # Raw is kept for the ref built below; only the print gets flat()
-        # (#977). `flat()` discloses U+2028/U+2029 as `[U+2028]`/`[U+2029]`
+        # Two names on purpose (#977): `_raw` for the ref built below, and a
+        # separately-bound flattened one for the print. The flat() call is
+        # deliberately NOT inlined into the print's f-string — #1475's scanner
+        # treats a sink argument containing any MARK call as fully handled, so
+        # inlining it hid `mr_state` and `pipe_status`, which are still raw on
+        # that same line, and dropped the census 20 -> 19 without fixing them.
+        # `flat()` discloses U+2028/U+2029 as `[U+2028]`/`[U+2029]`
         # rather than passing them through, and `git check-ref-format`
         # accepts both in a refname (#1654) — so a target branch carrying
         # either built a ref (with literal `[`/`]` in it) that does not
@@ -903,6 +908,7 @@ def main() -> int:
         # `(+a -d)` figure with no error shown anywhere. Same pattern as
         # `presets/github/job.py`'s `pr_branch`/`_local_branch_check` split.
         mr_target_raw = str(mr.get("target_branch", "?"))
+        mr_target = _untrusted.flat(mr_target_raw)
         pipeline = mr.get("pipeline") or mr.get("head_pipeline") or {}
         if not isinstance(pipeline, dict):
             pipeline = {}
@@ -912,7 +918,7 @@ def main() -> int:
         pipe_status = pipeline.get("status") or _checks.NO_PIPELINE
 
         print(f"\n## MR !{mr_iid} — {mr_title}")
-        print(f"State: {mr_state} | Target: {_untrusted.flat(mr_target_raw)} | Pipeline: {pipe_status}")
+        print(f"State: {mr_state} | Target: {mr_target} | Pipeline: {pipe_status}")
 
         # MR diff size — file count from existing JSON (no extra network).
         # +/- line counts via local git diff against target branch (also no
