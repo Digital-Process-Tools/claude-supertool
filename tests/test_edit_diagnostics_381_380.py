@@ -258,6 +258,32 @@ def test_doubled_backslash_is_named(tmp_path: Path) -> None:
     assert "do not process escapes" in out
 
 
+def test_single_backslash_misses_a_doubled_file(tmp_path: Path) -> None:
+    """The reverse of #380's case (#985): the FILE holds two literal
+    backslashes (e.g. written earlier with `literal_backslashes = true`) and
+    the payload's `old` holds one. #380 only named the direction where the
+    payload was doubled and the file single -- this direction produced only
+    a generic nearest-match percentage, with no mention of backslashes at
+    all, which is the "fails quietly" half #985 was filed about."""
+    f = tmp_path / "x.py"
+    f.write_text('BAR = "\\\\302"\n')
+    out = supertool.op_edit('BAR = "\\302"', 'BAR = "x"', str(f))
+    assert "ERROR: old string not found" in out
+    assert "DOUBLE backslashes" in out
+    assert "do not process escapes" in out
+
+
+def test_agreeing_backslashes_on_both_sides_need_no_hint(tmp_path: Path) -> None:
+    """Control paired with the two miss-direction tests above (#985): when
+    `old` and the file agree on backslash count, the edit just applies --
+    the hint machinery must not fire on a payload that was never wrong."""
+    f = tmp_path / "x.py"
+    f.write_text('BAR = "\\302"\n')
+    out = supertool.op_edit('BAR = "\\302"', 'BAR = "x"', str(f))
+    assert "ERROR" not in out
+    assert "↳" not in out
+
+
 def test_whitespace_only_difference_is_named(tmp_path: Path) -> None:
     f = tmp_path / "x.py"
     f.write_text("def foo():\n        return bar(1)\n")
