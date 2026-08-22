@@ -894,7 +894,21 @@ def main() -> int:
         mr_iid = mr.get("iid", "?")
         mr_title = _untrusted.flat(str(mr.get("title", "?")))
         mr_state = mr.get("state", "?")
-        mr_target = _untrusted.flat(str(mr.get("target_branch", "?")))
+        # Two names on purpose (#977): `_raw` for the ref built below, and a
+        # separately-bound flattened one for the print. The flat() call is
+        # deliberately NOT inlined into the print's f-string — #1475's scanner
+        # treats a sink argument containing any MARK call as fully handled, so
+        # inlining it hid `mr_state` and `pipe_status`, which are still raw on
+        # that same line, and dropped the census 20 -> 19 without fixing them.
+        # `flat()` discloses U+2028/U+2029 as `[U+2028]`/`[U+2029]`
+        # rather than passing them through, and `git check-ref-format`
+        # accepts both in a refname (#1654) — so a target branch carrying
+        # either built a ref (with literal `[`/`]` in it) that does not
+        # exist, and `git diff --shortstat` failed silently, dropping the
+        # `(+a -d)` figure with no error shown anywhere. Same pattern as
+        # `presets/github/job.py`'s `pr_branch`/`_local_branch_check` split.
+        mr_target_raw = str(mr.get("target_branch", "?"))
+        mr_target = _untrusted.flat(mr_target_raw)
         pipeline = mr.get("pipeline") or mr.get("head_pipeline") or {}
         if not isinstance(pipeline, dict):
             pipeline = {}
@@ -914,7 +928,7 @@ def main() -> int:
             print("Diff: EMPTY — branch has no commits ahead of target!")
         else:
             diff_line = f"Diff: {changes_count} files"
-            target_ref = f"origin/{mr_target}" if mr_target != "?" else ""
+            target_ref = f"origin/{mr_target_raw}" if mr_target_raw != "?" else ""
             if target_ref:
                 shortstat = _git(["diff", "--shortstat",
                                   f"{target_ref}...HEAD"], timeout=3)
