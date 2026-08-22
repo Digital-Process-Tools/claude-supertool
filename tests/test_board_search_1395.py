@@ -119,7 +119,7 @@ def _run_mrs(monkeypatch: pytest.MonkeyPatch, rows: list[dict],
         return subprocess.CompletedProcess(cmd, rc, payload, stderr)
 
     monkeypatch.setattr(mrs, "_run", fake_run)
-    monkeypatch.setattr(mrs, "_watched_iids", lambda: set())
+    monkeypatch.setattr(mrs, "_watched_iids", lambda *a, **k: set())
     monkeypatch.setattr(mrs.sys, "argv", ["mrs.py", arg_str])
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):

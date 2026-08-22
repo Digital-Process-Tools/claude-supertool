@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _board, _proc
+sys.path.insert(0, str(Path(__file__).parent.parent / "watch"))  # for transport
 
 import _board  # noqa: E402
 import _filter_tokens  # noqa: E402  (the one tokenizer + refusal, shared with gh-issues / gh-prs)
@@ -35,9 +36,15 @@ import _auth_probe  # noqa: E402  (does this stderr *state* that the credential 
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _checks  # noqa: E402  (the one check classifier, shared with gh-pr / gh-prs)
 import _proc  # noqa: E402  (the one liveness probe, shared with watch / gh-prs)
+import transport  # noqa: E402  (STATE_DIR resolution shared with radar/watches, #1922)
 
 WATCH_SOURCE = "gitlab-mr"
-STATE_DIR = "/tmp"
+# The resolved state dir, not a bare "/tmp" (#1922): under a named channel
+# (SUPERTOOL_WATCH_NAME) or an explicit SUPERTOOL_WATCH_STATE_DIR, pollers'
+# pid files live in transport.STATE_DIR, which can differ from "/tmp". A
+# stale local default here made this footer disagree with `radar` and
+# `watches`, both of which already read `transport.STATE_DIR`.
+STATE_DIR = transport.STATE_DIR
 DEFAULT_PER_PAGE = 50
 ENRICH_CAP = 40  # never fire more than this many per-MR pipeline calls
 ENRICH_WORKERS = 8  # parallel pipeline fetches
@@ -701,7 +708,10 @@ def main() -> int:
     if notice:
         print(notice)
 
-    watched = _watched_iids()
+    # transport.STATE_DIR is read live (#1922) rather than relying on the
+    # module-level STATE_DIR default, which is a value bound once at import
+    # and would go stale under a monkeypatched or re-resolved channel.
+    watched = _watched_iids(transport.STATE_DIR)
     # One disclosure line above the board, not two marker lines around each
     # title (#819). The titles are the MR authors' words; on a fifty-row board
     # a per-row fence is the noise that gets a convention switched off, and an
