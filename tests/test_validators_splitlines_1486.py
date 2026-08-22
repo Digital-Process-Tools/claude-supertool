@@ -391,22 +391,6 @@ ALLOWED = {
             "the finished string, which splits on all ten, so a fragment "
             "cannot reach a receipt on a row of its own (#1522).",
     },
-    "rector-mcp/rector-mcp.py": {
-        "for line in buf.splitlines():":
-            "bytes, not str: the JSON-RPC frame reader. `bytes.splitlines()` "
-            "adds only C0 controls, which JSON forbids unescaped inside a "
-            "string, and a mis-split fragment fails json.loads and produces no "
-            "record — it can withhold a response, never mint one.",
-    },
-    "phpmd-mcp/phpmd-mcp.py": {
-        "for line in buf.splitlines():": "as rector-mcp above.",
-    },
-    "phpstan-mcp/phpstan-mcp.py": {
-        "for line in buf.splitlines():": "as rector-mcp above.",
-    },
-    "phpunit-mcp/phpunit-mcp.py": {
-        "for line in buf.splitlines():": "as rector-mcp above.",
-    },
     "terraform-check/terraform-check.py": {
         "lines = [ln.lstrip(GUTTER).strip() for ln in stripped.splitlines()]":
             "a flattener, not a parser: `plain()` joins every line into one "
