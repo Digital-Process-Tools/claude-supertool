@@ -652,8 +652,15 @@ def _inprogress_signals(gitdir: str | None) -> list:
 
 
 #: Read from the tail rather than the whole file — a reflog can grow large
-#: between `git gc`s, and only the last entry is ever needed.
+#: between `git gc`s, and only the last entry is ever needed. If the newest
+#: entry's own line turns out to be longer than this (a very long commit
+#: subject), the read window grows rather than parsing a mid-line fragment —
+#: see `_reflog_newest_entry_time`.
 _REFLOG_TAIL_BYTES = 8192
+
+#: Growing past this means either a pathological single reflog line or a
+#: file that is not a reflog at all — decline rather than keep re-reading.
+_REFLOG_TAIL_MAX_BYTES = 1 << 20  # 1 MiB
 
 
 def _reflog_newest_entry_time(target: str):
@@ -669,21 +676,43 @@ def _reflog_newest_entry_time(target: str):
     <timestamp> <tz><TAB><message>`; the timestamp is the second-to-last
     field before the tab.
 
+    Only the tail is read, growing the window rather than trusting a first
+    read: seeking back a fixed `_REFLOG_TAIL_BYTES` can land **inside** the
+    newest entry's own message, past the tab that marks where its header
+    ends — reading that fragment as a header instead of growing the window
+    once mis-parsed a line's own message digits as a plausible-looking but
+    wrong timestamp, silently, with no failure at all. A short read is
+    detected by the absence of a tab in the last line and grown until one is
+    found or `_REFLOG_TAIL_MAX_BYTES` is reached, at which point this
+    declines rather than guess.
+
     `why` is a reason a caller can fold into the mtime-fallback evidence line
     below — it is never itself read as "the tree is quiet".
     """
     try:
         size = os.path.getsize(target)
-        with open(target, "rb") as handle:
-            if size > _REFLOG_TAIL_BYTES:
-                handle.seek(-_REFLOG_TAIL_BYTES, os.SEEK_END)
-            raw = handle.read()
     except OSError as exc:
         return None, f"could not be read ({exc})"
-    lines = [ln for ln in raw.decode("utf-8", errors="replace").splitlines() if ln.strip()]
-    if not lines:
-        return None, "the reflog has no entries"
-    header = lines[-1].split(chr(9), 1)[0]
+    tail = min(size, _REFLOG_TAIL_BYTES)
+    while True:
+        try:
+            with open(target, "rb") as handle:
+                if tail < size:
+                    handle.seek(-tail, os.SEEK_END)
+                raw = handle.read()
+        except OSError as exc:
+            return None, f"could not be read ({exc})"
+        lines = [ln for ln in raw.decode("utf-8", errors="replace").splitlines() if ln.strip()]
+        if not lines:
+            return None, "the reflog has no entries"
+        last = lines[-1]
+        if chr(9) in last or tail >= size:
+            break
+        if tail >= _REFLOG_TAIL_MAX_BYTES:
+            return None, (f"the newest entry's line exceeds {_REFLOG_TAIL_MAX_BYTES} bytes "
+                          "with no field separator found — declining rather than parsing a fragment")
+        tail = min(size, tail * 8)
+    header = last.split(chr(9), 1)[0]
     tokens = header.split()
     if len(tokens) < 2:
         return None, f"last entry does not look like a reflog line: {header!r}"
@@ -695,6 +724,11 @@ def _reflog_newest_entry_time(target: str):
 
 def _newest_write(path: str, gitdir: str | None, now: float):
     """Newest mtime in the tree and its git dir, as `(age_seconds, label)`.
+
+    The `"reflog written"` candidate is the one exception: it reports the
+    newest **entry**'s own timestamp via `_reflog_newest_entry_time`, not
+    the file's mtime, and only falls back to mtime when that entry cannot
+    be read. See that function's docstring and #1923.
 
     Returns `(None, why)` when the answer was not obtained — an unreadable
     tree, or a walk that hit its cap. A truncated walk could have missed a

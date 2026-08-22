@@ -155,13 +155,62 @@ def test_an_unparseable_reflog_falls_back_to_mtime_not_to_silence(tmp_path: Path
 
 
 def test_an_empty_reflog_file_does_not_read_as_idle(tmp_path: Path) -> None:
+    """Not vacuous against the pre-fix code: an empty file's mtime is fresh
+    either way, so `!= idle` alone would pass unmodified code too (a real
+    reflog is never empty for a worktree old enough to be `idle`-eligible).
+    What only the new code produces is the specific `why` naming the empty
+    reflog, carried into `_newest_write`'s fallback evidence line -- the
+    pre-fix module has no `_reflog_newest_entry_time` at all.
+    """
     path, gitdir = _fixture(tmp_path)
     reflog = os.path.join(gitdir, "logs", "HEAD")
     open(reflog, "w", encoding="utf-8").close()
     now = time.time()
 
+    ts, why = wt._reflog_newest_entry_time(reflog)
+    assert ts is None
+    assert "no entries" in why, why
+
+    age, label = wt._newest_write(path, gitdir, now)
+    assert "no entries" in label, label
+
     got = wt.assess({"path": path, "gitdir": gitdir}, now=now)
     assert got.state != wt.STATE_IDLE, got
+
+
+# ── the tail-seek that grows past a mis-landed cut (auditor finding) ─────
+
+def test_a_message_longer_than_the_tail_window_is_still_parsed_correctly(tmp_path: Path) -> None:
+    """The tail-seek in `_reflog_newest_entry_time` defaults to 8192 bytes.
+
+    A fixed seek that lands inside the newest entry's own commit message --
+    past the tab that marks where the header ends -- once mis-read message
+    digits as a plausible but wrong timestamp, silently, with no error at
+    all. The header itself is short and near the front of the line; only a
+    message long enough to push the true header more than 8192 bytes from
+    EOF can trigger this, so the message here is built to do exactly that.
+    """
+    reflog = tmp_path / "HEAD"
+    ts = 1700000000
+    long_message = "x" * 20000
+    reflog.write_text(
+        f"0000 1111 A <a@x.com> {ts} +0000\t commit: {long_message}\n",
+        encoding="utf-8",
+    )
+    got_ts, why = wt._reflog_newest_entry_time(str(reflog))
+    assert why is None, why
+    assert got_ts == float(ts), (got_ts, "must read the real header, not a message fragment")
+
+
+def test_a_message_past_the_hard_cap_declines_rather_than_guesses(tmp_path: Path) -> None:
+    """Growth is bounded. Past the cap, decline -- never parse a fragment."""
+    reflog = tmp_path / "HEAD"
+    # No tab anywhere in the tail-sized window even after growing past the
+    # cap: a file that is not a reflog at all, well over 1 MiB.
+    reflog.write_text("x" * (wt._REFLOG_TAIL_MAX_BYTES + 1000), encoding="utf-8")
+    got_ts, why = wt._reflog_newest_entry_time(str(reflog))
+    assert got_ts is None
+    assert why
 
 
 # ── the sweep: `_newest_write`'s tree walk is content-free by nature ─────
