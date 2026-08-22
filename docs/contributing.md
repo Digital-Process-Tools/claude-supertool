@@ -389,6 +389,8 @@ Any key in an op config that isn't a reserved key (`cmd`, `timeout`, `descriptio
 
 The script receives `SUPERTOOL_LINES=80` and `SUPERTOOL_ERROR_PATTERNS=ERROR,FAIL,Fatal`. Use this to tune op behavior from JSON without modifying scripts.
 
+**The key is not namespaced by the op that declares it** — `job.lines` and some other op's `other.lines` would both export `SUPERTOOL_LINES`, with no way for either script to tell whose value it received. Declaring the same key on two different ops in your own `"ops"` section with genuinely different values is refused at the point the second op would run ([#1009](https://github.com/Digital-Process-Tools/claude-supertool/issues/1009)); declaring it with the same value on purpose — the shape `REPO_TARGET` and `DEFAULT_LIMIT` already use across many shipped ops — is untouched, because that is deliberate sharing, not a collision.
+
 ### `scripts/` — this repo's own maintainer ops
 
 `scripts/` is where a project op that drives *this* repository lives, registered in this repository's own `.supertool.json`. Such ops are not part of the wheel (`py-modules` is `supertool` and `_supertool`), not in `.supertool.example.json`, and not in the README: an op that reads `~/Documents/st-wt` answers for one machine's layout, and advertising it to users of the released tool would be documenting something they cannot run.

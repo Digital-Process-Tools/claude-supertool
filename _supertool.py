@@ -1052,12 +1052,102 @@ def _record_op_sources(config: Dict[str, Any],
     config["_op_sources"] = sources
 
 
+#: Keys `_resolve_custom_op`'s launcher never exports as `SUPERTOOL_<KEY>` —
+#: its own control fields, not config for the subprocess to read (#692,
+#: #1347, #1357, #1672). Module-level and shared with
+#: `_op_config_key_collisions` below so the two can never disagree about
+#: which keys actually become an env var: a set redeclared at each site would
+#: let one drift and the other not, and the drift would be silent — exactly
+#: the defect class this whole file exists to remove.
+_OP_CONFIG_RESERVED_KEYS = {
+    "cmd", "timeout", "description", "syntax", "example", "status",
+    "restartMcp", "replaces", "paths", "exitStatus",
+}
+
+
+def _op_config_key_collisions(project_ops: Dict[str, Any]
+                              ) -> Dict[str, List[str]]:
+    """Env var names two DIFFERENT project-declared ops would both export (#1009).
+
+    `ops.<op>.<key>` reaches that op's own subprocess as `SUPERTOOL_<KEY>` —
+    the key alone, never namespaced by the op that declared it. Nothing stops
+    a second op from picking the same key name for an unrelated setting, and
+    the failure when that happens was silent: neither op errors, neither
+    warns, and whichever op runs reads whatever value its OWN project entry
+    happens to carry for that key. A live instance shipped as
+    `hashnode_react.auto_force` / `hashnode_comment.auto_force`, two separate
+    documented opt-ins, both landing on `SUPERTOOL_AUTO_FORCE` (#1009,
+    2026-08-13 comment).
+
+    Scoped to `project_ops` — the project's OWN "ops" section in
+    `.supertool.json` — never to a preset's shipped defaults. A preset
+    deliberately sharing one key across many ops on purpose (`REPO_TARGET`
+    across every `gh-*`/`gl-*` op that targets a repo, `DEFAULT_LIMIT` across
+    every list op) is the same shape as `SUPERTOOL_GIT_TIMEOUT`: one name,
+    several readers, by design. Flagging that would refuse most of this
+    repo's own shipped presets for behaviour that has always been correct —
+    measured: 10 of the 18 non-reserved keys shipped presets declare are
+    already read by 2+ ops on purpose.
+
+    Same name is not enough even within `project_ops` — a first version of
+    this checked only that, and `supertool 'ops:roster'` against this very
+    repository's own `.supertool.json` immediately named `SUPERTOOL_WATCH_NAME`
+    a collision: `channel`, `radar`, `unwatch`, `watch` and `watches` all
+    declare `watch_name: "oss-supertool"`, one identifier repeated on purpose
+    so the whole `watch` family points at the same channel. Refusing that
+    would have broken every `watch` op in this repository's own config the
+    moment this landed — exactly the breaking change this fix exists to
+    avoid causing. So the signal is not "two ops named it the same"; it is
+    "two ops named it the same AND disagree about the value" — the hashnode
+    case (`auto_force: true` vs `auto_force: false`) disagrees, `watch_name`
+    repeated verbatim does not. Values are compared via `json.dumps` with
+    sorted keys so a dict or list config value compares by content, not
+    identity; a value that cannot be JSON-encoded compares by `repr` rather
+    than silently dropping out of the check.
+
+    Returns `{env_var_name: [op_name, ...]}` for every name where two or more
+    ops declare GENUINELY DIFFERING values, each list sorted and
+    deduplicated and naming every op that touches the name — including one
+    that happens to agree with another, so an operator fixing the disagreement
+    sees the whole group rather than only the pair that disagrees. Empty when
+    nothing collides, which covers both "only one op uses this key" and
+    "several agree on one value".
+    """
+    by_env: Dict[str, List[Tuple[str, Any]]] = {}
+    for op_name, entry in project_ops.items():
+        if not isinstance(entry, dict):
+            continue
+        for key, value in entry.items():
+            if not isinstance(key, str) or key in _OP_CONFIG_RESERVED_KEYS:
+                continue
+            by_env.setdefault(f"SUPERTOOL_{key.upper()}", []).append(
+                (op_name, value))
+    collisions: Dict[str, List[str]] = {}
+    for env, pairs in by_env.items():
+        ops_here = sorted({op for op, _ in pairs})
+        if len(ops_here) < 2:
+            continue
+        fingerprints = set()
+        for _, value in pairs:
+            try:
+                fingerprints.add(json.dumps(value, sort_keys=True))
+            except TypeError:
+                fingerprints.add(repr(value))
+        if len(fingerprints) > 1:
+            collisions[env] = ops_here
+    return collisions
+
+
 def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
     """Load and merge preset ops into config. Project ops win on conflict."""
     presets = config.get("presets")
     project_ops = config.get("ops", {})
     if not isinstance(project_ops, dict):
         project_ops = {}
+    # Computed here, once, from `project_ops` alone — before any preset is
+    # merged in — and stashed on every return path below (#1009). Anything
+    # a preset contributes is deliberately out of scope; see the docstring.
+    config["_op_config_collisions"] = _op_config_key_collisions(project_ops)
     if presets is not None and not isinstance(presets, list):
         # Declared and unusable is not the same as not declared. Nothing gets
         # merged either way, but here the config asked for ops that are now
@@ -3995,6 +4085,44 @@ def _preset_declares_error(body: str) -> bool:
     return any(line.startswith("ERROR: ") for line in body.splitlines())
 
 
+def _op_config_collision_refusal(op: str, entry: Any,
+                                  config: Dict[str, Any]) -> str | None:
+    """ERROR text when `op`'s own config would export a colliding env var (#1009).
+
+    Only ever fires for a key `op` ITSELF declared in the project's "ops"
+    section: `config["_op_config_collisions"]` was built from `project_ops`
+    alone (`_op_config_key_collisions`), so an op that merely inherits a
+    preset's shared vocabulary key (`REPO_TARGET`, `DEFAULT_LIMIT`, ...) is
+    never named here — only two ops that picked the same name independently,
+    in the same project's own config, for genuinely differing values. A
+    value deliberately repeated across a family of ops (this repo's own
+    `watch_name: "oss-supertool"` on `channel`/`radar`/`unwatch`/`watch`/
+    `watches`) is never a collision at all, so it never reaches this
+    function's `collisions` lookup in the first place.
+    """
+    if not isinstance(entry, dict):
+        return None
+    collisions = config.get("_op_config_collisions")
+    if not isinstance(collisions, dict) or not collisions:
+        return None
+    for key in entry:
+        if not isinstance(key, str) or key in _OP_CONFIG_RESERVED_KEYS:
+            continue
+        env_key = f"SUPERTOOL_{key.upper()}"
+        others = collisions.get(env_key)
+        if others and op in others:
+            rest = ", ".join(o for o in others if o != op)
+            return (
+                f"ERROR: `ops.{op}.{key}` in .supertool.json reaches this op "
+                f"as `{env_key}`, and `ops.{rest}` declares the same key "
+                f"name in the same file. Both would read one shared "
+                f"variable with no way for either op to tell whose value it "
+                f"got (#1009). Rename one — e.g. "
+                f"`{op.replace('-', '_')}_{key}` — or drop the duplicate.\n"
+            )
+    return None
+
+
 def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     """Try to run op as a custom command from config["ops"].
 
@@ -4038,6 +4166,16 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
 
     if not cmd_template:
         return f"ERROR: empty command for custom op {op!r}\n"
+
+    # #1009 — before anything else runs: two ops that each declared their own
+    # `ops.<op>.<key>` and landed on the same `SUPERTOOL_<KEY>` got no warning
+    # before this, only whichever value its own entry happened to carry. Above
+    # the subprocess for the same reason the containment gate below is —
+    # once a colliding value has been read, the run it produced is
+    # indistinguishable from a correctly configured one.
+    _collision = _op_config_collision_refusal(op, entry, config)
+    if _collision:
+        return _collision
 
     # #1287 — the universal path chokepoint for preset and custom ops. Builtins
     # have had `_PATH_ARG_POSITIONS` in `_dispatch_impl` since #146; no preset
@@ -4109,7 +4247,9 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     # `exitStatus` joins them for the same reason as `paths` (#1672): it is a
     # declaration the dispatcher acts on around the subprocess, so exporting it
     # into that subprocess is the wrong direction for the information to travel.
-    _RESERVED_KEYS = {"cmd", "timeout", "description", "syntax", "example", "status", "restartMcp", "replaces", "paths", "exitStatus"}
+    # Shared with `_op_config_key_collisions` — see that constant's docstring
+    # for why the two must read the same set (#1009).
+    _RESERVED_KEYS = _OP_CONFIG_RESERVED_KEYS
     # No scrub here any more (#714). #692 put one on this line because every
     # PRESET op is launched from it — true, and the reasoning holds, but this
     # is the launcher for half the op table. Built-ins never reach it, and core

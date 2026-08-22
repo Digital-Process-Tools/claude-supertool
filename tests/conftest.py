@@ -1162,6 +1162,11 @@ RESET_GLOBALS = (
 #    something untrue about their lifetime.
 RESET_EXEMPT_GLOBALS = (
     "_GC_DEFAULT_RETENTION_DAYS",
+    # Which config keys `_resolve_custom_op`'s launcher never exports as an
+    # env var, and the set `_op_config_key_collisions` reads the same list
+    # from so the two can never disagree (#1009). Constant, written once at
+    # import, only ever read -- same lifetime as _BUILTIN_OPS.
+    "_OP_CONFIG_RESERVED_KEYS",
     "_MCP_SERVERS",
     "_MCP_STOP_CODES",
     # Per-command-word option grammar for the raw-command guard (#1421).
