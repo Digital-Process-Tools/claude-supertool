@@ -69,8 +69,17 @@ still do not cover.
 from __future__ import annotations
 
 import os
+import pathlib
 import re
 import sys
+
+# This module lives in validators/common/ alongside linebreaks.py, but
+# unlike the five adapters that import it, nothing guarantees a caller
+# loading path_anchor.py directly (as this module's own test files do) has
+# already put that directory on sys.path -- so it does so for itself,
+# mirroring the convention every adapter already uses one directory up.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from linebreaks import split_lines
 
 
 def safe_realpath(file: str) -> str | None:
@@ -155,3 +164,54 @@ def anchor(file: str, tail: str, platform: str | None = None,
                 all_variants.append(v)
     alternatives = "|".join(re.escape(v) for v in all_variants)
     return re.compile(r"^(?:" + alternatives + r")" + tail)
+
+
+# ---------------------------------------------------------------------------
+# When the anchor still matches nothing (#1937, third CI round). Three
+# rounds of guessing the transform from an assertion failure and a raw exit
+# code -- Windows spelling, then symlink canonicalisation, both reasoned
+# from real evidence and both incomplete -- is the cost of an adapter that
+# never said what it saw. These two functions do not widen the anchor
+# further; they make a MISS legible, so the next red prints the two strings
+# that differ instead of handing back a third hypothesis to test.
+# ---------------------------------------------------------------------------
+
+#: The SAME non-greedy shape #1934 removed from location-extraction -- safe
+#: to reuse here because nothing built from it is ever treated as a
+#: verdict. It feeds one string into a message a human reads, never a
+#: `line`/`col`/`code` a caller trusts.
+_LOOSE_LEADING_PATH_RE = re.compile(r"^(.*?):\d+\b")
+
+
+def unanchored_path_hint(output: str) -> str | None:
+    """A best-effort path-looking prefix from the FIRST line of `output`
+    that has one, or `None` when nothing does. Diagnostic only: this
+    extracts whatever the tool's own text happens to put before the first
+    `:digit`, unverified against anything, on purpose -- verifying it is
+    exactly what the anchor already does, and this function exists for the
+    case where that verification just failed.
+    """
+    for line in split_lines(output):
+        m = _LOOSE_LEADING_PATH_RE.match(line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def anchor_miss_message(file: str, output: str, fallback: str) -> str:
+    """`fallback` is what an adapter would otherwise say for a non-zero
+    exit with nothing anchored. When `output` looks like it names a
+    DIFFERENT path than `file` -- the anchor missed rather than the tool
+    staying silent -- this prefixes `fallback` with both strings side by
+    side. When it does not (the hint matches `file`, or there is no
+    path-shaped hint at all, or `output` is empty), `fallback` is returned
+    UNCHANGED: there is nothing to compare, and claiming a comparison that
+    found nothing would be its own small version of the defect this
+    function exists to fix.
+    """
+    hint = unanchored_path_hint(output) if output else None
+    if hint is None or hint == file:
+        return fallback
+    return (f"anchor matched no accepted spelling of the invoked path "
+            f"{file!r}; the tool's own output appears to start with "
+            f"{hint!r} instead -- {fallback}")

@@ -18,7 +18,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import guard_main, tool_fault
 from linebreaks import split_lines
-from path_anchor import anchor as _anchor, safe_realpath as _safe_realpath
+from path_anchor import (anchor as _anchor, safe_realpath as _safe_realpath,
+                          anchor_miss_message as _anchor_miss_message)
 
 # libxml announces a finding about the document as `file:LINE: parser error : ...`.
 # Every other way it exits non-zero says nothing about the document's XML:
@@ -114,9 +115,14 @@ def main() -> None:
     out = r.stderr or ""
     errors = parse_diagnostics(out, file)
     if not errors:
+        # #1937, third CI round: when the anchor missed but xmllint DID
+        # speak, say what it saw -- the invoked path and whatever path the
+        # tool's own output appears to name -- instead of leaving the next
+        # reader to guess the transform from an assertion failure alone.
         errors = [{"line": None, "col": None, "severity": "error",
                    "code": "adapter",
-                   "msg": tool_fault("xmllint", r.returncode, out)}]
+                   "msg": _anchor_miss_message(
+                       file, out, tool_fault("xmllint", r.returncode, out))}]
     emit({"tool": "xmllint", "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": dur})
 

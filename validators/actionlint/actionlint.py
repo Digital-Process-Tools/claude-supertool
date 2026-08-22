@@ -28,7 +28,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import absent, guard_main
 from linebreaks import split_lines
-from path_anchor import anchor as _anchor, safe_realpath as _safe_realpath
+from path_anchor import (anchor as _anchor, safe_realpath as _safe_realpath,
+                          anchor_miss_message as _anchor_miss_message)
 
 TOOL = "actionlint"
 INSTALL_HINT = ("actionlint not found on PATH — this workflow was NOT linted "
@@ -194,8 +195,13 @@ def main() -> None:
     errors = parse_diagnostics(output, file)
 
     if not errors and output:
+        # #1937, third CI round: when the anchor missed but actionlint DID
+        # speak, say what it saw -- the invoked path and whatever path the
+        # tool's own output appears to name -- instead of leaving the next
+        # reader to guess the transform from an assertion failure alone.
         errors = [{"line": None, "col": None, "severity": "error",
-                   "code": "lint", "msg": output[:300]}]
+                   "code": "lint",
+                   "msg": _anchor_miss_message(file, output, output[:300])}]
 
     emit({"tool": TOOL, "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": duration, **COUNT_CONTRACT})
