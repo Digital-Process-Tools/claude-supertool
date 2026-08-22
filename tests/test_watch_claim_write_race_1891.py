@@ -217,8 +217,6 @@ class TestWriteStateManyReadersOneSlot:
     """
 
     def test_concurrent_non_owning_writers_leave_one_valid_file(self) -> None:
-        import json
-
         barrier = threading.Barrier(8)
         errors: list[Exception] = []
 
