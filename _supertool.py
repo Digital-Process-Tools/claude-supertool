@@ -1332,12 +1332,20 @@ def _mixed_tree_note(pair: Tuple[str, str]) -> str:
 
 
 def _mixed_tree_decline(op: str, pair: Tuple[str, str]) -> str:
-    """The third state for a config op whose provenance is unknown (#678).
+    """The third state for an op whose provenance is unknown (#678, #1942).
 
     Not a finding — nothing was found wrong with the op. An absence: the tool
     cannot say which version would answer, so it says that instead of printing a
     `PASS` indistinguishable from one the invoked build produced. Same contract
     as `docs/validators.md` §"Declining instead of guessing".
+
+    Reused for two different callers: a config/preset op reached through
+    `_resolve_custom_op` (which shells out — the wrong tree's *script* would
+    have run), and, since #1942, a write-class builtin reached from
+    `_dispatch_impl`'s own chokepoint (no subprocess — the wrong tree's
+    *validators, formatters and hooks* would have run instead). `op` and
+    `pair` say which call and which two trees either way; nothing below
+    names which caller it was, on purpose, since the remedy is identical.
     """
     core, other = pair
     return (
@@ -26363,6 +26371,23 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         for _i, _pos in enumerate(_path_slots):
             parts[_pos] = _gated[_i]
 
+    # #1942 -- #678's guard declined a preset/custom op outright under a
+    # mixed core/tree pair, but a built-in WRITE op only got the stderr
+    # warning `main()` prints once and kept running to completion: the
+    # write itself always lands on the right file (`_safe_path` resolves
+    # against `os.getcwd()` regardless of which core answered), but the
+    # CODE that answered -- validators, formatters, hooks -- was the other
+    # tree's, and the receipt read exactly like a correct one. Gate the
+    # same class `_OP_SAFETY_BUILTIN` already names as "writes", at the
+    # same chokepoint every path argument already passes through, rather
+    # than adding a second list that can drift from the first (#1285's
+    # own lesson, about this exact table).
+    if _OP_SAFETY_BUILTIN.get(op) == "writes":
+        _mixed = _mixed_tree_pair()
+        if _mixed is not None and not _mixed_tree_allowed():
+            _SKIP_COUNT[0] += 1
+            return _receipt(header, _mixed_tree_decline(op, _mixed))
+
     try:
         if op == "read":
             path = parts[1] if len(parts) > 1 else ""
@@ -28192,9 +28217,12 @@ def _main(argv: List[str]) -> int:
     for _warning in list(_CONFIG_WARNINGS) + _preset_warnings:
         sys.stderr.write(f"supertool: {_warning}\n")
 
-    # #678 — config ops decline outright, but a built-in-only call under a mix
-    # runs to completion using the other tree's validators, formatters and
-    # hooks. Say so once, on stderr, so the operator knows what answered.
+    # #678 — a preset/custom op declines outright under a mix. #1942 widened
+    # that to every built-in the "writes" chokepoint above gates too, so what
+    # is left running to completion here on a bare warning is read-only:
+    # `read`, `grep` and the rest of `_PARALLEL_SAFE_OPS`, which answer from
+    # the core that was invoked and are not of unknown origin. Say so once, on
+    # stderr, so the operator still knows which tree's config resolved.
     _mixed_call = _mixed_tree_pair()
     if _mixed_call is not None:
         sys.stderr.write(f"supertool: {_mixed_tree_note(_mixed_call)}\n")
