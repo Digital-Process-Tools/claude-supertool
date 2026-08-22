@@ -412,7 +412,8 @@ def test_rev_parse_cannot_tell_outside_a_repo_from_a_faulted_one(
     outside.mkdir()
     outside_proc = subprocess.run(
         ["git", "rev-parse", "--is-inside-work-tree"], cwd=outside,
-        capture_output=True, text=True, timeout=BUDGET)
+        capture_output=True, text=True, timeout=BUDGET,
+        encoding="utf-8", errors="replace")
 
     faulted = tmp_path / "faulted"
     faulted.mkdir()
@@ -420,7 +421,8 @@ def test_rev_parse_cannot_tell_outside_a_repo_from_a_faulted_one(
     (faulted / ".git" / "HEAD").write_text("garbage\n", encoding="utf-8")
     faulted_proc = subprocess.run(
         ["git", "rev-parse", "--is-inside-work-tree"], cwd=faulted,
-        capture_output=True, text=True, timeout=BUDGET)
+        capture_output=True, text=True, timeout=BUDGET,
+        encoding="utf-8", errors="replace")
 
     assert outside_proc.returncode != 0, outside_proc
     assert faulted_proc.returncode != 0, faulted_proc
