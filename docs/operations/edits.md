@@ -323,10 +323,13 @@ ERROR: @file payload refused (p.toml): a ''' literal block carries an EVEN run o
                             ^^
   ↳ TWO OPPOSITE fixes, and nothing here can tell which you meant -- decide per occurrence, then send the payload once:
       meant HALF the run (escape reflex -- a literal block eats nothing, so a doubled 1 arrives as 2 and a doubled 2 as 4): write half of what is caretted above.
-      meant the run AS WRITTEN (a shell printf format, a Windows path, a LaTeX line break): add `literal_backslashes = true` at the top level of the payload, and this refusal becomes a decision you recorded. It applies to the WHOLE payload -- every op, every field.
+      meant the run AS WRITTEN (a shell printf format, a Windows path, a LaTeX line break): add `literal_backslashes = true` at the top level of the payload to exempt EVERY field, or name only the field(s) above -- `literal_backslashes = ["new"]` -- to leave any other field's own doubled runs refused ([#1839](https://github.com/Digital-Process-Tools/claude-supertool/issues/1839)). Either way, this refusal becomes a decision you recorded.
+  (#1087, #1096, #1808, #1814, #1819, #1839)
 ```
 
 That is the refusal. This section used to print the **note** shape here instead, for a `new` field — which has taken the refusal arm since #1087, so the example had been showing the wrong arm.
+
+The suggested `literal_backslashes = [...]` line is a UNION of the fields THIS refusal actually flagged and any the payload had already exempted with a prior list, in first-seen order — it is meant to be pasted over an existing list, not adapted, and pasting it never drops an exemption the payload already recorded. It is the way out for a payload whose fields genuinely disagree about escapes: `new` wants the run as written and some other field in the same payload does not. It does not distinguish two OPS that both carry a `new` field and disagree with EACH OTHER — the scan matches on the bare field name across the whole payload, with no notion of which op it sits in, so that payload is still two payloads.
 
 Every occurrence is located because the retry is the whole payload. One refusal per offence cost four full re-sends in one measured agent run, on payloads up to 14 KB, and the scan had already parsed all of them at the moment it reported one ([#1814](https://github.com/Digital-Process-Tools/claude-supertool/issues/1814)). The excerpt is centred on the pair rather than taken from the head of the line, because a `printf` format is frequently 200 characters into a long line and up to 48 characters of that line's head do not contain the offending bytes at all ([#1808](https://github.com/Digital-Process-Tools/claude-supertool/issues/1808)). Beyond four occurrences in one field the rest are named by payload line, never merely counted — a count sends the reader back to re-derive by hand the one fact the scanner already had.
 
@@ -339,7 +342,7 @@ Neither arm is a **correction**: nothing is rewritten either way. Some payloads 
 
 The second bullet used to read "three or more, which was counted rather than produced by reflex", and the rule was a run of *exactly* two. Four was produced by reflex twice ([#1860](https://github.com/Digital-Process-Tools/claude-supertool/issues/1860)), by callers who had just read this very refusal and doubled again to escape the escape — the refusal manufactured its own blind spot, and its stated premise ("would reach disk at its full length, pass every validator, and be wrong only in string contents") was always as true of four as of two. The test is evenness now, and the receipt names the run length it found rather than saying `\\`.
 
-To write one backslash, write one. To write a pair deliberately in `old` — the note arm — keep the literal block; the note is only a note. To write one deliberately in `new` or `content`, the literal block alone is not enough, because that arm is refused: set `literal_backslashes = true` at the top level of the payload, or say it in a `"""basic"""` block, where each backslash doubles.
+To write one backslash, write one. To write a pair deliberately in `old` — the note arm — keep the literal block; the note is only a note. To write one deliberately in `new` or `content`, the literal block alone is not enough, because that arm is refused: set `literal_backslashes = true` at the top level of the payload to exempt every field, `literal_backslashes = ["new"]` to exempt only the fields it names ([#1839](https://github.com/Digital-Process-Tools/claude-supertool/issues/1839)), or say it in a `"""basic"""` block, where each backslash doubles.
 
 ### `batch:@file` — mixed ops in one round-trip
 
