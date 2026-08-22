@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import socket
 import sys
 import time
@@ -122,12 +123,15 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
         s.settimeout(CALL_TIMEOUT_SEC)
         s.connect(sock_path)
 
+        # #1935: an unpredictable per-call id, not the fixed literal `2` --
+        # see ndjson_scan.py's module docstring for what that closes.
+        req_id = random.randrange(2**32)
         msgs = [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize",
              "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                         "clientInfo": {"name": "phpmd-mcp-adapter", "version": "1.0.0"}}},
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
-            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            {"jsonrpc": "2.0", "id": req_id, "method": "tools/call",
              "params": {"name": "phpmd_analyse",
                         "arguments": {"path": file_path}}},
         ]
@@ -151,12 +155,12 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
             # time — a fatal analysis run's HTML error page can glue the real
             # response to the end of the last HTML line with no separator,
             # and a line-anchored parser never sees it.
-            obj = _ndjson_scan.find_response(buf, 2)
+            obj = _ndjson_scan.find_response(buf, req_id)
             if obj is not None:
                 return obj
         raise RuntimeError(
-            f"no id=2 response within {CALL_TIMEOUT_SEC}s "
-            f"({_ndjson_scan.describe_buffer(buf, 2)})")
+            f"no id={req_id} response within {CALL_TIMEOUT_SEC}s "
+            f"({_ndjson_scan.describe_buffer(buf, req_id)})")
 
 
 def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:

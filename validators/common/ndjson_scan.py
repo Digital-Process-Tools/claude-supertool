@@ -31,12 +31,22 @@ holding one) can walk the count off by whatever braces sit inside that string.
 The mitigation is not "get the brace right" — over raw text without a lexer that
 cannot be guaranteed — it is that a wrong brace almost always produces text
 `raw_decode` cannot parse as JSON at all, and an unparseable candidate is just
-skipped, never guessed at. The one case this cannot catch is a forged frame:
-noise that contains a *complete, valid* JSON object with a `"jsonrpc"` key and
-the exact `id` being awaited. Nothing short of an authenticated transport closes
-that gap, and this module does not claim to. What it guarantees is the cheaper,
-real property: it never returns an object it could not fully decode, and it never
-returns one whose `id` does not match.
+skipped, never guessed at. The one case this cannot catch is a forged frame: noise that contains a
+*complete, valid* JSON object with a `"jsonrpc"` key and the exact `id`
+being awaited. That id used to be the literal `2`, hardcoded and identical
+on every call in all four adapters (#1935) — free to guess without
+observing a single byte of the daemon's actual traffic. Each adapter now
+sends `random.randrange(2**32)` per call and awaits that value instead, so
+a forger with no visibility into the outgoing frame has on the order of a
+1-in-4-billion chance of landing on the awaited id, rather than a
+certainty. What remains open is narrower, and worth naming precisely
+rather than waving at: anything that can *observe* the id — a process
+sharing the daemon's stdout, a debugger attached to the call, a log line
+that prints the outgoing frame — can still forge a match, because nothing
+here authenticates the transport itself. What this module guarantees,
+unchanged, is the cheaper, real property: it never returns an object it
+could not fully decode, and it never returns one whose `id` does not
+match.
 """
 from __future__ import annotations
 

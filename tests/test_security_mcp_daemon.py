@@ -991,8 +991,14 @@ class TestSocketRecvUnboundedAccumulation:
 
     def test_large_response_accumulates_in_memory(self, monkeypatch):
         """Simulate a large MCP response: verify buf grows to full size before
-        the id=2 line is found."""
-        # Build a fake response: N lines of noise, then id=2 at the end.
+        the awaited response line is found."""
+        # #1935: the id awaited is a random per-call value, not the fixed
+        # literal 2 -- pin it so this test's canned final_line still matches
+        # what the adapter actually sends. Unrelated to the memory-growth
+        # claim this test exists to make.
+        monkeypatch.setattr(phpunit_adapter.random, "randrange", lambda *a, **k: 2)
+        # Build a fake response: N lines of noise, then the real response
+        # (id=2, pinned above) at the end.
         noise_line = json.dumps({"jsonrpc": "2.0", "id": 99, "result": "x"}).encode() + b"\n"
         final_line = json.dumps({"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": {}}}).encode() + b"\n"
 
@@ -1022,6 +1028,10 @@ class TestSocketRecvUnboundedAccumulation:
 
     def test_timeout_prevents_infinite_loop_with_no_id2_response(self, monkeypatch):
         """If the server never sends id=2, the deadline loop exits and RuntimeError is raised."""
+        # #1935: the id awaited is a random per-call value, not the fixed
+        # literal 2 -- pin it so the assertion below can still match on a
+        # concrete id without caring what value it is.
+        monkeypatch.setattr(phpunit_adapter.random, "randrange", lambda *a, **k: 2)
         # All chunks are noise lines with no id=2
         noise_line = json.dumps({"jsonrpc": "2.0", "id": 99, "result": "x"}).encode() + b"\n"
         chunks = [noise_line] * 5 + [b""]  # EOF
