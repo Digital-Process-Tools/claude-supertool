@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
+import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 import _checks  # noqa: E402  (the one check tally, shared with gh-prs / git-status)
 import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run / gh-branch)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
@@ -779,7 +780,7 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     s = stderr.lower()
     if "github host" in s or "not a git repository" in s or "git remotes" in s:
         return _repo_target.no_repo_error("gh-pr:265:status")
-    if "could not resolve" in s or "404" in s or "not found" in s:
+    if _status_probe.says_not_found(s):
         return (f"ERROR: {resource} #{identifier} not found "
                 f"{_repo_target.not_found_scope()}. "
                 f"{_repo_target.not_found_hint()}")
@@ -795,7 +796,7 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
         return f"ERROR: gh CLI not authenticated. Run: gh auth login (verify with: gh auth status)"
     if "rate limit" in s or "429" in s:
         return "ERROR: GitHub API rate limit exceeded. Wait a few minutes and retry."
-    if "403" in s or "forbidden" in s:
+    if _status_probe.says_forbidden(s):
         return f"ERROR: permission denied for {resource} #{identifier}. Check repo access (gh auth status)."
     # The one sink both `gh-pr` error prints share, so the flatten belongs here
     # rather than at either of them (#1475). `gh` echoes the GitHub API's own

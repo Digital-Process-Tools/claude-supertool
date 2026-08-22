@@ -51,9 +51,20 @@ import base64
 import binascii
 import concurrent.futures
 import json
+import os
 import re
 import subprocess
+import sys
 import time
+
+# Every other presets-local sibling this module could import already carries
+# its own path insert before importing one; this module never needed a
+# sibling before #1864, and relying on the caller (branch.py) to have gone
+# first is how `import _status_probe` above raised `ModuleNotFoundError` for
+# any future caller or test that loads this file on its own -- found in
+# review, reproduced with a standalone `importlib` load.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _status_probe  # noqa: E402  (does this stderr *state* the target is missing? - #1864)
 
 WORKFLOW_DIR = ".github/workflows"
 
@@ -293,7 +304,7 @@ def _api(path: str, timeout: int = API_TIMEOUT) -> tuple[object, str]:
         return None, f"gh could not be run ({type(exc).__name__})"
     if r.returncode != 0:
         stderr = (r.stderr or "").strip()
-        if "404" in stderr or "Not Found" in stderr:
+        if _status_probe.says_not_found(stderr):
             return None, "404"
         return None, f"gh failed ({stderr[:120] or 'no stderr'})"
     try:

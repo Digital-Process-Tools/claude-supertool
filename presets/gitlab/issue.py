@@ -23,6 +23,7 @@ import _repo_target  # noqa: E402  (the project this call is about, if not cwd's
 import _secrets  # noqa: E402  (the one GitLab token-prefix list — #1645)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
+import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 
 DESCRIPTION_MAX = 3000
 # Related MRs are listed, not summarised, so the list is capped. A *count* cut
@@ -54,7 +55,7 @@ def _glab(args: list[str], timeout: int = 10) -> subprocess.CompletedProcess[str
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify glab errors into actionable messages for LLMs."""
     s = stderr.lower()
-    if "404" in s or "not found" in s or "could not resolve" in s:
+    if _status_probe.says_not_found(s):
         return (f"ERROR: {resource} #{identifier} not found "
                 f"{_repo_target.not_found_scope()}. "
                 f"{_repo_target.gl_not_found_hint()}")
@@ -67,7 +68,7 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     if (_auth_probe.says_not_authenticated(s, _auth_probe.GITLAB_MARKERS)
             or _secrets.mentions_gitlab_token(s)):
         return "ERROR: glab not authenticated. Run: glab auth login"
-    if "403" in s or "forbidden" in s:
+    if _status_probe.says_forbidden(s):
         return f"ERROR: permission denied for {resource} #{identifier}. Check your GitLab access token permissions."
     # `glab` echoes the GitLab API's own error body here, so the writer of this
     # text is the remote host — flattened, never relayed raw (#1485). The shape

@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import _untrusted  # noqa: E402  (the repo's remote-text convention — #981)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
+import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 
 
 def main(arg: str) -> int:
@@ -31,7 +32,7 @@ def main(arg: str) -> int:
     # user id, and must reach the arm below that quotes what actually failed.
     if _auth_probe.says_not_authenticated(err):
         sys.stderr.write("ERROR: gh not authenticated. Run: gh auth login\n")
-    elif "404" in err:
+    elif _status_probe.says_not_found(err):
         sys.stderr.write(f"ERROR: user @{user} not found\n")
     else:
         # Same as gh-star: gh's stderr quotes the login back (#981).
