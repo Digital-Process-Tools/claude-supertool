@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import random
 import socket
 import sys
 import time
@@ -118,12 +119,15 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         s.settimeout(CALL_TIMEOUT_SEC)
         s.connect(sock_path)
+        # #1935: an unpredictable per-call id, not the fixed literal `2` --
+        # see ndjson_scan.py's module docstring for what that closes.
+        req_id = random.randrange(2, 2**32)  # exclude 0/1 -- 1 is the initialize frame's id
         msgs = [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize",
              "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                         "clientInfo": {"name": "phpstan-mcp-adapter", "version": "1.0.0"}}},
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
-            {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            {"jsonrpc": "2.0", "id": req_id, "method": "tools/call",
              "params": {"name": "phpstan_analyse",
                         "arguments": {"path": file_path}}},
         ]
@@ -146,12 +150,12 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
             # time — a fatal analysis run's HTML error page can glue the real
             # response to the end of the last HTML line with no separator,
             # and a line-anchored parser never sees it.
-            obj = _ndjson_scan.find_response(buf, 2)
+            obj = _ndjson_scan.find_response(buf, req_id)
             if obj is not None:
                 return obj
         raise RuntimeError(
-            f"no id=2 response within {CALL_TIMEOUT_SEC}s "
-            f"({_ndjson_scan.describe_buffer(buf, 2)})")
+            f"no id={req_id} response within {CALL_TIMEOUT_SEC}s "
+            f"({_ndjson_scan.describe_buffer(buf, req_id)})")
 
 
 def is_refusal(msg: str) -> bool:

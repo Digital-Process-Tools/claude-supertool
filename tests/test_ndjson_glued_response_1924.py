@@ -177,6 +177,11 @@ def test_adapter_returns_the_glued_response_instead_of_timing_out(name, monkeypa
     loop back into another `recv()` that would (on the real bug) block until
     the deadline."""
     mod = adapter(name)
+    # #1935 sends a random per-call id instead of the fixed literal `2` this
+    # buffer is glued around; pin it back to `2` here since this test is
+    # about the buffer-scanning mechanism, not id unpredictability (that is
+    # tests/test_ndjson_unpredictable_id_1935.py's job).
+    monkeypatch.setattr(mod.random, "randrange", lambda *a, **k: 2)
     buf = _glued_buffer({"structuredContent": {"output": "{}"}, "exit_code": 0})
     fake = FakeSocket([buf, b""])
     monkeypatch.setattr(mod.socket, "socket", lambda *a, **k: fake)
