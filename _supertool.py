@@ -10140,14 +10140,25 @@ def _edit_miss_diagnostic(old: str, content: str, new: str = "",
             f"broken anchor"
         )
 
-    # 1. Doubled backslashes. TOML literal strings ('''...''') do not process
-    #    escapes, so `\\302` in a payload is backslash-backslash-3-0-2 and can
-    #    never match a file holding `\302`.
+    # 1. Doubled backslashes, in EITHER direction. TOML literal strings
+    #    ('''...''') do not process escapes, so `\\302` in a payload is
+    #    backslash-backslash-3-0-2 and can never match a file holding `\302`
+    #    -- and the reverse: a file written earlier with two literal
+    #    backslashes (e.g. via `literal_backslashes = true`) can never match
+    #    a payload's `old` carrying one. #380 named only the first direction;
+    #    the second produced a bare nearest-match percentage with no mention
+    #    of backslashes at all, which is the "fails quietly" half of #985.
     if "\\\\" in old and old.replace("\\\\", "\\") in content:
         hints.append(
             "the file matches with SINGLE backslashes — TOML literal strings "
             "('''...''') do not process escapes, so `\\\\` in the payload is "
             "two literal backslashes"
+        )
+    elif "\\" in old and old.replace("\\", "\\\\") in content:
+        hints.append(
+            "the file matches with DOUBLE backslashes — TOML literal strings "
+            "('''...''') do not process escapes, so a single `\\` in the "
+            "payload can only match one literal backslash, not two"
         )
 
     lines = content.splitlines()
