@@ -161,7 +161,7 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
         # initialize + notify + call — daemon bridges raw stdio so we speak JSON-RPC.
         # #1935: an unpredictable per-call id, not the fixed literal `2` --
         # see ndjson_scan.py's module docstring for what that closes.
-        req_id = random.randrange(2**32)
+        req_id = random.randrange(2, 2**32)  # exclude 0/1 -- 1 is the initialize frame's id
         msgs = [
             {"jsonrpc": "2.0", "id": 1, "method": "initialize",
              "params": {"protocolVersion": "2024-11-05", "capabilities": {},

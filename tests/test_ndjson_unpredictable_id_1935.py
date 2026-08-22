@@ -114,6 +114,37 @@ def test_request_id_is_not_the_fixed_literal_2(name, monkeypatch):
 
 
 @pytest.mark.parametrize("name", ADAPTERS)
+def test_request_id_range_excludes_the_initialize_frame_id(name, monkeypatch):
+    """`ndjson_call`'s first frame on the connection is always `id: 1`
+    (`initialize`). If the random `tools/call` id ever landed on `1` too,
+    both requests would share an id, both replies would carry `id: 1`, and
+    `find_response` -- which returns the *first* matching frame -- would
+    hand back the `initialize` result instead of the real one, silently
+    (no error, just a wrong/empty answer). Pin that the range `randrange`
+    is drawn from cannot produce `1` (or `0`) at all, rather than trusting
+    the ~1-in-4-billion odds to never land there."""
+    mod = adapter(name)
+    calls = []
+    real_randrange = mod.random.randrange
+
+    def recording_randrange(*a, **k):
+        calls.append(a)
+        return real_randrange(*a, **k)
+
+    monkeypatch.setattr(mod.random, "randrange", recording_randrange)
+    monkeypatch.setattr(mod.socket, "socket", lambda *a, **k: CapturingSocket())
+
+    mod.ndjson_call("/fake/sock", "/fake/test.php")
+
+    assert len(calls) == 1
+    args = calls[0]
+    low = args[0] if len(args) > 1 else 0
+    assert low >= 2, (
+        f"randrange{args} can produce 0 or 1, colliding with the "
+        "initialize frame's fixed id")
+
+
+@pytest.mark.parametrize("name", ADAPTERS)
 def test_request_id_varies_across_calls(name, monkeypatch):
     """A fixed id (formerly the literal 2) is guessable without observing
     any traffic at all. A real per-call `random.randrange(2**32)` id must
