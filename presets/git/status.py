@@ -932,9 +932,16 @@ def main() -> int:
         # way to tell "git could not answer" from "there happen to be no
         # line changes" — the second is ruled out here by construction.
         # Three states, not two: print the counts, or say the call did not
-        # answer and why. A timeout is already recorded in `_UNANSWERED` by
-        # `_git` itself for the footer; any other failure is recorded here
-        # through the same `_note_failed` seam every other section uses.
+        # answer and why, right on this line — not routed through
+        # `_note_failed`/`_UNANSWERED`. A target ref simply not fetched
+        # locally is the *expected* case on a shallow or partial checkout
+        # (the old comment called it out for exactly that reason), and
+        # `_note_failed`'s own docstring says calls that "fail as a matter
+        # of course stay silent on purpose" because a footer on every such
+        # run is one nobody reads on the run that needed it. A genuine
+        # timeout is still recorded in `_UNANSWERED` — `_git` does that
+        # itself on `TIMEOUT_RC`, unconditionally — so the footer keeps
+        # naming the one cause that is never routine.
         changes_count = mr.get("changes_count")
         if changes_count is None or changes_count == "" or changes_count == "0":
             print("Diff: EMPTY — branch has no commits ahead of target!")
@@ -942,8 +949,8 @@ def main() -> int:
             diff_line = f"Diff: {changes_count} files"
             target_ref = f"origin/{mr_target_raw}" if mr_target_raw != "?" else ""
             if target_ref:
-                shortstat_cmd = ["diff", "--shortstat", f"{target_ref}...HEAD"]
-                shortstat = _git(shortstat_cmd, timeout=3)
+                shortstat = _git(["diff", "--shortstat",
+                                  f"{target_ref}...HEAD"], timeout=3)
                 if shortstat.returncode == 0:
                     text = shortstat.stdout.strip()
                     if text:
@@ -956,10 +963,11 @@ def main() -> int:
                     else:
                         diff_line += " (+0 -0)"
                 else:
-                    _note_failed(shortstat_cmd, shortstat)
                     diff_line += (
-                        f" (+? -? — `git diff --shortstat` did not answer: "
-                        f"{_reason(shortstat.returncode, shortstat.stderr)})")
+                        " (+? -? — `git diff --shortstat` did not answer: "
+                        + _reason(shortstat.returncode, shortstat.stderr) + ")")
+            else:
+                diff_line += " (+? -? — no target branch reported for this MR/PR)"
             print(diff_line)
 
         # Extract linked issue from description
