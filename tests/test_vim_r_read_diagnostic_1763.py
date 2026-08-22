@@ -81,14 +81,18 @@ def test_r_success_receipt_carries_no_diagnostic_noise():
         os.unlink(src_path)
 
 
-def test_r_directory_failure_keeps_receipt_short():
+def test_r_directory_failure_keeps_receipt_short(tmp_path):
     """A failure that is not 'the file is not there' (here: the path
     names a directory, not a file) must not grow the missing-file
     diagnostic -- that block answers a question this failure never
     asked. Pairs with the two ENOENT cases above so the silence half is
-    not decoration."""
+    not decoration.
+
+    Uses pytest's own `tmp_path` rather than `tempfile.mkdtemp` -- the
+    directory is pytest's to reap, not this test's to remove (#1635)."""
     p = _tmp("a\nb\n")
-    a_dir = tempfile.mkdtemp()
+    a_dir = tmp_path / "a-directory"
+    a_dir.mkdir()
     try:
         r = st.op_vim(p, f":1r {a_dir}")
         assert "ERROR" in r
@@ -97,4 +101,3 @@ def test_r_directory_failure_keeps_receipt_short():
         )
     finally:
         os.unlink(p)
-        os.rmdir(a_dir)
