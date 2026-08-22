@@ -36,6 +36,16 @@ a lock it orphaned from one a concurrent `git commit` legitimately holds, and
 deleting the second corrupts that commit. Letting git clean up after itself
 fixes the damage without the inference.
 
+**Superseded for this adapter's own calls, by #1944.** `run()` now passes
+`--no-optional-locks` on every call it makes, so none of the four git
+invocations below ever takes `.git/index.lock` in the first place -- there is
+nothing for `_stop()`'s SIGTERM to unlink. `_stop()` itself is unchanged and
+still what runs: it still matters for reaping the child cleanly (a zombie, a
+process left holding this repository's working directory) and it is the
+general mechanism this file would fall back on for any future call that did
+NOT carry the flag. Read the paragraph above as history -- the mechanism that
+motivated `_stop()` -- rather than as what protects this file today.
+
 Usage: git-status.py <file>
 
 Env vars:
@@ -158,11 +168,15 @@ def _settled(proc: "subprocess.Popen", grace: int) -> bool:
 def _stop(proc: "subprocess.Popen") -> None:
     """Ask the child to stop, then insist (#1882).
 
-    The ask is what stops `.git/index.lock` being stranded: git traps SIGTERM
-    and unlinks the lock it is holding, which is the only actor entitled to
-    decide that lock is stale. The insist is what stops this being a promise to
-    wait — a child that ignores SIGTERM is killed anyway, one grace period
-    later.
+    The ask is what USED TO stop `.git/index.lock` being stranded: git traps
+    SIGTERM and unlinks the lock it is holding, which is the only actor
+    entitled to decide that lock is stale. Since #1944 every call this file
+    makes carries `--no-optional-locks`, so none of them ever takes that lock
+    -- there is nothing left here for the SIGTERM half to protect. It still
+    runs on every stall regardless: the insist half is what stops this being
+    a promise to wait (a child that ignores SIGTERM is killed anyway, one
+    grace period later), and reaping the child rather than abandoning it is
+    worth doing on its own.
 
     **Windows, and the two halves now carry different grades.** *Observed* (CI
     job 96847043189, windows-latest/3.10): a live child whose pipes stop
@@ -343,8 +357,7 @@ def main() -> None:
                             + exc.__class__.__name__ + " - "
                             + (str(exc) or "no reason given")) from exc
         try:
-            out, _err = proc.communicate(timeout=remaining)
-            return out
+            out, err = proc.communicate(timeout=remaining)
         except subprocess.TimeoutExpired:
             _stop(proc)
             raise _NoAnswer(full_args, timed_out) from None
@@ -365,6 +378,25 @@ def main() -> None:
             raise _NoAnswer(full_args, "communicate() failed: "
                             + exc.__class__.__name__ + " - "
                             + (str(exc) or "no reason given")) from exc
+        if proc.returncode == 129 and "--no-optional-locks" in err:
+            # git parsed and rejected the flag itself -- exit 129, usage
+            # text on stderr, before it ever ran the subcommand. That is a
+            # third cause of an empty stdout, distinct from the two the
+            # comment below already accounts for (outside a repository, a
+            # faulted .git), and it must not collapse into either: an old
+            # git answering "unknown option" for rev-parse looks byte-
+            # identical, on stdout alone, to a real outside-repository
+            # answer, and the same empty stdout on diff/status would read
+            # as "nothing changed" -- the exact fabricated-clean shape
+            # #1202/#1882 already fixed twice in this file. The flag name
+            # survives translation (only the words around it are
+            # localized), so matching it in `err` is not an English-only
+            # check.
+            raise _NoAnswer(full_args, (
+                "rejected --no-optional-locks (exit 129): this git is "
+                "older than the ~2.15 release that added the flag -- "
+                "upgrade git, or point $GIT_BIN at a newer one"))
+        return out
 
     try:
         # Check we're inside a git repo (fast — runs rev-parse)
