@@ -686,6 +686,15 @@ def _reflog_newest_entry_time(target: str):
     found or `_REFLOG_TAIL_MAX_BYTES` is reached, at which point this
     declines rather than guess.
 
+    `_untrusted.split_lines`, not `str.splitlines()` (#1130's register): the
+    newest entry's own commit message is written by whoever committed —
+    anyone who can write a commit message in a repo this tool inspects, not
+    this tool's own operator — and `str.splitlines()` treats U+2028 / U+2029
+    as line terminators, which git's reflog format does not. A message
+    carrying one could make `lines[-1]` a fragment of the message rather
+    than the true last physical line, the same "read a fragment instead of
+    the real header" failure the tail-seek growth above exists to close.
+
     `why` is a reason a caller can fold into the mtime-fallback evidence line
     below — it is never itself read as "the tree is quiet".
     """
@@ -702,7 +711,7 @@ def _reflog_newest_entry_time(target: str):
                 raw = handle.read()
         except OSError as exc:
             return None, f"could not be read ({exc})"
-        lines = [ln for ln in raw.decode("utf-8", errors="replace").splitlines() if ln.strip()]
+        lines = [ln for ln in _untrusted.split_lines(raw.decode("utf-8", errors="replace")) if ln.strip()]
         if not lines:
             return None, "the reflog has no entries"
         last = lines[-1]

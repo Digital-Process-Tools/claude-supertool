@@ -211,6 +211,29 @@ def test_a_message_past_the_hard_cap_declines_rather_than_guesses(tmp_path: Path
     assert why
 
 
+# ── forged line separators in an attacker-influenced message (#1130) ─────
+
+def test_a_u2028_in_the_message_cannot_forge_a_second_line(tmp_path: Path) -> None:
+    """The register's own question, applied to this reader.
+
+    `str.splitlines()` treats U+2028 / U+2029 as line terminators; git's
+    reflog format does not. A commit message ending in one, followed by
+    text that itself parses as a plausible header, must not let
+    `lines[-1]` become that forged tail instead of the true last physical
+    line -- the same "read a fragment, not the real header" shape the
+    tail-seek growth test above closes for a different cause.
+    """
+    reflog = tmp_path / "HEAD"
+    real_ts = 1700000000
+    forged_tail = "0 1 A <a@x.com> 999999999 +0000"  # looks like a header
+    line = f"0000 1111 A <a@x.com> {real_ts} +0000\tcommit: hi {forged_tail}\n"
+    reflog.write_bytes(line.encode("utf-8"))
+
+    ts, why = wt._reflog_newest_entry_time(str(reflog))
+    assert why is None, why
+    assert ts == float(real_ts), (ts, "a forged U+2028 tail must not become the parsed entry")
+
+
 # ── the sweep: `_newest_write`'s tree walk is content-free by nature ─────
 
 def test_the_tree_walk_signal_is_unaffected_real_file_writes_still_count(tmp_path: Path) -> None:
