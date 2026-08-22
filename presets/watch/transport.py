@@ -107,9 +107,13 @@ _CHANNEL_KEY_CHARS = 12
 # and the refusal is loud precisely because it is the end of the automation.
 DEATH_RESPAWN_LIMIT = 3
 
-# Refuse to follow a pre-existing symlink at the pidfile path (#148's guard, in
-# the second place that opens a /tmp path by predictable name). Windows has no
-# such flag, and 0 leaves the open otherwise unchanged.
+# Refuse to follow a pre-existing symlink at a predictable /tmp path (#148's
+# guard). Windows has no such flag, and 0 leaves the open otherwise unchanged.
+# Read-side only since #1891: the pidfile's own create moved off a direct
+# `os.open` at the predictable name onto `tempfile.mkstemp` (unpredictable,
+# and O_NOFOLLOW where the platform has it, by the stdlib's own flags) plus
+# `os.link`, whose own EEXIST on a symlinked destination is the write-side
+# guard now — see `claim_pidfile`.
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 # The state file's temporary name, which is where the write is contained (#1540,
@@ -326,7 +330,28 @@ def claim_pidfile(source: str, watcher_id: str) -> int:
     planted symlink at the pidfile name is refused the same way #148 already
     relies on for the write side). There is no longer any window in which the
     name exists without its content: a reader either finds nothing, or finds
-    a fully-written PID.
+    a fully-written PID. **Observed on POSIX** (this repository's own tests,
+    including this fix's, run there); **reasoned on Windows**, the same label
+    `write_state` already carries for `os.replace`'s analogous symlink-refusal
+    — `os.link` is `CreateHardLinkW` there, believed to refuse a reparse point
+    at the destination rather than follow it, and nobody here has driven that
+    path directly.
+
+    **What this trades away, named rather than silently accepted:** `os.link`
+    needs the temporary and the pidfile on the same filesystem — guaranteed
+    here, since both live in `directory` — and needs that filesystem to
+    support hard links at all. Every default and every documented override
+    (`/tmp`, an operator's own `SUPERTOOL_WATCH_STATE_DIR`) is expected to,
+    but a state directory an operator points at a filesystem that genuinely
+    cannot create one (some FAT variants, some network mounts) would see
+    every `os.link` call fail the same way forever, and this function has no
+    way to tell that failure apart from a transient one — it returns
+    `CLAIM_UNKNOWN` either way, which is silence rather than a diagnosis. Not
+    fixed here: distinguishing "this filesystem cannot do this" from "this
+    call lost a race" needs a design decision — fall back to the pre-#1891
+    shape and accept its race on such a filesystem, or refuse louder and name
+    the filesystem — that is bigger than this fix and belongs in its own
+    issue if it turns out to matter in practice.
 
     A pidfile whose owner is dead is removed and the claim retried once. The
     opposite failure — a crashed poller wedging its slot shut forever — is
@@ -358,8 +383,15 @@ def claim_pidfile(source: str, watcher_id: str) -> int:
             # no owner was identified.
             return CLAIM_UNKNOWN
         try:
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                f.write(f"{os.getpid()}\n")
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    f.write(f"{os.getpid()}\n")
+            except OSError:
+                # `os.fdopen` does not take the descriptor on its failing arm
+                # (the same hazard `write_json_contained` documents and
+                # guards below) — `tmp_fd` is still this process's to close.
+                os.close(tmp_fd)
+                return CLAIM_UNKNOWN
             try:
                 os.link(tmp_path, path)
             except FileExistsError:
@@ -655,9 +687,12 @@ def read_state_checked(source: str, watcher_id: str) -> tuple[dict[str, Any] | N
     board anyone can read — and the file is written by a separate process this
     function cannot authenticate.
 
-    `O_NOFOLLOW`, the spelling `claim_pidfile` has used since #148: a symlink
-    planted at the name got any same-uid JSON file opened, parsed, and rendered
-    onto the `watches` board.
+    `O_NOFOLLOW`, the read-side spelling of #148's guard: a symlink planted at
+    the name got any same-uid JSON file opened, parsed, and rendered onto the
+    `watches` board. (The write side moved off `O_NOFOLLOW` in #1891 —
+    `claim_pidfile` now refuses a planted symlink via `os.link`'s own EEXIST
+    on a name that resolves to one, not via a flag on `os.open` — but the
+    read here is unaffected and keeps the original spelling.)
 
     **No existence pre-check, deliberately.** `O_NOFOLLOW` answers a dangling
     symlink with `ELOOP`, not `ENOENT`, so the `os.path.exists` this replaced

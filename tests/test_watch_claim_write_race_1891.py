@@ -172,6 +172,36 @@ def test_second_claimant_is_told_the_live_pid_it_lost_to(monkeypatch) -> None:
         assert results["a"] not in (0, transport.CLAIM_UNKNOWN)
 
 
+def test_claim_pidfile_closes_the_temp_fd_when_fdopen_fails(monkeypatch) -> None:
+    """A reviewer's adjacent finding on this same rewrite, pinned.
+
+    `write_json_contained` a few hundred lines below documents this exact
+    hazard: `os.fdopen` does not take the descriptor on its failing arm, so a
+    caller that only relies on `with os.fdopen(fd, ...)` for cleanup leaks it
+    on that one path. `claim_pidfile`'s own `mkstemp` step is exposed to the
+    identical hazard and must close the fd itself when `fdopen` raises.
+    """
+    opened_fds: list[int] = []
+
+    def failing_fdopen(fd, *args, **kwargs):
+        opened_fds.append(fd)
+        raise OSError("synthetic fdopen failure")
+
+    monkeypatch.setattr(os, "fdopen", failing_fdopen)
+
+    result = transport.claim_pidfile("gitlab-mr", "99")
+
+    assert result == transport.CLAIM_UNKNOWN
+    assert len(opened_fds) == 1
+    # If claim_pidfile leaked the fd, this close would be the first one and
+    # would succeed silently. If claim_pidfile already closed it, a second
+    # close raises "bad file descriptor" — that is the property under test.
+    with pytest.raises(OSError):
+        os.close(opened_fds[0])
+    leftovers = [n for n in os.listdir(transport.STATE_DIR) if ".claim" in n]
+    assert leftovers == [], leftovers
+
+
 class TestWriteStateManyReadersOneSlot:
     """The positive control for the issue's other half.
 
