@@ -263,6 +263,34 @@ def test_xmllint_does_not_widen_when_the_real_platform_is_not_windows(monkeypatc
     assert found == [], found
 
 
+def test_actionlint_extra_paths_relpath_failure_falls_back_to_the_absolute_realpath(
+        monkeypatch, tmp_path: Path):
+    """The SECOND `os.path.relpath` guard in `_line_re` -- the one inside
+    `if real and real != file:`, added when the realpath widening landed --
+    had no test isolating its own `except ValueError` branch: the existing
+    `test_actionlint_relpath_failure_falls_back_to_the_literal_path`
+    monkeypatches `relpath` globally, so it happens to also make this
+    second call raise, but the test passes via the FIRST guard's fallback
+    alone and never asserts anything that requires the second one to have
+    worked. This isolates it: only the relpath call on the realpath'd
+    value raises; the call on the literal invoked path succeeds normally,
+    so a failure here can only come from the second guard."""
+    invoked, real = _make_symlinked_file(tmp_path, "deploy.yml", "on: push\n")
+    real_str = str(real)
+    genuine_relpath = actionlint.os.path.relpath
+
+    def _selective(p, *a, **kw):
+        if p == real_str:
+            raise ValueError("path is on mount 'C:', start on mount 'D:'")
+        return genuine_relpath(p, *a, **kw)
+
+    monkeypatch.setattr(actionlint.os.path, "relpath", _selective)
+    line = f'{real_str}:7:15: specifying action "bogus" is not allowed [action]'
+    found = actionlint.parse_diagnostics(line, str(invoked))
+    assert len(found) == 1, found
+    assert found[0]["line"] == 7 and found[0]["col"] == 15, found
+
+
 # ---------------------------------------------------------------------------
 # actionlint, with a RELATIVE Windows-shaped path -- see the module
 # docstring for why relative sidesteps relpath's own relativisation LOGIC
@@ -349,10 +377,29 @@ def test_actionlint_finds_the_location_when_the_tool_reports_the_realpath(tmp_pa
     absolute one -- actionlint always relativises against CWD, established
     by #1934, so a resolved-and-relativised path is what real actionlint
     would print if it also resolves the symlink), which is what
-    `extra_paths` in actionlint.py's `_line_re` supplies."""
+    `extra_paths` in actionlint.py's `_line_re` supplies.
+
+    That relpath call is guarded here the SAME way actionlint.py itself
+    guards its own (`except ValueError: extra.append(real)`), not left bare
+    -- windows-latest CI (all four Python versions) found this test's own
+    UNGUARDED `os.path.relpath(real)` raising `ValueError: path is on mount
+    'C:', start on mount 'D:'` when pytest's temp tree and the checkout
+    live on different drives. Production code never raised there (both of
+    its own `os.path.relpath` calls are already inside their own
+    try/except ValueError, verified by reading `_line_re` directly) -- this
+    was the test computing a cross-drive comparison the adapter itself
+    would never make unguarded. Mirroring the same fallback here means the
+    simulated diagnostic line matches what actionlint's OWN extra_paths
+    candidate would actually be in this exact cross-drive scenario:
+    `real` itself, unrelativised, not a relpath computation that can raise
+    a second time for the same reason the first one did.
+    """
     import os
     invoked, real = _make_symlinked_file(tmp_path, "deploy.yml", "on: push\n")
-    reported_real = os.path.relpath(real)
+    try:
+        reported_real = os.path.relpath(real)
+    except ValueError:
+        reported_real = str(real)
     line = f'{reported_real}:7:15: specifying action "bogus" is not allowed [action]'
     found = actionlint.parse_diagnostics(line, str(invoked))
     assert len(found) == 1, found
