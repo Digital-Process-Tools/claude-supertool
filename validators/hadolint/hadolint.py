@@ -44,6 +44,17 @@ TIMEOUT_S = 30
 # supplied by a Dockerfile filename crafted to contain its own
 # `N RULE severity: ` sequence. Building the pattern from `file` means only
 # the path hadolint was actually invoked against can start a match.
+#
+# Reasoned, not observed: this assumes hadolint echoes back the literal argv
+# path unmodified, the way ruby/gofmt/xmllint were verified to do (see the
+# siblings in this sweep) — hadolint was not installed on any machine this
+# fix was written or reviewed on, so that assumption could not be checked
+# against a real binary. actionlint was checked and turned out NOT to share
+# it (it relativises against its own CWD instead; see actionlint.py). If
+# hadolint turns out to behave like actionlint, the practical effect is not
+# a re-opened #1934 — it is every located finding falling through to the
+# unlocated `code: "lint"` branch below, a visible regression rather than a
+# silent one.
 def _pattern(file: str) -> re.Pattern[str]:
     return re.compile(r"^" + re.escape(file) + r":(\d+)\s+((?:DL|SC)\d+)\s+(\w+):\s+(.+)$")
 

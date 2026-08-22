@@ -79,8 +79,15 @@ def _line_re(file: str) -> re.Pattern[str]:
         reported = os.path.relpath(file)
     except ValueError:
         # Windows: relpath cannot express one drive letter in terms of
-        # another (C:\ vs D:\). actionlint has no more useful path to print
-        # in that case either, so fall back to the path as given.
+        # another (C:\ vs D:\). Reasoned, not observed — there is no
+        # Windows machine with actionlint installed to check this branch
+        # against, unlike the CWD-relativisation claim two paragraphs up,
+        # which was checked against the real 1.7.12 binary. Falling back to
+        # the path as given cannot re-open #1934: it only changes whether a
+        # genuine finding is located or falls through to the unlocated
+        # `code: "lint"` branch below, never which path a forged one binds
+        # to. See tests/test_adapter_line_re_anchor_1934.py for a unit-level
+        # (not real-binary) check of this fallback.
         reported = file
     return re.compile(r"^" + re.escape(reported)
                        + r":(\d+):(\d+):\s+(.+?)(?:\s+\[([\w-]+)\])?$")

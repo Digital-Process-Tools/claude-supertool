@@ -36,7 +36,7 @@ VALIDATORS = Path(__file__).parent.parent / "validators"
 
 _IN_PROCESS = {
     name: VALIDATORS / name / f"{name}.py"
-    for name in ("xmllint", "ruby-check", "gofmt-check")
+    for name in ("xmllint", "ruby-check", "gofmt-check", "actionlint")
 }
 
 
@@ -52,6 +52,7 @@ def _load(name: str):
 xmllint = _load("xmllint")
 ruby_check = _load("ruby-check")
 gofmt_check = _load("gofmt-check")
+actionlint = _load("actionlint")
 
 
 # ---------------------------------------------------------------------------
@@ -206,3 +207,26 @@ def test_hadolint_ordinary_filename_is_unaffected(tmp_path: Path) -> None:
     assert out["ok"] is False, out
     err = out["errors"][0]
     assert err["line"] == 5 and err["code"] == "DL3007", err
+
+
+# ---------------------------------------------------------------------------
+# actionlint's Windows cross-drive fallback (`except ValueError: reported =
+# file` in actionlint.py's `_line_re`) has no Windows machine with actionlint
+# installed to verify against, so it is reasoned rather than observed (see
+# the comment above `_line_re`). This is not that verification -- it cannot
+# be, absent that machine -- but it does pin the fallback's own logic at the
+# unit level: forcing `os.path.relpath` to raise confirms the adapter falls
+# back to anchoring on the literal `file` string rather than raising, or
+# silently matching nothing.
+# ---------------------------------------------------------------------------
+
+def test_actionlint_relpath_failure_falls_back_to_the_literal_path(monkeypatch) -> None:
+    def _raise(*_a, **_kw):
+        raise ValueError("path is on mount 'D:', start on mount 'C:'")
+
+    monkeypatch.setattr(actionlint.os.path, "relpath", _raise)
+    file = "D:\\workflows\\deploy.yml"
+    line = file + ":7:15: specifying action \"bogus\" is not allowed [action]"
+    found = actionlint.parse_diagnostics(line, file)
+    assert len(found) == 1, found
+    assert found[0]["line"] == 7 and found[0]["col"] == 15, found
