@@ -24,14 +24,22 @@ Three states. With neither route present the invocation is unknown, and an
 invented one would be a remedy that cannot be run -- the defect one layer
 down.
 
-Moved out of `presets/git/_git_common.py` for #905: that module's `st_hint`
-was only reachable from `presets/git/`, so every printed remedy outside that
-one directory (`_branch_locale.py`, `_repo_target.py`, `presets/gitlab/`,
-`presets/github/`) kept a hand-built `./supertool '...'` literal instead --
-correct in a clone, a raw `no such file or directory` from a worktree, which
-is the exact environment agents work in. `_git_common.py` re-exports these
-three names so its existing importers (`commit.py`, `conflicts.py`,
-`status.py`, `push.py`) see no change.
+Written for #905 alongside `presets/git/_git_common.py`'s own `st_hint`, not
+as a replacement for it: that module's version was only reachable from
+`presets/git/`, so every printed remedy outside that one directory
+(`_branch_locale.py`, `_repo_target.py`, `presets/gitlab/`, `presets/github/`)
+kept a hand-built `./supertool '...'` literal instead -- correct in a clone, a
+raw `no such file or directory` from a worktree, which is the exact
+environment agents work in. `_git_common.py` is deliberately left untouched
+rather than turned into a re-export of this module: `commit.py`, `conflicts.py`,
+`status.py` and `push.py` still import ITS `st_hint`, and
+`tests/test_printed_invocation_worktree_1012.py` pins
+`conflicts.st_hint.__globals__ is vars(git_common)`, plus several tests
+monkeypatch `git_common.install_dir` and read the effect back through
+`git_common.st_hint` -- both of which a re-export from this module's globals
+would break. The duplication of the three-state logic below is that trade-off,
+not an oversight; see `tests/test_supertool_hint_register_905.py`'s own
+"DEFINITION" entries for both.
 """
 from __future__ import annotations
 
