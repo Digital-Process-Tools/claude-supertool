@@ -52,6 +52,7 @@ import _untrusted  # noqa: E402  (every field below is written by the check's Ap
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
+import _st_hint  # noqa: E402  (a runnable invocation, not a relative path that may not exist — #905)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
 # One page of annotations. GitHub's default is 30; asking for the maximum makes
@@ -174,14 +175,14 @@ def _not_found_message(check_id: str, probe: GhCall) -> str:
             f"with that id does exist ({name}). The id is right and the "
             f"namespace is not: Actions jobs and check runs are two id spaces "
             f"and this op reads the second. Read it with: "
-            f"./supertool 'gh-job:{check_id}:fail'"
+            f"{_st_hint.st_hint(f'gh-job:{check_id}:fail')}"
         )
     if probe.absent:
         return (
             f"ERROR: No check run #{check_id} {scope}, and no Actions job with "
             f"that id either — both namespaces answered 404, so the id is "
             f"wrong. Check the ID. List the check runs on a PR with: "
-            f"./supertool 'gh-check:pr:NUMBER'"
+            f"{_st_hint.st_hint('gh-check:pr:NUMBER')}"
         )
     return (
         f"ERROR: No check run #{check_id} {scope}. Whether it is an Actions job "
@@ -464,7 +465,8 @@ def _list_pr(pr: str) -> int:
             f"0 check runs are attached to the head commit {sha}. That is a "
             f"statement about this commit, not about the PR: a check attached "
             f"to the merge ref, or one that has not been created yet, does not "
-            f"appear here. Cross-check with: ./supertool 'gh-pr:{pr}:status'"
+            f"appear here. Cross-check with: "
+            f"{_st_hint.st_hint(f'gh-pr:{pr}:status')}"
         )
         return 0
     print(f"{len(runs)} check run{'s' if len(runs) != 1 else ''} on the head commit.")
@@ -482,9 +484,9 @@ def _list_pr(pr: str) -> int:
         if rid:
             line += f"  #{rid}"
         print(line)
-    print(f"\nRead one with: ./supertool 'gh-check:<id>'  — annotations "
-          f"(path:line, title, message) are where a scanning check keeps its "
-          f"finding.")
+    print(f"\nRead one with: {_st_hint.st_hint('gh-check:<id>')}  — "
+          f"annotations (path:line, title, message) are where a scanning "
+          f"check keeps its finding.")
     return 0
 
 

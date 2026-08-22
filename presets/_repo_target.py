@@ -22,7 +22,11 @@ import json
 import os
 import re
 import subprocess
+import sys
 import urllib.parse
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _st_hint  # noqa: E402  (a runnable invocation, not a relative path that may not exist — #905)
 
 ENV_VAR = "SUPERTOOL_REPO"
 
@@ -365,6 +369,7 @@ def no_repo_error(cli_example: str, detail: str | None = None) -> str:
             f"ERROR: repo target {value!r} could not be resolved by gh. "
             f"Check the spelling and your access: gh repo view {value}"
         )
+    example = _st_hint.st_hint("repo:OWNER/NAME", cli_example)
     if state == UNKNOWN:
         return (
             f"ERROR: could not work out which GitHub repo this is — the "
@@ -372,12 +377,12 @@ def no_repo_error(cli_example: str, detail: str | None = None) -> str:
             f"not being a GitHub repo, and which of the two it is is UNKNOWN "
             f"from here. Retry; if it persists, check gh (gh auth status; "
             f"gh repo view), or name a repo with a leading repo: op "
-            f"(./supertool 'repo:OWNER/NAME' '{cli_example}')."
+            f"({example})."
         )
     return (
         "ERROR: cwd is not a GitHub repo and no repo target was given. "
         "cd into a GitHub-cloned repo, name one with a leading repo: op "
-        f"(./supertool 'repo:OWNER/NAME' '{cli_example}'), "
+        f"({example}), "
         "or run gh directly with --repo OWNER/REPO."
     )
 

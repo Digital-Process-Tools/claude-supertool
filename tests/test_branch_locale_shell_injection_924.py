@@ -75,6 +75,7 @@ def _load(rel: str, name: str):
 
 sys.path.insert(0, str(_PRESETS))
 import _branch_locale  # noqa: E402
+import _st_hint  # noqa: E402
 
 
 # Every op that prints this line. A fix landing on the helper but not reaching
@@ -191,9 +192,11 @@ def test_every_op_that_prints_this_line_refuses_too(op: str):
 # --------------------------------------------------------------------------
 
 def test_an_ordinary_branch_name_still_gets_its_command_verbatim():
+    # The invocation itself is `_st_hint`'s claim, not this test's (#905): a
+    # literal `./supertool` would be wrong in a worktree, which has none.
     assert _renders(ORDINARY) == (
         "You are on: master ⚠ MISMATCH — switch with: "
-        f"./supertool 'git-checkout:{ORDINARY}'")
+        f"{_st_hint.st_hint('git-checkout:' + ORDINARY)}")
 
 
 @pytest.mark.parametrize("name", ["master", "v1.2.3", "release/19.0.x",
@@ -203,7 +206,7 @@ def test_names_a_reviewer_actually_meets_are_not_swept_up(name: str):
     """The refusal has to stay rare or it becomes the thing readers skip."""
     if name == "master":
         pytest.skip("equal to the cwd branch — a different state entirely")
-    assert f"./supertool 'git-checkout:{name}'" in _renders(name)
+    assert _st_hint.st_hint("git-checkout:" + name) in _renders(name)
 
 
 # --------------------------------------------------------------------------

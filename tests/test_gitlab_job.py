@@ -15,6 +15,12 @@ assert _spec is not None and _spec.loader is not None
 job = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(job)
 
+_hint_spec = importlib.util.spec_from_file_location(
+    "st_hint_gitlab_job", Path(__file__).parent.parent / "presets" / "_st_hint.py")
+assert _hint_spec is not None and _hint_spec.loader is not None
+_st_hint = importlib.util.module_from_spec(_hint_spec)
+_hint_spec.loader.exec_module(_st_hint)
+
 
 def _make_fake_run(trace_lines: list[str], status: str = "failed"):
     """Return a fake subprocess.run that handles glab metadata + trace calls."""
@@ -592,7 +598,7 @@ def test_job_patterns_shows_resolution_with_interpolated_id(monkeypatch, capsys)
     out = capsys.readouterr().out
     assert rc == 0
     assert "BOOM goes the build" in out
-    assert "Resolve:  ./supertool 'rector_ci_apply:777'" in out
+    assert (f"Resolve:  {_st_hint.st_hint('rector_ci_apply:777')}") in out
 
 
 def _cause_above_trace_log() -> list[str]:

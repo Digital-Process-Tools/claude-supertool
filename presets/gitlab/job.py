@@ -32,6 +32,7 @@ import _status_probe  # noqa: E402  (does this stderr *state* the target is miss
 import _job_argv  # noqa: E402  (the argv shape both job presets share — #1145)
 import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
 import _secrets  # noqa: E402  (the one GitLab token-prefix list — #1645)
+import _st_hint  # noqa: E402  (a runnable invocation, not a relative path that may not exist — #905)
 
 
 def _local_branch_check(source: str, actionable: bool = True) -> str:
@@ -256,10 +257,10 @@ def _selection_mismatch(job_status: str, job_id: str) -> str:
         f"tail). Treat the above as the lines that MATCHED, not as what the log "
         f"contains.\n"
         f"> Read it instead with:\n"
-        f">   ./supertool 'gl-job:{job_id}:raw:-80'          # tail, where a "
-        f"cancellation's evidence usually sits\n"
-        f">   ./supertool 'gl-job:{job_id}:grep:PATTERN'     # the whole trace "
-        f"is still searchable\n"
+        f">   {_st_hint.st_hint(f'gl-job:{job_id}:raw:-80')}          # tail, "
+        f"where a cancellation's evidence usually sits\n"
+        f">   {_st_hint.st_hint(f'gl-job:{job_id}:grep:PATTERN')}     # the "
+        f"whole trace is still searchable\n"
     )
 
 
@@ -321,7 +322,7 @@ def _print_unmatched_failure(
     for i, line in enumerate(tail):
         print(f"  {start + i:>5} | {line}")
     print(
-        f"\nNext:  ./supertool 'gl-job:{job_id}:raw'  or  "
+        f"\nNext:  {_st_hint.st_hint(f'gl-job:{job_id}:raw')}  or  "
         f"'gl-job:{job_id}:grep:PATTERN'  — the whole trace is still there."
     )
 
@@ -906,7 +907,7 @@ def main() -> int:
         job_name, config["job_patterns"], config["error_patterns"]
     )
     resolution_line = (
-        f"Resolve:  ./supertool '{resolution.replace('{id}', job_id)}'"
+        f"Resolve:  {_st_hint.st_hint(resolution.replace('{id}', job_id))}"
         if resolution else ""
     )
     error_sections = _find_error_sections(lines, patterns,
