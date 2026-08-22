@@ -107,9 +107,13 @@ _CHANNEL_KEY_CHARS = 12
 # and the refusal is loud precisely because it is the end of the automation.
 DEATH_RESPAWN_LIMIT = 3
 
-# Refuse to follow a pre-existing symlink at the pidfile path (#148's guard, in
-# the second place that opens a /tmp path by predictable name). Windows has no
-# such flag, and 0 leaves the open otherwise unchanged.
+# Refuse to follow a pre-existing symlink at a predictable /tmp path (#148's
+# guard). Windows has no such flag, and 0 leaves the open otherwise unchanged.
+# Read-side only since #1891: the pidfile's own create moved off a direct
+# `os.open` at the predictable name onto `tempfile.mkstemp` (unpredictable,
+# and O_NOFOLLOW where the platform has it, by the stdlib's own flags) plus
+# `os.link`, whose own EEXIST on a symlinked destination is the write-side
+# guard now — see `claim_pidfile`.
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 # The state file's temporary name, which is where the write is contained (#1540,
@@ -291,9 +295,9 @@ def claim_pidfile(source: str, watcher_id: str) -> int:
 
     Returns 0 when this process now owns the slot, the PID of the poller that
     already does, or `CLAIM_UNKNOWN` when the claim could not be settled — an
-    `os.open` that failed for anything other than "it already exists", and a
-    retry that ran out. Neither of those created a file, so neither may be
-    reported as ownership.
+    `os.open`/`os.link` that failed for anything other than "it already
+    exists", and a retry that ran out. Neither of those created a file, so
+    neither may be reported as ownership.
 
     `O_CREAT|O_EXCL` is the atomic part, and it is the whole fix for #476: the
     spawn sites used to *test* the pidfile and then fork, but the pidfile is
@@ -301,6 +305,53 @@ def claim_pidfile(source: str, watcher_id: str) -> int:
     caller looking inside that window saw an empty slot and started its own
     poller. That is how nine pollers over one filter accumulate in same-second
     groups. Exactly one process can create the file, so exactly one starts.
+
+    **The name is created only once its content already exists on it (#1891).**
+    This used to `os.open(O_CREAT|O_EXCL)` the pidfile directly and write the
+    PID into it *afterward* — two syscalls, with the name visible and
+    zero-byte in between. A second claimant hitting `FileExistsError` in that
+    window read the empty file as "content is not a PID", which is the same
+    shape `read_pid_checked` reports for genuine corruption and is reclaimable
+    by design: it unlinked the name and re-created it under its own PID, while
+    the first claimant — already holding an fd open on the now-orphaned inode
+    — went on to write its PID into a file nobody could see any more and
+    returned 0 believing it owned a slot it no longer visibly held. Both
+    claimants reported ownership; the visible pidfile named only the last
+    writer. Reproduced with two real, unmodified processes racing this
+    function (60-way fan-out): more than one process reported `== 0` in
+    roughly half of repeated trials, which is the live-fleet symptom without
+    needing six same-minute `write_state` temporaries to explain it (compare
+    `record_death`'s docstring — that path has no relationship to this one).
+    The fix writes the PID into an unpredictable temporary first and
+    publishes it with `os.link`, which is atomic and — unlike `os.open`,
+    unlike `os.rename` — refuses outright rather than following or replacing
+    when the destination name already exists (POSIX `link(2)`: "If newpath
+    names a symbolic link, link() fails and sets errno to EEXIST", so a
+    planted symlink at the pidfile name is refused the same way #148 already
+    relies on for the write side). There is no longer any window in which the
+    name exists without its content: a reader either finds nothing, or finds
+    a fully-written PID. **Observed on POSIX** (this repository's own tests,
+    including this fix's, run there); **reasoned on Windows**, the same label
+    `write_state` already carries for `os.replace`'s analogous symlink-refusal
+    — `os.link` is `CreateHardLinkW` there, believed to refuse a reparse point
+    at the destination rather than follow it, and nobody here has driven that
+    path directly.
+
+    **What this trades away, named rather than silently accepted:** `os.link`
+    needs the temporary and the pidfile on the same filesystem — guaranteed
+    here, since both live in `directory` — and needs that filesystem to
+    support hard links at all. Every default and every documented override
+    (`/tmp`, an operator's own `SUPERTOOL_WATCH_STATE_DIR`) is expected to,
+    but a state directory an operator points at a filesystem that genuinely
+    cannot create one (some FAT variants, some network mounts) would see
+    every `os.link` call fail the same way forever, and this function has no
+    way to tell that failure apart from a transient one — it returns
+    `CLAIM_UNKNOWN` either way, which is silence rather than a diagnosis. Not
+    fixed here: distinguishing "this filesystem cannot do this" from "this
+    call lost a race" needs a design decision — fall back to the pre-#1891
+    shape and accept its race on such a filesystem, or refuse louder and name
+    the filesystem — that is bigger than this fix and belongs in its own
+    issue if it turns out to matter in practice.
 
     A pidfile whose owner is dead is removed and the claim retried once. The
     opposite failure — a crashed poller wedging its slot shut forever — is
@@ -320,42 +371,68 @@ def claim_pidfile(source: str, watcher_id: str) -> int:
     # re-exec'd through `poller_env` rather than returning at the flag (#1534).
     if naming.ensure_state_dir(RESOLVED, STATE_DIR):
         return CLAIM_UNKNOWN
+    path = pid_path(source, watcher_id)
+    directory = os.path.dirname(path) or "."
     for _ in range(2):
         try:
-            fd = os.open(pid_path(source, watcher_id),
-                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
-                         0o600)
-        except FileExistsError:
-            existing, _refusal = read_pid_checked(source, watcher_id)
-            if existing is None:
-                # The name is taken by something this process could not read —
-                # a symlink, most cheaply. Unreadable is not free, and the
-                # unlink below would destroy a live poller's claim while the
-                # `0` return told the caller to start a second one (#1200).
-                # `CLAIM_UNKNOWN` is the state this function already has for
-                # "no file was created and no owner was identified".
-                return CLAIM_UNKNOWN
-            if existing and _pid_alive(existing):
-                return existing
-            if existing:
-                # The slot recorded a poller that is gone. Removing the file
-                # here is what let a death vanish without a trace: this is the
-                # path radar's heal takes, so the evidence had to be written
-                # down before the claim erases it (#513).
-                record_death(source, watcher_id, existing)
-            try:
-                os.unlink(pid_path(source, watcher_id))
-            except FileNotFoundError:
-                pass
-            continue
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                prefix=f"{os.path.basename(path)}.", suffix=".claim",
+                dir=directory)
         except OSError:
-            # An unwritable or absent state dir, a path that is a directory
-            # (IsADirectoryError on POSIX, PermissionError on Windows), a
-            # refused symlink. No file exists and no owner was identified.
+            # A missing or unwritable directory. No file exists anywhere and
+            # no owner was identified.
             return CLAIM_UNKNOWN
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(f"{os.getpid()}\n")
-        return 0
+        try:
+            try:
+                with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                    f.write(f"{os.getpid()}\n")
+            except OSError:
+                # `os.fdopen` does not take the descriptor on its failing arm
+                # (the same hazard `write_json_contained` documents and
+                # guards below) — `tmp_fd` is still this process's to close.
+                os.close(tmp_fd)
+                return CLAIM_UNKNOWN
+            try:
+                os.link(tmp_path, path)
+            except FileExistsError:
+                pass
+            except OSError:
+                # A platform or filesystem that refused the hard link itself
+                # (no cross-device link, no link support at all) — not "it
+                # already exists", so this is unsettled rather than lost.
+                return CLAIM_UNKNOWN
+            else:
+                return 0
+        finally:
+            # Two names now point at the same content-bearing inode on the
+            # success path; drop this process's own name. On every other
+            # path this is the only name there ever was for that inode.
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        existing, _refusal = read_pid_checked(source, watcher_id)
+        if existing is None:
+            # The name is taken by something this process could not read —
+            # a symlink, most cheaply. Unreadable is not free, and the
+            # unlink below would destroy a live poller's claim while the
+            # `0` return told the caller to start a second one (#1200).
+            # `CLAIM_UNKNOWN` is the state this function already has for
+            # "no file was created and no owner was identified".
+            return CLAIM_UNKNOWN
+        if existing and _pid_alive(existing):
+            return existing
+        if existing:
+            # The slot recorded a poller that is gone. Removing the file
+            # here is what let a death vanish without a trace: this is the
+            # path radar's heal takes, so the evidence had to be written
+            # down before the claim erases it (#513).
+            record_death(source, watcher_id, existing)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        continue
     # Both attempts met a file that existed and had no live owner, and both
     # unlinks lost the follow-up race. Something is creating this pidfile faster
     # than we can take it; that is not this process owning the slot.
@@ -610,9 +687,12 @@ def read_state_checked(source: str, watcher_id: str) -> tuple[dict[str, Any] | N
     board anyone can read — and the file is written by a separate process this
     function cannot authenticate.
 
-    `O_NOFOLLOW`, the spelling `claim_pidfile` has used since #148: a symlink
-    planted at the name got any same-uid JSON file opened, parsed, and rendered
-    onto the `watches` board.
+    `O_NOFOLLOW`, the read-side spelling of #148's guard: a symlink planted at
+    the name got any same-uid JSON file opened, parsed, and rendered onto the
+    `watches` board. (The write side moved off `O_NOFOLLOW` in #1891 —
+    `claim_pidfile` now refuses a planted symlink via `os.link`'s own EEXIST
+    on a name that resolves to one, not via a flag on `os.open` — but the
+    read here is unaffected and keeps the original spelling.)
 
     **No existence pre-check, deliberately.** `O_NOFOLLOW` answers a dangling
     symlink with `ELOOP`, not `ENOENT`, so the `os.path.exists` this replaced
