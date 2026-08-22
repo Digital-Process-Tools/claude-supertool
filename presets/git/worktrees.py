@@ -651,6 +651,48 @@ def _inprogress_signals(gitdir: str | None) -> list:
     return found
 
 
+#: Read from the tail rather than the whole file — a reflog can grow large
+#: between `git gc`s, and only the last entry is ever needed.
+_REFLOG_TAIL_BYTES = 8192
+
+
+def _reflog_newest_entry_time(target: str):
+    """The newest entry's own timestamp, as `(unix_time, None)` — or
+    `(None, why)` when the entry could not be read.
+
+    `git gc` / `git reflog expire` (auto-triggered by an ordinary `git fetch
+    --prune`) rewrites this file for every linked worktree **without
+    appending anything**: the mtime moves, the content does not (#1923). The
+    file's own mtime therefore cannot tell "somebody just committed here"
+    apart from "a background gc just ran", and reading the last entry's own
+    timestamp is what does. A reflog line is `<old> <new> <who> <email>
+    <timestamp> <tz><TAB><message>`; the timestamp is the second-to-last
+    field before the tab.
+
+    `why` is a reason a caller can fold into the mtime-fallback evidence line
+    below — it is never itself read as "the tree is quiet".
+    """
+    try:
+        size = os.path.getsize(target)
+        with open(target, "rb") as handle:
+            if size > _REFLOG_TAIL_BYTES:
+                handle.seek(-_REFLOG_TAIL_BYTES, os.SEEK_END)
+            raw = handle.read()
+    except OSError as exc:
+        return None, f"could not be read ({exc})"
+    lines = [ln for ln in raw.decode("utf-8", errors="replace").splitlines() if ln.strip()]
+    if not lines:
+        return None, "the reflog has no entries"
+    header = lines[-1].split(chr(9), 1)[0]
+    tokens = header.split()
+    if len(tokens) < 2:
+        return None, f"last entry does not look like a reflog line: {header!r}"
+    try:
+        return float(tokens[-2]), None
+    except ValueError:
+        return None, f"last entry's timestamp field is not numeric: {tokens[-2]!r}"
+
+
 def _newest_write(path: str, gitdir: str | None, now: float):
     """Newest mtime in the tree and its git dir, as `(age_seconds, label)`.
 
@@ -669,6 +711,28 @@ def _newest_write(path: str, gitdir: str | None, now: float):
             (os.path.join(gitdir, "ORIG_HEAD"), "ORIG_HEAD written"),
         ]
     for target, label in candidates:
+        if label == "reflog written":
+            if not os.path.exists(target):
+                continue
+            entry_time, why = _reflog_newest_entry_time(target)
+            if entry_time is not None:
+                if newest is None or entry_time > newest:
+                    newest, where = entry_time, "reflog entry written"
+                continue
+            # The entry itself could not be read — an empty file, a line in
+            # a format this does not recognise. Falling back to the file's
+            # own mtime (rather than dropping the signal) is the deliberate
+            # choice here: it keeps this failure mode inside the direction
+            # #1923 already showed to be safe — a spurious `occupied`, never
+            # a spurious `idle`, which is the verdict that authorises
+            # deleting a worktree. See the function docstring above.
+            try:
+                mtime = os.stat(target).st_mtime
+            except OSError:
+                continue
+            if newest is None or mtime > newest:
+                newest, where = mtime, f"reflog file touched, entry unreadable ({why})"
+            continue
         try:
             mtime = os.stat(target).st_mtime
         except OSError:
