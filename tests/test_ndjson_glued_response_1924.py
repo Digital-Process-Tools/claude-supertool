@@ -201,3 +201,33 @@ def test_adapter_does_not_hang_and_does_not_fabricate_when_id_never_arrives(
     msg = str(excinfo.value)
     assert "no bytes received" not in msg, msg
     assert str(len(noise)) in msg, msg
+
+
+@pytest.mark.parametrize("name", ADAPTERS)
+def test_adapter_recv_timeout_is_caught_not_left_to_propagate_raw(name, monkeypatch):
+    """`recv()` itself can time out — a real socket does this when
+    `remaining` runs out mid-call, not just when the deadline check between
+    calls catches it first. Each adapter now retimes `s.settimeout(remaining)`
+    every iteration and wraps `s.recv()` in `except (socket.timeout,
+    TimeoutError)`; this drives that branch directly, with a socket that
+    raises on `recv()` rather than one whose absence is only inferred from
+    the deadline arithmetic in the test above. Uncaught, `socket.timeout`
+    would propagate past `ndjson_call` as a different exception type than
+    the `RuntimeError` every caller of this function expects."""
+    mod = adapter(name)
+
+    class TimingOutSocket(FakeSocket):
+        def recv(self, n):
+            raise socket.timeout("timed out")
+
+    monkeypatch.setattr(mod.socket, "socket", lambda *a, **k: TimingOutSocket([]))
+    # One `monotonic()` call for the deadline; every call after that falls
+    # back to a value still short of it, so the loop reaches `recv()` (and
+    # only `recv()`, since the `except` breaks the loop on the first raise)
+    # rather than exiting on the deadline check before ever calling it.
+    monkeypatch.setattr(mod.time, "monotonic", lambda: 0.0)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        mod.ndjson_call("/fake/sock", "/fake/test.php")
+
+    assert "no bytes received" in str(excinfo.value)
