@@ -133,13 +133,28 @@ def test_path_variants_does_not_widen_on_a_non_windows_platform():
 
 
 def test_safe_realpath_does_not_raise_on_an_embedded_nul_byte():
-    """A self-review finding: the first cut of `safe_realpath` caught only
-    `OSError`, but `os.path.realpath` raises `ValueError` for an embedded
-    NUL byte -- verified directly, not assumed. `guard_main` would have
-    absorbed the escape at the adapter level (defence in depth, confirmed
-    by the paired review), but this function's own contract ("or None if
-    the OS refuses to answer") should not depend on a second net."""
+    """A self-review finding, itself corrected by a second one: the first
+    cut of `safe_realpath` caught only `OSError`, but `os.path.realpath`
+    raises `ValueError` for an embedded NUL byte on Linux -- verified
+    directly. The `except (OSError, ValueError)` fix that followed still
+    rested on realpath RAISING at all, and CI (macos-latest, 3.9) found a
+    platform where it does not: realpath there joins the NUL straight into
+    the returned string instead. `safe_realpath` now checks for the NUL
+    explicitly, before ever calling `realpath`, so this assertion holds
+    independent of what any one platform's C library does with one."""
     pa = _load_common_module()
+    assert pa.safe_realpath("a\x00b") is None
+
+
+def test_safe_realpath_rejects_a_nul_byte_even_if_realpath_itself_would_not(monkeypatch):
+    """Proves the guard fires BEFORE `os.path.realpath` is ever called,
+    rather than depending on what it does with the input -- monkeypatches
+    it to the exact passthrough behaviour macOS 3.9 exhibited (return a
+    joined, NUL-bearing string; raise nothing) and confirms `None` still
+    comes back. Without the explicit check, this would return the
+    NUL-bearing string on any platform whose `realpath` behaves this way."""
+    pa = _load_common_module()
+    monkeypatch.setattr(pa.os.path, "realpath", lambda p: "/passthrough/" + p)
     assert pa.safe_realpath("a\x00b") is None
 
 

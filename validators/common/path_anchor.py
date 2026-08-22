@@ -90,20 +90,38 @@ def safe_realpath(file: str) -> str | None:
     `anchor` themselves, so those stay pure and callable with no filesystem
     at all -- what most of this module's own tests rely on. `realpath`
     resolves as far as it can even for a path that does not exist, but it
-    is NOT exception-free: an embedded NUL byte raises `ValueError`
-    (verified: `os.path.realpath("a\\x00b")` -> `ValueError: lstat:
-    embedded null character in path`), not `OSError` -- a gap a self-review
-    caught in the first cut of this function, which caught only `OSError`
-    and let that one through uncaught, contradicting its own claim to never
-    do so. `guard_main` (`refusal.py`) is a second, independent net around
-    every adapter's whole `main()` and would have turned that escape into a
-    distinguishable crash receipt rather than a silent clean result -- so
-    this was defended in depth, not reachable end to end from the adapter
-    CLI (a NUL byte cannot appear in a POSIX argv element at all) -- but a
-    caller building an anchor from output already in hand should not have
-    to rely on a second net for a filesystem surprise this function exists
-    to absorb. `None` here means "no extra candidate", not "an error".
+    is NOT exception-free: an embedded NUL byte raises `ValueError` on
+    Linux (verified: `os.path.realpath("a\\x00b")` -> `ValueError: lstat:
+    embedded null character in path`) -- a gap the first cut of this
+    function did not catch at all (it caught only `OSError`), found by a
+    self-review round.
+
+    That fix rested on a claim CI then falsified one platform over:
+    macOS 3.9 does NOT raise for the same input -- `os.path.realpath`
+    there joins the NUL straight into the returned string instead,
+    returning e.g. `.../a\\x00b` rather than raising anything. Depending
+    on the exception (or non-exception) each platform's `realpath` happens
+    to produce is exactly the "a platform raises a different exception, or
+    none at all, so a narrow `except` never fires" shape this repository's
+    own notes name -- and a second self-review round, prompted by that CI
+    leg, found the earlier fix rested on it. So the NUL check is now
+    explicit and precedes any call to `realpath` at all: this function's
+    contract -- never returns a NUL-bearing path, `None` instead -- is the
+    same sentence on every platform, independent of what any single
+    platform's C library does with one.
+
+    `guard_main` (`refusal.py`) is a second, independent net around every
+    adapter's whole `main()` and would have turned an uncaught escape into
+    a distinguishable crash receipt rather than a silent clean result -- so
+    the ORIGINAL gap was defended in depth, not reachable end to end from
+    the adapter CLI (a NUL byte cannot appear in a POSIX argv element at
+    all) -- but a caller building an anchor from output already in hand
+    should not have to rely on a second net, still less on which platform
+    it is running on, for a filesystem surprise this function exists to
+    absorb. `None` here means "no extra candidate", not "an error".
     """
+    if "\x00" in file:
+        return None
     try:
         return os.path.realpath(file)
     except (OSError, ValueError):
