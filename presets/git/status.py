@@ -895,11 +895,12 @@ def main() -> int:
         mr_title = _untrusted.flat(str(mr.get("title", "?")))
         mr_state = mr.get("state", "?")
         # Raw is kept for the ref built below; only the print gets flat()
-        # (#977). `flat()` maps U+2028/U+2029 to a space, and
-        # `git check-ref-format` accepts both in a refname (#1654) — so a
-        # target branch carrying either built a ref that does not exist, and
-        # `git diff --shortstat` failed silently, dropping the `(+a -d)`
-        # figure with no error shown anywhere. Same pattern as
+        # (#977). `flat()` discloses U+2028/U+2029 as `[U+2028]`/`[U+2029]`
+        # rather than passing them through, and `git check-ref-format`
+        # accepts both in a refname (#1654) — so a target branch carrying
+        # either built a ref (with literal `[`/`]` in it) that does not
+        # exist, and `git diff --shortstat` failed silently, dropping the
+        # `(+a -d)` figure with no error shown anywhere. Same pattern as
         # `presets/github/job.py`'s `pr_branch`/`_local_branch_check` split.
         mr_target_raw = str(mr.get("target_branch", "?"))
         pipeline = mr.get("pipeline") or mr.get("head_pipeline") or {}

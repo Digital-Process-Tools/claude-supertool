@@ -9,9 +9,10 @@
 
 `flat()` is byte-identical for ordinary names, so this was inert until a
 target branch carried U+2028 or U+2029 -- both accepted by `git
-check-ref-format` (#1654) -- at which point `flat()` folded the separator to
-a space, the constructed ref did not exist, `git diff --shortstat` failed,
-and the `(+a -d)` figure was silently dropped with no error shown anywhere.
+check-ref-format` (#1654) -- at which point `flat()` disclosed the separator
+as `[U+2028]`/`[U+2029]` instead of passing it through, the ref built from
+that mangled name did not exist, `git diff --shortstat` failed, and the
+`(+a -d)` figure was silently dropped with no error shown anywhere.
 
 The fix is the pattern `presets/github/job.py` already uses for
 `pr_branch`/`_local_branch_check`: keep the raw name for the functional
@@ -90,8 +91,9 @@ def _status_out(monkeypatch, target_branch: str, seen: list) -> str:
             return _ok("0" + chr(9) + "0" + chr(10))
         if head == "diff" and "--shortstat" in args:
             # The double stands in for git: an ordinary ref answers, a ref
-            # built from a mangled name (the space `flat()` would have
-            # substituted for the separator) does not exist and git refuses.
+            # built from a mangled name (the `[U+2028]` disclosure `flat()`
+            # would have substituted for the separator) does not exist and
+            # git refuses.
             ref_arg = args[-1]
             target = ref_arg.split("...", 1)[0]
             if target == f"origin/{target_branch}":
@@ -129,8 +131,8 @@ def test_a_target_branch_carrying_u2028_still_reaches_the_ref_raw(monkeypatch) -
 
     `check-ref-format` accepts U+2028 (#1654); the double above answers only
     when the *raw* name reaches the ref unmangled. Before the fix, `flat()`
-    had already turned the separator into a space by the time the ref was
-    built, so the double's `_dead()` branch fired and `(+a -d)` never
+    had already disclosed the separator as `[U+2028]` by the time the ref
+    was built, so the double's `_dead()` branch fired and `(+a -d)` never
     appeared -- silently, with no error line anywhere in the render.
     """
     hostile_target = "release" + SEP + "train"
