@@ -300,16 +300,37 @@ def main() -> None:
         A non-zero exit is NOT a stall and keeps returning stdout, because
         `rev-parse --is-inside-work-tree` outside a repository is an ordinary
         answer this adapter is built to read.
+
+        **`--no-optional-locks` precedes every call** (#1944). `git diff` and
+        `git status` are not pure reads: while scanning they refresh the
+        in-memory index and write it back, taking `.git/index.lock` to do so.
+        `_stop()` sends SIGTERM specifically so a stalled git traps it and
+        unlinks that lock on its way out, but that only helps when git is in
+        a state where it can trap the signal and run its own cleanup -- a
+        SIGKILL past the grace period, a git that is itself blocked (on a
+        network mount, say), or Windows, where `_stop()`'s own docstring
+        records that `terminate()` and `kill()` are the same call, still
+        strand it. The global flag removes the lock from existence instead
+        of relying on that cleanup running: git skips the index writeback
+        entirely, so killing this process at any point leaves nothing
+        behind. It is a global flag and must precede the subcommand -- git
+        parses it before dispatch, and folding it into `args` after the
+        subcommand would pass it as a positional instead.
+
+        The flag is recorded in the raised `_NoAnswer.argv`, not only spliced
+        into the `Popen` call, so a decline message names the command that
+        actually ran rather than one token short of it.
         """
+        full_args = ("--no-optional-locks", *args)
         timed_out = ("timed out after " + str(budget) + "s (the whole-adapter "
                      "budget; raise $" + TIMEOUT_ENV + " if this repository is "
                      "genuinely this slow)")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise _NoAnswer(args, timed_out)
+            raise _NoAnswer(full_args, timed_out)
         try:
             proc = subprocess.Popen(
-                [git_bin, *args],
+                [git_bin, *full_args],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 cwd=file_dir, text=True, encoding="utf-8", errors="replace",
             )
@@ -318,7 +339,7 @@ def main() -> None:
             # was removed under us, or is not executable by this user. Not a
             # measurement either way, and NOT a timeout: naming it one sends
             # the reader to raise a budget that was never the problem.
-            raise _NoAnswer(args, "could not be run: "
+            raise _NoAnswer(full_args, "could not be run: "
                             + exc.__class__.__name__ + " - "
                             + (str(exc) or "no reason given")) from exc
         try:
@@ -326,7 +347,7 @@ def main() -> None:
             return out
         except subprocess.TimeoutExpired:
             _stop(proc)
-            raise _NoAnswer(args, timed_out) from None
+            raise _NoAnswer(full_args, timed_out) from None
         except (OSError, ValueError) as exc:
             # `communicate()` failing says nothing about the child (#1883,
             # `_settled`'s own docstring) -- it is the PIPES that broke, one
@@ -341,7 +362,7 @@ def main() -> None:
             # pipe.
             if not _settled(proc, TERM_GRACE_S):
                 _stop(proc)
-            raise _NoAnswer(args, "communicate() failed: "
+            raise _NoAnswer(full_args, "communicate() failed: "
                             + exc.__class__.__name__ + " - "
                             + (str(exc) or "no reason given")) from exc
 
