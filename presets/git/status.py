@@ -134,7 +134,17 @@ def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedPro
     budget = _git_timeout() if timeout is None else timeout
     res = _spawn_git(args, timeout=budget)
     if res.returncode == TIMEOUT_RC:
-        _UNANSWERED.append(("git " + " ".join(args), res.stderr))
+        # `args` is not necessarily supertool's own construction -- the MR/PR
+        # shortstat call builds one of its elements from `mr_target_raw`, the
+        # target branch exactly as the tracker reported it (#1939). Flattened
+        # here, at the one append this generic wrapper owns, rather than at
+        # each of `_git()`'s 17 call sites or inside `_incomplete_note()` at
+        # render: this is the seam every timeout passes through regardless of
+        # which caller it came from, and the only one of the three that does
+        # not also have to guess whether a value already went through
+        # `_untrusted.flat()` upstream (double-flattening is a no-op for
+        # `flat()`, which is idempotent, so this is safe even when it has).
+        _UNANSWERED.append((_untrusted.flat("git " + " ".join(args)), res.stderr))
     return res
 
 
