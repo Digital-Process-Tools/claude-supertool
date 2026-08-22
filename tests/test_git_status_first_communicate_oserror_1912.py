@@ -27,8 +27,17 @@ from pathlib import Path
 
 import pytest
 
+from _adapter_budget import adapter_budget
+
 REPO = Path(__file__).resolve().parent.parent
 ADAPTER = REPO / "validators" / "git-status" / "git-status.py"
+
+#: A test that spawns this adapter is waiting on the adapter, not the tool --
+#: it is contractually obliged to answer within its own inner budget plus the
+#: cost of starting Python twice (tests/_adapter_budget.py, #702/#658). A
+#: hardcoded literal here renders a runner-speed assumption as a product
+#: verdict on a loaded CI leg (caught: #1912/#1914, ubuntu-latest 3.11/3.12).
+BUDGET = adapter_budget(ADAPTER)
 
 
 def _load() -> object:
@@ -131,7 +140,7 @@ def test_a_real_clean_file_still_reports_clean(repo: Path) -> None:
     """MUST FIRE."""
     proc = subprocess.run(
         [sys.executable, str(ADAPTER), str(repo / "base.txt")],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=BUDGET,
         encoding="utf-8", errors="replace",
     )
     assert proc.returncode == 0, proc.stderr
