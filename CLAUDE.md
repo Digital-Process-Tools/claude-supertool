@@ -40,7 +40,7 @@ Three of those rows point outside this repository, at the `oss` plugin (`Digital
 
 **This checkout may be someone's live binary.** `supertool.py` here is typically symlinked as `~/.local/bin/supertool`. Leaving this clone on a feature branch means every supertool call — yours and everyone else's, from every directory — runs unmerged code. Work in a worktree.
 
-**Inside a worktree, run `python3 supertool.py`, not `supertool`.** The global one resolves to the live clone, so it runs *master's* core against your branch's presets and your change never executes. It now warns `mixed supertool trees` when this happens; the warning tells you, it does not save you.
+**Inside a worktree, run `python3 supertool.py`, not `supertool`.** The global one resolves to the live clone, so it runs *master's* core against your branch's presets and your change never executes. For a write-class op (`paste`, `edit`, `append`, `replace`, `replace_lines`, `vim`, `format`, `format_staged`, `gc`, `rename`, `batch`) it now declines outright instead of warning ([#1942](https://github.com/Digital-Process-Tools/claude-supertool/issues/1942)) — the write always targeted the right directory even before that fix, but the *code* answering was master's, silently. A read-only op still just warns on stderr and runs: it answers from the core that was invoked, which is not of unknown origin.
 
 **CI runs pytest with `--tb=no`, so no traceback ever reaches the logs.** That is deliberate, not truncation. The `junit_summary` step prints the failing assertion and its context — read that. Before blaming a reader for what is absent, check whether the writer ever wrote it.
 
