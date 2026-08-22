@@ -31,7 +31,9 @@ at length why generalising them would bend one platform's semantics to fit the
 other's. What transfers is not the tier, it is this predicate: two hand-written
 lists of what "not authenticated" looks like is how they drift, and they had
 already drifted (`gh_prs` grew exit-code 4 and a transport whitelist in #1568;
-`gl_mrs` still has neither).
+`gl_mrs` grew its own transport whitelist in #1870 -- kept as a separate
+tuple rather than a shared one, for this module's own reason above -- and
+still has no exit-code equivalent, because `glab` publishes none to grow).
 
 **Why this is in `presets/` and not in `presets/watch/tiers/`, where it landed
 two hours earlier.** #1846 counted the same predicate in 23 more call sites --
