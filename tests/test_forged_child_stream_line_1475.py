@@ -8,7 +8,7 @@ so a U+2028 survives *inside* a relayed line and everything the reader anchors
 at column 0 becomes the writer's to choose.
 
 **The fix is at the seam, not at the sites.** Seven sites were named and the
-sweep below finds 145 sites in 32 files, which is what a per-site fix earns:
+sweep below finds 139 sites in 32 files, which is what a per-site fix earns:
 the same defect re-filed once per call. So
 
 * `_git_common._first_error_line` flattens what it returns. Every caller —
@@ -205,7 +205,7 @@ def test_a_tab_survives_the_commit_relay() -> None:
 # grows quietly — which is the failure mode of the thing it would be guarding".
 #
 # **So this is not a zero-assertion, and pretending otherwise is what would
-# make it useless.** Measured on this branch: 145 candidate sites in 32 files
+# make it useless.** Measured on this branch: 139 candidate sites in 32 files
 # across `presets/git`, `presets/github` and `presets/gitlab`. Not all are
 # defects — `push._local_head` returns `r.stdout.strip()`, and that is a SHA —
 # and closing them is four lanes of work this PR is not.
@@ -323,7 +323,25 @@ SINK_SHAPES = tuple(SHAPE_PROBES)
 #: which is the ground `tests/test_preset_git_splitlines_register_1130.py`
 #: records for `status.py::main`. Located by differencing this file's own
 #: `unresolved_escapes` against the merge-base, before the number moved.
-UNRESOLVED = 113
+#:
+#: 113 -> 109 on 2026-08-22 (#1918), all three from `_unmarked`'s per-value
+#: rewrite reading a comprehension's `ifs` the way it now reads `IfExp.test`:
+#: a filter condition decides which items pass, it never becomes one of them.
+#: `presets/git/commit.py:1155` (-2, both arguments of `_add_failure_lines`):
+#: `to_add = [p for p in paths if p not in staged_deletions]` — the old blind
+#: walk found `staged_deletions` (genuinely raw) in the filter and tainted
+#: `to_add` with it; `_comprehension_keys` does not walk `ifs`, so `to_add`
+#: (and `add`, built from it) are read correctly as never touching
+#: `staged_deletions`'s own bytes. `presets/github/job.py:1140` and
+#: `presets/gitlab/job.py:899` (-1 each, the same site in each preset's
+#: `_emit_grep_hits` caller): `match_count = sum(1 for line in lines if
+#: rx.search(line))` — the produced value is the literal `1` per match,
+#: never `line`; the old walk read `lines` off the generator's `iter` (the
+#: same shape `checkout.py`'s CENSUS note describes for a `sum(1 for … in
+#: …)` count) and tainted an int with it. Located by differencing this
+#: file's own `unresolved_escapes` against the merge-base, before the
+#: number moved.
+UNRESOLVED = 109
 
 #: Calls whose result cannot be a string, so the taint stops there. A type
 #: argument, not an allowlist: `json.loads(r.stdout)` yields a dict, and every
@@ -376,7 +394,17 @@ CENSUS = {
     # the disclosure the count exists to make rather than hide.
     "presets/git/_git_common.py": 7,
     "presets/git/blame.py": 2,
-    "presets/git/checkout.py": 13,  # +3, #1626: three `.write` / `.append` sinks
+    # 13 -> 10, #1918: not a MARKS site at all — the per-value rewrite of
+    # `_unmarked` replaced `_streams_in`'s blind whole-subtree walk with one
+    # that reads a comprehension's *value* off `elt`, never `iter`, and that
+    # precision removed these three as a side effect. `staged`/`unstaged`/
+    # `untracked` at checkout.py:302/304/306 are each `sum(1 for l in lines if
+    # …)` — the produced value is the literal `1` counted per match, never `l`
+    # itself, so no byte of `lines` (itself genuinely raw, still counted at
+    # :238/:248/:271/:273) reaches these three prints. The old walk could not
+    # tell "iterates over a raw list" from "the raw list is what gets printed"
+    # and counted both the same.
+    "presets/git/checkout.py": 10,  # +3, #1626: three `.write` / `.append` sinks
     "presets/git/commit.py": 10,  # -1, #1858: the git-dir read moved to
     # `_git_common.probe_repo`, which flattens it. One site, not zero: the
     # value did not stop existing, it stopped being raw HERE. The seam is where
@@ -389,7 +417,16 @@ CENSUS = {
     # the blamed file's own line, and both land in a table.
     "presets/git/investigate.py": 2,
     "presets/git/merge.py": 9,  # -1, #1654: `_fresh_merge_ref`'s fetch stderr
-    "presets/git/push.py": 32,  # -1, #1681: `_discarded_by_force`'s log relay
+    # 32 -> 31, #1918: `_incoming_commits`'s `return incoming, len(incoming),
+    # ahead` at push.py:2399 — not the `incoming` list (already safe, the
+    # `visible()`-wrapped comprehension `checkout.py`'s note describes) but
+    # `ahead = int(mine.stdout.strip()) if mine.returncode == 0 and
+    # mine.stdout.strip().isdigit() else 0`. The old blind walk read
+    # `mine.stdout` out of the ternary's *test* — used only to decide whether
+    # the parse is attempted, never part of the value — and tainted `ahead`
+    # with it. `_unmarked` now skips `IfExp.test` (see its docstring), so
+    # `ahead`, always genuinely an int, stops being counted as raw `stdout`.
+    "presets/git/push.py": 31,  # -1, #1681: `_discarded_by_force`'s log relay
     # 0, not 3: the two `failed.append` relays and the direct print #1638 named
     # are flattened, and the four sites #1626's widening had also disclosed here
     # went with them (they are the same two relays' other arm plus the two
@@ -416,7 +453,17 @@ CENSUS = {
     # printed byte-identically to what git wrote (the quoting ground the #1130
     # register records), and `l` is a `for` target, which this scan does not
     # taint - as it did not before.
-    "presets/git/status.py": 20,  # +3 #1626 (three `.append` sinks), +2 #1724
+    # 20 -> 19, #1918: `_worktree_root`'s untracked-cap message at
+    # status.py:866 traces to `known = [a for a, _w in cut if a is not None]`
+    # — a tuple-unpacking comprehension target. The old blind walk credited
+    # `cut`'s own taint to `known` regardless of the unpacking; `_comprehension
+    # _keys` now applies the same "only a plain `Name` target carries taint
+    # onward" rule `_accounted_for` already states for an ordinary assignment,
+    # so `known`, then `extra`, then this print stop being counted — see
+    # `_unmarked`'s docstring for why this shape has no `UNRESOLVED`
+    # disclosure either. Checked by hand rather than by the scan: `a` is
+    # `_untracked_age`'s `age` return, always a float or `None`, never text.
+    "presets/git/status.py": 19,  # +3 #1626 (three `.append` sinks), +2 #1724
     "presets/git/trail.py": 1,  # -3, #1681: two log renders and _format_error
     "presets/git/worktrees.py": 5,  # -1, #1654: the third `for-each-ref` decline
     "presets/github/_release_gate.py": 2,
@@ -449,7 +496,14 @@ CENSUS = {
     # still has a scanned site the model resolves and the other does not.
     "presets/gitlab/job.py": 1,
     "presets/gitlab/mr.py": 3,
-    "presets/gitlab/pipeline.py": 4,
+    # 4 -> 3, #1918: the noise-count summary at pipeline.py:200 traces through
+    # `summary = ", ".join(f"+{n} {status}" for status, n in
+    # sorted(counts.items()))` — the same tuple-target comprehension shape
+    # `status.py`'s `known` note describes, and the same `_unmarked` docstring
+    # blind spot: no `UNRESOLVED` disclosure for it either. Checked by hand:
+    # `status`/`n` are `Counter.items()`'s own keys/counts, never the tainted
+    # `hidden` list `counts` was built from.
+    "presets/gitlab/pipeline.py": 3,
     "presets/gitlab/runners.py": 2,
 }
 
@@ -471,18 +525,6 @@ def _walk_text(node: ast.AST):
         stack.extend(ast.iter_child_nodes(n))
 
 
-def _call_names(node: ast.AST) -> set:
-    names = set()
-    for sub in ast.walk(node):
-        if isinstance(sub, ast.Call):
-            fn = sub.func
-            if isinstance(fn, ast.Attribute):
-                names.add(fn.attr)
-            elif isinstance(fn, ast.Name):
-                names.add(fn.id)
-    return names
-
-
 def _streams_in(node: ast.AST, tainted: dict) -> set:
     keys = set()
     for sub in _walk_text(node):
@@ -493,9 +535,119 @@ def _streams_in(node: ast.AST, tainted: dict) -> set:
     return keys
 
 
+#: A comprehension's own value is its `elt` (or `key`/`value` for a dict) —
+#: never a generator's `iter` or its `ifs`. Handled in `_comprehension_keys`.
+_COMP_TYPES = (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
+
+
 def _unmarked(node: ast.AST, tainted: dict) -> set:
-    keys = _streams_in(node, tainted)
-    return set() if MARKS & _call_names(node) else keys
+    """Per-value: a MARKS call clears only the argument(s) it wraps.
+
+    Until #1918 this gated on whether ANY `MARKS` name appeared ANYWHERE
+    in `node` (`MARKS & _call_names(node)`, `_call_names` walking the
+    whole subtree) and returned the empty set for the whole node when it
+    did — so `print(f'{raw_a} {raw_b} {_untrusted.flat(marked)}')` scored
+    zero, discarding `raw_a` and `raw_b` along with the one value that was
+    actually marked.
+
+    A mark now only removes the streams reachable *through its own
+    arguments*: walking stops at a MARKS call the same way `_walk_text`
+    already stops at a NOT_TEXT call — the value inside is not descended
+    into, but nothing outside that call's own subtree is touched by it.
+
+    Two node shapes get their own rule rather than a blind walk, because a
+    blind walk over them is exactly what would have turned this fix into
+    the census-inflating one the issue warned against — every
+    `_untrusted.flat(tail[-1]) if tail else "…"` guard in this codebase
+    (five of the new census entries this fix first produced) walks `tail`
+    twice: once as the boolean condition, once — safely, under `flat` — as
+    the value. A blind walk cannot tell those apart and would have scored
+    the condition as a second, unmarked read of the same stream.
+
+    * `IfExp.test` is a condition, never the value: `X if cond else Y`
+      evaluates to `X` or `Y`, and `cond`'s only role is which one. A
+      tainted name read there is not read into the result, so it must not
+      taint the expression the way a read in `X`/`Y` would.
+    * A comprehension's `elt` (or a dict's `key`/`value`) is what actually
+      populates the result; `iter` only says which items are bound. Each
+      loop target is tainted inside `elt` exactly when its own `iter` was
+      — see `_comprehension_keys` — so `[_untrusted.visible(l) for l in
+      _untrusted.split_lines(r.stdout)]` scores clean (`l` is marked
+      before it reaches `elt`) while `[l for l in
+      _untrusted.split_lines(r.stdout)]` still does not (nothing marks the
+      loop variable before it becomes the list's own content).
+
+    What this still cannot see, stated rather than silently assumed:
+
+    * A mark applied to one name and then that same raw value read again
+      under a second, untracked name — the same blind spot `_streams_in`
+      already has for any alias this scan does not follow through
+      `tainted`. It is not a new gap; per-value marking does not widen it.
+    * A comprehension whose loop target is a tuple, e.g. `[a for a, _w in
+      cut]` — `_comprehension_keys` does not taint `a`/`_w` from `cut`,
+      the same "only a plain `Name` target carries taint onward" rule
+      `_accounted_for` already states for a top-level `text, code =
+      _render(...)`. Unlike that top-level case, there is no `ast.Call`
+      node here for `_escapes_from` to hang an `UNRESOLVED` disclosure
+      on, so a raw value reaching a sink this way would leave silently.
+      Both live instances of this shape were checked by hand rather than
+      by the scan: `status.py`'s `known` keeps only `_untracked_age`'s
+      `age` float and drops `_w`; `pipeline.py`'s `summary` reads
+      `status`/`n` off `Counter.items()`, never the tainted dict passed
+      through `iter` directly. A comprehension shaped this way earns its
+      own disclosure mechanism if one is ever found to matter; this scan
+      does not have one yet.
+    """
+    keys = set()
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if isinstance(n, ast.Call):
+            fn = n.func
+            name = (fn.attr if isinstance(fn, ast.Attribute)
+                    else getattr(fn, "id", None))
+            if name in MARKS or name in NOT_TEXT:
+                continue
+        if isinstance(n, ast.IfExp):
+            stack.append(n.body)
+            stack.append(n.orelse)
+            continue
+        if isinstance(n, _COMP_TYPES):
+            keys |= _comprehension_keys(n, tainted)
+            continue
+        if isinstance(n, ast.Attribute) and n.attr in STREAM_ATTRS:
+            keys.add(n.attr)
+        elif isinstance(n, ast.Name) and n.id in tainted:
+            keys.add(tainted[n.id])
+        stack.extend(ast.iter_child_nodes(n))
+    return keys
+
+
+def _comprehension_keys(node: ast.AST, tainted: dict) -> set:
+    """The streams a comprehension's *value* carries — its `elt`, or its
+    `key`/`value` for a `DictComp` — never its generators' `iter`/`ifs`
+    directly. A loop target is tainted inside that value exactly when the
+    `iter` it is bound from was, the same rule an assignment already gets.
+
+    Each generator's `iter` is checked against `local`, not the original
+    `tainted` — `[y for x in r.stdout.splitlines() for y in x.split()]`'s
+    second `iter` (`x.split()`) reads `x`, which the *first* generator
+    just bound in `local`. `x`'s taint is never written back into
+    `tainted` (that dict belongs to the enclosing scope); checking the
+    second `iter` against `tainted` instead of `local` would silently
+    lose it and score `y` — genuine `stdout` content — as clean.
+    """
+    local = dict(tainted)
+    for gen in node.generators:
+        iter_keys = _unmarked(gen.iter, local)
+        if isinstance(gen.target, ast.Name):
+            if iter_keys:
+                local[gen.target.id] = sorted(iter_keys)[0]
+            else:
+                local.pop(gen.target.id, None)
+    if isinstance(node, ast.DictComp):
+        return _unmarked(node.key, local) | _unmarked(node.value, local)
+    return _unmarked(node.elt, local)
 
 
 def _is_sink(node: ast.AST) -> bool:
@@ -695,6 +847,69 @@ def test_the_scanner_sees_the_defect_it_was_written_for(tmp_path: Path) -> None:
     found = raw_child_stream_sinks(sample)
     lines = {int(f.split(":")[1].split()[0]) for f in found}
     assert lines == {2, 4, 10}, found
+
+
+def test_a_mark_on_one_value_does_not_clear_its_siblings(tmp_path: Path) -> None:
+    """#1918: `_unmarked` used to gate on `MARKS & _call_names(whole_node)` —
+    any `_untrusted.flat(...)` anywhere in a sink node cleared every raw
+    stream in that same node, marked or not. PR #1913 inlined `flat()` into
+    one value of a `print` that also carried `mr_state` and `pipe_status`
+    raw, and both vanished from the census with nothing fixed.
+
+    A mark call only clears the value it wraps: `mr_state` and
+    `pipe_status` are raw streams the sink still carries, `mr_target` is
+    the one value actually marked.
+    """
+    sample = tmp_path / "partial.py"
+    sample.write_text(
+        "def render(r):" + chr(10)
+        + "    mr_state = r.stdout" + chr(10)
+        + "    pipe_status = r.stderr" + chr(10)
+        + "    mr_target = r.stdout" + chr(10)
+        + "    print(f'{mr_state} {pipe_status} "
+        + "{_untrusted.flat(mr_target)}')" + chr(10),
+        encoding="utf-8",
+    )
+    found = raw_child_stream_sinks(sample)
+    assert len(found) == 2, found
+
+
+def test_the_same_sink_with_only_the_marked_value_counts_zero(
+        tmp_path: Path) -> None:
+    """The pair `test_a_mark_on_one_value_does_not_clear_its_siblings`
+    needs: with the raw siblings gone, only the marked value remains and
+    the sink must count nothing. Without this pair a scanner that counts
+    every stream unconditionally — ignoring marks altogether — would also
+    pass the first test."""
+    sample = tmp_path / "marked_only.py"
+    sample.write_text(
+        "def render(r):" + chr(10)
+        + "    mr_target = r.stdout" + chr(10)
+        + "    print(f'{_untrusted.flat(mr_target)}')" + chr(10),
+        encoding="utf-8",
+    )
+    assert raw_child_stream_sinks(sample) == []
+
+
+def test_a_later_generator_inherits_an_earlier_generators_taint(
+        tmp_path: Path) -> None:
+    """A second `for` clause whose `iter` reads an earlier clause's loop
+    target must see that target's taint, not the taint the enclosing scope
+    had before the comprehension started. `_comprehension_keys` builds
+    `local` precisely so each generator's target is tainted in turn; a
+    later generator's `iter` has to be checked against `local` as it
+    stands at that point; checking it against the original `tainted`
+    instead loses `x`'s taint (never added to `tainted`, only to `local`)
+    and would score `y` — genuinely `r.stdout` data, unmarked — as clean.
+    """
+    sample = tmp_path / "nested.py"
+    sample.write_text(
+        "def render(r):" + chr(10)
+        + "    print([y for x in r.stdout.splitlines() for y in x.split()])"
+        + chr(10),
+        encoding="utf-8",
+    )
+    assert len(raw_child_stream_sinks(sample)) == 1
 
 
 # ---------------------------------------------------------------------------
