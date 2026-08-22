@@ -345,8 +345,22 @@ UNRESOLVED = 113
 #: added to a number documented as *what this scan cannot see*. The census
 #: (`raw_child_stream_sinks`) did not move, and neither did `UNRESOLVED` once
 #: the entry was added -- both checked before the number was touched.
+#:
+#: `says_not_found` and `says_forbidden` are the third and fourth, the same
+#: shape one scope over: `presets/_status_probe.py` (#1864) is the same
+#: `any(marker in low for marker in markers)` body, and the fix that put a
+#: not-found or forbidden reading behind a predicate call rather than a bare
+#: `"404" in s` / `"403" in s` gave it 32 call sites across the same two
+#: directories plus `presets/_declared_workflows.py`. Left out of this set
+#: `UNRESOLVED` rose 113 -> 143 for the identical reason: 30 sites where the
+#: taint provably stops (two more read `err` directly with no lowering
+#: assignment for this scan to lose) added to a number documented as what
+#: this scan cannot see. The census did not move, and neither did
+#: `UNRESOLVED` once these two entries were added -- both checked before the
+#: number was touched.
 NOT_TEXT = frozenset({"loads", "int", "float", "len", "bool",
-                      "mentions_gitlab_token", "says_not_authenticated"})
+                      "mentions_gitlab_token", "says_not_authenticated",
+                      "says_not_found", "says_forbidden"})
 
 _SCANNED = ("presets/github", "presets/gitlab", "presets/git")
 

@@ -70,6 +70,7 @@ import _declared_workflows  # noqa: E402  (the second *workflow* count — #846)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _untrusted  # noqa: E402  (workflow and job names are remote text — #851)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
+import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 
 # The four states. Spelled as constants because the tests, the exit code and
 # the header all have to mean the same thing by them, and because `NOT GREEN`
@@ -991,7 +992,7 @@ def _format_error(stderr: str, what: str, commit: bool = False) -> str:
     # a ref that does not exist — not a 404. Left unclassified it echoed gh's
     # own sentence, which names a SHA for something the caller typed as a
     # branch name and reads as an API fault rather than a typo.
-    if ("could not resolve" in s or "404" in s or "not found" in s
+    if (_status_probe.says_not_found(s)
             or "422" in s or "no commit found" in s):
         # Scope is shared; the hint is not. `_repo_target.not_found_hint()`
         # says "Check the number", which is right for the issue/PR ops it was
@@ -1028,7 +1029,7 @@ def _format_error(stderr: str, what: str, commit: bool = False) -> str:
         return "ERROR: gh CLI not authenticated. Run: gh auth login"
     if "rate limit" in s or "429" in s:
         return "ERROR: GitHub API rate limit exceeded. Wait a few minutes."
-    if "403" in s or "forbidden" in s:
+    if _status_probe.says_forbidden(s):
         return f"ERROR: permission denied for {what}. Check repo access."
     # The remote host wrote this text — flattened, never relayed raw (#1606).
     return (f"ERROR: gh failed for {what}: "

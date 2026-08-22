@@ -51,6 +51,20 @@ def _load(rel: str, name: str) -> Any:
 
 
 rt = _load("presets/_repo_target.py", "_repo_target")
+status_probe = _load("presets/_status_probe.py", "_status_probe_1807")
+
+#: `_in_strings` below resolves a call to either of these (#1864) into the
+#: marker tuple it tests, the same way it resolves a literal `"x" in s`. The
+#: seven target call sites under `presets/github/` and the four under
+#: `presets/gitlab/` route their not-found reading through
+#: `_status_probe.says_not_found` rather than a bare `"404" in s` now, and a
+#: derivation that only understood the literal shape would see nothing at
+#: those sites -- the same "silently saw less than it claimed" failure this
+#: module's own docstring names about the `notfound`-bucket-only keying.
+_STATUS_PROBE_MARKERS = {
+    "says_not_found": tuple(status_probe.NOT_FOUND_MARKERS),
+    "says_forbidden": tuple(status_probe.FORBIDDEN_MARKERS),
+}
 
 #: A string that satisfies the call sites' broad `git remotes` and none of the
 #: tuple's narrow spellings. #1807's own example.
@@ -70,7 +84,14 @@ GH_MISSING = "gh not found - install from https://cli.github.com"
 # ===========================================================================
 
 def _in_strings(test: ast.AST) -> set:
-    """Every `"literal" in <name>` string in one `if` test."""
+    """Every `"literal" in <name>` string in one `if` test.
+
+    Also resolves a call to `_status_probe.says_not_found` / `says_forbidden`
+    (#1864) into the marker tuple it tests, keyed on the attribute/function
+    name alone -- the call sites all spell the module `_status_probe`, but
+    matching on the name rather than the qualified path is the same choice
+    `_body_calls` below already makes for `no_repo_error`.
+    """
     out = set()
     for node in ast.walk(test):
         if isinstance(node, ast.Compare) and any(
@@ -78,6 +99,12 @@ def _in_strings(test: ast.AST) -> set:
             if isinstance(node.left, ast.Constant) and isinstance(
                     node.left.value, str):
                 out.add(node.left.value)
+        elif isinstance(node, ast.Call):
+            fn = node.func
+            name = ((isinstance(fn, ast.Attribute) and fn.attr)
+                     or (isinstance(fn, ast.Name) and fn.id))
+            if name in _STATUS_PROBE_MARKERS:
+                out |= set(_STATUS_PROBE_MARKERS[name])
     return out
 
 
@@ -226,7 +253,7 @@ def test_the_call_site_vocabulary_is_what_1807_reported() -> None:
     # a tuple counterpart for them.
     github_target = _under(target, "presets/github/")
     assert _union(github_target) == {
-        "could not resolve", "404", "not found", "422", "no commit found",
+        "could not resolve", "http 404", "not found", "422", "no commit found",
     }, repr(github_target)
     assert len(cwd) == 10, (
         "the number of cwd-classifying guards changed (was 10 at #1807, "
@@ -256,7 +283,7 @@ def test_gitlab_matches_on_the_same_target_phrases_for_now() -> None:
     gitlab = _under(target, "presets/gitlab/")
 
     assert len(gitlab) == 4, repr(gitlab)
-    assert _union(gitlab) == {"could not resolve", "404", "not found"}, (
+    assert _union(gitlab) == {"could not resolve", "http 404", "not found"}, (
         "GitLab's target vocabulary drifted from GitHub's. That is allowed - "
         "say so here. It does not by itself say anything about "
         "_ABSENT_TARGET, which reads gh's stderr: " + repr(gitlab))
@@ -308,7 +335,6 @@ def test_the_tuples_are_strictly_narrower_not_the_same_phrases() -> None:
 
     for site_marker, tuple_marker in (
             ("could not resolve", "could not resolve to a repository"),
-            ("404", "http 404"),
     ):
         assert site_marker in target_site_markers, site_marker
         assert tuple_marker in rt._ABSENT_TARGET, tuple_marker
@@ -318,10 +344,15 @@ def test_the_tuples_are_strictly_narrower_not_the_same_phrases() -> None:
     assert "not found" in target_site_markers
     assert not any("not found" == m for m in rt._ABSENT_TARGET)
 
-    # The two markers that really are identical, so `strictly narrower` is
-    # not read as `every phrase differs`.
+    # The markers that really are identical, so `strictly narrower` is not
+    # read as `every phrase differs`. `http 404` joined this list at #1864:
+    # the call sites used to match the bare digit `404` and the tuple already
+    # matched the narrow `http 404` -- the fix that removed the bare digit
+    # made the call site marker literally the tuple's own spelling, where it
+    # used to be a superstring of it.
     for shared in ("github host", "not a git repository"):
         assert shared in cwd_site_markers and shared in rt._ABSENT_CWD
+    assert "http 404" in target_site_markers and "http 404" in rt._ABSENT_TARGET
 
 
 def test_the_comment_says_narrower_and_no_longer_says_the_same_phrases(

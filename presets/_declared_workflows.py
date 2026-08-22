@@ -55,6 +55,8 @@ import re
 import subprocess
 import time
 
+import _status_probe  # noqa: E402  (does this stderr *state* the target is missing? - #1864; the caller already put presets/ on sys.path before importing this module)
+
 WORKFLOW_DIR = ".github/workflows"
 
 # Extra `gh api` calls one render will pay for: one for the directory, one per
@@ -293,7 +295,7 @@ def _api(path: str, timeout: int = API_TIMEOUT) -> tuple[object, str]:
         return None, f"gh could not be run ({type(exc).__name__})"
     if r.returncode != 0:
         stderr = (r.stderr or "").strip()
-        if "404" in stderr or "Not Found" in stderr:
+        if _status_probe.says_not_found(stderr):
             return None, "404"
         return None, f"gh failed ({stderr[:120] or 'no stderr'})"
     try:

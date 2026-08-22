@@ -28,6 +28,7 @@ from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 import _untrusted  # noqa: E402  (an MR's branch, title and author are the opener's text — #965)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
+import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 import _job_argv  # noqa: E402  (the argv shape both job presets share — #1145)
 import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
 import _secrets  # noqa: E402  (the one GitLab token-prefix list — #1645)
@@ -64,7 +65,7 @@ def _local_branch_check(source: str, actionable: bool = True) -> str:
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify glab errors into actionable messages for LLMs."""
     s = stderr.lower()
-    if "404" in s or "not found" in s or "could not resolve" in s:
+    if _status_probe.says_not_found(s):
         return (f"ERROR: {resource} #{identifier} not found "
                 f"{_repo_target.not_found_scope()}. Check the ID. Use "
                 "gl-pipeline to list jobs first, then gl-job with the job ID.")
@@ -77,7 +78,7 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     if (_auth_probe.says_not_authenticated(s, _auth_probe.GITLAB_MARKERS)
             or _secrets.mentions_gitlab_token(s)):
         return "ERROR: glab not authenticated. Run: glab auth login"
-    if "403" in s or "forbidden" in s:
+    if _status_probe.says_forbidden(s):
         return f"ERROR: permission denied for {resource} #{identifier}. Check your GitLab access token permissions."
     # The remote host wrote this text — flattened, never relayed raw (#1485).
     return (f"ERROR: glab failed for {resource} #{identifier}: "

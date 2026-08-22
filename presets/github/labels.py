@@ -98,6 +98,7 @@ from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -
 import _repo_target  # noqa: E402  (the repo this call is about, when not cwd's)
 import _untrusted  # noqa: E402  (label names and descriptions are remote text)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
+import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 
 # How many open issues are enumerated for the counts. One call, bounded: the
 # question is "what can I tag with", and an op answering it must not turn into
@@ -176,9 +177,9 @@ def _format_error(stderr: str, what: str) -> str:
         return "ERROR: gh CLI not authenticated. Run: gh auth login"
     if "rate limit" in s or "429" in s:
         return "ERROR: GitHub API rate limit exceeded. Wait a few minutes."
-    if "403" in s or "forbidden" in s:
+    if _status_probe.says_forbidden(s):
         return f"ERROR: permission denied reading {what}. Check repo access."
-    if "404" in s or "not found" in s:
+    if _status_probe.says_not_found(s):
         return (f"ERROR: {what} not found {_repo_target.not_found_scope()}. "
                 f"{_repo_target.not_found_hint()}")
     # The remote host wrote this text — flattened, never relayed raw (#1606).

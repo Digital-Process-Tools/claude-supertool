@@ -24,6 +24,7 @@ import _repo_target  # noqa: E402  (the repo this call is about, when not the cw
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 import _untrusted  # noqa: E402  (a PR's branch, title and author are the opener's text — #965)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
+import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 import _job_argv  # noqa: E402  (the argv shape both job presets share — #1145)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 
@@ -66,7 +67,7 @@ def _gh_error_kind(stderr: str) -> str:
     s = stderr.lower()
     if "github host" in s or "not a git repository" in s or "git remotes" in s:
         return "repo"
-    if "could not resolve" in s or "404" in s or "not found" in s:
+    if _status_probe.says_not_found(s):
         return "notfound"
     # A status, never a number (#1846). `401` sits inside a GitHub user id
     # (`API rate limit exceeded for user ID 44012345`) and inside a request id,
@@ -80,7 +81,7 @@ def _gh_error_kind(stderr: str) -> str:
         return "auth"
     if "rate limit" in s or "429" in s:
         return "ratelimit"
-    if "403" in s or "forbidden" in s:
+    if _status_probe.says_forbidden(s):
         return "forbidden"
     return "other"
 

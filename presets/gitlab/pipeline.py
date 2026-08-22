@@ -24,6 +24,7 @@ import _repo_target  # noqa: E402  (the project this call is about, if not cwd's
 import _secrets  # noqa: E402  (the one GitLab token-prefix list — #1645)
 import _untrusted  # noqa: E402  (a job name is CI-config text, and this is a column-aligned table — #965)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
+import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 
 # Statuses that answer "what's still going on right now".
 _ACTIVE_STATUSES = {"running", "pending"}
@@ -64,7 +65,7 @@ def _parse_paginated_json(raw: str) -> list[dict]:
 def _format_error(stderr: str, resource: str, identifier: str) -> str:
     """Classify glab errors into actionable messages for LLMs."""
     s = stderr.lower()
-    if "404" in s or "not found" in s or "could not resolve" in s:
+    if _status_probe.says_not_found(s):
         return (f"ERROR: {resource} #{identifier} not found "
                 f"{_repo_target.not_found_scope()}. "
                 f"{_repo_target.gl_not_found_hint()}")
@@ -77,7 +78,7 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
     if (_auth_probe.says_not_authenticated(s, _auth_probe.GITLAB_MARKERS)
             or _secrets.mentions_gitlab_token(s)):
         return "ERROR: glab not authenticated. Run: glab auth login"
-    if "403" in s or "forbidden" in s:
+    if _status_probe.says_forbidden(s):
         return f"ERROR: permission denied for {resource} #{identifier}. Check your GitLab access token permissions."
     # The remote host wrote this text — flattened, never relayed raw (#1485).
     return (f"ERROR: glab failed for {resource} #{identifier}: "

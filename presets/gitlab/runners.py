@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _untrusted  # noqa: E402  (a runner description and a CI tag are remote text, and these are hand-padded tables — #970)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
+import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 
 # GitLab does not write contacted_at on every poll — it throttles the update.
 # Measured on a live fleet: one runner's contacted_at stayed frozen at the same
@@ -106,14 +107,14 @@ _MAX_DETAIL_WORKERS = 8
 def _format_error(stderr: str, resource: str) -> str:
     """Classify glab errors into actionable messages for LLMs."""
     s = stderr.lower()
-    if "404" in s or "not found" in s or "could not resolve" in s:
+    if _status_probe.says_not_found(s):
         return f"ERROR: {resource} not found. Verify you're in the right repo."
     # A status, never a number (#1846). go-gitlab echoes the request URL into
     # every error string, so a project, job or pipeline id containing `401`
     # made a 500 or a throttle render as a missing credential.
     if _auth_probe.says_not_authenticated(s, _auth_probe.GITLAB_MARKERS):
         return "ERROR: glab not authenticated. Run: glab auth login"
-    if "403" in s or "forbidden" in s:
+    if _status_probe.says_forbidden(s):
         return (
             f"ERROR: permission denied reading {resource}. Instance-wide runner data "
             "needs admin; project-scoped runners need Maintainer."
@@ -647,7 +648,7 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
         watch(WATCH_SOURCE, WATCH_SCOPE)
 
     listed, err = _api("projects/:id/runners?per_page=100", paginate=True)
-    if err and ("403" in err or "permission denied" in err.lower()):
+    if err and _status_probe.says_forbidden(err):
         return ([
             "radar: gl-runners tier is registered but this token cannot read project "
             "runners (needs Maintainer). Grant access, or drop 'gl-runners' from "
