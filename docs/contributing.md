@@ -638,6 +638,39 @@ Derived from the *running* interpreter, which is where that check ends and `_net
 
 Why this is a rule and not a nicety: a live call makes the leg a statement about somebody else's DNS and redirect policy. #1312 was filed off a red on PR #1302, whose diff was one test file and one markdown table; Hashnode had started answering 301, `_http.urlopen` correctly refused the off-origin hop, and the test rendered that correct refusal as a product defect.
 
+### Every temp repo you `git init` already has fsmonitor suppressed -- you do not opt in
+
+`tests/conftest.py`'s `pytest_configure` sets `GIT_CONFIG_COUNT=1`,
+`GIT_CONFIG_KEY_0=core.fsmonitor`, `GIT_CONFIG_VALUE_0=false` once, before any
+fixture runs ([#1892]). `subprocess.run(["git", ...])` inherits the parent
+process's environment whenever the call omits `env=`, which every `git init`
+in this suite does, so the suppression reaches all of them -- there is no
+single shared repo-creation helper to opt in through, the suite has 27+ files
+that each roll their own `subprocess.run(["git", "init", ...])`.
+
+**Why this exists.** `core.fsmonitor = true` is an ordinary machine-level user
+preference, not a defect, and a repo that inherits it from the ambient global
+config spawns a detached `git fsmonitor--daemon run --detach` that outlives
+the process which started it -- the repository is deleted rather than closed.
+Three independent measurements on one machine on 2026-08-21 found 965-979 such
+orphaned daemons at `ppid 1`; with them present, a full suite run hung at 98%
+for over an hour and a plain `git add` in a fresh temp repo timed out at 30s.
+
+**A test that deliberately wants the daemon can still force it**, the same way
+`test_the_pin_outranks_the_environment_too` in
+`test_git_status_display_config_gates_1295.py` forces a different config key
+past the environment: `-c core.fsmonitor=true` on the individual `git`
+invocation outranks `GIT_CONFIG_*`. Nothing here can be defeated except on
+purpose.
+
+**Do not add a new fixture-creation helper that passes its own `env=`
+without carrying these three forward.** An explicit `env=` on `subprocess.run`
+replaces the inherited environment rather than extending it, so a helper that
+builds its own dict from scratch silently opts back into the ambient
+`core.fsmonitor` this section exists to suppress.
+
+[#1892]: https://github.com/Digital-Process-Tools/claude-supertool/issues/1892
+
 ### Fetching a URL somebody else chose
 
 Everything above governs a request to a URL *this repo* chose — the four API clients hold their base URLs as constants, and the only untrusted input is where a redirect points. `gh-issue` broke that assumption: it pulled `http(s)` URLs out of issue markdown and fetched them, so any comment containing

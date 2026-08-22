@@ -378,6 +378,35 @@ def pytest_configure(config):
     cache_home = tempfile.TemporaryDirectory(prefix="supertool-suite-cache-")
     _CACHE_HOMES.append(cache_home)
     os.environ["XDG_CACHE_HOME"] = cache_home.name
+    # #1892: every fixture in this suite creates its temp git repos with a
+    # bare `subprocess.run(["git", ...])`, none of them pass `env=`, and
+    # `subprocess.run` inherits the parent process's environment by default
+    # -- so setting this ONCE here, before any fixture runs, reaches every
+    # one of them without touching the 27+ files that call `git init`
+    # directly. The alternative (a per-fixture or per-helper change) was
+    # considered and rejected: there is no single shared repo-creation
+    # helper to patch, so that route would need 27 separate edits and any
+    # new one written tomorrow would silently be uncovered.
+    #
+    # `-c core.fsmonitor=...` on an individual git invocation would win
+    # over this (test_the_pin_outranks_the_environment_too in
+    # test_git_status_display_config_gates_1295.py measures the same
+    # precedence for a different key), so a test that deliberately wants
+    # the daemon can still force it that way; nothing here can be defeated
+    # by that except on purpose.
+    #
+    # A repo that inherits an ambient `core.fsmonitor = true` (an ordinary
+    # user preference, not a defect) spawns a detached
+    # `git fsmonitor--daemon run --detach` that outlives the process which
+    # started it, because the repo is deleted rather than closed. Three
+    # independent measurements on one machine on 2026-08-21 found 965-979
+    # orphaned daemons at `ppid 1`, and a full suite run hung at 98% for
+    # over an hour with them present (#1892). `setdefault`, like the other
+    # env knobs above: an operator who has genuinely set GIT_CONFIG_COUNT/
+    # KEY_0/VALUE_0 for their own purpose is not overridden by the suite.
+    os.environ.setdefault("GIT_CONFIG_COUNT", "1")
+    os.environ.setdefault("GIT_CONFIG_KEY_0", "core.fsmonitor")
+    os.environ.setdefault("GIT_CONFIG_VALUE_0", "false")
     # #416: the autouse fixture below cannot cover collection-time module
     # bodies or session helpers, which run before any fixture. Scrub once here
     # too, and remember what was leaked so it gets reported rather than hidden.
