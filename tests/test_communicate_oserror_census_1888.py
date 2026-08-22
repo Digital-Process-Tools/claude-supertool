@@ -61,8 +61,13 @@ _VALIDATORS = _ROOT / "validators"
 #: is new population this census has not looked at.
 _OWNS_MANUAL_TEARDOWN = {"git-status/git-status.py"}
 
-_POPEN_RE = re.compile(r"subprocess\.Popen\(")
-_SUBPROCESS_IMPORT_RE = re.compile(r"^\s*import subprocess\b", re.MULTILINE)
+#: Matches the bare call, not the qualified spelling, so `from subprocess
+#: import Popen` and `import subprocess as sp; sp.Popen(` are seen too --
+#: a regex tied to `subprocess.Popen(` alone missed both (found in review).
+_POPEN_RE = re.compile(r"\bPopen\s*\(")
+_SUBPROCESS_IMPORT_RE = re.compile(
+    r"^\s*(import subprocess\b|from subprocess import\b)", re.MULTILINE
+)
 
 
 def _validator_py_files() -> list[Path]:
