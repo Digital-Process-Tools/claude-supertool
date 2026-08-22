@@ -922,7 +922,26 @@ def main() -> int:
 
         # MR diff size — file count from existing JSON (no extra network).
         # +/- line counts via local git diff against target branch (also no
-        # network; falls back silently if target ref isn't present locally).
+        # network). #1933: the fallback used to be silent whenever the local
+        # `git diff --shortstat` did not answer with a clean, non-empty
+        # result — a timeout, a target ref not present locally, and any
+        # other git failure all rendered as the exact same bare
+        # `Diff: N files`, indistinguishable from a genuinely empty diff.
+        # That reading is impossible in this branch: `changes_count` above
+        # has already established the diff is non-empty, so a caller has no
+        # way to tell "git could not answer" from "there happen to be no
+        # line changes" — the second is ruled out here by construction.
+        # Three states, not two: print the counts, or say the call did not
+        # answer and why, right on this line — not routed through
+        # `_note_failed`/`_UNANSWERED`. A target ref simply not fetched
+        # locally is the *expected* case on a shallow or partial checkout
+        # (the old comment called it out for exactly that reason), and
+        # `_note_failed`'s own docstring says calls that "fail as a matter
+        # of course stay silent on purpose" because a footer on every such
+        # run is one nobody reads on the run that needed it. A genuine
+        # timeout is still recorded in `_UNANSWERED` — `_git` does that
+        # itself on `TIMEOUT_RC`, unconditionally — so the footer keeps
+        # naming the one cause that is never routine.
         changes_count = mr.get("changes_count")
         if changes_count is None or changes_count == "" or changes_count == "0":
             print("Diff: EMPTY — branch has no commits ahead of target!")
@@ -932,14 +951,23 @@ def main() -> int:
             if target_ref:
                 shortstat = _git(["diff", "--shortstat",
                                   f"{target_ref}...HEAD"], timeout=3)
-                if shortstat.returncode == 0 and shortstat.stdout.strip():
-                    # e.g. " 5 files changed, 126 insertions(+), 72 deletions(-)"
+                if shortstat.returncode == 0:
                     text = shortstat.stdout.strip()
-                    adds = re.search(r"(\d+) insertions?", text)
-                    dels = re.search(r"(\d+) deletions?", text)
-                    a = adds.group(1) if adds else "0"
-                    d = dels.group(1) if dels else "0"
-                    diff_line += f" (+{a} -{d})"
+                    if text:
+                        # e.g. " 5 files changed, 126 insertions(+), 72 deletions(-)"
+                        adds = re.search(r"(\d+) insertions?", text)
+                        dels = re.search(r"(\d+) deletions?", text)
+                        a = adds.group(1) if adds else "0"
+                        d = dels.group(1) if dels else "0"
+                        diff_line += f" (+{a} -{d})"
+                    else:
+                        diff_line += " (+0 -0)"
+                else:
+                    diff_line += (
+                        " (+? -? — `git diff --shortstat` did not answer: "
+                        + _reason(shortstat.returncode, shortstat.stderr) + ")")
+            else:
+                diff_line += " (+? -? — no target branch reported for this MR/PR)"
             print(diff_line)
 
         # Extract linked issue from description

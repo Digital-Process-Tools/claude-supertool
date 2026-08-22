@@ -341,7 +341,35 @@ SINK_SHAPES = tuple(SHAPE_PROBES)
 #: …)` count) and tainted an int with it. Located by differencing this
 #: file's own `unresolved_escapes` against the merge-base, before the
 #: number moved.
-UNRESOLVED = 109
+#:
+#: 109 -> 111 on 2026-08-22 (#1933). Both added sites are `presets/git/
+#: status.py:968:26`, both arguments of ONE `_reason(shortstat.returncode,
+#: shortstat.stderr)` inside the MR diff line's new failure branch
+#: (`diff_line += (… + _reason(…) + ")")`). Checked by hand before the
+#: number was touched, not assumed from the instruction this test's own
+#: failure prints: `_reason` (`status.py:339`) already applies
+#: `_untrusted.flat` to `stderr` before it returns, and both arguments reach
+#: it through the SAME helper this file already uses five other times —
+#: `_divergence_line` (`_reason(res.returncode, res.stderr)`, status.py:418),
+#: `_note_failed` (:374), `_hosted_request` (:468), and `main`'s own
+#: not-a-repository arm (:595) — none of which raised this number, because
+#: each embeds the call directly inside an f-string that is itself a sink's
+#: argument (`return f"…{_reason(…)}…"`, `print(f"…{_reason(…)}…"`), which
+#: `_accounted_for`'s sink-argument walk already speaks for. This call is the
+#: first to reach `_reason` through an `AugAssign` (`diff_line += (…)`)
+#: instead — `_scan_scope` only tracks `ast.Assign`/`ast.AnnAssign` as
+#: taint-carrying, so an `AugAssign`'s own `Call` is never in `accounted`,
+#: and the census's own sink-shape list (`SINK_SHAPES`) has no `AugAssign`
+#: entry either. `returncode` is an `int` and was never raw text; it is
+#: flagged only because `shortstat` itself inherits a generic taint key from
+#: the `target_ref`-derived argument handed to the `_git(…)` call that
+#: produced it (`_unmarked` cannot tell "used to build an argument" from
+#: "carries the raw stream itself"), the same coarse propagation the
+#: `mine.stdout` note above already documents for an `IfExp.test`. Neither
+#: argument is a new class of risk; the census (`raw_child_stream_sinks`)
+#: did not move and stays at `presets/git/status.py: 19` — checked before
+#: this number was touched.
+UNRESOLVED = 111
 
 #: Calls whose result cannot be a string, so the taint stops there. A type
 #: argument, not an allowlist: `json.loads(r.stdout)` yields a dict, and every
