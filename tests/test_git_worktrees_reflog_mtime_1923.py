@@ -23,8 +23,6 @@ import os
 import time
 from pathlib import Path
 
-import pytest
-
 
 ROOT = Path(__file__).parent.parent
 PRESET = ROOT / "presets" / "git" / "worktrees.py"
