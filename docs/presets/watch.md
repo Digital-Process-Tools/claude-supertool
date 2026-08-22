@@ -564,7 +564,8 @@ Rendering that as `0 watched` would be a number a reader acts on, and healing on
 | Route | What happens |
 |---|---|
 | a filter token `gh-prs` cannot honour | **refused, before any call.** `gh pr list` silently ignores an unrecognised key, so `radar:milestone=v19` would otherwise return the whole unfiltered board and read as "everything matched" |
-| auth failure, rate limit, unparseable JSON | `RadarError` — stderr, exit 1, nothing healed and **nothing snapshotted**. Acting on a population we could not read is how a cache gets overwritten with a guess |
+| auth failure, rate limit, a transport failure | `RadarUnreachable` (a `RadarError`, since [#1568](https://github.com/Digital-Process-Tools/claude-supertool/issues/1568)) — stderr, exit 1, nothing healed and **nothing snapshotted**. Acting on a population we could not read is how a cache gets overwritten with a guess |
+| unparseable JSON, or any other reply that arrived and was wrong | plain `RadarError` — the same non-zero exit and the same refusal to heal or snapshot, but a different class: the forge answered here, so a retry produces the same answer |
 | the filter matched nothing | reported *with its scope*: `No PRs matched — scope label=bug on owner/repo.` "No open PRs" is a claim about the world; this is a claim about a query |
 | a PR with an empty check rollup | counted `unchecked`, never green — the run may not exist yet, and "not yet" has rendered as "fine" on this board's GitLab twin before ([#659](https://github.com/Digital-Process-Tools/claude-supertool/issues/659)) |
 | a green whose legs do not reconcile | `[legs UNVERIFIED]`, counted `unchecked`, `healthy=False` |
