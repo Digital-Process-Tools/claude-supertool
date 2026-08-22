@@ -46,9 +46,10 @@ SLOT = ("gitlab-mr", "33698")
 class _Machine:
     """A process table, a liveness set, and a stop that only records."""
 
-    def __init__(self, mine: Path, theirs: Path) -> None:
+    def __init__(self, mine: Path, theirs: Path, base: Path) -> None:
         self.mine = str(mine)
         self.theirs = str(theirs)
+        self.base = base
         self.rows: list[tuple[int, list[str]]] = []
         self.alive: set[int] = set()
         self.stopped: list[int] = []
@@ -72,6 +73,22 @@ class _Machine:
         self.alive.add(pid)
         return pid
 
+    def add_resolvable_channel(self, name: str, pid: int, source: str,
+                                watcher_id: str) -> str:
+        """A foreign channel `channel_dirs()` can actually hash back to a path.
+
+        `self.theirs` deliberately cannot be resolved -- it is named `default`
+        and so carries none of the `supertool-watch-` prefix `channel_dirs()`
+        keys on -- which is why every test above it exercises only the
+        "no state directory hashes to it" arm. This builds the other one.
+        """
+        state_dir = self.base / f"supertool-watch-{name}"
+        state_dir.mkdir()
+        self.rows.append(
+            (pid, self.argv_under(str(state_dir), source, watcher_id)))
+        self.alive.add(pid)
+        return str(state_dir)
+
     def ps_rows(self):
         if self.scan_breaks:
             return None
@@ -94,7 +111,12 @@ def machine(tmp_path, monkeypatch) -> _Machine:
     theirs.mkdir()
     monkeypatch.setattr(transport, "STATE_DIR", str(mine))
     monkeypatch.setattr(dispatcher.transport, "STATE_DIR", str(mine))
-    m = _Machine(mine, theirs)
+    # `channel_dirs()` reads `naming.BASE_DIR` at call time and lists it. Left
+    # at the real "/tmp", a `supertool-watch-*` directory belonging to whoever
+    # is running the suite lands in the token map, so what this file asserts
+    # about a foreign channel would depend on the developer's own machine.
+    monkeypatch.setattr(naming, "BASE_DIR", str(tmp_path))
+    m = _Machine(mine, theirs, tmp_path)
     monkeypatch.setattr(transport, "_ps_rows", m.ps_rows)
     monkeypatch.setattr(transport, "_pid_alive", m.pid_alive)
     monkeypatch.setattr(dispatcher, "_stop_pid", m.stop)
@@ -114,6 +136,40 @@ def test_unwatch_discloses_a_foreign_poller_on_the_same_slot(machine, capsys) ->
     # from "something here, but not on this channel".
     assert "another channel" in out, out
     assert str(theirs) not in out, out  # never a PID this channel may not act on
+
+
+def test_unwatch_names_the_foreign_channels_state_dir_when_it_resolves(
+        machine, capsys) -> None:
+    """The actionable half of the disclosure, and the half nothing covered.
+
+    `channel_dirs()` exists to hash *forward* over the directories under
+    BASE_DIR so a channel token -- which is a one-way `sha256(...)[:12]` and
+    reverses into nothing -- turns back into the path, and so into the
+    `SUPERTOOL_WATCH_NAME` whose own board can stop the poller. That is the
+    whole of #1881's complaint: five slots, 564 processes, and no route from
+    the token to the thing that could act on them. The disclosure's closing
+    line tells the operator to "run `unwatch` under the SUPERTOOL_WATCH_NAME
+    that derives their state dir", which is advice they cannot follow if the
+    state dir was never named.
+
+    Every other test in this file uses `add_theirs`, whose directory is named
+    `default` and therefore never matches the `supertool-watch-` prefix
+    `channel_dirs()` keys on -- so all of them land on the "no state directory
+    hashes to it" arm and the resolved one went unexercised. Rendering goes
+    through `naming.flat_path`, never a raw interpolation (#1522), so that is
+    what this asserts against.
+    """
+    state_dir = machine.add_resolvable_channel("theirs", 202, *SLOT)
+    assert dispatcher.cmd_unwatch(list(SLOT)) == 0
+    out = capsys.readouterr().out
+    assert "another channel" in out, out
+    assert f"state dir {naming.flat_path(state_dir)}" in out, out
+    # The two arms are mutually exclusive: a resolved channel must not also
+    # report itself unresolvable, which is what would happen if the lookup
+    # silently missed and the fallback carried the line.
+    assert "hashes to it" not in out, out
+    assert "could not be resolved" not in out, out
+    assert "202" not in out, out  # still a count, never a PID
 
 
 def test_unwatch_says_nothing_extra_when_no_foreign_poller_exists(
