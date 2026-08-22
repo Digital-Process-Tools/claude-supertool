@@ -110,12 +110,22 @@ def test_the_pin_outranks_the_environment_too(poisoned_repo, monkeypatch):
     Carried from #1290 as a measurement rather than a belief: a fix that set
     the value through the environment would lose to a user who had set it
     through the environment, and nothing on the command line would say so.
+
+    Index 0 is `tests/conftest.py`'s own `core.fsmonitor` suppression
+    (#1892) -- overwriting it with `GIT_CONFIG_COUNT=1` the way this test
+    used to would clobber that entry for the one `git status` call below,
+    reopening the leak this test has no reason to reopen. Index 1 is what
+    this test actually asserts on: `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` is
+    positional, not additive, so both entries have to be named together
+    rather than one `setenv` per line.
     """
     push = _load("presets/git/push.py", "st_push_env_1295")
     monkeypatch.chdir(poisoned_repo)
-    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-    monkeypatch.setenv("GIT_CONFIG_KEY_0", "status.showUntrackedFiles")
-    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "no")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "false")
+    monkeypatch.setenv("GIT_CONFIG_KEY_1", "status.showUntrackedFiles")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_1", "no")
     leftovers, why = push._uncommitted_leftovers()
     assert why == ""
     assert leftovers is not None
