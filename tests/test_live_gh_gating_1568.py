@@ -198,7 +198,20 @@ def test_a_gh_killed_by_a_signal_is_unreachable(monkeypatch) -> None:
                         lambda *a, **k: _Result(-9, "", ""))
     with pytest.raises(tier.RadarUnreachable) as caught:
         tier.live_open_prs({"state": "open"})
-    assert "signal 9" in str(caught.value), caught.value
+    # The returncode, not the mechanism. This assertion used to read
+    # `"signal 9" in ...`, which contradicted the docstring directly above it:
+    # the predicate IS the sign of the return code, and "signal" is the one
+    # part of the old wording #1871 established was never observed on Windows.
+    # A test may not pin a claim the code deliberately stopped making.
+    #
+    # The returncode is true on every platform, and it is also what an
+    # operator acts on, so it is the right thing to hold. The *wording* --
+    # that the hedge is present and the old unconditional claim is gone, on
+    # both tiers, in both directions -- is owned by
+    # tests/test_watch_signal_wording_1871.py. Do not re-add a prose
+    # assertion here: two files pinning one string is how the next wording
+    # change breaks a test that was never about wording.
+    assert "-9" in str(caught.value), caught.value
 
 
 def test_a_non_zero_exit_with_nothing_to_read_stays_red(monkeypatch) -> None:
