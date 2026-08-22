@@ -52,6 +52,7 @@ class _Machine:
         self.rows: list[tuple[int, list[str]]] = []
         self.alive: set[int] = set()
         self.stopped: list[int] = []
+        self.scan_breaks = False
 
     def argv_under(self, state_dir: str, source: str, watcher_id: str) -> list[str]:
         saved = transport.STATE_DIR
@@ -72,6 +73,8 @@ class _Machine:
         return pid
 
     def ps_rows(self):
+        if self.scan_breaks:
+            return None
         return [(pid, argv) for pid, argv in self.rows if pid in self.alive]
 
     def pid_alive(self, pid: int) -> bool:
@@ -136,6 +139,66 @@ def test_unwatch_still_stops_its_own_poller_when_a_foreign_one_also_exists(
     assert dispatcher.cmd_unwatch(list(SLOT)) == 0
     assert machine.stopped == [mine]
     assert theirs in machine.alive
+
+
+# ---------------------------------------------------------------------------
+# a scan that could not run must not render as "no foreign poller found"
+# ---------------------------------------------------------------------------
+
+def test_unwatch_discloses_an_unavailable_scan_on_the_tracked_but_dead_branch(
+        machine, capsys) -> None:
+    """The auditor's finding: two of the three "nothing stopped" branches
+    called `_foreign_slot_lines`, which returns `[]` both when the scan found
+    nothing AND when the scan never ran -- so a failed scan on this branch
+    read exactly like a slot nobody else is covering. Only the third branch
+    (a bare "no PID file, no process") already said so.
+    """
+    tracked = machine.add_mine(101, *SLOT)
+    transport.record_pid(*SLOT, tracked)
+    machine.alive.discard(tracked)  # tracked PID is now dead
+    machine.scan_breaks = True
+    assert dispatcher.cmd_unwatch(list(SLOT)) == 0
+    out = capsys.readouterr().out
+    assert "is not running" in out, out  # the tracked-but-dead sentence itself
+    # Hedged, not claimed: the scan never ran, so nothing here may assert a
+    # foreign poller exists -- only that one could not be ruled out.
+    assert "also saw poller" not in out, out  # the confirmed-disclosure header
+    assert "scan" in out.lower() and (
+        "unavailable" in out.lower() or "could not" in out.lower()), out
+
+    # must-fire, same fixture: a working scan on the identical dead-tracked
+    # slot must NOT print the scan-unavailable line -- without this the
+    # assertion above would pass on a line printed unconditionally.
+    machine.scan_breaks = False
+    tracked2 = machine.add_mine(202, "gitlab-mr", "99999")
+    transport.record_pid("gitlab-mr", "99999", tracked2)
+    machine.alive.discard(tracked2)
+    assert dispatcher.cmd_unwatch(["gitlab-mr", "99999"]) == 0
+    out2 = capsys.readouterr().out
+    assert "scan" not in out2.lower() or "unavailable" not in out2.lower(), out2
+
+
+# ---------------------------------------------------------------------------
+# a poller whose channel is unknowable is not "another channel"
+# ---------------------------------------------------------------------------
+
+def test_unwatch_does_not_call_an_unlabelled_poller_another_channels(
+        machine, capsys) -> None:
+    """The auditor's second finding: the disclosure header asserted "on
+    another channel" even when the only foreign-looking poller found was one
+    whose argv predates the channel token -- a poller `poller_census` cannot
+    place on any channel, including possibly this one.
+    """
+    pid = 909
+    machine.rows.append((pid, [
+        sys.executable, str(WATCH_DIR / "dispatcher.py"),
+        transport.POLL_SUBOP, *SLOT,
+    ]))
+    machine.alive.add(pid)
+    assert dispatcher.cmd_unwatch(list(SLOT)) == 0
+    out = capsys.readouterr().out
+    assert "cannot be told" in out, out
+    assert "on another channel" not in out, out
 
 
 def test_the_change_is_findable():
