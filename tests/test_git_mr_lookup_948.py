@@ -87,7 +87,10 @@ def _runs(cli):
     `cli` is a `CompletedProcess`, or a callable taking argv.
     """
     def run(cmd, **kw):
-        if list(cmd[:2]) == ["git", "remote"]:
+        # `_git` prepends `--no-optional-locks` ahead of the subcommand
+        # (#1945), so the discriminator can no longer assume the subcommand
+        # sits at cmd[1] -- it looks for "remote" anywhere in a `git` argv.
+        if cmd and cmd[0] == "git" and "remote" in cmd:
             return _proc(0, stdout=_HOSTED_REMOTE)
         # `hasattr(..., "returncode")`, not `callable(...)`: a `mock.Mock`
         # stub result is itself callable, and calling it returns another Mock.
@@ -341,7 +344,9 @@ def _lookup_against(url: str, cli):
 
 def _runs_in_repo(url: str, cli):
     def run(cmd, *_a, **_k):
-        if list(cmd[:2]) == ["git", "remote"]:
+        # Same discriminator fix as `_runs` above, and for the same reason
+        # (#1945).
+        if cmd and cmd[0] == "git" and "remote" in cmd:
             return _proc(0, stdout=_remote_v(url))
         return cli if hasattr(cli, "returncode") else cli(cmd)
     return run

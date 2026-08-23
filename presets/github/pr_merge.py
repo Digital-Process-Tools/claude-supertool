@@ -616,7 +616,14 @@ _WORKTREES_PY = Path(__file__).resolve().parent.parent / "git" / "worktrees.py"
 
 
 def _git(args: List[str], timeout: int = 30):
-    return subprocess.run(["git"] + args, capture_output=True, text=True,
+    # --no-optional-locks precedes the subcommand -- a git global flag
+    # (#1945, same mechanism as #1944). This chokepoint runs both reads
+    # (rev-parse, worktree list, status, ls-files) and writes (branch -d,
+    # worktree remove) -- the flag suppresses OPTIONAL locks only, verified
+    # harmless against real git 2.46.2 for both `branch -d` and `worktree
+    # remove`, so a blanket edit here is a no-op on the writes and closes the
+    # index.lock hole on every read without having to enumerate call sites.
+    return subprocess.run(["git", "--no-optional-locks"] + args, capture_output=True, text=True,
                           timeout=timeout, encoding="utf-8", errors="replace")
 
 
