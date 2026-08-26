@@ -165,6 +165,15 @@ def test_require_columns_survive_the_round_trip():
     given, and on a `remind` rule it *is* the verdict. Pinned by name so that a
     future "just regenerate it" cannot satisfy the two tests above by dropping
     them.
+
+    `merged-is-not-ancestry.md` no longer carries one (#1977): its `require:
+    --merged` was a second, looser substring test than the anchored `match`
+    regex, ambiguous in exactly the same way -- it treated `--merged-prs` as
+    satisfying `--merged`. Removed rather than patched, because the `match`
+    regex already demands the subcommand at command position and gains
+    nothing from a second, weaker check duplicating it. `git-C-has-cwd.md`
+    keeps its own `require`, which is not ambiguous the same way and is not
+    part of this issue.
     """
     tsv = BASE / "tools" / "00-manual" / "00-index.tsv"
     required = {}
@@ -174,7 +183,6 @@ def test_require_columns_survive_the_round_trip():
         if fields[4]:
             required[fields[2]] = fields[4]
     assert required == {
-        "merged-is-not-ancestry.md": "--merged",
         "git-C-has-cwd.md": "git -c",
     }
 

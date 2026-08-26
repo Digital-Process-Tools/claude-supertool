@@ -1,9 +1,8 @@
 ---
 title: "Do not ask git whether a branch is merged — this repo squash-merges"
 tool: Bash
-match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?git[[:space:]]+(branch|for-each-ref)[^|]*--merged
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?git[[:space:]]+(branch|for-each-ref)([^;&\n]|&[^&[:space:]])*--merged($|[^[:alnum:]-])
 mode: block
-require: --merged
 ---
 
 **Use `git-worktrees`.** It owns this question, for every worktree at once, with the branch, the path, the tracker state and an occupancy verdict alongside it:
@@ -23,6 +22,19 @@ It does not fail loudly. It returns a short, well-formed, wrong list:
 - 2026-08-09, six live worktrees: three fully-merged branches (`fix/1207`, `fix/1216`, `docs/contributor-skill`, merged as #1212, #1217, #1215) were absent from the merged set. Read the natural way, that says three branches hold unproposed work — an argument for opening three redundant PRs.
 
 **A short answer and a correct answer look identical here**, which is why this blocks.
+
+## The span crossed `;` and `&&`, and `require` was a substring test (#1977)
+
+`[^|]*` between the subcommand and `--merged` stopped at a pipe but not at `;`
+or `&&`, so a compound command whose first clause was `git branch -D NAME`
+and whose LATER clause carried `--merged-prs` (the maintainer loop's own
+`oss_state.py … --merged-prs N`) was refused for a flag it never asked git
+about. The span now stops at `;` and `&&`, the way `supertool-no-cut.md`
+does, and `--merged` itself must be followed by end-of-string or a
+non-identifier character, so `--merged-prs` cannot satisfy it even inside one
+clause. `require: --merged` is dropped rather than patched: it was a second,
+looser substring test carrying the same ambiguity, and the anchored regex
+above already demands the subcommand at command position on its own.
 
 ## The same trap in `git diff`
 
