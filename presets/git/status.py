@@ -1011,7 +1011,13 @@ def main() -> int:
 
             check_states = _checks.github_states(pr.get("statusCheckRollup"))
             if check_states:
-                check_summary = _checks.summarize(check_states)
+                # `summarize_github`, not `summarize(check_states)` (#1804): a
+                # check run a later run of the same name replaced is not a
+                # live failure — same discriminator #1792 gave the merge
+                # gate, applied here so this line and `gh-pr:N:status` cannot
+                # disagree about one commit.
+                check_summary = _checks.summarize_github(
+                    pr.get("statusCheckRollup"))
             else:
                 # Zero check runs is four states, not one (#585, #594). The
                 # evidence is the age of the *PR's* head commit and the PR
