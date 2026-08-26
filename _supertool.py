@@ -3736,9 +3736,11 @@ def _path_not_found(path: str, *, label: str = "path",
             root = None
     if root and os.path.exists(os.path.join(root, path)):
         lines.append(
-            f"  exists at {_flat_field(os.path.join(root, path))} — prefix "
-            f"the call with 'cwd:{_flat_field(root)}' to run it from the "
-            f"project root"
+            f"  exists at "
+            f"{_flat_field(os.path.join(root, path), disclose_newline=True)}"
+            f" — prefix the call with "
+            f"'cwd:{_flat_field(root, disclose_newline=True)}' to run it "
+            f"from the project root"
         )
     elif suggest:
         lines.append(f"  {suggest}")
@@ -5499,7 +5501,8 @@ def _read_edit_hint(path: str, body: str) -> str:
     # censored: the hint is unrunnable either way for such a file, and one
     # naming a path that is not the one read would be worse than a broken one.
     return (f"{mark('↳')} to modify: "
-            f"./supertool 'edit:::OLD:::NEW:::{_flat_field(path)}'"
+            f"./supertool 'edit:::OLD:::NEW:::"
+            f"{_flat_field(path, disclose_newline=True)}'"
             f"  (or edit:@- ; no harness Read needed)\n")
 
 
@@ -9275,7 +9278,8 @@ def _extra_token_remedy(op: str, parts: List[str], extra: List[str]) -> str:
             # forged `[result]` line at column 0 inside a refusal is the same
             # defect the header already guards against.
             return (f"For a line range use the syntax form: "
-                    f"read:{_flat_field(parts[1])}:{tok[6:]}")
+                    f"read:{_flat_field(parts[1], disclose_newline=True)}"
+                    f":{tok[6:]}")
     return ""
 
 
@@ -23401,7 +23405,7 @@ def _validate_one_block(path: str, validators: dict, verbose: bool = False) -> L
     `msg` — so the rows carry the same guarantee, via `_flat_cell`. Stated
     here because a reader who believes the sentence above stops looking.
     """
-    out = [f"validate: {_flat_field(path)}"]
+    out = [f"validate: {_flat_field(path, disclose_newline=True)}"]
     had_finding = False
     had_non_verdict = False
     ran_any = False
@@ -25449,7 +25453,7 @@ def _payload_literal_backslashes_misplaced(parsed: Any) -> str:
     )
     return (
         "`" + _PAYLOAD_LITERAL_BS_KEY + "` is set inside " + where
-        + (" where it does nothing" if len(idxs) == 1 else ", where it does nothing")
+        + ", where it does nothing"
         + ". It is read at the TOP LEVEL of the "
         "payload only, and it applies to every op the payload carries -- "
         "the doubled-backslash scan runs once, over the raw source, "

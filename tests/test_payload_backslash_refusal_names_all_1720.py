@@ -95,7 +95,12 @@ def test_literal_backslashes_misplaced_names_every_offending_index(
 def test_literal_backslashes_misplaced_single_index_reads_naturally(
     tmp_path: Path,
 ) -> None:
-    """The single-offender case keeps its original, un-pluralised phrasing."""
+    """The single-offender case keeps its original, un-pluralised phrasing.
+
+    Reviewer finding (self-review, #1720): the first cut of this fix built
+    the single-index sentence with no comma before "where it does nothing",
+    a run-on this test's earlier substring-only assertions did not catch.
+    """
     body = (
         "[[ops]]" + NL
         + "op = " + Q + "edit" + Q + NL
@@ -109,3 +114,4 @@ def test_literal_backslashes_misplaced_single_index_reads_naturally(
     msg = str(excinfo.value)
     assert "ops[0]" in msg, msg
     assert "and `ops[" not in msg, msg
+    assert "`ops[0]`, where it does nothing" in msg, msg

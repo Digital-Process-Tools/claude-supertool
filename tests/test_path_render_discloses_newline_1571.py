@@ -15,6 +15,7 @@ line. `presets/git/worktrees.py`'s board did the same for `entry['path']` and
 for the `wanted` PATH argument disclosed one line above it in the same
 listing (two spellings of one path in one render).
 """
+import os
 from pathlib import Path
 
 import pytest
@@ -52,5 +53,25 @@ def test_path_not_found_discloses_a_newline_in_the_tried_path(
 ) -> None:
     missing = str(tmp_path / ("a" + LF + "b.txt"))
     out = supertool._path_not_found(missing)
+    assert "a b.txt" not in out, out
+    assert DISCLOSED in out, out
+
+
+def test_path_not_found_discloses_a_newline_in_the_exists_at_suggestion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reviewer finding (self-review, #1571): the `tried:` line was fixed and
+    the `exists at ... cwd:...` suggestion two lines below it, in the SAME
+    refusal, was not -- naming a different, collapsed spelling of the same
+    file the line above had just disclosed correctly."""
+    rel = "a" + LF + "b.txt"
+    root = tmp_path / "root"
+    root.mkdir()
+    exists_path = os.path.join(str(root), rel)
+    monkeypatch.setattr(supertool, "_project_root_above_cwd", lambda: str(root))
+    monkeypatch.setattr(
+        os.path, "exists", lambda p: p == exists_path,
+    )
+    out = supertool._path_not_found(rel)
     assert "a b.txt" not in out, out
     assert DISCLOSED in out, out
