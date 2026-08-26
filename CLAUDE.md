@@ -44,6 +44,8 @@ Three of those rows point outside this repository, at the `oss` plugin (`Digital
 
 **CI runs pytest with `--tb=no`, so no traceback ever reaches the logs.** That is deliberate, not truncation. The `junit_summary` step prints the failing assertion and its context — read that. Before blaming a reader for what is absent, check whether the writer ever wrote it.
 
+**`/oss:scaffold --apply` writes `.claude/jit-context/tools/01-oss/supertool-required.md` on disk, and this repository does not track it.** That file is the plugin's own `PreToolUse` block naming `Read`/`Edit`/`Write`/`Glob`/`Grep` — the same job `.claude/jit-context/tools/00-manual/harness-tools-blocked.md` already does locally, on purpose (it sits in `hooks/shipped_rules.NOT_SHIPPED`), and its text has already been read twice by a spawned reviewer as a fabricated prompt-injection payload rather than a first-party tool constraint (#1793). Tracking a second copy of the same rule buys nothing and reproduces the read that goes wrong. If a future `/oss:scaffold --apply` re-adds it, `git rm` it and clear its row from `.claude/jit-context/tools/01-oss/00-index.tsv` again rather than committing it — the row and the file move together, or the row points at nothing. `tests/test_harness_tools_do_not_ship_1791.py::test_the_rule_the_issue_describes_is_not_in_this_tree` asserts this against `git ls-files`, not a filesystem walk, precisely so the untracked copy scaffold writes does not redden it.
+
 ## The notes are yours to fix, not just to follow
 
 `CLAUDE.md`, the maintainer skill and the `.claude/jit-context/` files exist to help you. They are also written by people with no memory, about a repo that moves faster than they do, so **some of what they tell you is false right now.**
