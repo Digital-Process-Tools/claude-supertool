@@ -74,8 +74,8 @@ fi
 # what is lost is the roster, and the line below names what was tried so the
 # reader looks for the right absence.
 #
-# 'ops:roster' rather than 'ops-compact' (#1231). `ops-compact` is ~14.7KB and
-# `ops:full` ~72.7KB against a 7,168-byte cap — so the compact listing was
+# 'ops:roster' rather than 'ops-compact' (#1231). `ops-compact` is ~16.1KB and
+# `ops:full` ~74.1KB against a 7,168-byte cap — so the compact listing was
 # truncated on *every* session and everything alphabetically after `grep` was
 # hidden: the whole gh-*/git-* families, radar, watch, read, paste, tree. It
 # disclosed the truncation honestly and that did not help, because what was
