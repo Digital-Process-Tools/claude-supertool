@@ -739,8 +739,14 @@ _PR_FIELDS = ("number,headRefName,title,url,headRefOid,mergeable,"
 
 
 def _red_ref(rollup) -> object:
-    """The namespaced id of a red leg, so `next:` can name the log to read."""
-    for _name, state, kind, ident in _checks.github_named_states(rollup):
+    """The namespaced id of a red leg, so `next:` can name the log to read.
+
+    `github_named_live`, not `github_named_states` (#1804): a leg a later run
+    of the same name replaced is not decided by anything anymore, and pointing
+    `next:` at its log sends the reader to read a run GitHub itself no longer
+    counts.
+    """
+    for _name, state, kind, ident in _checks.github_named_live(rollup):
         if _checks.bucket(state) == "failed" and kind and ident:
             return (kind, ident)
     return None
@@ -748,7 +754,13 @@ def _red_ref(rollup) -> object:
 
 def _build_pr(payload: dict, issue_lanes: dict, prefix: str) -> PullRequest:
     rollup = payload.get("statusCheckRollup")
-    states = _checks.github_states(rollup) if isinstance(rollup, list) else None
+    # `github_live_states`, not `github_states` (#1804): `pr.states` feeds
+    # `pr_verdict()` directly, and a check run a later run of the same name
+    # replaced is not a live failure — same discriminator #1792 gave the
+    # merge gate, so this board and the merge gate cannot disagree about one
+    # PR.
+    states = (_checks.github_live_states(rollup)
+              if isinstance(rollup, list) else None)
     marker, _lines = _gh_pr._reconcile_checks(payload)
 
     lanes = {label.get("name") for label in (payload.get("labels") or [])
