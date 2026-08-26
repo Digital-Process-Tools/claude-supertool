@@ -26,6 +26,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import absent, guard_main, skipped, tool_fault
+from npx_absent import is_npx_absent
 
 TOOL = "stylelint"
 INSTALL_HINT = ("stylelint not found, globally or via npx — this file was NOT "
@@ -84,6 +85,7 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
     base = _resolve_cmd()
+    via_npx = bool(base) and base[0] != "stylelint"
     if not base:
         # The third state, and escalatable: an uninstalled optional linter must
         # not fail every unrelated CSS edit, and must not be silent where an
@@ -111,7 +113,16 @@ def main() -> None:
     data = _report((r.stdout, r.stderr))
     if data is None:
         noise = ((r.stderr or "") + "\n" + (r.stdout or "")).strip()
-        if any(m in noise.lower() for m in IGNORED_MARKERS):
+        lowered = noise.lower()
+        if via_npx and is_npx_absent(lowered, TOOL):
+            # npx refused to fetch stylelint under `--no-install` (#1949) —
+            # the same third state as `not base` above, reached one layer
+            # further out, with the same install hint. Checked ahead of the
+            # ignore-marker branch below: this is "the tool is not there",
+            # not "the tool ran and excluded the input".
+            emit(absent(TOOL, file, INSTALL_HINT, dur))
+            return
+        if any(m in lowered for m in IGNORED_MARKERS):
             emit(skipped(TOOL, file, IGNORED_REASON, dur))
             return
         # No report on either stream: a config error, a broken install, a flag

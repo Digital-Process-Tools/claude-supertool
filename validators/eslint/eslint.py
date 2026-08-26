@@ -16,7 +16,10 @@ unreachable code, shadowed declarations or accidental globals.
    determine executable to run` (npm 8-10) on stderr, which is neither a
    config problem nor a finding, and landed on `_adapter_error`: the reader
    was told eslint *failed* and sent to debug a linter that is not installed.
-   `_NPX_ABSENT` catches exactly those two, and only on the npx route.
+   `npx_absent.is_npx_absent()` (shared with stylelint, #1949) catches this
+   and every other spelling seen live -- three as of #1948, npm 10.9.4's
+   `npx canceled due to missing packages` among them -- and only on the
+   npx route.
 2. *eslint installed, no resolvable config.* eslint exits **2 with empty
    stdout** and puts "couldn't find an eslint.config.(js|mjs|cjs) file" on
    stderr. An adapter that only counts findings publishes `ok: true,
@@ -60,6 +63,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import guard_main, required, required_but_absent, skipped, tool_fault
+from npx_absent import is_npx_absent
 
 TOOL = "eslint"
 
@@ -79,16 +83,6 @@ _NO_CONFIG = (
     "couldn't find an eslint.config",
     "couldn't find a configuration file",
     "no eslint configuration found",
-)
-
-#: How npx says the package is not installed and `--no-install` forbids
-#: fetching it. Consulted only when the npx fallback was the route taken, and
-#: deliberately narrow: any other npx failure stays a loud fault, because
-#: swallowing an unknown failure is the same category mistake pointing the
-#: other way. Both spellings are live — npm 11 rewrote the message.
-_NPX_ABSENT = (
-    "could not determine executable to run",
-    'unknown command: "eslint"',
 )
 
 #: How eslint says it declined to lint a file it was handed. `ruleId` is null,
@@ -201,7 +195,7 @@ def main() -> None:
 
     if not body:
         lowered = stderr.lower()
-        if via_npx and any(p in lowered for p in _NPX_ABSENT):
+        if via_npx and is_npx_absent(lowered, TOOL):
             # An absent eslint, reached one layer further out. The same third
             # state as `not base`, with the same hint — the reader's next
             # action is `npm install`, not reading an npx traceback.

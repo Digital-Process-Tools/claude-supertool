@@ -377,15 +377,15 @@ def test_pyright_no_output_at_all_is_not_a_clean_pass(
 
 
 @pytest.mark.parametrize(
-    "line",
-    ["b.md:1:1 error MD018/no-missing-space-atx No space after hash",
-     "b.md:1:1 MD018/no-missing-space-atx No space after hash",
-     "b.md:1 error MD041/first-line-heading/first-line-h1 First line"],
+    "suffix",
+    [":1:1 error MD018/no-missing-space-atx No space after hash",
+     ":1:1 MD018/no-missing-space-atx No space after hash",
+     ":1 error MD041/first-line-heading/first-line-h1 First line"],
     ids=["with-severity", "without-severity", "no-column"],
 )
 def test_markdownlint_locates_a_finding_in_both_output_shapes(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, tmp_path: Path,
-    line: str,
+    suffix: str,
 ) -> None:
     """markdownlint-cli 0.49 prints a severity word the row parser did not expect.
 
@@ -393,11 +393,17 @@ def test_markdownlint_locates_a_finding_in_both_output_shapes(
     missed the pattern and fell through to the whole-output catch-all, so four
     located findings arrived as one `lint` error with `line: null`, no source
     context and a count of 1.
+
+    The line is built from the actual invoked path (#1940): the adapter now
+    anchors on the path it was given rather than a bare `.*?` wildcard, so a
+    fixture line naming a bare `b.md` while the adapter is invoked with an
+    absolute `tmp_path` -- which is what the real CLI never does, see
+    tests/test_adapter_path_anchor_1940.py -- would no longer match anything.
     """
     mod = _adapter("markdownlint", "markdownlint.py")
     f = tmp_path / "b.md"
     f.write_text("#bad heading\n\ntext\n", encoding="utf-8")
-    out = _drive(mod, monkeypatch, capsys, f, _md_run(line + "\n", rc=1))
+    out = _drive(mod, monkeypatch, capsys, f, _md_run(str(f) + suffix + "\n", rc=1))
     assert out["ok"] is False, out
     assert out["count"] == 1, out
     err = out["errors"][0]

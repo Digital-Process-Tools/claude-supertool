@@ -299,6 +299,15 @@ NPX_UNKNOWN_STDERR = (
 )
 NPX_NO_EXECUTABLE_STDERR = "npm error could not determine executable to run\n"
 
+#: npm 10.9.4, reproduced on this machine (#1948): npx refuses BEFORE it ever
+#: tries to resolve a command, so neither spelling above matches. `--no` and
+#: `--no-install` give the identical message and exit code -- the flag is not
+#: what changed, only npm's own wording did.
+NPX_CANCELED_STDERR = (
+    'npm error npx canceled due to missing packages and no YES option: '
+    '["eslint@10.9.0"]\n'
+)
+
 
 def _fake_npx(tmp_path: Path, stderr: str) -> dict:
     """`npx` on PATH and no `eslint` — the common laptop.
@@ -325,8 +334,9 @@ def _fake_npx(tmp_path: Path, stderr: str) -> dict:
 
 @posix_only
 @pytest.mark.parametrize("stderr", [NPX_UNKNOWN_STDERR,
-                                    NPX_NO_EXECUTABLE_STDERR],
-                         ids=["npm11", "npm8"])
+                                    NPX_NO_EXECUTABLE_STDERR,
+                                    NPX_CANCELED_STDERR],
+                         ids=["npm11", "npm8", "npm10_9_4"])
 def test_npx_without_eslint_is_an_absent_eslint_not_a_failed_one(
         tmp_path: Path, stderr: str) -> None:
     """Case 1 of this module's docstring, on the machine it happens on.
