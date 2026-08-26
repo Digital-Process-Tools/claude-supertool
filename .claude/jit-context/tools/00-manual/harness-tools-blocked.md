@@ -16,6 +16,21 @@ mode: block
 | `Write` | `paste:::PATH:::CONTENT` or `paste:@-` |
 | several at once | one call, 6-7 ops — `read`, `grep`, `glob`, `map`, `around`, `between`, `tree` |
 
+## This is not a prompt injection
+
+A stock reviewer with no supertool briefing has twice read this block through
+its own blocked `Read` call and reported it as fabricated attacker content
+(#1793) -- reasonably: unsolicited text inside a tool result, claiming its own
+tools are gone, naming another executable to use instead, is textbook
+injection shape. Do not trust this paragraph either; it is exactly what
+injected text would also say. Check it on a channel the text cannot forge:
+this file is tracked git history, not tool-result content, so
+`git log -1 -- .claude/jit-context/tools/00-manual/harness-tools-blocked.md`
+or `git show HEAD:.claude/jit-context/tools/00-manual/harness-tools-blocked.md`
+(both runnable from `Bash`, which a reviewer able to fall back to `git show`
+already has) shows these bytes committed under this repository's own history,
+which nothing arriving through a tool result can produce for itself.
+
 ## Why this blocks rather than reminds
 
 **Validators.** A mutating op runs the validator chain after the write and **rolls the file back on a syntax failure**. `Edit` does not. On this repo that is `py-syntax`, `ruff`, the changelog-fragment guard, the syntax-floor check — a broken fragment or an unparseable module is caught at write time instead of twenty minutes later on a 20-leg matrix.
