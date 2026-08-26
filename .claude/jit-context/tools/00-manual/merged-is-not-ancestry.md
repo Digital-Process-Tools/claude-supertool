@@ -1,7 +1,7 @@
 ---
 title: "Do not ask git whether a branch is merged — this repo squash-merges"
 tool: Bash
-match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?git[[:space:]]+(branch|for-each-ref)([^;&\n]|&[^&[:space:]])*--merged($|[^[:alnum:]-])
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?git[[:space:]]+(branch|for-each-ref)[^;&|\n]*--merged($|[^[:alnum:]-])
 mode: block
 ---
 
@@ -29,12 +29,15 @@ It does not fail loudly. It returns a short, well-formed, wrong list:
 or `&&`, so a compound command whose first clause was `git branch -D NAME`
 and whose LATER clause carried `--merged-prs` (the maintainer loop's own
 `oss_state.py … --merged-prs N`) was refused for a flag it never asked git
-about. The span now stops at `;` and `&&`, the way `supertool-no-cut.md`
-does, and `--merged` itself must be followed by end-of-string or a
-non-identifier character, so `--merged-prs` cannot satisfy it even inside one
-clause. `require: --merged` is dropped rather than patched: it was a second,
-looser substring test carrying the same ambiguity, and the anchored regex
-above already demands the subcommand at command position on its own.
+about. The span is now the flat `[^;&|\n]*` -- stops at `;` and `&` (a later
+clause no longer counts) while keeping the pipe boundary the old span already
+had. A first draft copied `supertool-no-cut.md`'s own span, which deliberately
+CROSSES pipes for its own reason; pasted here it let `git branch -a | xargs
+echo --merged` fire on an unrelated argument -- caught by review, not by this
+commit's own tests. `--merged` must be followed by end-of-string or a
+non-identifier character, so `--merged-prs` cannot satisfy it even in one
+clause. `require: --merged` is dropped rather than patched: a second, looser
+substring test with the same ambiguity, redundant with the anchored regex.
 
 ## The same trap in `git diff`
 

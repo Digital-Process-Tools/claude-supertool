@@ -87,6 +87,13 @@ MUST_NOT_FIRE = [
      GIT_BRANCH + " -a; python3 x.py --merged-prs 3"),
     ("--merged-prs in the same clause, after &&",
      GIT_BRANCH + " -a && python3 x.py --merged-prs 3"),
+    # Caught by review, not by an earlier draft of this file: a first attempt
+    # at the span reused supertool-no-cut.md's own span, which deliberately
+    # CROSSES pipes for its own reason -- pasted here it undid the ONE
+    # boundary the old, buggy pattern already had, and this exact command
+    # newly matched. `--merged` here belongs to `echo`, not to `git branch`.
+    ("--merged belongs to an unrelated command on the far side of a pipe",
+     GIT_BRANCH + " -a | xargs echo --merged"),
 ]
 
 MUST_STILL_FIRE = [
