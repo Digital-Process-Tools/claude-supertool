@@ -15,9 +15,13 @@ at `REPO_ROOT` no matter how it races with any other worker.
 Three assertions, the first two paired so neither can pass on a broken
 harness:
 
-* a positive control -- write a real `.py` inside `tests/` (the walk root)
-  and confirm `repo_python_files()` actually enumerates it. If this ever
+* a positive control -- write a real `.py` into a throwaway sandbox root
+  under `tmp_path` and confirm `scanned_with()` (the parameterised walk
+  `repo_python_files()` itself calls) enumerates it there. If this ever
   fails, the walk is broken and the negative assertion below is meaningless.
+  Deliberately not written into the real `tests/` walk root: an earlier
+  draft did exactly that and reintroduced #1981's own shape, narrower but
+  real, under this test's own name.
 * the actual guard -- runs the real leak-probe test (faking only the nested
   pytest subprocess) and checks where its throwaway file actually landed on
   disk, not merely whether the function's signature mentions `tmp_path`.
@@ -32,20 +36,35 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
-from _repo_walk import repo_python_files  # noqa: E402
+from _repo_walk import scanned_with  # noqa: E402
 
 import test_gl_repo_target_676 as _leak_probe_module  # noqa: E402
 
 
-def test_the_walk_root_really_does_enumerate_a_file_placed_in_tests() -> None:
-    """Positive control: a `.py` dropped in `tests/` is scanned. Without this,
-    a negative result below would be indistinguishable from a broken walk."""
-    control = REPO_ROOT / "tests" / "_walk_probe_control_1981.py"
+def test_the_walk_root_really_does_enumerate_a_file_placed_in_it(tmp_path) -> None:
+    """Positive control, rewritten per review: an earlier draft of this test
+    wrote its control file directly into `tests/` -- the real walk root --
+    to prove the walk was not vacuous. That reintroduced #1981's own shape
+    one level down: `scanned_with`'s own docstring in `tests/_repo_walk.py`
+    names exactly this risk ("a test that writes into the repository root
+    races every other worker's copy of these very walks, which is a worse
+    bug than the one it would be pinning"), and `-n auto` (pyproject.toml:59)
+    runs `test_syntax_floor_478.py` concurrently in every ordinary run, so a
+    real worker could in principle have observed this control mid-delete --
+    narrower than #1981's own 60s window, but the same shape, created by
+    this very regression test rather than merely inherited from elsewhere.
+
+    `scanned_with(ignored, root)` takes the walk root as a parameter for
+    exactly this reason -- `test_syntax_floor_478.py:253` already calls it
+    against a throwaway sandbox rather than `REPO_ROOT`. This control does
+    the same: it writes into a sandbox under `tmp_path` and asks
+    `scanned_with` to walk THAT root, proving the walk logic actually
+    enumerates a file placed in it, with no write anywhere inside the real
+    walk root `repo_python_files()` scans.
+    """
+    control = tmp_path / "_walk_probe_control_1981.py"
     control.write_text("x = 1\n", encoding="utf-8")
-    try:
-        assert control in repo_python_files()
-    finally:
-        control.unlink(missing_ok=True)
+    assert control in scanned_with(frozenset(), tmp_path)
 
 
 def test_the_leak_probe_actually_writes_outside_the_walk_root(tmp_path, monkeypatch) -> None:
