@@ -1055,5 +1055,8 @@ class TestSocketRecvUnboundedAccumulation:
         times = iter([0.0, phpunit_adapter.CALL_TIMEOUT_SEC + 1])
         monkeypatch.setattr(time, "monotonic", lambda: next(times, phpunit_adapter.CALL_TIMEOUT_SEC + 2))
 
-        with pytest.raises(RuntimeError, match="no id=2 response within"):
+        # #1927: the message now says how long was spent ("after Ns"), not a
+        # fixed "within Ns" -- same guarantee (RuntimeError, never a hang),
+        # different wording.
+        with pytest.raises(RuntimeError, match="no id=2 response after"):
             phpunit_adapter.ndjson_call("/fake/sock", "/fake/test.php")
