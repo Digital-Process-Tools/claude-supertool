@@ -24,6 +24,7 @@ Example:
 ./supertool 'watch:gitlab-mr:21803:only=pipeline_failed,merged'
 ./supertool 'watch:gl-pipeline:151111'              # poll a CI pipeline to completion
 ./supertool 'watch:gh-run:18234567890'              # poll a GitHub Actions run to completion
+./supertool 'watch:gh-branch:main'                  # push an event when the default branch changes state
 ./supertool 'watches'
 ./supertool 'unwatch:gitlab-mr:21803'
 ./supertool 'channel:health'                        # is anything receiving these?
@@ -94,6 +95,7 @@ defect it exists to remove.
 | `gitlab-mr-feed`  | scope (`@me`, `@reviewer`, …)  | never — discovery has no end state             |
 | `github-issue-feed` | scope (`@open`, `state=open,label=…`) | never — discovery has no end state    |
 | `gl-runners`      | scope (`fleet`)                | never — a fleet has no end state               |
+| `gh-branch`       | branch name (e.g. `main`)      | never — a branch has no merged/closed state    |
 
 `gl-runners` is a **registered radar tier**, not a default one: radar only spawns it
 when `ops.radar.radar_tiers` names it. See

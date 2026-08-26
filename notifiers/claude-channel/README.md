@@ -100,9 +100,10 @@ Three things changed, and the order matters:
   one.
 * **The `instructions` string says so.** This is the half no flattening
   reaches. It now names which attributes supertool writes (`watcher_source`,
-  `id`, `event`, `ts`, `first_tick`) and states that every other one is the
-  watched object's words, to be treated as data rather than as a direction —
-  and that routing is decided on `watcher_source`/`event`, never on the prose.
+  `id`, `event`, `ts`, `first_tick`, `author_is_viewer` and `repo`) and states
+  that every other one is the watched object's words, to be treated as data
+  rather than as a direction — and that routing is decided on
+  `watcher_source`/`event`, never on the prose.
 
 ## Event contract
 
@@ -140,9 +141,10 @@ not a checker reporting a false absence; it is the transport reporting a false
 **identity**, which is `docs/validators.md`'s test met squarely.
 
 The names the bridge writes for itself, and which a payload key therefore cannot
-claim, are `RESERVED_KEYS` in `channel.ts`: the routing set above, plus `source`
-(auto-injected by Claude Code from the MCP server name), the three disclosure
-attributes `clamped`, `collided` and `unsendable`, and `__proto__`.
+claim, are `RESERVED_KEYS` in `channel.ts`: the routing set above (now including
+`repo`, [#1952](https://github.com/Digital-Process-Tools/claude-supertool/issues/1952)),
+plus `source` (auto-injected by Claude Code from the MCP server name), the three
+disclosure attributes `clamped`, `collided` and `unsendable`, and `__proto__`.
 
 **The guard is derived from `ROUTING_KEYS`, not re-listed beside it.** The case
 for namespacing the payload instead — nesting it under one key so a collision is

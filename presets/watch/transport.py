@@ -17,6 +17,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -970,6 +971,43 @@ def flatten_remote(payload: dict[str, Any]) -> dict[str, Any]:
             for key, value in payload.items()}
 
 
+#: `owner/name`, or `group/subgroup/project` on a self-hosted GitLab, parsed
+#: from `git@HOST:PATH.git` and `https://HOST/PATH` alike — the two shapes a
+#: `git remote` actually takes. Anchored on the scheme/host boundary rather
+#: than on a trailing `.git`, because `.git` is optional and a slug is not
+#: allowed to swallow a path segment it never had.
+_REMOTE_SLUG_RE = re.compile(
+    r"^(?:[\w.+-]+://[^/]+/|[^@/]+@[^:]+:)(.+?)(?:\.git)?/?$")
+
+
+def repo_slug(timeout: int = 5) -> str:
+    """The `origin` remote's `owner/name`, or ``""`` when it cannot be read.
+
+    Forge-agnostic and read from the cwd's own git configuration, never from
+    an API call — this is the watcher's own configuration (which repository
+    was I started in), not a fact about the object being polled (#1952). A
+    poller for a repository it was never handed a remote for, or one running
+    where `git` is unavailable, answers "" rather than guessing: the consumer
+    already treats an absent `repo` as "unknown", never as "unattributed".
+
+    Read once per poller process (the caller's job, not this function's) —
+    the remote does not change under a running watcher, and re-shelling out to
+    `git` on every poll would be a cost paid for an answer that cannot change.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if r.returncode != 0:
+        return ""
+    m = _REMOTE_SLUG_RE.match((r.stdout or "").strip())
+    return m.group(1) if m else ""
+
+
 def emit_event(
     source: str,
     watcher_id: str,
@@ -979,6 +1017,7 @@ def emit_event(
     notify_title: str | None = None,
     notify_message: str | None = None,
     first_tick: bool = False,
+    repo: str = "",
 ) -> None:
     """All transports in one call.
 
@@ -992,6 +1031,14 @@ def emit_event(
     but week-old outcomes arriving shaped like news is not (#464). It sits
     beside the envelope keys rather than inside `payload`, which is
     source-defined and locked; see docs/presets/watch.md.
+
+    `repo` is the same footing (#1952): the poller's own configuration, not
+    remote text, so it belongs beside `source` and `id` rather than inside
+    `payload`. Omitted when unknown rather than sent as `""` — an event with
+    no attributable repository is a different fact from one on record as
+    belonging to a blank name, and `channel.ts` already treats the two
+    differently (a key it never sees is absent; a key holding `""` is a
+    coercible, if useless, string).
     """
     record = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1001,6 +1048,8 @@ def emit_event(
         "payload": flatten_remote(payload),
         "first_tick": bool(first_tick),
     }
+    if repo:
+        record["repo"] = repo
     verdict = emit_socket(record)
     current = read_state(source, watcher_id)
     current["last_event"] = record
