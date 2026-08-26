@@ -708,8 +708,9 @@ def _repo_target_platform(ops: List[str]) -> str | None:
     presets = _shipped_preset_ops()
     modes = _repo_target_modes()
     # Every op that has a repo dimension at all, not only the ones that take
-    # it from this op. A `payload`-mode write op is refused a few lines below,
-    # but it is still evidence of which forge the call is about — reading only
+    # it from this op. A `payload`-mode write op reconciles `repo:` against
+    # its own payload field rather than being refused here (#1909), but it is
+    # still evidence of which forge the call is about — reading only
     # `op`-mode ops let a GitLab project path through a GitHub-only call with
     # the shape never mentioned, and the reader sent to the wrong fix.
     found = {presets.get(a.split(":", 1)[0], "")

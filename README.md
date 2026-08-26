@@ -440,10 +440,10 @@ It composes with `cwd:`, which is what makes a GitLab project root usable as the
 - **both present and disagreeing → refuses, naming both values and which op each came from.** A silent precedence in either direction would reintroduce the defect the old ban existed to prevent, so the op decides this itself rather than core guessing.
 
 ```bash
-./supertool 'repo:Digital-Process-Tools/claude-remember' 'gh-issue-create:@issue.toml'
+./supertool 'repo:Digital-Process-Tools/claude-remember' 'gh-issues' 'gh-issue-create:@issue.toml'
 ```
 
-reads a sibling repo's board and files on it in the same call — the batching gap #1909 was filed about — without having to inject `repo = "..."` into a payload file you did not write.
+reads a sibling repo's open issues and files on it in the same call — the batching gap #1909 was filed about — without having to inject `repo = "..."` into a payload file you did not write.
 
 **The error moved with the capability.** `cwd is not a GitHub repo` was a complete answer while cwd was the only way to name a repo. It now names the second route as well — and when a target *was* given it is not used at all, because cwd had no part in that lookup:
 
