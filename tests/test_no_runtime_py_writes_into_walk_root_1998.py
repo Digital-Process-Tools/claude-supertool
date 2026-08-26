@@ -32,6 +32,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
+import _write_guard  # noqa: E402
 from _write_guard import REPO_ROOT as _GUARD_REPO_ROOT  # noqa: E402
 from _write_guard import installed_against, would_create_walked_py  # noqa: E402
 
@@ -94,6 +95,40 @@ def test_a_probe_written_the_old_way_is_caught_against_the_real_walk_root(tmp_pa
     assert not would_be_probe.exists(), (
         "the guard is supposed to raise BEFORE the write reaches disk; "
         "finding the file here means it was created for real")
+
+
+def test_the_ambient_session_guard_installed_by_conftest_catches_it_too(tmp_path) -> None:
+    """Every test above installs its own guard instance and tears it down
+    again -- which proves the PREDICATE and the patching mechanism work, but
+    proves nothing about the actual production wiring: `conftest.py`'s
+    `pytest_configure` calling `_write_guard.install()` once, for the whole
+    session, before any test runs. A diff that broke that one call site (an
+    `ImportError` silently swallowed into `_write_guard = None`, a typo in
+    the `if _write_guard is not None:` guard, `install()` never actually
+    invoked) would leave every test above green, because they each install
+    their own protection regardless of whether the ambient one exists.
+
+    This test installs nothing. It asserts the ambient guard is already
+    live (`is_installed()`), then performs the exact write that used to be
+    `test_repo_target_673.py`'s own probe and expects the SESSION-LEVEL
+    guard -- the one `conftest.py` wired, not one this test stood up -- to
+    catch it.
+    """
+    assert _write_guard.is_installed(), (
+        "the ambient guard conftest.py's pytest_configure installs is not "
+        "active -- either it was never called, or something upstream of "
+        "this test tore it down early")
+    would_be_probe = REPO_ROOT / "tests" / "_ambient_guard_demo_1998_not_actually_written.py"
+    try:
+        would_be_probe.write_text("x = 1\n", encoding="utf-8")
+    except AssertionError as exc:
+        assert "walk root" in str(exc)
+    else:
+        raise AssertionError(
+            "the ambient, conftest-installed guard did not catch a .py "
+            "write straight into REPO_ROOT/tests -- the production wiring "
+            "is not actually protecting the suite")
+    assert not would_be_probe.exists()
 
 
 def test_would_create_walked_py_is_the_pure_check_the_hook_delegates_to(tmp_path) -> None:

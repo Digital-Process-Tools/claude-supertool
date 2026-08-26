@@ -105,7 +105,16 @@ def would_create_walked_py(path: Path, root: Path, ignored) -> bool:
     Pure and side-effect-free so it can be unit-tested directly, without
     going anywhere near `pathlib.Path` patching.
     """
-    if path.suffix != ".py":
+    # Case-insensitively: `repo_python_files()` walks via `Path.rglob("*.py")`,
+    # and CPython's glob matching normalises case on Windows
+    # (`ntpath.normcase` lowercases; `posixpath.normcase` is the identity) --
+    # so a `.PY`-suffixed file is a real member of the walk root there, even
+    # though it never is on POSIX. Matching case-insensitively everywhere is
+    # the "wider than needed, never narrower" rule `_repo_walk.py`'s own
+    # docstring states for the walk itself: on POSIX this guards a shape the
+    # real walk happens not to enumerate, which is a false alarm nobody
+    # will ever see fire, not a missed one.
+    if path.suffix.lower() != ".py":
         return False
     try:
         rel = path.resolve().relative_to(root.resolve())
@@ -179,6 +188,20 @@ def uninstall() -> None:
     if not _stack:
         pathlib.Path.write_text = _orig_write_text
         pathlib.Path.write_bytes = _orig_write_bytes
+
+
+def is_installed() -> bool:
+    """True while at least one guarded root is active.
+
+    Exists so `conftest.py` can print whether the process-wide guard this
+    module installs from `pytest_configure` is actually live at session end,
+    the same way `_git_decline`/`_live_gh`/etc. each print a summary line
+    rather than letting a silently-failed import (this module is one of the
+    `try: import ... except ImportError: _write_guard = None` fallbacks in
+    `conftest.py`, tolerated for the synthetic-repo suites) read exactly
+    like a session where the guard ran the whole time and caught nothing.
+    """
+    return bool(_stack)
 
 
 @contextlib.contextmanager

@@ -529,6 +529,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     _adapter_wall_summary(terminalreporter, skipped)
     _live_gh_summary(terminalreporter, skipped)
     _git_decline_summary(terminalreporter, skipped)
+    _write_guard_summary(terminalreporter)
 
 
 def _token_skips(skipped, token: str) -> int:
@@ -620,6 +621,37 @@ def _git_decline_summary(terminalreporter, skipped):
     n = _token_skips(skipped, _git_decline.TOKEN)
     terminalreporter.write_line(_git_decline.verdict_line(n, len(skipped)))
     terminalreporter.write_line(_git_decline.POPULATION)
+
+
+def _write_guard_summary(terminalreporter):
+    """Say whether the #1998 class guard actually ran this session, rather
+    than letting a session where it silently failed to install read exactly
+    like one where it ran the whole time and caught nothing (finding from
+    this PR's own audit -- a green suite with no line here is indistinguish-
+    able from a green suite the guard genuinely protected).
+
+    Checked at `pytest_terminal_summary` time, which runs before
+    `pytest_unconfigure` -- `install()`'s entry from `pytest_configure` is
+    still on the stack, so `is_installed()` reports the true state of the
+    session that just ran, not a state already torn down.
+    """
+    if _write_guard is None:
+        terminalreporter.write_line(
+            "write-guard(#1998): NOT CHECKED -- tests/_write_guard.py is not "
+            "in this tree, so no test in this run was protected against "
+            "creating a .py file inside the walk root at runtime")
+        return
+    if _write_guard.is_installed():
+        terminalreporter.write_line(
+            "write-guard(#1998): installed for this session -- any write "
+            "landing a .py file inside repo_python_files()'s walk root "
+            "would have raised immediately")
+    else:
+        terminalreporter.write_line(
+            "write-guard(#1998): NOT installed -- pytest_configure imported "
+            "tests/_write_guard.py but install() was never called or was "
+            "undone before this summary ran; no test in this session was "
+            "protected")
 
 
 def _adapter_wall_summary(terminalreporter, skipped):
