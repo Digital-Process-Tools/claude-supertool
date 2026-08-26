@@ -456,6 +456,19 @@
       ],
       "rollback_on_fail": true,
       "timeout": 30
+    },
+    "markdownlint": {
+      "cmd": "{python} {supertool_dir}/validators/markdownlint/markdownlint.py {file}",
+      "match": "*.md",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 30
     }
   }
 }
