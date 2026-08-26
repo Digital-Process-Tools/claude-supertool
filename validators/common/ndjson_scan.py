@@ -51,6 +51,10 @@ match.
 from __future__ import annotations
 
 import json
+import socket
+import time
+
+from linebreaks import split_lines
 
 
 def _enclosing_brace(text: str, marker: int) -> int | None:
@@ -130,3 +134,105 @@ def describe_buffer(buf: bytes, want_id) -> str:
     plural = "s" if n_markers != 1 else ""
     return (f"received {len(buf)} bytes ({n_markers} \"jsonrpc\" marker{plural}), "
             f"none decoded to id={want_id!r}")
+
+
+# #1927: a timeout used to say only that it waited, never what it received.
+# The two facts below were sitting in reach the whole time -- the buffer
+# already in hand, and the daemon's own log, written to disk as the exchange
+# happens -- and neither reached the receipt.
+
+DEFAULT_IDLE_TIMEOUT_S = 10.0
+
+
+def read_daemon_log_tail(sock_path: str, n_lines: int = 8, max_chars: int = 400) -> str:
+    """Last few non-blank lines of the daemon's own `<sock>.log`, or `''`.
+
+    `daemon.py` opens `f"{sock_name}.log"` next to the socket for its whole
+    life and writes to it as requests and responses happen (#1927's own
+    incident: the answer left the server 2 seconds in, per that file, while
+    the client waited out the remaining five minutes). Best effort only: a
+    daemon predating this log, a runtime dir this process cannot read, or one
+    that never got far enough to open the file are all silent `''` here
+    rather than a second failure layered onto the timeout being reported.
+    """
+    try:
+        with open(sock_path + ".log", "rb") as f:
+            data = f.read()
+    except OSError:
+        return ""
+    # #1486: split_lines(), not str.splitlines() -- this is a daemon's own log,
+    # written by presets/mcp/daemon.py one line at a time, not a diagnostic
+    # echoing arbitrary source text, but the log tail is folded into a single
+    # RuntimeError message below and a stray U+2028/U+0085/VT/FF splitting it
+    # into an extra "line" there would be the same self-inflicted count this
+    # module exists to avoid one layer over.
+    lines = [ln for ln in split_lines(data.decode("utf-8", errors="replace"))
+             if ln.strip()]
+    return " | ".join(lines[-n_lines:])[:max_chars]
+
+
+def describe_timeout(buf: bytes, want_id, elapsed_s: float, sock_path: str) -> str:
+    """One line for a call that gave up: what arrived, how long it took, and
+    what the daemon's own log says -- the three facts #1927 names as the
+    difference between a five-minute hunt and a single call. Elapsed time is
+    stated explicitly (item 4): `NOT CHECKED` reads the same at 2s and at
+    300s otherwise, and the receipt is the only place that cost is visible.
+    """
+    reason = describe_buffer(buf, want_id)
+    if buf:
+        # Silence and garbage are different failures (item 1): once bytes
+        # exist, quote the start of them rather than only counting them, so
+        # a stray HTML error page names itself instead of waiting to be
+        # diagnosed by hand.
+        preview = buf[:200].decode("utf-8", errors="replace")
+        reason = f"{reason}; first bytes: {preview!r}"
+    msg = f"no id={want_id!r} response after {elapsed_s:.1f}s ({reason})"
+    log_tail = read_daemon_log_tail(sock_path)
+    if log_tail:
+        msg += f"; daemon log tail: {log_tail}"
+    return msg
+
+
+def receive_until(s: socket.socket, want_id, call_timeout: float, sock_path: str,
+                   idle_timeout: float = DEFAULT_IDLE_TIMEOUT_S) -> dict:
+    """Read from `s` until a JSON-RPC frame with id == `want_id` arrives, or
+    give up -- shared by all four warm adapters' `ndjson_call`.
+
+    Two deadlines, not one (#1927 item 2). `call_timeout` bounds the whole
+    exchange, same as before. `idle_timeout` is new and shorter: once at
+    least one byte has arrived, no further bytes for `idle_timeout` means
+    nothing more is coming -- a server that considers the exchange finished
+    does not resume mid-`recv()` -- so this gives up then instead of waiting
+    out whatever remains of `call_timeout`. Silence with zero bytes ever
+    received is unaffected: that is still "genuinely still working" until
+    `call_timeout`, because there is no last byte to measure idleness from.
+
+    Raises `RuntimeError(describe_timeout(...))` on either deadline, naming
+    what was received, how long was spent, and the daemon's own log tail.
+    """
+    start = time.monotonic()
+    deadline = start + call_timeout
+    buf = b""
+    last_byte_at = None
+    while True:
+        now = time.monotonic()
+        remaining = deadline - now
+        if remaining <= 0:
+            break
+        if last_byte_at is not None:
+            remaining = min(remaining, (last_byte_at + idle_timeout) - now)
+            if remaining <= 0:
+                break
+        s.settimeout(remaining)
+        try:
+            chunk = s.recv(65536)
+        except (socket.timeout, TimeoutError):
+            break
+        if not chunk:
+            break
+        buf += chunk
+        last_byte_at = time.monotonic()
+        obj = find_response(buf, want_id)
+        if obj is not None:
+            return obj
+    raise RuntimeError(describe_timeout(buf, want_id, time.monotonic() - start, sock_path))

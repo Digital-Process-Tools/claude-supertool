@@ -132,30 +132,14 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
                         "arguments": {"path": file_path}}},
         ]
         s.sendall(("\n".join(json.dumps(m) for m in msgs) + "\n").encode())
-        buf = b""
-        deadline = time.monotonic() + CALL_TIMEOUT_SEC
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            s.settimeout(remaining)
-            try:
-                chunk = s.recv(65536)
-            except (socket.timeout, TimeoutError):
-                break
-            if not chunk:
-                break
-            buf += chunk
-            # #1924: scan the whole buffer, not one LF-delimited line at a
-            # time — a fatal analysis run's HTML error page can glue the real
-            # response to the end of the last HTML line with no separator,
-            # and a line-anchored parser never sees it.
-            obj = _ndjson_scan.find_response(buf, req_id)
-            if obj is not None:
-                return obj
-        raise RuntimeError(
-            f"no id={req_id} response within {CALL_TIMEOUT_SEC}s "
-            f"({_ndjson_scan.describe_buffer(buf, req_id)})")
+        # #1924: scans the whole buffer, not one LF-delimited line at a
+        # time — a fatal analysis run's HTML error page can glue the real
+        # response to the end of the last HTML line with no separator, and a
+        # line-anchored parser never sees it. #1927: gives up on idle
+        # silence rather than waiting out the whole call budget, and names
+        # what was received (or the daemon's own log) on a timeout instead
+        # of only that one happened.
+        return _ndjson_scan.receive_until(s, req_id, CALL_TIMEOUT_SEC, sock_path)
 
 
 def is_refusal(msg: str) -> bool:
