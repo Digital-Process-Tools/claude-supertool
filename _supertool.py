@@ -28387,6 +28387,18 @@ def main(argv: List[str]) -> int:
     """
     global _INVOCATION_DIR, _CWD_SHIFT
     _repo_env_prior = {name: os.environ.get(name) for name in _REPO_ENV_VARS}
+    # #1993: restoring the prior value at the end is not the same as denying
+    # it for the DURATION of this call. An ambient pair the process merely
+    # inherited (a shell export from a parent, or a value that survived in a
+    # long-lived host process despite the restore below) used to sit in
+    # os.environ for the whole of _main(), which is exactly what let
+    # SUPERTOOL_REPO_FROM_OP credit a repo: op nobody typed in THIS call.
+    # Clearing both here, before _main ever inspects argv, means the only
+    # way either variable is set during this call is this calls own repo:
+    # pre-pass setting it fresh -- which is the one place that runs the
+    # shape check.
+    for _name in _REPO_ENV_VARS:
+        os.environ.pop(_name, None)
     try:
         return _main(argv)
     finally:

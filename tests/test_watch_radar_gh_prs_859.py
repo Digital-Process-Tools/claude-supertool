@@ -258,7 +258,7 @@ def test_two_filters_do_not_share_one_snapshot(state_dir, monkeypatch):
 def test_repo_target_makes_coverage_unknown_and_heals_nothing(state_dir, monkeypatch):
     _fake_gh(monkeypatch, [_pr(1, [RED_LEG])])
     _no_default_branch(monkeypatch)
-    monkeypatch.setattr(tier._repo_target, "target", lambda: "other/repo")
+    monkeypatch.setattr(tier._repo_target, "target", lambda *a, **k: "other/repo")
 
     lines, healthy = tier.radar_report({"_arg": "", "_watch": lambda *a, **k: "alive"})
     text = "\n".join(lines)

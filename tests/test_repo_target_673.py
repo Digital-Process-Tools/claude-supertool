@@ -514,7 +514,30 @@ def test_resolve_or_conflict_fills_a_silent_payload(monkeypatch) -> None:
     """The marker is required alongside the value (#1986): main()'s own
     pre-pass sets both together, so a test standing in for "this call's own
     repo: op ran" must set both too, or it is testing the ambient case
-    instead."""
+    instead.
+
+    **#1993 read this test's own monkeypatch as the reachable case it
+    describes**: setting both variables by hand, with no `repo:` op
+    anywhere, is bit-for-bit what an inherited pair looks like from
+    `resolve_or_conflict`'s side of the process boundary -- `from_op()` is
+    a bare env-var equality test and cannot tell "main()'s pre-pass ran"
+    from "a test (or an attacker) exported the pair directly." This test's
+    own assertion is NOT flipped, deliberately: `resolve_or_conflict`'s
+    real job, given a marker it trusts, is to fill from it -- that is the
+    ordinary, intended behaviour the sibling
+    `test_resolve_or_conflict_fills_when_the_marker_is_also_set` also pins.
+    What #1993 actually fixes is the OTHER side of this boundary: `main()`
+    now clears both variables on entry (`_supertool.py::main`), before
+    `_main` ever inspects argv, so the only way this exact env shape can
+    occur for a call reaching a real preset subprocess is that call's own
+    `repo:` op having set it moments before -- see
+    `tests/test_repo_target_1993.py`, which drives that guard through
+    `supertool.main()` itself rather than through this lower-level function.
+    A caller with the standing to `monkeypatch.setenv` two process
+    variables directly already has the shorter route of typing `repo:X`
+    for the identical effect, which is why this module cannot and does not
+    try to make the marker itself unforgeable -- it can only, and now
+    does, guarantee where it is allowed to come from."""
     monkeypatch.setenv("SUPERTOOL_REPO", "owner/name")
     monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
     rt = _load("_repo_target.py", "rt_conflict_fill")

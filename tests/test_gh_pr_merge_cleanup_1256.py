@@ -308,7 +308,17 @@ def test_an_absent_local_branch_is_a_skip(monkeypatch):
 def test_a_repo_target_skips_the_local_half(monkeypatch):
     c = _Calls(worktrees=["/w/944"], state="idle")
     _install(monkeypatch, c)
+    # #1990: run_cleanup reads _repo_target.target(explicit=True), the same
+    # guarantee gh_args()/api_path() now get everywhere else in this module
+    # -- so simulating "this call's own repo: op named a target" means
+    # setting the from-op marker too, exactly as main()'s real pre-pass
+    # does. Without it this is the ambient case, and #1990 makes an
+    # ambient target invisible to gh-pr-merge, not a reason to skip local
+    # cleanup: the merge and the identity read both fell through to the
+    # cwd's own repo in that case, so cwd's local branch and worktree are
+    # legitimately what was just merged.
     monkeypatch.setenv("SUPERTOOL_REPO", "other/repo")
+    monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
     rows = _cleanup("fix/924", merged=True)
     for item in ("local worktree", "local branch"):
         verdict, detail = _row(rows, item)
@@ -316,6 +326,28 @@ def test_a_repo_target_skips_the_local_half(monkeypatch):
         assert "other/repo" in detail
     assert _row(rows, "remote branch")[0] == m.CLEAN_DONE
     assert c.git_calls == []
+
+
+def test_an_ambient_repo_target_with_no_marker_does_not_skip_the_local_half(
+        monkeypatch):
+    """The paired must-fire control for #1990: an AMBIENT `SUPERTOOL_REPO`
+    -- present, but with no `SUPERTOOL_REPO_FROM_OP` marker, exactly what a
+    caller's shell export or a leaked in-process value looks like -- must
+    not make gh-pr-merge treat the local checkout as somebody else's repo.
+    `_repo_target.target(explicit=True)` reads as absent here, the same as
+    everywhere else in this module, so cwd's own local branch and worktree
+    are exactly what this cleanup should touch. Without this test the
+    change above (adding the marker to make the skip fire) could not tell
+    "the skip fires on any repo target" from "the skip fires only on an
+    explicit one" -- both would leave the must-not-fire case passing for
+    the wrong reason."""
+    c = _Calls(worktrees=["/w/944"], state="idle")
+    _install(monkeypatch, c)
+    monkeypatch.setenv("SUPERTOOL_REPO", "other/repo")
+    monkeypatch.delenv("SUPERTOOL_REPO_FROM_OP", raising=False)
+    rows = _cleanup("fix/924", merged=True)
+    verdict, _detail = _row(rows, "local branch")
+    assert verdict == m.CLEAN_DONE
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 try:
@@ -235,7 +236,13 @@ def main() -> int:
     if links and iid and iid != "?" and not iid.isdigit():
         print(f"gl-issue-create OK iid={iid} url={url}  (links skipped — could not extract numeric iid)", file=sys.stderr)
     elif links and iid and iid != "?":
-        encoded_project = project.replace("/", "%2F")
+        # #1993: a project carrying `?`, `#` or `%` reached this path with
+        # only its slashes escaped, so it spliced into the URL rather than
+        # naming a project. quote(..., safe="") is the same path-segment
+        # encoding `_repo_target.gl_project()` already uses for the primary
+        # `projects/:id` substitution -- one project string, one encoding,
+        # not two.
+        encoded_project = urllib.parse.quote(project, safe="")
         for link in links:
             target_iid = link.get("target_iid")
             link_type = link.get("type", "relates_to")
