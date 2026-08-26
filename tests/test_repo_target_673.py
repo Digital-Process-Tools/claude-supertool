@@ -70,8 +70,10 @@ def clean_repo_env(monkeypatch):
     own body naming that repo.
     """
     monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
+    monkeypatch.delenv("SUPERTOOL_REPO_FROM_OP", raising=False)
     yield
     os.environ.pop("SUPERTOOL_REPO", None)
+    os.environ.pop("SUPERTOOL_REPO_FROM_OP", None)
 
 
 @pytest.fixture
@@ -509,7 +511,12 @@ def test_resolve_or_conflict_is_silent_with_neither_set(monkeypatch) -> None:
 
 
 def test_resolve_or_conflict_fills_a_silent_payload(monkeypatch) -> None:
+    """The marker is required alongside the value (#1986): main()'s own
+    pre-pass sets both together, so a test standing in for "this call's own
+    repo: op ran" must set both too, or it is testing the ambient case
+    instead."""
     monkeypatch.setenv("SUPERTOOL_REPO", "owner/name")
+    monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
     rt = _load("_repo_target.py", "rt_conflict_fill")
     payload: dict = {}
     err, source = rt.resolve_or_conflict(payload, "gh-issue-create")
@@ -520,6 +527,7 @@ def test_resolve_or_conflict_fills_a_silent_payload(monkeypatch) -> None:
 
 def test_resolve_or_conflict_accepts_agreement(monkeypatch) -> None:
     monkeypatch.setenv("SUPERTOOL_REPO", "owner/name")
+    monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
     rt = _load("_repo_target.py", "rt_conflict_agree")
     payload = {"repo": "owner/name"}
     err, source = rt.resolve_or_conflict(payload, "gh-issue-create")
@@ -532,6 +540,7 @@ def test_resolve_or_conflict_agreement_is_case_insensitive(monkeypatch) -> None:
     """A caller who typed `Owner/Name` in the payload and `owner/name` in the
     repo: op has not disagreed."""
     monkeypatch.setenv("SUPERTOOL_REPO", "owner/name")
+    monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
     rt = _load("_repo_target.py", "rt_conflict_case")
     payload = {"repo": "Owner/Name"}
     err, _source = rt.resolve_or_conflict(payload, "gh-issue-create")
@@ -544,6 +553,7 @@ def test_resolve_or_conflict_refuses_disagreement_naming_both(monkeypatch) -> No
     refusal used to prevent wholesale. Pairs with the agreement test above --
     would still pass if the code did nothing without it."""
     monkeypatch.setenv("SUPERTOOL_REPO", "owner/from-repo-op")
+    monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
     rt = _load("_repo_target.py", "rt_conflict_disagree")
     payload = {"repo": "owner/from-payload"}
     err, source = rt.resolve_or_conflict(payload, "gh-issue-create")
@@ -560,6 +570,7 @@ def test_resolve_or_conflict_uses_the_given_key(monkeypatch) -> None:
     """`gl-issue-create` reads `project`, not `repo` — the refusal must name
     the field the payload validator actually reads."""
     monkeypatch.setenv("SUPERTOOL_REPO", "group/from-repo-op")
+    monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
     rt = _load("_repo_target.py", "rt_conflict_key")
     payload = {"project": "group/from-payload"}
     err, _source = rt.resolve_or_conflict(payload, "gl-issue-create", "project")
@@ -578,3 +589,45 @@ def test_repo_reachable_ops_is_a_superset_of_op_mode() -> None:
     assert "gh-issue-create" in reachable
     assert "gh-issue-create" not in op_mode
     assert "read" not in reachable
+
+
+# ---------------------------------------------------------------------------
+# #1986: an inherited SUPERTOOL_REPO with no repo: op in the call must not
+# direct a write. target() cannot tell a value THIS call exported from one
+# the process merely inherited, so resolve_or_conflict has to consult a
+# second, call-scoped signal (SUPERTOOL_REPO_FROM_OP) rather than the bare
+# env read.
+# ---------------------------------------------------------------------------
+
+def test_resolve_or_conflict_ignores_an_ambient_repo_with_no_op_in_the_call(monkeypatch) -> None:
+    """The symptom in #1986: SUPERTOOL_REPO is set (as it would be if a
+    caller's shell exported it, or a prior in-process call leaked it) but
+    no repo: op sits anywhere in THIS call, so the from-op marker is absent.
+    The write must fall through exactly as if no target existed at all --
+    never fill an unshape-checked, uncredited value into the payload."""
+    monkeypatch.setenv("SUPERTOOL_REPO", "someone-else/their-repo")
+    monkeypatch.delenv("SUPERTOOL_REPO_FROM_OP", raising=False)
+    rt = _load("_repo_target.py", "rt_conflict_ambient")
+    payload: dict = {}
+    err, source = rt.resolve_or_conflict(payload, "gh-issue-create")
+    assert err is None
+    assert source == ""
+    assert "repo" not in payload
+
+
+def test_resolve_or_conflict_fills_when_the_marker_is_also_set(monkeypatch) -> None:
+    """Must-fire control for the test above, in the same fixture shape: the
+    identical SUPERTOOL_REPO value, but with the from-op marker set
+    alongside it exactly as main()'s pre-pass sets both together for a real
+    repo: op. Without this pair, the silence assertion above would pass
+    just as well with resolve_or_conflict permanently broken (e.g. always
+    returning ""), which is exactly the harness-is-broken trap a
+    must-not-fire case alone cannot catch."""
+    monkeypatch.setenv("SUPERTOOL_REPO", "someone-else/their-repo")
+    monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
+    rt = _load("_repo_target.py", "rt_conflict_marked")
+    payload: dict = {}
+    err, source = rt.resolve_or_conflict(payload, "gh-issue-create")
+    assert err is None
+    assert source == "repo: op"
+    assert payload["repo"] == "someone-else/their-repo"

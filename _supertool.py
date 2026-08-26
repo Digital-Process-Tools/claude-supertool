@@ -28356,6 +28356,15 @@ def _auto_cwd_root(argv: List[str]) -> Optional[str]:
     return None
 
 
+#: Env vars a `repo:` op's pre-pass may export for the duration of one call
+#: (`_supertool.py`'s own SUPERTOOL_REPO plus its #1986 from-op marker).
+#: `main()` snapshots and restores these so the export never outlives the
+#: call that made it (#1962) — a direct `os.environ` write with nothing to
+#: restore it, which `monkeypatch` cannot undo because it never performed
+#: the mutation in the first place.
+_REPO_ENV_VARS = ("SUPERTOOL_REPO", "SUPERTOOL_REPO_FROM_OP")
+
+
 def main(argv: List[str]) -> int:
     """Entry point. Scopes the @payload root state to this one call.
 
@@ -28363,13 +28372,28 @@ def main(argv: List[str]) -> int:
     dispatch() — the MCP server and the test suite both drive dispatch()
     directly in a process where main() has already run, and a stale root there
     resolves payloads against a directory nobody is standing in (#672).
+
+    The `repo:` pre-pass has the same shape (#1962): it writes
+    `os.environ["SUPERTOOL_REPO"]` (and, since #1986, a from-op marker
+    alongside it) directly, for every preset subprocess spawned during this
+    call to inherit. Snapshotting both before `_main` runs and restoring
+    them here — the prior value if there was one, not just a bare pop —
+    means an outer ambient export survives a call that names its own
+    `repo:` op, and neither variable leaks into whatever runs in this
+    process after this call returns.
     """
     global _INVOCATION_DIR, _CWD_SHIFT
+    _repo_env_prior = {name: os.environ.get(name) for name in _REPO_ENV_VARS}
     try:
         return _main(argv)
     finally:
         _INVOCATION_DIR = None
         _CWD_SHIFT = None
+        for _name, _prior in _repo_env_prior.items():
+            if _prior is None:
+                os.environ.pop(_name, None)
+            else:
+                os.environ[_name] = _prior
 
 
 def _main(argv: List[str]) -> int:
@@ -28479,6 +28503,13 @@ def _main(argv: List[str]) -> int:
             sys.stderr.write(_repo_refusal(blocked[0]))
             return 1
         os.environ["SUPERTOOL_REPO"] = repo_target
+        # #1986: a second, call-scoped marker distinguishing an export THIS
+        # call's own repo: op just made (shape-checked, above) from a value
+        # the process merely inherited. `resolve_or_conflict` reads this
+        # through `_repo_target.explicit_target()` before directing a write
+        # anywhere — a bare `SUPERTOOL_REPO` read cannot make that
+        # distinction, since an inherited value looks identical.
+        os.environ["SUPERTOOL_REPO_FROM_OP"] = "1"
         argv = rest
         if not argv:
             return 0

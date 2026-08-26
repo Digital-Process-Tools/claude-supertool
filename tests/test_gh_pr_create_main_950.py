@@ -390,6 +390,7 @@ def test_repo_op_supplies_a_silent_payload(monkeypatch, capsys, tmp_path):
     _install(monkeypatch, h, _payload(
         tmp_path, {"title": "a change", "base": "master", "body": "Closes #950"}))
     monkeypatch.setenv("SUPERTOOL_REPO", "owner/from-repo-op")
+    monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
     assert m.main() == 0
     assert h.create_calls
@@ -404,6 +405,7 @@ def test_repo_op_and_agreeing_payload_proceed(monkeypatch, tmp_path):
     h = _Harness()
     _install(monkeypatch, h, _payload(tmp_path, FULL))
     monkeypatch.setenv("SUPERTOOL_REPO", REPO)
+    monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
     assert m.main() == 0
     assert h.create_calls
@@ -419,6 +421,7 @@ def test_repo_op_and_disagreeing_payload_refuse(monkeypatch, capsys, tmp_path):
     h = _Harness()
     _install(monkeypatch, h, _payload(tmp_path, FULL))
     monkeypatch.setenv("SUPERTOOL_REPO", "owner/somewhere-else")
+    monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
     assert m.main() == 1
     assert h.create_calls == [], "gh pr create ran despite the disagreement"

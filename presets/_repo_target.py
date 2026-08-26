@@ -30,18 +30,64 @@ import _st_hint  # noqa: E402  (a runnable invocation, not a relative path that 
 
 ENV_VAR = "SUPERTOOL_REPO"
 
+#: Set alongside :data:`ENV_VAR`, in the same pre-pass, only when THIS call's
+#: own `repo:` op ran and passed the core shape check — never when the
+#: process merely inherited :data:`ENV_VAR` from an ambient environment (a
+#: caller's shell export, a leaked value from an earlier in-process call).
+#: #1986: a bare read of :data:`ENV_VAR` cannot tell those two apart, and
+#: only the former has actually been shape-checked. See :func:`explicit_target`,
+#: the one this marker exists for.
+FROM_OP_ENV_VAR = "SUPERTOOL_REPO_FROM_OP"
+
 GITHUB_HOST = "github.com"
 
 
 def target() -> str | None:
-    """``OWNER/NAME`` when this call named a repo, else None.
+    """``OWNER/NAME`` when :data:`ENV_VAR` is set, else None.
 
-    Core validates the shape before exporting, so a value present here is
-    already well-formed. A blank env var is read as absence, not as an empty
-    target — an exported-but-empty variable is how a shell accident looks.
+    **Not "this call named a repo" — an ambient value the process inherited
+    reads identically to one this call's own `repo:` op exported.** Core
+    validates the shape only in the latter case, at the point it exports the
+    variable; a value present here because it was already in the environment
+    before this call started has never been through that check. Every
+    consumer in this module except :func:`explicit_target` reads this
+    function, which is correct for the read side #673 built it for — an
+    ambient target naming where to read from is the same feature working as
+    designed. A **write** route must not: see :func:`explicit_target`.
+
+    A blank env var is read as absence, not as an empty target — an
+    exported-but-empty variable is how a shell accident looks.
     """
     value = (os.environ.get(ENV_VAR) or "").strip()
     return value or None
+
+
+def from_op() -> bool:
+    """True when THIS call's own `repo:` op set :data:`ENV_VAR` (#1986).
+
+    Distinguishes an export `_supertool.py`'s pre-pass just performed, in
+    the process of dispatching the ops this call named, from a value that
+    was already sitting in the environment before the call started —
+    `os.environ.get(ENV_VAR)` alone cannot tell those apart, because they
+    are literally the same variable.
+    """
+    return os.environ.get(FROM_OP_ENV_VAR) == "1"
+
+
+def explicit_target() -> str | None:
+    """:func:`target`, but only when THIS call's own `repo:` op set it (#1986).
+
+    **What a mutating write route must call instead of `target()`.** Four
+    payload-mode ops (`gh-issue-create`, `gh-pr-create`, `gh-pr-edit`,
+    `gl-issue-create`) direct a live write at whatever this resolves to via
+    :func:`resolve_or_conflict`. An ambient `SUPERTOOL_REPO` — inherited from
+    the parent shell, or left behind by an earlier call in the same process
+    — is not a caller naming a repository for *this* write, and it was never
+    passed through the shape check the pre-pass runs on a real `repo:` op.
+    Returning it here would aim the write at a repository nobody named in
+    this call, unvalidated, and credit a `repo:` op that was never typed.
+    """
+    return target() if from_op() else None
 
 
 def owner_repo() -> tuple[str, str] | None:
@@ -574,8 +620,14 @@ def resolve_or_conflict(payload: dict, op: str, key: str = "repo") -> tuple[str 
     A silent precedence in either direction reintroduces exactly the defect
     the pre-pass refusal used to prevent wholesale — so disagreement is never
     resolved here, only reported.
+
+    **Reads :func:`explicit_target`, not :func:`target` (#1986).** An
+    ambient `SUPERTOOL_REPO` with no `repo:` op in this call is treated
+    exactly like no target at all — the payload falls through to whatever
+    auto-detect fallback the caller runs next — rather than silently
+    directing this write at a repository nobody named in this call.
     """
-    repo_target = target()
+    repo_target = explicit_target()
     have = str(payload.get(key) or "").strip()
     if not repo_target:
         return None, ("payload" if have else "")

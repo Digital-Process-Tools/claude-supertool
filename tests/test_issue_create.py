@@ -906,6 +906,7 @@ class TestGithubIssueCreateRepoTarget:
         payload_file = _write_payload(tmp_path, payload)
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
         monkeypatch.setenv("SUPERTOOL_REPO", "owner/from-repo-op")
+        monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
         captured: list[list[str]] = []
         monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: captured.append(args) or _ok(GH_URL))
@@ -921,6 +922,7 @@ class TestGithubIssueCreateRepoTarget:
         payload_file = _write_payload(tmp_path, GH_MINIMAL)
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
         monkeypatch.setenv("SUPERTOOL_REPO", GH_MINIMAL["repo"])
+        monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
         captured: list[list[str]] = []
         monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: captured.append(args) or _ok(GH_URL))
@@ -938,6 +940,7 @@ class TestGithubIssueCreateRepoTarget:
         payload_file = _write_payload(tmp_path, GH_MINIMAL)
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
         monkeypatch.setenv("SUPERTOOL_REPO", "owner/somewhere-else")
+        monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
         called: list[list[str]] = []
         monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: called.append(args) or _ok(GH_URL))
@@ -959,6 +962,7 @@ class TestGitlabIssueCreateRepoTarget:
         payload_file = _write_payload(tmp_path, {"title": "No project", "description": "x"})
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
         monkeypatch.setenv("SUPERTOOL_REPO", "group/from-repo-op")
+        monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
         captured: list[list[str]] = []
         monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: captured.append(args) or _ok(GL_URL))
@@ -974,6 +978,7 @@ class TestGitlabIssueCreateRepoTarget:
         payload_file = _write_payload(tmp_path, GL_MINIMAL)
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
         monkeypatch.setenv("SUPERTOOL_REPO", GL_MINIMAL["project"])
+        monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
         captured: list[list[str]] = []
         monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: captured.append(args) or _ok(GL_URL))
@@ -988,6 +993,7 @@ class TestGitlabIssueCreateRepoTarget:
         payload_file = _write_payload(tmp_path, GL_MINIMAL)
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
         monkeypatch.setenv("SUPERTOOL_REPO", "group/somewhere-else")
+        monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
         called: list[list[str]] = []
         monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: called.append(args) or _ok(GL_URL))

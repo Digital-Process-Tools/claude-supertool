@@ -411,6 +411,7 @@ def test_repo_op_supplies_a_silent_payload(monkeypatch, capsys, tmp_path):
     payload_file = _pr_payload(tmp_path, {"body": "Closes #1739."})
     monkeypatch.setattr(sys, "argv", ["pr_edit.py", "1737", payload_file])
     monkeypatch.setenv("SUPERTOOL_REPO", "owner/from-repo-op")
+    monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
     _install_edit_harness(
         monkeypatch, {"title": "t", "state": "OPEN", "body": "old"},
         {"body": "Closes #1739.", "title": "t", "html_url": "u"})
@@ -427,6 +428,7 @@ def test_repo_op_and_agreeing_payload_proceed(monkeypatch, capsys, tmp_path):
         tmp_path, {"repo": "o/r", "body": "Closes #1739."})
     monkeypatch.setattr(sys, "argv", ["pr_edit.py", "1737", payload_file])
     monkeypatch.setenv("SUPERTOOL_REPO", "o/r")
+    monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
     _install_edit_harness(
         monkeypatch, {"title": "t", "state": "OPEN", "body": "old"},
         {"body": "Closes #1739.", "title": "t", "html_url": "u"})
@@ -444,6 +446,7 @@ def test_repo_op_and_disagreeing_payload_refuse(monkeypatch, capsys, tmp_path):
         tmp_path, {"repo": "o/r", "body": "Closes #1739."})
     monkeypatch.setattr(sys, "argv", ["pr_edit.py", "1737", payload_file])
     monkeypatch.setenv("SUPERTOOL_REPO", "owner/somewhere-else")
+    monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
     def _must_not_be_called(*a, **kw):
         raise AssertionError("_gh_json was called despite the disagreement")
