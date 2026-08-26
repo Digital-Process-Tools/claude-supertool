@@ -8844,6 +8844,19 @@ def _split_arg(arg: str) -> List[str]:
             # (e.g. 'C:\a.php,C' + '\b.php' → 'C:\a.php,C:\b.php' for the
             # validate list form). The drive letter is the last ','/'|'-segment.
             drive_seg = last_seg.rsplit(",", 1)[-1]
+            # #1972 (CI, windows-latest): a `KEY=` prefix (#1690's own
+            # `path=`/`file=` keyword) puts the drive letter after the '='
+            # rather than at the start of the piece -- 'path=C' fails the
+            # single-letter check below whole, so the reassembly this
+            # function already promises for a bare drive letter (and that
+            # .supertool.json's own `validate` description documents: "Drive
+            # letters are reassembled") never fired for it. One shared
+            # tokenizer, extended once, rather than a second reassembly
+            # pass downstream in `_extract_path_kw` re-deriving what this
+            # function already knows how to do.
+            _kw_match = re.match(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)\Z", drive_seg)
+            if _kw_match:
+                drive_seg = _kw_match.group(1)
             is_drive = (
                 _DRIVE_LETTER.match(drive_seg) is not None
                 and next_piece
@@ -9728,6 +9741,22 @@ def _colon_split_hint(op: str, leading: str, path: str,
     if not path or path == "." or os.path.exists(path):
         return ""
     if ":" not in leading and _looks_like_path(path):
+        return ""
+    # #1972 (CI, windows-latest): the check above declines only when
+    # `leading` has NO colon at all -- true for an ordinary swap on POSIX,
+    # false on Windows, where an absolute path always carries one from its
+    # own drive letter (`C:\Users\...`). That platform difference must not
+    # change which diagnosis fires: `leading` resolving as a real file is
+    # the SAME positive, checkable evidence `_swap_suggest` uses downstream
+    # (in `op_around`/`op_grep`/`op_between_symbol`'s own fallback, reached
+    # once this returns ""), and it is strictly more specific than "there
+    # is a colon somewhere in here" regardless of platform. Gated through
+    # `_gate_paths` for the same reason `_swap_suggest` is: a bare
+    # `os.path.isfile` on caller-controlled text would make this an
+    # existence oracle for paths outside the containment boundary.
+    _leading_err, (_leading_expanded,) = _gate_paths([leading])
+    if not _leading_err and (os.path.isfile(_leading_expanded)
+                              or os.path.isdir(_leading_expanded)):
         return ""
     # Ahead of the `:` diagnosis, not after it. A value that whitespace-splits
     # into parts which all exist is positively a different mistake, and the

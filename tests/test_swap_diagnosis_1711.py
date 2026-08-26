@@ -82,3 +82,46 @@ def test_between_symbol_ordinary_missing_path_is_unchanged(tmp_path: Path) -> No
     out = supertool.dispatch("between:foo:definitely/does/not/exist.py")
     assert "not found" in out, out
     assert "Did you mean" not in out, out
+
+
+# --- colon-in-leading swap (CI: pytest windows-latest, job #98096203755) --
+
+def test_swap_still_diagnosed_when_leading_itself_contains_a_colon(
+        tmp_path: Path) -> None:
+    """`_colon_split_hint`'s existing early-decline only fires when `leading`
+    has NO colon in it -- fine on POSIX, where a swap's "pattern" slot is
+    ordinarily colon-free, but not on Windows: an absolute path always
+    carries one from its own drive letter (`C:\\Users\\...`), so a genuine
+    swap there always has a ':' in the leading argument and used to get the
+    generic "split on ':'" message instead of the more specific swap one.
+
+    POSIX allows ':' in a filename, so this is reproduced portably here
+    with a colon INSIDE the filename rather than a drive letter -- same
+    mechanism (colon in `leading`, `leading` itself resolves as a real
+    file), same fix, no Windows machine required to prove it. The fix is
+    `_colon_split_hint` declining whenever `leading` resolves as a real
+    file (positive evidence, from `_swap_suggest`'s own check) even though
+    it contains a ':' -- not just when it has none."""
+    real = tmp_path / "weird:name.py"
+    real.write_text("needle here\n", encoding="utf-8")
+    out = supertool.dispatch(f"around:{real}:needle")
+    assert "Did you mean" in out, out
+    assert "split on" not in out, out
+
+
+import sys as _sys
+
+import pytest as _pytest
+
+
+@_pytest.mark.skipif(
+    _sys.platform != "win32",
+    reason="exact CI reproduction (job #98096203755) needs a real Windows "
+           "drive-letter path; the platform-agnostic colon-in-filename test "
+           "above proves the same mechanism (colon in `leading`, `leading` "
+           "resolves as a real file) without requiring win32")
+def test_swap_diagnosed_with_a_real_windows_drive_letter_path(
+        tmp_path: Path) -> None:
+    real = _write(tmp_path, "winreal.py", "needle here\n")
+    out = supertool.dispatch(f"around:{real}:needle")
+    assert "Did you mean" in out, out

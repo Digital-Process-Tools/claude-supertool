@@ -160,3 +160,26 @@ def test_swap_suggest_never_confirms_existence_outside_cwd(tmp_path: Path) -> No
         if prev is not None:
             os.environ["SUPERTOOL_ALLOW_OUTSIDE_CWD"] = prev
     assert "Did you mean" not in out, out
+
+
+# --- Windows drive letter (CI: pytest windows-latest, job #98096203755) ----
+
+def test_split_arg_reassembles_drive_letter_after_kw_prefix() -> None:
+    r"""`_split_arg` already reassembles a bare drive letter ('C' + '\x') into
+    one token -- that's how `read:C:\Users\file.py` has always worked. The
+    same reassembly must also fire when the drive letter sits after a
+    `path=`/`file=` prefix instead of at the start of the piece; the naive
+    split treats 'path=C' as a whole token that fails `_DRIVE_LETTER`'s
+    single-letter check, so the next piece ('\\Users\\...') is left as its
+    own token instead of being absorbed."""
+    import _supertool as st
+    parts = st._split_arg(r"grep:needle:path=C:\Users\dev\code.py")
+    assert parts == ["grep", "needle", r"path=C:\Users\dev\code.py"], parts
+
+
+def test_split_arg_still_reassembles_bare_drive_letter() -> None:
+    """Must-not-fire half: the pre-existing bare-letter reassembly (no
+    `key=` prefix) is unaffected by the new stripping step."""
+    import _supertool as st
+    parts = st._split_arg(r"read:C:\Users\file.py")
+    assert parts == ["read", r"C:\Users\file.py"], parts
