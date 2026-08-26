@@ -1898,3 +1898,44 @@ convenience.
 An external contributor should still open one PR per change; the maintainer-side lane
 convention is not license to bundle unrelated fixes just because they landed the same
 day.
+
+## `.oss/statusline.py` is opt-in, not wired
+
+`.oss/statusline.py` is tracked. It arrives through `/oss:scaffold --apply`
+(#1956), which owns the file and overwrites it wholesale on every install — see
+its own header comment and `.github/scripts/coverage_gate.py`'s `NOT_MEASURED`
+entry for it. Tracking it is right: without a committed copy, a fresh clone gets
+none of what the maintainer's own checkout already has.
+
+**Wiring it is a different question, and this repository answers it "no."**
+`.claude/settings.json` is tracked and read by every clone the moment it is
+checked out. It already carries one executed thing — the `PreToolUse` guard —
+and that precedent does not extend to a status line: the guard protects this
+repository's own commands from a class of mistake documented elsewhere in this
+file, on every contributor's behalf, whether they asked for it or not. A status
+line is cosmetic and per-maintainer — it decides what renders in *your* prompt,
+not what a shared command is allowed to do — and imposing that choice on
+everyone who clones this repository, without an opt-in step, is a different
+kind of decision than the guard is. #1964 records both readings and settles on
+this one.
+
+**So `.claude/settings.json` deliberately does not carry a `statusLine` key.**
+If you want the status line locally, opt in yourself — this reads the same
+script every scaffolded install does, without changing anything tracked. Put
+this in `.claude/settings.local.json` (untracked; create it if you do not
+have one):
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.oss/statusline.py"
+  }
+}
+```
+
+`tests/test_statusline_wiring_documented_1964.py` pins this: it fails if
+`.claude/settings.json` ever gains a `statusLine` key without this section
+being updated in the same PR, and it fails if this section and the tracked
+config both go silent about the file at once — the exact state #1964 found,
+where a component ships with nothing tracked saying whether it is on purpose.
