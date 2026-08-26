@@ -8083,11 +8083,17 @@ def _regex_extract(path: str) -> List[Tuple[str, str, int, int, int]]:
                 # over the WHOLE header) can have a real base class or
                 # interface sitting past a truncated window.
                 if truncated and ext not in (".py", ".rb"):
-                    hierarchy: List[str] = []
+                    # #2002: a truncated window and a genuinely standalone
+                    # class used to render identically -- "no hierarchy" is
+                    # what BOTH an absent parent and an unread one look
+                    # like once `hierarchy` is simply []. `_class_header_text`
+                    # already tells the two apart (`truncated`); the marker
+                    # says so instead of discarding that fact here.
+                    name += " < ?"
                 else:
                     hierarchy = _header_hierarchy(ext, header)
-                if hierarchy:
-                    name += _format_hierarchy_suffix(hierarchy)
+                    if hierarchy:
+                        name += _format_hierarchy_suffix(hierarchy)
             symbols.append((kind, name, line_num, line_num, depth))
 
     # Sort by line number
@@ -28641,18 +28647,28 @@ def main(argv: List[str]) -> int:
     """
     global _INVOCATION_DIR, _CWD_SHIFT
     _repo_env_prior = {name: os.environ.get(name) for name in _REPO_ENV_VARS}
-    # #1993: restoring the prior value at the end is not the same as denying
-    # it for the DURATION of this call. An ambient pair the process merely
-    # inherited (a shell export from a parent, or a value that survived in a
-    # long-lived host process despite the restore below) used to sit in
-    # os.environ for the whole of _main(), which is exactly what let
-    # SUPERTOOL_REPO_FROM_OP credit a repo: op nobody typed in THIS call.
-    # Clearing both here, before _main ever inspects argv, means the only
-    # way either variable is set during this call is this calls own repo:
-    # pre-pass setting it fresh -- which is the one place that runs the
+    # #1993 closed a real hole: an inherited SUPERTOOL_REPO_FROM_OP="1" (a
+    # shell export from a parent, or a value that survived in a long-lived
+    # host process despite the restore below) used to sit in os.environ for
+    # the whole of _main(), which is exactly what let it credit a repo: op
+    # nobody typed in THIS call and reach the payload-mode write routes and
+    # gh-pr-merge through explicit_target() unvalidated.
+    # #2001: the fix as shipped cleared SUPERTOOL_REPO too, which took the
+    # READ path down as a side effect -- every read op calls the bare
+    # target(), which has no "this call's own repo: op" guarantee to
+    # protect, so clearing the value here denied nothing a write route
+    # needed denying and only made an ambient SUPERTOOL_REPO an outer shell
+    # had set stop reaching reads (contrary to docs/presets/watch.md and
+    # this module's own docstrings, both of which still describe an ambient
+    # value serving reads). explicit_target() -- what every write route
+    # calls -- returns None whenever from_op() is False regardless of
+    # whether SUPERTOOL_REPO itself is set, so clearing only the marker
+    # here closes #1993's hole exactly as before while leaving an ambient
+    # SUPERTOOL_REPO free to reach a read op for the DURATION of a call that
+    # types no repo: op of its own. This call's own repo: pre-pass still
+    # sets both fresh when it runs, which is the one place that runs the
     # shape check.
-    for _name in _REPO_ENV_VARS:
-        os.environ.pop(_name, None)
+    os.environ.pop("SUPERTOOL_REPO_FROM_OP", None)
     try:
         return _main(argv)
     finally:

@@ -193,10 +193,36 @@ def test_regex_tier_declines_the_suffix_when_the_header_window_is_exhausted(
     a wrong answer" defect CLAUDE.md names, one level up from simply
     dropping the hierarchy. Shrinking the window in the test (rather than
     writing a multi-kilobyte fixture file) exercises the real decline
-    path with the real production constant's own logic."""
+    path with the real production constant's own logic.
+
+    #2002: the decline used to render with no marker at all -- byte-
+    identical to a class that genuinely has no parent. It must now say it
+    could not read the heritage rather than staying silent about it."""
     monkeypatch.setattr(supertool, "_CLASS_HEADER_WINDOW", 20)
     f = tmp_path / "Handler.java"
     f.write_text("public class Handler extends Base implements IA, IB {\n}\n")
     out = supertool.op_map(str(f))
-    assert "class Handler " in out or "class Handler[" in out or "class Handler  [" in out
-    assert "<" not in out.split("class Handler", 1)[1].split("\n", 1)[0]
+    assert "class Handler < ?" in out
+    # The marker says "could not read", never a real (and therefore
+    # necessarily partial) name pulled from inside the truncated window.
+    assert "Base" not in out.split("class Handler", 1)[1].split("\n", 1)[0]
+
+
+def test_regex_tier_truncated_marker_is_distinct_from_no_parent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The two states this issue is about, side by side: a genuinely
+    standalone class renders with no `<` at all, and a class whose header
+    ran past the window renders `< ?` -- never the same bytes for both."""
+    monkeypatch.setattr(supertool, "_CLASS_HEADER_WINDOW", 20)
+    standalone = tmp_path / "Standalone.java"
+    standalone.write_text("public class Standalone {\n}\n")
+    truncated = tmp_path / "Handler.java"
+    truncated.write_text(
+        "public class Handler extends Base implements IA, IB {\n}\n"
+    )
+    standalone_out = supertool.op_map(str(standalone))
+    truncated_out = supertool.op_map(str(truncated))
+    assert "class Standalone " in standalone_out or "class Standalone[" in standalone_out
+    assert "<" not in standalone_out.split("class Standalone", 1)[1].split("\n", 1)[0]
+    assert "class Handler < ?" in truncated_out

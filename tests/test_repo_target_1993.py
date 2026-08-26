@@ -61,14 +61,49 @@ def no_dispatch(monkeypatch):
 # #1993's guard: an inherited pair with no repo: op in the call
 # ---------------------------------------------------------------------------
 
-def test_an_inherited_pair_does_not_survive_into_a_call_with_no_repo_op(
+def test_an_inherited_pair_leaves_the_value_but_not_the_marker(
         monkeypatch, no_dispatch) -> None:
-    """The symptom in #1993's own body: SUPERTOOL_REPO and
-    SUPERTOOL_REPO_FROM_OP are BOTH already set (as they would be from a
-    parent shell export, or a value that leaked past an earlier restore)
-    before this call starts, and this call itself types no `repo:` op.
-    Neither variable may be visible to the op that runs."""
+    """#2001 revises this fix: SUPERTOOL_REPO and SUPERTOOL_REPO_FROM_OP are
+    BOTH already set (as they would be from a parent shell export, or a
+    value that leaked past an earlier restore) before this call starts, and
+    this call itself types no `repo:` op. The marker must not survive --
+    explicit_target() (what every write route calls) trusts it, not the
+    bare value -- but the value itself must still reach a read op, exactly
+    as it did before #1993 took it down as a side effect of closing the
+    write-side hole."""
     monkeypatch.setenv("SUPERTOOL_REPO", "attacker/elsewhere")
+    monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
+
+    rc = supertool.main(["gh-issue:1"])
+
+    assert rc == 0
+    assert no_dispatch == [("gh-issue:1", "attacker/elsewhere", None)]
+
+
+def test_an_ambient_value_alone_still_reaches_a_read_op(
+        monkeypatch, no_dispatch) -> None:
+    """#2001's own reproduction: `SUPERTOOL_REPO=o/n supertool 'watch:...'`
+    silently started a poller against the cwd's repository instead. This is
+    what a plain shell export actually looks like -- only SUPERTOOL_REPO
+    set, never the marker, because nothing on this machine besides main()'s
+    own repo: pre-pass ever sets SUPERTOOL_REPO_FROM_OP. #1993's own tests
+    only ever set both variables together, so this direction was unpinned
+    either way until now."""
+    monkeypatch.setenv("SUPERTOOL_REPO", "someone/elsewhere")
+
+    rc = supertool.main(["gh-issue:1"])
+
+    assert rc == 0
+    assert no_dispatch == [("gh-issue:1", "someone/elsewhere", None)]
+
+
+def test_an_inherited_marker_alone_does_not_survive(
+        monkeypatch, no_dispatch) -> None:
+    """Must-fire control for the two tests above: a bare inherited
+    SUPERTOOL_REPO_FROM_OP with no SUPERTOOL_REPO to go with it (the
+    degenerate case) must still be denied -- the marker is what a write
+    route trusts, and it must never survive into a call whose own repo:
+    pre-pass did not set it fresh."""
     monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
     rc = supertool.main(["gh-issue:1"])
