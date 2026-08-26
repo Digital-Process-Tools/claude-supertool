@@ -76,25 +76,42 @@ _EVENT_FOR_STATE = {
 }
 
 
-def _snapshot(ref: str) -> tuple[str, str, str, str]:
-    """`(state, sentence, sha, error)` for the named ref, right now.
+def _snapshot(ref: str) -> tuple[str, str, str, str, str]:
+    """`(state, sentence, sha, repo, error)` for the named ref, right now.
 
-    `error` is set only when this call could not establish anything at all --
-    `_head_commit` or `_run_list` itself failing to answer. That is this
-    source's `LOOKUP_UNAVAILABLE`, never `branch.UNKNOWN`: `branch.UNKNOWN` is
-    a *finding* this composition is equipped to make (an unread job list on an
-    otherwise-resolved commit); a `gh` that would not answer at all is the
-    branch-tier equivalent of `github-pr`'s `_fetch` returning `(None, why)`,
-    and the two must not collapse into the one state (#541's argument, one
-    source over -- collapsing an outage into the same reading as a finding is
-    the mistake #1953 exists to stop repeating one layer in).
+    `repo` is `branch._repo_identity()`'s own `nameWithOwner` -- gh's own
+    base-repo resolution, which honours `remote.<name>.gh-resolved` -- the
+    same repository `_head_commit`/`_run_list` above already queried. It is
+    NOT `transport.repo_slug()`'s answer: that function is forge-agnostic and
+    reads the cwd's `git remote` once per poller process, which is right for
+    every source that does not otherwise learn the repository it is about,
+    and wrong for this one, which already asks `gh` directly. In a fork
+    checkout the two can disagree -- `origin` names the fork,
+    `gh repo set-default` points `gh` at the parent -- and #1963 was filed on
+    an event stamped with the fork's name while every `gh` call it describes
+    ran against the parent. The caller carries this value on the event so the
+    dispatcher's generic, process-level attribution does not override it.
+
+    `error` is set when this call could not establish anything at all --
+    `_head_commit`, `_run_list` or `_repo_identity` itself failing to answer.
+    That is this source's `LOOKUP_UNAVAILABLE`, never `branch.UNKNOWN`:
+    `branch.UNKNOWN` is a *finding* this composition is equipped to make (an
+    unread job list on an otherwise-resolved commit); a `gh` that would not
+    answer at all is the branch-tier equivalent of `github-pr`'s `_fetch`
+    returning `(None, why)`, and the two must not collapse into the one state
+    (#541's argument, one source over -- collapsing an outage into the same
+    reading as a finding is the mistake #1953 exists to stop repeating one
+    layer in). `_repo_identity` failing belongs in exactly this arm and not
+    past it (#1965): a repository this call could not identify must not
+    reach `branch.verdict()`, which would happily compute a state -- GREEN
+    included -- off an empty `repo`.
     """
     sha, age, err = branch._head_commit(ref)
     if err:
-        return "", "", "", err
+        return "", "", "", "", err
     runs, err = branch._run_list(ref)
     if err or runs is None:
-        return "", "", sha, err or "ERROR: gh run list returned nothing readable"
+        return "", "", sha, "", err or "ERROR: gh run list returned nothing readable"
 
     selected = branch.runs_on_sha(runs, sha)
     _prev_sha, prev_names = branch.previous_head(runs, sha)
@@ -110,17 +127,19 @@ def _snapshot(ref: str) -> tuple[str, str, str, str]:
                    else [branch._checks.github_state(j) for j in jobs])
             for name, jobs in fetched.items()}
 
-    repo, _default_ref, _repo_err = branch._repo_identity()
+    repo, _default_ref, repo_err = branch._repo_identity()
+    if repo_err:
+        return "", "", sha, "", repo_err
     marker, _shortfall = branch._reconcile(repo, selected, fetched)
     scope, _scope_lines, _unresolved = branch.scope_for(repo, sha, selected)
     state, sentence = branch.verdict(selected, legs, missing, sha, age,
                                      branch._GRACE, marker, scope=scope)
-    return state, sentence, sha, ""
+    return state, sentence, sha, repo, ""
 
 
 def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     ref = str(ctx["id"])
-    branch_state, sentence, sha, error = _snapshot(ref)
+    branch_state, sentence, sha, repo, error = _snapshot(ref)
 
     if error:
         # Three answers, not two -- same shape as `github-pr`'s `_fetch`
@@ -151,12 +170,22 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # is what tells a consumer that first emission apart from a live change.
     if branch_state != prev_state:
         key = _EVENT_FOR_STATE.get(branch_state, "unknown")
-        events.append({
+        ev = {
             "event": key,
             "payload": {"ref": ref, "sha": sha, "sentence": sentence},
             "notify_title": f"{ref} — {branch_state.lower()}",
             "notify_message": sentence,
-        })
+        }
+        if repo:
+            # #1963: this composition already asked gh which repository
+            # `_head_commit`/`_run_list` were run against
+            # (`branch._repo_identity()`, above). Carry that answer on the
+            # event so the dispatcher's own `transport.repo_slug()` -- a
+            # cheaper, git-config-based read that is right for every other
+            # source -- does not override it with a different repository's
+            # name inside a fork checkout.
+            ev["repo"] = repo
+        events.append(ev)
 
     new_state = {
         "branch_state": branch_state,

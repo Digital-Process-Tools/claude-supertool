@@ -247,6 +247,18 @@ read is not an absence in the world, which is the rule `docs/validators.md`
 §"Declining instead of guessing" states and the defect this preset has filed
 most often.
 
+**The `came from the environment` row is a false positive on a designed
+path, and #1785 gives it one way to say so.** A launcher that derives
+`SUPERTOOL_WATCH_NAME` for a repository — the `oss` plugin's own
+`bin/oss-workspace` does this precisely when a repo declares no name at all,
+so it does not bind the shared default socket unknowingly — can also export
+`SUPERTOOL_WATCH_NAME_ROOT` naming the directory it derived the name for. When
+that matches the directory holding the (name-silent) `.supertool.json`, the
+board says so instead of warning: this is not the same fact as a name copied
+in from another project's `settings.local.json`, and without the marker the
+two read identically. Absent, or naming some other directory, nothing
+changes — the row above still fires exactly as it always did.
+
 **This changes nothing about what is in force.** The environment stays
 authoritative, for the reason in the next paragraph; the attribution is a render,
 and a render must never move a live fleet's paths.

@@ -647,9 +647,15 @@ distinction lives in the event's `sentence` payload field, the same sentence
 `gh-branch` itself would print), `no_run` (zero workflow runs on the head
 commit — never folded into red, because it is the ordinary state for the first
 seconds after a squash), and `unknown` (a job list that did not come back). A
-lookup failure that could not resolve the ref or list runs at all is
-`branch_unreachable`, edge-triggered like every other source's `*_unreachable`
-event.
+lookup failure that could not resolve the ref, list runs, or identify the
+repository itself is `branch_unreachable`, edge-triggered like every other
+source's `*_unreachable` event — a `gh` that could not answer at all is never
+allowed to reach `unknown` or any other state, per this composition's own
+`LOOKUP_UNAVAILABLE` rule
+([#1965](https://github.com/Digital-Process-Tools/claude-supertool/issues/1965)):
+collapsing an outage into a finding is a different, cheaper mistake than the
+outage itself, and it is the one a repo lookup that failed used to make —
+`went_green` off a repository nothing had actually identified.
 
 `is_terminal` is always `False`: a branch has no merged/closed state to stop
 watching for, unlike a PR or an MR.
@@ -2222,6 +2228,20 @@ a payload key of the same name cannot override it (`claude-channel` treats
 `repo` as a routing key for exactly that reason — see below). `claude-channel`
 renders it as its own attribute and folds it into the summary line:
 `github-pr OWNER/REPO#527: merged`.
+
+**`transport.repo_slug()`'s answer can itself be overridden — by the source,
+not by the payload** ([#1963](https://github.com/Digital-Process-Tools/claude-supertool/issues/1963)).
+`repo_slug()` is forge-agnostic and reads `origin`'s remote once per process,
+which is right for a source with no better answer of its own. `gh-branch`
+has one: it already resolves the repository through `gh` itself
+(`branch._repo_identity()`, the same call `_head_commit`/`_run_list` were
+already run against) to build its own event, and in a fork checkout that can
+disagree with `origin` — `gh repo set-default` points `gh` at the parent
+while `origin` still names the fork. A poller's own event dict may carry a
+top-level `repo` key (still beside `source`/`id`, never inside `payload`, so
+the routing-key argument above is unaffected) and the dispatcher prefers it
+over `transport.repo_slug()`'s process-level read. A source with no opinion
+sets nothing, and gets exactly the process-level attribution it always did.
 
 **Payload values are size-capped by the `claude-channel` consumer** — 2,048 chars
 per attribute, 8,192 per event, 1 MB per NDJSON line

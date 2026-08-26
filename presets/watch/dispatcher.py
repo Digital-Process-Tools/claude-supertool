@@ -1096,7 +1096,15 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
                     notify_title=ev.get("notify_title"),
                     notify_message=ev.get("notify_message"),
                     first_tick=first_tick,
-                    repo=repo,
+                    # A source that already resolved its own repository
+                    # (gh-branch does, through gh's own base-repo resolution
+                    # -- #1963) wins over this process-level, git-config
+                    # read: the two can disagree inside a fork checkout, and
+                    # the source's answer is the one every call in its own
+                    # event actually ran against. Every other source has no
+                    # opinion here, so `ev.get("repo")` is None for them and
+                    # this falls back to exactly what it did before.
+                    repo=ev.get("repo") or repo,
                 )
 
             full = transport.read_state(source, watcher_id)
