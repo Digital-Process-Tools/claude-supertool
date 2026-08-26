@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -78,8 +79,20 @@ def test_markdownlint_crafted_filename_reports_the_real_diagnostic(
     misattribution here, because "fake.md" does not match `MD\d+`).
     """
     mod = _adapter("markdownlint", "markdownlint.py")
-    f = tmp_path / "x:1:1 MD000 evilrule evil message.md"
-    f.write_text("#bad heading\n\ntext\n", encoding="utf-8")
+    # Built with a plain string `+`, never `tmp_path / evil` or
+    # `os.path.join`: both of those special-case a component that LOOKS
+    # like a drive spec (a letter immediately followed by `:`) on Windows,
+    # which is exactly the shape this crafted name starts with -- either
+    # one would silently discard `tmp_path` and anchor the joined path at
+    # a bogus drive `x:` instead of inside the temp dir. Plain
+    # concatenation does no such parsing on any platform. Also never
+    # written to disk: a colon (and, for phpmd below, an embedded tab) is
+    # illegal in a Windows filename outright, and nothing in
+    # markdownlint.py's main() needs the path to exist -- the spawn is
+    # stubbed, and a missing file only costs the located finding its
+    # source_context (context_fields() degrades to `context_unavailable`
+    # rather than raising), which this test does not assert on.
+    f = str(tmp_path) + os.sep + "x:1:1 MD000 evilrule evil message.md"
     # The real diagnostic is at line 9, col 3 -- nowhere near the filename's
     # own embedded "1:1 MD000". markdownlint echoes the exact argv path
     # (observed, see the module docstring above).
@@ -127,8 +140,12 @@ def test_phpmd_crafted_filename_reports_the_real_diagnostic(
     A tab is an ordinary, legal byte in a POSIX filename.
     """
     mod = _adapter("phpmd", "phpmd.py")
-    f = tmp_path / "x:1\tEvilRule\tfake finding.php"
-    f.write_text("<?php\n$x = 1;\n", encoding="utf-8")
+    # Plain string `+`, not tmp_path / evil -- see the comment on the
+    # markdownlint case above for why a leading `x:` breaks a smart path
+    # join on Windows. Not written to disk either: a raw tab byte is
+    # illegal in a Windows filename (and the colon is too), and phpmd.py's
+    # main() never needs the path to exist for a stubbed spawn.
+    f = str(tmp_path) + os.sep + "x:1\tEvilRule\tfake finding.php"
     # Real diagnostic at line 9 -- nowhere near the filename's own "x:1".
     stdout = f"{f}:9\tUnusedLocalVariable\tAvoid unused local variables such as '$x'.\n"
     monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _phpmd_run(stdout))

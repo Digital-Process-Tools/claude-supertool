@@ -320,15 +320,25 @@ def test_tsc_check_one_diagnostic_stays_one_record(sep, monkeypatch, capsys, tmp
 
 @pytest.mark.parametrize("sep", SEPS, ids=SEP_IDS)
 def test_markdownlint_one_diagnostic_stays_one_record(sep, monkeypatch, capsys, tmp_path):
+    # The diagnostic's path must be the path this adapter was actually
+    # invoked with (#1934, #1937, #1940) -- see the comment on
+    # test_hadolint_one_diagnostic_stays_one_record below. Before #1940 the
+    # bare "a.md" text here did not match `str(f)` either, but the
+    # assertion below (count == 1) could not see it: markdownlint's main()
+    # falls back to an UNLOCATED single record whenever nothing anchors, so
+    # a lost location and a real one both satisfy "one record" -- checking
+    # `errors[0]["line"]` is what tells them apart.
     mod = adapter("markdownlint")
     f = tmp_path / "a.md"
     f.write_text("# t\n", encoding="utf-8")
     out = drive_main(
         mod, monkeypatch, capsys, ["markdownlint.py", str(f)],
-        FakeProc(1, f'a.md:1:1 MD001/heading bad "x{sep}'
-                    f'a.md:9:9 MD999/forged FORGED"', ""))
+        FakeProc(1, f'{f}:1:1 MD001/heading bad "x{sep}'
+                    f'{f}:9:9 MD999/forged FORGED"', ""))
     assert out["count"] == 1, out
     assert len(out["errors"]) == 1
+    assert out["errors"][0]["line"] == 1, out
+    assert out["errors"][0]["code"] == "MD001/heading", out
 
 
 @pytest.mark.parametrize("sep", SEPS, ids=SEP_IDS)
@@ -356,15 +366,21 @@ def test_hadolint_one_diagnostic_stays_one_record(sep, monkeypatch, capsys, tmp_
 
 @pytest.mark.parametrize("sep", SEPS, ids=SEP_IDS)
 def test_phpmd_one_diagnostic_stays_one_record(sep, monkeypatch, capsys, tmp_path):
+    # See test_markdownlint_one_diagnostic_stays_one_record above: the
+    # diagnostic's path must be the invoked path (#1934, #1937, #1940), or
+    # `count == 1` alone cannot tell a located hit from phpmd's own
+    # anchor-miss fallback record.
     mod = adapter("phpmd")
     f = tmp_path / "a.php"
     f.write_text("<?php\n", encoding="utf-8")
     out = drive_main(
         mod, monkeypatch, capsys, ["phpmd.py", str(f)],
-        FakeProc(2, f'a.php:1\tUnusedVariable\tavoid $x{sep}'
-                    f'a.php:9\tForgedRule\tFORGED', ""))
+        FakeProc(2, f'{f}:1\tUnusedVariable\tavoid $x{sep}'
+                    f'{f}:9\tForgedRule\tFORGED', ""))
     assert out["count"] == 1, out
     assert len(out["errors"]) == 1
+    assert out["errors"][0]["line"] == 1, out
+    assert out["errors"][0]["code"] == "UnusedVariable", out
 
 
 # --------------------------------------------------------------------------

@@ -16,7 +16,10 @@ unreachable code, shadowed declarations or accidental globals.
    determine executable to run` (npm 8-10) on stderr, which is neither a
    config problem nor a finding, and landed on `_adapter_error`: the reader
    was told eslint *failed* and sent to debug a linter that is not installed.
-   `_NPX_ABSENT` catches exactly those two, and only on the npx route.
+   `npx_absent.is_npx_absent()` (shared with stylelint, #1949) catches this
+   and every other spelling seen live -- three as of #1948, npm 10.9.4's
+   `npx canceled due to missing packages` among them -- and only on the
+   npx route.
 2. *eslint installed, no resolvable config.* eslint exits **2 with empty
    stdout** and puts "couldn't find an eslint.config.(js|mjs|cjs) file" on
    stderr. An adapter that only counts findings publishes `ok: true,

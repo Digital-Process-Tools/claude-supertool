@@ -12,7 +12,6 @@ Usage:  markdownlint.py <file>
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import subprocess
 import sys
@@ -180,8 +179,15 @@ def main() -> None:
             errors.append(err)
 
     if not errors and output:
+        # #1937, third CI round, applied here for #1940: when the anchor
+        # missed but markdownlint DID say something, say what it saw --
+        # the invoked path and whatever path the tool's own output appears
+        # to name -- instead of silently reporting a false clean verdict.
+        # A non-zero exit that produced no located finding is still not
+        # "ok: true, count: 0" about the file.
         errors = [{"line": None, "col": None, "severity": "error",
-                   "code": "lint", "msg": output[:300]}]
+                   "code": "lint",
+                   "msg": _anchor_miss_message(file, output, output[:300])}]
 
     emit({"tool": "markdownlint", "file": file, "ok": False, "count": len(errors),
           "errors": errors, "duration_ms": duration})

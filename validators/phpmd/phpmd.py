@@ -190,6 +190,17 @@ def main() -> None:
                 **context_fields(file, lineno),
             })
 
+    if not errors and raw.strip():
+        # #1937, third CI round, applied here for #1940: an anchor that
+        # matches nothing on a NON-EMPTY output must not silently become
+        # `ok: true, count: 0` -- that is a false clean verdict about a
+        # file phpmd may well have found something wrong with, just in a
+        # spelling this anchor did not expect. Say what was seen instead
+        # of guessing towards silence.
+        errors = [{"line": None, "col": None, "severity": "error",
+                   "code": "adapter",
+                   "msg": _anchor_miss_message(file, raw, raw.strip()[:300])}]
+
     count = len(errors)
     emit({
         "tool": "phpmd",
