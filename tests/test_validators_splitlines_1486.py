@@ -292,8 +292,8 @@ def test_jit_index_rows_are_framed_the_way_the_hook_frames_them(sep):
     would be two rows. The hook is awk, which breaks on LF and nothing else —
     so a `match` column holding U+2028 is one row there and was two here."""
     mod = adapter("jit-index")
-    text = (f"Bash\t~one{sep}still-one\tf.md\tremind\tk\n"
-            "Bash\t~two\tg.md\tremind\tk\n")
+    text = (f"Bash\t~one{sep}still-one\tf.md\tremind\tk\t\n"
+            "Bash\t~two\tg.md\tremind\tk\t\n")
     patterns, shape_errors, parsed, tabbed = mod._rows(text)
 
     assert (parsed, tabbed) == (2, 2), (parsed, tabbed, shape_errors)
