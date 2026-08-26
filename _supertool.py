@@ -18154,6 +18154,44 @@ def _guard_strip_heredocs(command: str) -> str:
     return "\n".join(out)
 
 
+def _guard_find_substitution_end(command: str, start: int) -> Optional[int]:
+    """Index of the ``)`` matching the ``$(`` whose interior begins at *start*.
+
+    Not a shell parser: it tracks paren depth and skips over quoted regions
+    -- so a literal ``(`` or ``)`` inside a nested ``'...'`` or ``"..."`` does
+    not move the count, the same as real command-substitution parsing -- but
+    it does not resolve backtick substitution or an escaped paren the way a
+    full lexer would. That is enough to recover what #1762 reports: an
+    ordinary substitution wrapped in double quotes, nested command
+    substitutions and embedded quotes included. What it cannot balance --
+    an unterminated substitution, one hidden behind a further layer this
+    scan does not model -- returns None, and the caller keeps the
+    `undecided` arm rather than guessing at where it would have closed.
+    """
+    depth = 1
+    i = start
+    single = double = False
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if ch == _GUARD_BACKSLASH and not single and i + 1 < n:
+            i += 2
+            continue
+        if ch == _GUARD_SQUOTE and not double:
+            single = not single
+        elif ch == _GUARD_DQUOTE and not single:
+            double = not double
+        elif not single and not double:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return i
+        i += 1
+    return None
+
+
 def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
     """Split what the shell would split, and name what quoting hid.
 
@@ -18199,6 +18237,9 @@ def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
     """
     out: List[str] = []
     unread: List[str] = []
+    #: Interiors recovered from a double-quoted `$(...)`, appended as their
+    #: own segments once the scan finishes -- see the loop at the bottom.
+    extracted: List[str] = []
     single = double = backtick = False
     # The last character emitted outside quotes, which is what decides whether
     # a `#` opens a comment. `""` at the start of the command counts as a word
@@ -18245,14 +18286,47 @@ def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
             i += 1
             prev = ";"
             continue
-        elif double and (ch == _GUARD_BACKTICK
-                         or command[i:i + 2] == "$("):
+        elif double and ch == _GUARD_BACKTICK:
+            # A backtick substitution's own closing delimiter is not
+            # recoverable the way a `$(...)`'s matching `)` is (there is no
+            # balancing scan below for it), so this shape stays undecided.
             unread.append("a command substitution inside a double-quoted "
                           "argument was not read")
+        elif double and command[i:i + 2] == "$(":
+            end = _guard_find_substitution_end(command, i + 2)
+            if end is None:
+                # Genuinely unreadable: no `)` balances before the command
+                # runs out. Keep the third state rather than guess at one.
+                unread.append("a command substitution inside a "
+                              "double-quoted argument was not read")
+            else:
+                # The obstacle really was only the quotes: recover the
+                # interior and check it exactly as if it had been written
+                # unquoted, through this same reader so a nested `$(...)`,
+                # an embedded quote or a further backtick inside it is
+                # handled once here rather than reimplemented. The `$(...)`
+                # text itself is still copied into `out` character by
+                # character below (this branch does not `continue`), so the
+                # outer double-quoted argument's own quoting stays intact
+                # for `shlex` exactly as it did before this branch existed.
+                inner_prepared, inner_unread = _guard_open_substitutions(
+                    command[i + 2:end])
+                extracted.append(inner_prepared)
+                for note in inner_unread:
+                    if note not in unread:
+                        unread.append(note)
         out.append(ch)
         if not single and not double:
             prev = ch
         i += 1
+    for text in extracted:
+        # Appended once the whole command has been scanned, as an
+        # independent segment (`_guard_segments` splits on `;`) rather than
+        # in place, so the outer argument's own text and quoting -- copied
+        # verbatim above -- are never disturbed by the recovery.
+        out.append(" ; ")
+        out.append(text)
+        out.append(" ; ")
     return "".join(out), unread
 
 
