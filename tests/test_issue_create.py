@@ -906,6 +906,7 @@ class TestGithubIssueCreateRepoTarget:
         payload_file = _write_payload(tmp_path, payload)
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
         monkeypatch.setenv("SUPERTOOL_REPO", "owner/from-repo-op")
+        monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
         captured: list[list[str]] = []
         monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: captured.append(args) or _ok(GH_URL))
@@ -921,6 +922,7 @@ class TestGithubIssueCreateRepoTarget:
         payload_file = _write_payload(tmp_path, GH_MINIMAL)
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
         monkeypatch.setenv("SUPERTOOL_REPO", GH_MINIMAL["repo"])
+        monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
         captured: list[list[str]] = []
         monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: captured.append(args) or _ok(GH_URL))
@@ -938,6 +940,7 @@ class TestGithubIssueCreateRepoTarget:
         payload_file = _write_payload(tmp_path, GH_MINIMAL)
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
         monkeypatch.setenv("SUPERTOOL_REPO", "owner/somewhere-else")
+        monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
         called: list[list[str]] = []
         monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: called.append(args) or _ok(GH_URL))
@@ -959,6 +962,7 @@ class TestGitlabIssueCreateRepoTarget:
         payload_file = _write_payload(tmp_path, {"title": "No project", "description": "x"})
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
         monkeypatch.setenv("SUPERTOOL_REPO", "group/from-repo-op")
+        monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
         captured: list[list[str]] = []
         monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: captured.append(args) or _ok(GL_URL))
@@ -974,6 +978,7 @@ class TestGitlabIssueCreateRepoTarget:
         payload_file = _write_payload(tmp_path, GL_MINIMAL)
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
         monkeypatch.setenv("SUPERTOOL_REPO", GL_MINIMAL["project"])
+        monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
         captured: list[list[str]] = []
         monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: captured.append(args) or _ok(GL_URL))
@@ -988,6 +993,7 @@ class TestGitlabIssueCreateRepoTarget:
         payload_file = _write_payload(tmp_path, GL_MINIMAL)
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
         monkeypatch.setenv("SUPERTOOL_REPO", "group/somewhere-else")
+        monkeypatch.setenv("SUPERTOOL_REPO_FROM_OP", "1")
 
         called: list[list[str]] = []
         monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: called.append(args) or _ok(GL_URL))
@@ -1000,3 +1006,29 @@ class TestGitlabIssueCreateRepoTarget:
         assert GL_MINIMAL["project"] in out
         assert "group/somewhere-else" in out
         assert "gl-issue-create" in out
+
+
+class TestGithubIssueCreateAmbientRepoEnv:
+    """End-to-end (#1986): an ambient SUPERTOOL_REPO with no repo: op in
+    this call must not direct the write, all the way through main() -- not
+    just at the resolve_or_conflict() unit tested directly in
+    tests/test_repo_target_673.py. A regression specific to how this module
+    threads resolve_or_conflict's return value would not be caught there."""
+
+    def test_ambient_repo_with_no_marker_is_ignored_end_to_end(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, {"title": "No repo in payload", "body": "x"})
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setenv("SUPERTOOL_REPO", "someone-else/their-repo")
+        monkeypatch.delenv("SUPERTOOL_REPO_FROM_OP", raising=False)
+        # Deterministic fallback so this test does not depend on this
+        # worktree's actual git remote.
+        monkeypatch.setattr(gh._rd, "resolve", lambda *a, **k: "fallback/repo")
+
+        captured: list[list[str]] = []
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: captured.append(args) or _ok(GH_URL))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert _flag_value(captured[0], "--repo") == "fallback/repo"
+        assert "someone-else/their-repo" not in out
