@@ -169,6 +169,12 @@
       "description": "Show supertool version",
       "example": "version"
     },
+    "doctor": {
+      "syntax": "doctor[:probe]",
+      "description": "Report the environment supertool runs in (#1857) and, per validator, whether the toolchain it dispatches to actually resolves here (#1950). Always: interpreter path/version/architecture with an architecture mismatch (Rosetta 2 or equivalent) flagged loudly rather than buried in a report line — a performance fact, not a fault, measured at ~3x slower interpreter starts and ~3.4x slower subprocess-spawn CPU time on the machine that filed #1857; performance/efficiency CPU core split where the platform exposes it, since supertool does not size worker pools itself but a caller that does needs this rather than logical CPU count alone; whether the supertool symlink on PATH dangles; the resolved .supertool.json and configured watch fleet. For every configured validator: whether a tracked file in this tree even matches its scope, reported for free. doctor:probe additionally invokes each in-scope validator own resolution path against a real matching file and reads the verdict it already emits — never a shutil.which sweep, which reports green where the tool the adapter actually shells out to (e.g. through npx) is the one that is missing — sorting each into resolves / absent / could not tell, never collapsing the third into either of the first two. Costs one subprocess per in-scope validator, so it is opt-in rather than the default.",
+      "example": "doctor:probe",
+      "hint": true
+    },
     "tree": {
       "syntax": "tree:PATH[:DEPTH]",
       "description": "Dir tree, depth=N (def 3). Hides dotfiles",

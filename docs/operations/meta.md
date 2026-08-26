@@ -8,14 +8,15 @@ Ops for self-documentation and version introspection. Used primarily in session-
 |----|--------|--------------|
 | `introduction` | `introduction` | Output the project introduction text from `.supertool.json`. No `---` dispatch header — clean markdown. |
 | `output-format` | `output-format` | Output format examples from `.supertool.json`. Shows what responses look like. |
-| `ops` | `ops` | Every op's **signature** — built-in ops, custom ops and aliases, one row each, no descriptions and no examples (~3.7KB here). Its footer says what the **whole `ops:full` render** costs, not what the descriptions cost: that is the footer's number minus this listing, 68,985 bytes here. It also names the two ops that fetch them (#1774). |
-| `ops:full` | `ops:full` | The same rows carrying their descriptions and examples — what `ops` was before #1774, ~73KB here. This is the full reference; nothing was deleted when the default changed. |
+| `ops` | `ops` | Every op's **signature** — built-in ops, custom ops and aliases, one row each, no descriptions and no examples (~3.7KB here). Its footer says what the **whole `ops:full` render** costs, not what the descriptions cost: that is the footer's number minus this listing, 70,363 bytes here. It also names the two ops that fetch them (#1774). |
+| `ops:full` | `ops:full` | The same rows carrying their descriptions and examples — what `ops` was before #1774, ~74.1KB here. This is the full reference; nothing was deleted when the default changed. |
 | `ops-compact` | `ops-compact` | The descriptive listing with per-op detail trimmed except where an entry declares `hint` (~15KB). Still over the ~7KB SessionStart hook cap; it says so in its first line rather than letting the tail be cut silently. |
 | `ops:roster` | `ops:roster` | Every op name plus a safety class and nothing else (~2.0KB) — the only listing that fits the SessionStart cap, so it is what the hook prints. Unmarked = read-only, `*` = writes in this tree, `!` = acts outside it or outlives the call. |
 | `version` | `version` | Show supertool version. |
 | `help` | `help:OP` | Print the full reference for a single op — syntax, full (uncompacted) description, example, and **the `@-` payload route with the field names it derives** (#1400). Both invocation forms, because an entry showing one of two reads as complete: `help:paste` printed `paste:::PATH:::CONTENT` and stopped, and the agents that needed `path` / `content` guessed them. The fields are rendered from the same registry that drives the route, so they cannot describe a shape the loader would reject. Errors with a pointer to `ops` for an unknown or undocumented op. |
 | `registry` | `registry[:OP]` | Which ops this project loads, and where each definition came from — preset, project config, or a project entry merged over a preset one. `registry:OP` shows one op's merged definition with the source of every key. See below. |
 | `guard` | `guard:SHELL COMMAND` | What, if anything, the op registry says replaces a raw shell command — the same answer the shipped `PreToolUse` hook enforces on every Bash call. Four states: `BLOCKED` naming the op and quoting its description, `OK`, `NOT COVERED` when an entry claims the verb and declines this invocation of it (a refspec past a `git push` the op takes none of — the command runs, with the reason, [#1684](https://github.com/Digital-Process-Tools/claude-supertool/issues/1684)), and `UNDECIDED` when the command did not tokenise or the registry could not be enumerated. See below. |
+| `doctor` | `doctor` or `doctor:probe` | The environment supertool runs in (interpreter, architecture/Rosetta, CPU topology, symlink health) plus, per configured validator, whether the toolchain it dispatches to actually resolves here. See below. |
 | `gc` | `gc[:dry\|:run][:KIND]` | Prune supertool's own caches. Bare `gc` and `gc:dry` preview; `gc:run` deletes. See below. |
 | `cwd` | `cwd:PATH` | Set the working dir for the whole call. **Must be the first op** — chdir's once before dispatch, then is stripped, so every following op resolves against `PATH`. Replaces a `cd PATH && ./supertool …` prefix (which trips the use-supertool hook and risks stale-cwd path poisoning) for cross-repo sessions. `~`/`$VAR` expanded; non-directory or non-first → error before any op runs. |
 | `repo` | `repo:OWNER/NAME` | Name the repo a call is *about*, when it is not the one the cwd stands *in*. **First op, or immediately after `cwd:`**, once per call; resolved before the op loop and exported as `SUPERTOOL_REPO`. Honoured by the `gh-*` family and, since [#676](https://github.com/Digital-Process-Tools/claude-supertool/issues/676), by `gl-issue`/`gl-mr`/`gl-pipeline`/`gl-job` — an op in the same call that cannot honour it **refuses the whole call** rather than half-applying the target. Not a `cwd:` substitute: presets still resolve from the cwd's project root. Full reference in [github.md](../presets/github.md#targeting-another-repo). |
@@ -164,6 +165,40 @@ A config that declares `"presets"` but never passed through the loader is a thir
 
 A `"presets"` value that is not a list is the same shape one step earlier. Nothing is merged, so the config asked for ops that are now absent; the loader records that as a preset warning and `registry` prints it rather than going on to report a complete set.
 
+## `doctor` — the environment and toolchain supertool runs in
+
+Two halves ([#1857](https://github.com/Digital-Process-Tools/claude-supertool/issues/1857), [#1950](https://github.com/Digital-Process-Tools/claude-supertool/issues/1950)), filed separately so neither buries the other, one op because they answer the same question — "what, in this environment, could quietly be going wrong under supertool" — from two directions.
+
+**Always runs, in-process, cheap:**
+
+- Interpreter path, version and **architecture**. A binary-architecture mismatch (Rosetta 2, or the reverse) is loud rather than a report line: it is a performance fact, not a fault — supertool works correctly, only slower — but the incident that filed #1857 spent a morning looking at the network and the repository before the interpreter, because nothing said so. Measured on that machine, interleaved under identical load: 40 interpreter starts at **2.514s under Rosetta vs 0.830s native** (~3x), 30 subprocess spawns at **0.37s vs 0.11s CPU** (~3.4x) — wall time is not quoted for the spawn case because the machine was loaded and wall time there measures the run queue, not the code.
+- CPU topology: logical core count, plus a performance/efficiency split where the platform exposes it (macOS `hw.perflevel{0,1}.logicalcpu`). Supertool does not size worker pools itself, but a caller that does and reads `os.cpu_count()` alone asks for one worker per core on a 5+6 chip and gets six of them fighting the other five — decisive in the incident #1857 describes.
+- Whether the `supertool` binary on `PATH` is a dangling symlink — the `exit 127` mid-session failure mode `CLAUDE.md` documents — and whether it resolves to the module actually answering the call (expected inside a worktree; a mismatch elsewhere means a stale symlink target).
+- The resolved `.supertool.json` and the configured watch fleet name.
+
+Every one of these is a **three-state** answer, never two: an architecture check that could not run (no `sysctl.proc_translated` node — an Intel Mac, for instance) reports "could not tell", never "native". Guessing the clean answer when the check could not run would be the exact failure #1857 exists to end.
+
+**Toolchain scope always runs; binary resolution is opt-in (`doctor:probe`):**
+
+For every validator this project configures, `doctor` reports whether any tracked file even matches its `match` glob — free, since it is one pass over `git ls-files` already paid for once. A validator with no matching file in this tree is `not applicable`, not a finding nobody needs.
+
+Bare `doctor` stops there: "in scope — could not tell without probing". It does **not** fall back to a `shutil.which()` sweep, because that reports green where the tool is broken — `#1950`'s own example: `which("npx")` is true, the stylelint adapter resolves `["npx", "--no-install", "stylelint"]`, and stylelint itself is not installed. `doctor:probe` invokes each in-scope validator's own resolution path — the same `_validator_run_one` the real `validate`/`format` ops use — against a real tracked file, and reads the verdict the adapter already emits (`validators/common/refusal.py`'s `absent`/`skipped`/`tool_fault` vocabulary), sorting it into:
+
+- **resolves** — the tool ran and answered, `ok`/`count` included.
+- **absent** — the adapter said so in its own words (its `INSTALL_HINT`, verbatim).
+- **could not tell** — a crash, a timeout, an unreadable reply, or a decline that does not clearly name an absent tool. Never rendered as either of the other two.
+
+Because probing invokes the *real* adapter against a *real* file in this tree, it also answers #1950's config half for free: `eslint.py`'s `_NO_CONFIG` decline and `stylelint`'s ignore-marker skip are ordinary `skipped()` results the invocation already produces when this tree lacks the config the tool needs — no second, per-tool config-detection layer.
+
+```bash
+./supertool 'doctor'          # environment + validator scope, no subprocess spawned per validator
+./supertool 'doctor:probe'    # + one subprocess per in-scope validator
+```
+
+`doctor:probe` costs a subprocess per in-scope validator — up to the full validator count in this tree — which is why it is not the default: a doctor that takes thirty seconds is one nobody runs. It also always bypasses `_validator_run_one`'s own result cache (`~/.cache/supertool/validators/`, up to 24h TTL by default): a cache hit from before a binary was installed or removed would silently contradict "does this resolve now", which is the whole question `doctor:probe` exists to answer.
+
+**One inherited cost worth naming rather than hiding.** A validator spec that opts into `"mcp_autospawn": true` (an existing, documented per-validator setting — see [mcp-integration.md](../mcp-integration.md)) makes `doctor:probe` cold-start that daemon, same as `validate`/`format` already do for the same setting: 30-60s to index, persisting up to a 600s idle window. No validator in this project's own `.supertool.json` sets it, so `doctor:probe` here never pays it — but a project that does opt in should read `doctor:probe` as inheriting that cost, not as a lightweight read regardless of config.
+
 ## `gc` — cache retention
 
 Supertool writes four caches under `~/.cache/supertool` (`XDG_CACHE_HOME` honoured): `vim-cursor` and `vim-undo` (per-file cursor state and the cross-call undo snapshot), `validators` (validator results keyed by content hash), and the legacy `vi-cursor`. Nothing used to reap them — on a daily-driver machine the tree reached **1.0 GB across 242,000 files in about two weeks**, and both `vim-*` directories exceeded the 65535-dirent listing cap, which is enough to make an ordinary `ls` visibly slow.
@@ -229,7 +264,7 @@ What the session-start hook actually runs, and it fits the ~7KB hook-output cap:
 ./supertool 'introduction' 'output-format' 'ops:roster'
 ```
 
-Measured in this checkout (`python3 supertool.py 'ops:full' > /tmp/o; wc -c /tmp/o`): `ops:full` is 72,715 bytes and `ops-compact` 14,708, against a cap of ~7,168 — so **no descriptive listing fits, and the startup listing was truncated on every session**, hiding everything alphabetically after `grep`: the whole `gh-*` and `git-*` families, `radar`, `watch`, `read`, `paste`, `tree`. It disclosed the truncation honestly and that did not help, because what was hidden was *existence*, and a reader cannot miss what they never learned about. Three agents in one session reported `write:` is not an op without being told `paste:` is.
+Measured in this checkout (`python3 supertool.py 'ops:full' > /tmp/o; wc -c /tmp/o`): `ops:full` is 74,114 bytes and `ops-compact` 16,110, against a cap of ~7,168 — so **no descriptive listing fits, and the startup listing was truncated on every session**, hiding everything alphabetically after `grep`: the whole `gh-*` and `git-*` families, `radar`, `watch`, `read`, `paste`, `tree`. It disclosed the truncation honestly and that did not help, because what was hidden was *existence*, and a reader cannot miss what they never learned about. Three agents in one session reported `write:` is not an op without being told `paste:` is.
 
 Two things have changed under that paragraph since it was written, and both are why it is dated. Bare `ops` is signatures only since #1774 and does fit, at ~3.7KB — the numbers above now describe `ops:full`, which is where the descriptions went. And the numbers themselves read 47,254 and 9,067 here until 2026-08-16: a measurement written into prose is a measurement nothing re-runs, so quote the command beside it and expect to re-take it.
 
