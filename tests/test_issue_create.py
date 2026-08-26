@@ -1008,6 +1008,34 @@ class TestGitlabIssueCreateRepoTarget:
         assert "gl-issue-create" in out
 
 
+class TestGitlabIssueCreateAmbientRepoEnv:
+    """The GitLab twin of `TestGithubIssueCreateAmbientRepoEnv` below, added
+    while closing #1990/#1993: `gl-issue-create` reconciles SUPERTOOL_REPO
+    through the identical `resolve_or_conflict` call `gh-issue-create` does,
+    but until now only the GitHub side had an end-to-end pin -- exactly the
+    asymmetry #1990 warns would let a future regression in one of the other
+    three payload-mode write ops keep the shared unit test green."""
+
+    def test_ambient_repo_with_no_marker_is_ignored_end_to_end(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, {"title": "No project in payload", "description": "x"})
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setenv("SUPERTOOL_REPO", "someone-else/their-project")
+        monkeypatch.delenv("SUPERTOOL_REPO_FROM_OP", raising=False)
+        # Deterministic fallback so this test does not depend on this
+        # worktree's actual git remote / .supertool.json default.
+        monkeypatch.setattr(gl._rd, "resolve", lambda *a, **k: "fallback/project")
+
+        captured: list[list[str]] = []
+        monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: captured.append(args) or _ok(GL_URL))
+        monkeypatch.setattr(gl, "_glab_api", lambda *a, **kw: _ok("{}"))
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert _flag_value(captured[0], "--repo") == "fallback/project"
+        assert "someone-else/their-project" not in out
+
+
 class TestGithubIssueCreateAmbientRepoEnv:
     """End-to-end (#1986): an ambient SUPERTOOL_REPO with no repo: op in
     this call must not direct the write, all the way through main() -- not

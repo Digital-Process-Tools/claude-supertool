@@ -42,7 +42,7 @@ FROM_OP_ENV_VAR = "SUPERTOOL_REPO_FROM_OP"
 GITHUB_HOST = "github.com"
 
 
-def target() -> str | None:
+def target(explicit: bool = False) -> str | None:
     """``OWNER/NAME`` when :data:`ENV_VAR` is set, else None.
 
     **Not "this call named a repo" — an ambient value the process inherited
@@ -62,13 +62,22 @@ def target() -> str | None:
     repo through `gh_args`/`api_path` like a read op does, because it has
     no payload to reconcile a target against — `resolve_or_conflict`'s
     shape does not fit it. It was out of #1986's scope (four *payload-mode*
-    ops) and reported for filing rather than fixed here; this docstring
-    used to claim every non-`explicit_target` consumer was a safe read,
-    which this one caller disproves.
+    ops); #1990 closes it by giving every helper here an `explicit` flag
+    (below) rather than teaching `gh-pr-merge` a payload it does not have.
+
+    **`explicit=True` is the `gh-pr-merge`-shaped answer to that gap.** It
+    returns :func:`explicit_target` instead of the bare env read — the same
+    guarantee `resolve_or_conflict` already gives the four payload-mode
+    writes, applied at the one op-mode acting route that has no payload to
+    reconcile against. An ambient value with no `repo:` op in this call
+    reads as absence under `explicit=True`, exactly as it does for a
+    payload-mode write.
 
     A blank env var is read as absence, not as an empty target — an
     exported-but-empty variable is how a shell accident looks.
     """
+    if explicit:
+        return explicit_target()
     value = (os.environ.get(ENV_VAR) or "").strip()
     return value or None
 
@@ -101,9 +110,12 @@ def explicit_target() -> str | None:
     return target() if from_op() else None
 
 
-def owner_repo() -> tuple[str, str] | None:
-    """``(owner, name)`` split of the target, or None when there is none."""
-    value = target()
+def owner_repo(explicit: bool = False) -> tuple[str, str] | None:
+    """``(owner, name)`` split of the target, or None when there is none.
+
+    `explicit` is forwarded to :func:`target` — see its docstring (#1990).
+    """
+    value = target(explicit)
     if not value or value.count("/") != 1:
         return None
     owner, name = value.split("/", 1)
@@ -112,24 +124,27 @@ def owner_repo() -> tuple[str, str] | None:
     return owner, name
 
 
-def gh_args() -> list[str]:
+def gh_args(explicit: bool = False) -> list[str]:
     """``["--repo", OWNER/NAME]`` for a gh subcommand, or ``[]``.
 
     Never for ``gh api``: that subcommand has no ``--repo``. Use
-    :func:`api_path` there instead.
+    :func:`api_path` there instead. `explicit` is forwarded to
+    :func:`target` — see its docstring (#1990).
     """
-    value = target()
+    value = target(explicit)
     return ["--repo", value] if value else []
 
 
-def api_path(suffix: str) -> str:
+def api_path(suffix: str, explicit: bool = False) -> str:
     """A ``gh api`` repo path, with the target substituted when there is one.
 
     ``gh api`` expands the literal ``{owner}`` / ``{repo}`` placeholders from
     the cwd's remote. That expansion is exactly what a repo target has to
     override, so the placeholders are replaced rather than accompanied.
+    `explicit` is forwarded to :func:`owner_repo` — see :func:`target`'s
+    docstring (#1990).
     """
-    pair = owner_repo()
+    pair = owner_repo(explicit)
     if pair is None:
         return f"repos/{{owner}}/{{repo}}/{suffix}"
     owner, name = pair
@@ -142,7 +157,7 @@ def api_path(suffix: str) -> str:
 _SLUG = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
 
 
-def api_path_for_display(suffix: str, slug: str) -> str:
+def api_path_for_display(suffix: str, slug: str, explicit: bool = False) -> str:
     """:func:`api_path`, with a slug the caller has already read filled in.
 
     **For a path that is printed for a human to paste, never for argv.** The two
@@ -164,8 +179,8 @@ def api_path_for_display(suffix: str, slug: str) -> str:
     in — the placeholders are a correct command, and a path built out of a
     partial answer is not.
     """
-    if owner_repo() is not None or not _SLUG.fullmatch(slug or ""):
-        return api_path(suffix)
+    if owner_repo(explicit) is not None or not _SLUG.fullmatch(slug or ""):
+        return api_path(suffix, explicit)
     return f"repos/{slug}/{suffix}"
 
 
@@ -368,7 +383,8 @@ def classify_detail(detail: str, slug: str | None = None) -> str:
     return ABSENT if any(m in low for m in markers) else UNKNOWN
 
 
-def no_repo_error(cli_example: str, detail: str | None = None) -> str:
+def no_repo_error(cli_example: str, detail: str | None = None,
+                  explicit: bool = False) -> str:
     """The message for "gh could not work out which repo this is".
 
     Before #673 this said `cwd is not a GitHub repo`, which was a complete and
@@ -408,7 +424,7 @@ def no_repo_error(cli_example: str, detail: str | None = None) -> str:
     reader #1789 identified is this function, and it is a *different* lookup
     from `cwd_slug`'s: the callers hand it a result they already have.
     """
-    value = target()
+    value = target(explicit)
     state = classify_detail(detail, value) if detail is not None else ABSENT
     # An `unknown` never renders without a reason. A caller that passes an
     # empty string has still said "I could not ask" — that is the state, and
@@ -444,20 +460,24 @@ def no_repo_error(cli_example: str, detail: str | None = None) -> str:
     )
 
 
-def not_found_scope() -> str:
+def not_found_scope(explicit: bool = False) -> str:
     """How to describe *where* something was not found, in the caller's sentence.
 
     Reads as "PR #265 not found **in this repo**" / "**in owner/name**". The
     cwd phrasing is wrong under a target for the same reason as above: it sends
     the reader to check a working directory that had no part in the lookup.
+    `explicit` is forwarded to :func:`target` — see its docstring (#1990).
     """
-    value = target()
+    value = target(explicit)
     return f"in {value}" if value else "in this repo"
 
 
-def not_found_hint() -> str:
-    """The verification step that matches whichever scope was actually used."""
-    value = target()
+def not_found_hint(explicit: bool = False) -> str:
+    """The verification step that matches whichever scope was actually used.
+
+    `explicit` is forwarded to :func:`target` — see its docstring (#1990).
+    """
+    value = target(explicit)
     if value:
         return f"Check the number, or the repo target (gh repo view {value})."
     return "Check the number or verify you're in the right repo (gh repo view)."

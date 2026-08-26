@@ -219,7 +219,7 @@ def test_under_a_repo_target_the_feed_is_never_asked_for(state_dir, monkeypatch)
     asked for, exactly as heal() already declines to spawn per-PR watchers."""
     _fake_gh(monkeypatch, [_pr(1)])
     _no_default_branch(monkeypatch)
-    monkeypatch.setattr(tier._repo_target, "target", lambda: "other/repo")
+    monkeypatch.setattr(tier._repo_target, "target", lambda *a, **k: "other/repo")
     watch, calls = _recording_watch()
 
     lines, healthy = tier.radar_report({"_arg": "", "_watch": watch})
@@ -324,7 +324,7 @@ def test_radar_state_under_a_repo_target_says_feed_coverage_is_unknown(state_dir
         pytest.fail("radar_state reached the network")
 
     monkeypatch.setattr(tier.subprocess, "run", boom)
-    monkeypatch.setattr(tier._repo_target, "target", lambda: "other/repo")
+    monkeypatch.setattr(tier._repo_target, "target", lambda *a, **k: "other/repo")
 
     lines = tier.radar_state({"_arg": ""})
     text = "\n".join(lines)

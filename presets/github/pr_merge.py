@@ -922,7 +922,7 @@ def _remote_ref_sha(head: str) -> tuple[str, str]:
     would mean the name did not identify one ref, which is not something to
     delete.
     """
-    data, err = _gh_json(["api", _repo_target.api_path("git/ref/heads/" + head)])
+    data, err = _gh_json(["api", _repo_target.api_path("git/ref/heads/" + head, explicit=True)])
     if err:
         return ("", err)
     if isinstance(data, list):
@@ -968,7 +968,7 @@ def _cleanup_remote_branch(head: str, head_oid: str) -> tuple[str, str, str]:
                 f"`{safe}` in this repository points at {sha[:7]}, not at this "
                 f"PR's head {head_oid[:7]} — the same name, a different ref. "
                 f"Deleting it would destroy a branch this PR never owned")
-    ref_path = _repo_target.api_path("git/refs/heads/" + head)
+    ref_path = _repo_target.api_path("git/refs/heads/" + head, explicit=True)
     try:
         r = _gh(["api", "-X", "DELETE", ref_path])
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
@@ -1042,7 +1042,7 @@ def run_cleanup(head: str, *, merged: bool, cross_repo: bool | None = None,
         return [(i, CLEAN_REFUSED, reason) for i in _CLEAN_ITEMS]
 
     rows: List[tuple[str, str, str]] = []
-    target = _repo_target.target()
+    target = _repo_target.target(explicit=True)
     if target:
         why = (f"a repo target is set ({_untrusted.flat(target)}), so this "
                f"checkout is not that PR's repository — deleting a local "
@@ -1227,7 +1227,7 @@ def base_distance(base: str, head_oid: str) -> tuple[int | None, str, str, str]:
         return (None, "", "", "the PR's base branch or head commit was not in "
                               "the API reply")
     data, err = _gh_json(
-        ["api", _repo_target.api_path(f"compare/{base}...{head_oid}"),
+        ["api", _repo_target.api_path(f"compare/{base}...{head_oid}", explicit=True),
          "--jq", _COMPARE_JQ],
         timeout=30)
     if err or not isinstance(data, dict):
@@ -1317,7 +1317,7 @@ def stacked_followups(head: str) -> tuple[str, List[str]]:
             f"for a stacked follow-up."])
     data, err = _gh_json(
         ["pr", "list", "--state", "open", "--base", head,
-         "--json", "number,title,url"] + _repo_target.gh_args(), timeout=20)
+         "--json", "number,title,url"] + _repo_target.gh_args(explicit=True), timeout=20)
     if err or not isinstance(data, list):
         return (UNKNOWN, [
             f"  {UNKNOWN}: whether any open pull request now targets "
@@ -1343,7 +1343,7 @@ def stacked_followups(head: str) -> tuple[str, List[str]]:
 def _repo_identity() -> tuple[str, str, str]:
     data, err = _gh_json(["repo", "view", "--json",
                           "nameWithOwner,defaultBranchRef"]
-                         + _repo_target.gh_args(), timeout=20)
+                         + _repo_target.gh_args(explicit=True), timeout=20)
     if err or not isinstance(data, dict):
         return ("", "", err or "gh repo view returned no data")
     ref = data.get("defaultBranchRef") or {}
@@ -1416,15 +1416,15 @@ def main() -> int:
         # is better evidence than a second lookup a second later — and it
         # spares this terminal path a `gh repo view` it does not need.
         print(_repo_target.no_repo_error(f"gh-pr-merge:{number}",
-                                         detail=ident_err))
+                                         detail=ident_err, explicit=True))
         return 1
 
     pr, err = _gh_json(["pr", "view", number, "--json", _PR_FIELDS]
-                       + _repo_target.gh_args())
+                       + _repo_target.gh_args(explicit=True))
     if err or not isinstance(pr, dict):
         print(f"ERROR: PR #{number} could not be read "
-              f"{_repo_target.not_found_scope()}: {err}. "
-              f"{_repo_target.not_found_hint()}")
+              f"{_repo_target.not_found_scope(explicit=True)}: {err}. "
+              f"{_repo_target.not_found_hint(explicit=True)}")
         return 1
 
     _pr_mod = _load_pr_module()
@@ -1505,7 +1505,7 @@ def main() -> int:
     # ---- the irreversible half ------------------------------------------
     try:
         merged = _gh(["pr", "merge", number, f"--{method}"]
-                     + _repo_target.gh_args(), timeout=90)
+                     + _repo_target.gh_args(explicit=True), timeout=90)
         merge_err = "" if merged.returncode == 0 else (
             (merged.stderr or merged.stdout).strip() or
             f"gh exited {merged.returncode}")
@@ -1514,7 +1514,7 @@ def main() -> int:
 
     after, read_err = _gh_json(
         ["pr", "view", number, "--json",
-         "state,mergedAt,mergeCommit,headRefName"] + _repo_target.gh_args())
+         "state,mergedAt,mergeCommit,headRefName"] + _repo_target.gh_args(explicit=True))
 
     print("## Merge")
     if merge_err:
@@ -1659,7 +1659,7 @@ def main() -> int:
         # `api_path`, which a repo target must keep replacing rather than
         # accompanying (#1281).
         ref_path = _refname.shell_ref(
-            _repo_target.api_path_for_display("git/refs/heads/" + head, repo))
+            _repo_target.api_path_for_display("git/refs/heads/" + head, repo, explicit=True))
         print(f"  Head branch `{safe_head}` still exists. "
               f"Delete it when you are done: gh api -X DELETE {ref_path}")
         print(f"  Local worktree, if any: git worktree remove <path> && "
