@@ -2786,9 +2786,12 @@ _PATH_ARG_POSITIONS = {
     "stat": (1,), "around_line": (1,), "ls": (1,), "tree": (1,),
     "map": (1,), "validate": (1,), "format": (1,),
     "workspace": (1,), "diag": (1,),
-    # grep_around:PATTERN:PATH — parts[2] and nothing else, because its
-    # trailing slots must parse as ints, so a ':' in the pattern fails the
-    # call rather than moving the path.
+    # grep_around:PATTERN:PATH — parts[2] and nothing else. True for
+    # three-and-four-token calls: their trailing slots must parse as ints, so
+    # a ':' in the pattern fails the call rather than moving the path. FALSE
+    # for the two-token shape (#1842): there is no trailing int slot to fail
+    # on, so `grep_around:PATTERN:PATH` moves the path exactly as `grep`
+    # does, and answers rather than failing.
     "grep_around": (2,),
     # `grep` and `around` are deliberately absent: neither keeps its path
     # in a fixed slot. `_parse_grep_args`/`_parse_around_args` peel the
@@ -5998,7 +6001,14 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
         # Could be a glob pattern — check if it expands to anything
         from glob import glob as _glob
         if not _glob(path, recursive=True):
-            return _path_not_found(path, op="grep",
+            # #1711: a plain PATTERN/PATH swap has no ':' anywhere and both
+            # values are ordinary tokens, so `_colon_split_hint` (dispatch,
+            # ahead of this) declines — this is the general check that
+            # still catches it, off the same evidence `around` uses.
+            _swap = _swap_suggest(
+                "grep", "PATTERN:PATH", "pattern", pattern, path,
+                f"grep:{path}:{pattern}")
+            return _path_not_found(path, op="grep", suggest=_swap,
                                    call_prefix=f"grep:{pattern}")
 
     excl = _get_exclude_paths("grep", no_exclude)
@@ -6386,6 +6396,14 @@ def _op_around(pattern: str, path: str, n: int = 10) -> str:
                 f"'{path}' was read as the path. Did you mean: "
                 f"around_line:{pattern}:{path}[:N]"
             )
+        if suggest is None:
+            # #1711: the int-path case above is around_line confusion, a
+            # different mistake from a plain PATTERN/PATH swap — this is
+            # the general case, reachable at any arity including the 3-arg
+            # form the int check above cannot cover.
+            suggest = _swap_suggest(
+                "around", "PATTERN:PATH[:N]", "pattern", pattern, path,
+                f"around:{path}:{pattern}[:N]")
         return _path_not_found(path, label="file", suggest=suggest,
                                op="around")
 
@@ -6458,6 +6476,14 @@ def op_between_symbol(symbol: str, path: str) -> str:
         return (f"ERROR: between only works on single files, not "
                 f"directories: {path}\n")
     if not os.path.isfile(path):
+        # #1711: same swap check as `grep`/`around` — SYMBOL:PATH shares
+        # the shape, and a swap here has no ':' to be caught by dispatch's
+        # `_colon_split_hint` either.
+        _swap = _swap_suggest(
+            "between", "SYMBOL:PATH", "symbol", symbol, path,
+            f"between:{path}:{symbol}")
+        if _swap:
+            return f"ERROR: file not found: {path}\n  {_swap}\n"
         return f"ERROR: file not found: {path}\n"
 
     if not _has_tree_sitter():
@@ -8818,6 +8844,19 @@ def _split_arg(arg: str) -> List[str]:
             # (e.g. 'C:\a.php,C' + '\b.php' → 'C:\a.php,C:\b.php' for the
             # validate list form). The drive letter is the last ','/'|'-segment.
             drive_seg = last_seg.rsplit(",", 1)[-1]
+            # #1972 (CI, windows-latest): a `KEY=` prefix (#1690's own
+            # `path=`/`file=` keyword) puts the drive letter after the '='
+            # rather than at the start of the piece -- 'path=C' fails the
+            # single-letter check below whole, so the reassembly this
+            # function already promises for a bare drive letter (and that
+            # .supertool.json's own `validate` description documents: "Drive
+            # letters are reassembled") never fired for it. One shared
+            # tokenizer, extended once, rather than a second reassembly
+            # pass downstream in `_extract_path_kw` re-deriving what this
+            # function already knows how to do.
+            _kw_match = re.match(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)\Z", drive_seg)
+            if _kw_match:
+                drive_seg = _kw_match.group(1)
             is_drive = (
                 _DRIVE_LETTER.match(drive_seg) is not None
                 and next_piece
@@ -9028,6 +9067,91 @@ def _grep_peeled_extras(parts: List[str]) -> List[str]:
     if _GREP_ALL_TOKEN in trailing[1:]:
         return []
     return trailing[2:]
+
+
+def _swap_suggest(op: str, sig: str, other_key: str, other_value: str,
+                  missing_value: str, call_template: str) -> Optional[str]:
+    """Suggest a positional swap when the value in the OTHER slot resolves
+    to a real file/dir and the missing one does not (#1711).
+
+    `_colon_split_hint` already answers "your PATTERN has a ':' in it and
+    swallowed the PATH slot" — a different mistake, and the one arity that
+    reaches it (4+ tokens) is not the one a swap usually lands on. A swap
+    needs no ':' anywhere: both values are ordinary tokens, just in the
+    wrong slots, and `_colon_split_hint` declines on exactly that shape
+    (`":" not in leading and _looks_like_path(path)` is true for a plain
+    identifier in the path slot). This closes that gap generically rather
+    than per-op: whenever the slot that failed to resolve sits next to a
+    slot that resolved to an actual file, that is a positive, checkable
+    signal — not a guess from shape alone — and every op in the read family
+    can ask it the same way.
+
+    Deliberately does NOT fire on `missing_value == other_value`: pointing
+    someone at swapping two identical arguments explains nothing.
+
+    Gates `other_value` through `_gate_paths` before ever stat-ing it
+    (self-review caught this): the same "a stat of an outside file is
+    itself the existence oracle this gate exists to close" hazard that
+    every OTHER call site in this file gates against applies here too —
+    `os.path.isfile('/etc/passwd')` on the PATTERN/SYMBOL slot would leak
+    whether an arbitrary host path exists through a diagnostic message
+    that was never supposed to touch anything outside cwd. A value that
+    fails containment is silently treated as "does not resolve" — same
+    as a value that is simply missing — rather than surfaced as its own
+    kind of refusal, so this stays a hint and never a second gate with its
+    own wording to keep in sync.
+    """
+    if not other_value or other_value == missing_value:
+        return None
+    _err, (_expanded,) = _gate_paths([other_value])
+    if _err:
+        return None
+    if not (os.path.isfile(_expanded) or os.path.isdir(_expanded)):
+        return None
+    other_value = _expanded
+    return (
+        f"`{op}` takes {sig} — '{other_value}' looks like the path and "
+        f"'{missing_value}' looks like the {other_key}. Did you mean: "
+        f"{call_template}"
+    )
+
+
+def _extract_path_kw(parts: List[str]) -> Tuple[List[str], Optional[str]]:
+    """Pull a `path=VALUE`/`file=VALUE` token out of a read op's args (#1690).
+
+    `grep`, `around` and `grep_around` all take PATTERN:PATH, `read` takes
+    PATH first -- internally consistent per op, but the four disagree with
+    each other, and only a multi-op call surfaces that. Direction 1 from
+    #1690: a caller who does not want to remember which slot the path goes
+    in can name it instead, rather than at the fixed position each op
+    otherwise requires.
+
+    Purely additive. `parts[0]` (the op name) is never a candidate, so it is
+    always returned untouched at index 0. Exactly one match is required —
+    zero leaves `parts` untouched (ordinary positional parsing runs exactly
+    as before), and two or more is left in place rather than picking one:
+    an ambiguous call should fail the way it always did, not have this
+    silently resolve it.
+
+    `parts[1]` is ALSO never a candidate, and that is deliberate rather than
+    an oversight (self-review caught the gap, #1711/#1690's own review): the
+    PATTERN slot always sits at `parts[1]` for every op this is wired into,
+    and a legitimate search for the literal string `path=` or `file=` —
+    plausible in any codebase that assigns those variable names — would
+    otherwise have its own pattern silently reinterpreted as the keyword.
+    Restricting the scan to `parts[2:]` still closes the gap #1690 exists
+    for (which slot PATH goes in past the mandatory leading PATTERN) while
+    leaving the one slot every caller unconditionally controls alone.
+    """
+    matches = [i for i, p in enumerate(parts)
+               if i > 1 and (p.startswith("path=") or p.startswith("file="))]
+    if len(matches) != 1:
+        return parts, None
+    i = matches[0]
+    value = parts[i].split("=", 1)[1]
+    if not value:
+        return parts, None
+    return parts[:i] + parts[i + 1:], value
 
 
 def _parse_grep_args(parts: List[str]) -> tuple:
@@ -9602,7 +9726,8 @@ def _grep_around_numeric_refusal(parts: List[str], pattern: str,
 
 def _colon_split_hint(op: str, leading: str, path: str,
                       keys: Tuple[str, ...] = ("pattern",),
-                      call_prefix: Optional[str] = None) -> str:
+                      call_prefix: Optional[str] = None,
+                      swap_fallback: bool = True) -> str:
     """Error text for a read op whose PATH does not exist and probably should.
 
     A read op that mis-tokenizes must never read as an absence in the world.
@@ -9613,11 +9738,37 @@ def _colon_split_hint(op: str, leading: str, path: str,
     Returns "" when the missing path is an ordinary typo (no ':' in the
     leading argument and the path token still looks like a path) — crying
     wolf on every wrong path would make the advice worthless.
+
+    `swap_fallback` must be False for a caller with no `_swap_suggest`
+    fallback of its own downstream (#1972 review caught this): declining
+    here is only safe when returning "" hands the call to code that will
+    say something else instead. `between:re:START:END:PATH` shares this
+    function but calls `op_between_pattern`, which has no swap-suggest
+    branch at all -- declining there for `leading` a colon-joined
+    `START:END` was a silent zero-diagnostic regression, not a wash, the
+    first time this shipped.
     """
     if not path or path == "." or os.path.exists(path):
         return ""
     if ":" not in leading and _looks_like_path(path):
         return ""
+    # #1972 (CI, windows-latest): the check above declines only when
+    # `leading` has NO colon at all -- true for an ordinary swap on POSIX,
+    # false on Windows, where an absolute path always carries one from its
+    # own drive letter (`C:\Users\...`). That platform difference must not
+    # change which diagnosis fires: `leading` resolving as a real file is
+    # the SAME positive, checkable evidence `_swap_suggest` uses downstream
+    # (in `op_around`/`op_grep`/`op_between_symbol`'s own fallback, reached
+    # once this returns "") -- ONLY for the callers that have that
+    # fallback, which is what `swap_fallback` gates. Gated through
+    # `_gate_paths` for the same reason `_swap_suggest` is: a bare
+    # `os.path.isfile` on caller-controlled text would make this an
+    # existence oracle for paths outside the containment boundary.
+    if swap_fallback:
+        _leading_err, (_leading_expanded,) = _gate_paths([leading])
+        if not _leading_err and (os.path.isfile(_leading_expanded)
+                                  or os.path.isdir(_leading_expanded)):
+            return ""
     # Ahead of the `:` diagnosis, not after it. A value that whitespace-splits
     # into parts which all exist is positively a different mistake, and the
     # colon advice points at a payload whose `path` is a scalar as well — a
@@ -26573,6 +26724,10 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             body = op_read(path, offset, limit, grep_filter, force_full,
                            range_form)
         elif op == "grep":
+            # #1690: path=/file= extracted before anything else touches
+            # `parts`, so every downstream peel (LIMIT/CONTEXT, the trailing-
+            # extras refusal) sees the same shape it always did.
+            parts, _kw_path = _extract_path_kw(parts)
             # Before the parse, and off the same peel the parse uses: a third
             # trailing integer is peeled and never read, so `grep:PAT:PATH:5:3:2`
             # ran limit 5 / context 3 and dropped the `2` — exit 0, no note, a
@@ -26587,6 +26742,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     "follows CONTEXT."))
             pattern, path, limit, context, count_only, no_auto_read = \
                 _parse_grep_args(parts)
+            if _kw_path is not None:
+                path = _kw_path
             # Ahead of the hint, not after it: `_colon_split_hint` stats the
             # path to decide whether to fire, and a stat of an outside file is
             # itself the existence oracle this gate exists to close.
@@ -26613,6 +26770,32 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         elif op == "grep_around":
             # grep_around:PATTERN:PATH[:N[:LIMIT]] — every match with N lines
             # context. Sane defaults for "show me how everyone uses this".
+            # #1690: path=/file= extracted first, same as grep/around — the
+            # fixed N/LIMIT slots below then land on whatever token is left,
+            # which is exactly what removing one positional buys.
+            parts, _kw_path = _extract_path_kw(parts)
+            if _kw_path is not None:
+                # The generic dispatch-level gate (above, keyed off
+                # `_PATH_ARG_POSITIONS["grep_around"] = (2,)`) already ran —
+                # against the RAW parts, before this branch's own
+                # `_extract_path_kw` call. It checked the literal token
+                # `path=/whatever`, which never escapes cwd itself (it is
+                # not an absolute path, just a string starting with
+                # 'path='), and passed. The real value is only known now,
+                # so it gets its own gate here — self-review caught this as
+                # a real containment bypass, not a hypothetical one: without
+                # this, `grep_around:PAT:path=/etc/passwd` read straight
+                # through where `grep_around:PAT:/etc/passwd` was refused.
+                _contained, (_kw_path,) = _gate_paths([_kw_path])
+                if _contained:
+                    return _receipt(header, _contained)
+                # Re-splice at the fixed PATH slot rather than re-deriving
+                # every downstream index: `_grep_around_numeric_refusal` and
+                # the N/LIMIT slots below all read `parts` positionally, and
+                # a keyword path REMOVES a slot rather than filling it, so
+                # putting it back where positional parsing expects it keeps
+                # every one of those reads correct unchanged.
+                parts = parts[:2] + [_kw_path] + parts[2:]
             ga_pattern = parts[1] if len(parts) > 1 else ""
             ga_path = parts[2] if len(parts) > 2 and parts[2] else "."
             if len(parts) > 3 and parts[3] == _GREP_ALL_TOKEN:
@@ -26674,7 +26857,12 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             kind = parts[2] if len(parts) > 2 else ""
             body = op_gc(mode, kind)
         elif op == "around":
+            # #1690: same path=/file= extraction as grep, ahead of the peel
+            # `_parse_around_args` does.
+            parts, _kw_path = _extract_path_kw(parts)
             pattern, path, n = _parse_around_args(parts)
+            if _kw_path is not None:
+                path = _kw_path
             # Ahead of the delegation and the hint: both stat the path to
             # decide whether to fire, and that stat is the oracle. The #1135
             # guard inside the delegation covers the OTHER slot — parts[1],
@@ -26731,6 +26919,13 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                         # dropping the `re:` marker that selects this mode —
                         # a printed repair nobody can run.
                         call_prefix=f"between:re:{start_pat}:{end_pat}",
+                        # #1972 review: op_between_pattern (below) has no
+                        # swap-suggest fallback of its own, unlike around/
+                        # grep/between-symbol -- declining here on the new
+                        # "leading resolves as a real file" branch would
+                        # hand the call to a body with nothing more to say,
+                        # trading a real (if generic) diagnostic for none.
+                        swap_fallback=False,
                     )
                     if _hint:
                         return _receipt(header, _hint)
