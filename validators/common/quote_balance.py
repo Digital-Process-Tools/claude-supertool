@@ -2,7 +2,7 @@
 
 `bash -n` reports a syntax finding at the line where its parser gave up, which
 for an unterminated `'` or `"` is not the line that opened it -- the reported
-incident put six lines and a whole indented `function` block between the two,
+incident put five lines and a whole indented `function` block between the two,
 in a ~1,900-line file where every neighbouring line is also full of quotes.
 This module answers a narrower, checkable question instead of trying to be
 `bash -n`: **is a quote still open by the time execution reaches line N, and
@@ -10,9 +10,13 @@ if so, where did it start?**
 
 This is NOT a bash parser and does not try to be one. It has no model of
 here-docs, command substitution, ANSI-C $'...' quoting, or nested
-constructs -- any of those can make its answer wrong. That is exactly why its
-result must never be folded into `line`, `col` or `msg` (bash's own, and
-exact): callers surface it as a separately labelled guess, never as a second
+constructs -- any of those can make its answer wrong. Nor does it require a
+`#` to sit at a word boundary the way real bash does, so `foo#bar'baz` reads
+as a comment starting at the `#` here and would not in a real shell -- a false
+negative (no guess where one exists), never a false positive, so it degrades
+to silence rather than to a wrong pointer. That is exactly why its result
+must never be folded into `line`, `col` or `msg` (bash's own, and exact):
+callers surface it as a separately labelled guess, never as a second
 diagnostic.
 """
 from __future__ import annotations

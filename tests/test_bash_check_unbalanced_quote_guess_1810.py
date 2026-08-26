@@ -61,8 +61,12 @@ FIXTURE = (
 
 
 def test_far_diagnostic_line_carries_a_labelled_guess_at_the_true_open(tmp_path):
-    """The `line: 8` finding -- bash's own EOF report, six lines past the
-    apostrophe -- also names line 2 as a guess. `line` itself is untouched."""
+    """The `line: 8` finding -- bash's own EOF report, five lines past the
+    `function` block and six past the apostrophe -- also names line 2 as a
+    guess. `line` itself is untouched. This is the positive case: it is the
+    one thing in this file that fails if `unbalanced_quote_open` is deleted or
+    made a no-op, which the two tests below are deliberately NOT (see their
+    own docstrings)."""
     mod = adapter("bash-check")
     f = tmp_path / "unterm.sh"
     f.write_text(FIXTURE, encoding="utf-8")
@@ -78,21 +82,36 @@ def test_far_diagnostic_line_carries_a_labelled_guess_at_the_true_open(tmp_path)
     assert "note" in guess and guess["note"], "the guess must say it is a guess"
 
 
-def test_diagnostic_line_that_is_itself_the_open_carries_no_guess():
+def test_diagnostic_line_that_is_itself_the_open_carries_no_guess(tmp_path):
     """bash's `line 2` report already IS where the quote opened -- nothing to
-    add, so no `quote_open_guess` key at all (never one pointing at itself)."""
+    add, so no `quote_open_guess` key (never one pointing at itself).
+
+    Reads a REAL, existing file (unlike a stale earlier version of this test,
+    which pointed at a nonexistent path and so passed on the file-unreadable
+    short-circuit rather than on the de-duplication check this test names --
+    a positive control on THIS test, run once by hand: with the `guess_line
+    != ln` check in `parse_diagnostics` removed, this test fails, correctly,
+    on a self-referential guess.)"""
     mod = adapter("bash-check")
+    f = tmp_path / "unterm.sh"
+    f.write_text(FIXTURE, encoding="utf-8")
     errors = mod.parse_diagnostics(
-        UNTERMINATED_QUOTE_STDERR.format(file="x.sh"), "x.sh")
-    # parse_diagnostics reads the file for context/guessing; x.sh does not
-    # exist here, so nothing can be read and no guess is fabricated either.
+        UNTERMINATED_QUOTE_STDERR.format(file=str(f)), str(f))
     by_line = {e["line"]: e for e in errors}
     assert "quote_open_guess" not in by_line[2]
 
 
 def test_balanced_file_gets_no_guess(tmp_path):
     """A real syntax error with no unbalanced quote anywhere before it must not
-    manufacture a guess -- the positive control for the two tests above."""
+    manufacture a guess.
+
+    This is a negative test, not a positive control on its own -- it passes
+    identically whether `unbalanced_quote_open` runs correctly or has been
+    deleted outright, since both produce "no guess" here. What proves the
+    machinery is live is `test_far_diagnostic_line_...` above (parse_diagnostics
+    driven end to end) and `tests/test_quote_balance_1810.py` (the tracker
+    itself, driven directly on cases built to have a real answer). This test's
+    only job is to confirm those two don't fire everywhere."""
     mod = adapter("bash-check")
     f = tmp_path / "brace.sh"
     f.write_text("#!/bin/bash\nif [ 1 ]; then\n  echo hi\n", encoding="utf-8")
