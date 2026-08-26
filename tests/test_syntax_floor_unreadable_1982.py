@@ -13,8 +13,6 @@ Paired tests, so the fix cannot pass by making the checker silent about
 everything: a path that does not exist must NOT produce a syntax finding,
 and a path that genuinely fails to compile still MUST.
 """
-import sys
-
 import supertool
 
 
