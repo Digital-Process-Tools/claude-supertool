@@ -18505,6 +18505,18 @@ class GuardVerdict(NamedTuple):
     #: Why an entry that claims this verb does not claim this invocation. One
     #: line per (op, segment), rendered by `guard_uncovered_note`.
     uncovered: Tuple[str, ...] = ()
+    #: Raw text of every top-level segment before the earliest one this
+    #: `blocked` verdict matched -- what a `PreToolUse` denial also discards,
+    #: since it covers the whole call (#1873). Kept OUT of `notes`
+    #: deliberately: `notes` competes for `_guard_notes`'s fixed
+    #: `_GUARD_MAX_NOTES` slots with #1450's per-op ambiguity disclosures, and
+    #: prepending a discard note there silently dropped one of those on a
+    #: command already carrying three -- confirmed by running the same
+    #: command through this file's pre-fix revision, where all three
+    #: ambiguity notes fit. `guard_refusal` renders this list on its own line,
+    #: spending from the same text budget as everything else but never
+    #: competing for the notes list's slot count.
+    discarded: Tuple[str, ...] = ()
 
 
 class _Replacement(NamedTuple):
@@ -18827,6 +18839,21 @@ def _guard_drop_io_numbers(text: str) -> str:
 def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
     """Tokenise into simple commands plus what it could not read, or raise ValueError.
 
+    A thin wrapper over `_guard_segments_with_origins`, for the (majority of)
+    callers with no use for its origin map — see that function for the
+    docstring this one used to carry in full.
+    """
+    heads, unread, _origins, _origin_texts = _guard_segments_with_origins(
+        command)
+    return heads, unread
+
+
+def _guard_segments_with_origins(
+        command: str
+) -> Tuple[List[List[str]], List[str], List[int], List[str]]:
+    """`_guard_segments`, plus which top-level shell segment produced each
+    head, and that segment's own raw text (#1873).
+
     What it models: POSIX quoting, `;` `&&` `||` `|` `&` as separators,
     redirections as **removals** rather than separators (#1684 — the words on
     both sides of one belong to the same command), leading `VAR=value`
@@ -18841,6 +18868,14 @@ def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
     guard's `undecided` state — a construct this matcher did not read is not
     evidence that nothing was replaced. Aliases and shell functions remain
     invisible and are named here so the limit is on the record.
+
+    The third and fourth elements exist for one reason: a `PreToolUse`
+    decision is made on the WHOLE call, so there is no such thing as running
+    the first half of a refused `A && B`. `origins[i]` is the index into the
+    fourth element (one raw text per top-level segment, before wrapper-word
+    stripping) that produced `heads[i]` — so a caller holding the index of
+    the earliest blocked head can name every earlier segment a refusal
+    silently throws away too (#1873).
     """
     prepared, unread = _guard_open_substitutions(
         _guard_drop_io_numbers(_guard_strip_heredocs(command)))
@@ -18883,7 +18918,9 @@ def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
     segments.append(current)
 
     heads: List[List[str]] = []
-    for segment in segments:
+    origins: List[int] = []
+    origin_texts = [" ".join(segment) for segment in segments]
+    for index, segment in enumerate(segments):
         wrapped = False
         while segment and (segment[0] in _GUARD_PREFIX_WORDS
                            or _GUARD_ENV_ASSIGNMENT.match(segment[0])):
@@ -18934,7 +18971,8 @@ def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
                 if note not in unread:
                     unread.append(note)
             heads.append(candidate)
-    return heads, unread
+            origins.append(index)
+    return heads, unread, origins, origin_texts
 
 
 # The one spelling of `unless_flag` that is not a flag: any flag at all
@@ -19657,6 +19695,69 @@ def _guard_score(replacement: _Replacement, argv: Sequence[str]
     return 2 if replacement.value in values else None
 
 
+def _guard_discarded_segments(matched_origins: Sequence[int],
+                              origin_texts: Sequence[str]) -> Tuple[str, ...]:
+    """Raw text of every segment a `blocked` verdict also discards (#1873).
+
+    A `PreToolUse` hook decides on the whole Bash call at once — there is no
+    partial-run outcome to offer. So when the earliest blocked segment is not
+    the first one in the call, every top-level segment before it (`;`, `&&`,
+    `||`, `|`, `&` all end a call just as completely once the whole thing is
+    refused) never runs either. Measured twice in one week: a `git commit`
+    before a refused `git push`, and a payload `edit:@-` before a refused
+    pipe through `head` — both discovered only because a LATER receipt looked
+    wrong, never because the refusal said so.
+
+    Unquoted and uncapped on purpose — `guard_refusal` renders this against
+    its own text budget, the same as every other list it prints, rather than
+    this function guessing a cap. An earlier version of this fix rendered a
+    finished note directly into `verdict.notes` and it was WRONG: `notes`
+    shares a fixed `_GUARD_MAX_NOTES` (3) slots with #1450's per-op ambiguity
+    disclosures, and a command already carrying three of those had one
+    silently dropped the moment this note took a fourth slot — confirmed by
+    running the identical command through this file's pre-fix revision, where
+    all three ambiguity notes fit. Returns `()` when there is nothing to name
+    — the ordinary case, and the blocked segment being first in the call.
+    """
+    if not matched_origins:
+        return ()
+    earliest = min(matched_origins)
+    return tuple(text for text in origin_texts[:earliest] if text.strip())
+
+
+def _guard_discard_line(discarded: Sequence[str], budget: int) -> str:
+    """One line naming `discarded`, bounded by `budget`, or "" for none.
+
+    Deliberately not one of `_guard_notes`'s capped notes — see
+    `GuardVerdict.discarded` and `_guard_discarded_segments` for why sharing
+    that budget was the bug.
+    """
+    if not discarded or budget <= 0:
+        return ""
+    shown = discarded[:3]
+    quoted: List[str] = []
+    spent = 0
+    for text in shown:
+        left = budget - spent
+        if left <= 0:
+            break
+        piece = _guard_quote(text, min(_GUARD_USE_CAP, left))
+        if not piece:
+            break
+        quoted.append(piece)
+        spent += len(piece)
+    if not quoted:
+        return ""
+    joined = ", ".join("`" + piece + "`" for piece in quoted)
+    extra = (f" and {len(discarded) - 3} more" if len(discarded) > 3 else "")
+    plural = "command" if len(discarded) == 1 else "commands"
+    them = "it" if len(discarded) == 1 else "them"
+    return (f"{len(discarded)} earlier {plural} in this call will NOT run "
+            f"either, because a refusal covers the whole call rather than "
+            f"the part that named it: " + joined + extra
+            + f" — re-send {them} separately")
+
+
 def guard_command(command: str, config: Optional[Dict[str, Any]] = None
                   ) -> GuardVerdict:
     """Does the registry replace anything in this shell command?
@@ -19683,7 +19784,8 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
 
     replacements, notes = _guard_replacements(config)
     try:
-        segments, unread = _guard_segments(command)
+        segments, unread, origins, origin_texts = _guard_segments_with_origins(
+            command)
     except ValueError as exc:
         return GuardVerdict("undecided", (), tuple(notes) + (
             f"the command did not tokenise ({exc}), so no part of it was "
@@ -19697,9 +19799,10 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
                       if len(replacement.argv) > 1)
 
     matches: List[GuardMatch] = []
+    matched_origins: List[int] = []
     uncovered: List[str] = []
     seen = set()
-    for argv in segments:
+    for head_index, argv in enumerate(segments):
         scoring, note = _guard_normalise(argv, heads)
         if note is not None and note not in notes:
             notes.append(note)
@@ -19857,6 +19960,7 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
                 command=" ".join(argv),
                 project=replacement.project,
             ))
+            matched_origins.append(origins[head_index])
 
     if matches:
         # A positive match is authoritative even when the population is short:
@@ -19867,8 +19971,19 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
         # than being dropped: `git status && git push origin v1.0` renders one
         # refusal, and without this the only thing said about the push is
         # nothing (#1684, found in review).
+        #
+        # A `PreToolUse` denial is all-or-nothing across the whole call, so
+        # every top-level segment BEFORE the earliest blocked one also never
+        # runs — silently, unless this says so (#1873). Carried on its own
+        # field rather than folded into `notes`: `notes` shares a fixed
+        # `_GUARD_MAX_NOTES` (3) slots with #1450's per-op ambiguity
+        # disclosures, and a discard note prepended there silently dropped
+        # one of those on a command already carrying three — see
+        # `GuardVerdict.discarded`'s docstring for the repro that caught it.
+        discarded = _guard_discarded_segments(matched_origins, origin_texts)
         return GuardVerdict("blocked", tuple(matches),
-                            tuple(notes) + tuple(uncovered), tuple(uncovered))
+                            tuple(notes) + tuple(uncovered), tuple(uncovered),
+                            discarded)
     if uncovered:
         # Ahead of `undecided`, and the order is the point: a decided "no op
         # covers this form" rendered as "the guard could not answer" would be
@@ -20047,6 +20162,15 @@ def guard_refusal(verdict: GuardVerdict) -> str:
                      f"command are not detailed here — `supertool 'ops'` "
                      f"lists every op.")
         lines.append("")
+    # A `blocked` verdict's own field, deliberately outside `_guard_notes`'s
+    # capped notes list (#1873) — see `GuardVerdict.discarded`'s docstring for
+    # why sharing that cap silently dropped a DIFFERENT, unrelated disclosure.
+    discard_line = _guard_discard_line(verdict.discarded,
+                                       _GUARD_TEXT_BUDGET - spent)
+    if discard_line:
+        lines.append(discard_line)
+        lines.append("")
+        spent += len(discard_line)
     # What the guard could not read is printed on a BLOCK too, not only on an
     # `undecided`. A note is why some part of this command was unreadable — a
     # dropped `replaces` entry, an expanded command word, a help flag in a
