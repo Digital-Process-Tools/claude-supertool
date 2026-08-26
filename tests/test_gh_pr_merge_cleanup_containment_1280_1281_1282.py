@@ -85,7 +85,7 @@ class Shim:
         return subprocess.CompletedProcess(args, 0, body, "")
 
     def worktrees_for(self, branch):
-        return list(self.worktrees)
+        return (list(self.worktrees), "")
 
     def worktree_state(self, path):
         return self.state

@@ -2087,6 +2087,24 @@ are flattened, which is the right treatment for prose.
 
 Exit 0 requires a verified merge **and** every linked issue verified closed.
 
+### What is left unwatched after this merge
+
+Every section above is about **this** pull request. `stacked_followups()` asks
+one question about the board **after** the merge: is any open pull request now
+based on the branch just merged ([#1851](https://github.com/Digital-Process-Tools/claude-supertool/issues/1851))?
+A downstream loop that heals its watcher fleet on every board-membership
+change — `claude-oss`, on every merge — cannot re-derive that fact without a
+second full board read costing more than the heal it would trigger, and it is
+knowable at merge time only, by the op that just changed the board.
+
+Three states, printed under `## Stacked follow-up` and named in the `[result]`
+tail: **found** (the follow-up PR is named), **none**, or **`unknown`** when
+the one added `gh pr list --base <head>` call itself could not be read.
+`none` is never taken from a read that failed — an empty answer here is a
+caller's licence to do nothing, so it is earned by an actual empty list, not
+by silence. Skipped, not searched, when the merge itself is not confirmed:
+nothing about the board after an unconfirmed merge is established.
+
 ### `cleanup` runs the three commands the receipt used to hand back
 
 Until [#1256](https://github.com/Digital-Process-Tools/claude-supertool/issues/1256) the op computed the exact branch-delete and worktree-remove commands and printed them to be retyped. Measured on this repo: **96 of 99 remote branches were merged and undeleted**, and 10 `st-wt/NNN` worktrees on merged branches survived one day. Cleanup is not skipped because it is hard; it is skipped because it is a second decision after the interesting one is over.
@@ -2109,6 +2127,7 @@ Each constraint is load-bearing:
 
 - **`gh api -X DELETE`, never `git push --delete`.** The pre-push hook runs the entire suite per deletion; 96 branches that way is about three hours of pytest whose output looks like progress.
 - **A worktree is removed only on `idle`**, read off `git-worktrees`' own `[result]` tally rather than re-derived here — `cannot tell` is treated as occupied and named, because an agent can be alive in a tree with an empty index for its first 26 minutes. Only `0 occupied, 1 idle, 0 cannot tell` counts, and a board with no tally line is `cannot tell`: reading the op's **exit code** instead read a nested three-worktree board printing `0 idle` as permission to delete ([#1282](https://github.com/Digital-Process-Tools/claude-supertool/issues/1282)). Note the consequence: run right after your own merge, the honest answer is usually `refused: cannot tell`, because `idle` requires an hour of quiet. The litter this exists for is day-old trees, and those pass.
+- **Finding *which* worktree to remove was itself a two-state answer** ([#1947](https://github.com/Digital-Process-Tools/claude-supertool/issues/1947)). `_worktrees_for_branch` collapsed a failed `git worktree list --porcelain` into the same empty list a genuinely empty listing returns, so a cleanup that could not look printed the identical `no worktree of this checkout has <branch> checked out` as one that looked and found nothing. It now returns `(paths, error)`, matching the dirt-read idiom directly above, and a non-empty error routes the item to `refused` rather than `skipped` — a cleanup that could not look has not skipped anything.
 - **`--force` was never the guarantee it was written up as** ([#1280](https://github.com/Digital-Process-Tools/claude-supertool/issues/1280)). `git worktree remove` runs without it, and that governs **modified and untracked** files — an **ignored** one is deleted regardless, and a local env file, a virtualenv or a scratch database is in no index, no stash and no remote. The tree is read first and refused, naming the paths, if it holds anything git is not tracking; a read that could not run is also a refusal.
 - **That read was itself a two-state answer, and one ordinary git preference turned it off** ([#1290](https://github.com/Digital-Process-Tools/claude-supertool/issues/1290)). `git status --porcelain --ignored` inherited its config, and `status.showUntrackedFiles=no` suppresses `!!` as well as `??` — so the gate above got an empty list, could not tell "nothing there" from "not looked", authorised the removal, and said in the same sentence that it had found nothing. The display settings are pinned on the command line now (`-c status.showUntrackedFiles=normal -c core.quotePath=true`, `--untracked-files=normal`), where they outrank config files and `GIT_CONFIG_*` both. Pinning closes that instance and not the shape, so the empty answer is corroborated: `git ls-files --others --directory --no-empty-directory` is plumbing with no display setting to suppress, and the union of the two is what the gate reads. `status` stays because it is the only one of the two that sees modified tracked files. Either read failing is `could not check`, naming which command failed — never `checked and found nothing`.
 - **The commands this op *prints* are the same delete, made by the reader.** Without `cleanup` it hands back `gh api -X DELETE …/refs/heads/<head>` and `git branch -d <head>`; refname quoting was the only guard in front of them, and quoting makes a wrong command safe to paste rather than making it right. A head that is cross-repository, unestablished, or the default branch now gets no command and a line naming which ([#1281](https://github.com/Digital-Process-Tools/claude-supertool/issues/1281)). A fourth ground was missing from this arm until [#1292](https://github.com/Digital-Process-Tools/claude-supertool/issues/1292): a default branch that **could not be read**. `run_cleanup` had refused on it since #1281, but an empty default branch satisfies neither "is cross-repository" nor "equals the default branch" — `""` is not the head — so the printing arm fell through to the DELETE. Both arms now test the same three conditions in the same order, and pick their stated reason in that order, so they cannot report different grounds for one refusal.

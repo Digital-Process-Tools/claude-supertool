@@ -522,31 +522,37 @@ def merge_verdict(after: dict | None, err: str) -> tuple[str, List[str]]:
 # the verdict line
 # ---------------------------------------------------------------------------
 
-def result_line(merge_state: str, issue_overall: str, branch_state: str) -> str:
+def result_line(merge_state: str, issue_overall: str, branch_state: str,
+                stack_state: str = "") -> str:
     """One line, no newline, that survives `| tail -1`.
 
     Leads with the irreversible half. A merge that landed while an issue stayed
     open is **not** a success and must not read as one — but it is also not a
     failed merge, and rendering it as either loses half the truth.
+
+    `stack_state` defaults to `""` and is silent when omitted (#1851): this
+    line predates the stacked-follow-up check, and every caller that names
+    only three states keeps meaning exactly what it always meant.
     """
+    tail = f" Stacked follow-up: {stack_state}." if stack_state else ""
     if merge_state != MERGED:
         return (f"[result] MERGE {UNVERIFIED.upper()} — not confirmed merged; "
                 f"nothing rolled back. Issues: {issue_overall}. "
-                f"Default branch: {branch_state}")
+                f"Default branch: {branch_state}" + tail)
 
     if issue_overall == NOT_CLOSED:
         return (f"[result] MERGED, but linked issues NOT CLOSED — the merge is "
                 f"done and cannot be undone; close them by hand (commands "
-                f"above). Default branch: {branch_state}")
+                f"above). Default branch: {branch_state}" + tail)
     if issue_overall == UNKNOWN:
         return (f"[result] MERGED, linked issue state {UNKNOWN} — the merge is "
                 f"confirmed; whether its issues closed was not read. Verify by "
-                f"hand (commands above). Default branch: {branch_state}")
+                f"hand (commands above). Default branch: {branch_state}" + tail)
     if issue_overall == NONE_DECLARED:
         return (f"[result] MERGED, no linked issue declared. "
-                f"Default branch: {branch_state}")
+                f"Default branch: {branch_state}" + tail)
     return (f"[result] MERGED and every linked issue verified closed. "
-            f"Default branch: {branch_state}")
+            f"Default branch: {branch_state}" + tail)
 
 
 # ---------------------------------------------------------------------------
@@ -645,19 +651,29 @@ def _git_rc(args: List[str], timeout: int = 30) -> tuple[int, str]:
     return (r.returncode, msg or f"git exited {r.returncode}")
 
 
-def _worktrees_for_branch(branch: str) -> List[str]:
-    """Every worktree of this repository with `branch` checked out.
+def _worktrees_for_branch(branch: str) -> tuple[List[str], str]:
+    """`(paths, error)` — every worktree of this repository with `branch`
+    checked out.
 
     A list rather than one path: two worktrees can hold the same branch only in
     unusual states, and picking the first of them would be a guess about which
     one to delete.
+
+    Two states collapsed into one `[]` here until #1947: a genuinely empty
+    listing and a read that failed outright both answered "nobody has this
+    branch checked out". `_worktree_dirt` in this same module already returns
+    `(value, error)`; this brings the worktree lookup to the same shape, so its
+    caller can refuse a cleanup it could not establish rather than skip one
+    that had nothing to do.
     """
     try:
         r = _git(["worktree", "list", "--porcelain"])
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return []
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
+        return ([], f"`git worktree list` could not be run: {e}")
     if r.returncode != 0:
-        return []
+        why = ((r.stderr or r.stdout) or "").strip()
+        return ([], f"`git worktree list` exited {r.returncode}"
+                    + (f": {why}" if why else ""))
     paths: List[str] = []
     current = ""
     # `--porcelain` does not quote a path, so a branch or directory name can
@@ -671,7 +687,7 @@ def _worktrees_for_branch(branch: str) -> List[str]:
             ref = line[len("branch "):].strip()
             if ref == f"refs/heads/{branch}" and current:
                 paths.append(current)
-    return paths
+    return (paths, "")
 
 
 def _worktree_state(path: str) -> str:
@@ -823,7 +839,12 @@ def _cleanup_worktree(head: str) -> tuple[str, str, str]:
     check it had inherited a config setting out of performing.
     """
     item = "local worktree"
-    paths = _worktrees_for_branch(head)
+    paths, paths_err = _worktrees_for_branch(head)
+    if paths_err:
+        return (item, CLEAN_REFUSED,
+                f"the worktree list could not be read "
+                f"({_untrusted.flat(paths_err)}) — a cleanup that could not "
+                f"look has not skipped anything")
     if not paths:
         return (item, CLEAN_SKIPPED,
                 f"no worktree of this checkout has `{_untrusted.flat(head)}` "
@@ -1261,6 +1282,59 @@ def base_distance_lines(base: str, head_oid: str, behind: int | None,
     ]
 
 
+# ---------------------------------------------------------------------------
+# what is left unwatched after this merge (#1851)
+# ---------------------------------------------------------------------------
+
+STACK_FOUND = "found"
+STACK_NONE = "none"
+
+
+def stacked_followups(head: str) -> tuple[str, List[str]]:
+    """`(state, lines)` — is any open pull request now based on `head`?
+
+    Three states, not two. A caller that heals its watcher fleet on every
+    board-membership change (a merge included) needs to know whether this
+    merge left a **stacked follow-up** unwatched — a second open PR whose base
+    was the branch just merged — and `STACK_NONE` must never stand in for a
+    read that failed: an empty answer here is the caller's licence to do
+    nothing, so it is not taken from a read that never happened.
+
+    One `gh pr list` call, gated on the head actually being a name safe to
+    hand to `--base` (`_refname.ordinary`, the same gate the printed cleanup
+    commands use) — an extraordinary name is refused rather than searched for,
+    since a search that silently matched nothing would read exactly like
+    `STACK_NONE`.
+    """
+    if not head or not _refname.ordinary(head):
+        return (UNKNOWN, [
+            f"  {UNKNOWN}: the head branch name could not be used to search "
+            f"for a stacked follow-up."])
+    data, err = _gh_json(
+        ["pr", "list", "--state", "open", "--base", head,
+         "--json", "number,title,url"] + _repo_target.gh_args(), timeout=20)
+    if err or not isinstance(data, list):
+        return (UNKNOWN, [
+            f"  {UNKNOWN}: whether any open pull request now targets "
+            f"`{_untrusted.flat(head)}` could not be read "
+            f"({_untrusted.flat(err or 'gh returned no list')})."])
+    if not data:
+        return (STACK_NONE, [
+            f"  none — no open pull request targets `{_untrusted.flat(head)}`; "
+            f"nothing about this merge is left unwatched on that account."])
+    lines = [f"  {len(data)} open pull request(s) now target "
+             f"`{_untrusted.flat(head)}` and need a poller unless one already "
+             f"covers them:"]
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        num = row.get("number")
+        title = _untrusted.flat(str(row.get("title") or ""))
+        url = row.get("url") or "?"
+        lines.append(f"    #{num} {title} — {url}")
+    return (STACK_FOUND, lines)
+
+
 def _repo_identity() -> tuple[str, str, str]:
     data, err = _gh_json(["repo", "view", "--json",
                           "nameWithOwner,defaultBranchRef"]
@@ -1466,6 +1540,20 @@ def main() -> int:
         print(line)
     print()
 
+    # ---- what is left unwatched after this merge (#1851) -----------------
+    if m_state != MERGED or not head:
+        stack_state = UNKNOWN
+        print("## Stacked follow-up")
+        print("  Skipped — the merge is not confirmed, so whether anything "
+              "now targets this branch was not checked.")
+        print()
+    else:
+        stack_state, stack_lines = stacked_followups(head)
+        print("## Stacked follow-up")
+        for line in stack_lines:
+            print(line)
+        print()
+
     # ---- the default branch, which the PR's green said nothing about ----
     branch_state, branch_lines = _default_branch_report(
         default_branch, repo, merge_sha)
@@ -1491,7 +1579,7 @@ def main() -> int:
                             head_oid=str(pr.get("headRefOid") or ""))):
             print(line)
         print()
-        print(result_line(m_state, issue_overall, branch_state))
+        print(result_line(m_state, issue_overall, branch_state, stack_state))
         return 0 if (m_state == MERGED and
                      issue_overall in (ALL_CLOSED, NONE_DECLARED)) else 1
 
@@ -1578,7 +1666,7 @@ def main() -> int:
               f"read back: gh-pr-merge:{number}:{method}|force|cleanup")
     print()
 
-    print(result_line(m_state, issue_overall, branch_state))
+    print(result_line(m_state, issue_overall, branch_state, stack_state))
     return 0 if (m_state == MERGED and
                  issue_overall in (ALL_CLOSED, NONE_DECLARED)) else 1
 
