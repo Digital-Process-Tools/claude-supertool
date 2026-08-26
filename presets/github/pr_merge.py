@@ -671,7 +671,12 @@ def _worktrees_for_branch(branch: str) -> tuple[List[str], str]:
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as e:
         return ([], f"`git worktree list` could not be run: {e}")
     if r.returncode != 0:
-        why = ((r.stderr or r.stdout) or "").strip()
+        # `_untrusted.flat`, not a bare `.strip()` (#1958 CI, #1475's ratchet):
+        # this is git's own stderr, a single-line field this error text folds
+        # into rather than a multi-line transcript relayed for its own sake,
+        # so `flat` is the right treatment -- a `\n[result] ...` inside it
+        # must not survive as a line this tool appears to have printed.
+        why = _untrusted.flat(((r.stderr or r.stdout) or "").strip())
         return ([], f"`git worktree list` exited {r.returncode}"
                     + (f": {why}" if why else ""))
     paths: List[str] = []
