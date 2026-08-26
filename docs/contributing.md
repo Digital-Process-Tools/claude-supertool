@@ -119,19 +119,19 @@ This is not a rule invented for one field. Measured across every shipped preset:
 
 **A second invocation form goes after ` | `, and starts with the op's own name.** `gh-check:CHECK_RUN_ID | gh-check:pr:NUMBER` is the shape, shared by `bluesky_list`, `devto_list`, `hashnode_list` and (since #1590) `gh-prs`. A bare `|` inside a form is an alternation between *values* and means something different — 34 fields use it that way.
 
-**`description` is not the long form — there is no long form** ([#1774](https://github.com/Digital-Process-Tools/claude-supertool/issues/1774)). The note above sends provenance and rationale here, and that is still the right destination relative to `syntax`. What it does not say, and what a writer needs before adding a paragraph, is that `ops` and `help:OP` render this field **byte for byte the same**. On 0.46.0 `gh-prs` carries 4,512 characters of `description`; its `ops` row is 4,706 bytes and `help:gh-prs` is 4,721 — the difference is the syntax line and the payload-route footer. So a clause written for the maintainer record is not filed somewhere a reader can opt into. It is injected into every reader of the roster, on every call, forever.
+**`description` is not the long form — there is no long form** ([#1774](https://github.com/Digital-Process-Tools/claude-supertool/issues/1774)). The note above sends provenance and rationale here, and that is still the right destination relative to `syntax`. What it does not say, and what a writer needs before adding a paragraph, is that `ops:full` and `help:OP` render this field **byte for byte the same** — `op_help()` has no `compact`/`full` distinction of its own, so it always prints `description` verbatim. Bare `ops` has not carried it since [#1774](https://github.com/Digital-Process-Tools/claude-supertool/issues/1774)/#1775/#1778 ([#1813](https://github.com/Digital-Process-Tools/claude-supertool/issues/1813)): the default listing is signatures only, and `description` is paid for only by a reader who asks for `ops:full` or `help:OP`. So a clause written for the maintainer record is not filed somewhere a reader can opt into — it is injected into every reader of *those two surfaces*, on every call, forever, but no longer into every reader of the default listing.
 
 Measured across the 128 documented ops in the shipped tree:
 
 | | |
 |---|---|
-| total | 76,795 chars |
-| median | 151 |
-| p90 | 1,868 |
+| total | 74,679 chars |
+| median | 152 |
+| p90 | 1,732 |
 | max | 6,578 (`channel`) |
-| top 10 rows | 37,739 = **49% of the corpus, in 8% of the ops** |
+| top 10 rows | 35,290 = **47% of the corpus, in 8% of the ops** |
 
-The assembled descriptive render, `ops:full`, is ~72.7KB against `_HOOK_OUTPUT_CAP_BYTES` = 7,168, which is why this repo's own SessionStart injection has fallen back to `ops:roster`, a bare alphabetical list of op names carrying no signatures at all. Bare `ops` has been signatures-only since #1774 and fits on its own at ~3.7KB; it is the *descriptions* that have never fitted, and this section is about what they cost.
+The assembled descriptive render, `ops:full`, is ~72.7KB against `_HOOK_OUTPUT_CAP_BYTES` = 7,168. That is why `hooks/session-start.sh` sends `ops:roster` instead: names plus safety class, no descriptions at all. Bare `ops` has been signatures-only since #1774/#1775/#1778 and fits the cap on its own at ~3.7KB without needing a fallback (issue [#1813](https://github.com/Digital-Process-Tools/claude-supertool/issues/1813) is where the earlier version of this paragraph is corrected). It is the *descriptions* — reachable only through `ops:full` and `help:OP` now — that have never fitted, and this section is about what they cost.
 
 **The line to draw.** A `description` says what the op does, what it will refuse, and what it declines to tell you — the three things a caller cannot get from the `syntax` field and cannot afford to learn from a failed call. What it is *not* is the record of how the op got here. These, from one entry, are all true and none of them belong on a line printed to every reader of the roster:
 

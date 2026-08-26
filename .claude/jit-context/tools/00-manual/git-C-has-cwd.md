@@ -1,7 +1,7 @@
 ---
 title: "`git -C <path>` is `cwd:` plus an op"
 tool: Bash
-match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(command[[:space:]]+)?git[[:space:]]+-c[[:space:]]+[^=[:space:]]*/[^[:space:]]*[[:space:]]+(diff|log|status[^;&|\n]*[[:space:]]-)
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+(proxy[[:space:]]+)?)?(command[[:space:]]+)?git[[:space:]]+-c[[:space:]]+[^=[:space:]]*/[^[:space:]]*[[:space:]]+(diff|log|status[^;&|\n]*[[:space:]]-)
 mode: block
 require: git -c
 ---

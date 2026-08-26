@@ -105,6 +105,12 @@ MUST_STILL_FIRE = [
      GIT_FER + " --merged=master refs/heads"),
     ("after a chain operator, on its own line",
      "cd /tmp &&\n\t" + GIT_BRANCH + " --merged master"),
+    # #1987: `(rtk[[:space:]]+)?` anchors rtk immediately before git, so the
+    # documented `rtk proxy` idiom -- recommended for exactly this shape of
+    # command, per the user's own RTK.md -- put `proxy` between them and
+    # walked straight through. Measured returning a wrong 15-branch list.
+    ("the documented rtk proxy idiom, not bare rtk",
+     "rtk proxy " + GIT_BRANCH + " --merged"),
 ]
 
 # The prose case this rule's own body already documents as unfixable by a
