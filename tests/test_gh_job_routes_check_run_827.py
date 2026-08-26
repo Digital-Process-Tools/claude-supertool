@@ -138,7 +138,9 @@ def _fake_gh(
             return _REAL_RUN(args, **kw)
         assert args and args[0] == "gh", f"unstubbed command: {args!r}"
         cmd = args[1] if len(args) > 1 else ""
-        url = args[2] if len(args) > 2 else ""
+        # First non-flag positional after `api` — the log call now inserts
+        # --allow-escape-sequences before the url (#1957).
+        url = next((a for a in args[2:] if not a.startswith("--")), "")
         if seen is not None:
             seen.append(f"{cmd} {url}")
         if cmd == "api" and "/check-runs/" in url and url.split("?")[0].endswith("/annotations"):

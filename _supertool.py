@@ -18294,6 +18294,44 @@ def _guard_strip_heredocs(command: str) -> str:
     return "\n".join(out)
 
 
+def _guard_find_substitution_end(command: str, start: int) -> Optional[int]:
+    """Index of the ``)`` matching the ``$(`` whose interior begins at *start*.
+
+    Not a shell parser: it tracks paren depth and skips over quoted regions
+    -- so a literal ``(`` or ``)`` inside a nested ``'...'`` or ``"..."`` does
+    not move the count, the same as real command-substitution parsing -- but
+    it does not resolve backtick substitution or an escaped paren the way a
+    full lexer would. That is enough to recover what #1762 reports: an
+    ordinary substitution wrapped in double quotes, nested command
+    substitutions and embedded quotes included. What it cannot balance --
+    an unterminated substitution, one hidden behind a further layer this
+    scan does not model -- returns None, and the caller keeps the
+    `undecided` arm rather than guessing at where it would have closed.
+    """
+    depth = 1
+    i = start
+    single = double = False
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if ch == _GUARD_BACKSLASH and not single and i + 1 < n:
+            i += 2
+            continue
+        if ch == _GUARD_SQUOTE and not double:
+            single = not single
+        elif ch == _GUARD_DQUOTE and not single:
+            double = not double
+        elif not single and not double:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return i
+        i += 1
+    return None
+
+
 def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
     """Split what the shell would split, and name what quoting hid.
 
@@ -18308,10 +18346,15 @@ def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
       happens to be a punctuation char.
     * **Single-quoted** — literal text in every shell. Left alone; it is not a
       command and must not become one.
-    * **Double-quoted** — substitutes, but the delimiters are inside a token
-      the lexer hands back whole, so the guard cannot read it. Reported, so
-      the verdict is `undecided` rather than a clean bill for a command
-      nobody looked at.
+    * **Double-quoted** — substitutes, and the delimiters used to sit inside
+      a token the lexer hands back whole, so the guard could not read it.
+      For `$(...)` that gap is closed (#1762): `_guard_find_substitution_end`
+      balances the interior against nested parens and quotes, and what it
+      recovers is checked through this same function. A backtick's own
+      delimiters are not recoverable the same way — no balancing scan is
+      written for them — so a double-quoted `` \x60cmd\x60 `` is still
+      reported, and the verdict is `undecided` rather than a clean bill for
+      a command nobody looked at.
 
     An unquoted **newline** is separated here for the same reason and by the
     same scan. `shlex` with `whitespace_split` calls a newline whitespace, so
@@ -18339,6 +18382,9 @@ def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
     """
     out: List[str] = []
     unread: List[str] = []
+    #: Interiors recovered from a double-quoted `$(...)`, appended as their
+    #: own segments once the scan finishes -- see the loop at the bottom.
+    extracted: List[str] = []
     single = double = backtick = False
     # The last character emitted outside quotes, which is what decides whether
     # a `#` opens a comment. `""` at the start of the command counts as a word
@@ -18385,14 +18431,66 @@ def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
             i += 1
             prev = ";"
             continue
-        elif double and (ch == _GUARD_BACKTICK
-                         or command[i:i + 2] == "$("):
+        elif double and ch == _GUARD_BACKTICK:
+            # A backtick substitution's own closing delimiter is not
+            # recoverable the way a `$(...)`'s matching `)` is (there is no
+            # balancing scan below for it), so this shape stays undecided.
             unread.append("a command substitution inside a double-quoted "
                           "argument was not read")
+        elif double and command[i:i + 2] == "$(":
+            end = _guard_find_substitution_end(command, i + 2)
+            if end is None:
+                # Genuinely unreadable: no `)` balances before the command
+                # runs out. Keep the third state rather than guess at one.
+                unread.append("a command substitution inside a "
+                              "double-quoted argument was not read")
+                out.append(ch)
+                if not single and not double:
+                    prev = ch
+                i += 1
+                continue
+            # The obstacle really was only the quotes: recover the interior
+            # and check it exactly as if it had been written unquoted,
+            # through this same reader so a nested `$(...)`, an embedded
+            # quote or a further backtick inside it is handled once here
+            # rather than reimplemented.
+            #
+            # The whole matched span is copied into `out` VERBATIM and `i`
+            # jumps past it -- it is not walked character by character the
+            # way ordinary text is. `$(...)` opens a fresh quoting context
+            # in real bash: a `"` inside it does not close the argument
+            # this substitution sits in. Walking it char-by-char reused this
+            # loop's own single `double` flag for those interior quote
+            # characters, so a nested `"..."` toggled `double` OFF at the
+            # wrong place, and a `#` later in the same interior then read as
+            # an unquoted comment opener -- deleting everything after it,
+            # including a real trailing command, and silently turning
+            # `undecided` into `clean` (caught in review before this ever
+            # shipped). Jumping over the span keeps the outer scan's quote
+            # state exactly where it was; the interior's own quoting is
+            # resolved once, inside the recursive call below, not twice.
+            inner_prepared, inner_unread = _guard_open_substitutions(
+                command[i + 2:end])
+            extracted.append(inner_prepared)
+            for note in inner_unread:
+                if note not in unread:
+                    unread.append(note)
+            out.append(command[i:end + 1])
+            i = end + 1
+            prev = ")"
+            continue
         out.append(ch)
         if not single and not double:
             prev = ch
         i += 1
+    for text in extracted:
+        # Appended once the whole command has been scanned, as an
+        # independent segment (`_guard_segments` splits on `;`) rather than
+        # in place, so the outer argument's own text and quoting -- copied
+        # verbatim above -- are never disturbed by the recovery.
+        out.append(" ; ")
+        out.append(text)
+        out.append(" ; ")
     return "".join(out), unread
 
 
@@ -18460,7 +18558,9 @@ def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
     `$(...)` substitution wherever the shell would have split it.
 
     What it cannot model is returned as the second element rather than silently
-    dropped: a substitution whose delimiters are inside quotes, and a word that
+    dropped: a `$(...)` this scan cannot balance, a backtick substitution
+    whose delimiters sit inside double quotes (#1762 — its own delimiters
+    are not recoverable the way `$(...)`'s matching `)` is), and a word that
     hands a string to something else to run (`eval`, `sh -c`). Those become the
     guard's `undecided` state — a construct this matcher did not read is not
     evidence that nothing was replaced. Aliases and shell functions remain

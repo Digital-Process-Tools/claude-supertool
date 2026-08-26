@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -58,6 +59,80 @@ CHECK_CREATION_GRACE = 900
 NO_CHECKS_YET = "no checks yet"
 CHECKS_READ = "checks read"
 CHECKS_UNKNOWN = "unknown"
+
+# The escape hatch for #1967, named to match the one `paste`/`edit` already
+# ship for the same shape (`literal_backslashes = true`, #1096) rather than
+# invent a second vocabulary for the same decision.
+LITERAL_BS_KEY = "literal_backslashes"
+
+# The escape hatch for #1838 -- a `Part of #N` pull request that genuinely
+# closes nothing. Named for what it records (a deliberate decision), not for
+# what it disables, so a template carrying it unconditionally reads wrong on
+# sight rather than looking like ordinary configuration.
+NO_CLOSE_KEY = "no_close"
+
+_LITERAL_BS_QUOTE = re.compile(r'\\"')
+
+
+def literal_backslash_quotes(text: str) -> List[tuple[int, int]]:
+    """Every backslash-quote pair in a decoded body -- (1-based line, 1-based
+    column) each.
+
+    The doubled-backslash detector `paste`/`edit` already ship (#1087, #1096)
+    scans a payload's own *source* for an even backslash run, because a TOML
+    literal block processes no escapes and what is typed is what lands. A
+    published PR body is different: `gh-pr-create` reads `body` through
+    `json.load`/`tomllib`, which DOES process escapes, so the defect this
+    issue is about is not in the payload source -- it is in what the escaping
+    decoded to. A JSON author who means a literal quote writes a single
+    escaped quote and gets a bare quote; one who (mistakenly) doubles the
+    backslash first gets a real backslash immediately followed by a real
+    quote in the decoded string -- #1967's own example: an `ev.get(...)`
+    snippet with a stray backslash in front of each quote. So this scans the
+    DECODED string for that two-character sequence, not the payload's raw
+    text.
+    """
+    hits: List[tuple[int, int]] = []
+    for m in _LITERAL_BS_QUOTE.finditer(text):
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        line_no = text.count("\n", 0, m.start()) + 1
+        hits.append((line_no, m.start() - line_start + 1))
+    return hits
+
+
+def literal_backslash_quote_refusal(hits: List[tuple[int, int]]) -> str:
+    """The refusal `main()` prints -- named occurrences, and the way out."""
+    n = len(hits)
+    shown = ", ".join(f"line {ln}, col {c}" for ln, c in hits[:5])
+    more = f" (+{n - 5} more)" if n > 5 else ""
+    plural = "occurrence" if n == 1 else "occurrences"
+    return (
+        f"ERROR: body carries {n} literal backslash-quote {plural} at "
+        f"{shown}{more} -- a JSON string only needs an escaped quote for a "
+        f"literal quote character; a doubled backslash before it decodes to "
+        f"a real backslash followed by a real quote, and that almost never "
+        f"belongs in prose. If this is the mistake, remove the extra "
+        f"backslash and re-send. If the run is meant as written (a shell "
+        f"snippet, a regex, a Windows path with a trailing quote), set "
+        f"{LITERAL_BS_KEY} = true at the top level of the payload to "
+        f"publish it unchanged.")
+
+
+def no_closing_reference_refusal() -> str:
+    """The refusal `main()` prints when the body closes nothing and nobody
+    said that was deliberate. `no_close = true` is the escape -- a
+    Part-of-#N pull request is a real, recurring case this repo's own merge
+    gates protect by name (#1838), so this refusal must stay openable
+    rather than becoming a gate every payload template disables.
+    """
+    return (
+        "ERROR: body has no working closing reference (Closes #N), so "
+        "merging this pull request as written would close nothing. Add "
+        "Closes #N if that is wrong -- it is far cheaper now than after "
+        "the merge. If this pull request genuinely closes nothing (a "
+        "Part-of-#N pull request, or unrelated work), set "
+        f"{NO_CLOSE_KEY} = true at the top level of the payload to say so "
+        "and publish anyway.")
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +398,17 @@ def main() -> int:  # noqa: C901
     else:
         content = str(payload.get("body") or "")
 
+    if not payload.get(LITERAL_BS_KEY):
+        hits = literal_backslash_quotes(content)
+        if hits:
+            print(literal_backslash_quote_refusal(hits))
+            return 1
+
+    refs = _checks.closing_issue_refs(content)
+    if not refs and not payload.get(NO_CLOSE_KEY):
+        print(no_closing_reference_refusal())
+        return 1
+
     cmd = ["pr", "create", "--repo", repo, "--base", base, "--head", head,
            "--title", title]
     tmp_body: str | None = None
@@ -413,14 +499,27 @@ def main() -> int:  # noqa: C901
     print()
 
     # ---- what will this close? -------------------------------------------
-    refs = _checks.closing_issue_refs(content)
+    # `refs` was already computed above, before creation -- the refusal at
+    # #1838 depends on it. Not re-parsed here so the receipt and the gate
+    # can never disagree about what the same body carries.
     print("## Linked issues (parsed from the body you just submitted)")
     print(f"  {_checks.linked_issue_line(refs)}")
     if refs:
         issue_note = f"links {', '.join(refs)}"
         print("  Verified again at merge time by `gh-pr-merge` — a body that "
               "reads correctly is not the same as a reference GitHub bound.")
+    elif payload.get(NO_CLOSE_KEY):
+        issue_note = f"no closing reference ({NO_CLOSE_KEY} acknowledged)"
+        print(f"  No closing keyword in the body — {NO_CLOSE_KEY} = true in "
+              "the payload acknowledged this pull request closes nothing "
+              "deliberately.")
     else:
+        # Unreachable in the ordinary path: the refusal above already
+        # stopped a body with no reference and no NO_CLOSE_KEY from
+        # reaching `gh pr create`. Left as a real branch, not an assert,
+        # because `refs`/`NO_CLOSE_KEY` are read from mutable state and a
+        # future edit that reorders the two checks should not silently
+        # start opening these PRs unlabelled.
         issue_note = "no closing reference in the body"
         print("  No closing keyword in the body, so merging this will close "
               "nothing. Add `Closes #N` now if that is wrong — it is far "
