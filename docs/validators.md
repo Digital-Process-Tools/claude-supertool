@@ -245,9 +245,11 @@ matches nothing; and the tools matcher lowercases the command before matching, s
 literal outside a bracket expression can never match. A bracket expression is left alone, since
 `[A-Za-z]` still matches through its lower half.
 
-Row shape decides which column is a regex, so the adapter asserts no directory layout: a six-field
-tools row exposes column 2, and only when it opens with `~`; a two-field paths row exposes column 1,
-which is *always* a regex — calling it a "prefix" is what made that easy to miss.
+Row shape decides which column is a regex, so the adapter asserts no directory layout: a tools
+row is 6 or 7 fields (claude-jit-context 0.6.0 added a `requires` 7th column, #1992) and exposes
+column 2, and only when it opens with `~`; a two-field paths row exposes column 1, which is
+*always* a regex — calling it a "prefix" is what made that easy to miss. Anything else --- 4, 5 or
+9 fields, say --- is refused as a shape error rather than silently parsed as one of these two (#2003).
 
 ### `html-check` — script extraction, not HTML well-formedness (#833)
 

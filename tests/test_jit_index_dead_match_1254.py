@@ -270,7 +270,7 @@ class TestThisRepo:
             if not raw.strip():
                 continue
             fields = raw.split(TAB)
-            if family == "tools" and len(fields) >= 4 and fields[1].startswith("~"):
+            if family == "tools" and len(fields) in (6, 7) and fields[1].startswith("~"):
                 expected += 1
             elif family == "paths" and len(fields) == 2:
                 expected += 1

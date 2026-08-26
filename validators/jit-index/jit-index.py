@@ -150,7 +150,7 @@ def _rows(text):
         fields = raw.split(TAB)
         if len(fields) > 1:
             tabbed += 1
-        if len(fields) >= 4:
+        if len(fields) in (6, 7):
             parsed += 1
             match = fields[1]
             if match.startswith("~"):
@@ -407,7 +407,7 @@ def main():
         # skip there would drop an answer already in hand.
         emit(skipped(TOOL, target,
                      "no row here has the shape of a jit-context index row "
-                     "(6 tab-separated fields for tools, 2 for paths)",
+                     "(6 or 7 tab-separated fields for tools, 2 for paths)",
                      _ms(start)))
         return
 
