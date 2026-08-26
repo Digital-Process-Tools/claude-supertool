@@ -18505,6 +18505,18 @@ class GuardVerdict(NamedTuple):
     #: Why an entry that claims this verb does not claim this invocation. One
     #: line per (op, segment), rendered by `guard_uncovered_note`.
     uncovered: Tuple[str, ...] = ()
+    #: Raw text of every top-level segment before the earliest one this
+    #: `blocked` verdict matched -- what a `PreToolUse` denial also discards,
+    #: since it covers the whole call (#1873). Kept OUT of `notes`
+    #: deliberately: `notes` competes for `_guard_notes`'s fixed
+    #: `_GUARD_MAX_NOTES` slots with #1450's per-op ambiguity disclosures, and
+    #: prepending a discard note there silently dropped one of those on a
+    #: command already carrying three -- confirmed by running the same
+    #: command through this file's pre-fix revision, where all three
+    #: ambiguity notes fit. `guard_refusal` renders this list on its own line,
+    #: spending from the same text budget as everything else but never
+    #: competing for the notes list's slot count.
+    discarded: Tuple[str, ...] = ()
 
 
 class _Replacement(NamedTuple):
@@ -19683,39 +19695,66 @@ def _guard_score(replacement: _Replacement, argv: Sequence[str]
     return 2 if replacement.value in values else None
 
 
-def _guard_discard_note(matched_origins: Sequence[int],
-                        origin_texts: Sequence[str]) -> Optional[str]:
-    """What a `blocked` verdict also throws away, or `None` (#1873).
+def _guard_discarded_segments(matched_origins: Sequence[int],
+                              origin_texts: Sequence[str]) -> Tuple[str, ...]:
+    """Raw text of every segment a `blocked` verdict also discards (#1873).
 
     A `PreToolUse` hook decides on the whole Bash call at once — there is no
     partial-run outcome to offer. So when the earliest blocked segment is not
     the first one in the call, every top-level segment before it (`;`, `&&`,
     `||`, `|`, `&` all end a call just as completely once the whole thing is
-    refused) never runs either, and nothing said that before this. Measured
-    twice in one week: a `git commit` before a refused `git push`, and a
-    payload `edit:@-` before a refused pipe through `head` — both discovered
-    only because a LATER receipt looked wrong, never because the refusal said
-    so.
+    refused) never runs either. Measured twice in one week: a `git commit`
+    before a refused `git push`, and a payload `edit:@-` before a refused
+    pipe through `head` — both discovered only because a LATER receipt looked
+    wrong, never because the refusal said so.
 
-    Returns `None` when there is nothing to name — the ordinary case, and the
-    blocked segment being first in the call — so a caller with nothing lost
-    prints nothing extra.
+    Unquoted and uncapped on purpose — `guard_refusal` renders this against
+    its own text budget, the same as every other list it prints, rather than
+    this function guessing a cap. An earlier version of this fix rendered a
+    finished note directly into `verdict.notes` and it was WRONG: `notes`
+    shares a fixed `_GUARD_MAX_NOTES` (3) slots with #1450's per-op ambiguity
+    disclosures, and a command already carrying three of those had one
+    silently dropped the moment this note took a fourth slot — confirmed by
+    running the identical command through this file's pre-fix revision, where
+    all three ambiguity notes fit. Returns `()` when there is nothing to name
+    — the ordinary case, and the blocked segment being first in the call.
     """
     if not matched_origins:
-        return None
+        return ()
     earliest = min(matched_origins)
-    discarded = [text for text in origin_texts[:earliest] if text.strip()]
-    if not discarded:
-        return None
+    return tuple(text for text in origin_texts[:earliest] if text.strip())
+
+
+def _guard_discard_line(discarded: Sequence[str], budget: int) -> str:
+    """One line naming `discarded`, bounded by `budget`, or "" for none.
+
+    Deliberately not one of `_guard_notes`'s capped notes — see
+    `GuardVerdict.discarded` and `_guard_discarded_segments` for why sharing
+    that budget was the bug.
+    """
+    if not discarded or budget <= 0:
+        return ""
     shown = discarded[:3]
-    quoted = ", ".join("`" + _guard_quote(text, _GUARD_USE_CAP) + "`"
-                       for text in shown)
+    quoted: List[str] = []
+    spent = 0
+    for text in shown:
+        left = budget - spent
+        if left <= 0:
+            break
+        piece = _guard_quote(text, min(_GUARD_USE_CAP, left))
+        if not piece:
+            break
+        quoted.append(piece)
+        spent += len(piece)
+    if not quoted:
+        return ""
+    joined = ", ".join("`" + piece + "`" for piece in quoted)
     extra = (f" and {len(discarded) - 3} more" if len(discarded) > 3 else "")
     plural = "command" if len(discarded) == 1 else "commands"
     them = "it" if len(discarded) == 1 else "them"
     return (f"{len(discarded)} earlier {plural} in this call will NOT run "
             f"either, because a refusal covers the whole call rather than "
-            f"the part that named it: " + quoted + extra
+            f"the part that named it: " + joined + extra
             + f" — re-send {them} separately")
 
 
@@ -19935,15 +19974,16 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
         #
         # A `PreToolUse` denial is all-or-nothing across the whole call, so
         # every top-level segment BEFORE the earliest blocked one also never
-        # runs — silently, unless this says so (#1873). Put first, ahead of
-        # every other note, so `_guard_notes`'s cap on how many it shows
-        # cannot bury the one note that names what the refusal is also
-        # discarding.
-        discard_note = _guard_discard_note(matched_origins, origin_texts)
-        if discard_note is not None:
-            notes = [discard_note] + notes
+        # runs — silently, unless this says so (#1873). Carried on its own
+        # field rather than folded into `notes`: `notes` shares a fixed
+        # `_GUARD_MAX_NOTES` (3) slots with #1450's per-op ambiguity
+        # disclosures, and a discard note prepended there silently dropped
+        # one of those on a command already carrying three — see
+        # `GuardVerdict.discarded`'s docstring for the repro that caught it.
+        discarded = _guard_discarded_segments(matched_origins, origin_texts)
         return GuardVerdict("blocked", tuple(matches),
-                            tuple(notes) + tuple(uncovered), tuple(uncovered))
+                            tuple(notes) + tuple(uncovered), tuple(uncovered),
+                            discarded)
     if uncovered:
         # Ahead of `undecided`, and the order is the point: a decided "no op
         # covers this form" rendered as "the guard could not answer" would be
@@ -20122,6 +20162,15 @@ def guard_refusal(verdict: GuardVerdict) -> str:
                      f"command are not detailed here — `supertool 'ops'` "
                      f"lists every op.")
         lines.append("")
+    # A `blocked` verdict's own field, deliberately outside `_guard_notes`'s
+    # capped notes list (#1873) — see `GuardVerdict.discarded`'s docstring for
+    # why sharing that cap silently dropped a DIFFERENT, unrelated disclosure.
+    discard_line = _guard_discard_line(verdict.discarded,
+                                       _GUARD_TEXT_BUDGET - spent)
+    if discard_line:
+        lines.append(discard_line)
+        lines.append("")
+        spent += len(discard_line)
     # What the guard could not read is printed on a BLOCK too, not only on an
     # `undecided`. A note is why some part of this command was unreadable — a
     # dropped `replaces` entry, an expanded command word, a help flag in a
