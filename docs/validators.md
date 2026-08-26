@@ -562,6 +562,34 @@ file (`validate:hooks.d/after_save/50-git-backup`) and shellcheck reads the
 shebang. A repo of extensionless hooks should add a second entry globbing the
 directory.
 
+### bash-check — a second line, always labelled a guess
+
+`bash -n`'s own `line` is exact about where its parser gave up, and an
+unterminated quote can leave that a long way from the line that actually
+opened it -- reported at five lines and a whole indented `function` block
+past the apostrophe, on a ~1,900-line file of awk embedded in shell quoting,
+where every neighbouring line is also full of quotes ([#1810](https://github.com/Digital-Process-Tools/claude-supertool/issues/1810)).
+The message alone sent the reader to a correct, innocent line in a file where
+every line looks equally guilty.
+
+`bash-check` now also runs a small, dedicated state-machine scan
+(`validators/common/quote_balance.py`) over the file up to the reported line,
+and adds a **second**, explicitly labelled field when it finds a quote still
+open there:
+
+```json
+{"line": 8, "col": null, "severity": "error", "code": "syntax",
+ "msg": "syntax error: unexpected end of file",
+ "quote_open_guess": {"line": 2, "note": "best-effort: a quote opened here ..."}}
+```
+
+`line`, `col` and `msg` are untouched -- they are `bash -n`'s own output and
+stay exact. `quote_open_guess` is not a diagnostic in its own right: the
+tracker has no model of here-docs, command substitution or nested quoting, so
+it can be wrong, and it says as much in its own `note`. It is present only
+when it differs from `line` -- a report that already names the true open line
+gets nothing extra.
+
 ### eslint — declining beats inventing a config
 
 JS/TS coverage was `node-check` (syntax), `tsc-check` (types, TS only),
