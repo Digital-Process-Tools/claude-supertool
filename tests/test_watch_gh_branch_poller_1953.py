@@ -22,8 +22,8 @@ poller = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(poller)
 
 
-def _snap(state, sentence="", sha="deadbeef", error=""):
-    return (state, sentence, sha, error)
+def _snap(state, sentence="", sha="deadbeef", repo="", error=""):
+    return (state, sentence, sha, repo, error)
 
 
 def _ctx(ref="main"):

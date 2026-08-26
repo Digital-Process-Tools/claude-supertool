@@ -48,10 +48,11 @@ def test_snapshot_reaches_no_run_through_the_real_gh_boundary() -> None:
     same composition, mocked at the one seam (`_gh`) both share."""
     with mock.patch.object(branch, "_gh", side_effect=_fake_gh), \
          mock.patch("time.time", return_value=1798000000):
-        state, sentence, sha, error = poller._snapshot("main")
+        state, sentence, sha, repo, error = poller._snapshot("main")
     assert error == "", error
     assert state == branch.NO_RUN, (state, sentence)
     assert sha == "c391c1333b6793f4fc2e5a2cc830024fd834ffe1"
+    assert repo == "OWNER/REPO", repo
 
 
 def test_snapshot_reports_the_lookup_failure_when_the_commit_cannot_resolve() -> None:
@@ -60,6 +61,6 @@ def test_snapshot_reports_the_lookup_failure_when_the_commit_cannot_resolve() ->
             return _proc(1, "")
         raise AssertionError(f"unexpected gh call: {argv}")
     with mock.patch.object(branch, "_gh", side_effect=_fail):
-        state, sentence, sha, error = poller._snapshot("main")
+        state, sentence, sha, repo, error = poller._snapshot("main")
     assert state == ""
     assert error, "a commit that could not resolve must report an error, not a state"

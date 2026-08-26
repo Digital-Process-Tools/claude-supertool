@@ -62,6 +62,14 @@ import _untrusted  # noqa: E402  (a name is operator text on a rendered surface,
 NAME_ENV = "SUPERTOOL_WATCH_NAME"
 SOCK_ENV = "SUPERTOOL_WATCH_SOCK"
 STATE_DIR_ENV = "SUPERTOOL_WATCH_STATE_DIR"
+#: Paired with `NAME_ENV` by a process that derived the name *for a specific
+#: directory* rather than inheriting it (#1785) -- `bin/oss-workspace` in the
+#: consuming `oss` plugin is the first such caller: it reads a repo's own
+#: `.oss.json` slug and exports both, precisely for a repo whose
+#: `.supertool.json` declares no `watch_name` at all (`DECLARED_SILENT`
+#: below). Absent, or naming a directory other than the one this check is
+#: about, changes nothing -- this is opt-in evidence, never a default.
+ROOT_ENV = "SUPERTOOL_WATCH_NAME_ROOT"
 
 #: Not `os.path.join`, and deliberately: these are AF_UNIX paths, the two
 #: constants they have to reproduce byte-for-byte are POSIX literals, and a
@@ -437,7 +445,8 @@ def _flat_list(values: tuple[str, ...]) -> str:
     return ", ".join(_untrusted.flat(v, disclose_newline=True) for v in values)
 
 
-def project_notes(resolved: Resolved, declared: Declared | None) -> list[str]:
+def project_notes(resolved: Resolved, declared: Declared | None,
+                  env: dict[str, str] | None = None) -> list[str]:
     """Whose channel this is, for a board that used to render every fleet alike.
 
     A name derives one socket and one poller-slot directory, so two projects
@@ -489,6 +498,18 @@ def project_notes(resolved: Resolved, declared: Declared | None) -> list[str]:
                 f"claims the name {name} — this socket and these poller slots "
                 f"may be another project's fleet"]
     if declared.state == DECLARED_SILENT:
+        root = ((env if env is not None else os.environ).get(ROOT_ENV) or "").strip()
+        if root and declared.path and os.path.abspath(root.rstrip(os.sep)) == \
+                os.path.dirname(os.path.abspath(declared.path)):
+            # A process that exported `name` said, separately, which
+            # directory it derived it for -- and it matches this one (#1785).
+            # That is not the same fact as an inherited name copied in from
+            # another project's settings, which is the case this warning
+            # exists for; without this check the two read identically and
+            # the warning fired on every healthy `radar`/`channel` call.
+            return [f"{name} came from the environment, but {ROOT_ENV} "
+                    f"says it was derived for this directory — not another "
+                    f"project's fleet"]
         return [f"{where} declares no watch_name in any op block, so {name} came "
                 f"from the environment — this socket and these poller slots may "
                 f"be another project's fleet"]
