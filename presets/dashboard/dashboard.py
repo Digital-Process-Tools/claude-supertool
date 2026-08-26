@@ -702,15 +702,23 @@ def collect_default(repo: str, default_branch: str) -> Section:
             for wf, jobs in fetched.items()}
     marker, detail = _gh_branch._reconcile(repo, selected, fetched)
     _prev_sha, prev_names = _gh_branch.previous_head(runs, sha)
+    # #1959: fetched once and handed to both `missing_workflows` (so a
+    # workflow the trigger set proves could not have run here does not hold
+    # this board's own verdict inside the creation window) and `scope_for`
+    # below, the same call this board's own "release gate 1" read the
+    # contradiction through.
+    owner, name = _gh_branch._declared_legs.owner_repo(repo)
+    declared_pair = _gh_branch._declared_workflows.declared_at(owner, name, sha)
     # `missing_workflows`, not `prev_names - set(selected)`: the selection is
     # keyed per run since #1640, so a workflow with two runs on the head is in
     # neither key verbatim and the subtraction reported it as absent.
-    missing = _gh_branch.missing_workflows(prev_names, selected)
+    missing = _gh_branch.missing_workflows(prev_names, selected, declared_pair[0])
     # #846: the scope of the green, not only the green. This section is the
     # board a human reads immediately before tagging a release, and it was
     # printing "every workflow on X concluded and every leg passed" over a
     # commit three of whose four declared workflows had produced no run.
-    scope, scope_lines, _unresolved = _gh_branch.scope_for(repo, sha, selected)
+    scope, scope_lines, _unresolved = _gh_branch.scope_for(
+        repo, sha, selected, declared_pair=declared_pair)
     state, sentence = _gh_branch.verdict(selected, legs, missing, sha, age,
                                          unreconciled=marker, scope=scope)
 

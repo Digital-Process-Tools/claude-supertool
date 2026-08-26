@@ -273,15 +273,38 @@ def workflow_names(selected: dict) -> set:
     return {_workflow_name(r) for r in (selected or {}).values()}
 
 
-def missing_workflows(prev_names, selected: dict) -> list:
+def missing_workflows(prev_names, selected: dict,
+                       declared: list | None = None) -> list:
     """Workflow names that ran on the previous head and produced no run here.
 
     A seam rather than `set(prev_names) - set(selected)` at each call site,
     because that subtraction was written against name keys in three places and
     two of them are in other files. Against labels it would report every
     two-run workflow as absent — a NOT GREEN invented out of a spelling.
+
+    `declared` is the `_declared_workflows.declared_at` list, optional and
+    keyword-shaped so every existing caller keeps its old behaviour unless it
+    opts in. Passed, a name is dropped from the result when the declared set
+    says it definitely has no push trigger (#1959) — "ran on the previous
+    head and has no run here" is only evidence of a missing run for a
+    workflow a push could have produced a run from. `slow tests`
+    (`schedule`/`workflow_dispatch`) failing to run on a pushed commit is
+    exactly what its trigger declaration predicts, not a gap.
+
+    Kept, never dropped, when `is_push_triggered` answers anything other than
+    `False` — a push-triggered workflow (`is_push_triggered` is `True`) and a
+    workflow whose triggers could not be read (`None`, unknown) both stay in
+    the result, because this is the branch that decides whether a fresh
+    commit is still owed a run, and only a *provably* excluded trigger may
+    remove that obligation.
     """
-    return sorted(set(prev_names or ()) - workflow_names(selected))
+    missing = sorted(set(prev_names or ()) - workflow_names(selected))
+    if not declared:
+        return missing
+    by_name = {w.get("name"): w for w in declared if isinstance(w, dict)}
+    return [name for name in missing
+            if _declared_workflows.is_push_triggered(
+                (by_name.get(name) or {}).get("triggers")) is not False]
 
 
 def _run_id(run: object) -> int:
@@ -705,8 +728,8 @@ def scope_clause(undispatched: list, unestablished: str, n_wf: int) -> str:
             f"{names}.")
 
 
-def scope_for(repo: str, sha: str,
-              selected: dict) -> tuple[str, list[str], str]:
+def scope_for(repo: str, sha: str, selected: dict, *,
+              declared_pair: tuple | None = None) -> tuple[str, list[str], str]:
     """`(clause, lines, unresolved)` — #846's scope check, for every caller.
 
     Exists as a seam rather than as four lines inlined in `main()` because
@@ -743,8 +766,13 @@ def scope_for(repo: str, sha: str,
     """
     if not selected:
         return "", [], ""
-    owner, name = _declared_legs.owner_repo(repo)
-    declared, why = _declared_workflows.declared_at(owner, name, sha)
+    if declared_pair is not None:
+        # Reuses a fetch `main()` already made for `missing_workflows` (#1959)
+        # -- the same declared-at-this-sha call, made once rather than twice.
+        declared, why = declared_pair
+    else:
+        owner, name = _declared_legs.owner_repo(repo)
+        declared, why = _declared_workflows.declared_at(owner, name, sha)
     if declared is None:
         n_wf = len(workflow_names(selected))
         return (
@@ -1381,7 +1409,17 @@ def main() -> int:
         prev_sha, prev_names = "", set()
     else:
         prev_sha, prev_names = previous_head(runs, sha)
-    missing = missing_workflows(prev_names, selected)
+    # #1959: fetched once and handed to both `missing_workflows` (which uses
+    # it to drop a workflow the trigger set proves could not have produced a
+    # run here) and `scope_for` below, rather than asking twice for the
+    # declared set at the same commit. Only worth fetching when there is a
+    # selection to reconcile against -- on an empty selection `verdict()`
+    # short-circuits before `missing` is read at all (`no_run_verdict`).
+    declared_pair = (None, "")
+    if selected and mode != MODE_COMMIT:
+        owner, repo_name = _declared_legs.owner_repo(repo)
+        declared_pair = _declared_workflows.declared_at(owner, repo_name, sha)
+    missing = missing_workflows(prev_names, selected, declared_pair[0])
 
     legs: dict = {}
     named: list = []
@@ -1409,7 +1447,9 @@ def main() -> int:
     # #846: the second source one scope out. Bought only when there is a run
     # set to be short of — on a commit with no runs at all `no_run_verdict`
     # already declines, and two more API calls would buy nothing.
-    scope, scope_lines, _unresolved = scope_for(repo, sha, selected)
+    scope, scope_lines, _unresolved = scope_for(
+        repo, sha, selected,
+        declared_pair=declared_pair if mode != MODE_COMMIT else None)
     state, sentence = verdict(selected, legs, missing, sha, age, _GRACE,
                               marker, scope=scope)
 
