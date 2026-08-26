@@ -134,7 +134,13 @@ RETIRED = ("the extraction kind", "consumes the separator",
 
 #: Every `str.splitlines()` in `presets/git/`, with the judgment recorded when
 #: it was audited. `_untrusted.split_lines` sites are absent by construction -
-#: they are not `str.splitlines()` calls.
+#: they are not `str.splitlines()` calls. Being safe by construction does NOT
+#: mean split_lines' own CR/CRLF arms are doing that work: every one of those
+#: sites reads through `_git` (`text=True`), which has already rewritten a
+#: lone CR to LF before split_lines ever runs, so the CR arm is dead code for
+#: all of them. `test_split_lines_cr_arm_is_dead_for_every_git_ops_caller`
+#: below pins that (#1704 instance 1) rather than leaving it a claim this
+#: header makes and nothing checks.
 REGISTER: dict[str, str] = {
     # -- _git_common.py -----------------------------------------------------
     # `_list_conflicts` WAS here, as the sixth `QUOTED PATH` entry and as the
@@ -487,3 +493,88 @@ def test_no_entry_rests_on_the_retired_reasoning() -> None:
                 "Consuming the separator discards the other half; say what "
                 "the site is actually safe by, or narrow it."
             )
+
+
+def _names_in(node: ast.AST) -> set[str]:
+    """Every `ast.Name` id appearing anywhere under `node`, argument trees
+    included — used to ask "does this expression read a given variable",
+    which is as much dataflow as a per-function co-occurrence check needs
+    here: both real call sites bind `_git_verbatim`'s result to a variable
+    and read it back by name a few lines later, never inline."""
+    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+
+class _VerbatimSplitLinesVisitor(ast.NodeVisitor):
+    """Per function: does a `_untrusted.split_lines` call's argument read a
+    variable that `_git_verbatim`'s return value was assigned to? (#1704
+    instance 1)
+
+    `_git_verbatim` exists precisely because `_git`'s `text=True` rewrites a
+    lone CR into LF before any splitter sees the stream — `split_lines`'s own
+    CR/CRLF arms are reachable only from a stream `_git_verbatim` (or some
+    other non-`text=True` read) produced. Keyed on the assigned variable
+    rather than "both calls appear in this function": `investigate.py::main`
+    calls `_git_verbatim` for the blame read AND `split_lines` for the
+    (separately sourced, `_git`-read) log and diff renders in the same
+    function, which a same-function check flags as a false positive — the
+    thing that actually matters is whether `split_lines` is ever handed
+    `_git_verbatim`'s own result.
+    """
+
+    def __init__(self, rel: str, mixed: list[str]) -> None:
+        self._rel = rel
+        self._mixed = mixed
+        self._stack: list[str] = []
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        key = f"{self._rel}::{'.'.join(self._stack + [node.name])}"
+        verbatim_vars: set[str] = set()
+        for child in ast.walk(node):
+            if (isinstance(child, ast.Assign)
+                    and isinstance(child.value, ast.Call)
+                    and isinstance(child.value.func, ast.Name)
+                    and child.value.func.id == "_git_verbatim"):
+                for target in child.targets:
+                    if isinstance(target, ast.Name):
+                        verbatim_vars.add(target.id)
+        if verbatim_vars:
+            for child in ast.walk(node):
+                if (isinstance(child, ast.Call)
+                        and isinstance(child.func, ast.Attribute)
+                        and child.func.attr == "split_lines"
+                        and isinstance(child.func.value, ast.Name)
+                        and child.func.value.id == "_untrusted"
+                        and any(_names_in(arg) & verbatim_vars
+                                for arg in child.args)):
+                    self._mixed.append(key)
+                    break
+        self._stack.append(node.name)
+        self.generic_visit(node)
+        self._stack.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
+
+
+def test_split_lines_cr_arm_is_dead_for_every_git_ops_caller() -> None:
+    """`_untrusted.split_lines`'s CR/CRLF handling cannot fire anywhere in
+    `presets/git/` today (#1704 instance 1) — every caller reads through
+    `_git`, which has already rewritten a lone CR to LF by the time
+    `split_lines` sees the bytes. `_git_verbatim` is the one function whose
+    output could still carry a bare CR, and its two callers
+    (`_git_common.py::_list_conflicts`, `investigate.py::main`'s blame read)
+    both deliberately avoid `split_lines` — `-z`/NUL and a raw LF split,
+    respectively — for exactly that reason. This is a pin, not new behaviour:
+    it fails the moment `split_lines` is ever handed `_git_verbatim`'s own
+    result, which is the one shape under which the CR arm stops being dead.
+    """
+    mixed: list[str] = []
+    for path in sorted((REPO / TREE).rglob("*.py")):
+        rel = path.relative_to(REPO).as_posix()
+        module = ast.parse(path.read_text(encoding="utf-8"))
+        _VerbatimSplitLinesVisitor(rel, mixed).visit(module)
+    assert not mixed, (
+        "_untrusted.split_lines was called on a _git_verbatim result - the "
+        "CR arm is no longer provably dead here, and split_lines' docstring "
+        "/ this register's own reasoning about it need to be revisited: "
+        f"{mixed}"
+    )

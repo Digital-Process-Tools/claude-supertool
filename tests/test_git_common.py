@@ -68,6 +68,17 @@ def test_looks_like_success_markers() -> None:
     assert not common._looks_like_success("")
 
 
+def test_looks_like_success_substring_false_negative_1704() -> None:
+    """A success line must not be demoted by a keyword hiding inside a longer
+    word. `_looks_like_success` suppresses (the mirror of #1669's `_git_common`
+    error test, which selects), so its failure mode runs the other way: a real
+    success line reads as not-success because 'fatal' is a substring of
+    'nonfatal' (#1704 instance 2).
+    """
+    assert common._looks_like_success(
+        "✅ nonfatal warnings resolved, pushed successfully")
+
+
 # ── query_open_mr ────────────────────────────────────────────────────────
 
 _HOSTED_REMOTE = ("origin" + chr(9) + "https://gitlab.com/acme/x.git (fetch)" +

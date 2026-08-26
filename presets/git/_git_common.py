@@ -633,6 +633,24 @@ def st_hint(arg: str) -> str:
             + chr(39) + arg + chr(39) + ")")
 
 
+#: The demotion words `_looks_like_success` uses to un-suppress a line that
+#: also carries a hard error signal, as WORDS rather than substrings (#1704
+#: instance 2 — the mirror of #1669's `_ERROR_WORD_RE` below, pointed the
+#: other way: that one SELECTS a line as the error, this one SUPPRESSES a
+#: line from being treated as success, so its misfire is a real success line
+#: read as not-success because one of these hid inside a longer word).
+#: Demonstrated: `"fatal" in low` matched inside "nonfatal", so
+#: "✅ nonfatal warnings resolved, pushed successfully" — a genuine success
+#: line — read as not-success. `errors?` is deliberately absent here: unlike
+#: `_ERROR_WORD_RE`, this set is checked only after a success marker was
+#: already found, and "0 errors" / "no errors" are exactly the phrases that
+#: found it — a bare `errors?` word match would cancel the success it just
+#: detected. The colon-anchored "error:" substring stays for the same
+#: reason and is checked separately, not folded into this pattern.
+_SUCCESS_DEMOTION_WORD_RE = re.compile(
+    r"\b(fatal|rejected|aborted|failed|declined)\b", re.IGNORECASE)
+
+
 def _looks_like_success(line: str) -> bool:
     """True for lines that report success — must never be picked as an error.
 
@@ -651,10 +669,10 @@ def _looks_like_success(line: str) -> bool:
         return False
     # A success marker doesn't win if the same line also carries a hard error
     # signal (e.g. 'lint ✓ — push blocked: error: …'). 'error:' (with colon)
-    # avoids matching the '0 errors' / 'no errors' success phrases.
-    has_error = any(k in low for k in (
-        "error:", "fatal", "rejected", "aborted", "failed", "declined")) \
-        or "! [" in s or "❌" in s
+    # avoids matching the '0 errors' / 'no errors' success phrases. The rest
+    # are WORDS (#1704), not substrings — see `_SUCCESS_DEMOTION_WORD_RE`.
+    has_error = ("error:" in low or bool(_SUCCESS_DEMOTION_WORD_RE.search(low))
+                 or "! [" in s or "❌" in s)
     return not has_error
 
 

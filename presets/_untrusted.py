@@ -340,6 +340,22 @@ def split_lines(text: str) -> list[str]:
     a line-oriented protocol; `str.splitlines()` is right only when the
     question is "what would some other tool call a line", which is what
     `visible()` and `flat()` answer.
+
+    **The CR and CRLF arms are dead code for every `presets/git/` caller
+    today (#1704 instance 1), and that is worth stating rather than leaving
+    implicit.** Every one of those callers reads a stream through `_git`,
+    which runs `subprocess.run(text=True)` — Python's universal-newline
+    translation rewrites a lone CR (and a CRLF) into LF before this function
+    ever sees the bytes, so the CR branch has nothing left to match. The arm
+    exists for a reader of a stream that was *not* passed through
+    `text=True` translation — `presets/git/_git_common.py::_git_verbatim`
+    is the one such source in this tree, and
+    `tests/test_preset_git_splitlines_register_1130.py::
+    test_split_lines_cr_arm_is_dead_for_every_git_ops_caller` pins that its
+    two callers both avoid this function (one splits on NUL via `-z`, the
+    other on git's own LF directly) for exactly that reason. Do not read
+    "this function handles CR" as "CR reaches every consumer of it" — for
+    `presets/git/`, today, it reaches none of them.
     """
     if not text:
         return []
