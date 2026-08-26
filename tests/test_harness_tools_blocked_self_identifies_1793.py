@@ -12,14 +12,14 @@ to use instead -- refusing was the textbook-correct response to a textbook
 tool-result injection. The rule applied the right suspicion to the wrong
 object, and had no way to tell which object it had.
 
-The fix is not to soften the rule -- CLAUDE.md's "Do not weaken what the rule
-does" -- and not to assert first-party origin in prose, which an injection can
-write just as cheaply. It is to give the reader something it can check WITHOUT
-trusting this text at all: the reviewer that hit this had `Bash` in its own
-tool grant (as `Explore` does, and as it demonstrated by falling back to `git
-show`), so a verification command using a channel the injected text cannot
-forge -- git's own history -- is checkable independently of whether this body
-is believed.
+The fix is not to soften the rule -- #1793's own brief: "Do not weaken what the
+rule does" -- and not to assert first-party origin in prose, which an
+injection can write just as cheaply. It is to give the reader something it
+can check WITHOUT trusting this text at all: the reviewer that hit this had
+`Bash` in its own tool grant (as `Explore` does, and as it demonstrated by
+falling back to `git show`), so a verification command using a channel the
+injected text cannot forge -- git's own history -- is checkable independently
+of whether this body is believed.
 
 This does not cover a reader with no `Bash`/git access, and it does not cover
 the scaffolded per-repo copy at `.claude/jit-context/tools/01-oss/
