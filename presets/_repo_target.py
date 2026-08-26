@@ -50,10 +50,21 @@ def target() -> str | None:
     validates the shape only in the latter case, at the point it exports the
     variable; a value present here because it was already in the environment
     before this call started has never been through that check. Every
-    consumer in this module except :func:`explicit_target` reads this
-    function, which is correct for the read side #673 built it for — an
-    ambient target naming where to read from is the same feature working as
-    designed. A **write** route must not: see :func:`explicit_target`.
+    other consumer of this function *inside this module* is a read
+    (`gh_args`, `api_path`, `owner_repo`, `cwd_slug`'s "target is the
+    answer" short-circuit, `effective_slug`) — an ambient target naming
+    where to read from is the same feature working as designed. A
+    **payload-mode write route must not**: see :func:`explicit_target`,
+    consumed by :func:`resolve_or_conflict`.
+
+    That is not every *external* caller, though: `gh-pr-merge` is a genuine
+    write (it merges, and under `|cleanup` deletes a branch) that names its
+    repo through `gh_args`/`api_path` like a read op does, because it has
+    no payload to reconcile a target against — `resolve_or_conflict`'s
+    shape does not fit it. It was out of #1986's scope (four *payload-mode*
+    ops) and reported for filing rather than fixed here; this docstring
+    used to claim every non-`explicit_target` consumer was a safe read,
+    which this one caller disproves.
 
     A blank env var is read as absence, not as an empty target — an
     exported-but-empty variable is how a shell accident looks.
