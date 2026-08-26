@@ -9075,11 +9075,27 @@ def _swap_suggest(op: str, sig: str, other_key: str, other_value: str,
 
     Deliberately does NOT fire on `missing_value == other_value`: pointing
     someone at swapping two identical arguments explains nothing.
+
+    Gates `other_value` through `_gate_paths` before ever stat-ing it
+    (self-review caught this): the same "a stat of an outside file is
+    itself the existence oracle this gate exists to close" hazard that
+    every OTHER call site in this file gates against applies here too —
+    `os.path.isfile('/etc/passwd')` on the PATTERN/SYMBOL slot would leak
+    whether an arbitrary host path exists through a diagnostic message
+    that was never supposed to touch anything outside cwd. A value that
+    fails containment is silently treated as "does not resolve" — same
+    as a value that is simply missing — rather than surfaced as its own
+    kind of refusal, so this stays a hint and never a second gate with its
+    own wording to keep in sync.
     """
     if not other_value or other_value == missing_value:
         return None
-    if not (os.path.isfile(other_value) or os.path.isdir(other_value)):
+    _err, (_expanded,) = _gate_paths([other_value])
+    if _err:
         return None
+    if not (os.path.isfile(_expanded) or os.path.isdir(_expanded)):
+        return None
+    other_value = _expanded
     return (
         f"`{op}` takes {sig} — '{other_value}' looks like the path and "
         f"'{missing_value}' looks like the {other_key}. Did you mean: "
@@ -9094,7 +9110,8 @@ def _extract_path_kw(parts: List[str]) -> Tuple[List[str], Optional[str]]:
     PATH first -- internally consistent per op, but the four disagree with
     each other, and only a multi-op call surfaces that. Direction 1 from
     #1690: a caller who does not want to remember which slot the path goes
-    in can name it instead, in either position.
+    in can name it instead, rather than at the fixed position each op
+    otherwise requires.
 
     Purely additive. `parts[0]` (the op name) is never a candidate, so it is
     always returned untouched at index 0. Exactly one match is required —
@@ -9102,9 +9119,19 @@ def _extract_path_kw(parts: List[str]) -> Tuple[List[str], Optional[str]]:
     as before), and two or more is left in place rather than picking one:
     an ambiguous call should fail the way it always did, not have this
     silently resolve it.
+
+    `parts[1]` is ALSO never a candidate, and that is deliberate rather than
+    an oversight (self-review caught the gap, #1711/#1690's own review): the
+    PATTERN slot always sits at `parts[1]` for every op this is wired into,
+    and a legitimate search for the literal string `path=` or `file=` —
+    plausible in any codebase that assigns those variable names — would
+    otherwise have its own pattern silently reinterpreted as the keyword.
+    Restricting the scan to `parts[2:]` still closes the gap #1690 exists
+    for (which slot PATH goes in past the mandatory leading PATTERN) while
+    leaving the one slot every caller unconditionally controls alone.
     """
     matches = [i for i, p in enumerate(parts)
-               if i > 0 and (p.startswith("path=") or p.startswith("file="))]
+               if i > 1 and (p.startswith("path=") or p.startswith("file="))]
     if len(matches) != 1:
         return parts, None
     i = matches[0]
@@ -26608,6 +26635,20 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             # which is exactly what removing one positional buys.
             parts, _kw_path = _extract_path_kw(parts)
             if _kw_path is not None:
+                # The generic dispatch-level gate (above, keyed off
+                # `_PATH_ARG_POSITIONS["grep_around"] = (2,)`) already ran —
+                # against the RAW parts, before this branch's own
+                # `_extract_path_kw` call. It checked the literal token
+                # `path=/whatever`, which never escapes cwd itself (it is
+                # not an absolute path, just a string starting with
+                # 'path='), and passed. The real value is only known now,
+                # so it gets its own gate here — self-review caught this as
+                # a real containment bypass, not a hypothetical one: without
+                # this, `grep_around:PAT:path=/etc/passwd` read straight
+                # through where `grep_around:PAT:/etc/passwd` was refused.
+                _contained, (_kw_path,) = _gate_paths([_kw_path])
+                if _contained:
+                    return _receipt(header, _contained)
                 # Re-splice at the fixed PATH slot rather than re-deriving
                 # every downstream index: `_grep_around_numeric_refusal` and
                 # the N/LIMIT slots below all read `parts` positionally, and

@@ -41,12 +41,28 @@ def test_grep_accepts_path_kw_after_pattern(tmp_path: Path) -> None:
     assert "needle here" in out, out
 
 
-def test_grep_accepts_file_kw_before_pattern(tmp_path: Path) -> None:
+def test_grep_accepts_file_kw_alias(tmp_path: Path) -> None:
+    """`file=` is accepted as an alias for `path=`. Not tested ahead of the
+    pattern: `parts[1]` -- always the mandatory PATTERN slot for this op
+    family -- is deliberately excluded from the keyword scan (self-review,
+    #1711/#1690), so a legitimate pattern of literally `file=...` is never
+    silently reinterpreted."""
     f = _hay(tmp_path)
-    # keyword ahead of the pattern -- order no longer matters
-    out = supertool.dispatch(f"grep:file={f}:needle")
+    out = supertool.dispatch(f"grep:needle:file={f}")
     assert "ERROR" not in out, out
     assert "needle here" in out, out
+
+
+def test_grep_pattern_literally_starting_with_path_equals_is_unaffected(
+        tmp_path: Path) -> None:
+    """Must-not-fire half of the parts[1]-exclusion above: a real pattern
+    of `path=` (plausible in any codebase assigning that variable name)
+    must not be swallowed as the keyword."""
+    f = tmp_path / "config.py"
+    f.write_text("path=/tmp/somewhere\n", encoding="utf-8")
+    out = supertool.dispatch(f"grep:path=:{f}")
+    assert "ERROR" not in out, out
+    assert "path=/tmp/somewhere" in out, out
 
 
 def _body(out: str) -> str:
@@ -107,3 +123,40 @@ def test_grep_around_without_path_kw_parses_exactly_as_before(tmp_path: Path) ->
     with_kw = supertool.dispatch(f"grep_around:needle:path={f}:2")
     without_kw = supertool.dispatch(f"grep_around:needle:{f}:2")
     assert _body(with_kw) == _body(without_kw), (with_kw, without_kw)
+
+
+# --- containment (self-review findings, #1690/#1711) ------------------
+
+def test_grep_around_path_kw_cannot_escape_cwd() -> None:
+    """The generic dispatch-level containment gate runs BEFORE this op's
+    own `_extract_path_kw` call, against the raw `path=...` token (which
+    never itself escapes cwd -- it is a string starting with 'path=', not
+    an absolute path). Without a second gate on the extracted value,
+    `grep_around:PAT:path=/etc/passwd` read straight through where
+    `grep_around:PAT:/etc/passwd` was refused. Both must refuse alike."""
+    import os
+    prev = os.environ.pop("SUPERTOOL_ALLOW_OUTSIDE_CWD", None)
+    try:
+        positional = supertool.dispatch("grep_around:root:/etc/passwd")
+        kw = supertool.dispatch("grep_around:root:path=/etc/passwd")
+    finally:
+        if prev is not None:
+            os.environ["SUPERTOOL_ALLOW_OUTSIDE_CWD"] = prev
+    assert "escapes cwd" in positional or "ERROR" in positional, positional
+    assert "escapes cwd" in kw or "ERROR" in kw, kw
+    assert "root:*:0:0" not in kw, kw
+
+
+def test_swap_suggest_never_confirms_existence_outside_cwd(tmp_path: Path) -> None:
+    """`_swap_suggest` stats the OTHER slot to decide whether to fire. That
+    stat must never answer for a path outside the containment boundary --
+    doing so would make the diagnostic itself an oracle for "does this
+    absolute host path exist", independent of whether it fires."""
+    import os
+    prev = os.environ.pop("SUPERTOOL_ALLOW_OUTSIDE_CWD", None)
+    try:
+        out = supertool.dispatch("grep:/etc/passwd:definitely/does/not/exist.py")
+    finally:
+        if prev is not None:
+            os.environ["SUPERTOOL_ALLOW_OUTSIDE_CWD"] = prev
+    assert "Did you mean" not in out, out
