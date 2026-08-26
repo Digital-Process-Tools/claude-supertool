@@ -125,3 +125,28 @@ def test_swap_diagnosed_with_a_real_windows_drive_letter_path(
     real = _write(tmp_path, "winreal.py", "needle here\n")
     out = supertool.dispatch(f"around:{real}:needle")
     assert "Did you mean" in out, out
+
+
+# --- between:re has no swap-suggest fallback (reviewer finding, #1972) ----
+
+def test_between_re_keeps_the_generic_colon_hint_even_when_leading_is_a_real_file(
+        tmp_path: Path) -> None:
+    """`between:re:START:END:PATH` shares `_colon_split_hint` with
+    `around`/`grep`/`between` symbol mode, but its body (`op_between_pattern`)
+    has no `_swap_suggest` fallback of its own -- so the "leading resolves as
+    a real file, decline and let the fallback answer" branch must NOT apply
+    here: declining would hand the call to a body with nothing further to
+    say, trading a real diagnostic for none. POSIX allows ':' in a filename,
+    so a file literally named 'start:end' stands in for the Windows
+    drive-letter shape this class of bug was found under."""
+    import os
+    real = tmp_path / "start:end"
+    real.write_text("x\n", encoding="utf-8")
+    prev_cwd = os.getcwd()
+    os.chdir(str(tmp_path))
+    try:
+        out = supertool.dispatch("between:re:start:end:missing.py")
+    finally:
+        os.chdir(prev_cwd)
+    assert "split on" in out, out
+    assert out.strip() != "ERROR: file not found: missing.py", out

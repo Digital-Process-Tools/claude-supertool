@@ -9726,7 +9726,8 @@ def _grep_around_numeric_refusal(parts: List[str], pattern: str,
 
 def _colon_split_hint(op: str, leading: str, path: str,
                       keys: Tuple[str, ...] = ("pattern",),
-                      call_prefix: Optional[str] = None) -> str:
+                      call_prefix: Optional[str] = None,
+                      swap_fallback: bool = True) -> str:
     """Error text for a read op whose PATH does not exist and probably should.
 
     A read op that mis-tokenizes must never read as an absence in the world.
@@ -9737,6 +9738,15 @@ def _colon_split_hint(op: str, leading: str, path: str,
     Returns "" when the missing path is an ordinary typo (no ':' in the
     leading argument and the path token still looks like a path) — crying
     wolf on every wrong path would make the advice worthless.
+
+    `swap_fallback` must be False for a caller with no `_swap_suggest`
+    fallback of its own downstream (#1972 review caught this): declining
+    here is only safe when returning "" hands the call to code that will
+    say something else instead. `between:re:START:END:PATH` shares this
+    function but calls `op_between_pattern`, which has no swap-suggest
+    branch at all -- declining there for `leading` a colon-joined
+    `START:END` was a silent zero-diagnostic regression, not a wash, the
+    first time this shipped.
     """
     if not path or path == "." or os.path.exists(path):
         return ""
@@ -9749,15 +9759,16 @@ def _colon_split_hint(op: str, leading: str, path: str,
     # change which diagnosis fires: `leading` resolving as a real file is
     # the SAME positive, checkable evidence `_swap_suggest` uses downstream
     # (in `op_around`/`op_grep`/`op_between_symbol`'s own fallback, reached
-    # once this returns ""), and it is strictly more specific than "there
-    # is a colon somewhere in here" regardless of platform. Gated through
+    # once this returns "") -- ONLY for the callers that have that
+    # fallback, which is what `swap_fallback` gates. Gated through
     # `_gate_paths` for the same reason `_swap_suggest` is: a bare
     # `os.path.isfile` on caller-controlled text would make this an
     # existence oracle for paths outside the containment boundary.
-    _leading_err, (_leading_expanded,) = _gate_paths([leading])
-    if not _leading_err and (os.path.isfile(_leading_expanded)
-                              or os.path.isdir(_leading_expanded)):
-        return ""
+    if swap_fallback:
+        _leading_err, (_leading_expanded,) = _gate_paths([leading])
+        if not _leading_err and (os.path.isfile(_leading_expanded)
+                                  or os.path.isdir(_leading_expanded)):
+            return ""
     # Ahead of the `:` diagnosis, not after it. A value that whitespace-splits
     # into parts which all exist is positively a different mistake, and the
     # colon advice points at a payload whose `path` is a scalar as well — a
@@ -26908,6 +26919,13 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                         # dropping the `re:` marker that selects this mode —
                         # a printed repair nobody can run.
                         call_prefix=f"between:re:{start_pat}:{end_pat}",
+                        # #1972 review: op_between_pattern (below) has no
+                        # swap-suggest fallback of its own, unlike around/
+                        # grep/between-symbol -- declining here on the new
+                        # "leading resolves as a real file" branch would
+                        # hand the call to a body with nothing more to say,
+                        # trading a real (if generic) diagnostic for none.
+                        swap_fallback=False,
                     )
                     if _hint:
                         return _receipt(header, _hint)
