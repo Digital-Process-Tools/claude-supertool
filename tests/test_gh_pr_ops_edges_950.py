@@ -168,7 +168,7 @@ def test_gh_never_running_at_all_is_reported(monkeypatch, capsys, tmp_path,
                                              exc, needle):
     payload = tmp_path / "pr.json"
     payload.write_text(json.dumps({"repo": REPO, "title": "t",
-                                   "base": "master", "body": "b"}))
+                                   "base": "master", "body": "Closes #950"}))
 
     def boom(*a, **kw):
         raise exc
