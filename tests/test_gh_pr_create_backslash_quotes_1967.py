@@ -101,3 +101,19 @@ def test_a_lone_backslash_with_no_following_quote_is_not_flagged(
         tmp_path, {**BASE, "body": "Closes #1967\n\nSee C:\\Users\\me\\file.md"}))
     assert m.main() == 0
     assert len(h.create_calls) == 1
+
+
+def test_a_body_tripping_both_new_refusals_names_the_backslash_first(
+        monkeypatch, capsys, tmp_path):
+    """A body with neither a closing reference nor clean escaping trips
+    #1967's check before #1838's -- the checks are ordered in main(), and a
+    body that fails both must never be silently waved through by either one
+    reading the other's escape hatch as its own."""
+    h = _Harness()
+    _install(monkeypatch, h, _payload(
+        tmp_path, {**BASE, "body": 'ev.get(\\"repo\\") or repo'}))
+    assert m.main() == 1
+    out = capsys.readouterr().out
+    assert h.create_calls == []
+    assert "literal backslash" in out
+    assert "no working closing reference" not in out
