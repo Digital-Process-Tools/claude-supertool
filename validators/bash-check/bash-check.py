@@ -48,6 +48,14 @@ def _read_for_guess(file: str) -> str:
     `context_unavailable` state for exactly that case. This one just gives up
     on the guess quietly, by returning "", which `unbalanced_quote_open`
     treats as an empty file (no quote open anywhere).
+
+    Known and left as-is: this duplicates the read `source_context()`
+    (validators/common/source_context.py) already does for the same
+    diagnostic, so a run producing at least one finding opens the file twice.
+    Sharing one read between two independently-designed helper modules is a
+    real fix, but it is not this one -- it would mean touching
+    `source_context`'s own contract for a cost that only matters on files
+    large enough for a second full read to register at all (#1810 review).
     """
     try:
         return pathlib.Path(file).read_text(errors="replace", encoding="utf-8")
