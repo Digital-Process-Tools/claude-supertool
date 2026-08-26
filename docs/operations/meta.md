@@ -197,6 +197,8 @@ Because probing invokes the *real* adapter against a *real* file in this tree, i
 
 `doctor:probe` costs a subprocess per in-scope validator — up to the full validator count in this tree — which is why it is not the default: a doctor that takes thirty seconds is one nobody runs. It also always bypasses `_validator_run_one`'s own result cache (`~/.cache/supertool/validators/`, up to 24h TTL by default): a cache hit from before a binary was installed or removed would silently contradict "does this resolve now", which is the whole question `doctor:probe` exists to answer.
 
+**One inherited cost worth naming rather than hiding.** A validator spec that opts into `"mcp_autospawn": true` (an existing, documented per-validator setting — see [mcp-integration.md](../mcp-integration.md)) makes `doctor:probe` cold-start that daemon, same as `validate`/`format` already do for the same setting: 30-60s to index, persisting up to a 600s idle window. No validator in this project's own `.supertool.json` sets it, so `doctor:probe` here never pays it — but a project that does opt in should read `doctor:probe` as inheriting that cost, not as a lightweight read regardless of config.
+
 ## `gc` — cache retention
 
 Supertool writes four caches under `~/.cache/supertool` (`XDG_CACHE_HOME` honoured): `vim-cursor` and `vim-undo` (per-file cursor state and the cross-call undo snapshot), `validators` (validator results keyed by content hash), and the legacy `vi-cursor`. Nothing used to reap them — on a daily-driver machine the tree reached **1.0 GB across 242,000 files in about two weeks**, and both `vim-*` directories exceeded the 65535-dirent listing cap, which is enough to make an ordinary `ls` visibly slow.
