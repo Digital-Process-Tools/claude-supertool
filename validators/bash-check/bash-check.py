@@ -18,6 +18,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import guard_main, tool_fault
 from linebreaks import split_lines
+from quote_balance import unbalanced_quote_open
 
 # `bash -n` reports a syntax finding as `file: line N: message`. Its other
 # non-zero exits are the shell failing to get as far as parsing:
@@ -39,17 +40,64 @@ from linebreaks import split_lines
 DIAGNOSTIC = re.compile(r":\s*line\s+(\d+):\s*(.+)")
 
 
+def _read_for_guess(file: str) -> str:
+    """Best-effort read for `unbalanced_quote_open`, never a diagnostic path.
+
+    An unreadable file is not this function's failure to report -- the
+    diagnostic itself still stands on `context_fields`, which has its own
+    `context_unavailable` state for exactly that case. This one just gives up
+    on the guess quietly, by returning "", which `unbalanced_quote_open`
+    treats as an empty file (no quote open anywhere).
+
+    Known and left as-is: this duplicates the read `source_context()`
+    (validators/common/source_context.py) already does for the same
+    diagnostic, so a run producing at least one finding opens the file twice.
+    Sharing one read between two independently-designed helper modules is a
+    real fix, but it is not this one -- it would mean touching
+    `source_context`'s own contract for a cost that only matters on files
+    large enough for a second full read to register at all (#1810 review).
+    """
+    try:
+        return pathlib.Path(file).read_text(errors="replace", encoding="utf-8")
+    except OSError:
+        return ""
+
+
 def parse_diagnostics(out: str, file: str) -> list[dict]:
     """Every located diagnostic in bash's stderr. Empty means the shell never
-    got as far as parsing."""
+    got as far as parsing.
+
+    `bash -n`'s own `line` is exact about where its parser gave up, and stays
+    untouched. An unterminated quote can leave that line far from the one that
+    actually broke -- five lines and an indented `function` block, in the
+    incident this exists for (#1810) -- so each finding also carries a
+    `quote_open_guess` when a plain state-machine scan finds a quote still
+    open by the time it reaches `line`. It is a GUESS, explicitly labelled:
+    the scan knows nothing of here-docs or command substitution, so it can be
+    wrong, and it is never folded into `line`, `col` or `msg`.
+    """
     errors = []
+    text = None
     for line in split_lines(out):
         m = DIAGNOSTIC.search(line)
         if m:
             ln = int(m.group(1))
-            errors.append({"line": ln, "col": None, "severity": "error",
-                           "code": "syntax", "msg": m.group(2).strip()[:200],
-                           **context_fields(file, ln)})
+            err = {"line": ln, "col": None, "severity": "error",
+                   "code": "syntax", "msg": m.group(2).strip()[:200],
+                   **context_fields(file, ln)}
+            if text is None:
+                text = _read_for_guess(file)
+            if text:
+                guess_line = unbalanced_quote_open(text, ln)
+                if guess_line is not None and guess_line != ln:
+                    err["quote_open_guess"] = {
+                        "line": guess_line,
+                        "note": ("best-effort: a quote opened here looks still "
+                                 "unclosed by the reported line. Not itself a "
+                                 "diagnostic -- `line` above is bash's own and "
+                                 "exact, this is a guess (#1810)."),
+                    }
+            errors.append(err)
     return errors
 
 

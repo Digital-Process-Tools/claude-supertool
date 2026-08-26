@@ -21260,6 +21260,30 @@ def _flat_cell(value: Any, limit: Optional[int] = None) -> str:
     return text
 
 
+def _quote_open_guess_line(e: Dict[str, Any]) -> Optional[str]:
+    """One short receipt line for `quote_open_guess` (#1810), or None.
+
+    Unlike `source_context`/`context_unavailable` -- several lines, shown only
+    in `verbose` mode -- this is a single short line, so it is not gated the
+    same way: the incident it exists for is read from the receipt an edit's
+    own rollback prints, which never carries `verbose` at all
+    (`_validator_render_diff` takes no such parameter). Gating it behind an
+    explicit `validate:PATH:verbose` re-run would build the hint and then hide
+    it from the one moment it is for.
+
+    Adapter-supplied text, `_flat_cell`-ed like every other string these
+    renderers put on a line of its own (#895).
+    """
+    guess = e.get("quote_open_guess")
+    if not isinstance(guess, dict):
+        return None
+    gl = guess.get("line")
+    if gl is None:
+        return None
+    note = _flat_cell(str(guess.get("note") or ""), 100)
+    return f"      ↳ maybe opened at L{gl}" + (f": {note}" if note else "")
+
+
 def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
     """Render a single validator result as a list of display lines.
 
@@ -21305,6 +21329,9 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
             code = e.get("code") or ""
             msg = _flat_cell(e.get("msg") or "")
             out.append(f"  {line_n} {code}  {msg}")
+            guess_line = _quote_open_guess_line(e)
+            if guess_line:
+                out.append(guess_line)
             for ctx_line in (e.get("source_context") or []):
                 out.append(f"    {_flat_cell(ctx_line)}")
             # An empty `source_context` used to mean either "no lines to show"
@@ -21334,6 +21361,9 @@ def _validator_render_row(data: Dict[str, Any], verbose: bool = False) -> list:
             code = e.get("code") or ""
             msg = _flat_cell(e.get("msg") or "", 120)
             out.append(f"  {line_n} {code}  {msg}")
+            guess_line = _quote_open_guess_line(e)
+            if guess_line:
+                out.append(guess_line)
         if len(errors) > 5:
             out.append(f"  ... +{len(errors) - 5} more")
     return out
@@ -21785,6 +21815,9 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
                 code = e.get("code") or ""
                 msg = _flat_cell(e.get("msg") or "", 120)
                 out.append(f"  {line_n} {code}  {msg}")
+                guess_line = _quote_open_guess_line(e)
+                if guess_line:
+                    out.append(guess_line)
             if len(after.get("errors") or []) > 5:
                 out.append(f"  ... +{len(after['errors']) - 5} more")
         return out
@@ -21828,6 +21861,9 @@ def _validator_render_diff(before: Optional[Dict[str, Any]], after: Dict[str, An
             msg = _flat_cell(e.get("msg") or "", 120)
             out.append(f"  {' ' if code == 'adapter' else bullet} "
                        f"{line_n} {code}  {msg}")
+            guess_line = _quote_open_guess_line(e)
+            if guess_line:
+                out.append(guess_line)
         if len(new) > 5:
             out.append(f"  {bullet} ... +{len(new) - 5} more"
                        f"{'' if b_unknown else ' new'}")
