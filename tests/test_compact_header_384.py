@@ -155,8 +155,10 @@ def assert_header_replays(out: str, arg: str) -> None:
     `[U+000A]` — so the reproduction material #384 is about survives, and the
     line count of supertool's own header stops being the argument's to choose.
     """
-    assert out.startswith("--- " + supertool._flat_field(arg)
-                          + " ---" + chr(10)), out.splitlines()[0]
+    assert out.startswith(
+        "--- " + supertool._flat_field(arg, disclose_newline=True)
+        + " ---" + chr(10)
+    ), out.splitlines()[0]
 
 
 def test_failed_edit_keeps_its_verbatim_header(tmp_path: Path) -> None:

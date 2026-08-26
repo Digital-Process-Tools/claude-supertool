@@ -3693,8 +3693,11 @@ def _path_not_found(path: str, *, label: str = "path",
     # line into the middle of a refusal. The stat, the abspath and the join
     # above still run on the real name, so the receipt keeps naming the path
     # that was actually opened (#1300).
-    shown, shown_tried = _flat_field(path), _flat_field(tried)
-    shown_cwd = _flat_field(os.getcwd())
+    shown, shown_tried = (
+        _flat_field(path, disclose_newline=True),
+        _flat_field(tried, disclose_newline=True),
+    )
+    shown_cwd = _flat_field(os.getcwd(), disclose_newline=True)
     if not suggest and path.startswith("~") and os.path.expanduser(path) == path:
         # `cwd:` provably cannot fix this one: no working directory makes a
         # `~user` resolve. Same reasoning as #734 and #921 — a hint pointing
@@ -11855,7 +11858,7 @@ def op_edit(old: str, new: str, path: str) -> str:
     # it — a retraction the reader's anchored grep believes, for a file that
     # was in fact written. Disclosed, never stripped: `_flat_field` leaves the
     # name readable in full so the operator can still go and look at it.
-    out = [f"edited {_flat_field(path)} (line {start_line}"]
+    out = [f"edited {_flat_field(path, disclose_newline=True)} (line {start_line}"]
     if end_line != start_line:
         out.append(f"-{end_line}")
     out.append(")\n")
@@ -23302,7 +23305,7 @@ _UNTRUSTED_FLAT: Optional[Callable[[str], str]] = None
 _UNTRUSTED_FLAT_TRIED = False
 
 
-def _flat_field(text: str) -> str:
+def _flat_field(text: str, *, disclose_newline: bool = False) -> str:
     """A value the tool prints on its own line, kept to one line (#881).
 
     The guarantee this establishes, stated so a parser can rely on it: **a
@@ -23334,6 +23337,15 @@ def _flat_field(text: str) -> str:
     Recorded because the argument for consolidating was "one guarantee, one
     implementation", which was right in shape and unverified in fact:
     consolidation is a win only once the survivor is the stronger of the two.
+
+    `disclose_newline` (#1571) forwards to `presets/_untrusted.flat`'s own
+    flag of the same name. The default is right for a title, which cannot
+    hold a newline on either tracker, so collapsing one to a space renders
+    something that never happens. A **path** can hold one, and there the
+    space is this repo's own defect class in miniature: it turns *this name
+    has a newline in it* into a DIFFERENT, plausible name that is not on
+    disk. Every caller of this function that renders a path the reader may
+    need to open again passes `disclose_newline=True`.
     """
     global _UNTRUSTED_FLAT, _UNTRUSTED_FLAT_TRIED
     if not _UNTRUSTED_FLAT_TRIED:
@@ -23350,7 +23362,7 @@ def _flat_field(text: str) -> str:
         except Exception:
             _UNTRUSTED_FLAT = None
     if _UNTRUSTED_FLAT is not None:
-        return _UNTRUSTED_FLAT(text)
+        return _UNTRUSTED_FLAT(text, disclose_newline=disclose_newline)
     return text if text.isprintable() else repr(text)
 
 
@@ -24720,8 +24732,9 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
     ("..." with escapes, '...' literal), multi-line strings (\"\"\"...\"\"\"
     with escapes, '''...''' literal), inline arrays (nesting, trailing comma,
     comments between elements), # comments, and `[[table]]` array-of-tables
-    headers. No single `[table]`, no dotted keys, no dates — only what
-    payloads need.
+    headers. No single `[table]`, no dotted keys, no quoted keys, no dates —
+    only what payloads need. A quoted key (`"my key" = 1`) parses on stdlib
+    `tomllib` (3.11+) and is refused here, by name, on Python <3.11 (#1595).
 
     Inline arrays matter specifically: a variadic payload field is written as
     a list, and `git-commit:@-` with `paths = ["a", "b"]` is the documented
@@ -24768,6 +24781,11 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
             bucket.append(current)
             i = end + 2
             continue
+        if raw[i] in "\"'":
+            raise ValueError(
+                f"a quoted key at offset {i} is not supported by the fallback "
+                "TOML parser (Python <3.11); use a bare key or JSON (#1595)"
+            )
         ks = i
         while i < n and (raw[i].isalnum() or raw[i] in "_-"):
             i += 1
@@ -25402,30 +25420,42 @@ def _payload_literal_backslashes_scope(parsed: Any) -> Union[bool, FrozenSet[str
 
 
 def _payload_literal_backslashes_misplaced(parsed: Any) -> str:
-    """Refuse `literal_backslashes` set inside an `[[ops]]` table (#1096).
+    """Refuse `literal_backslashes` set inside an `[[ops]]` table (#1096, #1720).
 
     An author who set it there stated an intent, and honouring it at a scope the
     tool cannot implement is not an option -- but neither is ignoring it. A
     silently dropped flag refuses the write while the payload says it was
     allowed, which is this tracker's own defect class: the receipt and the
     payload disagreeing about what was asked for.
+
+    Names EVERY offending index, not just the first (#1720): a templated batch
+    is the likely source of this mistake, and a caller who fixes `ops[0]`,
+    re-sends, and is then told about `ops[2]` has paid a round-trip the first
+    scan already had the answer to.
     """
     if not isinstance(parsed, dict):
         return ""
     ops = parsed.get("ops")
     if not isinstance(ops, list):
         return ""
-    for idx, entry in enumerate(ops):
-        if isinstance(entry, dict) and _PAYLOAD_LITERAL_BS_KEY in entry:
-            return (
-                "`" + _PAYLOAD_LITERAL_BS_KEY + "` is set inside `ops[" + str(idx)
-                + "]`, where it does nothing. It is read at the TOP LEVEL of the "
-                "payload only, and it applies to every op the payload carries -- "
-                "the doubled-backslash scan runs once, over the raw source, "
-                "before any op does. Move it to the top level if that is what "
-                "you meant; split the payload if the ops differ. (#1096)"
-            )
-    return ""
+    idxs = [idx for idx, entry in enumerate(ops)
+            if isinstance(entry, dict) and _PAYLOAD_LITERAL_BS_KEY in entry]
+    if not idxs:
+        return ""
+    where = (
+        "`ops[" + str(idxs[0]) + "]`" if len(idxs) == 1
+        else ", ".join("`ops[" + str(i) + "]`" for i in idxs[:-1])
+        + " and `ops[" + str(idxs[-1]) + "]`"
+    )
+    return (
+        "`" + _PAYLOAD_LITERAL_BS_KEY + "` is set inside " + where
+        + (" where it does nothing" if len(idxs) == 1 else ", where it does nothing")
+        + ". It is read at the TOP LEVEL of the "
+        "payload only, and it applies to every op the payload carries -- "
+        "the doubled-backslash scan runs once, over the raw source, "
+        "before any op does. Move it to the top level if that is what "
+        "you meant; split the payload if the ops differ. (#1096, #1720)"
+    )
 
 
 def _literal_bs_field_list_example(
@@ -26724,7 +26754,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # at column 0 above every genuine one. Not `_flat_cell`: that is the *row*
     # variant, which strips and bounds; a header names what was asked for and
     # must not silently drop a trailing space or truncate a long path.
-    header = (f"--- {_flat_field(arg)}"
+    header = (f"--- {_flat_field(arg, disclose_newline=True)}"
               f"{_NO_EXCLUDE_SUFFIX if no_exclude else ''} ---\n")
 
     # `op:::FIELD:::FIELD:::...` — triple-colon mode for write ops with
@@ -27688,7 +27718,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # status code, never from the prose of the receipt being summarised.
     if _compact_header and (_WRITE_COUNT[0] > _writes_before
                             or _custom_op_ok is True):
-        header = (f"--- {_flat_field(_compact_header)}"
+        header = (f"--- {_flat_field(_compact_header, disclose_newline=True)}"
                   f"{_NO_EXCLUDE_SUFFIX if no_exclude else ''} ---\n")
     # Right file, wrong branch is silent until commit time, and supertool is
     # the thing that knows (#381). Success and failure both get it — a failed

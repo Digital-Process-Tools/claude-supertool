@@ -1397,7 +1397,8 @@ def render(rows: list, exit_note: str = "") -> str:
         suffix = f"  [{', '.join(tags)}]" if tags else ""
         token = f"  {flat(tracker.token)}" if tracker is not None else ""
         out.append(f"{verdict.state:<12} {flat(str(branch)):<26} "
-                   f"{flat(str(entry.get('path', '?')))}{suffix}{token}")
+                   f"{flat(str(entry.get('path', '?')), disclose_newline=True)}"
+                   f"{suffix}{token}")
         for item in verdict.evidence:
             out.append(f"             · {flat(str(item))}")
         if tracker is not None:
@@ -1556,7 +1557,7 @@ def main() -> int:
     if wanted:
         entries = [e for e in entries if _inside(wanted, e["path"]) or _inside(e["path"], wanted)]
         if not entries:
-            shown = _untrusted.flat(wanted)
+            shown = _untrusted.flat(wanted, disclose_newline=True)
             print(f"# git-worktrees\n\ncannot tell   {shown}")
             print(f"             · {shown} is not a worktree of this repository — "
                   "nothing was inspected, so nothing is claimed")
