@@ -104,7 +104,7 @@ def test_subgroup_path_is_accepted_for_a_gitlab_call(no_dispatch) -> None:
     assert no_dispatch == [("gl-issue:5", TARGET)]
 
 
-def test_the_env_var_main_sets_does_not_survive_into_the_next_test() -> None:
+def test_the_env_var_main_sets_does_not_survive_into_the_next_test(tmp_path) -> None:
     """`main()`'s `repo:` pre-pass sets `os.environ["SUPERTOOL_REPO"]` for
     real -- a process-global side effect `monkeypatch` never touched, so its
     own teardown cannot undo it by itself. Left alive it corrupts every later
@@ -119,8 +119,20 @@ def test_the_env_var_main_sets_does_not_survive_into_the_next_test() -> None:
     what survives INTO THE NEXT test, so this drives a real next test, in a
     real pytest subprocess, and checks it from there -- the same way the leak
     was originally found.
+
+    #1981 -- the probe used to live at `REPO_ROOT / "tests" / "..."`, inside
+    `repo_python_files()`'s walk root (`tests/_repo_walk.py`). Under `-n auto`
+    (pyproject.toml:59) a concurrent worker running
+    `test_syntax_floor_478.py::test_every_repo_py_file_compiles_at_the_floor`
+    could enumerate the probe between this write and the `finally: unlink()`
+    below, then fail to open it -- coded as `unreadable`
+    (`_supertool.py:20095-20096`), which reads as a bogus `SyntaxError` naming
+    a file in no commit. `tmp_path` is pytest's own per-test scratch
+    directory and is never inside `REPO_ROOT`
+    (`test_repo_walk_probe_location_1981.py` pins that), so no walk rooted at
+    `REPO_ROOT` can ever enumerate it, no matter how the two races.
     """
-    probe = REPO_ROOT / "tests" / "_gl_repo_env_leak_probe_1780.py"
+    probe = tmp_path / "_gl_repo_env_leak_probe_1780.py"
     probe.write_text(
         "import os\n\n\n"
         "def test_probe():\n"
