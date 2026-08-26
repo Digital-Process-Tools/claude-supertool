@@ -68,6 +68,32 @@ def test_repo_slug_is_empty_on_timeout(monkeypatch) -> None:
     assert transport.repo_slug() == ""
 
 
+def test_repo_slug_honours_a_supertool_repo_target(monkeypatch) -> None:
+    """A watcher started under a `repo:` target (`SUPERTOOL_REPO`) queries
+    that repository, not the cwd's -- `_head_commit`/`_run_list` already
+    route through `presets/_repo_target.py` for it. `repo_slug()` reading the
+    cwd's `git remote` regardless would attribute the event to the wrong
+    repository: not merely absent, actively wrong, which is the one failure
+    #1952 was filed to eliminate. Reading `_gh` at all must not even be
+    attempted once a target is set — asserted here by leaving `git config`
+    unmocked and confirming it is never reached."""
+    monkeypatch.setenv("SUPERTOOL_REPO", "OTHER/REPO")
+
+    def _fail_if_called(*a, **kw):
+        raise AssertionError("git must not be shelled out to under a repo: target")
+    monkeypatch.setattr(transport.subprocess, "run", _fail_if_called)
+    assert transport.repo_slug() == "OTHER/REPO"
+
+
+def test_repo_slug_falls_back_to_the_cwd_remote_with_no_target(monkeypatch) -> None:
+    """The positive control for the case above: with no target set, the cwd's
+    own remote is still read exactly as before."""
+    monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
+    monkeypatch.setattr(transport.subprocess, "run",
+                        lambda *a, **kw: _run(0, "https://github.com/OWNER/REPO.git\n"))
+    assert transport.repo_slug() == "OWNER/REPO"
+
+
 # ---------------------------------------------------------------------------
 # emit_event carries repo the same way it carries first_tick
 # ---------------------------------------------------------------------------

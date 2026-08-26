@@ -38,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _proc
 sys.path.insert(0, str(Path(__file__).parent))  # for naming, our own sibling
 
 import _proc  # noqa: E402  (the one liveness probe, shared with gl-mrs / gh-prs)
+import _repo_target  # noqa: E402  (a `repo:` target wins over the cwd's remote, #1952)
 import _untrusted  # noqa: E402  (the repo's remote-text convention)
 import naming  # noqa: E402  (one name above the two path variables, #1477)
 
@@ -981,19 +982,33 @@ _REMOTE_SLUG_RE = re.compile(
 
 
 def repo_slug(timeout: int = 5) -> str:
-    """The `origin` remote's `owner/name`, or ``""`` when it cannot be read.
+    """`SUPERTOOL_REPO` when the watcher was started under one, else the
+    `origin` remote's `owner/name`, else ``""``.
 
-    Forge-agnostic and read from the cwd's own git configuration, never from
-    an API call — this is the watcher's own configuration (which repository
-    was I started in), not a fact about the object being polled (#1952). A
+    A watcher started under a `repo:` target queries *that* repository, never
+    the cwd's — `presets/github/branch.py`'s own `_head_commit`/`_run_list`
+    already route through `_repo_target` for exactly this reason, and
+    `gh-branch`'s poller calls them directly. Reading the cwd's `git remote`
+    regardless would attribute the event to the *wrong* repository rather
+    than to an absent one, which is worse than the ambiguity #1952 was filed
+    to fix: an event that names a repository is trusted, and a trusted wrong
+    answer is the more expensive of the two failures.
+
+    Otherwise forge-agnostic and read from the cwd's own git configuration,
+    never from an API call — this is the watcher's own configuration (which
+    repository was I started in), not a fact about the object being polled. A
     poller for a repository it was never handed a remote for, or one running
     where `git` is unavailable, answers "" rather than guessing: the consumer
     already treats an absent `repo` as "unknown", never as "unattributed".
 
     Read once per poller process (the caller's job, not this function's) —
-    the remote does not change under a running watcher, and re-shelling out to
-    `git` on every poll would be a cost paid for an answer that cannot change.
+    neither the target nor the remote changes under a running watcher, and
+    re-shelling out to `git` on every poll would be a cost paid for an answer
+    that cannot change.
     """
+    target = _repo_target.target()
+    if target:
+        return target
     try:
         r = subprocess.run(
             ["git", "config", "--get", "remote.origin.url"],
