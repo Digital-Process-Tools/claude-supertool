@@ -331,12 +331,17 @@ def test_log_pattern_bare_V_keeps_hint():
         os.unlink(p)
 
 
-def test_log_pattern_Nr_read_file_after_line():
-    """Kevin log: `:189r /tmp/foo.txt` — read FILE after line 189. Real vim feature."""
-    # Source file with content to read
-    src_fd, src_path = tempfile.mkstemp(suffix=".txt", text=True)
-    os.write(src_fd, b"INSERTED1\nINSERTED2\n")
-    os.close(src_fd)
+def test_log_pattern_Nr_read_file_after_line(tmp_path):
+    """Kevin log: `:189r /tmp/foo.txt` — read FILE after line 189. Real vim feature.
+
+    #1973: the source file used to come from a bare `tempfile.mkstemp()`,
+    landing it in the shared platform temp root rather than under pytest's
+    own per-test `tmp_path`. That is a mitigation against a race under
+    xdist load, not a diagnosis of one -- see the issue for what remains
+    unestablished."""
+    src_path = str(tmp_path / "src.txt")
+    with open(src_path, "wb") as f:
+        f.write(b"INSERTED1\nINSERTED2\n")
     p = _tmp("a\nb\nc\nd\ne\n")
     try:
         r = st.op_vim(p, f":2r {src_path}")
@@ -346,7 +351,6 @@ def test_log_pattern_Nr_read_file_after_line():
         assert "ERROR" not in r
     finally:
         os.unlink(p)
-        os.unlink(src_path)
 
 
 def test_issue12_bare_g_pattern_d_autocorrects_to_ex():

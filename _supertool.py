@@ -7486,6 +7486,89 @@ _TS_DEF_NODES_DEFAULT: Dict[str, str] = {
 }
 
 
+# #1954: `map` used to render a class's name and line span and nothing about
+# what it inherits from -- a subclass with two methods of its own and a
+# parent that supplies the rest read as a small standalone class. Capped
+# so a wide interface list cannot blow the line, and the cut is SAID
+# ("+N more") rather than a shorter list that silently claims completeness.
+_HIERARCHY_MAX_NAMES = 4
+
+# Node types that wrap a class/interface's parent + interface names, across
+# the grammars in the issue's own table. One neutral `<` separator for every
+# language rather than a language-shaped `extends`/`implements`: cheaper and
+# reads consistently on a mixed-language map, at the cost of not
+# distinguishing a parent class from an interface on sight -- the trade the
+# issue leaves as an open call, decided here in the cheaper direction.
+_TS_HERITAGE_CONTAINER_TYPES = frozenset({
+    "base_clause", "class_interface_clause",  # php
+    "class_heritage",                          # js/ts classes (wraps extends_clause/implements_clause)
+    "superclass", "super_interfaces",          # java classes, ruby
+    "extends_interfaces",                      # java interfaces: `interface Sub extends A, B`
+    "extends_type_clause",                     # ts/js interfaces: `interface Sub extends A, B`
+})
+
+# Node types whose text IS a name -- recursion into a heritage clause stops
+# here rather than walking into the name's own (empty) children.
+_TS_HIERARCHY_LEAF_TYPES = frozenset({
+    "identifier", "type_identifier", "constant", "name",
+    "scoped_identifier", "qualified_name",
+})
+
+
+def _ts_hierarchy_names(container: Any) -> List[str]:
+    """Named leaves under a heritage/interface-list node, source order.
+
+    Recurses through wrapper nodes a grammar interposes (TS/JS nests the
+    real names one level down inside `extends_clause`/`implements_clause`;
+    Java nests interface names inside a `type_list`) and skips a Python
+    `keyword_argument` (`metaclass=Meta` is not a base class) entirely.
+    """
+    names: List[str] = []
+
+    def _walk(node: Any) -> None:
+        if node.type == "keyword_argument":
+            return
+        if node.type in _TS_HIERARCHY_LEAF_TYPES:
+            text = node.text.decode("utf-8", errors="replace").strip()
+            if text:
+                names.append(text)
+            return
+        for child in node.named_children:
+            _walk(child)
+
+    for child in container.named_children:
+        _walk(child)
+    return names
+
+
+def _ts_class_hierarchy(node: Any) -> List[str]:
+    """Base class + interfaces named by a class/interface definition node's
+    own heritage clauses (#1954). Node-type driven: the same information
+    sits under a different child depending on grammar, so this asks each
+    known shape rather than assuming one."""
+    names: List[str] = []
+    for child in node.children:
+        if child.type in _TS_HERITAGE_CONTAINER_TYPES:
+            names.extend(_ts_hierarchy_names(child))
+        elif child.type == "argument_list" and node.type == "class_definition":
+            # Python: `class Foo(Base, metaclass=Meta):` -- the base list is
+            # the class_definition's own argument_list, not a named clause.
+            names.extend(_ts_hierarchy_names(child))
+    return names
+
+
+def _format_hierarchy_suffix(names: List[str]) -> str:
+    """`< A, B, C` (or `, +N more`) appended to a class's own map line."""
+    if not names:
+        return ""
+    shown = names[:_HIERARCHY_MAX_NAMES]
+    rest = len(names) - len(shown)
+    suffix = ", ".join(shown)
+    if rest > 0:
+        suffix += f", +{rest} more"
+    return f" < {suffix}"
+
+
 # Keywords that appear in front of a symbol when it's copy-pasted out of source
 # (`async function foo`, `public static function bar`, `class Baz`). `between:`
 # used to reject those verbatim strings, so a caller who typed the signature the
@@ -7564,6 +7647,10 @@ def _ts_extract(path: str, lang_name: str) -> List[Tuple[str, str, int, int]]:
         if node_type in def_nodes:
             kind = def_nodes[node_type]
             name = _ts_node_name(node, lang_name)
+            if kind in ("class", "interface"):
+                hierarchy = _ts_class_hierarchy(node)
+                if hierarchy:
+                    name += _format_hierarchy_suffix(hierarchy)
             line = node.start_point[0] + 1  # 0-indexed → 1-indexed
             end_line = node.end_point[0] + 1
             symbols.append((kind, name, line, end_line, depth))
@@ -7815,6 +7902,146 @@ _REGEX_PATTERNS[".tsx"] = _REGEX_PATTERNS[".ts"]
 _REGEX_PATTERNS[".jsx"] = _REGEX_PATTERNS[".js"]
 
 
+# #1954, regex tier: same gap as tree-sitter's `_ts_node_name`, and this is
+# the tier that actually runs whenever tree-sitter is unavailable -- the
+# default in this repo's own test suite. `extends`/`implements` are
+# keywords here, not grammar fields, so this is a header-text regex rather
+# than a node walk; `re.DOTALL` matters because a wrapped declaration (the
+# PHP example the issue was filed from) puts each interface on its own
+# line.
+_HEADER_HERITAGE_RE: Dict[str, Tuple[Optional[re.Pattern[str]], Optional[re.Pattern[str]]]] = {
+    ".php": (re.compile(r"extends\s+([\w\\]+)"),
+             re.compile(r"implements\s+(.+)", re.DOTALL)),
+    ".java": (re.compile(r"extends\s+([\w.<>]+)"),
+              re.compile(r"implements\s+(.+)", re.DOTALL)),
+    ".js": (re.compile(r"extends\s+([\w.$]+)"), None),
+    ".ts": (re.compile(r"extends\s+([\w.$]+)"),
+            re.compile(r"implements\s+(.+)", re.DOTALL)),
+}
+_HEADER_HERITAGE_RE[".tsx"] = _HEADER_HERITAGE_RE[".ts"]
+_HEADER_HERITAGE_RE[".jsx"] = _HEADER_HERITAGE_RE[".js"]
+
+# 2000 chars comfortably covers any realistic wrapped extends/implements
+# clause (the issue's own multi-line PHP example is under 150). Widened
+# from 400 after a review measured a false "+N more" undercount on a
+# synthetic 12-interface header that ran past the old window (#1954
+# follow-up): the count was wrong, not just approximate, because
+# `_format_hierarchy_suffix` had already lost the names past the cut.
+_CLASS_HEADER_WINDOW = 2000
+
+
+def _class_header_text(content: str, start: int) -> Tuple[str, bool]:
+    """The declaration's own text from just past the class/interface name
+    up to its opening `{`, and whether the scan window ran out first.
+
+    Cutting at `{` keeps a later comment or method body that happens to say
+    "implements" from being read as part of the header. When no `{` turns
+    up inside the window, the header is truncated -- the caller must not
+    report a name count computed from it as complete: better to decline
+    the whole suffix than assert a number this function cannot back up.
+    """
+    chunk = content[start:start + _CLASS_HEADER_WINDOW]
+    brace = chunk.find("{")
+    if brace == -1:
+        return chunk, True
+    return chunk[:brace], False
+
+
+def _split_top_level_commas(s: str) -> List[str]:
+    """Split on `,` that is not nested inside `()`, `[]`, `{}` or `<>`.
+
+    A Python base list can carry a parenthesized default
+    (`class Foo(Base, x=(1, 2)):`) and a Java/TS interface list can carry a
+    generic type argument (`implements Comparable<Foo, Bar>`) -- a plain
+    `str.split(",")` cuts both in the middle and reports a garbled or
+    truncated name instead of the real one.
+    """
+    parts: List[str] = []
+    depth = 0
+    current: List[str] = []
+    opens = "([{<"
+    closes = ")]}>"
+    for ch in s:
+        if ch in opens:
+            depth += 1
+        elif ch in closes:
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    parts.append("".join(current))
+    return parts
+
+
+def _leading_balanced_parens(header: str) -> Optional[str]:
+    """Content of the balanced `(...)` at the very start of `header` (after
+    optional leading whitespace), or None if it does not start with one.
+
+    A plain `[^)]*` regex stops at the FIRST `)`, which for
+    `class Foo(Base, x=(1, 2)):` is the one closing the nested tuple
+    literal -- the outer close-paren and anything after it (a later real
+    base class) are silently lost. Balanced counting does not have that
+    failure mode.
+    """
+    i = 0
+    n = len(header)
+    while i < n and header[i].isspace():
+        i += 1
+    if i >= n or header[i] != "(":
+        return None
+    depth = 0
+    start = i
+    for j in range(i, n):
+        if header[j] == "(":
+            depth += 1
+        elif header[j] == ")":
+            depth -= 1
+            if depth == 0:
+                return header[start + 1:j]
+    return None  # unbalanced within the scanned window
+
+
+def _header_hierarchy(ext: str, header: str) -> List[str]:
+    """Base class + interfaces named in a class/interface declaration's own
+    header (from the name to the opening `{`). Language-shaped, because the
+    keywords are: PHP/Java/JS/TS name them with `extends`/`implements`,
+    Python's base list is the parens right after the name, Ruby's is `<`.
+    """
+    if ext == ".py":
+        inner = _leading_balanced_parens(header)
+        if inner is None:
+            return []
+        names = []
+        for part in _split_top_level_commas(inner):
+            part = part.strip()
+            if part and "=" not in part and not part.startswith("*"):
+                names.append(part)
+        return names
+    if ext == ".rb":
+        m = re.match(r"\s*<\s*([\w:]+)", header)
+        return [m.group(1)] if m else []
+    spec = _HEADER_HERITAGE_RE.get(ext)
+    if not spec:
+        return []
+    names = []
+    extends_re, implements_re = spec
+    if extends_re:
+        m = extends_re.search(header)
+        if m:
+            names.append(m.group(1).strip())
+    if implements_re:
+        m = implements_re.search(header)
+        if m:
+            names.extend(
+                part.strip()
+                for part in _split_top_level_commas(m.group(1))
+                if part.strip()
+            )
+    return names
+
+
 def _regex_extract(path: str) -> List[Tuple[str, str, int, int, int]]:
     """Extract symbols from a file using regex patterns.
 
@@ -7847,6 +8074,20 @@ def _regex_extract(path: str) -> List[Tuple[str, str, int, int, int]]:
             else:
                 name = m.group(1)
                 depth = 0
+            if kind in ("class", "interface"):
+                header, truncated = _class_header_text(content, m.end())
+                # Python (`:`) and Ruby (no closing token at all) match right
+                # at the head of the header regardless of where -- or
+                # whether -- the scan window ran out; only the keyword-based
+                # languages (`extends`/`implements` reached via .search()
+                # over the WHOLE header) can have a real base class or
+                # interface sitting past a truncated window.
+                if truncated and ext not in (".py", ".rb"):
+                    hierarchy: List[str] = []
+                else:
+                    hierarchy = _header_hierarchy(ext, header)
+                if hierarchy:
+                    name += _format_hierarchy_suffix(hierarchy)
             symbols.append((kind, name, line_num, line_num, depth))
 
     # Sort by line number
@@ -20100,10 +20341,10 @@ for p in json.load(sys.stdin):
         compile(src, p, 'exec', dont_inherit=True)
     except SyntaxError as e:
         out.append({'file': p, 'line': getattr(e, 'lineno', None),
-                    'col': getattr(e, 'offset', None),
+                    'col': getattr(e, 'offset', None), 'kind': 'syntax',
                     'msg': (getattr(e, 'msg', None) or str(e))[:300]})
     except (OSError, ValueError) as e:
-        out.append({'file': p, 'line': None, 'col': None,
+        out.append({'file': p, 'line': None, 'col': None, 'kind': 'unreadable',
                     'msg': 'unreadable: ' + str(e)[:200]})
 json.dump(out, sys.stdout)
 """
@@ -20199,14 +20440,27 @@ def _syntax_floor_check(paths: Iterable[str],
         return {"tool": "syntax-floor", "skipped": (
             "unparseable output from %s — treating as no answer, not as clean: %s"
             % (interp, (proc.stderr or proc.stdout or "").strip()[:200]))}
+    # #1982: the child tags each arm ('syntax' vs 'unreadable') so the parent
+    # no longer has to erase the distinction with a hard-coded "code": "syntax"
+    # literal. A path the child never got to `compile()` -- gone mid-walk, a
+    # dangling symlink, a permissions error -- is not a finding about source
+    # that was never read; it goes to `skipped_paths`, and `checked` excludes
+    # it, mirroring `_builtin_syntax_run`'s in-process contract (#1982).
+    unreadable = [f for f in found if f.get("kind") == "unreadable"]
+    syntax_errors = [f for f in found if f.get("kind") != "unreadable"]
     errors = [{"file": f.get("file"), "line": f.get("line"), "col": f.get("col"),
                "severity": "error", "code": "syntax",
-               "msg": str(f.get("msg", ""))[:300]} for f in found]
+               "msg": str(f.get("msg", ""))[:300]} for f in syntax_errors]
     result: Dict[str, Any] = {
         "tool": "syntax-floor", "ok": not errors, "count": len(errors),
         "errors": errors, "duration_ms": int(_elapsed_since(t0) * 1000),
-        "interpreter": interp, "checked": len(targets),
+        "interpreter": interp, "checked": len(targets) - len(unreadable),
     }
+    if unreadable:
+        result["skipped_paths"] = [
+            {"file": f.get("file"), "msg": str(f.get("msg", ""))[:300]}
+            for f in unreadable
+        ]
     ver = _interpreter_version(interp)
     if ver is not None:
         result["interpreter_version"] = "%d.%d" % ver

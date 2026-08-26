@@ -64,21 +64,29 @@ def test_r_missing_file_in_existing_parent_says_parent_exists():
         os.unlink(p)
 
 
-def test_r_success_receipt_carries_no_diagnostic_noise():
+def test_r_success_receipt_carries_no_diagnostic_noise(tmp_path):
     """The common case -- file present, read succeeds -- must not carry
     any of this extra detail. Most `:r` calls succeed; a successful read
-    should look exactly as it did before."""
+    should look exactly as it did before.
+
+    #1973: the source file used to come from a bare `tempfile.mkstemp()`,
+    landing it in the shared platform temp root rather than under pytest's
+    own per-test `tmp_path`. That is a mitigation against a race under
+    xdist load, not a diagnosis of one -- see the issue for what remains
+    unestablished. `os.close()` alone does not delete an `mkstemp()` file,
+    so the file was never "closed and therefore gone" the way a
+    `NamedTemporaryFile(delete=True)` would be; whatever removed it was
+    something else."""
     p = _tmp("a\nb\n")
-    src_fd, src_path = tempfile.mkstemp(suffix=".txt", text=True)
-    os.write(src_fd, b"HI\n")
-    os.close(src_fd)
+    src_path = str(tmp_path / "src.txt")
+    with open(src_path, "wb") as f:
+        f.write(b"HI\n")
     try:
         r = st.op_vim(p, f":1r {src_path}")
         assert "ERROR" not in r
         assert "parent" not in r.lower()
     finally:
         os.unlink(p)
-        os.unlink(src_path)
 
 
 def test_r_directory_failure_keeps_receipt_short(tmp_path):
