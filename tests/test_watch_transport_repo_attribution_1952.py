@@ -25,6 +25,28 @@ transport = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(transport)
 
 
+@pytest.fixture(autouse=True)
+def clean_repo_env(monkeypatch):
+    """`SUPERTOOL_REPO` is process-global, never let it bleed between tests.
+
+    `os.environ["SUPERTOOL_REPO"] = ...` in `_supertool.py`'s own `repo:`
+    pre-pass is a direct environment write, not a `monkeypatch.setenv` call --
+    so a test file that invokes `supertool.main([...])` in-process (several
+    do, e.g. `test_repo_target_673.py`) leaves the value sitting in this
+    worker's real `os.environ` after it returns, with nothing to undo it: it
+    was never `monkeypatch`'s write to undo. Observed on CI (ubuntu, #1953):
+    every case here, including the three absence arms that mock `git` into
+    failing, returned `Digital-Process-Tools/claude-remember` because
+    `repo_slug()` (correctly) checks `_repo_target.target()` first and a
+    prior test file's leaked env answered before any mock here was reached.
+    Same fixture, same reasoning, same fix as `test_repo_target_673.py`'s
+    `clean_repo_env` -- copied rather than imported, because a shared fixture
+    across files is exactly the kind of implicit coupling a leak like this
+    exploits."""
+    monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
+    yield
+
+
 def _run(returncode: int, stdout: str):
     result = mock.Mock()
     result.returncode = returncode
@@ -91,6 +113,24 @@ def test_repo_slug_falls_back_to_the_cwd_remote_with_no_target(monkeypatch) -> N
     monkeypatch.setattr(transport.subprocess, "run",
                         lambda *a, **kw: _run(0, "https://github.com/OWNER/REPO.git\n"))
     assert transport.repo_slug() == "OWNER/REPO"
+
+
+def test_the_regex_itself_rejects_a_trailing_newline_in_its_own_value(
+        monkeypatch) -> None:
+    r"""#1188: `^...$` accepts a value with a trailing newline that nobody
+    meant to allow, because Python's `$` matches before a final `\n` as well
+    as at the true end of the string. `_REMOTE_SLUG_RE` is anchored `\Z`
+    rather than `$` for exactly this. The call site's own `.strip()` already
+    makes this unreachable through `repo_slug()` itself -- which is why this
+    test exercises the compiled pattern directly rather than through
+    `repo_slug()`: a caller that strips first is not evidence the pattern's
+    own anchor is honest, and the class this guards against is any future
+    caller that matches this same regex without stripping first."""
+    raw_with_newline = "https://github.com/OWNER/REPO.git\n"
+    assert transport._REMOTE_SLUG_RE.match(raw_with_newline) is None
+    # Positive control: the same value with the newline actually gone still
+    # matches, so the anchor change did not simply refuse everything.
+    assert transport._REMOTE_SLUG_RE.match(raw_with_newline.rstrip("\n")) is not None
 
 
 # ---------------------------------------------------------------------------

@@ -328,7 +328,10 @@ FILE_CENSUS: dict[str, int] = {
     "presets/github/job.py": 8,
     "presets/github/pr.py": 1,
     "presets/gitlab/api.py": 1,
-    "presets/watch/README.md": 10,  # prose; held by fix/1798, report don't edit
+    "presets/watch/README.md": 11,  # prose -- #1953 added one usage example
+                                     # line (`watch:gh-branch:main`), same
+                                     # shape as its neighbours in the same
+                                     # code block, not a printed remedy
     "presets/watch/dispatcher.py": 1,
     "presets/watch/tiers/gl_mrs.py": 1,
     "presets/watch/watch-mine.sh": 1,  # shell: `${SUPERTOOL:-./supertool}`

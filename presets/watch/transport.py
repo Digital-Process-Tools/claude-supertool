@@ -978,7 +978,7 @@ def flatten_remote(payload: dict[str, Any]) -> dict[str, Any]:
 #: than on a trailing `.git`, because `.git` is optional and a slug is not
 #: allowed to swallow a path segment it never had.
 _REMOTE_SLUG_RE = re.compile(
-    r"^(?:[\w.+-]+://[^/]+/|[^@/]+@[^:]+:)(.+?)(?:\.git)?/?$")
+    r"^(?:[\w.+-]+://[^/]+/|[^@/]+@[^:]+:)(.+?)(?:\.git)?/?\Z")
 
 
 def repo_slug(timeout: int = 5) -> str:
