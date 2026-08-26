@@ -10,7 +10,6 @@ never inside `payload`, which is a forge object's own words.
 from __future__ import annotations
 
 import importlib.util
-import subprocess
 import sys
 from pathlib import Path
 from unittest import mock

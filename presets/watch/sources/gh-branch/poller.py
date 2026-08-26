@@ -37,7 +37,6 @@ from __future__ import annotations
 import concurrent.futures
 import importlib.util
 from pathlib import Path
-from typing import Any
 
 INTERVAL = 30
 
