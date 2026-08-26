@@ -85,8 +85,12 @@ def test_markdownlint_config_disables_the_rules_that_misfire_on_this_repo() -> N
       an HTML banner image, a deliberate choice, not a heading) and on
       every changelog.d/*.md fragment (a bullet destined for CHANGELOG.md,
       never meant to stand alone as a headed document) -- measured on the
-      very first fragment written through this validator, changelog.d/
-      1975.fixed.md itself.
+      changelog fragment this issue's own pull request adds, the very
+      first write to reach this validator once it was registered locally.
+      (Not named by its on-disk path here: a pending changelog.d fragment
+      is deleted by the release that ships it, and a reference keyed to
+      that path is green only until then -- see
+      tests/_changelog_findable.py.)
 
     A `.markdownlintignore` scoped to changelog.d/ was tried first and
     reverted: markdownlint-cli's `ignore` dependency raises a `RangeError`
