@@ -62,6 +62,16 @@ try:
 except ImportError:  # pragma: no cover - only in the synthetic-repo suites
     _git_decline = None
 
+# Same tolerance, same reason (#1998): the class guard for the #1981 race --
+# no test may create a `.py` file inside `repo_python_files()`'s walk root at
+# runtime. Not available in the synthetic-repo suites, which have no
+# `tests/_repo_walk.py` to import and are not scanned by anything that reads
+# it, so there is nothing here for the guard to protect.
+try:
+    import _write_guard  # noqa: E402
+except ImportError:  # pragma: no cover - only in the synthetic-repo suites
+    _write_guard = None
+
 # Same tolerance, same reason (#1523). This one is registered as a plugin rather
 # than called from the hooks below: it needs `pytest_runtest_makereport`,
 # `pytest_runtest_logreport` and `pytest_sessionfinish` as well as a summary
@@ -411,6 +421,15 @@ def pytest_configure(config):
     # bodies or session helpers, which run before any fixture. Scrub once here
     # too, and remember what was leaked so it gets reported rather than hidden.
     config._supertool_leaked_git_env = scrub_git_env()
+    # #1998: installed once, for the life of the process, rather than as a
+    # per-test fixture -- the #1981 race is not scoped to "whichever test is
+    # currently running". Under `-n auto` the offending write and the
+    # competing repo-wide walk can be in two different tests in two
+    # different workers, so the only scope that covers every window is
+    # "the whole time this worker is alive". Taken down in
+    # `pytest_unconfigure`, symmetrically with the cache-home redirect above.
+    if _write_guard is not None:
+        _write_guard.install()
 
 
 def pytest_unconfigure(config):
@@ -430,6 +449,12 @@ def pytest_unconfigure(config):
         except OSError:
             pass
     del _CACHE_HOMES[:]
+    # #1998: symmetric with the install in pytest_configure. Best-effort in
+    # the same spirit as the cleanup above is not needed here -- uninstall()
+    # only ever restores two saved function references, which cannot itself
+    # raise.
+    if _write_guard is not None:
+        _write_guard.uninstall()
 
 
 def pytest_report_header(config):
