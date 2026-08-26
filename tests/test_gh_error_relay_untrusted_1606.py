@@ -253,7 +253,7 @@ def test_pr_create_failure_relay_is_flattened(monkeypatch, capsys, tmp_path):
     payload = tmp_path / "pr.toml"
     payload.write_text(
         chr(10).join(['repo = "o/r"', 'base = "master"', 'head = "topic"',
-                      'title = "t"', 'body = "b"', ""]),
+                      'title = "t"', 'body = "Closes #1606"', ""]),
         encoding="utf-8",
     )
     monkeypatch.setattr(mod, "_gh", lambda *a, **k: _failing(HOSTILE))

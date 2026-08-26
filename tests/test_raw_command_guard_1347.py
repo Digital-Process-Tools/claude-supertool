@@ -165,14 +165,31 @@ def test_a_backtick_inside_quotes_is_still_text(tmp_path, guard_config):
     assert supertool.guard_command(cmd).state == "clean", cmd
 
 
-def test_a_substitution_the_lexer_cannot_open_is_undecided(
+def test_a_backtick_substitution_the_lexer_cannot_open_is_undecided(
         tmp_path, guard_config):
-    """Quoting hides a substitution from the tokeniser. That is not `clean`."""
+    """Quoting hides a backtick substitution from the tokeniser (#1762: only
+
+    the `$(...)` spelling was taught to look past the quotes -- there is no
+    balancing scan for a backtick's own delimiters, so that shape is still
+    not `clean`.
+    """
     guard_config(tmp_path, _TWO_OPS)
-    for cmd in ('echo "$(some-command)"',
-                'echo "' + chr(96) + 'some-command' + chr(96) + '"'):
-        verdict = supertool.guard_command(cmd)
-        assert verdict.state == "undecided", (cmd, verdict)
+    cmd = 'echo "' + chr(96) + 'some-command' + chr(96) + '"'
+    verdict = supertool.guard_command(cmd)
+    assert verdict.state == "undecided", (cmd, verdict)
+
+
+def test_a_double_quoted_dollar_paren_substitution_is_now_read(
+        tmp_path, guard_config):
+    """#1762: the obstacle was only the quotes, so this is read like the
+    unquoted form -- `clean` when nothing inside it is replaced, `blocked`
+    when it names one of `_TWO_OPS`'s own commands.
+    """
+    guard_config(tmp_path, _TWO_OPS)
+    assert supertool.guard_command(
+        'echo "$(some-command)"').state == "clean"
+    assert supertool.guard_command(
+        'x="$(gh pr view 12)"').state == "blocked"
 
 
 def test_an_interpreter_handed_a_string_is_undecided(tmp_path, guard_config):

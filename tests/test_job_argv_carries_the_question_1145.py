@@ -65,7 +65,9 @@ def _gh_run(args: list[str], **kw: Any) -> subprocess.CompletedProcess:
         "name": "test-job", "status": "completed", "conclusion": "failure",
         "run_id": 42, "run_url": "https://github.com/x/y/actions/runs/42",
     })
-    url = args[2] if len(args) > 2 else ""
+    # First non-flag positional after `api` — the log call now inserts
+    # --allow-escape-sequences before the url (#1957).
+    url = next((a for a in args[2:] if not a.startswith("--")), "")
     if url.endswith("/logs"):
         return subprocess.CompletedProcess(args, 0, TRACE, "")
     return subprocess.CompletedProcess(args, 0, meta, "")

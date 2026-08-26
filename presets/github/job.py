@@ -83,6 +83,13 @@ def _gh_error_kind(stderr: str) -> str:
         return "ratelimit"
     if _status_probe.says_forbidden(s):
         return "forbidden"
+    # #1957: an older `gh`, predating --allow-escape-sequences, refuses the
+    # flag itself ("unknown flag: --allow-escape-sequences") rather than the
+    # escape-sequence guard the flag exists to bypass. That is a third state,
+    # not the "other" catch-all -- naming it lets the caller say "this gh is
+    # too old" instead of a generic failure that reads like a transient error.
+    if "unknown flag" in s and "allow-escape-sequences" in s:
+        return "old_gh_no_escape_flag"
     return "other"
 
 
@@ -99,6 +106,11 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
         return "ERROR: GitHub API rate limit exceeded. Wait a few minutes and retry."
     if kind == "forbidden":
         return f"ERROR: permission denied for {resource} #{identifier}. Check repo access (gh auth status)."
+    if kind == "old_gh_no_escape_flag":
+        return (f"ERROR: this gh CLI does not support --allow-escape-sequences, "
+                f"so {resource} #{identifier} cannot be read (its log contains "
+                f"terminal escape sequences). Upgrade gh (https://cli.github.com) "
+                f"and retry.")
     # The remote host wrote this text — flattened, never relayed raw (#1606).
     return (f"ERROR: gh failed for {resource} #{identifier}: "
             f"{_untrusted.flat(stderr.strip())}")
@@ -996,8 +1008,16 @@ def main() -> int:
 
     # 2. Get job log
     try:
+        # #1957: gh refuses to write a response containing terminal escape
+        # sequences to a non-TTY, which supertool always is when it captures
+        # output -- so any log with ANSI colour codes (the CI norm, not the
+        # exception) was unreadable through every mode. --allow-escape-sequences
+        # lets the bytes through; the strip a few lines below (line ~1032, kept
+        # from before this fix) removes them before anything downstream parses
+        # the log, so the reader still never sees a raw control byte (#1429).
         log_result = subprocess.run(
-            ["gh", "api", _api_repo_path(f"actions/jobs/{job_id}/logs")],
+            ["gh", "api", "--allow-escape-sequences",
+             _api_repo_path(f"actions/jobs/{job_id}/logs")],
             capture_output=True, text=True, timeout=20, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
