@@ -470,10 +470,15 @@ def main() -> int:  # noqa: C901
               "with body or body_file)")
         return 1
 
+    repo_conflict, repo_source = _repo_target.resolve_or_conflict(payload, "gh-pr-edit")
+    if repo_conflict:
+        print(repo_conflict)
+        return 1
     if not payload.get("repo"):
-        auto = _repo_target.target() or _rd.resolve("github_repo", "github.com")
+        auto = _rd.resolve("github_repo", "github.com")
         if auto:
             payload["repo"] = auto
+            repo_source = "cwd remote / config default"
 
     err = validate(payload)
     if err:
@@ -512,7 +517,9 @@ def main() -> int:  # noqa: C901
     elif not read_err:
         read_err = "gh returned no pull request object"
 
-    print(f"# gh-pr-edit — {repo}#{number}")
+    repo_note = (f"  (repo from {repo_source})"
+                 if repo_source not in ("", "payload") else "")
+    print(f"# gh-pr-edit — {repo}#{number}{repo_note}")
     print(f"  {state_line}")
 
     # ---- would this update unlink an issue? ------------------------------

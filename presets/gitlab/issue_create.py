@@ -19,6 +19,7 @@ except ModuleNotFoundError:
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _remote_default as _rd  # noqa: E402
+import _repo_target  # noqa: E402  (repo: op precedence over payload's own field -- #1909)
 import _untrusted  # noqa: E402  (glab relays the API's own error body — #1485)
 
 
@@ -110,10 +111,15 @@ def main() -> int:
         print(f"ERROR: failed to parse payload: {e} (expected JSON or TOML with title/description)")
         return 1
 
+    repo_conflict, repo_source = _repo_target.resolve_or_conflict(payload, "gl-issue-create", "project")
+    if repo_conflict:
+        print(repo_conflict)
+        return 1
     if not payload.get("project"):
         auto = _rd.resolve("gitlab_project", "gitlab")
         if auto:
             payload["project"] = auto
+            repo_source = "cwd remote / config default"
 
     err = _validate(payload)
     if err:
@@ -243,7 +249,9 @@ def main() -> int:
                 f"--field=link_type={link_type}",
             )
 
-    print(f"gl-issue-create OK iid={iid} url={url}")
+    source_note = (f"  (project from {repo_source})"
+                    if repo_source not in ("", "payload") else "")
+    print(f"gl-issue-create OK iid={iid} url={url}{source_note}")
     return 0
 
 

@@ -888,3 +888,115 @@ class TestGithubIssueCreate:
         assert "failed to parse payload" in out
         assert "JSON or TOML" in out
         assert "title" in out
+
+
+# ===========================================================================
+# #1909 — repo: reconciled against the payload's own repo field
+# ===========================================================================
+
+class TestGithubIssueCreateRepoTarget:
+    """`main()`'s own reconciliation of `SUPERTOOL_REPO` against `payload["repo"]`
+    -- the counterpart to `tests/test_repo_target_673.py`'s pre-pass tests,
+    which stop at "the call was not refused" and never dispatch this far."""
+
+    def test_repo_op_supplies_a_silent_payload(self, monkeypatch, capsys, tmp_path):
+        """target set, payload silent -> the target wins, stated with its
+        source in the receipt."""
+        payload = {"title": "No repo in payload", "body": "x"}
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setenv("SUPERTOOL_REPO", "owner/from-repo-op")
+
+        captured: list[list[str]] = []
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: captured.append(args) or _ok(GH_URL))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert _flag_value(captured[0], "--repo") == "owner/from-repo-op"
+        assert "repo from repo: op" in out
+
+    def test_repo_op_and_agreeing_payload_proceed(self, monkeypatch, capsys, tmp_path):
+        """Both present and agreeing is not ambiguous -- it proceeds."""
+        payload_file = _write_payload(tmp_path, GH_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setenv("SUPERTOOL_REPO", GH_MINIMAL["repo"])
+
+        captured: list[list[str]] = []
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: captured.append(args) or _ok(GH_URL))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert _flag_value(captured[0], "--repo") == GH_MINIMAL["repo"]
+
+    def test_repo_op_and_disagreeing_payload_refuse(self, monkeypatch, capsys, tmp_path):
+        """Both present and disagreeing must refuse, naming both values and
+        never guessing which wins -- the one arm that proves the check is
+        for real. Would still pass if the code did nothing UNLESS paired
+        with the agreeing case above, which proceeds."""
+        payload_file = _write_payload(tmp_path, GH_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setenv("SUPERTOOL_REPO", "owner/somewhere-else")
+
+        called: list[list[str]] = []
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: called.append(args) or _ok(GH_URL))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert called == [], "gh was invoked despite the disagreement"
+        assert GH_MINIMAL["repo"] in out
+        assert "owner/somewhere-else" in out
+        assert "gh-issue-create" in out
+
+
+class TestGitlabIssueCreateRepoTarget:
+    """The GitLab twin: `gl-issue-create` reconciles `SUPERTOOL_REPO` against
+    `payload["project"]`, using GitLab's own key name (#1909)."""
+
+    def test_repo_op_supplies_a_silent_payload(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, {"title": "No project", "description": "x"})
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setenv("SUPERTOOL_REPO", "group/from-repo-op")
+
+        captured: list[list[str]] = []
+        monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: captured.append(args) or _ok(GL_URL))
+        monkeypatch.setattr(gl, "_glab_api", lambda *a, **kw: _ok("{}"))
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert _flag_value(captured[0], "--repo") == "group/from-repo-op"
+        assert "project from repo: op" in out
+
+    def test_repo_op_and_agreeing_payload_proceed(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, GL_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setenv("SUPERTOOL_REPO", GL_MINIMAL["project"])
+
+        captured: list[list[str]] = []
+        monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: captured.append(args) or _ok(GL_URL))
+        monkeypatch.setattr(gl, "_glab_api", lambda *a, **kw: _ok("{}"))
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert _flag_value(captured[0], "--repo") == GL_MINIMAL["project"]
+
+    def test_repo_op_and_disagreeing_payload_refuse(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, GL_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setenv("SUPERTOOL_REPO", "group/somewhere-else")
+
+        called: list[list[str]] = []
+        monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: called.append(args) or _ok(GL_URL))
+        monkeypatch.setattr(gl, "_glab_api", lambda *a, **kw: _ok("{}"))
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert called == [], "glab was invoked despite the disagreement"
+        assert GL_MINIMAL["project"] in out
+        assert "group/somewhere-else" in out
+        assert "gl-issue-create" in out

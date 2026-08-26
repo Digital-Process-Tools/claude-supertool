@@ -377,3 +377,52 @@ def test_current_branch_reports_a_missing_git(monkeypatch):
 def test_an_unparseable_timestamp_is_not_read_as_fresh():
     assert m._age_secs("not a date") is None
     assert m._age_secs("") is None
+
+
+# ===========================================================================
+# #1909 — repo: reconciled against the payload's own repo field
+# ===========================================================================
+
+def test_repo_op_supplies_a_silent_payload(monkeypatch, capsys, tmp_path):
+    """target set, payload silent -> the target wins, stated with its source
+    in the receipt."""
+    h = _Harness()
+    _install(monkeypatch, h, _payload(
+        tmp_path, {"title": "a change", "base": "master", "body": "Closes #950"}))
+    monkeypatch.setenv("SUPERTOOL_REPO", "owner/from-repo-op")
+
+    assert m.main() == 0
+    assert h.create_calls
+    assert "--repo" in h.create_calls[0]
+    assert h.create_calls[0][h.create_calls[0].index("--repo") + 1] == \
+        "owner/from-repo-op"
+    assert "repo from repo: op" in capsys.readouterr().out
+
+
+def test_repo_op_and_agreeing_payload_proceed(monkeypatch, tmp_path):
+    """Both present and agreeing is not ambiguous -- it proceeds."""
+    h = _Harness()
+    _install(monkeypatch, h, _payload(tmp_path, FULL))
+    monkeypatch.setenv("SUPERTOOL_REPO", REPO)
+
+    assert m.main() == 0
+    assert h.create_calls
+    assert "--repo" in h.create_calls[0]
+    assert h.create_calls[0][h.create_calls[0].index("--repo") + 1] == REPO
+
+
+def test_repo_op_and_disagreeing_payload_refuse(monkeypatch, capsys, tmp_path):
+    """Both present and disagreeing must refuse, naming both values and never
+    guessing which wins -- the one arm that proves the check is for real.
+    Would still pass if the code did nothing UNLESS paired with the agreeing
+    case above, which proceeds."""
+    h = _Harness()
+    _install(monkeypatch, h, _payload(tmp_path, FULL))
+    monkeypatch.setenv("SUPERTOOL_REPO", "owner/somewhere-else")
+
+    assert m.main() == 1
+    assert h.create_calls == [], "gh pr create ran despite the disagreement"
+    out = capsys.readouterr().out
+    assert REPO in out
+    assert "owner/somewhere-else" in out
+    assert "gh-pr-create" in out

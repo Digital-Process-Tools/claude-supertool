@@ -408,23 +408,23 @@ def test_a_payload_route_op_still_settles_the_forge(no_dispatch, capsys) -> None
     assert "GitLab project path" in capsys.readouterr().err
 
 
-def test_gl_issue_create_names_its_own_payload_key(no_dispatch, capsys) -> None:
-    """`gl-issue-create` takes `project`, not `repo`. Telling its caller to set
-    `repo = ...` names a field the payload validator does not read, which is a
-    worse answer than the generic refusal it used to get."""
+def test_gl_issue_create_now_reaches_the_pre_pass(no_dispatch) -> None:
+    """#1909: `gl-issue-create` is `payload:project`-mode, and a payload mode
+    no longer refuses the whole call — `repo:` is exported for it exactly as
+    for an `op`-mode read, and reconciling it with the payload's own
+    `project` key is `gl-issue-create`'s own job now (see
+    tests/test_issue_create.py for that reconciliation)."""
     rc = supertool.main(["repo:group/project", "gl-issue-create:@.max/x.toml"])
 
-    assert rc == 1
-    assert no_dispatch == []
-    err = capsys.readouterr().err
-    assert "gl-issue-create" in err
-    assert "payload" in err
-    assert "project" in err
-    assert "repo = " not in err
+    assert rc == 0
+    assert no_dispatch == [("gl-issue-create:@.max/x.toml", "group/project")]
 
 
-def test_gh_issue_create_still_names_repo(no_dispatch, capsys) -> None:
-    assert "repo" in supertool._repo_refusal("gh-issue-create")
+def test_repo_refusal_still_names_repo_for_a_non_targetable_op() -> None:
+    """`_repo_refusal` is only reached for an op with no repo dimension at
+    all now (#1909) — `read` is one such op, never `gh-issue-create`, which
+    is `payload`-mode and no longer refused here."""
+    assert "repo" in supertool._repo_refusal("read")
 
 
 def test_pipeline_not_found_says_check_once(monkeypatch) -> None:

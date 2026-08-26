@@ -364,10 +364,15 @@ def main() -> int:  # noqa: C901
               f"(expected JSON or TOML with title/body/base)")
         return 1
 
+    repo_conflict, repo_source = _repo_target.resolve_or_conflict(payload, "gh-pr-create")
+    if repo_conflict:
+        print(repo_conflict)
+        return 1
     if not payload.get("repo"):
-        auto = _repo_target.target() or _rd.resolve("github_repo", "github.com")
+        auto = _rd.resolve("github_repo", "github.com")
         if auto:
             payload["repo"] = auto
+            repo_source = "cwd remote / config default"
 
     branch, branch_err = _current_branch()
     head, head_source, err = resolve_head(payload, branch, branch_err)
@@ -474,7 +479,9 @@ def main() -> int:  # noqa: C901
             break
     number = url.rstrip("/").split("/")[-1] if url else "?"
 
-    print(f"# gh-pr-create — {repo}")
+    repo_note = (f"  (repo from {repo_source})"
+                 if repo_source not in ("", "payload") else "")
+    print(f"# gh-pr-create — {repo}{repo_note}")
     print(f"PR:   #{number}  {_untrusted.flat(title)}")
     print(f"URL:  {url or '(not returned by gh)'}")
     print(f"Base: {base}  (from payload — never defaulted)")
