@@ -17585,24 +17585,39 @@ def _doctor_interpreter() -> Dict[str, Any]:
     checked, which is the exact failure #1857 was filed to stop happening
     silently — an architecture mismatch is a performance fact, not a fault,
     but only when it is reported rather than assumed away.
+
+    **`sysctl.proc_translated` is not trusted on its own.** Confirmed on real
+    hardware: `timeout 5 python3 -c '…sysctl.proc_translated…'` answers `1`
+    for a python3 binary `file` reports as `Mach-O 64-bit executable arm64`
+    — the flag reads as `1` when a translated ancestor sits anywhere in the
+    exec chain (Homebrew's `timeout` is compiled x86_64), not only when THIS
+    process is the one being translated. Rosetta translates x86_64 binaries;
+    an arm64 process can never itself be the thing being translated, so
+    `platform.machine() == "arm64"` forces `rosetta` to `False` regardless of
+    what the sysctl answers — the alternative publishes "install a native
+    interpreter" about an interpreter that already is one.
     """
+    machine = platform.machine()
     info: Dict[str, Any] = {
         "executable": sys.executable,
         "version": platform.python_version(),
-        "machine": platform.machine(),
+        "machine": machine,
         "platform": sys.platform,
         "rosetta": None,
     }
     if sys.platform == "darwin":
-        try:
-            r = subprocess.run(["sysctl", "-n", "sysctl.proc_translated"],
-                               capture_output=True, text=True, timeout=5,
-                               encoding="utf-8", errors="replace")
-            out = r.stdout.strip()
-            if r.returncode == 0 and out in ("0", "1"):
-                info["rosetta"] = out == "1"
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        if machine == "arm64":
+            info["rosetta"] = False
+        else:
+            try:
+                r = subprocess.run(["sysctl", "-n", "sysctl.proc_translated"],
+                                   capture_output=True, text=True, timeout=5,
+                                   encoding="utf-8", errors="replace")
+                out = r.stdout.strip()
+                if r.returncode == 0 and out in ("0", "1"):
+                    info["rosetta"] = out == "1"
+            except (OSError, subprocess.TimeoutExpired):
+                pass
     return info
 
 
@@ -17661,11 +17676,22 @@ def _doctor_symlink() -> Dict[str, Any]:
     if which is None:
         return result
     if os.path.islink(which):
-        target = os.readlink(which)
-        resolved = target if os.path.isabs(target) else os.path.normpath(
-            os.path.join(os.path.dirname(which), target))
-        result["symlink_target"] = resolved
-        result["dangling"] = not os.path.exists(resolved)
+        # TOCTOU: the link can vanish between the check above and the read
+        # below (a plugin update mid-session is exactly the scenario this
+        # function exists to catch). An unguarded OSError here would crash
+        # the whole `doctor` op over one race window instead of degrading —
+        # so a link that disappears between the two calls answers `None`,
+        # not a crash and not a false `dangling: False`.
+        try:
+            target = os.readlink(which)
+        except OSError:
+            result["symlink_target"] = None
+            result["dangling"] = None
+        else:
+            resolved = target if os.path.isabs(target) else os.path.normpath(
+                os.path.join(os.path.dirname(which), target))
+            result["symlink_target"] = resolved
+            result["dangling"] = not os.path.exists(resolved)
     running = os.path.abspath(__file__)
     try:
         result["path_resolves_to_running_module"] = (
@@ -17694,6 +17720,27 @@ def _doctor_tracked_files() -> Optional[List[str]]:
     return [ln for ln in r.stdout.splitlines() if ln]
 
 
+def _doctor_looks_absent(text: str) -> bool:
+    """Does this adapter-authored sentence read as "the binary is missing"?
+
+    One heuristic, applied to both routes an adapter uses to say it — the
+    `skipped()`/`absent()` third state, and the `errors` list. #1950's own
+    `absent()` helper escalates to an `errors`+`code:"adapter"` entry instead
+    of a `skipped` one the moment a repo names the tool in
+    `$SUPERTOOL_REQUIRE_VALIDATORS`, and several shipped adapters
+    (`phpstan`, `xmllint`, `node-check`, `prettier-check`, `bash-check`,
+    `phpmd`, `psr`, `lsp-diag`) report a missing binary as an inline `errors`
+    entry directly, never through `skipped()` at all. A classifier that only
+    read this heuristic off the `skipped` branch reported every one of those
+    as "could not tell" for a tool that is, in fact, definitively absent —
+    never wrong in the dangerous direction (never "resolves"), but a real
+    accuracy gap in the exact three-state count #1950 asks for.
+    """
+    low = text.lower()
+    return ("not found" in low or "not installed" in low
+            or "could not be run" in low or "binary not found" in low)
+
+
 def _doctor_classify_probe(data: Dict[str, Any]) -> "Tuple[str, str]":
     """Sort one `_validator_run_one` verdict into resolves/absent/could-not-tell.
 
@@ -17712,15 +17759,15 @@ def _doctor_classify_probe(data: Dict[str, Any]) -> "Tuple[str, str]":
         return "could not tell", f"timed out after {data.get('duration_ms', 0)}ms"
     if "skipped" in data:
         reason = str(data["skipped"])
-        low = reason.lower()
-        if ("not found" in low or "not installed" in low
-                or "could not be run" in low or "no warm daemon" in low):
+        if _doctor_looks_absent(reason):
             return "absent", reason
         return "could not tell", reason
     errors = data.get("errors") or []
     if any(isinstance(e, dict) and e.get("code") == "adapter" for e in errors):
-        msg = errors[0].get("msg", "") if errors else ""
-        return "could not tell", str(msg)
+        msg = str(errors[0].get("msg", "")) if errors else ""
+        if _doctor_looks_absent(msg):
+            return "absent", msg
+        return "could not tell", msg
     if "ok" in data:
         return "resolves", f"ok={data.get('ok')}, count={data.get('count')}"
     return "could not tell", "adapter replied without a verdict"
@@ -17745,6 +17792,18 @@ def _doctor_validators_section(config: Dict[str, Any], probe: bool) -> str:
     skip are both ordinary `skipped()` results the real invocation already
     produces when this tree lacks the config the tool needs, with no second
     per-tool config-detection layer required.
+
+    **Probing always bypasses `_validator_run_one`'s own result cache**
+    (`~/.cache/supertool/validators/`, up to a 24h TTL by default). That
+    cache exists to make an *edit* fast on a file whose validator answer has
+    not changed; `doctor:probe` exists to answer "does this resolve NOW",
+    which a cache hit from before a binary was installed or removed would
+    silently contradict — the same silently-stale-green failure #1950 was
+    filed to end, one layer down through infrastructure reuse.
+    `$SUPERTOOL_NO_VALIDATOR_CACHE` is the existing, already-plumbed knob for
+    this; it is set for the duration of this function only and always
+    restored, so a concurrent `edit`/`validate` call in another process is
+    unaffected.
     """
     validators = config.get("validators") or {}
     lines: List[str] = ["## Toolchain validators (#1950)"]
@@ -17757,52 +17816,62 @@ def _doctor_validators_section(config: Dict[str, Any], probe: bool) -> str:
 
     resolves = absent = unknown = not_applicable = 0
     rows: List[str] = []
-    for name in sorted(validators):
-        spec = validators[name]
-        if not isinstance(spec, dict):
-            continue
-        glob = spec.get("match", "*")
-        target: Optional[str] = None
-        if not scope_unknown:
-            for f in files:  # type: ignore[union-attr]
-                if _match_glob(f, glob):
-                    target = f
-                    break
+    _prior_cache_env = os.environ.get("SUPERTOOL_NO_VALIDATOR_CACHE")
+    if probe:
+        os.environ["SUPERTOOL_NO_VALIDATOR_CACHE"] = "1"
+    try:
+        for name in sorted(validators):
+            spec = validators[name]
+            if not isinstance(spec, dict):
+                continue
+            glob = spec.get("match", "*")
+            target: Optional[str] = None
+            if not scope_unknown:
+                for f in files:  # type: ignore[union-attr]
+                    if _match_glob(f, glob):
+                        target = f
+                        break
 
-        if scope_unknown:
-            unknown += 1
-            rows.append(f"- {name}: could not tell whether this tree has a "
-                        "matching file (`git ls-files` did not answer)")
-            continue
-        if target is None:
-            not_applicable += 1
-            rows.append(f"- {name}: not applicable (no tracked file matches "
-                        f"`{glob}`)")
-            continue
-        if not probe:
-            unknown += 1
-            rows.append(f"- {name}: in scope ({target}) — could not tell "
-                        "without probing; run doctor:probe")
-            continue
-        try:
-            data = _validator_run_one(name, spec, target)
-        except Exception as exc:  # noqa: BLE001 — a crashing probe is itself a finding
-            unknown += 1
-            rows.append(f"- {name}: could not tell — probing it raised "
-                        f"{type(exc).__name__}: {exc}")
-            continue
-        if not isinstance(data, dict):
-            unknown += 1
-            rows.append(f"- {name}: could not tell — probe returned no verdict")
-            continue
-        state, detail = _doctor_classify_probe(data)
-        if state == "resolves":
-            resolves += 1
-        elif state == "absent":
-            absent += 1
-        else:
-            unknown += 1
-        rows.append(f"- {name} ({target}): {state} — {detail}")
+            if scope_unknown:
+                unknown += 1
+                rows.append(f"- {name}: could not tell whether this tree has a "
+                            "matching file (`git ls-files` did not answer)")
+                continue
+            if target is None:
+                not_applicable += 1
+                rows.append(f"- {name}: not applicable (no tracked file matches "
+                            f"`{glob}`)")
+                continue
+            if not probe:
+                unknown += 1
+                rows.append(f"- {name}: in scope ({target}) — could not tell "
+                            "without probing; run doctor:probe")
+                continue
+            try:
+                data = _validator_run_one(name, spec, target)
+            except Exception as exc:  # noqa: BLE001 — a crashing probe is itself a finding
+                unknown += 1
+                rows.append(f"- {name}: could not tell — probing it raised "
+                            f"{type(exc).__name__}: {exc}")
+                continue
+            if not isinstance(data, dict):
+                unknown += 1
+                rows.append(f"- {name}: could not tell — probe returned no verdict")
+                continue
+            state, detail = _doctor_classify_probe(data)
+            if state == "resolves":
+                resolves += 1
+            elif state == "absent":
+                absent += 1
+            else:
+                unknown += 1
+            rows.append(f"- {name} ({target}): {state} — {detail}")
+    finally:
+        if probe:
+            if _prior_cache_env is None:
+                os.environ.pop("SUPERTOOL_NO_VALIDATOR_CACHE", None)
+            else:
+                os.environ["SUPERTOOL_NO_VALIDATOR_CACHE"] = _prior_cache_env
 
     lines.append(f"- {len(validators)} configured, {resolves} resolves, "
                  f"{absent} absent, {unknown} could not tell, "

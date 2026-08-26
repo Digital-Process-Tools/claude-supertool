@@ -195,7 +195,7 @@ Because probing invokes the *real* adapter against a *real* file in this tree, i
 ./supertool 'doctor:probe'    # + one subprocess per in-scope validator
 ```
 
-`doctor:probe` costs a subprocess per in-scope validator — up to the full validator count in this tree — which is why it is not the default: a doctor that takes thirty seconds is one nobody runs.
+`doctor:probe` costs a subprocess per in-scope validator — up to the full validator count in this tree — which is why it is not the default: a doctor that takes thirty seconds is one nobody runs. It also always bypasses `_validator_run_one`'s own result cache (`~/.cache/supertool/validators/`, up to 24h TTL by default): a cache hit from before a binary was installed or removed would silently contradict "does this resolve now", which is the whole question `doctor:probe` exists to answer.
 
 ## `gc` — cache retention
 
