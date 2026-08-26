@@ -247,6 +247,15 @@ NOT_MEASURED_PY: "dict[str, str]" = {
         "tests/test_raw_command_guard_1347.py, and the judgment they carry "
         "lives in guard_command() in _supertool.py, which is enforced"
     ),
+    ".oss/statusline.py": (
+        "the oss plugin's own scaffolded file (#1956), tracked here only so a "
+        "clone gets what /oss:scaffold --apply already wrote into the "
+        "maintainer's checkout. It is not our code: `/oss:scaffold --apply` "
+        "replaces it wholesale on every install, so a test written against "
+        "today's copy is a test against a file this repository does not "
+        "author and cannot fix. A fix reaches it by being rewritten upstream, "
+        "in the oss plugin, not by a test added here"
+    ),
 }
 
 #: Not Python at all. Listed so the gap is recorded rather than merely

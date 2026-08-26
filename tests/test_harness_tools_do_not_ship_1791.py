@@ -110,15 +110,27 @@ def _hook(tool_name: str, tool_input: dict, project: Path, tmp_path: Path):
 
 
 def test_the_rule_the_issue_describes_is_not_in_this_tree() -> None:
-    """#1791 names a file. Nothing here is called that, at any path.
+    """#1791 names a file. Nothing here ships that, at any tracked path.
 
-    Reddens if a `supertool-required.md` is ever added: at that point the
+    Asserted against `git ls-files`, not a filesystem walk. `/oss:scaffold
+    --apply` writes an untracked `.claude/jit-context/tools/01-oss/` layer
+    into a maintainer's own checkout for reasons that have nothing to do with
+    this test (#1956) -- a plugin-owned rule file sitting on disk, unshipped,
+    is not the state this test exists to catch. What ships to a clone, and
+    what CI sees, is the tracked set.
+
+    Reddens if a `supertool-required.md` is ever tracked: at that point the
     issue stops being a non-reproduction and the rest of this file stops
     describing the shipped set.
     """
-    stray = sorted(str(path.relative_to(_ROOT))
-                   for path in _ROOT.rglob("supertool-required.md"))
-    assert stray == [], stray
+    proc = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*supertool-required.md"],
+        cwd=str(_ROOT), capture_output=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    tracked = [p for p in
+               proc.stdout.decode("utf-8", "surrogateescape").split("\0")
+               if p]
+    assert tracked == [], tracked
     assert (_MANUAL / _RULE).is_file(), "the rule it really means moved"
 
 

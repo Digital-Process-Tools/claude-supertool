@@ -35,6 +35,7 @@
     "backlog"
   ],
   "release": {
+    "authority": "loop",
     "tag_pattern": "v{version}",
     "create_release": true,
     "draft": false,
