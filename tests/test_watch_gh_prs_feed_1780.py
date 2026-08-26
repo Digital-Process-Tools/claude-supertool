@@ -207,6 +207,26 @@ def test_under_a_repo_target_the_feed_is_never_asked_for(state_dir, monkeypatch)
 # blind and split-scope feeds must be visible, not just "alive"
 # ---------------------------------------------------------------------------
 
+def test_a_blind_feed_with_no_recorded_message_is_still_reported(state_dir, monkeypatch):
+    """The empty string means two different things to `feed_blind` -- "not
+    blind" and "blind, with nothing recorded" -- and only one of them may
+    render as ``. Every path in the source that sets `lookup` unavailable
+    happens to supply a message today, so this pins the fallback rather than
+    a reproduced live case (auditor finding on this same lane, class A)."""
+    _fake_gh(monkeypatch, [_pr(1)])
+    _no_default_branch(monkeypatch)
+    Path(tier.transport.state_path(tier.FEED_SOURCE, "@open")).write_text(
+        json.dumps({"source_state": {"lookup": "unavailable", "error": ""}}),
+        encoding="utf-8")
+    watch, _ = _recording_watch()
+
+    lines, healthy = tier.radar_report({"_arg": "", "_watch": watch})
+    text = "\n".join(lines)
+
+    assert "could not establish the population" in text
+    assert not healthy
+
+
 def test_a_blind_feed_is_reported_even_though_it_is_alive(state_dir, monkeypatch):
     """A feed that reached GitHub and got a 401 raises nothing -- it returns
     cleanly, having seen nothing, and looks identical to a healthy one unless

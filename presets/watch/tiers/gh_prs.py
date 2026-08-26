@@ -729,11 +729,22 @@ def feed_blind(scope: str) -> str:
     GitHub and got a 401 raises nothing inside the poller. It returns
     cleanly, having seen nothing, and both of those two report a healthy
     feed. `gl_mrs.feed_blind` is the same read on the GitLab side (#1602).
+
+    The empty string means two different things to this function's own
+    caller — "not blind" and "blind, but the poller recorded no message" —
+    and only one of them may return it, or a blind feed with a blank `error`
+    would render exactly like a healthy one. Every path in
+    `github-pr-feed/poller.py::fetch_population` that sets `lookup` to
+    unavailable currently supplies a non-empty `error`, so this is a latent
+    gap rather than a reproduced one — but nothing enforces that across the
+    two files, so the fallback stays here rather than relying on it staying
+    true.
     """
     state = transport.read_state(FEED_SOURCE, scope).get("source_state") or {}
     if not isinstance(state, dict) or state.get("lookup") != FEED_LOOKUP_UNAVAILABLE:
         return ""
-    return _untrusted.flat(str(state.get("error") or ""))
+    return (_untrusted.flat(str(state.get("error") or ""))
+            or "(feed recorded no error message)")
 
 
 # ---------------------------------------------------------------------------
