@@ -18206,10 +18206,15 @@ def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
       happens to be a punctuation char.
     * **Single-quoted** — literal text in every shell. Left alone; it is not a
       command and must not become one.
-    * **Double-quoted** — substitutes, but the delimiters are inside a token
-      the lexer hands back whole, so the guard cannot read it. Reported, so
-      the verdict is `undecided` rather than a clean bill for a command
-      nobody looked at.
+    * **Double-quoted** — substitutes, and the delimiters used to sit inside
+      a token the lexer hands back whole, so the guard could not read it.
+      For `$(...)` that gap is closed (#1762): `_guard_find_substitution_end`
+      balances the interior against nested parens and quotes, and what it
+      recovers is checked through this same function. A backtick's own
+      delimiters are not recoverable the same way — no balancing scan is
+      written for them — so a double-quoted `` \x60cmd\x60 `` is still
+      reported, and the verdict is `undecided` rather than a clean bill for
+      a command nobody looked at.
 
     An unquoted **newline** is separated here for the same reason and by the
     same scan. `shlex` with `whitespace_split` calls a newline whitespace, so
@@ -18299,22 +18304,41 @@ def _guard_open_substitutions(command: str) -> Tuple[str, List[str]]:
                 # runs out. Keep the third state rather than guess at one.
                 unread.append("a command substitution inside a "
                               "double-quoted argument was not read")
-            else:
-                # The obstacle really was only the quotes: recover the
-                # interior and check it exactly as if it had been written
-                # unquoted, through this same reader so a nested `$(...)`,
-                # an embedded quote or a further backtick inside it is
-                # handled once here rather than reimplemented. The `$(...)`
-                # text itself is still copied into `out` character by
-                # character below (this branch does not `continue`), so the
-                # outer double-quoted argument's own quoting stays intact
-                # for `shlex` exactly as it did before this branch existed.
-                inner_prepared, inner_unread = _guard_open_substitutions(
-                    command[i + 2:end])
-                extracted.append(inner_prepared)
-                for note in inner_unread:
-                    if note not in unread:
-                        unread.append(note)
+                out.append(ch)
+                if not single and not double:
+                    prev = ch
+                i += 1
+                continue
+            # The obstacle really was only the quotes: recover the interior
+            # and check it exactly as if it had been written unquoted,
+            # through this same reader so a nested `$(...)`, an embedded
+            # quote or a further backtick inside it is handled once here
+            # rather than reimplemented.
+            #
+            # The whole matched span is copied into `out` VERBATIM and `i`
+            # jumps past it -- it is not walked character by character the
+            # way ordinary text is. `$(...)` opens a fresh quoting context
+            # in real bash: a `"` inside it does not close the argument
+            # this substitution sits in. Walking it char-by-char reused this
+            # loop's own single `double` flag for those interior quote
+            # characters, so a nested `"..."` toggled `double` OFF at the
+            # wrong place, and a `#` later in the same interior then read as
+            # an unquoted comment opener -- deleting everything after it,
+            # including a real trailing command, and silently turning
+            # `undecided` into `clean` (caught in review before this ever
+            # shipped). Jumping over the span keeps the outer scan's quote
+            # state exactly where it was; the interior's own quoting is
+            # resolved once, inside the recursive call below, not twice.
+            inner_prepared, inner_unread = _guard_open_substitutions(
+                command[i + 2:end])
+            extracted.append(inner_prepared)
+            for note in inner_unread:
+                if note not in unread:
+                    unread.append(note)
+            out.append(command[i:end + 1])
+            i = end + 1
+            prev = ")"
+            continue
         out.append(ch)
         if not single and not double:
             prev = ch
@@ -18394,7 +18418,9 @@ def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
     `$(...)` substitution wherever the shell would have split it.
 
     What it cannot model is returned as the second element rather than silently
-    dropped: a substitution whose delimiters are inside quotes, and a word that
+    dropped: a `$(...)` this scan cannot balance, a backtick substitution
+    whose delimiters sit inside double quotes (#1762 — its own delimiters
+    are not recoverable the way `$(...)`'s matching `)` is), and a word that
     hands a string to something else to run (`eval`, `sh -c`). Those become the
     guard's `undecided` state — a construct this matcher did not read is not
     evidence that nothing was replaced. Aliases and shell functions remain

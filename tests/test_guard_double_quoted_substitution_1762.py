@@ -133,3 +133,23 @@ def test_the_disclosure_still_names_the_command_when_unreadable(
         "x=" + DQ + "$($GH_BIN run view 123)" + DQ)
     assert verdict.state == "undecided", verdict
     assert verdict.notes, verdict
+
+
+def test_a_nested_quote_inside_the_recovered_text_does_not_eat_the_rest_of_the_command(
+        tmp_path, guard_config):
+    """Reviewer-caught regression: the main scan must SKIP the whole
+
+    recovered `$(...)` rather than keep walking it character by character.
+    Not skipping means a nested double quote inside the substitution's own
+    interior -- legal, since `$(...)` opens a fresh quoting context in real
+    bash -- flips the OUTER scan's `double` flag off mid-argument. A `#`
+    later in that same interior then reads as an unquoted comment opener and
+    the comment-stripping logic deletes everything after it, including a
+    real trailing command the guard exists to catch. This must stay
+    `blocked` on the trailing `gh run view`, never `clean`.
+    """
+    guard_config(tmp_path, _OPS)
+    command = ('note --detail ' + DQ + '$(cat ' + DQ + 'notes # v2' + DQ
+              + ')' + DQ + ' ; gh run view 123')
+    verdict = supertool.guard_command(command)
+    assert verdict.state == "blocked", (command, verdict)
