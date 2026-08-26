@@ -94,6 +94,7 @@ from typing import NamedTuple, Optional
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import _declared_workflows  # noqa: E402  (local trigger parse, reused — #1817)
 import _filter_tokens  # noqa: E402  (the one instant parser, shared with gh-prs)
 import _untrusted  # noqa: E402  (PR titles and tag names are remote text — #851)
 
@@ -909,6 +910,74 @@ def default_changelog_dir() -> str:
     return os.path.join(root, "changelog.d")
 
 
+def default_workflows_dir() -> str:
+    """`.github/workflows` at the repo root — same reasoning as
+    `default_changelog_dir`, and the same worktree-subdirectory failure mode
+    if it were left relative."""
+    ok, out, _reason = _run(["git", "rev-parse", "--show-toplevel"], GIT_TIMEOUT)
+    root = out.strip() if ok and out.strip() else os.getcwd()
+    return os.path.join(root, _declared_workflows.WORKFLOW_DIR)
+
+
+def not_gated_by_push_workflows(directory=None):
+    """`(excluded, note)` — workflow files whose triggers can never be
+    reached by a push (#1817). `excluded` is `None` when the directory could
+    not be read at all, never an empty list: the same distinction
+    `count_fragments` draws for `changelog.d` two functions above, so a
+    caller cannot mistake "I could not look" for "nothing is excluded".
+    `note` names any individual workflow file this could not open even when
+    the directory listing itself succeeded — dropping such a file silently
+    would UNDERSTATE the excluded set, the opposite failure from claiming one
+    that does not exist, but still a wrong number nobody was told about.
+
+    A **local** read of `.github/workflows/*.{yml,yaml}`, not a query against
+    one commit's run history the way `_declared_workflows.declared_at` (used
+    by `gh-branch`) works: whether a workflow's `on:` block excludes every
+    push is a property of the file on disk, and this repo's release gate
+    already reads `changelog.d` off the same working tree without a network
+    round trip. So this function costs nothing extra to call on every render.
+
+    `_declared_workflows.parse_triggers` / `.is_push_triggered` are reused
+    rather than re-implemented, so a fix to the trigger grammar reaches both
+    `gh-branch`'s per-commit disclosure and this release-wide one together.
+
+    Excludes, on purpose, exactly what `is_push_triggered` refuses to call
+    `False`: a workflow whose `on:` block could not be parsed (`None`) is
+    left OUT of `excluded` rather than named as provably unreachable — "I
+    could not tell" must not read as "this cannot happen", the same
+    distinction `_declared_workflows`'s own docstring draws for `gh-branch`.
+    A workflow a push CAN reach (`True`) is of course also left out: it is
+    covered by `gh-branch`'s own run-based verdict, and naming it here would
+    claim `tests` itself is unmeasured.
+    """
+    directory = directory if directory is not None else default_workflows_dir()
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError as exc:
+        return None, f"{directory} could not be listed ({exc})"
+    out = []
+    unreadable = []
+    for fname in names:
+        if not fname.lower().endswith((".yml", ".yaml")):
+            continue
+        path = os.path.join(directory, fname)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError:
+            unreadable.append(fname)
+            continue
+        triggers = _declared_workflows.parse_triggers(text)
+        if _declared_workflows.is_push_triggered(triggers) is False:
+            out.append({
+                "name": _declared_workflows.parse_name(text, fname),
+                "triggers": triggers,
+            })
+    out.sort(key=lambda w: w["name"])
+    note = ("could not open " + ", ".join(sorted(unreadable))) if unreadable else ""
+    return out, note
+
+
 def merge_order_rows(rows) -> list:
     """The merged slice's own render — number, merge instant, title.
 
@@ -983,7 +1052,7 @@ def gate_exit(boundary_state: str, count_state: str) -> int:
 
 
 def assess(*, rows, boundary, per_page, fetched, narrowed_by=(),
-           repo_targeted=False, changelog_dir=None):
+           repo_targeted=False, changelog_dir=None, workflows_dir=None):
     """`(kept, lines, exit_code)` — the slice, the gate footer, and the verdict.
 
     **Every conditional read states whether it ran.** `gh-prs` is this repo's
@@ -992,6 +1061,10 @@ def assess(*, rows, boundary, per_page, fetched, narrowed_by=(),
     a check that quietly did not happen, reading as a check that passed. Three
     are conditional here and each appears in the footer in every case: the
     boundary-row exclusion, the local-history cross-check, and `changelog.d`.
+    A fourth, `not_gated_by_push_workflows` (#1817), is unconditional — it is
+    a local file read, not a call that can fail to run — and says nothing at
+    all when every declared workflow can be reached by a push, rather than
+    printing an empty claim.
 
     A cross-check that did **not** run counts as unreconciled, so the count
     renders ``UNVERIFIED`` rather than ``EXACT``. That is the point of the
@@ -1068,6 +1141,49 @@ def assess(*, rows, boundary, per_page, fetched, narrowed_by=(),
     else:
         sources.append(f"changelog.d: READ — {frag_count} fragment(s) under "
                        f"{_untrusted.flat(directory)}")
+
+    # 4. Workflows this release cannot possibly be gated by (#1817). A local
+    # read of the workflow files, not of the boundary commit's run history —
+    # see `not_gated_by_push_workflows`'s own docstring — so this costs
+    # nothing extra and runs on every render, tag or not.
+    excluded, wf_note = not_gated_by_push_workflows(workflows_dir)
+    if excluded is None:
+        sources.append(f"release scope: NOT READ — {wf_note}")
+    else:
+        if wf_note:
+            sources.append(
+                f"release scope: {wf_note} — the set named below may be "
+                f"incomplete")
+        if excluded:
+            wf_names = ", ".join(f"`{_untrusted.flat(w['name'])}`" for w in excluded)
+            sources.append(
+                f"release scope: {len(excluded)} workflow(s) in "
+                f"{_declared_workflows.WORKFLOW_DIR} never produce a run "
+                f"from a push, so this release is NOT gated by them: "
+                f"{wf_names}")
+            for w in excluded:
+                triggers = w["triggers"] or []
+                # `pull_request*` (`pull_request`, `pull_request_target`,
+                # `pull_request_review`, `pull_request_review_comment`) all
+                # run per-PR before merge — none of them waits on a
+                # schedule, so all four get the "already checked" reading
+                # rather than the exact-match `== "pull_request"` this used
+                # to be, which mislabelled `pull_request_target` as
+                # cron-only unmeasured risk.
+                if any(str(t).startswith("pull_request") for t in triggers):
+                    sources.append(
+                        f"  · `{_untrusted.flat(w['name'])}` is "
+                        f"pull_request-only — it already checked every PR "
+                        f"that produced this delta before it merged, so "
+                        f"nothing here is unchecked, only unrepeated at the "
+                        f"tag")
+                else:
+                    sources.append(
+                        f"  · `{_untrusted.flat(w['name'])}` triggers on "
+                        f"{', '.join(_untrusted.flat(str(t)) for t in triggers) or 'nothing a push reaches'} "
+                        f"— a regression only it would catch is UNMEASURED "
+                        f"at release time and is caught, if at all, by its "
+                        f"own schedule, not by this gate")
 
     state, text = count_state(kept=len(kept), limit=per_page,
                               undated=len(undated), unreconciled=unreconciled,

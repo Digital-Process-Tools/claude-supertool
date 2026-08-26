@@ -127,7 +127,9 @@ def _rows(text):
     """Classify each row by its own shape, not by the directory it sits in.
 
     A tools row is `tool<TAB>match<TAB>file<TAB>mode<TAB>require<TAB>forbid`,
-    and only its second column is a regex, and only when it opens with `~`.
+    optionally followed by a 7th `requires` column (claude-jit-context 0.6.0,
+    #1992), and only its second column is a regex, and only when it opens
+    with `~`.
     A paths row is `pattern<TAB>file`, and its first column is *always* handed
     to `match()` — calling it a "prefix" is what made that easy to miss.
 
@@ -166,7 +168,8 @@ def _rows(text):
         else:
             shape_errors.append(_err(
                 line,
-                "row has {0} tab-separated field(s): a tools row has 6 and a "
+                "row has {0} tab-separated field(s): a tools row has 6 or 7 "
+                "(claude-jit-context 0.6.0 added `requires`, #1992) and a "
                 "paths row has 2, so the hook will read this row's columns as "
                 "something other than what is written here".format(len(fields)),
                 "shape"))
