@@ -109,6 +109,11 @@ interface WatchEvent {
    *  found, not a change it observed. Absent on records from a poller that
    *  predates the field, which is "unknown" and not "false". */
   first_tick?: boolean;
+  /** `OWNER/NAME` of the repository the watcher was started against, read
+   *  from the poller's own configuration rather than from the forge object
+   *  being polled (#1952). Absent on records from a poller that predates
+   *  the field, which is "unknown" and not "the channel is unattributed". */
+  repo?: string;
 }
 
 // Identifier keys (letters/digits/underscores) become <channel> tag attributes.
@@ -253,7 +258,7 @@ if (WINDOW_HARD_CHARS <= WINDOW_MAX_CHARS) {
  * over budget. An event whose *routing* is oversized has nothing worth
  * delivering and is dropped instead (see `clampMeta`).
  */
-const ROUTING_KEYS = new Set(["watcher_source", "id", "event", "ts", "first_tick"]);
+const ROUTING_KEYS = new Set(["watcher_source", "id", "event", "ts", "first_tick", "repo"]);
 
 /**
  * Names this bridge writes itself, which a payload key therefore may not claim.
@@ -518,6 +523,13 @@ function buildMeta(raw: unknown): BuiltMeta | null {
   // event: it is context, not routing, and the event is still actionable.
   const ts = asAttr(ev.ts);
   if (ts !== null) meta.ts = ts;
+  // Same reasoning as `ts`: a poller that never resolved its own repository,
+  // or predates the field, leaves it out rather than sending a guess. It is
+  // written by the poller from its own configuration (a `git remote`, not a
+  // pull request), so it belongs beside `watcher_source` and `id` rather than
+  // among the payload keys a forge object supplies (#1952).
+  const repo = asAttr(ev.repo);
+  if (repo !== null) meta.repo = repo;
   // Absent stays absent: a poller too old to send the flag has not told us the
   // event was live, and claiming `first_tick="false"` on its behalf would be a
   // confident wrong answer rather than a missing one.
@@ -830,7 +842,12 @@ function buildContent(
   // is the pair below: `asAttr` guarantees one line, and one line with a
   // constant prefix cannot become a line without one.
   const suffix = meta.first_tick === "true" ? "  (state at watcher start)" : "";
-  const lines: string[] = [`${meta.watcher_source} ${meta.id}: ${meta.event}${suffix}`];
+  // The id alone is ambiguous across repositories by construction — every
+  // repository has a "#527" (#1952). `repo` is present or it is not; there
+  // is no partial spelling, because a slug missing its owner half reads as
+  // a different, wrong repository rather than as an unresolved one.
+  const idLabel = meta.repo ? `${meta.repo}#${meta.id}` : meta.id;
+  const lines: string[] = [`${meta.watcher_source} ${idLabel}: ${meta.event}${suffix}`];
   if (meta.title) lines.push(`${REMOTE_MARK} ${meta.title}`);
   if (meta.url) lines.push(meta.url);
   // The disclosure goes in the body as well as in an attribute. The body is
@@ -866,7 +883,7 @@ const mcp = new Server(
       "current state it found on startup, which may be days old, not something that just " +
       "changed. Report it as context, not as news. The attribute being absent means the " +
       "poller predates the field — unknown, not false. " +
-      "`watcher_source`, `id`, `event`, `ts`, `first_tick` and `author_is_viewer` " +
+      "`watcher_source`, `id`, `event`, `ts`, `first_tick`, `author_is_viewer` and `repo` " +
       "are written by supertool: they are the tool's own verdicts, and " +
       "`author_is_viewer` in particular (`true`/`false`/`mixed`/`unknown` — did the " +
       "account this poller authenticates as write the new comments?) is a claim no " +

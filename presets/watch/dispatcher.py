@@ -968,7 +968,7 @@ def _wait_interruptible(seconds: int, stop_flag: dict[str, bool]) -> None:
 
 
 def _record_give_up(source: str, watcher_id: str, failures: int,
-                    message: str) -> None:
+                    message: str, repo: str = "") -> None:
     """Write why coverage ended, then say so on the channel.
 
     The state file is *kept*, unlike a terminal exit, and the two differ for a
@@ -993,6 +993,7 @@ def _record_give_up(source: str, watcher_id: str, failures: int,
         notify_title=f"watch: {source}:{watcher_id} stopped",
         notify_message=(f"{failures} consecutive failed polls. "
                         f"Last error: {message}"),
+        repo=repo,
     )
 
 
@@ -1024,6 +1025,11 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
     published = transport.read_state(source, watcher_id)
     published["only"] = list(only)
     transport.write_state(source, watcher_id, published)
+
+    # Read once per process, not once per poll (#1952): the cwd's own remote
+    # cannot change under a running watcher, and re-shelling out to `git` on
+    # every 30s tick would pay for an answer that never differs.
+    repo = transport.repo_slug()
 
     state: dict[str, Any] = transport.read_state(source, watcher_id).get("source_state", {}) or {}
     # No prior state means this watcher knows nothing yet, so whatever its
@@ -1069,7 +1075,7 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
                     # `reached_terminal`: that clears the state file, and the
                     # state file is the only record of why this stopped.
                     _record_give_up(source, watcher_id,
-                                    consecutive_failures, str(e))
+                                    consecutive_failures, str(e), repo=repo)
                     break
                 _wait_interruptible(interval, stop_flag)
                 continue
@@ -1090,6 +1096,7 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
                     notify_title=ev.get("notify_title"),
                     notify_message=ev.get("notify_message"),
                     first_tick=first_tick,
+                    repo=repo,
                 )
 
             full = transport.read_state(source, watcher_id)

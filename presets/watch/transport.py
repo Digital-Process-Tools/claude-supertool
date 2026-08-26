@@ -17,6 +17,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -37,6 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _proc
 sys.path.insert(0, str(Path(__file__).parent))  # for naming, our own sibling
 
 import _proc  # noqa: E402  (the one liveness probe, shared with gl-mrs / gh-prs)
+import _repo_target  # noqa: E402  (a `repo:` target wins over the cwd's remote, #1952)
 import _untrusted  # noqa: E402  (the repo's remote-text convention)
 import naming  # noqa: E402  (one name above the two path variables, #1477)
 
@@ -970,6 +972,57 @@ def flatten_remote(payload: dict[str, Any]) -> dict[str, Any]:
             for key, value in payload.items()}
 
 
+#: `owner/name`, or `group/subgroup/project` on a self-hosted GitLab, parsed
+#: from `git@HOST:PATH.git` and `https://HOST/PATH` alike — the two shapes a
+#: `git remote` actually takes. Anchored on the scheme/host boundary rather
+#: than on a trailing `.git`, because `.git` is optional and a slug is not
+#: allowed to swallow a path segment it never had.
+_REMOTE_SLUG_RE = re.compile(
+    r"^(?:[\w.+-]+://[^/]+/|[^@/]+@[^:]+:)(.+?)(?:\.git)?/?\Z")
+
+
+def repo_slug(timeout: int = 5) -> str:
+    """`SUPERTOOL_REPO` when the watcher was started under one, else the
+    `origin` remote's `owner/name`, else ``""``.
+
+    A watcher started under a `repo:` target queries *that* repository, never
+    the cwd's — `presets/github/branch.py`'s own `_head_commit`/`_run_list`
+    already route through `_repo_target` for exactly this reason, and
+    `gh-branch`'s poller calls them directly. Reading the cwd's `git remote`
+    regardless would attribute the event to the *wrong* repository rather
+    than to an absent one, which is worse than the ambiguity #1952 was filed
+    to fix: an event that names a repository is trusted, and a trusted wrong
+    answer is the more expensive of the two failures.
+
+    Otherwise forge-agnostic and read from the cwd's own git configuration,
+    never from an API call — this is the watcher's own configuration (which
+    repository was I started in), not a fact about the object being polled. A
+    poller for a repository it was never handed a remote for, or one running
+    where `git` is unavailable, answers "" rather than guessing: the consumer
+    already treats an absent `repo` as "unknown", never as "unattributed".
+
+    Read once per poller process (the caller's job, not this function's) —
+    neither the target nor the remote changes under a running watcher, and
+    re-shelling out to `git` on every poll would be a cost paid for an answer
+    that cannot change.
+    """
+    target = _repo_target.target()
+    if target:
+        return target
+    try:
+        r = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if r.returncode != 0:
+        return ""
+    m = _REMOTE_SLUG_RE.match((r.stdout or "").strip())
+    return m.group(1) if m else ""
+
+
 def emit_event(
     source: str,
     watcher_id: str,
@@ -979,6 +1032,7 @@ def emit_event(
     notify_title: str | None = None,
     notify_message: str | None = None,
     first_tick: bool = False,
+    repo: str = "",
 ) -> None:
     """All transports in one call.
 
@@ -992,6 +1046,14 @@ def emit_event(
     but week-old outcomes arriving shaped like news is not (#464). It sits
     beside the envelope keys rather than inside `payload`, which is
     source-defined and locked; see docs/presets/watch.md.
+
+    `repo` is the same footing (#1952): the poller's own configuration, not
+    remote text, so it belongs beside `source` and `id` rather than inside
+    `payload`. Omitted when unknown rather than sent as `""` — an event with
+    no attributable repository is a different fact from one on record as
+    belonging to a blank name, and `channel.ts` already treats the two
+    differently (a key it never sees is absent; a key holding `""` is a
+    coercible, if useless, string).
     """
     record = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1001,6 +1063,8 @@ def emit_event(
         "payload": flatten_remote(payload),
         "first_tick": bool(first_tick),
     }
+    if repo:
+        record["repo"] = repo
     verdict = emit_socket(record)
     current = read_state(source, watcher_id)
     current["last_event"] = record

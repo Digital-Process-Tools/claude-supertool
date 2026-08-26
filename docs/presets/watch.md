@@ -620,8 +620,39 @@ gh-prs:
 | `github-issue-feed` | `gh api repos/{owner}/{repo}/issues` for a whole scope | `issue_opened`, `issue_reopened`, `issue_entered_feed`, `issue_labeled`, `issue_unlabeled`, `issue_assigned`, `issue_unassigned`, `issue_comment_added`, `issue_closed`, `issue_left_feed`, `issues_unreachable` |
 | `gl-runners` | `glab api projects/:id/runners` + the pending/running job queue | `runner_silent`, `runner_liveness_unknown`, `runner_recovered`, `runner_starved`, `queue_liveness_unknown`, `queue_cleared`, `runner_paused`, `runner_added`, `runner_vanished` |
 | `gh-run` | `gh run view <id> --json status,conclusion,workflowName,url,...` | `run_succeeded`, `run_failed`, `run_cancelled`, `run_action_required`, `run_started`, `run_inconclusive`, `run_unreachable` |
+| `gh-branch` | the same composition `gh-branch:<ref>` and `radar`'s default-branch member row already use — `gh api commits/<ref>` then `gh run list --branch <ref>` | `went_green`, `went_not_green`, `no_run`, `unknown`, `branch_unreachable` |
 
 Each source declares its event vocabulary in `presets/watch/sources/<NAME>/events.json` for introspection.
+
+### `gh-branch` — the default branch is a member, and now it is also pushed
+
+Before this source, the default branch was *reported* by `radar`'s member row — a
+pull, re-answered on every tick — and never *pushed*: a consumer waiting for
+"the default branch went green" had written a condition nothing on the channel
+could ever satisfy ([#1953](https://github.com/Digital-Process-Tools/claude-supertool/issues/1953)). `watch:gh-branch:<ref>` closes that: it reuses
+`presets/github/branch.py`'s own `_head_commit` / `_run_list` / `runs_on_sha` /
+`verdict` — the exact composition `gh-branch:<ref>` and the member row already
+run — and emits once per **state transition**, not once per poll.
+
+`<ref>` is a branch name you type (`watch:gh-branch:main`), not left to resolve
+itself: a poller has no per-tick moment to re-ask "what is the default branch
+today" the way `radar`'s member row does, so naming it explicitly means it
+keeps watching the ref you meant even if the repository's default branch is
+renamed later.
+
+The event vocabulary is `gh-branch`'s own four states, unfolded rather than
+collapsed into a green/red pair: `went_green`, `went_not_green` (covers both "a
+leg failed" and "nothing failed but nothing has concluded either" — the
+distinction lives in the event's `sentence` payload field, the same sentence
+`gh-branch` itself would print), `no_run` (zero workflow runs on the head
+commit — never folded into red, because it is the ordinary state for the first
+seconds after a squash), and `unknown` (a job list that did not come back). A
+lookup failure that could not resolve the ref or list runs at all is
+`branch_unreachable`, edge-triggered like every other source's `*_unreachable`
+event.
+
+`is_terminal` is always `False`: a branch has no merged/closed state to stop
+watching for, unlike a PR or an MR.
 
 ### `github-pr` or `gh-run`? A PR's checks, or a run id
 
@@ -2174,9 +2205,23 @@ worth carving out. If the board should surface this, the shape is `radar` callin
     "url": "https://github.com/.../pull/179",
     "title": "feat: do the thing"
   },
-  "first_tick": false
+  "first_tick": false,
+  "repo": "OWNER/REPO"
 }
 ```
+
+**`repo` is optional and, like `first_tick`, absent rather than guessed when
+unknown** ([#1952](https://github.com/Digital-Process-Tools/claude-supertool/issues/1952)).
+A `#527` is ambiguous across every repository by construction — every
+repository has one — and the repository was recoverable only from a payload
+`url`, which never reached the body line a human actually reads. Every poller
+now resolves its own `origin` remote once per process (`transport.repo_slug()`)
+and the dispatcher carries it beside `source`/`id`, never inside `payload`: it
+is the poller's own configuration, not a fact about the object being polled, so
+a payload key of the same name cannot override it (`claude-channel` treats
+`repo` as a routing key for exactly that reason — see below). `claude-channel`
+renders it as its own attribute and folds it into the summary line:
+`github-pr OWNER/REPO#527: merged`.
 
 **Payload values are size-capped by the `claude-channel` consumer** — 2,048 chars
 per attribute, 8,192 per event, 1 MB per NDJSON line
@@ -2196,9 +2241,10 @@ the consumer's reasoning is in
 [`notifiers/claude-channel/README.md`](../../notifiers/claude-channel/README.md#size-limits-and-how-a-clamped-event-says-so-605).
 
 **Payload keys are also name-capped**: `payload` may not carry a key named
-`watcher_source`, `id`, `event`, `ts`, `first_tick`, `source`, `clamped`,
+`watcher_source`, `id`, `event`, `ts`, `first_tick`, `repo`, `source`, `clamped`,
 `collided`, `unsendable` or `__proto__`, because the consumer writes those itself
-([#609](https://github.com/Digital-Process-Tools/claude-supertool/issues/609)).
+([#609](https://github.com/Digital-Process-Tools/claude-supertool/issues/609),
+[#1952](https://github.com/Digital-Process-Tools/claude-supertool/issues/1952)).
 Until #609 the payload was merged *over* them, so a `payload.id` silently
 re-aimed the event — an event announced as `gitlab-mr 33173: pipeline_failed` was
 delivered as `not-gitlab 11111: pipeline_succeeded`, every surface agreeing.
