@@ -21,14 +21,10 @@ from __future__ import annotations
 
 import importlib.util
 import io
-import json
 import subprocess
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
-from types import SimpleNamespace
-
-import pytest
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT / "presets"))
