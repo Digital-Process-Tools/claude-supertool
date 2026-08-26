@@ -9,7 +9,10 @@ mentions it, so it has never fired on a Markdown edit in this checkout.
 tests/test_validator_registration_reachability_1795.py does not catch this
 shape: markdownlint IS reachable from the example config, so that generic
 sweep stayed green the whole time this gap was live. This file pins the local
-registration by name, the same way #1974 pinned yaml-check/actionlint.
+registration by name, the same way #1974 pinned yaml-check/actionlint. (The
+issue text cites 82 matching `.md` files at filing time; this repo's tracked
+count moves as files are added and removed, so no test here asserts a
+specific figure -- what is pinned is that the glob matches at all.)
 
 The posture decision this issue asks for: `rollback_on_fail: false`, not
 `true`. markdownlint is a *style* linter over a large body of prose-heavy
