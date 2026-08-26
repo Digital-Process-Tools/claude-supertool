@@ -113,7 +113,9 @@ def _fake_gh(meta: dict[str, Any], log: str):
             return _REAL_RUN(args, **kw)
         assert args and args[0] == "gh", f"unstubbed command: {args!r}"
         cmd = args[1] if len(args) > 1 else ""
-        url = args[2] if len(args) > 2 else ""
+        # First non-flag positional after `api` — the log call now inserts
+        # --allow-escape-sequences before the url (#1957).
+        url = next((a for a in args[2:] if not a.startswith("--")), "")
         if cmd == "api" and url.split("?")[0].endswith("/logs"):
             return subprocess.CompletedProcess(args, 0, log, "")
         if cmd == "api" and "/actions/jobs/" in url:

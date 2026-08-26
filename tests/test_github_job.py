@@ -35,7 +35,10 @@ def _make_fake_run(trace_lines: list[str], conclusion: str = "failure"):
 
     def fake_run(args: list[str], **kw: Any) -> subprocess.CompletedProcess:
         cmd = args[1] if len(args) > 1 else ""
-        url = args[2] if len(args) > 2 else ""
+        # The url is whichever positional (non-flag) argument follows `api` —
+        # the log call now inserts --allow-escape-sequences before it (#1957),
+        # so a fixed index would silently stop matching the /logs call.
+        url = next((a for a in args[2:] if not a.startswith("--")), "")
         if cmd == "api" and url.endswith("/logs"):
             stdout = trace
         elif cmd == "api":
