@@ -109,7 +109,7 @@ def test_repo_op_is_stripped_and_exported_before_dispatch(no_dispatch) -> None:
     ]
 
 
-def test_the_env_var_main_sets_does_not_survive_into_the_next_test() -> None:
+def test_the_env_var_main_sets_does_not_survive_into_the_next_test(tmp_path) -> None:
     """The GitHub twin of `test_gl_repo_target_676.py`'s own pin (#1962).
 
     `main()`'s `repo:` pre-pass sets `os.environ["SUPERTOOL_REPO"]` for real,
@@ -128,8 +128,18 @@ def test_the_env_var_main_sets_does_not_survive_into_the_next_test() -> None:
     INTO the next test, so this drives a real next test, in a real pytest
     subprocess, and checks it from there -- the same technique
     `test_gl_repo_target_676.py`'s own regression test uses.
+
+    #1998 -- the probe used to live at `REPO_ROOT / "tests" / "..."`, inside
+    `repo_python_files()`'s walk root (`tests/_repo_walk.py`), the identical
+    shape #1981 had already fixed once in `test_gl_repo_target_676.py`. This
+    one was added after that fix landed and was not caught by #1981's own
+    guard, which is written against that one function
+    (`test_repo_walk_probe_location_1981.py`). `tests/_write_guard.py`'s
+    class guard now covers this file too, installed for the whole session
+    from `conftest.py`; this write goes to `tmp_path`, exactly like #1981's
+    fix, so it is outside the walk root regardless.
     """
-    probe = REPO_ROOT / "tests" / "_gh_repo_env_leak_probe_1962.py"
+    probe = tmp_path / "_gh_repo_env_leak_probe_1962.py"
     probe.write_text(
         "import os\n\n\n"
         "def test_probe():\n"
