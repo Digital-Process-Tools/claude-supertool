@@ -1921,10 +1921,11 @@ this one.
 
 **So `.claude/settings.json` deliberately does not carry a `statusLine` key.**
 If you want the status line locally, opt in yourself — this reads the same
-script every scaffolded install does, without changing anything tracked:
+script every scaffolded install does, without changing anything tracked. Put
+this in `.claude/settings.local.json` (untracked; create it if you do not
+have one):
 
 ```json
-// .claude/settings.local.json (untracked; create it if you do not have one)
 {
   "statusLine": {
     "type": "command",
