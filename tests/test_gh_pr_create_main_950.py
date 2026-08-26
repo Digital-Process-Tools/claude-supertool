@@ -338,7 +338,7 @@ def test_repo_defaults_from_the_remote_when_absent(monkeypatch, capsys,
 # A later change that bypassed explicit_target() in this module alone would
 # leave that unit test and the shared _repo_target suite green; only an
 # end-to-end pin through main() catches it. The must-fire control for this
-# harness already lives above: test_repo_op_supplies_a_silent_payload and its
+# harness lives below: test_repo_op_supplies_a_silent_payload and its
 # neighbours exercise the marker-PRESENT path through the same _Harness/
 # _install/_payload plumbing, so a harness that silently stopped wiring
 # SUPERTOOL_REPO through at all would already be failing those.
