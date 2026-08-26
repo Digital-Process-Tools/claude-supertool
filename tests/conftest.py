@@ -1276,6 +1276,7 @@ RESET_EXEMPT_GLOBALS = (
     # `None`-sentinel name added to this tuple.
     "_EXT_FAMILIES",
     "_FORMATTER_CONFIG_MARKERS",
+    "_HEADER_HERITAGE_RE",
     "_NONDETERMINISTIC_ERROR_CODES",
     "_OP_TARGETS",
     "_PARALLEL_SAFE_OPS",

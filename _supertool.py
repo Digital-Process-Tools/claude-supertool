@@ -7501,8 +7501,10 @@ _HIERARCHY_MAX_NAMES = 4
 # issue leaves as an open call, decided here in the cheaper direction.
 _TS_HERITAGE_CONTAINER_TYPES = frozenset({
     "base_clause", "class_interface_clause",  # php
-    "class_heritage",                          # js/ts (wraps extends_clause/implements_clause)
-    "superclass", "super_interfaces",          # java, ruby
+    "class_heritage",                          # js/ts classes (wraps extends_clause/implements_clause)
+    "superclass", "super_interfaces",          # java classes, ruby
+    "extends_interfaces",                      # java interfaces: `interface Sub extends A, B`
+    "extends_type_clause",                     # ts/js interfaces: `interface Sub extends A, B`
 })
 
 # Node types whose text IS a name -- recursion into a heritage clause stops
@@ -7919,19 +7921,86 @@ _HEADER_HERITAGE_RE: Dict[str, Tuple[Optional[re.Pattern[str]], Optional[re.Patt
 _HEADER_HERITAGE_RE[".tsx"] = _HEADER_HERITAGE_RE[".ts"]
 _HEADER_HERITAGE_RE[".jsx"] = _HEADER_HERITAGE_RE[".js"]
 
-_CLASS_HEADER_WINDOW = 400  # chars scanned past the name for a heritage clause
+# 2000 chars comfortably covers any realistic wrapped extends/implements
+# clause (the issue's own multi-line PHP example is under 150). Widened
+# from 400 after a review measured a false "+N more" undercount on a
+# synthetic 12-interface header that ran past the old window (#1954
+# follow-up): the count was wrong, not just approximate, because
+# `_format_hierarchy_suffix` had already lost the names past the cut.
+_CLASS_HEADER_WINDOW = 2000
 
 
-def _class_header_text(content: str, start: int) -> str:
+def _class_header_text(content: str, start: int) -> Tuple[str, bool]:
     """The declaration's own text from just past the class/interface name
-    up to its opening `{` (or the scan window, whichever comes first).
+    up to its opening `{`, and whether the scan window ran out first.
 
     Cutting at `{` keeps a later comment or method body that happens to say
-    "implements" from being read as part of the header.
+    "implements" from being read as part of the header. When no `{` turns
+    up inside the window, the header is truncated -- the caller must not
+    report a name count computed from it as complete: better to decline
+    the whole suffix than assert a number this function cannot back up.
     """
     chunk = content[start:start + _CLASS_HEADER_WINDOW]
     brace = chunk.find("{")
-    return chunk if brace == -1 else chunk[:brace]
+    if brace == -1:
+        return chunk, True
+    return chunk[:brace], False
+
+
+def _split_top_level_commas(s: str) -> List[str]:
+    """Split on `,` that is not nested inside `()`, `[]`, `{}` or `<>`.
+
+    A Python base list can carry a parenthesized default
+    (`class Foo(Base, x=(1, 2)):`) and a Java/TS interface list can carry a
+    generic type argument (`implements Comparable<Foo, Bar>`) -- a plain
+    `str.split(",")` cuts both in the middle and reports a garbled or
+    truncated name instead of the real one.
+    """
+    parts: List[str] = []
+    depth = 0
+    current: List[str] = []
+    opens = "([{<"
+    closes = ")]}>"
+    for ch in s:
+        if ch in opens:
+            depth += 1
+        elif ch in closes:
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    parts.append("".join(current))
+    return parts
+
+
+def _leading_balanced_parens(header: str) -> Optional[str]:
+    """Content of the balanced `(...)` at the very start of `header` (after
+    optional leading whitespace), or None if it does not start with one.
+
+    A plain `[^)]*` regex stops at the FIRST `)`, which for
+    `class Foo(Base, x=(1, 2)):` is the one closing the nested tuple
+    literal -- the outer close-paren and anything after it (a later real
+    base class) are silently lost. Balanced counting does not have that
+    failure mode.
+    """
+    i = 0
+    n = len(header)
+    while i < n and header[i].isspace():
+        i += 1
+    if i >= n or header[i] != "(":
+        return None
+    depth = 0
+    start = i
+    for j in range(i, n):
+        if header[j] == "(":
+            depth += 1
+        elif header[j] == ")":
+            depth -= 1
+            if depth == 0:
+                return header[start + 1:j]
+    return None  # unbalanced within the scanned window
 
 
 def _header_hierarchy(ext: str, header: str) -> List[str]:
@@ -7941,11 +8010,11 @@ def _header_hierarchy(ext: str, header: str) -> List[str]:
     Python's base list is the parens right after the name, Ruby's is `<`.
     """
     if ext == ".py":
-        m = re.match(r"\s*\(([^)]*)\)", header)
-        if not m:
+        inner = _leading_balanced_parens(header)
+        if inner is None:
             return []
         names = []
-        for part in m.group(1).split(","):
+        for part in _split_top_level_commas(inner):
             part = part.strip()
             if part and "=" not in part and not part.startswith("*"):
                 names.append(part)
@@ -7966,7 +8035,9 @@ def _header_hierarchy(ext: str, header: str) -> List[str]:
         m = implements_re.search(header)
         if m:
             names.extend(
-                part.strip() for part in m.group(1).split(",") if part.strip()
+                part.strip()
+                for part in _split_top_level_commas(m.group(1))
+                if part.strip()
             )
     return names
 
@@ -8004,8 +8075,17 @@ def _regex_extract(path: str) -> List[Tuple[str, str, int, int, int]]:
                 name = m.group(1)
                 depth = 0
             if kind in ("class", "interface"):
-                header = _class_header_text(content, m.end())
-                hierarchy = _header_hierarchy(ext, header)
+                header, truncated = _class_header_text(content, m.end())
+                # Python (`:`) and Ruby (no closing token at all) match right
+                # at the head of the header regardless of where -- or
+                # whether -- the scan window ran out; only the keyword-based
+                # languages (`extends`/`implements` reached via .search()
+                # over the WHOLE header) can have a real base class or
+                # interface sitting past a truncated window.
+                if truncated and ext not in (".py", ".rb"):
+                    hierarchy: List[str] = []
+                else:
+                    hierarchy = _header_hierarchy(ext, header)
                 if hierarchy:
                     name += _format_hierarchy_suffix(hierarchy)
             symbols.append((kind, name, line_num, line_num, depth))

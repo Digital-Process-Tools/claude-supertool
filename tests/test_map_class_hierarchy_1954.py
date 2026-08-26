@@ -93,6 +93,26 @@ def test_wide_interface_list_is_capped_and_says_what_was_cut(tmp_path: Path) -> 
     assert "class Wide < I0, I1, I2, I3, +4 more" in out
 
 
+def test_python_nested_paren_default_does_not_truncate_the_base_list(tmp_path: Path) -> None:
+    """Regression: a `[^)]*`-style capture stops at the FIRST `)`, which for
+    `class Foo(Base, x=(1, 2), Mixin):` is the one closing the nested tuple
+    literal -- `Mixin` (a real base class) used to be silently dropped."""
+    f = tmp_path / "svc.py"
+    f.write_text("class Service(Base, x=(1, 2), Mixin):\n    pass\n")
+    out = supertool.op_map(str(f))
+    assert "class Service < Base, Mixin" in out
+
+
+def test_java_generic_interface_comma_is_not_split_as_two_names(tmp_path: Path) -> None:
+    """Regression: `implements Comparable<Foo, Bar>` has a comma INSIDE the
+    generic argument list -- a naive `.split(",")` used to garble it into
+    two half-names (`Comparable<Foo`, `Bar>`) instead of the one real one."""
+    f = tmp_path / "Handler.java"
+    f.write_text("public class Handler implements Comparable<Foo, Bar>, Serializable {\n}\n")
+    out = supertool.op_map(str(f))
+    assert "class Handler < Comparable<Foo, Bar>, Serializable" in out
+
+
 # ---------------------------------------------------------------------------
 # tree-sitter tier
 # ---------------------------------------------------------------------------
@@ -134,3 +154,49 @@ def test_ts_tier_class_without_parent_shows_no_hierarchy(tmp_path: Path, monkeyp
     symbols = supertool._ts_extract(str(f), "php")
     names = [s[1] for s in symbols if s[0] == "class"]
     assert names == ["Plain"]
+
+
+def test_ts_tier_java_interface_extending_interfaces(tmp_path: Path, monkeypatch) -> None:
+    """Regression: an interface's OWN `extends A, B` sits under a different
+    node type (`extends_interfaces`) than a class's (`superclass`/
+    `super_interfaces`) -- omitting it left interface-to-interface
+    inheritance silently unrendered, the exact symptom #1954 was filed
+    against, just one level up."""
+    _ts_or_skip(monkeypatch)
+    f = tmp_path / "Sub.java"
+    f.write_text("public interface Sub extends Base, Other {\n}\n")
+    symbols = supertool._ts_extract(str(f), "java")
+    names = [s[1] for s in symbols if s[0] == "interface"]
+    assert names == ["Sub < Base, Other"]
+
+
+def test_ts_tier_typescript_interface_extending_interfaces(tmp_path: Path, monkeypatch) -> None:
+    """Same regression as the Java case above, TS/JS's own node type
+    (`extends_type_clause`)."""
+    _ts_or_skip(monkeypatch)
+    f = tmp_path / "Foo.ts"
+    f.write_text("interface Foo extends Bar, Baz {\n}\n")
+    symbols = supertool._ts_extract(str(f), "typescript")
+    names = [s[1] for s in symbols if s[0] == "interface"]
+    assert names == ["Foo < Bar, Baz"]
+
+
+# ---------------------------------------------------------------------------
+# regex tier -- window truncation must decline rather than misreport
+# ---------------------------------------------------------------------------
+
+def test_regex_tier_declines_the_suffix_when_the_header_window_is_exhausted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A header longer than the scan window must not report a name count
+    computed from a truncated read -- that is the same "absence read as
+    a wrong answer" defect CLAUDE.md names, one level up from simply
+    dropping the hierarchy. Shrinking the window in the test (rather than
+    writing a multi-kilobyte fixture file) exercises the real decline
+    path with the real production constant's own logic."""
+    monkeypatch.setattr(supertool, "_CLASS_HEADER_WINDOW", 20)
+    f = tmp_path / "Handler.java"
+    f.write_text("public class Handler extends Base implements IA, IB {\n}\n")
+    out = supertool.op_map(str(f))
+    assert "class Handler " in out or "class Handler[" in out or "class Handler  [" in out
+    assert "<" not in out.split("class Handler", 1)[1].split("\n", 1)[0]
