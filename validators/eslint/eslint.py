@@ -60,6 +60,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from source_context import context_fields
 from refusal import guard_main, required, required_but_absent, skipped, tool_fault
+from npx_absent import is_npx_absent
 
 TOOL = "eslint"
 
@@ -79,16 +80,6 @@ _NO_CONFIG = (
     "couldn't find an eslint.config",
     "couldn't find a configuration file",
     "no eslint configuration found",
-)
-
-#: How npx says the package is not installed and `--no-install` forbids
-#: fetching it. Consulted only when the npx fallback was the route taken, and
-#: deliberately narrow: any other npx failure stays a loud fault, because
-#: swallowing an unknown failure is the same category mistake pointing the
-#: other way. Both spellings are live — npm 11 rewrote the message.
-_NPX_ABSENT = (
-    "could not determine executable to run",
-    'unknown command: "eslint"',
 )
 
 #: How eslint says it declined to lint a file it was handed. `ruleId` is null,
@@ -201,7 +192,7 @@ def main() -> None:
 
     if not body:
         lowered = stderr.lower()
-        if via_npx and any(p in lowered for p in _NPX_ABSENT):
+        if via_npx and is_npx_absent(lowered, TOOL):
             # An absent eslint, reached one layer further out. The same third
             # state as `not base`, with the same hint — the reader's next
             # action is `npm install`, not reading an npx traceback.

@@ -23,6 +23,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from refusal import absent, guard_main, skipped
 from linebreaks import split_lines
+from path_anchor import (anchor as _anchor, safe_realpath as _safe_realpath,
+                          anchor_miss_message as _anchor_miss_message)
 
 TOOL = "markdownlint"
 INSTALL_HINT = ("markdownlint not found on PATH — this file was NOT linted "
@@ -137,12 +139,33 @@ def main() -> None:
     # ...", measured on 0.49.1), optionally that. Without it every row fell
     # through to the catch-all below: four located findings arrived as one
     # unlocated `lint` error with no source context and a count of 1.
+    #
+    # Anchored on the invoked path itself (#1934, then #1940 for this
+    # adapter) rather than a bare `(?:.*?)`: the non-greedy wildcard used to
+    # discard the path instead of matching it, so it bound to the *earliest*
+    # `:digit:digit:` run anywhere in the line — including one supplied by a
+    # filename crafted to contain its own `N:M: ` sequence, e.g.
+    # `x:1:1: fake.md`. Building the pattern from `file` means only a
+    # spelling of the path markdownlint was actually invoked against can
+    # start a match (see `path_anchor.py`, #1937, for what "a spelling of"
+    # widened to). `.search()`, not `.match()`: a tool can print the invoked
+    # path more than once before its own diagnostic.
+    #
+    # Observed, not reasoned: markdownlint-cli 0.49.1 (npx, node v22.22.1)
+    # echoes the exact argv path back unmodified, including through a
+    # symlink and with a crafted `x:1:1: fake.md` name — verified directly
+    # against the real binary rather than assumed from the sibling adapters
+    # this class was found across.
     errors = []
-    pattern = re.compile(
-        r"^(?:.*?):(\d+)(?::(\d+))?\s+(?:(?:error|warning)\s+)?(MD\d+[^\s]*)\s+(.+)$")
+    real = _safe_realpath(file)
+    extra = [real] if real and real != file else []
+    pattern = _anchor(
+        file,
+        r":(\d+)(?::(\d+))?\s+(?:(?:error|warning)\s+)?(MD\d+[^\s]*)\s+(.+)$",
+        extra_paths=extra)
     output = (result.stdout + result.stderr).strip()
     for line in split_lines(output):
-        m = pattern.match(line)
+        m = pattern.search(line)
         if m:
             lineno, col, code, msg = m.groups()
             ln = int(lineno)

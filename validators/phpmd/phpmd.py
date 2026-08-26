@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 import pathlib
@@ -35,6 +34,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"
 from source_context import context_fields
 from linebreaks import split_lines
 from refusal import guard_main
+from path_anchor import (anchor as _anchor, safe_realpath as _safe_realpath,
+                          anchor_miss_message as _anchor_miss_message)
 
 
 DEFAULT_RULESETS = "cleancode,codesize,controversial,design,naming,unusedcode"
@@ -131,12 +132,37 @@ def main() -> None:
 
     raw = r.stdout or ""
     errors = []
+    # Anchored on the invoked path itself (#1934, then #1940 for this
+    # adapter) rather than a bare `.+?`: the non-greedy wildcard used to
+    # discard the path instead of matching it, so it bound to the earliest
+    # colon-digit run anywhere in the line -- including one supplied by a
+    # filename crafted to contain its own N-colon sequence, e.g.
+    # "x:1:1: fake.php". Building the pattern from `file` means only a
+    # spelling of the path phpmd was actually invoked against can start a
+    # match (see path_anchor.py, #1937, for what that widened to). Uses
+    # .search(), not .match().
+    #
+    # Observed, not reasoned: real phpmd 2.15.0 (phar, PHP 8.2), given a
+    # RELATIVE argv path, echoes back the fully-resolved absolute path
+    # instead -- through a symlink too (/tmp -> /private/tmp on macOS,
+    # resolved in the echoed line). Plain re.escape(file) alone would miss
+    # every relative invocation entirely; extra_paths=[realpath] is not
+    # merely a widening here the way it is for markdownlint, it is the
+    # spelling phpmd actually uses whenever `file` is not already absolute.
+    # The old docstring shape below (tab-separated) was also not what a real
+    # phpmd prints: the observed separator is repeated spaces, not tabs --
+    # a run of whitespace matches both, so the existing tab-based test
+    # fixtures keep passing unchanged.
+    real = _safe_realpath(file)
+    extra = [real] if real and real != file else []
+    pattern_with_rule = _anchor(file, r":(\d+)\s+(\S+)\s+(.+)$", extra_paths=extra)
+    pattern_no_rule = _anchor(file, r":(\d+)\s+(.+)$", extra_paths=extra)
     for line in split_lines(raw):
         line = line.strip()
         if not line:
             continue
-        # "path/to/file.php:42\tRuleName\tHuman message"
-        m = re.match(r'^.+?:(\d+)\t([^\t]+)\t(.+)$', line)
+        # "path/to/file.php:42<tab-or-spaces>RuleName<tab-or-spaces>Human message"
+        m = pattern_with_rule.search(line)
         if m:
             lineno = int(m.group(1))
             rule = m.group(2).strip()
@@ -150,8 +176,8 @@ def main() -> None:
                 **context_fields(file, lineno),
             })
             continue
-        # Fallback: "path/to/file.php:42  message" (space-separated, no rule column)
-        m2 = re.match(r'^.+?:(\d+)\s+(.+)$', line)
+        # Fallback: "path/to/file.php:42  message" (no rule column)
+        m2 = pattern_no_rule.search(line)
         if m2:
             lineno = int(m2.group(1))
             msg = m2.group(2).strip()
