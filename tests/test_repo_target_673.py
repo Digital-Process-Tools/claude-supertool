@@ -53,9 +53,25 @@ def _load(preset_rel: str, name: str) -> Any:
 
 @pytest.fixture(autouse=True)
 def clean_repo_env(monkeypatch):
-    """SUPERTOOL_REPO is process-global; never let it bleed between tests."""
+    """SUPERTOOL_REPO is process-global; never let it bleed between tests.
+
+    `monkeypatch.delenv` before `yield` only ever cleans the *incoming* state.
+    `main()`'s `repo:` pre-pass writes `os.environ["SUPERTOOL_REPO"]` directly
+    -- real production code, not a test double, and every "accepted" call in
+    this file (`test_repo_op_is_stripped_and_exported_before_dispatch` and its
+    siblings) drives `main()` far enough to set it for real. That mutation is
+    invisible to `monkeypatch`, whose own teardown only reverses ops it
+    performed itself, so without an explicit pop here the value survives into
+    whichever test runs next in this pytest worker -- the #1962 shape,
+    reproduced against this file's GitLab twin
+    (`tests/test_gl_repo_target_676.py`) and confirmed here too: a `gh-prs`
+    radar test scheduled after this file's tests started resolving
+    `Digital-Process-Tools/claude-remember` as its target with nothing in its
+    own body naming that repo.
+    """
     monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
     yield
+    os.environ.pop("SUPERTOOL_REPO", None)
 
 
 @pytest.fixture
@@ -89,6 +105,46 @@ def test_repo_op_is_stripped_and_exported_before_dispatch(no_dispatch) -> None:
     assert no_dispatch == [
         ("gh-pr:265:status", "Digital-Process-Tools/claude-remember")
     ]
+
+
+def test_the_env_var_main_sets_does_not_survive_into_the_next_test() -> None:
+    """The GitHub twin of `test_gl_repo_target_676.py`'s own pin (#1962).
+
+    `main()`'s `repo:` pre-pass sets `os.environ["SUPERTOOL_REPO"]` for real,
+    a mutation `monkeypatch` never tracks, so `clean_repo_env`'s teardown did
+    not undo it before the fix above -- left alive, it silently makes a later
+    test in the same pytest worker answer as though it were scoped to
+    `Digital-Process-Tools/claude-remember` (the repo this file's own tests
+    use as their example target). Observed for real: 5 of 12 CI legs on
+    #1979 had `presets/watch/tiers/gh_prs.py`'s own tests resolve exactly
+    that repo with nothing in their own bodies naming it.
+
+    Asserting `os.environ` inside the leaking test's own body cannot see
+    this -- `main()` has already set it and `clean_repo_env`'s teardown has
+    not run yet at that point, so the assertion would pass or fail
+    identically with or without the fix above. The leak is what survives
+    INTO the next test, so this drives a real next test, in a real pytest
+    subprocess, and checks it from there -- the same technique
+    `test_gl_repo_target_676.py`'s own regression test uses.
+    """
+    probe = REPO_ROOT / "tests" / "_gh_repo_env_leak_probe_1962.py"
+    probe.write_text(
+        "import os\n\n\n"
+        "def test_probe():\n"
+        "    assert 'SUPERTOOL_REPO' not in os.environ, os.environ.get('SUPERTOOL_REPO')\n",
+        encoding="utf-8",
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest",
+             f"{__file__}::test_repo_op_is_stripped_and_exported_before_dispatch",
+             str(probe), "-q", "--no-cov", "-n0"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=REPO_ROOT, timeout=60,
+        )
+    finally:
+        probe.unlink(missing_ok=True)
+    assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
 
 
 def test_repo_op_allowed_immediately_after_cwd(tmp_path, no_dispatch,

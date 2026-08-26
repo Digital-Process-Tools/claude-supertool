@@ -69,6 +69,34 @@ def quiet_reconcile(monkeypatch):
     monkeypatch.setattr(tier, "_reconcile_one", lambda p: ("", []))
 
 
+@pytest.fixture(autouse=True)
+def hermetic_repo_env(monkeypatch):
+    """`SUPERTOOL_REPO` is process-global, and this file is one of the tests
+    that reads it (through `tier._repo_target.target()`, via
+    `watch_coverage()`/`resolve_filter`/`radar_state`): every test here that
+    does NOT explicitly monkeypatch `target()` assumes it resolves to
+    "no target" — the ordinary case.
+
+    A leak from *any other file* that drives `main()`'s `repo:` pre-pass
+    without cleaning up after itself (#1962 -- observed leaking out of both
+    `tests/test_repo_target_673.py` and `tests/test_gl_repo_target_676.py`
+    before their own fixtures were fixed) sets that env var directly and
+    outlives `monkeypatch`'s own tracking, so it can reach this file too if
+    scheduled after the leaking one in the same pytest worker: 5 of 12 CI
+    legs on #1979 had these tests resolve `Digital-Process-Tools/
+    claude-remember` with nothing in their own bodies naming it, and every
+    footer/health assertion here silently started exercising the #673
+    UNKNOWN-coverage path instead of the states they are named for.
+
+    This is deliberately defensive rather than a fix for the leak itself: it
+    makes this file's own tests hermetic against a leak from *anywhere*,
+    present or future, known cause or not — the two known leaking fixtures
+    are fixed separately, and this is the second, independent guard the
+    coordinator asked for, not a substitute for the first.
+    """
+    monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
+
+
 def _fake_gh(monkeypatch, prs, code=0, err=""):
     def run(cmd, *a, **k):
         return _Result(json.dumps(prs), err, code)
