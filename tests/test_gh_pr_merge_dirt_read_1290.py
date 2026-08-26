@@ -72,7 +72,7 @@ class Reads:
 
 def arm(monkeypatch, reads: Reads, path="/w/fix"):
     monkeypatch.setattr(m, "_git", reads)
-    monkeypatch.setattr(m, "_worktrees_for_branch", lambda head: [path])
+    monkeypatch.setattr(m, "_worktrees_for_branch", lambda head: ([path], ""))
     monkeypatch.setattr(m, "_worktree_state", lambda p: "idle")
     return lambda: m._cleanup_worktree("fix/1290")
 
@@ -110,7 +110,7 @@ def test_a_status_configured_not_to_look_does_not_authorise_a_removal(
         capture_output=True, text=True, encoding="utf-8", errors="replace")
     assert blind.stdout.strip() == "", "the premise no longer reproduces"
 
-    monkeypatch.setattr(m, "_worktrees_for_branch", lambda head: [str(wt)])
+    monkeypatch.setattr(m, "_worktrees_for_branch", lambda head: ([str(wt)], ""))
     monkeypatch.setattr(m, "_worktree_state", lambda p: "idle")
     monkeypatch.chdir(main)
 

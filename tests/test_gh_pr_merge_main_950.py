@@ -96,6 +96,7 @@ class _Harness:
                  branch_stdout=_DEFAULT,
                  default_branch: str = "master",
                  behind_by: int = 0,
+                 stack_prs: list | None = None,
                  fail_json: set | None = None):
         self.pr = pr
         # `""` is a real answer from `_repo_identity`, not a missing fixture:
@@ -125,6 +126,12 @@ class _Harness:
         self.merge_calls: list = []
         self.readback_count = 0
         self.compare_calls: list = []
+        # #1851: stacked-follow-up search. `()` — not `None` — is the ordinary
+        # "nothing targets this branch" fixture default; `stack_prs` names the
+        # rows a caller wants `gh pr list` to answer with, and `"stack"` in
+        # `fail_json` makes the read fail outright, the third state.
+        self.stack_prs = stack_prs if stack_prs is not None else []
+        self.stack_calls: list = []
 
     # -- gh ---------------------------------------------------------------
     def gh(self, args, timeout=30):
@@ -179,6 +186,11 @@ class _Harness:
             if state is None:
                 return (None, "rate limited")
             return ({"state": state}, "")
+        if args[:2] == ["pr", "list"]:
+            self.stack_calls.append(list(args))
+            if "stack" in self.fail_json:
+                return (None, "gh timed out")
+            return (list(self.stack_prs), "")
         raise AssertionError(f"unexpected gh_json call: {args}")
 
     # -- the pr.py seam ---------------------------------------------------
