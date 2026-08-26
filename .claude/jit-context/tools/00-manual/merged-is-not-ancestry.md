@@ -1,7 +1,7 @@
 ---
 title: "Do not ask git whether a branch is merged — this repo squash-merges"
 tool: Bash
-match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?git[[:space:]]+(branch|for-each-ref)[^;&|\n]*--merged($|[^[:alnum:]-])
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+(proxy[[:space:]]+)?)?git[[:space:]]+(branch|for-each-ref)[^;&|\n]*--merged($|[^[:alnum:]-])
 mode: block
 ---
 
@@ -12,7 +12,7 @@ supertool 'git-worktrees'              # the whole fleet
 supertool 'git-worktrees:<PATH>'       # one tree, exit 0 only for idle
 ```
 
-## Why the raw command is blocked rather than discouraged
+## Why this blocks
 
 `--merged` is an **ancestry** test. This repo squash-merges every PR, and a squash creates a commit with no parent link to the branch — so a fully merged branch is not an ancestor of `master` and `--merged` never names it.
 

@@ -1,7 +1,7 @@
 ---
 title: "Piping a supertool op through head/tail/sed selects against the answer"
 tool: Bash
-match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+)?(python3?[[:space:]]+(-m[[:space:]]+)?)?([^[:space:]]*/)?supertool(\.py)?[[:space:]]([^;&\n]|&[^&[:space:]])*[[:space:]'"]\|[[:space:]]*(head|tail|sed|cut|awk)
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+(proxy[[:space:]]+)?)?(python3?[[:space:]]+(-m[[:space:]]+)?)?([^[:space:]]*/)?supertool(\.py)?[[:space:]]([^;&\n]|&[^&[:space:]])*[[:space:]'"]\|[[:space:]]*(head|tail|sed|cut|awk)
 mode: block
 ---
 

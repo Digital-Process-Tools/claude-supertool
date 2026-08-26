@@ -1,20 +1,36 @@
-"""#1774 — `description` is rendered whole by `ops`, so its length is a per-session tax.
+"""#1774 — `description` is rendered whole by `ops:full` and `help:OP`, so its length is paid for by both on demand.
 
-`ops` and `help:OP` print the **same** `description` field, byte for byte: there
-is no long form today. Measured on 0.46.0, `gh-prs` carries 4,512 characters of
-`description`, its `ops` row is 4,706 bytes and its `help:gh-prs` render is
-4,721 — the difference is the syntax line and the payload-route footer, nothing
-else. So a clause added "for the maintainer record" is not filed somewhere
-cheaper; it is injected into every reader of the roster, forever.
+#1813: this was wrong as of #1775/#1778, which moved `description` out of the
+default `ops` listing. Corrected here rather than left to drift a second time.
 
-What that costs, over the whole shipped tree (128 documented ops):
+`ops` (bare, no argument) has been **signatures only** since #1774/#1775/#1778
+— measured here at 3,721 bytes. `description` is now paid for by two
+on-demand surfaces instead, and both still render it whole: `ops:full` prints
+every row's description alongside its signature, and `help:OP` prints one
+op's description verbatim — `op_help()` has no `compact`/`full` distinction of
+its own and never developed one, so shrinking a description shrinks `help:OP`
+by exactly as much. **The obvious remedy — "move the prose into `help:OP`" —
+does not exist**; the cheaper home is the docs page for that op's family (see
+`docs/contributing.md`'s own `description` section), not a surface that
+already carries the same bytes.
 
-    total 76,795   median 151   p90 1,868   max 6,578 (`channel`)
-    top 10 rows    37,739 = 49% of the corpus, in 8% of the ops
+**The ratchet is unaffected by any of this.** A field two on-demand surfaces
+still render whole is worth bounding regardless of who pays for it by default.
+What changed is only the entry point a maintainer reads when the test goes
+red — it names `ops:full` and `help:OP`, not `ops`.
 
-`_HOOK_OUTPUT_CAP_BYTES` is 7,168 and the assembled `ops` render is 74,838 —
-over the SessionStart cap by 10x, which is why this repo's own session
-injection has fallen back to a bare list of op names carrying no signatures.
+What the corpus costs, over the whole shipped tree (128 documented ops):
+
+    total 74,679   median 152   p90 1,732   max 6,578 (`channel`)
+    top 10 rows    35,290 = 47% of the corpus, in 8% of the ops
+
+`_HOOK_OUTPUT_CAP_BYTES` is 7,168 and `ops:full` renders far past it (tens of
+KB, and checkout-path-dependent to the byte — `tests/test_render_size_claims_1877.py`
+is where an exact figure is pinned, not here). That gap is why `ops:full` is
+never what a SessionStart-style injection sends; `ops:roster` (names plus
+safety class, no descriptions at all) is what `hooks/session-start.sh` sends
+instead, and bare `ops` — signatures, no descriptions — fits the cap on its
+own without needing a fallback.
 
 This file is a **ratchet, not a style rule.** Every entry in `_OVER_BUDGET` is a
 description that is already over `MAX_DESCRIPTION`; each may shrink and none may
