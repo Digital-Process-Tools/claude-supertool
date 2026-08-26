@@ -665,8 +665,22 @@ def _repo_target_modes() -> Dict[str, str]:
 
 
 def _repo_target_ops() -> set[str]:
-    """Ops that honour a leading ``repo:OWNER/NAME``."""
+    """Ops that honour a leading ``repo:OWNER/NAME`` directly."""
     return {op for op, mode in _repo_target_modes().items() if mode == "op"}
+
+
+def _repo_reachable_ops() -> set[str]:
+    """Every op a ``repo:`` op may sit beside without refusing the call (#1909).
+
+    Broader than :func:`_repo_target_ops`: a ``payload``-mode op does not read
+    ``SUPERTOOL_REPO`` itself, but it is still repo-scoped, so ``repo:`` may
+    now supply its payload's own repo field when the payload is silent, and
+    the op refuses on its own when the two are both set and disagree — see
+    ``presets/_repo_target.py``'s ``resolve_or_conflict``. Only an op absent
+    from ``_repo_target_modes()`` altogether has no repo dimension at all,
+    and that is the one case still refused outright, by :func:`_repo_refusal`.
+    """
+    return set(_repo_target_modes())
 
 
 #: A repo target is a path made of project-path segments and nothing else.
@@ -694,8 +708,9 @@ def _repo_target_platform(ops: List[str]) -> str | None:
     presets = _shipped_preset_ops()
     modes = _repo_target_modes()
     # Every op that has a repo dimension at all, not only the ones that take
-    # it from this op. A `payload`-mode write op is refused a few lines below,
-    # but it is still evidence of which forge the call is about — reading only
+    # it from this op. A `payload`-mode write op reconciles `repo:` against
+    # its own payload field rather than being refused here (#1909), but it is
+    # still evidence of which forge the call is about — reading only
     # `op`-mode ops let a GitLab project path through a GitHub-only call with
     # the shape never mentioned, and the reader sent to the wrong fix.
     found = {presets.get(a.split(":", 1)[0], "")
@@ -733,24 +748,17 @@ def _repo_shape_error(value: str, platform: str | None) -> str | None:
 
 
 def _repo_refusal(op: str) -> str:
-    """Why this call cannot carry a ``repo:`` op, and what to do instead.
+    """Why this call cannot carry a ``repo:`` op alongside *op*.
 
-    Named rather than generic, because the two reasons have different fixes: an
-    op with its own payload key wants the target moved, an op with no repo
-    dimension at all wants the target dropped or the call split.
+    Only reached for an op absent from ``_repo_target_modes()`` altogether —
+    no repo dimension at all. A ``payload``-mode op used to be refused here
+    too, on the theory that "one place the target comes from" meant one
+    *route*; #1909 narrowed that to one *resolved value* — the pre-pass now
+    lets ``repo:`` sit beside a payload-mode op, exports it the same as for an
+    ``op``-mode read, and the op itself reconciles the two (see
+    ``presets/_repo_target.py``'s ``resolve_or_conflict``), refusing on its
+    own only when both are set and disagree.
     """
-    mode = _repo_target_modes().get(op) or ""
-    if mode.split(":", 1)[0] == "payload":
-        # `payload` alone means the key is `repo`; `payload:KEY` names another.
-        # The key is quoted from the manifest rather than assumed, because
-        # `gl-issue-create` reads `project` and telling its caller to set
-        # `repo` names a field its payload validator does not look at.
-        key = mode.split(":", 1)[1] if ":" in mode else "repo"
-        return (
-            f"repo: {op!r} takes its repo target in the payload "
-            f"({key} = ...), not from a repo: op — so there is one "
-            f"place the target comes from. Set it there and drop the repo: op.\n"
-        )
     return (
         f"repo: {op!r} cannot be pointed at a repo, so a repo: op in this call "
         f"would apply to some ops and be silently ignored by this one. Drop "
@@ -28460,7 +28468,7 @@ def _main(argv: List[str]) -> int:
         if shape_error:
             sys.stderr.write(shape_error)
             return 1
-        targetable = _repo_target_ops()
+        targetable = _repo_reachable_ops()
         # A leading cwd: survives in `rest` and is another pre-pass op, not a
         # dispatch one — it is where the call stands, never what it is about,
         # so it is exempt from the targetable check rather than refused by it.

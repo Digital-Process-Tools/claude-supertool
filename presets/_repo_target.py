@@ -544,3 +544,48 @@ def github_owner_repo(url: str) -> tuple[str, str] | None:
     if len(segments) < 2:
         return None
     return segments[0], segments[1]
+
+
+def resolve_or_conflict(payload: dict, op: str, key: str = "repo") -> tuple[str | None, str]:
+    """Reconcile a payload's own repo field against a `repo:` target (#1909).
+
+    Core's pre-pass no longer refuses the whole call when `repo:` sits beside
+    a payload-mode write op (`gh-issue-create`, `gh-pr-create`, `gh-pr-edit`)
+    — it exports :data:`ENV_VAR` for it exactly as it does for an `op`-mode
+    read, and leaves reconciling the two routes to the op that owns the
+    payload key. This is that reconciliation, called once, before any
+    `.supertool.json`/git-remote auto-detect fallback the caller still runs
+    when *both* routes are silent — a `repo:` target is a caller naming the
+    repository explicitly and must win over an inferred default the same way
+    an explicit payload value already does.
+
+    Returns ``(error, source)``. ``error`` is ``None`` on success and a
+    ready-to-print refusal otherwise — check it first. ``source`` describes
+    where the resolved value came from, for a receipt to state it:
+
+    - target absent, payload silent  -> ``(None, "")``      — nothing decided
+    - target absent, payload has it  -> ``(None, "payload")``
+    - target present, payload silent -> value copied into ``payload[key]``,
+      ``(None, "repo: op")``
+    - target present, payload agrees -> ``(None, "payload (agrees with repo: op)")``
+    - target present, payload disagrees -> refusal naming *op*, *key* and
+      both values, ``payload`` left untouched.
+
+    A silent precedence in either direction reintroduces exactly the defect
+    the pre-pass refusal used to prevent wholesale — so disagreement is never
+    resolved here, only reported.
+    """
+    repo_target = target()
+    have = str(payload.get(key) or "").strip()
+    if not repo_target:
+        return None, ("payload" if have else "")
+    if not have:
+        payload[key] = repo_target
+        return None, "repo: op"
+    if have.casefold() == repo_target.casefold():
+        return None, "payload (agrees with repo: op)"
+    return (
+        f"repo: {op!r}'s payload names {key} = {have!r}, and the repo: op "
+        f"names {repo_target!r} — these disagree, so the target is "
+        f"ambiguous. Make them agree, or drop one.\n"
+    ), ""

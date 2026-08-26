@@ -196,17 +196,14 @@ def test_repo_op_refuses_ops_that_cannot_honour_it(no_dispatch, capsys) -> None:
     assert "repo:" in err
 
 
-def test_repo_op_refuses_gh_issue_create_and_names_the_payload_route(
-        no_dispatch, capsys) -> None:
-    """gh-issue-create has its own `repo` payload key — point at it, don't guess
-    which of the two wins."""
+def test_repo_op_now_reaches_gh_issue_create(no_dispatch) -> None:
+    """#1909: a payload-mode op no longer refuses the whole call — `repo:` is
+    exported the same as for an `op`-mode read, and reconciling it with the
+    payload's own `repo` key is `gh-issue-create`'s own job now."""
     rc = supertool.main(["repo:owner/name", "gh-issue-create:@.max/x.toml"])
 
-    assert rc == 1
-    assert no_dispatch == []
-    err = capsys.readouterr().err
-    assert "gh-issue-create" in err
-    assert "payload" in err
+    assert rc == 0
+    assert no_dispatch == [("gh-issue-create:@.max/x.toml", "owner/name")]
 
 
 def test_no_repo_op_leaves_the_env_untouched(no_dispatch) -> None:
@@ -485,3 +482,99 @@ def test_not_found_with_a_target_names_the_target_not_this_repo(
 
     assert "in this repo" not in msg
     assert "o/r" in msg
+
+
+# ---------------------------------------------------------------------------
+# `_repo_target.resolve_or_conflict` — the reconciliation a payload-mode op
+# now runs itself, since the pre-pass no longer refuses on its behalf (#1909)
+# ---------------------------------------------------------------------------
+
+def test_resolve_or_conflict_is_a_no_op_without_a_target() -> None:
+    rt = _load("_repo_target.py", "rt_conflict_no_target")
+    payload = {"repo": "o/r"}
+    err, source = rt.resolve_or_conflict(payload, "gh-issue-create")
+    assert err is None
+    assert source == "payload"
+    assert payload["repo"] == "o/r"
+
+
+def test_resolve_or_conflict_is_silent_with_neither_set(monkeypatch) -> None:
+    monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
+    rt = _load("_repo_target.py", "rt_conflict_neither")
+    payload: dict = {}
+    err, source = rt.resolve_or_conflict(payload, "gh-issue-create")
+    assert err is None
+    assert source == ""
+    assert "repo" not in payload
+
+
+def test_resolve_or_conflict_fills_a_silent_payload(monkeypatch) -> None:
+    monkeypatch.setenv("SUPERTOOL_REPO", "owner/name")
+    rt = _load("_repo_target.py", "rt_conflict_fill")
+    payload: dict = {}
+    err, source = rt.resolve_or_conflict(payload, "gh-issue-create")
+    assert err is None
+    assert source == "repo: op"
+    assert payload["repo"] == "owner/name"
+
+
+def test_resolve_or_conflict_accepts_agreement(monkeypatch) -> None:
+    monkeypatch.setenv("SUPERTOOL_REPO", "owner/name")
+    rt = _load("_repo_target.py", "rt_conflict_agree")
+    payload = {"repo": "owner/name"}
+    err, source = rt.resolve_or_conflict(payload, "gh-issue-create")
+    assert err is None
+    assert "agrees" in source
+    assert payload["repo"] == "owner/name"
+
+
+def test_resolve_or_conflict_agreement_is_case_insensitive(monkeypatch) -> None:
+    """A caller who typed `Owner/Name` in the payload and `owner/name` in the
+    repo: op has not disagreed."""
+    monkeypatch.setenv("SUPERTOOL_REPO", "owner/name")
+    rt = _load("_repo_target.py", "rt_conflict_case")
+    payload = {"repo": "Owner/Name"}
+    err, _source = rt.resolve_or_conflict(payload, "gh-issue-create")
+    assert err is None
+
+
+def test_resolve_or_conflict_refuses_disagreement_naming_both(monkeypatch) -> None:
+    """The load-bearing arm: this must refuse, and name *both* values and the
+    op, or a silent precedence reintroduces exactly the defect the pre-pass
+    refusal used to prevent wholesale. Pairs with the agreement test above --
+    would still pass if the code did nothing without it."""
+    monkeypatch.setenv("SUPERTOOL_REPO", "owner/from-repo-op")
+    rt = _load("_repo_target.py", "rt_conflict_disagree")
+    payload = {"repo": "owner/from-payload"}
+    err, source = rt.resolve_or_conflict(payload, "gh-issue-create")
+    assert err is not None
+    assert source == ""
+    assert "gh-issue-create" in err
+    assert "owner/from-repo-op" in err
+    assert "owner/from-payload" in err
+    # untouched — a refusal must never half-apply either value
+    assert payload["repo"] == "owner/from-payload"
+
+
+def test_resolve_or_conflict_uses_the_given_key(monkeypatch) -> None:
+    """`gl-issue-create` reads `project`, not `repo` — the refusal must name
+    the field the payload validator actually reads."""
+    monkeypatch.setenv("SUPERTOOL_REPO", "group/from-repo-op")
+    rt = _load("_repo_target.py", "rt_conflict_key")
+    payload = {"project": "group/from-payload"}
+    err, _source = rt.resolve_or_conflict(payload, "gl-issue-create", "project")
+    assert err is not None
+    assert "project" in err
+    assert "repo = " not in err
+
+
+def test_repo_reachable_ops_is_a_superset_of_op_mode() -> None:
+    """#1909: a payload-mode op is reachable too now — it just does not read
+    SUPERTOOL_REPO itself."""
+    reachable = supertool._repo_reachable_ops()
+    op_mode = supertool._repo_target_ops()
+
+    assert op_mode <= reachable
+    assert "gh-issue-create" in reachable
+    assert "gh-issue-create" not in op_mode
+    assert "read" not in reachable

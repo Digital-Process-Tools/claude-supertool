@@ -21,6 +21,7 @@ except ModuleNotFoundError:
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _remote_default as _rd  # noqa: E402
+import _repo_target  # noqa: E402  (repo: op precedence over payload's own field -- #1909)
 import _untrusted  # noqa: E402  (the GitHub API writes the failure body — #1606)
 
 
@@ -105,10 +106,15 @@ def main() -> int:
         print(f"ERROR: failed to parse payload: {e} (expected JSON or TOML with title/body)")
         return 1
 
+    repo_conflict, repo_source = _repo_target.resolve_or_conflict(payload, "gh-issue-create")
+    if repo_conflict:
+        print(repo_conflict)
+        return 1
     if not payload.get("repo"):
         auto = _rd.resolve("github_repo", "github.com")
         if auto:
             payload["repo"] = auto
+            repo_source = "cwd remote / config default"
 
     err = _validate(payload)
     if err:
@@ -202,7 +208,9 @@ def main() -> int:
             url = _untrusted.flat(printed[-1]) if printed else "?"
             number = url.rstrip("/").split("/")[-1] if "/" in url else "?"
 
-        print(f"gh-issue-create OK number={number} url={url}")
+        source_note = (f"  (repo from {repo_source})"
+                        if repo_source not in ("", "payload") else "")
+        print(f"gh-issue-create OK number={number} url={url}{source_note}")
         return 0
 
     finally:

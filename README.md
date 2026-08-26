@@ -430,7 +430,20 @@ It composes with `cwd:`, which is what makes a GitLab project root usable as the
 
 **Rules.** First op, or immediately after `cwd:`. One per call. `OWNER/NAME` or it is refused before anything runs — a half-target never reaches `gh`.
 
-**A `repo:` no op in the call can honour is refused, not ignored.** Only ops that declare a repo target accept one (`gh-pr`, `gh-prs`, `gh-issue`, `gh-issues`, `gh-run`, `gh-branch`, `gh-job`); mixing in one that cannot — `read:`, or `gh-issue-create`, which has its own payload key — fails the call and names the op. A target that silently applied to half a call is the defect the issue was about, so it is not the fix's behaviour either.
+**A `repo:` no op in the call can honour is refused, not ignored.** Only ops that declare a repo target accept one (`gh-pr`, `gh-prs`, `gh-issue`, `gh-issues`, `gh-run`, `gh-branch`, `gh-job`, and the payload-mode write ops below); mixing in one that has no repo dimension at all — `read:` — fails the call and names the op. A target that silently applied to half a call is the defect the issue was about, so it is not the fix's behaviour either.
+
+**A payload-mode write op — `gh-issue-create`, `gh-pr-create`, `gh-pr-edit`, `gl-issue-create` — takes a precedence rule instead of a ban ([#1909](https://github.com/Digital-Process-Tools/claude-supertool/issues/1909)).** These ops read their repo target from their own payload field (`repo`, or `project` for `gl-issue-create`), not from `SUPERTOOL_REPO` directly — until #1909 that meant a `repo:` op beside one of them refused the *whole call*, on the theory that "one place the target comes from" meant one route. It now means one *resolved value*:
+
+- `repo:` present, payload silent → the target wins, stated with its source in the receipt (`repo from repo: op`).
+- payload set, no `repo:` op → unchanged, exactly as before.
+- both present and agreeing → proceeds; nothing is ambiguous.
+- **both present and disagreeing → refuses, naming both values and which op each came from.** A silent precedence in either direction would reintroduce the defect the old ban existed to prevent, so the op decides this itself rather than core guessing.
+
+```bash
+./supertool 'repo:Digital-Process-Tools/claude-remember' 'gh-issues' 'gh-issue-create:@issue.toml'
+```
+
+reads a sibling repo's open issues and files on it in the same call — the batching gap #1909 was filed about — without having to inject `repo = "..."` into a payload file you did not write.
 
 **The error moved with the capability.** `cwd is not a GitHub repo` was a complete answer while cwd was the only way to name a repo. It now names the second route as well — and when a target *was* given it is not used at all, because cwd had no part in that lookup:
 

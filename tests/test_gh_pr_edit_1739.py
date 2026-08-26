@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -384,3 +385,72 @@ def test_the_body_and_title_spellings_of_gh_pr_edit_are_refused(
 ])
 def test_the_shapes_this_op_does_not_answer_stay_clean(shipped_github, command):
     assert supertool.guard_command(command).state == "clean", command
+
+
+# ===========================================================================
+# #1909 — repo: reconciled against the payload's own repo field
+# ===========================================================================
+
+def _pr_payload(tmp_path: Path, data: dict) -> str:
+    p = tmp_path / "pr_edit.json"
+    p.write_text(json.dumps(data))
+    return str(p)
+
+
+def _install_edit_harness(monkeypatch, current: dict, response: dict):
+    monkeypatch.setattr(
+        m, "_gh_json",
+        lambda args, timeout=30, **kw: (
+            (current, "") if args[:2] == ["api"] and "-X" not in args
+            else (response, "")))
+
+
+def test_repo_op_supplies_a_silent_payload(monkeypatch, capsys, tmp_path):
+    """target set, payload silent -> the target wins, stated with its source
+    in the receipt."""
+    payload_file = _pr_payload(tmp_path, {"body": "Closes #1739."})
+    monkeypatch.setattr(sys, "argv", ["pr_edit.py", "1737", payload_file])
+    monkeypatch.setenv("SUPERTOOL_REPO", "owner/from-repo-op")
+    _install_edit_harness(
+        monkeypatch, {"title": "t", "state": "OPEN", "body": "old"},
+        {"body": "Closes #1739.", "title": "t", "html_url": "u"})
+
+    assert m.main() == 0
+    out = capsys.readouterr().out
+    assert "owner/from-repo-op" in out
+    assert "repo from repo: op" in out
+
+
+def test_repo_op_and_agreeing_payload_proceed(monkeypatch, capsys, tmp_path):
+    """Both present and agreeing is not ambiguous -- it proceeds."""
+    payload_file = _pr_payload(
+        tmp_path, {"repo": "o/r", "body": "Closes #1739."})
+    monkeypatch.setattr(sys, "argv", ["pr_edit.py", "1737", payload_file])
+    monkeypatch.setenv("SUPERTOOL_REPO", "o/r")
+    _install_edit_harness(
+        monkeypatch, {"title": "t", "state": "OPEN", "body": "old"},
+        {"body": "Closes #1739.", "title": "t", "html_url": "u"})
+
+    assert m.main() == 0
+    assert "o/r" in capsys.readouterr().out
+
+
+def test_repo_op_and_disagreeing_payload_refuse(monkeypatch, capsys, tmp_path):
+    """Both present and disagreeing must refuse, naming both values and never
+    guessing which wins -- the one arm that proves the check is for real.
+    Would still pass if the code did nothing UNLESS paired with the agreeing
+    case above, which proceeds."""
+    payload_file = _pr_payload(
+        tmp_path, {"repo": "o/r", "body": "Closes #1739."})
+    monkeypatch.setattr(sys, "argv", ["pr_edit.py", "1737", payload_file])
+    monkeypatch.setenv("SUPERTOOL_REPO", "owner/somewhere-else")
+
+    def _must_not_be_called(*a, **kw):
+        raise AssertionError("_gh_json was called despite the disagreement")
+    monkeypatch.setattr(m, "_gh_json", _must_not_be_called)
+
+    assert m.main() == 1
+    out = capsys.readouterr().out
+    assert "o/r" in out
+    assert "owner/somewhere-else" in out
+    assert "gh-pr-edit" in out
