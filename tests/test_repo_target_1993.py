@@ -10,10 +10,22 @@ Two independent things are fixed here:
   export, or a value that somehow survived a restore in a long-lived host
   process -- sat in `os.environ` for the whole of `_main()`, which is
   exactly what let a call with no `repo:` op read as though one had run.
-  `main()` now clears both on entry, before `_main` ever inspects argv, so
-  the only way either variable is set during a call is that call's own
+  `main()` cleared both on entry, before `_main` ever inspects argv, so the
+  only way either variable was set during a call was that call's own
   `repo:` pre-pass setting it fresh -- the one place that runs the shape
   check (`_repo_shape_error`).
+
+  **#2001 revises this**: clearing `SUPERTOOL_REPO` itself was never
+  needed to close the hole above -- `explicit_target()`, what every write
+  route calls instead of the bare `target()`, gates purely on the marker
+  via `from_op()`, so the marker alone is what a write route must never
+  see survive. Clearing the value too took the READ path down as a side
+  effect: an ambient `SUPERTOOL_REPO` with no `repo:` op in the call used
+  to reach a read op and stopped reaching one, silently. `main()` now
+  clears only `SUPERTOOL_REPO_FROM_OP` on entry, which still denies it for
+  the duration of a call whose own `repo:` pre-pass did not set it fresh,
+  while leaving an ambient `SUPERTOOL_REPO` free to reach reads exactly as
+  it did before this fix existed.
 * `presets/gitlab/issue_create.py`'s `encoded_project` escaped only `/`,
   so a project carrying `?`, `#` or `%` reached the linked-issue API path
   unencoded -- independent of how the target arrived.
