@@ -54,6 +54,19 @@ def _load(preset_rel: str, name: str) -> Any:
 def clean_repo_env(monkeypatch):
     monkeypatch.delenv("SUPERTOOL_REPO", raising=False)
     yield
+    # `main()`'s `repo:` pre-pass writes `os.environ["SUPERTOOL_REPO"]`
+    # directly (it is a real per-process CLI invocation in production, not a
+    # test double) -- a mutation `monkeypatch` never tracked, so its teardown
+    # restoring the pre-test snapshot does not touch it. Every accepted-path
+    # test here (`test_subgroup_path_is_accepted_for_a_gitlab_call`,
+    # `test_two_segment_path_is_accepted_for_a_gitlab_call`) drives `main()`
+    # far enough to set it for real and leaves it live in this process for
+    # every test that runs after it in the same worker -- reproduced by
+    # running either of those two ahead of any test that reads
+    # `_repo_target.target()` and asserting the env afterward. Popped
+    # unconditionally, not through monkeypatch, because what needs undoing
+    # is not something monkeypatch ever did.
+    os.environ.pop("SUPERTOOL_REPO", None)
 
 
 @pytest.fixture
@@ -89,6 +102,42 @@ def test_subgroup_path_is_accepted_for_a_gitlab_call(no_dispatch) -> None:
 
     assert rc == 0
     assert no_dispatch == [("gl-issue:5", TARGET)]
+
+
+def test_the_env_var_main_sets_does_not_survive_into_the_next_test() -> None:
+    """`main()`'s `repo:` pre-pass sets `os.environ["SUPERTOOL_REPO"]` for
+    real -- a process-global side effect `monkeypatch` never touched, so its
+    own teardown cannot undo it by itself. Left alive it corrupts every later
+    test in the same pytest worker that reads `_repo_target.target()`,
+    silently -- a GitHub-repo test starts answering as though it were scoped
+    to `group/subgroup/project`.
+
+    Asserting `os.environ` from inside the leaking test's own body cannot see
+    this: `main()` has already set the var and `clean_repo_env`'s teardown
+    has not run yet, so that assertion would fail identically with or without
+    the fix above -- a weak-assertion trap for this specific bug. The leak is
+    what survives INTO THE NEXT test, so this drives a real next test, in a
+    real pytest subprocess, and checks it from there -- the same way the leak
+    was originally found.
+    """
+    probe = REPO_ROOT / "tests" / "_gl_repo_env_leak_probe_1780.py"
+    probe.write_text(
+        "import os\n\n\n"
+        "def test_probe():\n"
+        "    assert 'SUPERTOOL_REPO' not in os.environ, os.environ.get('SUPERTOOL_REPO')\n",
+        encoding="utf-8",
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest",
+             f"{__file__}::test_subgroup_path_is_accepted_for_a_gitlab_call",
+             str(probe), "-q", "--no-cov", "-n0"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            cwd=REPO_ROOT, timeout=60,
+        )
+    finally:
+        probe.unlink(missing_ok=True)
+    assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
 
 
 def test_two_segment_path_is_accepted_for_a_gitlab_call(no_dispatch) -> None:

@@ -53,7 +53,7 @@ _OVER_BUDGET = {
     "dashboard": 2401,
     "git-worktrees": 2383,
     "guard": 2166,
-    "radar": 2141,
+    "radar": 2138,
 }
 
 
