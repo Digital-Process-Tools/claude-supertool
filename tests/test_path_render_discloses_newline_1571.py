@@ -26,6 +26,13 @@ LF = chr(10)
 DISCLOSED = chr(0x240A)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="a newline is not a legal NTFS filename character, so this test "
+           "needs a POSIX filesystem to create its own fixture; the string-"
+           "level tests below exercise the same render without touching disk "
+           "and run on every platform",
+)
 def test_dispatch_header_discloses_a_newline_in_the_path(tmp_path: Path) -> None:
     target = tmp_path / ("vict" + LF + "im.txt")
     target.write_text("ALPHA" + LF, encoding="utf-8")
@@ -39,6 +46,13 @@ def test_dispatch_header_discloses_a_newline_in_the_path(tmp_path: Path) -> None
     )
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="a newline is not a legal NTFS filename character, so this test "
+           "needs a POSIX filesystem to create its own fixture; the string-"
+           "level tests below exercise the same render without touching disk "
+           "and run on every platform",
+)
 def test_edit_success_line_discloses_a_newline_in_the_path(tmp_path: Path) -> None:
     target = tmp_path / ("vict" + LF + "im.txt")
     target.write_text("ALPHA" + LF, encoding="utf-8")
