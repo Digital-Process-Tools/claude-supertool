@@ -17617,6 +17617,12 @@ def _doctor_interpreter() -> Dict[str, Any]:
                 if r.returncode == 0 and out in ("0", "1"):
                     info["rosetta"] = out == "1"
             except (OSError, subprocess.TimeoutExpired):
+                # Deliberately swallowed: `rosetta` stays None, which is this
+                # op's third state — "could not tell" — and is rendered as
+                # such. A missing or hung `sysctl` is not evidence either way
+                # about translation, so neither True nor False may be
+                # inferred here, and raising would take the whole report down
+                # over one unanswerable line.
                 pass
     return info
 
