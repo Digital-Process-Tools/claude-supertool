@@ -271,15 +271,18 @@ def test_an_unreadable_rollup_is_unknown_not_zero(monkeypatch, capsys,
     assert "zero check runs" not in out
 
 
-def test_a_body_with_no_closing_keyword_says_so_loudly(monkeypatch, capsys,
-                                                       tmp_path):
+def test_a_body_with_no_closing_keyword_is_refused_before_creating(
+        monkeypatch, capsys, tmp_path):
+    """Superseded by #1838: a body with no closing keyword used to publish
+    with a loud note (see tests/test_gh_pr_create_no_close_1838.py for the
+    refusal and its `no_close` escape hatch); it no longer reaches `gh pr
+    create` at all without that acknowledgment."""
     h = _Harness()
     _install(monkeypatch, h, _payload(tmp_path, dict(FULL, body="just prose")))
-    assert m.main() == 0
+    assert m.main() == 1
     out = capsys.readouterr().out
-    assert "merging this will close nothing" in out
-    assert "[result] PR #957 opened" in out
-    assert "no closing reference in the body" in out
+    assert h.create_calls == []
+    assert "no working closing reference" in out
 
 
 def test_a_url_gh_did_not_return_is_not_invented(monkeypatch, capsys, tmp_path):
@@ -315,7 +318,7 @@ def test_repo_defaults_from_the_remote_when_absent(monkeypatch, capsys,
                                                    tmp_path):
     h = _Harness()
     _install(monkeypatch, h, _payload(
-        tmp_path, {"title": "t", "base": "master", "body": "b"}))
+        tmp_path, {"title": "t", "base": "master", "body": "Closes #950"}))
     monkeypatch.setattr(m._rd, "resolve", lambda *a: REPO)
     assert m.main() == 0
     args = h.create_calls[0]
