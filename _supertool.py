@@ -17521,13 +17521,16 @@ def op_ops(compact: bool = False, full: bool = False) -> str:
 
     **The default is signatures** (#1774). Every op, every name, the shape of
     the call — and nothing else. The descriptive render is `ops:full`, which is
-    what this op used to be: 74,838 bytes in this tree against a 7,168-byte
-    SessionStart cap, ~19k tokens spent by a caller whose question was which op
-    lists PRs. The cost was never spread evenly — across 128 documented ops the
-    median description is 151 characters and the top ten rows are 49% of the
-    corpus — because `description` is printed whole by both this listing and
-    `help:OP`, and had become the record of how each op got here. #1775 put a
-    ratchet under the growth; this changes who pays for it.
+    what this op used to be: tens of KB in this tree against a 7,168-byte
+    SessionStart cap (`tests/test_render_size_claims_1877.py` pins the exact,
+    checkout-path-dependent figure — not a literal here, per #1813), ~19k
+    tokens spent by a caller whose question was which op lists PRs. The cost
+    was never spread evenly — across 128 documented ops the median description
+    is ~150 characters and the top ten rows are roughly half the corpus —
+    because `description` is printed whole by both `ops:full` and `help:OP`
+    (never by this listing's default output), and had become the record of how
+    each op got here. #1775 put a ratchet under the growth; this changes who
+    pays for it by default.
 
     Nothing is dropped: the row count is identical in both modes, and the
     default footer states the size of what it withheld and the token that

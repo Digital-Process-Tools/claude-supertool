@@ -129,7 +129,8 @@ def test_the_over_budget_ledger_only_ever_falls() -> None:
     ]
     assert not grew, (
         f"description grew on an op already over budget (name, was, now): "
-        f"{grew}. #1774 — this field is paid for by every reader of `ops`."
+        f"{grew}. #1774 — this field is paid for by every reader of `ops:full` "
+        f"and `help:OP` (#1813)."
     )
 
 

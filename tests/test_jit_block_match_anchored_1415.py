@@ -248,6 +248,28 @@ def test_every_invocation_form_still_reaches_both_supertool_rules(rule, arg, for
     assert _awk_matches(_pattern_for(rule), form + arg), form
 
 
+# #1987: `(rtk[[:space:]]+)?` anchored `rtk` immediately before the guarded
+# command, so the documented `rtk proxy` idiom -- `proxy` sitting between the
+# two -- walked through every one of these rules. Widened to
+# `(rtk[[:space:]]+(proxy[[:space:]]+)?)?`. `merged-is-not-ancestry.md` has
+# its own dedicated coverage in tests/test_jit_merged_prs_not_merged_1977.py;
+# these are the other three files that carried the identical gap.
+RTK_PROXY_STILL_FIRES = [
+    ("git-C-has-cwd.md", "rtk proxy git -C /Users/x/repo diff"),
+    ("op-defaults-that-narrow.md",
+     "rtk proxy supertool " + APOS + "gh-prs:state=open" + APOS),
+    ("supertool-no-cut.md",
+     "rtk proxy supertool 'read:a'" + PIPE + "cut -c1-40"),
+]
+
+
+@needs_awk
+@pytest.mark.parametrize("rule,command", RTK_PROXY_STILL_FIRES,
+                         ids=[r[0] for r in RTK_PROXY_STILL_FIRES])
+def test_the_documented_rtk_proxy_idiom_still_fires(rule, command):
+    assert _awk_matches(_pattern_for(rule), command), rule
+
+
 class TestEveryRegexRuleIsAnchored:
     """The class, not the two instances.
 
