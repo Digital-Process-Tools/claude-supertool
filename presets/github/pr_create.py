@@ -206,12 +206,23 @@ def checks_section(rollup, age_secs, sha: str,
         ], CHECKS_UNKNOWN)
 
     if rollup:
-        states = _checks.github_states(rollup)
-        lines = [f"  {_checks.summarize(states)}"]
+        # `summarize_github`, not `summarize(github_states(rollup))` (#1804):
+        # a check run a later run of the same name replaced is not a live
+        # failure — same discriminator #1792 gave the merge gate, so this
+        # post-create summary and `gh-pr:N:status` cannot disagree about the
+        # PR just created. `github_named_live`/`github_named_superseded`
+        # split the disclosure the same way `gh-pr:N` does: what is still
+        # red, and what stopped deciding anything but is named rather than
+        # dropped.
+        lines = [f"  {_checks.summarize_github(rollup)}"]
         named = [(_untrusted.flat(n), s, k, i)
-                 for n, s, k, i in _checks.github_named_states(rollup)]
+                 for n, s, k, i in _checks.github_named_live(rollup)]
         lines.extend(_checks.named_disclosure(
             [e for e in named if _checks.bucket(e[1]) != "passed"]))
+        superseded_named = [(_untrusted.flat(n), s, k, i)
+                            for n, s, k, i in
+                            _checks.github_named_superseded(rollup)]
+        lines.extend(_checks.superseded_disclosure(superseded_named))
         return (lines, CHECKS_READ)
 
     if age_secs is None:
