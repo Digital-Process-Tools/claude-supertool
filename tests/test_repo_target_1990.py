@@ -133,5 +133,9 @@ def test_pr_merge_never_calls_repo_target_without_explicit() -> None:
         src,
     )
     assert calls, "expected pr_merge.py to call _repo_target at all"
-    missing = [name for name, args in calls if "explicit" not in args]
+    # "explicit=True" as a substring, not merely "explicit" (#1990 review):
+    # a future site written explicit=False would satisfy a bare "explicit"
+    # check while silently reopening the ambient-SUPERTOOL_REPO gap this
+    # test exists to pin.
+    missing = [name for name, args in calls if "explicit=True" not in args]
     assert not missing, f"call(s) without explicit=True: {missing}"
