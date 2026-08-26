@@ -14,11 +14,15 @@ Three of the four things `gl_mrs` does turn out not to transfer, and forcing
 one interface over them would have bent GitLab's semantics to fit GitHub's or
 the reverse:
 
-  * **there is no discovery feed.** `gitlab-mr-feed` is a watch *source*; there
-    is no `github-pr-feed`, so a PR opened after this run is discovered on the
-    next radar tick and not before. That is a real difference in coverage, so
-    the footer states it (`discovery: radar ticks only`) rather than leaving a
-    reader to infer a guarantee this side does not have.
+  * **discovery used to have no analogue and now does (#1780).** This section
+    used to say flatly that there was no `github-pr-feed`, so a PR opened
+    after a radar run was invisible until the next tick. `github-pr-feed`
+    closes that: this tier spawns and keeps alive one feed poller over its own
+    filter, exactly as `gl_mrs` does with `gitlab-mr-feed` — see "3b. feed"
+    below. The footer states the feed's own state on every board
+    (`discovery: feed ok` / `feed DOWN` / ...) rather than a fixed sentence,
+    because "radar ticks only" was true when there was nothing to lose and is
+    a false claim of degraded coverage now that there is a feed to be down.
   * **drift has no analogue.** GitLab's drift is `last_event.pipeline_id` vs
     `source_state.pipeline_id`. A GitHub PR has no pipeline id; its identity
     under a re-push is the head SHA, which is a *snapshot* concern here rather
@@ -632,6 +636,118 @@ def heal(numbers: list[str], watched: set[str] | None,
 
 
 # ---------------------------------------------------------------------------
+# 3b. feed — the part that discovers PRs this tier has never seen (#1780)
+# ---------------------------------------------------------------------------
+#
+# The GitLab tier has had this since #528: `gl_mrs.py` runs a
+# `gitlab-mr-feed` poller as a first-class part of reconcile, and its own
+# module docstring calls that "the discovery guarantee". This tier's own
+# docstring stated the absence rather than closing it — "there is no
+# discovery feed [...] a PR opened after this run is discovered on the next
+# radar tick and not before" — and #1780 is that sentence being read as a
+# defect rather than a disclosure. `github-pr-feed` closes it the same way
+# `gitlab-mr-feed` did: one poller over the population, spawned and kept
+# alive here exactly like a per-PR watcher is.
+
+FEED_SOURCE = "github-pr-feed"
+
+FEED_LABEL = {"alive": "feed ok", "spawned": "feed respawned", "failed": "feed DOWN",
+              "capped": "feed DOWN (respawn capped)",
+              "unknown": "feed coverage UNKNOWN (#673)"}
+
+# Every event this source can emit (see `sources/github-pr-feed/events.json`).
+# Unlike `gitlab-mr-feed`'s DEFAULT_FEED_ONLY, this is not a separate,
+# hand-kept filter that can drift from the source's own vocabulary — the tier
+# always wants every discovery event a feed it spawned can produce, so the
+# filter is simply "all of them", read off the one list this tier already
+# needs for the pid-name / scope reasoning above.
+FEED_ONLY = ("pr_opened", "pr_merged", "pr_closed", "pr_left_feed", "prs_unreachable")
+
+
+def feed_scope(filters: dict[str, str] | None = None) -> str:
+    """The feed watcher id covering this population.
+
+    `filter_string` is already the canonical spelling this tier uses
+    everywhere else (the snapshot key, the board label), so reusing it here
+    is what keeps `@me` and `author=@me` from becoming two feed pollers over
+    one population the way `gl_mrs.feed_scope` guards against for its own
+    dict-of-lists filter. The empty filter — the whole-repo default since
+    #1207 — gets its own alias rather than an empty pid filename, matching
+    `github-pr-feed.ALIASES["@open"]`.
+    """
+    filters = {} if filters is None else filters
+    return filter_string(filters) or "@open"
+
+
+def feed_pid(scope: str = "@open") -> int:
+    """PID recorded for the feed poller, or 0 when there is no readable file."""
+    return transport.read_pid(FEED_SOURCE, scope)
+
+
+def other_feed_scopes(scope: str) -> list[str]:
+    """Live feed pollers covering a population other than this board's.
+
+    Changing the filter respawns the feed; the previous one is not retired,
+    so a machine can carry a feed started with one scope while the current
+    invocation resolved another. Read-only: pid files only, nothing is
+    spawned and nothing is killed — see `gl_mrs.other_feed_scopes` for the
+    same guarantee on the GitLab side.
+    """
+    return sorted({
+        str(row.get("id") or "")
+        for row in transport.list_active_pids()
+        if row.get("source") == FEED_SOURCE and str(row.get("id") or "") != scope
+    } - {""})
+
+
+def feed_error(scope: str) -> str:
+    """Last error the feed poller recorded, or "" when it is polling cleanly.
+
+    A feed that is alive but erroring every tick discovers nothing while
+    looking healthy in `watches` — the same silence as a dead one, so it gets
+    the same report. The dispatcher clears this key on a successful poll, so a
+    message here is current rather than a scar.
+    """
+    state = transport.read_state(FEED_SOURCE, scope)
+    # Flat, because this is a render (#1197): a poller exception message can
+    # carry newlines, and this board prints it into a multi-line report.
+    return _untrusted.flat(str((state.get("last_error") or {}).get("message") or ""))
+
+
+#: The feed poller's own `LOOKUP_UNAVAILABLE`, spelled again rather than
+#: imported — importing it would load the source module on every board
+#: render. `test_watch_feed_unreachable_1602`-style coverage keeps the two in
+#: step so the copy cannot drift into a check that silently never matches.
+FEED_LOOKUP_UNAVAILABLE = "unavailable"
+
+
+def feed_blind(scope: str) -> str:
+    """Why the feed could not establish its population, or "" when it could.
+
+    A third fact, not a rewording of the two above: `feed_pid` answers "is the
+    poller running", `feed_error` answers "did it crash" — a poll that reached
+    GitHub and got a 401 raises nothing inside the poller. It returns
+    cleanly, having seen nothing, and both of those two report a healthy
+    feed. `gl_mrs.feed_blind` is the same read on the GitLab side (#1602).
+
+    The empty string means two different things to this function's own
+    caller — "not blind" and "blind, but the poller recorded no message" —
+    and only one of them may return it, or a blind feed with a blank `error`
+    would render exactly like a healthy one. Every path in
+    `github-pr-feed/poller.py::fetch_population` that sets `lookup` to
+    unavailable currently supplies a non-empty `error`, so this is a latent
+    gap rather than a reproduced one — but nothing enforces that across the
+    two files, so the fallback stays here rather than relying on it staying
+    true.
+    """
+    state = transport.read_state(FEED_SOURCE, scope).get("source_state") or {}
+    if not isinstance(state, dict) or state.get("lookup") != FEED_LOOKUP_UNAVAILABLE:
+        return ""
+    return (_untrusted.flat(str(state.get("error") or ""))
+            or "(feed recorded no error message)")
+
+
+# ---------------------------------------------------------------------------
 # 4. the default branch — the member that is not a PR
 # ---------------------------------------------------------------------------
 
@@ -823,7 +939,7 @@ def _stale_running(p: dict, previous_entry: Any, threshold: float,
 
 
 def _footer(open_prs: list[dict], covered: set[str] | None, healed: list[str],
-            uncovered: list[str], gone: int, label: str,
+            uncovered: list[str], gone: int, feed: str, label: str,
             unchecked_n: int, elided_n: int = 0,
             departed_capped: bool = False) -> str:
     """Tallies over the whole open population, plus what the delta held back.
@@ -865,10 +981,13 @@ def _footer(open_prs: list[dict], covered: set[str] | None, healed: list[str],
         # on a full page not even "left" is established — see `departed_note`.
         parts.append(f"{gone} off this page" if departed_capped
                      else f"{gone} left this board")
-    # Stated on every board: this tier has no discovery feed, so a PR opened
-    # after this run is not seen until the next tick. An unstated guarantee is
-    # one a reader assumes.
-    parts.append("discovery: radar ticks only")
+    # Stated on every board (#1780): this used to be the fixed string
+    # "discovery: radar ticks only" no matter what. Now it names the feed's
+    # own state, because "ticks only" was true when there was no feed to lose
+    # and is a false claim of degraded coverage once there is one — and a feed
+    # that is alive but blind or capped is not the same fact as one that was
+    # never spawned, so the token has to be able to say which.
+    parts.append(f"discovery: {FEED_LABEL.get(feed, feed)}")
     return " | ".join(parts)
 
 
@@ -880,6 +999,39 @@ def _coverage_warning(covered: set[str] | None) -> list[str]:
             "board is about a repo target, so a live poller for #N cannot be "
             "told apart from #N of the clone it was started in. Nothing was "
             "healed; run radar from a clone of that repo to get coverage back."]
+
+
+def _feed_warnings(feed: str, feed_err: str, others: list[str],
+                   feed_blind: str = "") -> list[str]:
+    """A blind board must say so. A dead, capped or erroring feed discovers
+    nothing, and a healthy-looking footer over a dead feed is #1780's own
+    defect one render up — see `gl_mrs._feed_warnings` for the GitLab twin
+    this mirrors line for line.
+    """
+    out = []
+    if feed == "failed":
+        out.append("radar: WARNING — PR feed poller is down. New PRs will not be "
+                   "discovered until the next radar tick.")
+    elif feed == "capped":
+        out.append("radar: WARNING — PR feed poller has died too often and is no "
+                   "longer being respawned. New PRs will not be discovered until "
+                   "the next radar tick.")
+    elif feed == "unknown":
+        out.append("radar: WARNING — PR feed coverage is UNKNOWN for this board "
+                   "(#673, the same repo-blind pid naming that leaves per-PR "
+                   "watch coverage unknown under a repo target). Nothing was "
+                   "spawned; run radar from a clone of that repo to get "
+                   "discovery back.")
+    elif feed_err:
+        out.append(f"radar: WARNING — PR feed poller is failing to poll: {feed_err}")
+    if feed_blind:
+        out.append(f"radar: WARNING — PR feed poller is alive but could not "
+                   f"establish the population on its last poll: {feed_blind}")
+    for other in others:
+        out.append(f"radar: NOTE — a PR feed poller is also live on scope "
+                   f"{other!r}, which this board did not resolve to. Its "
+                   f"discoveries are not this board's.")
+    return out
 
 
 def _unchecked_warning(numbers: list[str], total: int) -> list[str]:
@@ -912,7 +1064,10 @@ def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
            notes: list[str] | None = None,
            page_capped: bool = False,
            now: str | None = None,
-           stale_running_minutes: float = STALE_RUNNING_MINUTES) -> list[str]:
+           stale_running_minutes: float = STALE_RUNNING_MINUTES,
+           feed: str = "alive", feed_err: str = "",
+           other_feed_scopes: list[str] | None = None,
+           feed_blind: str = "") -> list[str]:
     """Full board on cold start; changed + standing-problem rows afterwards.
 
     Every open PR lands in exactly one of `shown` and `elided`, and both are
@@ -949,8 +1104,8 @@ def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
             elided.append(number)
 
     departed = _departed(previous, open_prs)
-    footer = _footer(open_prs, covered, healed, uncovered, len(departed), label,
-                     len(unchecked_numbers), len(elided), page_capped)
+    footer = _footer(open_prs, covered, healed, uncovered, len(departed), feed,
+                     label, len(unchecked_numbers), len(elided), page_capped)
 
     # Named only when the board is *partial*. A board where everything was
     # elided already says so unambiguously on its `radar: no change` line, and
@@ -961,6 +1116,7 @@ def render(open_prs: list[dict], covered: set[str] | None, healed: list[str],
                if shown else [])
 
     lines = (_coverage_warning(covered)
+             + _feed_warnings(feed, feed_err, other_feed_scopes or [], feed_blind)
              + _unchecked_warning(unchecked_numbers, len(open_prs))
              + elision
              + snapshot.departed_note(departed, "PR", "#", "gh-pr:<number>",
@@ -1029,6 +1185,19 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     healed, uncovered = heal(numbers, watched, watch)
     covered = None if watched is None else watched | set(healed)
 
+    # The feed follows the same #673 rule as per-PR healing: under a repo
+    # target the pid filename cannot tell this board's scope apart from the
+    # same scope started against another clone, so nothing is spawned and the
+    # gap is reported rather than guessed shut (`feed == "unknown"`).
+    scope = feed_scope(filters)
+    if watched is not None:
+        feed = watch(FEED_SOURCE, scope, list(FEED_ONLY))
+        feed_err = feed_error(scope) if feed == "alive" else ""
+        blind = feed_blind(scope) if feed == "alive" else ""
+        other_scopes = other_feed_scopes(scope)
+    else:
+        feed, feed_err, blind, other_scopes = "unknown", "", "", []
+
     raw_ref = options.get("default_branch")
     branch_lines, branch_ok = default_branch_report(
         None if raw_ref is None else str(raw_ref), repo)
@@ -1051,7 +1220,10 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     lines = branch_lines + render(open_prs, covered, healed, uncovered,
                                   previous, label, notes, page_capped,
                                   now=stamped_at,
-                                  stale_running_minutes=stale_after)
+                                  stale_running_minutes=stale_after,
+                                  feed=feed, feed_err=feed_err,
+                                  other_feed_scopes=other_scopes,
+                                  feed_blind=blind)
     prev_entries: dict[str, Any] = (previous or {}).get("prs", {}) or {}
     snapshot.write(SNAPSHOT_PREFIX, key,
                    {str(p.get("number")): snapshot.stamp(
@@ -1064,8 +1236,14 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     # `quiet_when_healthy`, which drops this tier's whole output. A
     # departure-only tick is every row elided plus one summary line, so a
     # healthy verdict there suppresses the only notice that something left.
+    # `feed`/`blind`/`other_scopes` count for the same reason `gl_mrs` counts
+    # its own feed against health (#1780): a feed that is down, capped,
+    # unknown or blind is this tier failing at the one job #1779 was filed
+    # about, and a quiet radar must not hide that.
     healthy = bool(branch_ok) and not uncovered and covered is not None \
-        and not unchecked(open_prs) and not departed
+        and not unchecked(open_prs) and not departed \
+        and feed not in ("failed", "capped", "unknown") \
+        and not feed_err and not blind and not other_scopes
     return lines, healthy
 
 
@@ -1123,4 +1301,26 @@ def radar_state(options: dict | None = None) -> list[str]:
                    f"cover this repo (#673): {', '.join('#' + n for n in pids) or 'none'}")
     else:
         out.append(f"  pollers   : {', '.join('#' + n for n in pids) or 'none'}")
+
+    # #1780: this view reads files and never asks whether a poller is alive,
+    # so — like `gl_mrs.radar_state`'s own feed row — the pid row below says
+    # whether anyone is still trying, and `feed_blind` says whether the last
+    # poll that did run could see anything.
+    scope = feed_scope(filters)
+    if target:
+        out.append(f"  feed      : scope {scope!r} — UNKNOWN whether a live pid "
+                   f"here covers this repo (#673); nothing is spawned for it "
+                   f"under a repo target")
+    else:
+        pid, pid_refusal = transport.read_pid_checked(FEED_SOURCE, scope)
+        err = feed_error(scope)
+        out.append(f"  feed      : scope {scope!r}, pid "
+                   f"{pid or pid_refusal or 'none recorded'}"
+                   f"{f' — last error: {err}' if err else ''}")
+        blind = feed_blind(scope)
+        if blind:
+            out.append(f"  feed sight: last poll could NOT establish the "
+                       f"population — {blind}")
+        for other in other_feed_scopes(scope):
+            out.append(f"  feed ALSO : scope {other!r} is live and is NOT on this board")
     return out

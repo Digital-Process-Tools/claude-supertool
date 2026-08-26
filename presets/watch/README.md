@@ -93,6 +93,7 @@ defect it exists to remove.
 | `gl-pipeline`     | GitLab CI pipeline id          | pipeline success / failed / canceled / skipped |
 | `gh-run`          | GitHub Actions run id          | run `status` reaches `completed`               |
 | `gitlab-mr-feed`  | scope (`@me`, `@reviewer`, …)  | never — discovery has no end state             |
+| `github-pr-feed`  | scope (`@open`, `author=@me`, …) | never — discovery has no end state           |
 | `github-issue-feed` | scope (`@open`, `state=open,label=…`) | never — discovery has no end state    |
 | `gl-runners`      | scope (`fleet`)                | never — a fleet has no end state               |
 | `gh-branch`       | branch name (e.g. `main`)      | never — a branch has no merged/closed state    |
@@ -102,7 +103,7 @@ when `ops.radar.radar_tiers` names it. See
 [docs/presets/watch.md](../../docs/presets/watch.md) for the tier contract and for
 which ops are worth watching at all.
 
-The two **feed** sources are the exception: every other source polls **one
+The three **feed** sources are the exception: every other source polls **one
 known id**, so none of them can discover something that did not exist when they
 were spawned.
 
@@ -115,6 +116,15 @@ A population it could not establish — an unreachable GitLab, an expired token,
 scope carrying a filter token `gl-mrs` cannot apply — is **not** an empty one: it
 emits one `mrs_unreachable` per outage and no departures, and keeps `known` so
 recovery does not announce every open MR as new (#1602).
+
+`github-pr-feed` ([#1780](https://github.com/Digital-Process-Tools/claude-supertool/issues/1780))
+is `gitlab-mr-feed`'s GitHub twin: new numbers get a `github-pr` watcher and a
+`pr_opened` event, departed numbers are looked up and reported as `pr_merged`
+/ `pr_closed` / `pr_left_feed`. `radar`'s `gh-prs` tier keeps exactly one alive
+per resolved filter and names its state on the board footer
+(`discovery: feed ok` / `feed DOWN` / `feed DOWN (respawn capped)` / `feed
+coverage UNKNOWN (#673)`) rather than the old fixed sentence that was true
+whether or not a feed existed to lose.
 
 `github-issue-feed` polls a population of GitHub issues and has **no per-id
 tier** — every fact worth watching on an issue (labels, assignees, comment

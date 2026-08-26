@@ -239,7 +239,7 @@ Observed live on the GitHub tier: three rendered rows under `6 open | 2 failing 
 ```
 scope every author (default) on Digital-Process-Tools/claude-supertool | 6 open |
 3 unchanged not shown | 2 failing | 4 running | 6 watched | 2 left this board |
-discovery: radar ticks only
+discovery: feed ok
 ```
 
 and a partial board names what it held back, because a count a reader cannot resolve back to a row is not a disclosure:
@@ -488,7 +488,7 @@ radar: cold start — no prior snapshot, full board
         fix(gh-issues): refuse an unrecognised token instead of returning the whole board (#864, #875)
 
 scope every author (default) on Digital-Process-Tools/claude-supertool | 4 open | 1 failing |
-3 running | 4 watched | 4 healed | discovery: radar ticks only
+3 running | 4 watched | 4 healed | discovery: feed ok
 ```
 
 Rows are `gh-prs` rows, so the board, the op and `gl-mrs` cannot drift apart. Three marks are radar's own:
@@ -536,9 +536,9 @@ The subclassing is what keeps every existing `except RadarError` — radar's tie
 
 Three of the four things `gl-mrs` does turn out not to transfer:
 
-- **There is no discovery feed.** `gitlab-mr-feed` is a watch *source*; there is no `github-pr-feed`, so a PR opened after a run is found on the next tick and not before. That is a genuine difference in coverage, so the footer states it — `discovery: radar ticks only` — rather than leaving a reader to assume a guarantee this side does not have.
+- **Discovery used to have no analogue, and now does** ([#1780](https://github.com/Digital-Process-Tools/claude-supertool/issues/1780)). This bullet used to say there was no `github-pr-feed`, so a PR opened after a run was found on the next tick and not before. `github-pr-feed` closes that: `gh_prs.py` spawns and keeps it alive as part of reconcile, exactly as `gl-mrs` already does with `gitlab-mr-feed`. The footer now states the feed's own state on every board — `discovery: feed ok` / `feed DOWN` / `feed DOWN (respawn capped)` / `feed coverage UNKNOWN (#673)` — rather than the fixed `discovery: radar ticks only` it used to print regardless of whether that was still true ([#1779](https://github.com/Digital-Process-Tools/claude-supertool/issues/1779)).
 - **Drift has no analogue.** GitLab's drift is `last_event.pipeline_id` versus `source_state.pipeline_id`. A GitHub PR has no pipeline id; its identity under a re-push is the head SHA, which is a snapshot concern here, not an event-versus-state one.
-- **Watch state is repo-blind** ([#673](https://github.com/Digital-Process-Tools/claude-supertool/issues/673)), which gives this tier a failure mode `gl-mrs` does not have.
+- **Watch state is repo-blind** ([#673](https://github.com/Digital-Process-Tools/claude-supertool/issues/673)), which gives per-PR healing a failure mode `gl-mrs` does not have — and the feed follows the same rule: under a repo target nothing is spawned for it either, for the identical reason.
 
 What *does* transfer is the snapshot — keeping a previous board keyed by the population it describes, so a delta cannot lie. That reasoning is not GitLab's, so it moved to `presets/watch/tiers/_snapshot.py` and both tiers read it. One copy, because a second copy is how a fixed defect comes back.
 
@@ -617,6 +617,7 @@ gh-prs:
 | `gitlab-mr` | `glab api projects/:id/merge_requests/<iid>` | `pipeline_failed`, `pipeline_succeeded`, `pipeline_running`, `comment_added`, `merged`, `closed`, `conflicts_appeared`, `mr_unreachable` |
 | `gl-pipeline` | `glab api projects/:id/pipelines/<id>` | `pipeline_succeeded`, `pipeline_failed`, `pipeline_canceled`, `pipeline_running`, `pipeline_unreachable` |
 | `gitlab-mr-feed` | `glab mr list` for a whole filter | `mr_opened`, `mr_merged`, `mr_closed`, `mr_left_feed`, `mrs_unreachable` |
+| `github-pr-feed` | `gh pr list` for a whole filter ([#1780](https://github.com/Digital-Process-Tools/claude-supertool/issues/1780)) | `pr_opened`, `pr_merged`, `pr_closed`, `pr_left_feed`, `prs_unreachable` |
 | `github-issue-feed` | `gh api repos/{owner}/{repo}/issues` for a whole scope | `issue_opened`, `issue_reopened`, `issue_entered_feed`, `issue_labeled`, `issue_unlabeled`, `issue_assigned`, `issue_unassigned`, `issue_comment_added`, `issue_closed`, `issue_left_feed`, `issues_unreachable` |
 | `gl-runners` | `glab api projects/:id/runners` + the pending/running job queue | `runner_silent`, `runner_liveness_unknown`, `runner_recovered`, `runner_starved`, `queue_liveness_unknown`, `queue_cleared`, `runner_paused`, `runner_added`, `runner_vanished` |
 | `gh-run` | `gh run view <id> --json status,conclusion,workflowName,url,...` | `run_succeeded`, `run_failed`, `run_cancelled`, `run_action_required`, `run_started`, `run_inconclusive`, `run_unreachable` |
