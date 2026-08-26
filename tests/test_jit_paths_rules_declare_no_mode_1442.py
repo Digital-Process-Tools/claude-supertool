@@ -94,16 +94,17 @@ def test_the_paths_index_has_no_column_a_mode_could_live_in():
 
 def test_the_tools_index_still_does_carry_a_mode_column():
     """The asymmetry is the point, and a test that only ever looked at `paths/`
-    would read as 'jit rules have no modes'. A tools row is 6 fields with the
-    mode in column 4, and `block` genuinely lives there."""
+    would read as 'jit rules have no modes'. A tools row is 7 fields (#1992,
+    claude-jit-context 0.6.0's `requires` column) with the mode in column 4,
+    and `block` genuinely lives there."""
     rows = [r for r in (TOOLS / "00-index.tsv").read_text(
         encoding="utf-8").splitlines() if r.strip()]
     assert rows, "tools index is empty; the shape changed"
     modes = set()
     for row in rows:
         fields = row.split(TAB)
-        assert len(fields) == 6, (
-            "tools row is 6 fields, got {0}: {1!r}".format(len(fields), row))
+        assert len(fields) == 7, (
+            "tools row is 7 fields, got {0}: {1!r}".format(len(fields), row))
         modes.add(fields[3])
     assert any("block" in m for m in modes), (
         "no tools row declares `block`; column 4 stopped being the mode")

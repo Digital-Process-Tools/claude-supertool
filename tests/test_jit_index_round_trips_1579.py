@@ -104,7 +104,10 @@ def _no_unexpanded_macro(rows, layer):
 
 
 def _derive_tools(dirpath):
-    """`build_tool_tsv` (rebuild-tsv.sh:87). Six columns; `remind` when mode is empty."""
+    """`build_tool_tsv` (rebuild-tsv.sh:87, claude-jit-context 0.6.0). Seven
+    columns; `remind` when mode is empty. The 7th, `requires`, names a binary
+    a rule's own enforcement depends on (#203 there, #1992 here) -- an empty
+    frontmatter field round-trips as an empty 7th column, not as a dropped one."""
     rows = []
     for md in _entries(dirpath):
         tool = _frontmatter(md, "tool")
@@ -116,6 +119,7 @@ def _derive_tools(dirpath):
             _frontmatter(md, "mode") or "remind",
             _frontmatter(md, "require"),
             _frontmatter(md, "forbid"),
+            _frontmatter(md, "requires"),
         ]))
     return rows
 
@@ -179,7 +183,7 @@ def test_require_columns_survive_the_round_trip():
     required = {}
     for row in _committed(tsv):
         fields = row.split(TAB)
-        assert len(fields) == 6, "a tools row has six columns: " + row
+        assert len(fields) == 7, "a tools row has seven columns (#1992): " + row
         if fields[4]:
             required[fields[2]] = fields[4]
     assert required == {
