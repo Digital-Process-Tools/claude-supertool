@@ -329,6 +329,40 @@ def test_repo_defaults_from_the_remote_when_absent(monkeypatch, capsys,
 # plumbing
 # ===========================================================================
 
+# ===========================================================================
+# #1995 — end-to-end ambient-repo-target coverage, matching the shape
+# tests/test_issue_create.py's TestGithubIssueCreateAmbientRepoEnv uses for
+# gh-issue-create: an inherited SUPERTOOL_REPO with NO repo: op in this call
+# must not direct --repo, all the way through main() -- not just at the
+# resolve_or_conflict() unit tested directly in tests/test_repo_target_673.py.
+# A later change that bypassed explicit_target() in this module alone would
+# leave that unit test and the shared _repo_target suite green; only an
+# end-to-end pin through main() catches it. The must-fire control for this
+# harness already lives above: test_repo_op_supplies_a_silent_payload and its
+# neighbours exercise the marker-PRESENT path through the same _Harness/
+# _install/_payload plumbing, so a harness that silently stopped wiring
+# SUPERTOOL_REPO through at all would already be failing those.
+# ===========================================================================
+
+def test_ambient_repo_with_no_marker_is_ignored_end_to_end(monkeypatch, capsys,
+                                                            tmp_path):
+    h = _Harness()
+    _install(monkeypatch, h, _payload(
+        tmp_path, {"title": "t", "base": "master", "body": "Closes #950"}))
+    monkeypatch.setenv("SUPERTOOL_REPO", "someone-else/their-repo")
+    monkeypatch.delenv("SUPERTOOL_REPO_FROM_OP", raising=False)
+    # Deterministic fallback so this test does not depend on this worktree's
+    # actual git remote.
+    monkeypatch.setattr(m._rd, "resolve", lambda *a, **k: "fallback/repo")
+
+    assert m.main() == 0
+    out = capsys.readouterr().out
+    assert h.create_calls
+    args = h.create_calls[0]
+    assert args[args.index("--repo") + 1] == "fallback/repo"
+    assert "someone-else/their-repo" not in out
+
+
 def test_gh_json_reports_a_missing_binary(monkeypatch):
     def boom(*a, **kw):
         raise FileNotFoundError()

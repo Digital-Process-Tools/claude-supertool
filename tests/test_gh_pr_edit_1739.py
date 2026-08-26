@@ -457,3 +457,37 @@ def test_repo_op_and_disagreeing_payload_refuse(monkeypatch, capsys, tmp_path):
     assert "o/r" in out
     assert "owner/somewhere-else" in out
     assert "gh-pr-edit" in out
+
+
+# ===========================================================================
+# #1995 — end-to-end ambient-repo-target coverage, matching the shape
+# tests/test_issue_create.py's TestGithubIssueCreateAmbientRepoEnv uses for
+# gh-issue-create: an inherited SUPERTOOL_REPO with NO repo: op in this call
+# must not direct the update, all the way through main() -- not just at the
+# resolve_or_conflict() unit tested directly in tests/test_repo_target_673.py.
+# A later change that bypassed explicit_target() in this module alone would
+# leave that unit test green; only an end-to-end pin through main() catches
+# it. The must-fire control for this harness already lives above:
+# test_repo_op_supplies_a_silent_payload and its neighbours exercise the
+# marker-PRESENT path through the same _install_edit_harness/_pr_payload
+# plumbing, so a harness that silently stopped wiring SUPERTOOL_REPO through
+# at all would already be failing those.
+# ===========================================================================
+
+def test_ambient_repo_with_no_marker_is_ignored_end_to_end(monkeypatch, capsys,
+                                                            tmp_path):
+    payload_file = _pr_payload(tmp_path, {"body": "Closes #1739."})
+    monkeypatch.setattr(sys, "argv", ["pr_edit.py", "1737", payload_file])
+    monkeypatch.setenv("SUPERTOOL_REPO", "someone-else/their-repo")
+    monkeypatch.delenv("SUPERTOOL_REPO_FROM_OP", raising=False)
+    # Deterministic fallback so this test does not depend on this worktree's
+    # actual git remote.
+    monkeypatch.setattr(m._rd, "resolve", lambda *a, **k: "fallback/repo")
+    _install_edit_harness(
+        monkeypatch, {"title": "t", "state": "OPEN", "body": "old"},
+        {"body": "Closes #1739.", "title": "t", "html_url": "u"})
+
+    assert m.main() == 0
+    out = capsys.readouterr().out
+    assert "fallback/repo" in out
+    assert "someone-else/their-repo" not in out
