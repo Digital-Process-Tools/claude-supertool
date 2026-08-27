@@ -114,3 +114,58 @@ def test_help_answers_for_vim_in_this_repo(shipped_config: dict) -> None:
     out = supertool.dispatch("help:vim")
     assert "vim:::PATH:::SCRIPT" in out
     assert "DEFAULT EDIT OP" in out
+
+
+def test_the_shipped_reference_still_documents_vim_from_a_consumer_tree(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """#1773's property, held across the move.
+
+    `_shipped_config()` reads the `.supertool.json` beside the module, and
+    `vim`'s entry is no longer in it. Where a built-in's documentation lives in
+    this install is not a fact about the caller's tree, so the shipped
+    reference folds in the shipped presets' `builtin-ops` too. Without that,
+    `help:vim` answered "no documented help" in every repo that does not list
+    the preset — the exact failure #1773 was filed about.
+    """
+    preset = json.loads(
+        (REPO_ROOT / "presets" / "github.json").read_text(encoding="utf-8"))
+    monkeypatch.setattr(supertool, "_CONFIG", {"ops": dict(preset.get("ops") or {})})
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+    monkeypatch.setattr(supertool, "_CONFIG_PATH", "/somewhere/else/.supertool.json")
+    monkeypatch.setattr(supertool, "_SHIPPED_CONFIG", None)
+    out = supertool.op_help("vim")
+    assert not out.startswith("ERROR"), out
+    assert "DEFAULT EDIT OP" in out
+    assert "shipped" in out.lower(), (
+        "the answer came from somewhere without saying it was the binary's "
+        "rather than this tree's")
+
+
+def test_folding_the_presets_does_not_widen_the_projects_own_listing(
+        shipped_config: dict) -> None:
+    """The saving is only real if it survives the fallback fix.
+
+    `op_ops` renders the project's merged config, never the shipped reference,
+    so a repo that does not list the preset still pays no listing bytes for it
+    — it just keeps `help:vim`.
+    """
+    import copy
+
+    without = copy.deepcopy(shipped_config)
+    without["builtin-ops"] = {k: v for k, v in
+                              (without.get("builtin-ops") or {}).items()
+                              if k != "vim"}
+    supertool._CONFIG = without
+    supertool._CONFIG_CHECKED = True
+    assert "vim:::PATH:::SCRIPT" not in supertool.op_ops(compact=True)
+
+
+def test_a_project_entry_still_wins_over_the_shipped_fold(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(supertool, "_CONFIG", {"builtin-ops": {
+        "vim": {"syntax": "vim:::PATH:::SCRIPT", "description": "LOCAL"}}})
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True)
+    monkeypatch.setattr(supertool, "_SHIPPED_CONFIG", None)
+    out = supertool.op_help("vim")
+    assert "LOCAL" in out
+    assert "shipped" not in out.lower()

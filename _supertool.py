@@ -18092,7 +18092,53 @@ def _shipped_config() -> Dict[str, Any]:
             else:
                 _SHIPPED_CONFIG_STATE = "unreadable"
         _SHIPPED_CONFIG = data if isinstance(data, dict) else {}
+        _fold_shipped_preset_docs(_SHIPPED_CONFIG, directory)
     return _SHIPPED_CONFIG
+
+
+def _fold_shipped_preset_docs(shipped: Dict[str, Any], directory: str) -> None:
+    """Fold the shipped presets' `builtin-ops` into the shipped reference.
+
+    A built-in's documentation may live in a preset manifest rather than in
+    `.supertool.json` (#2025, #2026), and where it lives is an implementation
+    detail of this install — not a fact about the caller's tree. Without this,
+    moving `vim`'s entry into `presets/vim.json` made `help:vim` answer "no
+    documented help" from any repo that does not list the preset, which is
+    exactly the failure #1773 was filed about, reintroduced one file over.
+
+    The listing bytes are still saved: `op_ops` renders the *project's* merged
+    config, which only holds what that project's presets contributed. This
+    reaches the `help:OP` fallback alone, where the question is what this
+    binary can document rather than what this repo loads.
+
+    Entries in `.supertool.json` win — it is the more specific reference — and
+    an unreadable manifest contributes nothing, by the same rule as everywhere
+    else: a preset we cannot read is an absence, never a fatal.
+    """
+    preset_dir = os.path.join(directory, "presets")
+    try:
+        entries = sorted(os.listdir(preset_dir))
+    except OSError:
+        return
+    folded = dict(shipped.get("builtin-ops") or {})
+    for fname in entries:
+        if not fname.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(preset_dir, fname), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        docs = data.get("builtin-ops")
+        if not isinstance(docs, dict):
+            continue
+        for name, entry in docs.items():
+            if isinstance(name, str) and name not in folded:
+                folded[name] = entry
+    if folded:
+        shipped["builtin-ops"] = folded
 
 
 def _shipped_reference_path() -> str:
