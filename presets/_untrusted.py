@@ -340,6 +340,36 @@ def split_lines(text: str) -> list[str]:
     a line-oriented protocol; `str.splitlines()` is right only when the
     question is "what would some other tool call a line", which is what
     `visible()` and `flat()` answer.
+
+    **The CR and CRLF arms are dead code for every `presets/git/` caller
+    that reads a stream through `_git` (#1704 instance 1) — but NOT for
+    every caller in that tree, and that distinction is the one worth
+    stating rather than leaving implicit.** `_git` runs
+    `subprocess.run(text=True)`, and Python's universal-newline translation
+    rewrites a lone CR (and a CRLF) into LF before this function ever sees
+    the bytes, so for a `_git`-sourced stream the CR branch has nothing left
+    to match. `_git_verbatim` is the one function in that tree whose output
+    was *not* passed through `text=True`, and
+    `tests/test_preset_git_splitlines_register_1130.py::
+    test_split_lines_cr_arm_is_dead_for_every_git_ops_caller` pins that its
+    two callers both avoid this function (one splits on NUL via `-z`, the
+    other on git's own LF directly) for exactly that reason.
+
+    **A first draft of this note claimed the arm was dead for "every
+    `presets/git/` caller", full stop — that was checked against subprocess
+    readers only and was wrong.**
+    `presets/git/worktrees.py::_reflog_newest_entry_time` reads a reflog
+    file directly with `open(target, "rb")` and `.decode("utf-8",
+    errors="replace")` — no subprocess, no `text=True`, no universal-newline
+    translation of any kind — and hands the result straight to this
+    function. A bare CR in a crafted commit message (the reflog's own
+    subject line, which anyone who can write a commit message in the
+    inspected repo controls) survives intact to reach `split_lines` there,
+    which is exactly why that site uses this function rather than
+    `str.splitlines()`: see its own docstring. So the correct claim is
+    narrower than "reaches none of them" — it is "reaches none of the
+    `_git`-subprocess callers", and a caller that reads its own file
+    directly is a live one.
     """
     if not text:
         return []

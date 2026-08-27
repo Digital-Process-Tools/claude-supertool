@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from _adapter_budget import inner_budget
+from _adapter_budget import adapter_budget, inner_budget
 from _adapter_verdict import assert_ok, assert_declined, skip_if_stalled
 from _winenv import empty_path_env
 
@@ -17,6 +17,11 @@ ADAPTER = Path(__file__).parent.parent / "validators" / "html-check" / "html-che
 # The adapter's own `node --check` budget, read off its source rather than
 # copied (#702) -- see `_adapter_budget.inner_budget`.
 INNER_S = inner_budget(ADAPTER)
+
+# The outer hang guard on the adapter spawn itself (#1306 part 1). No other
+# adapter test file in this suite omits one -- this one had none, and was
+# harmless only because the adapter's own INNER_S budget always fired first.
+OUTER_S = adapter_budget(ADAPTER, inner=INNER_S)
 
 
 def _run(file_path: str) -> dict:
@@ -48,6 +53,7 @@ def _run(file_path: str) -> dict:
         [sys.executable, str(ADAPTER), file_path],
         capture_output=True,
         text=True, encoding="utf-8", errors="replace",
+        timeout=OUTER_S,
     )
     assert result.stdout.strip(), f"no stdout; stderr={result.stderr}"
     return skip_if_stalled(json.loads(result.stdout), inner_s=INNER_S)
@@ -986,3 +992,74 @@ def test_truncated_end_tag_is_not_reported_as_a_missing_end_tag(tmp_path: Path) 
         "reader to add one is the wrong next action: %s" % reason)
     assert "quote" not in reason.lower(), (
         "no quote is involved in this file: %s" % reason)
+
+
+# ---------------------------------------------------------------------------
+# `_run` itself must not spawn the adapter with no outer hang guard (#1306
+# part 1) -- 32 spawns in this file and none of them carried one.
+# ---------------------------------------------------------------------------
+
+def test_run_spawns_the_adapter_with_an_outer_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Harmless today only because the adapter's own 30s budget always fires
+    first (`docs/contributing.md`'s framework default, read here as
+    `INNER_S`). An adapter that ignores its own budget hangs this leg with
+    nothing to say -- `adapter_budget(ADAPTER)`, the existing answer every
+    other adapter test file in this suite already uses, is what turns that
+    into a decline instead of a wall.
+    """
+    real_run = subprocess.run
+    captured: dict = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    f = tmp_path / "plain.html"
+    f.write_text("<html><body>hi</body></html>", encoding="utf-8")
+    _run(str(f))
+    assert "timeout" in captured, (
+        "_run spawned the adapter with no outer subprocess timeout at all"
+    )
+    assert captured["timeout"] is not None
+
+
+# ---------------------------------------------------------------------------
+# `errors` ordering (#1306 part 3) -- specified as document order and pinned,
+# rather than left for every `errors[0]` assertion above to assume silently.
+# ---------------------------------------------------------------------------
+
+def test_two_real_findings_come_back_in_document_order(tmp_path: Path) -> None:
+    """`main()` walks `extract_js_blocks()` in a plain `for` loop over a list
+    built by a single sequential regex scan (`SCRIPT_OPEN.search(html, pos)`
+    with `pos` only ever advancing) -- there is no sort, no concurrency and
+    no dict whose iteration order is not insertion order between the blocks
+    being found and `errors` being built, so the order was always document
+    order by construction. Nothing said so on the record, and several tests
+    above index `errors[0]` on files that (today) only ever produce one
+    finding -- this is the one that has two, and pins the order the adapter
+    already guarantees instead of leaving the next `errors[0]` reader to
+    assume it.
+    """
+    f = tmp_path / "two_broken.html"
+    f.write_text(
+        "<html><body>\n"
+        "<script>\n"
+        "const a = (;\n"
+        "</script>\n"
+        "<script>\n"
+        "const b = (;\n"
+        "</script>\n"
+        "</body></html>\n"
+    )
+    out = _run(str(f))
+    assert_declined(out)
+    assert out["count"] == 2, out
+    lines = [e["line"] for e in out["errors"]]
+    assert lines == sorted(lines), (
+        "errors must come back in document order (ascending by the source "
+        f"line of the block that produced them), got {lines}"
+    )
+    assert lines == [3, 6], out

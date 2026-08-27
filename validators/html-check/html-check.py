@@ -496,6 +496,16 @@ def main() -> None:
                      int((time.time() - start) * 1000)))
         return
 
+    # `errors` is in DOCUMENT ORDER, ascending by the start line of the
+    # block that produced each one (#1306 part 3). `found` is already in that
+    # order -- `extract_js_blocks` builds it with one sequential
+    # `SCRIPT_OPEN.search(html, pos)` scan, `pos` only ever advancing -- and
+    # this loop is plain and synchronous, so nothing between "found" and
+    # "reported" can reorder it. Stated here because several tests in
+    # tests/test_html_check.py index `errors[0]`, and a reader of one of
+    # those should not have to re-derive this from the loop below to know
+    # the assumption is sound; `test_two_real_findings_come_back_in_document_order`
+    # pins it.
     errors = []
     for start_line, content in found:
         err = check_block(start_line, content, file)
