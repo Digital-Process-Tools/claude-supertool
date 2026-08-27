@@ -404,9 +404,21 @@ UNRESOLVED = 111
 #: this scan cannot see. The census did not move, and neither did
 #: `UNRESOLVED` once these two entries were added -- both checked before the
 #: number was touched.
+#: `_is_graphql_transport_failure` is the fifth, and the first that lives in
+#: a preset rather than a shared helper. Same shape and same argument: its
+#: whole body is two substring tests over a lowercased copy and it returns
+#: `bool` -- `presets/github/issue_create.py` (#1790), where the one call
+#: site hands it `stderr + stdout` to decide whether an outage was the
+#: GraphQL mutation transport rather than an ordinary refusal. Left out of
+#: this set it raised `UNRESOLVED` 111 -> 112, which would have been one
+#: site where the taint provably stops added to a number documented as what
+#: this scan cannot see. Measured both ways before this entry was written:
+#: with it, the count is 111 again and the census
+#: (`raw_child_stream_sinks`) did not move.
 NOT_TEXT = frozenset({"loads", "int", "float", "len", "bool",
                       "mentions_gitlab_token", "says_not_authenticated",
-                      "says_not_found", "says_forbidden"})
+                      "says_not_found", "says_forbidden",
+                      "_is_graphql_transport_failure"})
 
 _SCANNED = ("presets/github", "presets/gitlab", "presets/git")
 

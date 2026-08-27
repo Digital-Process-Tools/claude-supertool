@@ -891,6 +891,219 @@ class TestGithubIssueCreate:
 
 
 # ===========================================================================
+# #1790 — a GraphQL-mutation-path outage falls back to REST, named as such
+# ===========================================================================
+
+class TestGithubIssueCreateTransportFallback:
+    """`gh issue create` goes through GraphQL. Observed 2026-08-17: that path
+    can 503 while REST is healthy (#1790), and the fix is not "retry the same
+    transport" -- it is a REST fallback that (1) names which transport
+    answered, (2) never fires on an ordinary refusal, and (3) never files a
+    duplicate if the earlier mutation actually landed despite the 503."""
+
+    def test_graphql_success_names_its_transport(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, GH_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: _ok(GH_URL))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "transport=graphql" in out
+
+    def test_transport_503_falls_back_to_rest_and_names_it(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, GH_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        monkeypatch.setattr(
+            gh, "_gh",
+            lambda args, timeout=20: _err(
+                "HTTP 503: No server is currently available to service your "
+                "request. (https://api.github.com/graphql)"))
+
+        rest_calls: list[list[str]] = []
+
+        def fake_gh_json(args, stdin=None, timeout=30):
+            rest_calls.append(args)
+            if "POST" not in args:
+                return ([], "")  # dedup lookup (GET): no open issue with this title
+            if args[0] == "api" and "POST" in args:
+                return ({"number": 99,
+                          "html_url": "https://github.com/Digital-Process-Tools/"
+                                       "claude-supertool/issues/99"}, "")
+            raise AssertionError(f"unexpected _gh_json call: {args}")
+
+        monkeypatch.setattr(gh, "_gh_json", fake_gh_json)
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "transport=rest" in out
+        assert "number=99" in out
+        assert rest_calls, "REST fallback never called _gh_json"
+        # `gh api` defaults to POST the instant a `-f` parameter is present
+        # (its own --help says so), so a lookup with no explicit `-X GET`
+        # silently becomes a write against the wrong endpoint and 422s on a
+        # real `gh` binary -- caught by review, not by a fake that only
+        # checks the return value (#1790).
+        dedup_call = rest_calls[0]
+        assert "GET" in dedup_call, (
+            f"the dedup lookup did not pin its HTTP method to GET: {dedup_call}")
+
+    def test_ordinary_failure_never_triggers_rest_fallback(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, GH_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: _err("gh: not authenticated"))
+
+        def _must_not_be_called(*a, **kw):
+            raise AssertionError("_gh_json was called on an ordinary (non-transport) failure")
+
+        monkeypatch.setattr(gh, "_gh_json", _must_not_be_called)
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "ERROR" in out
+        assert "transport" not in out
+
+    def test_dedup_guard_reuses_existing_open_issue_instead_of_reposting(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, GH_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setattr(
+            gh, "_gh",
+            lambda args, timeout=20: _err("HTTP 503: No server is currently "
+                                           "available to service your request. "
+                                           "(https://api.github.com/graphql)"))
+
+        existing = {"number": 55, "title": GH_MINIMAL["title"],
+                    "html_url": "https://github.com/Digital-Process-Tools/"
+                                 "claude-supertool/issues/55"}
+
+        def fake_gh_json(args, stdin=None, timeout=30):
+            if "POST" not in args:
+                return ([existing], "")
+            raise AssertionError("a POST was attempted despite an existing match")
+
+        monkeypatch.setattr(gh, "_gh_json", fake_gh_json)
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "number=55" in out
+        assert "transport=rest" in out
+
+    def test_dedup_lookup_failure_refuses_to_write_blind(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, GH_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setattr(
+            gh, "_gh",
+            lambda args, timeout=20: _err("HTTP 503: No server is currently "
+                                           "available to service your request. "
+                                           "(https://api.github.com/graphql)"))
+
+        def fake_gh_json(args, stdin=None, timeout=30):
+            if "POST" not in args:
+                return (None, "gh timed out")
+            raise AssertionError("a POST was attempted after a failed dedup lookup")
+
+        monkeypatch.setattr(gh, "_gh_json", fake_gh_json)
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "ERROR" in out
+        assert "duplicate" in out.lower()
+
+    def test_unresolved_milestone_is_named_not_applied_on_rest_fallback(self, monkeypatch, capsys, tmp_path):
+        payload = dict(GH_MINIMAL)
+        payload["milestone"] = "v9.9"
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setattr(
+            gh, "_gh",
+            lambda args, timeout=20: _err("HTTP 503: No server is currently "
+                                           "available to service your request. "
+                                           "(https://api.github.com/graphql)"))
+
+        def fake_gh_json(args, stdin=None, timeout=30):
+            joined = " ".join(args)
+            if "POST" not in args and "milestones" in joined:
+                return ([], "")  # no milestone named v9.9
+            if "POST" not in args:
+                return ([], "")  # dedup lookup: nothing open with this title
+            if "POST" in args:
+                return ({"number": 12,
+                          "html_url": "https://github.com/Digital-Process-Tools/"
+                                       "claude-supertool/issues/12"}, "")
+            raise AssertionError(f"unexpected _gh_json call: {args}")
+
+        monkeypatch.setattr(gh, "_gh_json", fake_gh_json)
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "NOT APPLIED" in out
+        assert "v9.9" in out
+
+    def test_resolved_milestone_is_sent_as_its_rest_number(self, monkeypatch, capsys, tmp_path):
+        payload = dict(GH_MINIMAL)
+        payload["milestone"] = "v1.0"
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setattr(
+            gh, "_gh",
+            lambda args, timeout=20: _err("HTTP 503: No server is currently "
+                                           "available to service your request. "
+                                           "(https://api.github.com/graphql)"))
+
+        post_fields: list[dict] = []
+
+        def fake_gh_json(args, stdin=None, timeout=30):
+            joined = " ".join(args)
+            if "POST" not in args and "milestones" in joined:
+                return ([{"title": "v1.0", "number": 7}], "")
+            if "POST" not in args:
+                return ([], "")  # dedup lookup: nothing open with this title
+            if "POST" in args:
+                post_fields.append(json.loads(stdin))
+                return ({"number": 21,
+                          "html_url": "https://github.com/Digital-Process-Tools/"
+                                       "claude-supertool/issues/21"}, "")
+            raise AssertionError(f"unexpected _gh_json call: {args}")
+
+        monkeypatch.setattr(gh, "_gh_json", fake_gh_json)
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "NOT APPLIED" not in out
+        assert post_fields, "the REST POST never happened"
+        assert post_fields[0].get("milestone") == 7
+
+    def test_rest_fallback_write_failure_reports_nothing_written(self, monkeypatch, capsys, tmp_path):
+        payload_file = _write_payload(tmp_path, GH_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setattr(
+            gh, "_gh",
+            lambda args, timeout=20: _err("HTTP 503: No server is currently "
+                                           "available to service your request. "
+                                           "(https://api.github.com/graphql)"))
+
+        def fake_gh_json(args, stdin=None, timeout=30):
+            if "POST" not in args:
+                return ([], "")  # dedup lookup: nothing open with this title
+            return (None, "422 Unprocessable Entity")
+
+        monkeypatch.setattr(gh, "_gh_json", fake_gh_json)
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "ERROR" in out
+        assert "nothing was written" in out.lower()
+
+
+# ===========================================================================
 # #1909 — repo: reconciled against the payload's own repo field
 # ===========================================================================
 
