@@ -28,6 +28,12 @@ rejects (long lines are the deliberate choice CLAUDE.md's own prose makes).
 rules (unlabeled fenced code blocks, stray table columns, multiple blank
 lines, spaces inside code spans, ...) are left on because they caught real,
 specific problems when run against this repo's own docs/validators.md.
+
+Widened further by #2012, which measured 846 findings across 50 of 82
+tracked `.md` files through this exact adapter and found most of it was
+genre noise rather than signal -- see
+tests/test_markdownlint_noise_2012.py for the rules disabled there and why,
+and for the post-fix ceiling this repo now holds itself to.
 """
 from __future__ import annotations
 

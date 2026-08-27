@@ -98,14 +98,17 @@ Rules live in `presets/_secrets.py`. `_common.trunc` deliberately does not redac
 ## Common workflows
 
 **Audit an autonomous run:**
+
 ```bash
 ./supertool 'claude-log-list:5'
 # pick the UUID, then:
 ./supertool 'claude-log-summary:84397aff-4925-45fd-afc5-3641e28c993c'
 ```
+
 Summary shows cache hit %, error counts per tool, and total turns — enough to spot whether the run was efficient or thrashing.
 
 **Trace what happened at the end of a run:**
+
 ```bash
 ./supertool 'claude-log-tail:84397aff-4925-45fd-afc5-3641e28c993c:50'
 ```

@@ -807,7 +807,7 @@ LC_ALL=C PYTHONCOERCECLOCALE=0 PYTHONUTF8=0 python3 supertool.py git-status
 
 **4. CI's own emitters are pinned per process, never through the environment** ([#546](https://github.com/Digital-Process-Tools/claude-supertool/issues/546)).
 
-Rules 1–3 are about supertool. This one is about the workflow that tests it, and it exists because a *readable* Windows failure is the only thing that makes the Windows legs worth having. Pytest's terminal writer renders assertion messages onto a stream whose codec is the runner's console codepage, and an em dash — ordinary in this repo's assertion text — is not in cp437, so it left the process as U+FFFD. Destroyed at emit time; nothing downstream recovers it. Measured on `windows-latest` in runs [30485881190](https://github.com/Digital-Process-Tools/claude-supertool/actions/runs/30485881190) and [30500828589](https://github.com/Digital-Process-Tools/claude-supertool/actions/runs/30500828589), both of which also carry intact em dashes echoed from the workflow's own step names — so the log transport was never the problem.
+Rules 1–3 are about supertool. This one is about the workflow that tests it — since PR #1894 that also means `.githooks/pre-push`, which runs the same suite under the same `-X utf8` flag — and it exists because a *readable* Windows failure is the only thing that makes the Windows legs worth having. Pytest's terminal writer renders assertion messages onto a stream whose codec is the runner's console codepage, and an em dash — ordinary in this repo's assertion text — is not in cp437, so it left the process as U+FFFD. Destroyed at emit time; nothing downstream recovers it. Measured on `windows-latest` in runs [30485881190](https://github.com/Digital-Process-Tools/claude-supertool/actions/runs/30485881190) and [30500828589](https://github.com/Digital-Process-Tools/claude-supertool/actions/runs/30500828589), both of which also carry intact em dashes echoed from the workflow's own step names — so the log transport was never the problem.
 
 Two mechanisms, and the choice between them is the point:
 
@@ -865,7 +865,6 @@ Six things about that table are load-bearing:
   **Not touched lines, and that is the design decision.** Intersecting ruff's line numbers with `git diff --unified=0` hunk ranges is the obvious route and it cannot see the case that motivated the issue: at `c974d493` all four hunks are pure deletions (`+N,0`), so the touched-line set in those files is **empty** and the orphaned import sits where the PR never typed. Measured, not reasoned — a touched-lines gate reports 0 of the 4. What the gate does instead is run the same rule set over the file's merge-base content and over its head content and report a finding only when its `(code, message)` is not already accounted for at base, as a multiset. Whole-file over modified paths was rejected outright: it re-surfaces all 263 and the leg is permanently red, which is the much larger change #797 declined to make anybody pay for.
 
   **What it costs and what it does not.** Re-measured against 200 commits of merged `master` (443 changed `.py` files, 231 of them modified): 7s wall, and 11 files carrying findings rather than the 141 a whole-file scope would have reported. Both halves are pinned by `tests/test_lint_new_modified_files_1849.py`, and the second half is not optional — without a test asserting that a pre-existing finding on an untouched line stays quiet, the fix passes by reporting everything and the ignore is gone.
-
 
 - **The coverage floor is a job, not a flag on the matrix, and until [#861](https://github.com/Digital-Process-Tools/claude-supertool/issues/861) it was neither.** It lived in `addopts` as `--cov=supertool --cov-fail-under=86`, which measured one file: `presets/` — ~14k statements, the whole op surface — had no floor at all, so a preset could ship with zero tests against a green number. And because the twelve legs pass `--no-cov` (and `.githooks/pre-push` does too, deliberately), the 86% was enforced only against whoever happened to run a bare local `pytest`, while the row above this one said it ran on all twelve legs. The gate now has one owner, one number, and one place it runs.
 
@@ -1112,7 +1111,7 @@ was going anywhere shared. CI gates the commit on all three platforms
 regardless. `PREPUSH_FULL=1` still forces it, and the banner names which state
 it overrode — asking the override *inside* each state rather than ahead of both
 is deliberate, since hoisting it prints one message for two states and rebuilds
-#1242's conflation one layer up.
+\#1242's conflation one layer up.
 
 **The master arm stays, and that is the half of #1802 that was not taken.** The
 issue proposed removing the hook's suite run entirely, on the grounds that
@@ -1836,10 +1835,10 @@ assert "npm i -g bun" in workflow_text                     # no — re-arms on t
 
 Two rules follow from the three instances:
 
-* **Swapping the needle is not the fix.** `"npm i -g bun"` is the same defect
+- **Swapping the needle is not the fix.** `"npm i -g bun"` is the same defect
   with a fresher string: the next rename re-arms it, and a comment mentioning
   the old command re-arms it immediately.
-* **Compare sets, do not list names.** The same guard named two of the five
+- **Compare sets, do not list names.** The same guard named two of the five
   channel test files the job runs, so three could have been dropped without it
   noticing — while two others had already arrived without being added. Both
   directions close if you assert the set CI runs equals the set the repo has.

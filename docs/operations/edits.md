@@ -69,7 +69,7 @@ ERROR: old string not found in a.py
 
 A located fact, not a verdict. The `ERROR` stands, the op is still counted in `K skipped`, and the call still exits non-zero — downgrading a failure because it is probably benign is how a loud bug becomes a quiet one.
 
-### The nearest match, and when it declines to name one
+## The nearest match, and when it declines to name one
 
 A multi-line anchor is scored on the **whole block**, and it names the window rather than a line ([#1489](https://github.com/Digital-Process-Tools/claude-supertool/issues/1489)):
 

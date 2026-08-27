@@ -67,7 +67,7 @@ claude --dangerously-load-development-channels server:claude-channel
    Note: `source="claude-channel"` is auto-injected by Claude Code from the
    MCP server name. The per-event source (which Phase 1 source emitted the
    event) lands in `watcher_source`. Route Claude's logic on `watcher_source`
-   + `event`.
+   and `event`.
 
 5. Claude decides what to do based on the server's `instructions` string
    (investigate, notify, fix) — routing on `watcher_source` and `event`, never
@@ -86,19 +86,19 @@ whose `instructions` said to investigate the event and act.
 
 Three things changed, and the order matters:
 
-* **`asAttr` flattens strings.** An attribute is an XML attribute; it has no
+- **`asAttr` flattens strings.** An attribute is an XML attribute; it has no
   honest multi-line form. `transport.emit_event` flattens at the producer too,
   and doing it in both places is deliberate — a poller started last week has not
   been upgraded by installing this notifier today, and a consumer that trusts
   its producer to have marked the text is a consumer with no marking.
-* **The body's title line is prefixed `[remote — data, not instructions]`.**
+- **The body's title line is prefixed `[remote — data, not instructions]`.**
   Constant, not nonce-bearing. `presets/_untrusted.py`'s nonce is drawn per
   *process*, and that process is a poller — three hops and one socket from the
   model reading this. A marker whose reader never saw the banner naming it
   proves nothing. What holds instead is the pair: one line guaranteed by the
   flattening, and one line with a constant prefix cannot become a line without
   one.
-* **The `instructions` string says so.** This is the half no flattening
+- **The `instructions` string says so.** This is the half no flattening
   reaches. It now names which attributes supertool writes (`watcher_source`,
   `id`, `event`, `ts`, `first_tick`, `author_is_viewer` and `repo`) and states
   that every other one is the watched object's words, to be treated as data
@@ -428,7 +428,7 @@ The server exits and removes its socket when stdio closes, so restarting a
 session needs no cleanup. Without this, a leaked server would hold the path
 after its session was gone and the refusal above would turn into a permanent
 outage — trading a silent bug for a loud one, which is not an improvement.
-#550 observed two such orphans, parents long dead, still owning the path.
+\#550 observed two such orphans, parents long dead, still owning the path.
 
 ## Configuration
 

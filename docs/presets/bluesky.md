@@ -24,22 +24,27 @@ Bluesky publishing, discovery, and engagement via the AT Protocol. Replaces raw 
 ## Common workflows
 
 **Post a thread:**
+
 ```bash
 ./supertool 'bluesky_publish:First post in the thread — here is the setup.'
 # copy the AT URI from output, then:
 ./supertool 'bluesky_publish:Second post — the payoff.|at://did:plc:abc/app.bsky.feed.post/3kxyz'
 ```
+
 `REPLY_TO_AT_URI` chains the second post as a reply, forming a thread. Repeat for as many posts as needed.
 
 **Monitor mentions and follow back recent likers:**
+
 ```bash
 ./supertool 'bluesky_status_since'
 # review new likes, then for each liker handle:
 ./supertool 'bluesky_follow:liker.bsky.social'
 ```
+
 `bluesky_status_since` uses the native notifications endpoint — one call, no fan-out. Auto-tracks last check in `~/.config/bluesky/last_check`.
 
 **Search for mentions and reply:**
+
 ```bash
 ./supertool 'bluesky_search:claude-supertool|10'
 # pick a post AT URI, read it for context:

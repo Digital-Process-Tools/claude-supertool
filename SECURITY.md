@@ -13,7 +13,7 @@ Only the latest minor version receives security updates.
 
 **Do not open public GitHub issues for security vulnerabilities.**
 
-Email **fdavid@digitalprocesstools.com** with:
+Email **<fdavid@digitalprocesstools.com>** with:
 
 - A description of the issue
 - Steps to reproduce

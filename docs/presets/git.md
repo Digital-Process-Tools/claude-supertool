@@ -128,18 +128,23 @@ Each is a decision, and each is pinned as an absence in `tests/test_git_replaces
 ## Common workflows
 
 **Assess state before starting work:**
+
 ```bash
 ./supertool 'git-status' 'git-diverge:my-feature:master'
 ```
+
 One call gives you branch health + exactly what differs from base — no follow-up needed.
 
 **Investigate why a file changed:**
+
 ```bash
 ./supertool 'git-investigate:src/app/Auth.py' 'git-trail:verify_token:src/app/Auth.py'
 ```
+
 `git-investigate` shows recent commits and blame hotspots; `git-trail` pinpoints when `verify_token` was added or renamed.
 
 **Resolve a merge conflict and commit:**
+
 ```bash
 ./supertool 'git-conflicts'
 # review, then:
@@ -151,6 +156,7 @@ One call gives you branch health + exactly what differs from base — no follow-
 
 `both` is a union, so it is refused on source files — `git-resolve:::both:::all`
 resolves the changelog and holds back the code, which stays conflicted:
+
 ```text
 # git-resolve: both (2 file(s))
   ✓ CHANGELOG.md
@@ -161,17 +167,20 @@ Resolved: 1 | Refused: 1 | Failed: 0 | Remaining: 1
 Next: resolve these by hand — ./supertool 'git-conflicts' to inspect, ./supertool 'git-resolve:::ours:::PATH' / ':::theirs:::PATH' to take one side,
       or append 'force' (git-resolve:::both:::PATH:::force) to union anyway and verify the result yourself.
 ```
+
 A `CHANGELOG.md` is the one file `both` is usually *right* about — which is why the
 other refusal is worth knowing before you meet it mid-rebase. When one side has had a
 release section cut above the entry both branches touched, the release heading sits
 inside the hunk on both sides and the union emits it twice, quietly reparenting the
 unreleased entries under it:
+
 ```text
 # git-resolve: both (1 file(s))
   ⊘ CHANGELOG.md: structured document — union would duplicate 1 heading(s) present on both sides: '## [0.23.0] - 2026-08-05', reparenting the lines between the two copies under the first; refused
 
 Resolved: 0 | Refused: 1 | Failed: 0 | Remaining: 1
 ```
+
 Resolve those two sections by hand, or `force` it and check the headings yourself.
 Only the hunk's *own* headings count, so the everyday case — two branches each adding
 a bullet under the same `### Fixed` — still unions without a word.
@@ -180,6 +189,7 @@ Every resolve **self-verifies before it stages**: it scans the resolved file for
 leftover conflict markers (`<<<<<<<` / `>>>>>>>`) and then runs the file-type
 validator (xmllint / phplint / …) so the receipt tells you the resolution is
 actually clean — the routine you'd otherwise run by hand:
+
 ```text
 # git-resolve: ours (1 file(s))
   ✓ src/app/Config.py
@@ -187,6 +197,7 @@ actually clean — the routine you'd otherwise run by hand:
 Resolved: 1 | Failed: 0 | Remaining: 0
 Next: ./supertool 'git-commit:::Merge resolved' (or git merge --continue)
 ```
+
 **The `PATH` in those rows is git's own, never yours** ([#1693](https://github.com/Digital-Process-Tools/claude-supertool/issues/1693)). A comma-separated `PATH` argument is a filter over the conflicted set, not a second source: anything not already conflicted is refused before a single row is printed.
 
 **What held those rows up used to be `core.quotePath`, and that was the wrong thing to rest on** ([#1708](https://github.com/Digital-Process-Tools/claude-supertool/issues/1708)). The rows interpolated the path raw, sound only because `git diff --name-only --diff-filter=U` octal-quotes every byte above 0x7F — a config *default*, so #1708 proposed pinning it with `-c core.quotePath=true`. Driving it first showed the setting has no correct value, on git 2.46.2:
@@ -198,9 +209,11 @@ So the read is `-z` now, which is what `git-commit` settled on for the same defe
 
 A marker left behind is a **hard fail** — the file is *not* staged, so a broken
 merge can never reach a commit:
+
 ```text
   ✗ src/app/Config.py: conflict markers remain at line(s) 63 — not staged
 ```
+
 The validate line is **advisory** (warn-only): `validate: ⚠ phplint 2 err` flags
 syntax to look at but never blocks the resolve — an "invalid" file is often just
 a merge that needs the next hunk resolved, not a corrupt write. It is scoped to
@@ -214,37 +227,45 @@ did not run** ([#880](https://github.com/Digital-Process-Tools/claude-supertool/
 A validator that matched the file and then declined — `php` not installed, an
 adapter that timed out — says so on the same line, and a decline beside a pass
 still costs a word:
+
 ```text
   ✓ src/app/Config.php
       markers: clean | validate: ⚠ not checked (phplint (php not installed))
   ✓ src/app/other.php
       markers: clean | validate: ok | ⚠ not checked by phpstan (php not installed)
 ```
+
 Nothing is blocked either way — the digest is advisory — but `markers: clean` is
 the phrase a reader uses to decide not to look, so it may not stand alone over a
 file nobody parsed.
 
 **Resolve specific conflict blocks (per-hunk side selection):**
+
 ```bash
 ./supertool 'git-conflicts'                          # blocks are numbered per file
 # keep ours for blocks 1 and 3 only — block 2 stays conflicted:
 ./supertool 'git-resolve:::ours:::src/app/Config.py:::1,3'
 ```
+
 One side per call (mixed sides → run twice). A partial resolve never stages — it
 keeps the unselected blocks' markers and reports what's left:
+
 ```text
 # git-resolve: ours block(s) 1, 3 in src/app/Config.py
   ~ src/app/Config.py: 2 of 3 block(s) resolved, file still conflicted
 Resolved blocks: 2 | Remaining blocks: 1 | Not staged (still conflicted).
 Next: resolve the remaining block(s), then ./supertool 'git-resolve:::SIDE:::PATH' (whole file) or git add once clean.
 ```
+
 When the selector covers every block the file goes clean and is staged like a
 whole-file resolve.
 
 **Update an MR that already exists:**
+
 ```bash
 ./supertool 'git-commit:::Fix the thing:::src/app/Thing.py' 'git-push'
 ```
+
 `git-commit` shows HEAD before/after; `git-push` updates the remote and reports the open MR + the pipeline the push just triggered — no raw `git push` fallback.
 
 ### `git-commit` commits the paths you name, and nothing else
@@ -454,13 +475,17 @@ That is not a formality. Git's `GIT_DIR`, `GIT_WORK_TREE` and five siblings over
 Those seven variables are removed **once per call, before any op dispatches** — see [Inherited `GIT_*` environment](../operations/meta.md#inherited-git-environment), which is where the boundary and its reasoning are written down. The scrub is not a property of the git preset: it covers every op, preset and built-in alike.
 
 **Just tell me whether it landed:**
+
 ```bash
 ./supertool 'git-push' | tail -1
 ```
+
 ```
 [result] PUSHED  max/a11y-aria-prohibited-attr -> origin/max/a11y-aria-prohibited-attr @ f1627b7  (verified, 2 commit(s))
 ```
+
 `verified` means the sha was read back from the remote with `ls-remote` after the push, so this replaces the `git fetch` + `git log FETCH_HEAD` round-trip. A run that did not push is equally unambiguous at `tail -1`:
+
 ```
 [result] NOT PUSHED - already up to date  feat -> origin/feat @ f1627b7  (verified)
 [result] NOT PUSHED - REJECTED  feat -> origin/feat - [remote rejected] (protected branch hook declined)
@@ -480,6 +505,7 @@ Those seven variables are removed **once per call, before any op dispatches** �
 There is exactly **one** `Status:` line per receipt, and that is the load-bearing half. The rebase-recovery route used to print its own `Status: pushed ✓ (rebased onto remote)` and then let the shared receipt print a second one below it — two column-0 fields a consumer greps for, disagreeing on a rebase that turned out to move nothing. A caller that has something to say about *how* the push got here adds a clause to the one line (`Status: nothing to push ✓ — the remote ref already matched (rebased onto remote)`) rather than a line of its own.
 
 **A branch's first push, after `git worktree add -b`, is not "no upstream" and does not read as a rejection any more** ([#787](https://github.com/Digital-Process-Tools/claude-supertool/issues/787)). `git worktree add -b <branch> <path> origin/master` — the normal way to start a fresh branch — leaves `@{upstream}` resolving to `origin/master` via `branch.autoSetupMerge`, tracking the *start point* rather than the new branch. A bare `git push` there hands the target to `push.default`, which refuses on the name mismatch; before the fix that refusal rendered as `NOT PUSHED - REJECTED  branch -> origin/master` — a target `push.default` picked, not the caller, and a verb implying the remote had acted when the push was never attempted. `git-push` now detects that precondition before invoking `git push` at all and declines instead, naming the phantom upstream it found and both of git's own remedies:
+
 ```
 Nothing was pushed. Name the target once:
   ./supertool 'git-push:set-upstream'   # push fix/x under its own name, tracking origin/fix/x (the usual first push)
@@ -505,22 +531,28 @@ Upstream: origin/master — inherited, not this branch. :set-upstream retargets 
 **Platform scope, stated rather than implied.** The execution is proven on POSIX (macOS, Linux, git 2.46.2) — for the fetch sink and, since #1617, for the push sink as well. Whether it also executes on **Windows is not established** — do not read this note as claiming it does. The guard itself is a leading-dash string check with no platform-dependent behaviour, so it closes the sink either way. The test suite carries a positive control that runs the unguarded fetch and proves the sink is live on whatever platform it runs on; the "payload did not run" assertions depend on it, since that assertion passes for free where the payload could never have run. The refusal assertions run everywhere regardless.
 
 **A push that landed still ends on a verdict even when the receipt itself breaks** ([#675](https://github.com/Digital-Process-Tools/claude-supertool/issues/675)). Every check that runs *after* the push is past the point of no return, so none of them may cost you the answer:
+
 ```
 [result] PUSHED  feat -> origin/feat @ unknown  (RECEIPT INCOMPLETE - git-push crashed after the push landed: OSError: ...)
 ```
+
 The exception is printed in full above it, on stdout — swallowing it would trade a loud failure for a quiet one — and the exit code follows the **push**, not the receipt, so a landed push never reports as a failed one.
 
 **Push when the remote has moved ahead (non-fast-forward):**
+
 ```bash
 ./supertool 'git-push'
 ```
+
 `git-push` rebases your work onto the remote and re-pushes in the same call — no manual `pull --rebase` round-trip. If the rebase conflicts, it stops with the rebase **paused** and the conflicting files listed, then points you at `git-conflicts`:
+
 ```bash
 ./supertool 'git-conflicts'                       # inspect the blocks
 ./supertool 'git-resolve:::ours:::src/app/X.py'   # decide
 # then continue the rebase and push:
 git rebase --continue && ./supertool 'git-push'
 ```
+
 To **cancel** and get back to exactly where you were before the push (your commits intact, nothing pushed), `git rebase --abort`. To overwrite the remote intentionally (your history wins), `git rebase --abort` then `./supertool 'git-push:force-with-lease'`. To skip a local pre-push hook that diverges from CI, `./supertool 'git-push:no-verify'`. To make a branch's **first** push when `git worktree add -b <new> <base>` left it tracking `<base>`, `./supertool 'git-push:set-upstream'` — see the `:set-upstream` / `:to-upstream` note below.
 
 **Only git decides that the remote moved ahead.** The auto-rebase is the one path in this op that rewrites local history, so it fires on git's own machine-readable answer and nothing else: the push runs `--porcelain`, and the per-ref status line for your branch on stdout — `!<TAB>refs/heads/x:refs/heads/x<TAB>[rejected] (non-fast-forward)` — is the only input to the decision. Text printed by a **pre-push hook** cannot reach it, even when the hook prints the exact words git uses (`fetch first`, `non-fast-forward`, `tip of your current branch is behind`); before [#641](https://github.com/Digital-Process-Tools/claude-supertool/issues/641) it could, and a hook saying "fetch first" in its own advice was enough to make the op fetch and rebase your branch.
@@ -789,6 +821,7 @@ Most ops need no project config. `git-investigate` takes two env vars (below); `
 | `SUPERTOOL_GIT_TIMEOUT` | `10` (`5` for `git-status`) | Seconds each individual git call gets before it is abandoned and disclosed (see **When git does not answer**) |
 
 Set via the op's JSON config if you want project-wide defaults:
+
 ```json
 {
   "ops": {

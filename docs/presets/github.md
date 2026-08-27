@@ -252,7 +252,7 @@ Comparing against `createdAt` alone is the tempting shortcut and it is wrong in 
 
 Highest priority first: **unrankable**, then **external author**, then **stale body**, then **no linked PR**, then **oldest**. Age is the last tiebreak rather than the first because oldest-first is what a plain list already gives, and it is the ordering that keeps putting a destructive report behind three cosmetic fixes.
 
-#769 proposed a top tier above all of these — data-loss/destructive, driven by a label. It is not implemented, because the signal does not exist: this repo's label set is GitHub's defaults plus `security`, `audit`, `dependencies` and `github_actions`, and 2 of 33 open issues carry any label at all. A tier computed from a label nobody applies ranks nothing while reading as authoritative. Create and populate a `data-loss` label and it belongs at the top of `_rank_key`.
+\#769 proposed a top tier above all of these — data-loss/destructive, driven by a label. It is not implemented, because the signal does not exist: this repo's label set is GitHub's defaults plus `security`, `audit`, `dependencies` and `github_actions`, and 2 of 33 open issues carry any label at all. A tier computed from a label nobody applies ranks nothing while reading as authoritative. Create and populate a `data-loss` label and it belongs at the top of `_rank_key`.
 
 ### Unknown sorts first
 
@@ -651,9 +651,11 @@ Refused rather than quoted, unlike `gl-mr`'s conflict recipe, because here the c
 ## Common workflows
 
 **Review a PR before merging:**
+
 ```bash
 ./supertool 'gh-pr:42' 'gh-run:NUMBER'
 ```
+
 `gh-pr` gives you the full dashboard (approval, diff stat, comments); `gh-run` confirms all checks passed. Replace `NUMBER` with the run ID shown in `gh-pr` output.
 
 Read the two lines together. `Checks:` is CI; `Mergeable:` is GitHub's *merge conflict* state and nothing else, so it now says `Mergeable: yes (no merge conflicts)` and appends `— checks ⚠ NOT ALL GREEN, see Checks above` when the run is not unanimously green. `Mergeable: yes` beside a cancelled run was how a failed run got read as ready to merge.
@@ -871,6 +873,7 @@ Declared in .github/workflows at this commit with no run on it — NOT covered b
 **Radar states the scope it cannot account for, and only that.** `scope_for` returns a third value saying whether the green is bounded, and the radar tier speaks on a green only when it is not — a declared set that could not be read, or a workflow declaring a **push** trigger that produced no run on the head commit — and drops its `could_tell` at the same time, because radar's `quiet_when_healthy` discards a healthy tier's whole output. A `schedule`- or `pull_request`-only workflow producing no run on a push is expected and keeps the board quiet: on this repo `slow tests` and `changelog` are permanently in that state, so an unconditional clause would be two identical lines on every tick, which is how the render that matters gets skipped. The full clause and the named block are still printed unconditionally by `gh-branch` itself and by the dashboard section — the board a human reads immediately before tagging.
 
 **Debug a failed Actions job:**
+
 ```bash
 ./supertool 'gh-run:12345'
 # find the failed job ID, then:
@@ -1026,6 +1029,7 @@ lint                                     completed    skipped      -
 Two states are not resolved, for opposite reasons. A pending step has not finished — that is the whole point of the count. A step carrying neither `conclusion` nor `status` was not *read*, and counting an unread step as done is a guess; it is left out of the numerator instead, so the column under-claims progress rather than over-claiming it.
 
 **Build a follow list from a repo's community:**
+
 ```bash
 ./supertool 'gh-find-followable:anthropics/claude-code|100'
 # review the output, save to a file, then:
@@ -1093,7 +1097,7 @@ Same family as [`gh-job:...:grep:`](#gh-jobgrep-bounds-its-own-output-and-says-w
 
 ### Which ten are shown: the first three and the last seven
 
-#719 kept the ten most *recent* and [#738](https://github.com/Digital-Process-Tools/claude-supertool/issues/738) asked whether the ten oldest were the better choice, since the opening comments carry the original objection, the design decision and the "do not merge until X". The answer taken is neither, and the budget is unchanged at ten.
+\#719 kept the ten most *recent* and [#738](https://github.com/Digital-Process-Tools/claude-supertool/issues/738) asked whether the ten oldest were the better choice, since the opening comments carry the original objection, the design decision and the "do not merge until X". The answer taken is neither, and the budget is unchanged at ten.
 
 **Both sides are right about different comments.** The head carries the objection that opened the thread; the tail carries the resolution that closed it. A cap that takes one end therefore guarantees that on every long thread one of the two load-bearing regions is gone — and the reader cannot tell which, because a thread whose opening never mattered renders identically to one whose opening was the whole point. That is the same shape as the invisible cut #719 fixed, one level up: an absence produced by the tool, read as an absence in the world.
 

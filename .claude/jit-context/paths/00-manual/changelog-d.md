@@ -44,6 +44,7 @@ Enforced by `tests/test_changelog_findable_{1053,1293}.py` (#1293).
 # The guard is a real parser, not a scanner
 
 Validator = CommonMark (`markdown-it-py`). A hand-rolled scanner was bypassed across four rounds: #927 → #930 → #932 → #934 → #935 → #936. Refused at any depth:
+
 - headings
 - link-reference definitions
 - raw HTML

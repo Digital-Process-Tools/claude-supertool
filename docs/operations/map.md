@@ -233,7 +233,7 @@ src/api/Client.ts (95 lines)
 
 ## Common workflows
 
-**"Give me the shape of this module"**
+**"Give me the shape of this module":**
 
 ```bash
 ./supertool 'map:src/SiProject/'
@@ -241,7 +241,7 @@ src/api/Client.ts (95 lines)
 
 Costs ~20 tokens instead of reading every file. Use it before deciding which file to `read` next.
 
-**"Find all classes that implement X"**
+**"Find all classes that implement X":**
 
 ```bash
 ./supertool 'map:src/' | grep -i "implements MyInterface"
@@ -249,7 +249,7 @@ Costs ~20 tokens instead of reading every file. Use it before deciding which fil
 ./supertool 'map:src/' 'grep:implements MyInterface:src/'
 ```
 
-**"Compare structure before/after a refactor"**
+**"Compare structure before/after a refactor":**
 
 ```bash
 # Before (on a git revision via temp checkout or diff)
@@ -259,7 +259,7 @@ Costs ~20 tokens instead of reading every file. Use it before deciding which fil
 ./supertool 'map:src/NewModule/'
 ```
 
-**"Orient fast, then read the interesting part"**
+**"Orient fast, then read the interesting part":**
 
 ```bash
 ./supertool 'map:src/app/' 'between:handle_request:src/app/Module.py'
