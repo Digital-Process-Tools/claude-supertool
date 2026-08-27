@@ -19319,6 +19319,64 @@ def _guard_raw_segment_spans(text: str) -> List[Tuple[int, int]]:
     return spans
 
 
+def _guard_tokenize_prepared(prepared: str) -> List[List[str]]:
+    """Split ALREADY-prepared text into word-level top-level segments.
+
+    Just the `shlex` tokenisation and redirect-drop half of
+    `_guard_segments_with_origins` -- no heredoc-stripping, IO-number-drop
+    or substitution-opening, because `prepared` has had all of that done to
+    it already and redoing it on a SLICE of `prepared` is not idempotent in
+    general (a slice cut at a real operator boundary is not the same text
+    `_guard_open_substitutions` etc. saw the whole command as). Calling the
+    public `_guard_segments` wrapper here instead -- which re-runs the full
+    pipeline via `_guard_segments_with_origins` -- used to be exactly that:
+    `_guard_segments_with_origins` re-slicing and re-calling itself through
+    that wrapper recursed without terminating on a `find . -exec ls {}`
+    placeholder clause once this function's caller started re-tokenising
+    each raw span to detect a phantom separator (#2010). Raises
+    `ValueError` on an unterminated quote, same as the tokeniser this is
+    extracted from.
+    """
+    lexer = shlex.shlex(prepared, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    # Comments were already removed, line by line, with quote state (#1389).
+    # `shlex`'s own `commenters` cannot be line-scoped here — the newline
+    # rewrite above leaves it nothing to stop at — so leaving it on meant one
+    # `#` blinded the guard to the rest of the command. Off, it can at worst
+    # leave text that is not a command in an argv, which over-blocks.
+    lexer.commenters = ""
+    tokens = list(lexer)  # ValueError on an unterminated quote
+
+    segments: List[List[str]] = []
+    current: List[str] = []
+    drop_next = False
+    for token in tokens:
+        if token and all(ch in _GUARD_PUNCTUATION for ch in token):
+            if "<" in token or ">" in token:
+                # A redirection is NOT a command separator, and treating it as
+                # one put its target where a command word is read: `2>&1` left
+                # a segment `['1']`, and `git status > gh` one whose head was
+                # `gh` (#1684). The words on both sides of it belong to the
+                # same command — `gh pr view 1 > out.txt --json state` runs
+                # `gh pr view 1 --json state` — so the operator and its target
+                # are dropped and the segment continues. Dropping the target
+                # while still splitting would have been worse than the bug:
+                # `gh pr view 1 > f gh issue list` would then read `gh issue
+                # list` as a command nobody runs, and a wrong block has no
+                # per-command escape.
+                drop_next = True
+                continue
+            segments.append(current)
+            current = []
+            drop_next = False
+        elif drop_next:
+            drop_next = False
+        else:
+            current.append(token)
+    segments.append(current)
+    return segments
+
+
 def _guard_segments_with_origins(
         command: str
 ) -> Tuple[List[List[str]], List[str], List[int], List[str]]:
@@ -19357,78 +19415,62 @@ def _guard_segments_with_origins(
     """
     prepared, unread = _guard_open_substitutions(
         _guard_drop_io_numbers(_guard_strip_heredocs(command)))
-    # `origin_texts` is a raw character SLICE of `prepared`, one per
-    # top-level segment (#2010) -- not a re-join of tokens `shlex` has
-    # already dequoted. `_guard_raw_segment_spans` walks `prepared` itself,
-    # splitting on the same operators the tokeniser below does, so a
-    # discarded segment keeps the quoting and the redirect a token re-join
-    # could never recover (`shlex.shlex.instream.tell()` was tried first and
-    # rejected: in posix mode it reads one character of lookahead past the
-    # token it just returned to decide the token is finished, so its
-    # position is already past an UNSPACED separator like the `;` in
-    # `echo one; echo two` before that separator's own token is even
-    # fetched -- silently mis-splitting exactly the compact style most
-    # shell one-liners use).
+    # `segment_spans` gives each top-level segment's raw character SLICE of
+    # `prepared` (#2010) -- not a re-join of tokens `shlex` has already
+    # dequoted. `_guard_raw_segment_spans` walks `prepared` itself, splitting
+    # on the same operators the tokeniser below does, so a discarded segment
+    # keeps the quoting and the redirect a token re-join could never recover
+    # (`shlex.shlex.instream.tell()` was tried first and rejected: in posix
+    # mode it reads one character of lookahead past the token it just
+    # returned to decide the token is finished, so its position is already
+    # past an UNSPACED separator like the `;` in `echo one; echo two` before
+    # that separator's own token is even fetched -- silently mis-splitting
+    # exactly the compact style most shell one-liners use). `origin_texts`
+    # itself is built below, once `segments` is known, because a span can
+    # cover more than one of `segments`' entries (see the comment there).
     segment_spans = _guard_raw_segment_spans(prepared)
-    origin_texts = [prepared[lo:hi].strip() for lo, hi in segment_spans]
-
-    lexer = shlex.shlex(prepared, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    # Comments were already removed, line by line, with quote state (#1389).
-    # `shlex`'s own `commenters` cannot be line-scoped here — the newline
-    # rewrite above leaves it nothing to stop at — so leaving it on meant one
-    # `#` blinded the guard to the rest of the command. Off, it can at worst
-    # leave text that is not a command in an argv, which over-blocks.
-    lexer.commenters = ""
-    tokens = list(lexer)  # ValueError on an unterminated quote
-
-    segments: List[List[str]] = []
-    current: List[str] = []
-    drop_next = False
-    for token in tokens:
-        if token and all(ch in _GUARD_PUNCTUATION for ch in token):
-            if "<" in token or ">" in token:
-                # A redirection is NOT a command separator, and treating it as
-                # one put its target where a command word is read: `2>&1` left
-                # a segment `['1']`, and `git status > gh` one whose head was
-                # `gh` (#1684). The words on both sides of it belong to the
-                # same command — `gh pr view 1 > out.txt --json state` runs
-                # `gh pr view 1 --json state` — so the operator and its target
-                # are dropped and the segment continues. Dropping the target
-                # while still splitting would have been worse than the bug:
-                # `gh pr view 1 > f gh issue list` would then read `gh issue
-                # list` as a command nobody runs, and a wrong block has no
-                # per-command escape.
-                drop_next = True
-                continue
-            segments.append(current)
-            current = []
-            drop_next = False
-        elif drop_next:
-            drop_next = False
-        else:
-            current.append(token)
-    segments.append(current)
+    segments = _guard_tokenize_prepared(prepared)  # ValueError on a bad quote
     # `_guard_raw_segment_spans` splits on the same operators as the
-    # tokeniser above, in the same order, so ordinarily it produces exactly
-    # one span per entry in `segments`. It is not a full re-implementation
-    # of `shlex.shlex(punctuation_chars=True)`, though: that tokeniser also
+    # tokeniser above, so ordinarily it produces exactly one span per entry
+    # in `segments`. It is not a full re-implementation of
+    # `shlex.shlex(punctuation_chars=True)`, though: that tokeniser also
     # treats a WHITESPACE-BOUNDED word made entirely of `_GUARD_PUNCTUATION`
     # chars as a separator even when none of them are its own operator
     # characters -- `find . -exec ls {} \;` splits on the bare `{}` and the
     # backslash-escaped `;` this scanner does not special-case, because
     # neither is a real shell operator; `{` and `}` are ordinary characters
     # to the shell and only end a command here because #1389 chose to treat
-    # an all-punctuation WORD as if it were one. A length mismatch means a
-    # segment boundary this scanner did not know to draw, and it is far
-    # cheaper to fall back to the plain word-rejoin `_guard_segments` used to
-    # return unconditionally than to keep growing this scanner one shell
-    # idiom at a time: `origins[i]` still resolves correctly either way, and
-    # a discarded command that recovers its old (imperfect) rendering is a
-    # better outcome than a `guard_command` call that raises on a `find`
-    # invocation nobody is even redirecting.
-    if len(segment_spans) != len(segments):
-        origin_texts = [" ".join(segment) for segment in segments]
+    # an all-punctuation WORD as if it were one.
+    #
+    # A whole-command length mismatch used to fall back to the plain
+    # word-rejoin for EVERY segment, not just the ones inside the offending
+    # span -- so `echo "a b" > f && find . -exec ls {} \; && gh pr view 1`
+    # lost its quoting and its redirect on the first, perfectly ordinary
+    # segment too, degraded by a `find` idiom two segments later that never
+    # touched it (#2010, reported by a spawned auditor against this same
+    # fix). The fix is scoped per span instead: re-tokenising each span's
+    # own raw text in isolation (`_guard_segments`, cheap -- these are short
+    # strings) tells us exactly how many `segments` entries THAT span
+    # produced. A span producing exactly one keeps its raw-text fidelity;
+    # a span producing more than one is the one with a phantom separator
+    # inside it, and only ITS `segments` entries fall back to the word-join.
+    # Consuming `segments` sequentially in span order is safe because the
+    # tokeniser never reorders segments and a raw span's boundaries always
+    # sit at an unquoted real operator, so re-tokenising each slice on its
+    # own reproduces exactly the stretch of the full token stream it covers.
+    origin_texts: List[str] = []
+    consumed = 0
+    for lo, hi in segment_spans:
+        raw_text = prepared[lo:hi].strip()
+        count = len(_guard_tokenize_prepared(prepared[lo:hi]))
+        if count <= 1:
+            origin_texts.append(raw_text)
+            consumed += 1
+        else:
+            origin_texts.extend(
+                " ".join(segment)
+                for segment in segments[consumed:consumed + count])
+            consumed += count
 
     heads: List[List[str]] = []
     origins: List[int] = []

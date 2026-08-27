@@ -46,3 +46,17 @@ def test_discarded_segment_keeps_its_redirection_and_quoting(
     assert verdict.state == "blocked", verdict
     assert verdict.discarded == (
         'echo "hello   world" > /tmp/x.txt',), verdict.discarded
+
+def test_a_later_phantom_separator_does_not_degrade_an_earlier_segment(
+        tmp_path, guard_config):
+    """#2010, second round: the length-mismatch fallback used to be scoped
+    to the WHOLE command, so a `find` placeholder clause anywhere in a call
+    cost every other segment its quoting and its redirect too -- caught by
+    a spawned auditor against the first cut of this fix."""
+    guard_config(tmp_path, _TWO_OPS)
+    cmd = ('echo "hello   world" > /tmp/x.txt && '
+           r'find . -exec ls {} \; && gh pr view 12')
+    verdict = supertool.guard_command(cmd)
+    assert verdict.state == "blocked", verdict
+    assert verdict.discarded[0] == (
+        'echo "hello   world" > /tmp/x.txt'), verdict.discarded
