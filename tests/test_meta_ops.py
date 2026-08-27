@@ -353,7 +353,14 @@ def test_ops_compact_warning_when_over_cap(tmp_path: Path, monkeypatch) -> None:
 
     Uses ``hint: true`` on every op so descriptions and examples stay in the
     output — that's the realistic worst case where compaction can't trim more.
+
+    The op count is DERIVED from the cap, not written as a literal. It was
+    `range(40)`, sized against a cap of 7168; when #2029 corrected that
+    constant to the harness's real 10000 the fixture no longer cleared it and
+    this test failed for a reason that had nothing to do with the behaviour it
+    guards. A fixture calibrated to a constant has to read the constant.
     """
+    per_op = 200  # rough rendered bytes per hint entry below; only a divisor
     big_ops = {
         f"op_{i}": {
             "syntax": f"op_{i}:PATH:LIMIT[:CONTEXT][:MODE]",
@@ -362,10 +369,13 @@ def test_ops_compact_warning_when_over_cap(tmp_path: Path, monkeypatch) -> None:
             "example": f"op_{i}:src/foo.py:50",
             "hint": True,
         }
-        for i in range(40)
+        for i in range(2 * supertool._HOOK_OUTPUT_CAP_BYTES // per_op)
     }
     _set_config(monkeypatch, tmp_path, {"builtin-ops": big_ops})
     out = supertool.op_ops(compact=True)
+    assert supertool._over_hook_cap(out), (
+        "the fixture no longer exceeds the cap, so this test would pass or "
+        "fail for reasons unrelated to the warning it is about")
     assert "exceeds the" in out
     assert "SessionStart hook cap" in out
     assert "./supertool 'ops'" in out

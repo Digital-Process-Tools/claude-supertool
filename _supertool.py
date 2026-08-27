@@ -2734,19 +2734,30 @@ def _unknown_op_message(op: str) -> str:
     return msg
 
 
-# The three safety classes a roster row can carry (#1231).
+# The three safety classes a listing row can carry (#1231).
 #
-# `ops` is 47,254 bytes and `ops-compact` 9,067 against a ~7,168-byte
-# SessionStart cap, so the startup listing is truncated *today* and every op
-# alphabetically after `grep` is hidden — the whole gh-*/git-* families, radar,
-# watch. What is lost is **existence**, which a reader cannot miss because they
-# never learn there was something to look for. A roster of every name fits in
-# about a fifth of the cap.
+# **Every figure in this comment was wrong, and they were the argument.** It
+# read "`ops` is 47,254 bytes and `ops-compact` 9,067 against a ~7,168-byte
+# SessionStart cap, so the startup listing is truncated *today*". Measured on
+# 2026-08-27: `ops` 3,740, `ops-compact` 16,100, cap 10,000. The `ops` figure
+# was 12.6x high — it predates #1774 making the default listing signatures-only,
+# and 47,254 is roughly what `ops:full` costs now. So the premise "signatures
+# cannot fit" was false, and the conclusion drawn from it — hand every session
+# names alone — outlived it by fifteen releases.
 #
-# A bare name is only actionable for an op you may probe: `between:F:747:820`
-# answers "'820' was read as the path" and names the op that does take a range,
-# so roster → call → the error teaches the form. You cannot probe `gh-pr-merge`,
-# which merges. Hence the class.
+# #1877 corrected this same pair of numbers where they appear in
+# `hooks/session-start.sh` and left this copy, which is the one the reader
+# reaches from the code. `tests/test_render_size_claims_1877.py` grades the
+# figures in that file; this comment is prose beside a constant and nothing
+# graded it. That is the whole lesson: a measurement written into a comment is
+# a measurement nothing re-runs, and the second copy is the one that survives.
+#
+# What stands unchanged is why the class exists at all. A bare signature is
+# only safely actionable for an op you may probe: `between:F:747:820` answers
+# "'820' was read as the path" and names the op that does take a range, so
+# listing → call → the error teaches the form. You cannot probe `gh-pr-merge`,
+# which merges. Hence the class, and hence it now rides on `ops` too (#2028)
+# rather than only on the roster.
 #
 # Declared, never inferred. `_PARALLEL_SAFE_OPS` looks like a ready-made
 # read-only set and is not one — it is a dispatch-safety set, and until #1244
@@ -18242,12 +18253,68 @@ def op_help(op_name: str) -> str:
             f"Run 'ops' for the full list of operations.\n")
 
 
-# Threshold above which compact ops output gets a "truncation likely" warning.
-# Claude Code's hook-stdout cap appears to be ~7KB; anything over that gets
-# saved to disk and only a ~2KB preview is injected into the model's context,
-# silently hiding the tail of the ops list. (Empirical: 6.6KB landed full,
-# 11KB+ got truncated — threshold sits in between.)
-_HOOK_OUTPUT_CAP_BYTES = 7168
+# Claude Code's hook-stdout cap. Over it, the payload is written to disk and
+# only a 2,000-character preview is injected into the model's context, so the
+# tail of a listing is hidden behind something that still reads as a listing.
+#
+# Read out of the harness rather than guessed (#2029). HOW TO RE-DERIVE IT,
+# because this is a third-party constant and it can move under us:
+#
+#     B="$(dirname "$(readlink -f "$(which claude)")")/claude.exe"
+#     strings -n 8 "$B" > /tmp/cc-strings.txt
+#     grep -oE "originalSizeBytes[^;]{0,120}" /tmp/cc-strings.txt
+#
+# `bin/claude.exe` is the real executable on every platform despite the name
+# (Mach-O arm64 here, ~250MB); the CLI is a compiled bundle, so the JavaScript
+# source is not on disk but the string table still carries the function bodies
+# verbatim. Search for the emitted message rather than the constant — the
+# minifier renames `k0u` on every release, and `Output too large (` does not
+# move. From that line, read the enclosing function's default argument.
+#
+# What that search finds in the shipped bundle
+# (`@anthropic-ai/claude-code`, `bin/claude.exe`):
+#
+#     var CKr=50000, mor=500000, AKr=4, A0u=400000, R0u=200000, i3=50, k0u=1e4;
+#
+#     async function jKe(e, t, r, n = k0u) {
+#         if (e.length <= n) return e;
+#         let o = await x2e(e, `hook-${t}-${r}`);
+#         if (I2e(o)) return M("tengu_hook_output_persisted", ...
+#
+# `k0u = 1e4`, and the comparison is `<=`, so exactly the cap passes. The
+# 2,000 is its own constant (`hor`) and is what the observed "Preview (first
+# 2KB)" line reports. It is the *hook* path specifically: the persisted file is
+# named `hook-<id>-<stream>`, the event is `tengu_hook_output_persisted`, and
+# tool results are capped separately and far higher by `CKr = 50000`.
+#
+# This value was 7168 for thirty-odd releases: a midpoint of an empirical
+# bracket, which its own comment said out loud — "6.6KB landed full, 11KB+ got
+# truncated". Both observations bracket 10,000 and are kept here as
+# corroboration; the midpoint drawn between them was 40% low, and it was the
+# premise of what every fresh session gets shown (hooks/session-start.sh) and
+# of the truncation warning `op_ops(compact=True)` prepends.
+#
+# UNITS. `e.length` is a JavaScript string length — UTF-16 code units, i.e.
+# characters. Supertool measures BYTES, and its listings are full of `—`, `→`,
+# `⚠`, `✓`: one character each, three bytes each. So a byte count over-reports
+# against this limit and can only refuse or warn EARLIER than the harness
+# would, never later. That is the safe direction and it is why this stays a
+# byte count rather than being "corrected" to characters — a conservative
+# bound survives the harness changing its own unit, and a tight one does not.
+# (Claude Code logs the same figure as `originalSizeBytes: e.length`, so the
+# confusion is not only ours.)
+_HOOK_OUTPUT_CAP_BYTES = 10000
+
+
+def _over_hook_cap(payload: str) -> bool:
+    """Would the harness persist this hook payload instead of injecting it?
+
+    One helper rather than an inline comparison at each site, because the
+    boundary is inclusive and `>` versus `>=` is exactly the kind of detail
+    that gets flipped by someone reading only the constant. Measured in
+    UTF-8 bytes — see the units note above.
+    """
+    return len(payload.encode("utf-8")) > _HOOK_OUTPUT_CAP_BYTES
 
 
 def _configured_op_names(config: Dict[str, Any]) -> set:
@@ -18375,6 +18442,7 @@ def op_ops(compact: bool = False, full: bool = False) -> str:
     # Operations section — built-in and custom merged into one flat list
     has_ops = False
     if builtin_ops or custom_ops:
+        lines.append(_CLASS_LEGEND)
         lines.append("## Operations\n")
         has_ops = True
         # Three states, not two (#1124). An op the dispatcher accepts but that
@@ -18400,15 +18468,29 @@ def op_ops(compact: bool = False, full: bool = False) -> str:
             lines.append("Also accepted, no reference in .supertool.json: "
                          + ", ".join(undocumented) + "\n")
 
+    # The safety class, from the one place it is already declared (#2028).
+    # `ops` is what a session is handed now, so it has to answer the question
+    # the roster was carrying alone: which of these may I call blind to learn
+    # its arguments? A signature tells you the shape of a call; it does not
+    # tell you that making it opens an issue or merges a pull request.
+    marks = _roster_classes()
+
+    def _row(name: str, syntax: str, desc: str) -> str:
+        mark_ = _SAFETY_MARKERS.get(marks.get(name, "acts"), "!")
+        head_ = f"- `{syntax}`{(' ' + mark_) if mark_ else ''}"
+        return f"{head_} — {desc}" if desc else head_
+
     if builtin_ops:
         for name, info in builtin_ops.items():
             if not isinstance(info, dict):
                 continue
             if not info.get("status", 1):
                 continue
-            syntax = info.get("syntax", name)
-            desc = _emit_desc(info)
-            lines.append(f"- `{syntax}` — {desc}" if desc else f"- `{syntax}`")
+            # A `form` entry documents a spelling of another op and dispatches
+            # as nothing (#1245), so it inherits that op's class rather than
+            # falling to `acts` and rendering a `!` on `read:PATH:::grep=`.
+            lines.append(_row(info.get("form") or name,
+                              info.get("syntax", name), _emit_desc(info)))
             if _emit_example(info):
                 lines.append(f"  Example: `{info['example']}`")
 
@@ -18416,9 +18498,8 @@ def op_ops(compact: bool = False, full: bool = False) -> str:
                      if isinstance(v, dict) and v.get("status", 1)}
     if active_custom:
         for name, info in active_custom.items():
-            desc = _emit_desc(info)
-            syntax = info.get("syntax", f"{name}:PATH")
-            lines.append(f"- `{syntax}` — {desc}" if desc else f"- `{syntax}`")
+            lines.append(_row(name, info.get("syntax", f"{name}:PATH"),
+                              _emit_desc(info)))
             if _emit_example(info):
                 lines.append(f"  Example: `{info['example']}`")
 
@@ -18462,7 +18543,7 @@ def op_ops(compact: bool = False, full: bool = False) -> str:
     # In compact mode, only warn if the body still won't fit the harness cap.
     # When it fits, no warning — the absence is itself a signal that the listing
     # is complete.
-    if compact and len(body.encode("utf-8")) > _HOOK_OUTPUT_CAP_BYTES:
+    if compact and _over_hook_cap(body):
         warning = (
             f"> {mark('⚠')} Output is {len(body.encode('utf-8'))} bytes, exceeds the "
             f"~{_HOOK_OUTPUT_CAP_BYTES}-byte SessionStart hook cap. The tail "
@@ -18519,6 +18600,19 @@ def _roster_classes() -> Dict[str, str]:
             declared = info.get("safety")
             classes[name] = declared if declared in _SAFETY_CLASSES else "acts"
     return classes
+
+
+# The class key, shared by `ops` and `ops:roster` so the two cannot drift into
+# describing the same three markers differently (#2028). Short on purpose: it
+# is paid at every session start, and what it has to establish is only that
+# unmarked is a *claim* rather than a missing annotation.
+_CLASS_LEGEND = (
+    "Class: unmarked — read-only, call it blind and its own error teaches the "
+    "signature.\n`*` writes files here. `!` reaches outside this tree or "
+    "outlives the call — look\nthose up, never probe one. An undeclared class "
+    "renders `!`, so a gap is never\nthe quiet answer. One op in full: "
+    "`help:OP`. Every description: `ops:full`.\n"
+)
 
 
 _ROSTER_LEGEND = (
@@ -18580,6 +18674,44 @@ def op_ops_roster(width: int = 78) -> str:
     if disclosure:
         head += "\n" + disclosure + "\n"
     return head + "\n" + "\n".join(body) + "\n"
+
+
+def op_ops_session() -> str:
+    """What a fresh session is handed: signatures if they fit, names if not.
+
+    The choice lives here rather than in `hooks/session-start.sh` because the
+    cap constant does, and a shell script measuring a payload it then has to
+    re-generate would be a second place for the same decision to go stale —
+    which is the failure this op exists downstream of. #2029 found the cap had
+    been a guessed midpoint for thirty-odd releases and 40% low.
+
+    **Signatures, not names, by default (#2028).** `ops:roster` prevents "I did
+    not know this op existed"; it does not prevent "I did not know this op was
+    the answer". An op's own error teaches its signature — true, and the reason
+    a roster is defensible at all — but an error only fires after the decision
+    to call has been made. A name a reader cannot interpret is a capability
+    never reached for, and nothing fails when that happens, so the cost is
+    invisible by construction. `between` is a word; `between:SYMBOL:PATH` is a
+    call.
+
+    **Three states, not two.** Over the cap the harness writes the payload to
+    disk and injects a 2,000-character preview, so a listing that does not fit
+    arrives looking like a listing that does. The fallback therefore says what
+    it measured, against what, and which listing it withheld — a shorter answer
+    with no account of itself is the defect this repo keeps having.
+    """
+    signatures = op_ops()
+    if not _over_hook_cap(signatures):
+        return signatures
+    size = len(signatures.encode("utf-8"))
+    note = (
+        f"> Signatures withheld: `ops` renders {size} bytes here, over the "
+        f"{_HOOK_OUTPUT_CAP_BYTES}-byte SessionStart hook cap, and a payload "
+        f"over it is written to disk with only a preview injected — so the "
+        f"listing would arrive looking complete. Names and classes below "
+        f"instead; run `ops` for the signatures.\n\n"
+    )
+    return note + op_ops_roster()
 
 
 def _ops_argument_refusal(arg: str, op_name: str = "ops") -> str:
@@ -28440,6 +28572,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     body = op_ops(compact=(op == "ops-compact"))
                 elif ops_arg == "roster" and op == "ops":
                     body = op_ops_roster()
+                elif ops_arg == "session" and op == "ops":
+                    body = op_ops_session()
                 elif ops_arg == "full" and op == "ops":
                     # What bare `ops` was before #1774 made signatures the
                     # default. Named on the default listing's own footer, with

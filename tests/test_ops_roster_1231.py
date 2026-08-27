@@ -174,12 +174,20 @@ def test_bare_ops_still_renders_the_full_listing(shipped_config) -> None:
 
 # --- the hook the whole issue is about -------------------------------------
 
-def test_session_start_hook_asks_for_the_roster() -> None:
+def test_session_start_hook_does_not_ask_for_the_descriptive_listing() -> None:
     """The pin that makes the fix real rather than available.
 
     `ops:roster` existing changes nothing on its own — the defect was what the
-    SessionStart hook prints, and it printed `ops-compact` (9,067 bytes against
-    a ~7,168 cap) on every session.
+    SessionStart hook prints, and it printed `ops-compact` (16,486 bytes
+    against a 10,000 cap) on every session, truncated.
+
+    What the hook asks for is `ops:session` since #2028: signatures, with this
+    roster as a measured fallback when they do not fit. The roster is still the
+    floor and this file still owns it; it is no longer the ceiling. Asserted as
+    "not the descriptive listing" rather than as one literal token, because the
+    thing #1231 is about is that a listing too large to inject must never be
+    what a session is handed — which of the two fitting forms arrives is
+    `ops:session`'s call, made against the cap constant.
     """
     hook = (REPO_ROOT / "hooks" / "session-start.sh").read_text(encoding="utf-8")
     # Selected by the op arguments rather than by the interpreter: #1382
@@ -189,8 +197,9 @@ def test_session_start_hook_asks_for_the_roster() -> None:
     invocations = [ln for ln in hook.splitlines()
                    if '"$BIN"' in ln and "'introduction'" in ln]
     assert invocations, "hook no longer invokes supertool for onboarding"
-    assert all("ops:roster" in ln for ln in invocations), invocations
+    assert all("ops:session" in ln for ln in invocations), invocations
     assert not any("ops-compact" in ln for ln in invocations), invocations
+    assert not any("ops:full" in ln for ln in invocations), invocations
 
 
 def test_whole_hook_payload_fits_the_cap(shipped_config) -> None:

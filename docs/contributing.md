@@ -95,7 +95,7 @@ Shorthand string ops (`"lint": "ruff check {file}"`) work with a 60s default tim
 | `replaces` | no | Raw shell invocations this op supersedes. The shipped `PreToolUse` hook refuses them. See below. |
 | `exitStatus` | no | `{"values": [0, 1, 2]}` — exit codes that are this op's **answer** rather than a verdict on it. See below. |
 
-**`safety` decides whether someone may learn your op by calling it.** The `ops:roster` listing is names plus one marker, because that is what fits the ~7KB SessionStart cap — and a bare name is only actionable for an op you can probe. Most ops teach their own signature on contact: `between:FILE:747:820` answers *"'820' was read as the path"* and names the op that does take a range. An op that reaches outside the tree cannot be learned that way — `gh-pr-merge` merges, `git-push` publishes, `watch` spawns a poller.
+**`safety` decides whether someone may learn your op by calling it.** The `ops:roster` listing is names plus one marker, because that is what fits the 10,000-byte SessionStart cap — and a bare name is only actionable for an op you can probe. Most ops teach their own signature on contact: `between:FILE:747:820` answers *"'820' was read as the path"* and names the op that does take a range. An op that reaches outside the tree cannot be learned that way — `gh-pr-merge` merges, `git-push` publishes, `watch` spawns a poller.
 
 | Value | Means | Marker |
 |-------|-------|--------|
@@ -131,7 +131,7 @@ Measured across the 128 documented ops in the shipped tree:
 | max | 6,578 (`channel`) |
 | top 10 rows | 35,290 = **47% of the corpus, in 8% of the ops** |
 
-The assembled descriptive render, `ops:full`, is ~74.1KB against `_HOOK_OUTPUT_CAP_BYTES` = 7,168. That is why `hooks/session-start.sh` sends `ops:roster` instead: names plus safety class, no descriptions at all. Bare `ops` has been signatures-only since #1774/#1775/#1778 and fits the cap on its own at ~3.7KB without needing a fallback (issue [#1813](https://github.com/Digital-Process-Tools/claude-supertool/issues/1813) is where the earlier version of this paragraph is corrected). It is the *descriptions* — reachable only through `ops:full` and `help:OP` now — that have never fitted, and this section is about what they cost.
+The assembled descriptive render, `ops:full`, is ~74.5KB against `_HOOK_OUTPUT_CAP_BYTES` = 7,168. That is why `hooks/session-start.sh` sends `ops:roster` instead: names plus safety class, no descriptions at all. Bare `ops` has been signatures-only since #1774/#1775/#1778 and fits the cap on its own at ~4.1KB without needing a fallback (issue [#1813](https://github.com/Digital-Process-Tools/claude-supertool/issues/1813) is where the earlier version of this paragraph is corrected). It is the *descriptions* — reachable only through `ops:full` and `help:OP` now — that have never fitted, and this section is about what they cost.
 
 **The line to draw.** A `description` says what the op does, what it will refuse, and what it declines to tell you — the three things a caller cannot get from the `syntax` field and cannot afford to learn from a failed call. What it is *not* is the record of how the op got here. These, from one entry, are all true and none of them belong on a line printed to every reader of the roster:
 
