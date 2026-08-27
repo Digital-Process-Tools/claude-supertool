@@ -12,7 +12,8 @@
     "watch",
     "dashboard",
     "claims",
-    "plugin-marketplace"
+    "plugin-marketplace",
+    "lsp"
   ],
   "mcp": {
     "py-lsp": {
@@ -246,31 +247,6 @@
       "description": "Which ops this project actually loads, and where each definition came from — preset, project config, or a project entry merged over a preset one. `registry:OP` shows one op's merged definition with the source of every key. Answers what a hand-rolled walk over presets/*.json + .supertool.json gets wrong: a partial project override merges key-by-key, so overwriting wholesale turns an op into a stub with no cmd or syntax and drops it from every filtered count with no marker (#1356). A population that could not be fully enumerated says INCOMPLETE in the body, never a shorter list.",
       "example": "registry:git-diff",
       "hint": true
-    },
-    "workspace": {
-      "syntax": "workspace:PATH",
-      "description": "One-shot IDE-style view: file + symbols + validators + siblings + git + references + tests. Opt-in (heavy). Use for first-touch on unfamiliar files.",
-      "example": "workspace:src/app/Module.py"
-    },
-    "resolve": {
-      "syntax": "resolve:SYMBOL[:FROM_FILE]",
-      "description": "Symbol \u2192 file. LSP via mcp.tools.resolve when configured, else heuristic glob.",
-      "example": "resolve:MCPClient:tests/test_mcp_client.py"
-    },
-    "diag": {
-      "syntax": "diag:FILE",
-      "description": "LSP errors/warnings for FILE.",
-      "example": "diag:supertool.py"
-    },
-    "hover": {
-      "syntax": "hover:SYMBOL:FILE",
-      "description": "LSP hover: type + docs for SYMBOL.",
-      "example": "hover:MCPClient:supertool.py"
-    },
-    "rename": {
-      "syntax": "rename:OLD:NEW:FILE",
-      "description": "LSP workspace rename. Safer than sed.",
-      "example": "rename:oldName:newName:supertool.py"
     }
   },
   "ops": {

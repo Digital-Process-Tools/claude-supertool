@@ -334,6 +334,20 @@ class TestShippedPresetIndex:
         assert idx.get("git-commit") == "git"
         assert idx.get("radar") == "watch"
 
-    def test_index_does_not_claim_builtins(self) -> None:
+    def test_index_names_a_builtin_a_preset_documents(self) -> None:
+        """Inverted by #2025, deliberately.
+
+        This used to assert the index held no built-in name at all, enforced by
+        a `_BUILTIN_OPS` filter in `_shipped_preset_ops`. That filter stood in
+        for "a preset must not shadow a built-in" — which `dispatch` already
+        guarantees, by reaching `_resolve_custom_op` only after every built-in
+        branch has declined.
+
+        Once `presets/lsp.json` became where those five ops are documented, the
+        old assertion made the hint lie in the one direction this whole file
+        exists to prevent: `hover` would have been reported as an op that does
+        not exist, in a binary that dispatches it.
+        """
         idx = supertool._shipped_preset_ops()
-        assert not (set(idx) & supertool._BUILTIN_OPS)
+        assert idx.get("hover") == "lsp"
+        assert idx.get("rename") == "lsp"

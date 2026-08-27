@@ -578,7 +578,14 @@ def _shipped_preset_ops() -> Dict[str, str]:
         if not isinstance(preset_ops, dict):
             continue
         for op_name, entry in preset_ops.items():
-            if not isinstance(op_name, str) or op_name in _BUILTIN_OPS:
+            # Deliberately NOT filtered against _BUILTIN_OPS. That filter stood
+            # in for "a preset must not shadow a built-in", which `dispatch`
+            # already guarantees structurally — `_resolve_custom_op` is reached
+            # only on the fallthrough, after every built-in branch has
+            # declined. Meanwhile it made a built-in documented in a preset
+            # (`presets/lsp.json`, #2025) invisible to this index, so the #614
+            # hint answered "no such op" for an op this binary dispatches.
+            if not isinstance(op_name, str):
                 continue
             if op_name in index:
                 continue
