@@ -46,6 +46,8 @@ every number above, not a reading of CPython.
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 import test_html_check as html_tests
@@ -88,6 +90,43 @@ def test_the_decline_carries_the_counted_token() -> None:
     reason = stalled_at_its_own_wall(
         _payload([_wall_error(), _syntax_error()]), inner_s=INNER_S)
     assert reason is not None and ADAPTER_WALL_TOKEN in reason, reason
+
+
+def test_the_message_names_both_counts_distinctly() -> None:
+    """#2014: the verdict test above (`test_a_wall_beside_a_finding_is_not_a_verdict`)
+    only pins that the payload declines -- it never reads what the message says.
+    A decline that reports one count and a decline that reports both are the
+    same `None`-is-not-`None` to that assertion, so the wall/total distinction
+    #1709 added at line 340 could regress to a single number, or the same
+    number twice, and nothing here would notice.
+
+    A plain substring check on one digit is not enough: `"1" in reason` and
+    `"2" in reason` both pass against a message that only ever says "1 error",
+    because `inner_s` (30) and other stray digits are already in there. What
+    has to be pinned is the *phrase that ties each count to its role* --
+    walls counted separately from the total -- so a message that drops the
+    wall count, drops the total, or reports the same number for both fails
+    this test even though it would still satisfy a bare substring check.
+    """
+    payload = _payload([_wall_error(), _syntax_error()])
+    walls = 1
+    total = len(payload["errors"])
+    assert walls != total, "the fixture must actually be mixed"
+
+    reason = stalled_at_its_own_wall(payload, inner_s=INNER_S)
+    assert reason is not None, payload
+
+    match = re.search(
+        r"(\d+) of its (\d+) reported errors are that wall", reason)
+    assert match is not None, (
+        "decline message dropped the wall-vs-total phrase entirely: "
+        f"{reason!r}")
+
+    reported_walls, reported_total = int(match.group(1)), int(match.group(2))
+    assert reported_walls == walls, reason
+    assert reported_total == total, reason
+    assert reported_walls != reported_total, (
+        "wall count and total collapsed to the same number: " + reason)
 
 
 def test_the_wall_may_arrive_after_the_finding() -> None:
