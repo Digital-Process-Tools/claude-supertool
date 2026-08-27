@@ -27,18 +27,23 @@ Hashnode publishing, discovery, and engagement via GraphQL. Replaces manual API 
 ## Common workflows
 
 **Cross-publish a blog post from Dev.to or a local markdown file:**
+
 ```bash
 ./supertool 'hashnode_publish:My Post Title|/tmp/post.md|https://dev.to/me/my-post|ai,tooling|https://example.com/og.png'
 ```
+
 The canonical URL ensures search engines attribute the original correctly.
 
 **Monitor engagement since last check:**
+
 ```bash
 ./supertool 'hashnode_status_since'
 ```
+
 No timestamp needed — the script auto-tracks the last call in `~/.config/hashnode/last_check`. Returns new comments + follower count + top posts in one response.
 
 **Read a post then reply to its top comment:**
+
 ```bash
 ./supertool 'hashnode_comments:my-post-slug:5'
 # get comment ID from output, then:

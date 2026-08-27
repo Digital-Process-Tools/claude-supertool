@@ -215,7 +215,6 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | jit-context index | `jit-index` | stdlib only; `awk` for the second half | Keyed on a path glob, not a language. Refuses a `**/00-manual/00-index.tsv` rule whose regex column the hook's awk cannot honour. Two checks: a **structural** one that needs no awk and gives the same verdict everywhere, and a **compile** one against the installed awk. `skipped` when the file is not a jit-context index, or when awk is absent *and* the structural half was clean — a half-run check is not a pass. See below |
 | Changelog fragment | `changelog-fragment` | the **project's own** `assemble_changelog.py` (plus its `markdown-it-py`) | Keyed on a path glob, not a language. States no rules of its own — it calls the release script's `parse_fragment_name` / `scan_fragment_body` and republishes their messages verbatim, so the write-time verdict and the CI verdict cannot drift. `skipped` when no such script sits above the file, so it is inert in projects with no `changelog.d/` convention. `$SUPERTOOL_CHANGELOG_ASSEMBLER` overrides where it looks (default `.github/scripts/assemble_changelog.py`) |
 
-
 ### `jit-index` — a rule that reads as enforced and never fires (#1254)
 
 A `.claude/jit-context/**/00-index.tsv` row is written by an ordinary `paste` or `edit`, and its

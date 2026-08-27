@@ -99,13 +99,15 @@ The `requires` field is documentation only — supertool does not enforce it at 
 ## Preset vs. custom op
 
 Use a **preset** when:
-- The ops are reusable across multiple projects
-- They depend on a specific external CLI or service
-- You want to share them with the team or publish them
+
+* The ops are reusable across multiple projects
+* They depend on a specific external CLI or service
+* You want to share them with the team or publish them
 
 Use a **custom op** (directly in `.supertool.json`) when:
-- The op is specific to this project (e.g., `pytest:tests/`, `mypy:src/`)
-- It's a one-liner that doesn't need a helper script
-- You don't need the `{path}` placeholder
+
+* The op is specific to this project (e.g., `pytest:tests/`, `mypy:src/`)
+* It's a one-liner that doesn't need a helper script
+* You don't need the `{path}` placeholder
 
 Both support the same op schema — presets are just a packaging convention.

@@ -11,11 +11,13 @@ could not run must say so — never report clean. Canonical write-up:
 mis-cited across a repo boundary before.
 
 **Absent tool → one call, `refusal.absent()`** (`validators/common/refusal.py:227`):
+
 ```python
 if not shutil.which(TOOL):
     emit(absent(TOOL, file, INSTALL_HINT, int((time.time() - start) * 1000)))
     return
 ```
+
 `tool` is the **validator name** — the key a repo writes in `.supertool.json` — never the binary. `tsc-check` runs `tsc` and `html-check` runs `node`; escalating on the binary name would ignore the only spelling anyone can configure. Reserve it for an *absent* tool; a tool that ran and fell over is a different arm.
 
 Where the absence lands — `skipped`, or a loud failure under `$SUPERTOOL_REQUIRE_VALIDATORS` — is decided inside `absent()`, not by the adapter. That is the point of #1202: `required()` was a helper each adapter had to remember to call, **six of them did**, and the other ten spelled the moment as a fabricated `{"ok": true, "count": 0, "errors": []}` about a file nothing opened.
@@ -82,5 +84,6 @@ Fires on any mutating op under `changelog.d/` and republishes the assembler's ow
 ```
 ./supertool 'validate:PATH[:tool1,tool2][:verbose]'
 ```
+
 `verbose` = uncapped errors + source context + raw stdout/stderr. Colon-in-filename → use
 `validate:@payload.toml` or `validate:@-` (fields: `path`|`paths`, `tools`, `verbose`).

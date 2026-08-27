@@ -119,6 +119,7 @@ fenced code block at the bullet's own indent:**
   ```markdown
   ## [Unreleased]
   ```
+
 ```
 
 **A fence, not an indent, and this is the part that was wrong before.** This file

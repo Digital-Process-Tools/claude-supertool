@@ -15,7 +15,7 @@
 
 Saves tokens. Saves money. Saves turns. Works the same in interactive sessions and autonomous runs — humans pair-programming with Claude Code use it every day, not just Kevin-style headless agents. One Python file, zero deps, Python 3.9+.
 
-[Why](#why) • [Why I built this](#why-i-built-this) • [Four pillars](#four-pillars) • [Receipt](#receipt--the-bill-math) • [Batching](#batch-multiple-ops-in-one-call) • [Parallel](docs/configuration.md#parallel-execution) • [Input forms](#input-forms) • [Validators](#validators--squiggle-on-save-for-the-llm) • [Expand it](#supertooljson--project-configuration) • [Install](#install)
+[Why](#why) • [Why I built this](#why-i-built-this) • [Four pillars](#four-pillars) • [Receipt](#receipt--the-bulldozer-math) • [Batching](#batch-multiple-ops-in-one-call) • [Parallel](docs/configuration.md#parallel-execution) • [Input forms](#input-forms) • [Validators](#validators--squiggle-on-save-for-the-llm) • [Expand it](#supertooljson--project-configuration) • [Install](#install)
 
 ```bash
 # 7 ops, 1 round-trip, parallel where safe
@@ -311,6 +311,7 @@ Three ways to pass arguments. Full reference: [docs/input-forms.md](docs/input-f
   path = "traces.txt"
   EOF
   ```
+
 - **`batch:@file`** — mixed reads + writes in one round-trip: `batch:@.max/ops.json` (bare array or `{continue_on_error, ops}` wrapper).
 
 **`paste` over an existing file keeps the bytes it displaces.** Every other mutating op fails on a path that is not there — `edit` and `replace` match a string, `vim` and `replace_lines` both return `file not found` — so `paste` is the only one that can overwrite a file the caller believes is not there. That is the whole of the claim: `vim` empties a file with `ggdG` and `replace_lines` clamps an `END` of `total + 1` rather than refusing it, so plenty else destroys bytes. The outgoing bytes are copied to `~/.cache/supertool/paste-backup/` **before** the write and the receipt names the copy and the mode it landed at, which is the overwritten file's own — a `0600` file does not get a world-readable backup ([#1685](https://github.com/Digital-Process-Tools/claude-supertool/issues/1685)); nothing is refused, because a guard that blocked the overwrite would have to offer a `force` token and a reflex `force` is the guard deleting itself. No line means nothing was displaced; a `no backup of the previous contents — WHY` line means the copy failed and the write happened anyway. Reaped by `gc` at 7 days. See [docs/operations/edits.md](docs/operations/edits.md).

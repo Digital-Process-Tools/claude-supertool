@@ -17,21 +17,27 @@ Read-only XPath queries over XML files using stdlib `xml.etree.ElementTree` — 
 ## Common workflows
 
 **Inspect a config file — find all elements with a specific attribute value:**
+
 ```bash
 ./supertool 'xml:config.xml:.//service[@enabled="true"]'
 ```
+
 Returns each matching `<service>` element's line number, tag, and attributes — enough to locate and understand it without opening the file.
 
 **Count uncovered lines in a PHPUnit clover report:**
+
 ```bash
 ./supertool 'xml_count:clover.xml:.//line[@count="0"]'
 ```
+
 Fast path: `xml_count` skips result materialization, so it handles 25 MB / 350K-line reports in ~2.5s.
 
 **Extract all `name` attributes from file nodes matching a class:**
+
 ```bash
 ./supertool 'xml_attr:::clover.xml:::.//file[contains(@name,"CommandX")]:::name'
 ```
+
 Use `:::` (triple colon) as the field separator when XPath contains colons — avoids ambiguity with the standard `:` separator.
 
 ## Configuration

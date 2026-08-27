@@ -50,7 +50,7 @@ has no way to find a parent and says so with `class.notFound` rather than
 falling quiet.
 
 The one case it cannot see through: if your `ignoreErrors` suppresses
-`class.notFound`, an unreachable parent becomes silent *and* the inheritance
+`class.notFound`, an unreachable parent becomes silent _and_ the inheritance
 rules cannot run. Don't ignore that identifier project-wide.
 
 **A refusal is not a pass.** When PHPStan declines to analyse the file — it
@@ -65,7 +65,7 @@ information, and the adapter returns the third state rather than a verdict:
 
 A `skipped` result never renders a `✗`, never rolls back an edit and is never
 cached (see [SCHEMA.md](../SCHEMA.md), "Skipped: the third state"). An exit the
-adapter *cannot* explain is reported as an error naming the exit code — an
+adapter _cannot_ explain is reported as an error naming the exit code — an
 unknown failure is not a refusal, and swallowing it is the same mistake
 pointing the other way. Only a genuinely quiet success — empty stdout, exit 0 —
 is read as clean.

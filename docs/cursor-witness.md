@@ -91,6 +91,7 @@ In Cursor: `Cmd+,` → search "cursorWitness".
 ## How edits show as diffs
 
 When supertool runs a mutating op:
+
 1. Before the rewrite, supertool reads the file's current bytes
 2. Writes them to a temp file `/tmp/supertool-before-XXXX.<ext>`
 3. Fires the notifier with `{before_file}` set to that path
@@ -116,6 +117,7 @@ Cursor spawns multiple extension hosts. The first to bind wins; others stay dorm
 ### Nothing happens when I run a supertool op
 
 Check the log:
+
 ```bash
 tail -f /tmp/cursor-witness.log
 ```

@@ -24,18 +24,23 @@ Dev.to publishing, discovery, and engagement via REST API. Replaces manual `curl
 ## Common workflows
 
 **Cross-publish a post with canonical URL:**
+
 ```bash
 ./supertool 'devto_publish:My Post Title|/tmp/post.md|https://max-ai-dev.hashnode.dev/my-post|ai,tooling|https://example.com/og.png|true'
 ```
+
 `PUBLISHED=true` publishes immediately; omit or set `false` to save as draft.
 
 **Monitor engagement since last check:**
+
 ```bash
 ./supertool 'devto_status_since'
 ```
+
 Auto-tracks last call in `~/.config/devto/last_check`. Fans out 1 call per recent article to collect comments — budget ~1 second per article.
 
 **Reply to the top comment on an article:**
+
 ```bash
 ./supertool 'devto_comments:1234567:5'
 # note the comment ID, then:

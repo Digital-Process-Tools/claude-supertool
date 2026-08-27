@@ -228,16 +228,20 @@ Watch state is keyed `(source, id)` with no project dimension, and `radar` consu
 ## Common workflows
 
 **Read a path no op covers:**
+
 ```bash
 ./supertool 'gl-api:projects/:id/protected_branches'
 ./supertool 'gl-api:projects/:id/members/all:full'
 ```
+
 The first prints one page and says whether it is the whole list; the second follows every page. GET-only — for a write, call `glab api -X POST` directly.
 
 **Review an MR before merging:**
+
 ```bash
 ./supertool 'gl-mr:42'
 ```
+
 Returns approval state, pipeline status, diff stat, and the comments in one call — bounded, and saying where it bounded them (see [A truncated description says so before you reach it](#a-truncated-description-says-so-before-you-reach-it)).
 
 ### A related MR says whether its pipeline passed
@@ -415,6 +419,7 @@ Option-shaped names (`-B`) are the limit of what quoting reaches: `git checkout 
 **The hunk timeout scales with the conflicted file count** — `max(15s, 5s × files)`, capped at 60s. Wall time here is git's merge computation, not the pipe write, so it tracks how many files git has to merge. 15s is a floor that is generous for one conflicted text file and thin for a dozen files or a cold object cache — which is where the preview is worth the most.
 
 **Debug a failed pipeline:**
+
 ```bash
 ./supertool 'gl-pipeline:12345:failed'   # only the failed jobs + their IDs/URLs
 # or, while it's still running, what's left:
@@ -669,7 +674,7 @@ column-0 line mid-sentence and named the failing step.
 The split is now LF / CR / CRLF only, the same conservative definition
 [#1081](https://github.com/Digital-Process-Tools/claude-supertool/issues/1081) gave
 `_pr_diff`. Narrowing alone would have traded a forged parse boundary for a forged
-_render_ line — the separator surviving into `  1234 | …` and breaking the terminal
+*render* line — the separator surviving into `  1234 | …` and breaking the terminal
 row with no gutter below it — so the separators the split no longer honours are
 disclosed as pictures on the way through, and tabs are kept because a trace line is
 a block and its indentation is the author's content.
@@ -678,7 +683,7 @@ a block and its indentation is the author's content.
 that stream is the two branches' file content verbatim, and `changed in both` is a
 column-0 anchor whose match ends a file's hunk — a forged one printed a conflict
 preview with the conflict missing, under a heading naming the file. The sibling
-call that lists the _conflicted paths_ is deliberately left on `str.splitlines()`:
+call that lists the *conflicted paths* is deliberately left on `str.splitlines()`:
 git octal-quotes every non-ASCII byte in a path it prints, so a filename cannot
 carry a separator into that split.
 
@@ -784,17 +789,21 @@ The same budget and the same wording apply to `gh-job:NUMBER:grep:PATTERN` under
 `GH_JOB_GREP_MAX_BYTES` — see [github.md](github.md).
 
 **Check an issue before starting work:**
+
 ```bash
 ./supertool 'gl-issue:999' 'gl-mr:feature/my-branch:status'
 ```
+
 Gets the full issue context and checks whether an MR already exists for the branch.
 
 **Triage your open MRs:**
+
 ```bash
 ./supertool 'gl-mrs'                          # my MRs: pipeline, approval, age, watch-state
 ./supertool 'gl-mrs:reviewer=@me'             # MRs I'm reviewing
 ./supertool 'gl-mrs:author=@me,failed,iids'   # bare ids of my failing MRs
 ```
+
 The last form feeds the [`watch`](watch.md) supervisor: pipe failing-MR ids straight into background pollers.
 
 ### The argv `gl-job` receives is checked before anything is fetched
