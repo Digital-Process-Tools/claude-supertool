@@ -13,7 +13,8 @@
     "dashboard",
     "claims",
     "plugin-marketplace",
-    "lsp"
+    "lsp",
+    "vim"
   ],
   "mcp": {
     "py-lsp": {
@@ -194,13 +195,6 @@
       "syntax": "paste:::PATH:::CONTENT",
       "description": "NARROW USE: replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits \u2014 vim is default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon \u2192 holds any chars. Overwriting an EXISTING file copies its outgoing bytes to ~/.cache/supertool/paste-backup/ first and the receipt names the copy — nothing is refused, and no such line means nothing was displaced (#1650).",
       "example": "paste:::tests/new_test.php:::<?php\\ndeclare(strict_types=1);\\n...",
-      "status": 1,
-      "hint": true
-    },
-    "vim": {
-      "syntax": "vim:::PATH:::SCRIPT",
-      "description": "vim-flavored cursor-based multi-action edit. SCRIPT is parsed like a real vim macro: NORMAL mode reads verbs char-by-char; insert verbs (i/a/A/I/o/O), search (/?), and ex (:) enter GREEDY modes where chars are TEXT/PAT until \\e (ESC, U+001B) returns to NORMAL. No separator chars \u2014 ';', '{', '}', newlines etc. are literal. Each action: [count][verb][arg]. Cursor: gg/G (BOF/EOF), nG (goto line), 0/$ (BOL/EOL), /PAT or ?PAT (search), nh/nl/nj/nk (move), bare `:N`/`:$`/`:.` (line goto). Inserts (TEXT until \\e, \\n/\\t decoded): iTEXT (before), aTEXT (after), ITEXT (BOL), ATEXT (EOL), oTEXT/OTEXT (open below/above, AUTO-INDENT to current line). Deletes: x/nx (chars), dd/ndd (lines), D (to EOL). Replace: rc. Ex: :s/PAT/REPL/[gid] (literal-fallback on unescaped parens/over-escapes), :%s, :Nd/:N,Md/:.,/PAT/d, :g/PAT/d (also bare `g/PAT/d` and `%g/PAT/d` autoprefixed with `:`), :v/PAT/d, :r FILE, :Nr FILE (read after line N), :Na\\nBODY\\n. (ex append after line N), :w/:wq (no-op, supertool writes atomically). Autocorrects: `oi<ws>TEXT` strips redundant verb-bleed, `:%%d` \u2192 `:%d`, `V<N>Gd` \u2192 `:.,Nd`, `64,` abandoned range stripped. **DEFAULT EDIT OP** for any pattern-based edit (find+change, insert relative to pattern, multi-step chains). Only fall back to `paste` (full file) / `edit` (unique literal swap) / `replace_lines` (known line range) when vim doesn't fit.",
-      "example": "vim:::skill.md:::/## Process\\eO## Task list\\eo1. Foo\\eo2. Bar",
       "status": 1,
       "hint": true
     },

@@ -1238,10 +1238,17 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
             for doc_name, doc_def in preset_builtin_docs.items():
                 if not isinstance(doc_name, str):
                     continue
-                # The project's own config wins, by the same rule `ops` uses:
-                # a repo that redefines the entry documents its version.
-                if doc_name not in (config.get("builtin-ops") or {}):
-                    merged_builtin_docs[doc_name] = doc_def
+                # The project's own config wins, by the same rule `ops` uses
+                # — and key-for-key, through the same helper, for the same
+                # reason: `builtin-ops` entries carry behaviour overrides
+                # (`read.max_lines`, `grep.extensions`) as well as prose, so a
+                # project setting one key would otherwise delete the preset's
+                # whole entry and leave the op undocumented. That is #1356's
+                # stub, one section over.
+                project_entry = (config.get("builtin-ops") or {}).get(doc_name)
+                merged_builtin_docs[doc_name] = (
+                    _merge_op_def(doc_def, project_entry)
+                    if project_entry is not None else doc_def)
                 # Stamped by the loader, for the same reason `_op_sources` is:
                 # "did this preset contribute anything?" is asked against the
                 # provenance, never by re-walking the manifests, and a preset

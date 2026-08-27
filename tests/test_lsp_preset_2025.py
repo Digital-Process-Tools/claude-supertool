@@ -155,8 +155,29 @@ def test_the_preset_merges_into_the_builtin_ops_section(
     ops = shipped_config.get("ops") or {}
     for name in MOVED:
         assert name in builtin_docs, f"{name} did not merge into builtin-ops"
+        # The key, not merely its presence. `_merge_op_def(entry, None)`
+        # returns None, so a merge written with no project entry to override
+        # put the name in the section mapped to nothing — and `help:hover`
+        # answered "no documented help" while every membership assertion
+        # stayed green. A section is not a document.
+        assert isinstance(builtin_docs[name], dict), (
+            f"{name} merged as {builtin_docs[name]!r}, not an entry")
+        assert builtin_docs[name].get("syntax"), f"{name} merged without syntax"
         assert name not in ops, (
             f"{name} landed in `ops`, where a cmd-less entry is the #1356 stub")
+
+
+@pytest.mark.parametrize("name", MOVED)
+def test_help_answers_for_every_moved_op(shipped_config: dict,
+                                         name: str) -> None:
+    """The surface a reader actually uses, asserted end to end.
+
+    The structural tests above all passed against a merge that mapped every
+    name to `None`; this one did not.
+    """
+    out = supertool.dispatch(f"help:{name}")
+    assert "no documented help" not in out, out
+    assert name in out
 
 
 def test_the_loader_stamps_a_doc_only_contribution(
@@ -175,10 +196,16 @@ def test_a_project_entry_wins_over_the_presets_documentation(
     a project's wording, which is the one direction nobody can debug."""
     cfg = {
         "presets": ["lsp"],
-        "builtin-ops": {"hover": {"syntax": "hover:SYMBOL:FILE",
-                                  "description": "project wording"}},
+        "builtin-ops": {"hover": {"description": "project wording"}},
     }
     supertool._merge_presets(cfg, str(REPO_ROOT))
-    assert cfg["builtin-ops"]["hover"]["description"] == "project wording"
+    entry = cfg["builtin-ops"]["hover"]
+    assert entry["description"] == "project wording"
     assert "diag" in cfg["builtin-ops"], (
         "the project entry suppressed the rest of the preset's documentation")
+    # Key-for-key, not wholesale. `builtin-ops` entries carry behaviour
+    # overrides as well as prose, so a project that sets one key must not
+    # delete the rest of the entry and leave the op undocumented (#1356).
+    assert entry.get("syntax") == "hover:SYMBOL:FILE", (
+        "the project's partial override replaced the preset entry wholesale, "
+        "dropping the syntax line: that is the #1356 stub in builtin-ops")
