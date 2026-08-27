@@ -83,6 +83,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parent.parent
 ADAPTER = REPO / "validators" / "markdownlint" / "markdownlint.py"
 
@@ -138,6 +140,29 @@ def _lint_all_tracked_md() -> dict[str, int]:
     return per_file
 
 
+def _markdownlint_absent_reason() -> str | None:
+    """None when markdownlint answered a real file; otherwise the `skipped`
+    reason it gave. Every test below that turns a finding count into a
+    negative claim (`stays low`, `only these files`, `at least one`) must
+    call this first -- `_lint_all_tracked_md()` silently excludes a
+    `skipped` file, so on a machine with no markdownlint on PATH every one
+    of those assertions passes (or fails) for the wrong reason: an absence
+    of the tool, not an absence -- or presence -- of findings. Grepped
+    against .github/workflows/*.yml at the time this was written: nothing
+    on any of the twelve pytest legs installs markdownlint-cli, so this is
+    not a hypothetical machine, it is every CI run."""
+    probe = subprocess.run(
+        [sys.executable, str(ADAPTER), "README.md"],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    try:
+        probe_data = json.loads(probe.stdout)
+    except json.JSONDecodeError:
+        return f"adapter produced no parseable JSON: {probe.stdout!r}"
+    skipped = probe_data.get("skipped")
+    return str(skipped) if skipped else None
+
+
 def test_markdownlint_config_disables_the_genre_rules_measured_in_2012() -> None:
     cfg = json.loads((REPO / ".markdownlint.json").read_text(encoding="utf-8"))
     for rule in NEWLY_DISABLED:
@@ -162,23 +187,14 @@ def test_repo_wide_markdownlint_findings_stay_under_the_2012_ceiling() -> None:
     measured 846 and require the total to be something a reader will
     actually read. Skips (no markdownlint on PATH) rather than passing
     vacuously: see the positive control below."""
+    absent = _markdownlint_absent_reason()
+    if absent is not None:
+        pytest.skip(
+            "markdownlint not on PATH -- cannot verify the findings "
+            f"ceiling, see {absent}"
+        )
     per_file = _lint_all_tracked_md()
     total = sum(per_file.values())
-    if total == 0 and not per_file:
-        # Could be a genuinely clean repo, or markdownlint absent from
-        # PATH and every file reporting `skipped`. Tell them apart before
-        # trusting the zero.
-        probe = subprocess.run(
-            [sys.executable, str(ADAPTER), "README.md"],
-            capture_output=True, text=True, cwd=REPO,
-        )
-        probe_data = json.loads(probe.stdout)
-        if probe_data.get("skipped"):
-            import pytest
-            pytest.skip(
-                "markdownlint not on PATH -- cannot verify the findings "
-                "ceiling, see " + str(probe_data.get("skipped"))
-            )
     assert total <= FINDINGS_CEILING, (
         f"repo-wide markdownlint findings rose to {total} across "
         f"{len(per_file)} files (ceiling {FINDINGS_CEILING}) -- "
@@ -192,6 +208,12 @@ def test_markdownlint_positive_control_a_real_finding_is_still_caught() -> None:
     linting a scratch file with an unambiguous, always-on violation
     (MD012, multiple consecutive blank lines) that no rule disabled above
     touches."""
+    absent = _markdownlint_absent_reason()
+    if absent is not None:
+        pytest.skip(
+            "markdownlint not on PATH -- cannot run the positive control, "
+            f"see {absent}"
+        )
     import tempfile
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".md", dir=REPO, delete=False
@@ -216,6 +238,12 @@ def test_known_residue_files_are_the_only_ones_left_with_findings() -> None:
     """Pins the residue named in the module docstring to specific files,
     so a *new* file joining the noisy set is a red here rather than
     quietly padding out the ceiling above."""
+    absent = _markdownlint_absent_reason()
+    if absent is not None:
+        pytest.skip(
+            "markdownlint not on PATH -- cannot verify the residue set, "
+            f"see {absent}"
+        )
     per_file = _lint_all_tracked_md()
     unexpected = set(per_file) - KNOWN_RESIDUE
     assert not unexpected, (

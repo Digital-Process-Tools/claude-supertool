@@ -67,7 +67,7 @@ claude --dangerously-load-development-channels server:claude-channel
    Note: `source="claude-channel"` is auto-injected by Claude Code from the
    MCP server name. The per-event source (which Phase 1 source emitted the
    event) lands in `watcher_source`. Route Claude's logic on `watcher_source`
-   - `event`.
+   and `event`.
 
 5. Claude decides what to do based on the server's `instructions` string
    (investigate, notify, fix) — routing on `watcher_source` and `event`, never
