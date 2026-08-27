@@ -120,13 +120,15 @@ def _lint_all_tracked_md() -> dict[str, int]:
     markdownlint on PATH) is excluded rather than counted as zero, so a
     missing tool cannot masquerade as a clean repo."""
     files = subprocess.run(
-        ["git", "ls-files", "*.md"], capture_output=True, text=True, cwd=REPO
+        ["git", "ls-files", "*.md"], capture_output=True, text=True, cwd=REPO,
+        encoding="utf-8", errors="replace",
     ).stdout.splitlines()
     per_file: dict[str, int] = {}
     for f in files:
         result = subprocess.run(
             [sys.executable, str(ADAPTER), f],
             capture_output=True, text=True, cwd=REPO,
+            encoding="utf-8", errors="replace",
         )
         try:
             data = json.loads(result.stdout)
@@ -154,6 +156,7 @@ def _markdownlint_absent_reason() -> str | None:
     probe = subprocess.run(
         [sys.executable, str(ADAPTER), "README.md"],
         capture_output=True, text=True, cwd=REPO,
+        encoding="utf-8", errors="replace",
     )
     try:
         probe_data = json.loads(probe.stdout)
@@ -224,6 +227,7 @@ def test_markdownlint_positive_control_a_real_finding_is_still_caught() -> None:
         result = subprocess.run(
             [sys.executable, str(ADAPTER), scratch.name],
             capture_output=True, text=True, cwd=REPO,
+            encoding="utf-8", errors="replace",
         )
         data = json.loads(result.stdout)
         assert data.get("count", 0) >= 1, (
