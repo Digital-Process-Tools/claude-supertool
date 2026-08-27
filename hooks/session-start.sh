@@ -74,36 +74,51 @@ fi
 # what is lost is the roster, and the line below names what was tried so the
 # reader looks for the right absence.
 #
-# 'ops:roster' rather than 'ops-compact' (#1231). `ops-compact` is ~16.1KB and
-# `ops:full` ~74.1KB against a 7,168-byte cap — so the compact listing was
-# truncated on *every* session and everything alphabetically after `grep` was
-# hidden: the whole gh-*/git-* families, radar, watch, read, paste, tree. It
-# disclosed the truncation honestly and that did not help, because what was
-# hidden was existence and a reader cannot miss what they never learned about.
-# (Bare `ops` is signatures-only since #1774 and fits on its own at ~3.7KB. The
-# figures here read 47,254 and 9,067 until #1877, because a measurement written
-# into a comment is a measurement nothing re-runs — hence the pin below.)
+# 'ops:session' — signatures, with the names-only roster as a measured fallback
+# (#2028). Not 'ops-compact': `ops-compact` is ~16.5KB and `ops:full` ~74.5KB
+# against a 10,000-byte cap, so the compact listing was truncated every session
+# everything alphabetically after `grep` was hidden — the whole gh-*/git-*
+# families, radar, watch, read, paste, tree. It disclosed the truncation
+# honestly and that did not help, because what was hidden was existence and a
+# reader cannot miss what they never learned about.
 #
-# `ops:roster` is ~2.0KB — every op name plus a safety class, no descriptions,
-# plus the same "presets not loaded here" line `ops` carries. Whole hook: ~2.9KB
-# against a ~7.2KB cap. (Not exact figures: the disclosure names the absolute
-# config path, so what a session actually receives is these plus the length of
-# that path — 30 to 130 bytes, depending on where the checkout sits.
-# tests/test_render_size_claims_1877.py normalises that path away before
-# grading, so the figures above are checkout-independent and the tolerance is
-# rounding room only. It read "they move with the checkout, which is why the
-# test grades them with a tolerance rather than to the byte" until a 129-char
-# clone made four of those rows red with nothing wrong; the tolerance was the
-# first place everyone looked, and it was the wrong one.) Descriptions are
-# one call away and richer there: `help:OP` carries the full contract, the
-# semantics and a worked example, where the listing row carried one line.
+# Not the roster either, which is what this line said for fifteen releases.
+# `ops:roster` is ~2.0KB of names plus a safety class, and it answers "does
+# this op exist" (#614) but not "is this op the answer" — an error teaches a
+# signature only after the decision to call has been made, and a name a reader
+# cannot interpret is a capability never reached for. Nothing fails when that
+# happens, so the cost was invisible.
+#
+# Bare `ops` is signatures-only since #1774 and fits at ~4.1KB.
+# Whole hook: ~5.1KB against 10,000. That was true all along and this comment
+# said so in passing while choosing the roster anyway: the numbers it reasoned
+# from were wrong — `ops` was stated at 47,254 (it is 4,126) and the cap at
+# 7,168 (it is 10,000, read out of the harness in #2029). #1877 corrected the
+# first pair here and the copy in _supertool.py kept them another fifteen
+# releases; both are now graded.
+#
+# The fallback is `ops:session`'s decision, not this script's, because the cap
+# constant lives in Python: a shell script measuring a payload it must then
+# regenerate is a second place for one decision to go stale.
+#
+# (Not exact figures: the disclosure names the absolute config path, so what a
+# session receives is these plus the length of that path — 30 to 130 bytes,
+# depending on where the checkout sits. tests/test_render_size_claims_1877.py
+# normalises that path away before grading, so the figures above are
+# checkout-independent and the tolerance is rounding room only. It read "they
+# move with the checkout, which is why the test grades them with a tolerance
+# rather than to the byte" until a 129-char clone made four of those rows red
+# with nothing wrong; the tolerance was the first place everyone looked, and it
+# was the wrong one.) Descriptions are one call away and richer there:
+# `help:OP` carries the full contract, the semantics and a worked example,
+# where the listing row carried one line.
 LADDER="$(cd "$(dirname "$0")" && pwd)/python-ladder.sh"
 
 # shellcheck disable=SC2329  # invoked indirectly, as supertool_python_each's callback
 onboard() {
     supertool_python_identifies "$@" || return 1
-    if ! "$@" "$BIN" 'introduction' 'output-format' 'ops:roster'; then
-        echo "> supertool's op roster is incomplete: the interpreter ran and supertool exited non-zero. The ./supertool wrapper still works; 'ops:roster' prints the listing."
+    if ! "$@" "$BIN" 'introduction' 'output-format' 'ops:session'; then
+        echo "> supertool's op listing is incomplete: the interpreter ran and supertool exited non-zero. The ./supertool wrapper still works; 'ops' prints the listing."
     fi
     exit 0
 }
@@ -111,9 +126,9 @@ onboard() {
 # shellcheck source=hooks/python-ladder.sh
 if . "$LADDER" 2>/dev/null; then
     supertool_python_each onboard
-    echo "> supertool's op roster is not shown: nothing on PATH identified itself as a Python 3. Tried $SUPERTOOL_LADDER_RUNGS. The bare name python3 is never run, because on Windows and on a stock macOS it can resolve to a stub that blocks instead of erroring (#572, #1382)."
+    echo "> supertool's op listing is not shown: nothing on PATH identified itself as a Python 3. Tried $SUPERTOOL_LADDER_RUNGS. The bare name python3 is never run, because on Windows and on a stock macOS it can resolve to a stub that blocks instead of erroring (#572, #1382)."
 else
-    echo "> supertool's op roster is not shown: hooks/python-ladder.sh could not be sourced, so no interpreter was resolved."
+    echo "> supertool's op listing is not shown: hooks/python-ladder.sh could not be sourced, so no interpreter was resolved."
 fi
 
 # A SessionStart hook that exits non-zero is a broken session, and every path

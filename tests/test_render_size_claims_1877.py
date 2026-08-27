@@ -219,7 +219,7 @@ def graded_bytes(text: str) -> int:
 def _hook_payload() -> str:
     """What `hooks/session-start.sh` prints, by the ops it prints it with."""
     return "".join(supertool.dispatch(op) for op in
-                   ("introduction", "output-format", "ops:roster"))
+                   ("introduction", "output-format", "ops:session"))
 
 
 @dataclass(frozen=True)
@@ -290,9 +290,15 @@ REGISTERED_FILES = tuple(dict.fromkeys(c.path for c in SITES))
 #: renumbered sentence stops matching and the guard fires again -- which is the
 #: safe direction, and is why this is a list of three-tuples rather than a set
 #: of files to skip.
-NOT_A_RENDER_SIZE = (
-    ("docs/contributing.md", "ops:roster", "7"),
-)
+#:
+#: Empty since #2028. Its one entry existed because `docs/contributing.md` said
+#: "the ~7KB SessionStart cap" beside `ops:roster` — a cap wearing the shape of
+#: a render size. #2029 replaced every `~7KB` cap mention with the harness's
+#: actual `10,000-byte`, which the `~([\d.]+)KB` pattern does not match, so the
+#: false positive is gone rather than suppressed. Kept as an empty tuple rather
+#: than deleted: the mechanism is the interesting part, and the next cap phrased
+#: in KB beside a render name will need it again.
+NOT_A_RENDER_SIZE: tuple = ()
 
 
 def _read(path: str) -> str:
