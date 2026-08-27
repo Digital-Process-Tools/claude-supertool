@@ -75,6 +75,35 @@ def refuse_mode(op: str, mode: str) -> str:
     )
 
 
+def refuse_job_ids(op: str, forge: str, job_ids: str) -> tuple[list[str], str]:
+    """`(ids, "")` for a valid comma-separated job-id list; `([], message)` else.
+
+    #626's multi-id form (`gl-job:A,B:trace`). Each piece gets the exact same
+    check `refuse_job_id` applies to a single id, before anything is fetched —
+    a stray non-digit anywhere in the list must refuse the whole call rather
+    than silently drop the bad piece and read the rest.
+
+    Duplicates are folded, first occurrence wins, so `A,A` fetches once. An
+    empty piece (`',A'`, `'A,,B'`, or the bare `''`) is refused rather than
+    becoming a silently smaller list than the one that was typed.
+    """
+    pieces = job_ids.split(",")
+    if not job_ids or any(not p for p in pieces):
+        return [], (
+            f"ERROR: {op} takes one or more comma-separated numeric job ids "
+            f"and got {job_ids!r}. Nothing was read.\n"
+            f"Usage: {op}:ID1[,ID2,...]:trace"
+        )
+    seen: list[str] = []
+    for piece in pieces:
+        refusal = refuse_job_id(op, forge, piece)
+        if refusal:
+            return [], refusal
+        if piece not in seen:
+            seen.append(piece)
+    return seen, ""
+
+
 def grep_pattern(op: str, tokens: list[str]) -> tuple[str, str]:
     """`(pattern, disclosure)` for the argv entries right of `grep`.
 
