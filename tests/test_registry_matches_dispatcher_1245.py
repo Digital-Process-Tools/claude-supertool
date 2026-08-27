@@ -114,31 +114,14 @@ def test_every_ops_entry_can_actually_run(shipped_config: dict) -> None:
     `cmd`. An entry without one is a name in the registry that dispatches to
     nothing, the same defect one section over.
 
-    One exemption, and it is narrow: a built-in's own name. `presets/lsp.json`
-    documents five ops that dispatch from core (#2025), and `_resolve_custom_op`
-    is never reached for them — `dispatch` tries every built-in branch first —
-    so a `cmd` there would be dead text pretending to be the route. Any other
-    cmd-less entry is still the #1356 stub this test was written for.
+    No exemption, deliberately. A preset that documents a built-in it does not
+    define puts the entry in its own `builtin-ops` section (#2025), which this
+    sweep does not read — so `ops` keeps meaning "ops this manifest defines"
+    and the guard keeps its teeth.
     """
-    valid = set(supertool._valid_op_names())
     dead = sorted(name for name, info in (shipped_config.get("ops") or {}).items()
-                  if name not in valid
-                  and not (isinstance(info, dict) and info.get("cmd")))
+                  if not (isinstance(info, dict) and info.get("cmd")))
     assert not dead, f"ops entries with no cmd: {dead}"
-
-
-def test_the_cmd_exemption_is_not_vacuous(shipped_config: dict) -> None:
-    """The exemption above is only sound while something uses it. If the LSP
-    docs move back into `builtin-ops`, the clause becomes an untested widening
-    of a guard, which is how a stub gets in unnoticed."""
-    ops = shipped_config.get("ops") or {}
-    exempt = sorted(name for name, info in ops.items()
-                    if name in set(supertool._valid_op_names())
-                    and not (isinstance(info, dict) and info.get("cmd")))
-    assert exempt, (
-        "no cmd-less built-in is documented by a preset any more — delete the "
-        "exemption in test_every_ops_entry_can_actually_run rather than "
-        "leaving it unexercised")
 
 
 def test_configured_op_names_does_not_report_a_form_as_an_op_name(

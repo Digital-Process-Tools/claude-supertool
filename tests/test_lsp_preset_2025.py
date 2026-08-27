@@ -31,7 +31,11 @@ MOVED = ("workspace", "resolve", "diag", "hover", "rename")
 def lsp_preset() -> dict:
     raw = json.loads(
         (REPO_ROOT / "presets" / "lsp.json").read_text(encoding="utf-8"))
-    return raw.get("ops") or {}
+    assert not raw.get("ops"), (
+        "presets/lsp.json defines no ops — it documents built-ins, and an "
+        "`ops` section here would put cmd-less entries in front of four "
+        "sweeps that rightly refuse them (#1231, #1269, #1287, #1350, #1384)")
+    return raw.get("builtin-ops") or {}
 
 
 def test_the_preset_documents_every_moved_op(lsp_preset: dict) -> None:
@@ -137,3 +141,44 @@ def test_the_moved_ops_are_still_dispatchable_names() -> None:
     """Moving documentation must not move capability."""
     valid = set(supertool._valid_op_names())
     assert set(MOVED) <= valid, sorted(set(MOVED) - valid)
+
+
+def test_the_preset_merges_into_the_builtin_ops_section(
+        shipped_config: dict) -> None:
+    """Where the entries land is the whole design, not bookkeeping.
+
+    In `ops` they would face four sweeps that rightly demand a resolvable
+    script, a safety class, a path-containment boundary and a `replaces`
+    census row — none of which a built-in's documentation can supply.
+    """
+    builtin_docs = shipped_config.get("builtin-ops") or {}
+    ops = shipped_config.get("ops") or {}
+    for name in MOVED:
+        assert name in builtin_docs, f"{name} did not merge into builtin-ops"
+        assert name not in ops, (
+            f"{name} landed in `ops`, where a cmd-less entry is the #1356 stub")
+
+
+def test_the_loader_stamps_a_doc_only_contribution(
+        shipped_config: dict) -> None:
+    """`tests/conftest.py` refuses a declared preset that contributed nothing
+    (#1829). A doc-only preset contributes, and says so through the loader
+    rather than by anyone re-walking the manifests."""
+    stamped = shipped_config.get("_preset_doc_contributions") or {}
+    assert sorted(stamped.get("lsp") or []) == sorted(MOVED), stamped
+
+
+def test_a_project_entry_wins_over_the_presets_documentation(
+        tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same precedence `ops` already has: a repo that documents an op
+    documents its own version. Without this a preset would silently overwrite
+    a project's wording, which is the one direction nobody can debug."""
+    cfg = {
+        "presets": ["lsp"],
+        "builtin-ops": {"hover": {"syntax": "hover:SYMBOL:FILE",
+                                  "description": "project wording"}},
+    }
+    supertool._merge_presets(cfg, str(REPO_ROOT))
+    assert cfg["builtin-ops"]["hover"]["description"] == "project wording"
+    assert "diag" in cfg["builtin-ops"], (
+        "the project entry suppressed the rest of the preset's documentation")

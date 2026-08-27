@@ -2,7 +2,9 @@
 
 Documentation for five ops that are **built into supertool** and dispatch from core: `workspace`, `resolve`, `diag`, `hover` and `rename`.
 
-This preset ships no `cmd` and no helper scripts. Enabling it does not add capability — those five ops run whether or not it is listed. What it adds is documentation: with the preset loaded, `ops`, `ops:full`, `help:OP` and `registry:OP` answer for them; without it, they are reported under `ops`' "Also accepted, no reference in .supertool.json" line, and `help:hover` says it has no documented help.
+This preset ships no `cmd` and no helper scripts. Enabling it does not add capability — those five ops run whether or not it is listed. What it adds is documentation: with the preset loaded, `ops`, `ops:full` and `help:OP` answer for them; without it, they are reported under `ops`' "Also accepted, no reference in .supertool.json" line, and `help:hover` says it has no documented help.
+
+Its entries live under **`builtin-ops`** in the manifest, not `ops`. That is the difference between documenting an op and defining one, and it is load-bearing: four guards sweep `config["ops"]` on the premise that every entry there resolves to a script ([#1269](https://github.com/Digital-Process-Tools/claude-supertool/issues/1269)), declares a safety class ([#1231](https://github.com/Digital-Process-Tools/claude-supertool/issues/1231)), declares a path-containment boundary ([#1287](https://github.com/Digital-Process-Tools/claude-supertool/issues/1287), [#1350](https://github.com/Digital-Process-Tools/claude-supertool/issues/1350)) and appears in the `replaces` census ([#1384](https://github.com/Digital-Process-Tools/claude-supertool/issues/1384)). A built-in's documentation can supply none of those — its script is `_supertool.py`, its class is `_OP_SAFETY_BUILTIN`, its paths go through the built-in chokepoint — so it belongs in a section those sweeps do not read.
 
 ```json
 { "presets": ["lsp"] }

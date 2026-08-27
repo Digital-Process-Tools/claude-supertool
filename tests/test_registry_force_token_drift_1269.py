@@ -68,11 +68,6 @@ _DECLARES_FORCE = re.compile(r"(?<![A-Za-z0-9_-])force(?![A-Za-z0-9_-])")
 
 TOKEN = "force"
 
-#: Preset entries the sweep read and had no script for, because they document a
-#: built-in rather than declaring a command (#2025). Populated by `_registry`
-#: and asserted on below, so the exemption cannot quietly widen.
-DOC_ONLY: list = []
-
 
 def _docstring_nodes(tree: ast.AST) -> set:
     """The id() of every node that is a docstring rather than a value.
@@ -124,9 +119,6 @@ def _registry() -> list:
     under — and it would drop exactly the ops whose `cmd` shape changed,
     which is when you most want to be told.
     """
-    import supertool
-
-    builtins = set(supertool._valid_op_names())
     rows = []
     for manifest in sorted(PRESETS.glob("*.json")):
         data = json.loads(manifest.read_text(encoding="utf-8"))
@@ -134,18 +126,6 @@ def _registry() -> list:
             if not isinstance(entry, dict):
                 continue
             cmd = str(entry.get("cmd") or "")
-            if not cmd and name in builtins:
-                # A doc-only entry: `presets/lsp.json` documents five ops that
-                # dispatch from core (#2025). There is no preset script to
-                # read, and any `force` token one of them took would live in
-                # `_supertool.py`, which this sweep is not about.
-                #
-                # Recorded rather than dropped. `test_the_sweep_read_the_whole
-                # _registry` asserts on the size of what was read, so an entry
-                # that vanished here would shrink that population silently —
-                # the exact shape this file's own docstring refuses.
-                DOC_ONLY.append(f"{name} (presets/{manifest.name})")
-                continue
             hit = _SCRIPT.search(cmd)
             if not hit:
                 raise AssertionError(
@@ -169,28 +149,7 @@ FORCE_OPS = [r for r in REGISTRY if reads_force(r[3])]
 
 def test_the_sweep_read_the_whole_registry() -> None:
     """A shrunk population passes every parametrised case and proves nothing."""
-    assert len(REGISTRY) + len(DOC_ONLY) >= 80, (len(REGISTRY), DOC_ONLY)
-
-
-def test_every_exempted_entry_is_a_builtin_documented_by_a_preset() -> None:
-    """The exemption's blast radius, named rather than trusted.
-
-    `not cmd and name in builtins` is two conditions, and only the second is
-    hard to satisfy by accident: a preset op that lost its `cmd` in an edit
-    would be exempted the moment its name happened to collide with a built-in.
-    So assert the population itself, not just that the sweep survived it.
-    """
-    import supertool
-
-    builtins = set(supertool._valid_op_names())
-    assert DOC_ONLY, (
-        "nothing is exempted any more — delete the doc-only arm in _registry "
-        "rather than leaving an untested branch in the sweep")
-    for row in DOC_ONLY:
-        name = row.split(" ", 1)[0]
-        assert name in builtins, (
-            f"{row} has no cmd and is not a built-in either: the sweep skipped "
-            f"an op it should have refused")
+    assert len(REGISTRY) >= 80, len(REGISTRY)
 
 
 def test_the_force_sweep_found_the_ops_it_is_about() -> None:

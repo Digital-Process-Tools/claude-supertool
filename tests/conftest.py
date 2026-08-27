@@ -1529,9 +1529,17 @@ def _load_shipped_config(root: Path) -> dict:
     # `dashboard` ship, so all three are invisible to a name-set difference.
     # `_op_sources` records the originating preset even for an op the project
     # overrode, so it answers the question that was actually being asked.
+    #
+    # A preset may contribute documentation rather than ops: `presets/lsp.json`
+    # documents built-ins in its own `builtin-ops` section (#2025), which never
+    # reaches `config["ops"]` and so has no `_op_sources` row. The loader stamps
+    # those separately. Read here rather than re-walked, by the rule above.
     sources = cfg.get("_op_sources") or {}
     contributed = {s.get("preset") for s in sources.values()
                    if isinstance(s, dict) and s.get("preset")}
+    contributed |= {p for p, names in
+                    (cfg.get("_preset_doc_contributions") or {}).items()
+                    if names}
     silent = [p for p in declared_presets if p not in contributed]
     assert not silent, (
         f"{root}'s config declares presets {silent} that resolved without a "
