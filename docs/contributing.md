@@ -458,6 +458,12 @@ Same op schema as custom ops, wrapped in a manifest:
 
 The `requires` field is documentation only — supertool does not enforce it at runtime.
 
+#### `builtin-ops` — documenting an op the preset does not define
+
+A manifest may also carry a `builtin-ops` section, in the same shape. It documents **built-ins**: ops whose code is in `_supertool.py`, which dispatch whether or not the preset is loaded. `presets/lsp.json` is the shipped example. Entries there merge into the config's own `builtin-ops`, project entries winning key-for-key, and reach `ops`, `ops:full` and `help:OP` exactly as if they had been written into `.supertool.json`.
+
+Use it only for that. An op the preset *defines* goes in `ops` and needs a `cmd` — four guards sweep `config["ops"]` on that premise ([#1269](https://github.com/Digital-Process-Tools/claude-supertool/issues/1269) resolvable script, [#1231](https://github.com/Digital-Process-Tools/claude-supertool/issues/1231) safety class, [#1287](https://github.com/Digital-Process-Tools/claude-supertool/issues/1287)/[#1350](https://github.com/Digital-Process-Tools/claude-supertool/issues/1350) path containment, [#1384](https://github.com/Digital-Process-Tools/claude-supertool/issues/1384) `replaces` census), and a doc-only entry hidden among them defeats all four at once. A built-in supplies none of them from a manifest: its safety class comes from `_OP_SAFETY_BUILTIN`, so a `safety` key here is never consulted — write one and it reads as authoritative while doing nothing.
+
 Enable the preset in `.supertool.json`:
 
 ```json

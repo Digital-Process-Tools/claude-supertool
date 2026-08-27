@@ -23,6 +23,8 @@ Supertool merges preset ops at startup — project-level ops always override on 
 | `watch` | Background pollers + async wake on external events (PRs, MRs, pipelines) | [watch.md](watch.md) | `gh` and/or `glab` per source |
 | `dashboard` | "What do I do next" — one read-only join over clone, CI, board, worktrees and lanes | [dashboard.md](dashboard.md) | `gh` CLI |
 | `claims` | Does a markdown doc's references still hold? Op names, paths, line numbers, quoted lines, and issues cited under an "Open defects" heading | [claims.md](claims.md) | `python3`; `gh` only for open-defect citations |
+| `vim` | Documentation for the built-in `vim` op — the macro grammar for the default pattern-based edit | [vim.md](vim.md) | doc-only; the op is built in |
+| `lsp` | Documentation for five built-in ops that reach a language server: `workspace`, `resolve`, `diag`, `hover`, `rename` | [lsp.md](lsp.md) | doc-only; the ops need an `mcp` block |
 | `plugin-marketplace` | Did this release reach anyone? Per catalogue: listed / not listed / skipped-with-reason, the pinned sha, the version at it, the distance to local HEAD, and the catalogue's bump PRs | [plugin-marketplace.md](plugin-marketplace.md) | `gh`; `claude` only for the validation gate |
 
 ## Remote text is fenced

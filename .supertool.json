@@ -12,7 +12,9 @@
     "watch",
     "dashboard",
     "claims",
-    "plugin-marketplace"
+    "plugin-marketplace",
+    "lsp",
+    "vim"
   ],
   "mcp": {
     "py-lsp": {
@@ -196,13 +198,6 @@
       "status": 1,
       "hint": true
     },
-    "vim": {
-      "syntax": "vim:::PATH:::SCRIPT",
-      "description": "vim-flavored cursor-based multi-action edit. SCRIPT is parsed like a real vim macro: NORMAL mode reads verbs char-by-char; insert verbs (i/a/A/I/o/O), search (/?), and ex (:) enter GREEDY modes where chars are TEXT/PAT until \\e (ESC, U+001B) returns to NORMAL. No separator chars \u2014 ';', '{', '}', newlines etc. are literal. Each action: [count][verb][arg]. Cursor: gg/G (BOF/EOF), nG (goto line), 0/$ (BOL/EOL), /PAT or ?PAT (search), nh/nl/nj/nk (move), bare `:N`/`:$`/`:.` (line goto). Inserts (TEXT until \\e, \\n/\\t decoded): iTEXT (before), aTEXT (after), ITEXT (BOL), ATEXT (EOL), oTEXT/OTEXT (open below/above, AUTO-INDENT to current line). Deletes: x/nx (chars), dd/ndd (lines), D (to EOL). Replace: rc. Ex: :s/PAT/REPL/[gid] (literal-fallback on unescaped parens/over-escapes), :%s, :Nd/:N,Md/:.,/PAT/d, :g/PAT/d (also bare `g/PAT/d` and `%g/PAT/d` autoprefixed with `:`), :v/PAT/d, :r FILE, :Nr FILE (read after line N), :Na\\nBODY\\n. (ex append after line N), :w/:wq (no-op, supertool writes atomically). Autocorrects: `oi<ws>TEXT` strips redundant verb-bleed, `:%%d` \u2192 `:%d`, `V<N>Gd` \u2192 `:.,Nd`, `64,` abandoned range stripped. **DEFAULT EDIT OP** for any pattern-based edit (find+change, insert relative to pattern, multi-step chains). Only fall back to `paste` (full file) / `edit` (unique literal swap) / `replace_lines` (known line range) when vim doesn't fit.",
-      "example": "vim:::skill.md:::/## Process\\eO## Task list\\eo1. Foo\\eo2. Bar",
-      "status": 1,
-      "hint": true
-    },
     "batch": {
       "syntax": "batch:@FILE | batch:@-",
       "description": "N ops from ONE payload — TOML [[ops]] array or JSON array of {\"op\":...}, each entry taking that op's own @payload fields. The only way to put several mutations in one call, since a call carries just one '@-' (#341). Reads/greps mix in freely. Per-op validators, per-op rollback. A NESTED batch entry takes its inner payload as path = \"@inner.toml\" — the field is 'path' and the leading '@' is required (#1407).",
@@ -246,31 +241,6 @@
       "description": "Which ops this project actually loads, and where each definition came from — preset, project config, or a project entry merged over a preset one. `registry:OP` shows one op's merged definition with the source of every key. Answers what a hand-rolled walk over presets/*.json + .supertool.json gets wrong: a partial project override merges key-by-key, so overwriting wholesale turns an op into a stub with no cmd or syntax and drops it from every filtered count with no marker (#1356). A population that could not be fully enumerated says INCOMPLETE in the body, never a shorter list.",
       "example": "registry:git-diff",
       "hint": true
-    },
-    "workspace": {
-      "syntax": "workspace:PATH",
-      "description": "One-shot IDE-style view: file + symbols + validators + siblings + git + references + tests. Opt-in (heavy). Use for first-touch on unfamiliar files.",
-      "example": "workspace:src/app/Module.py"
-    },
-    "resolve": {
-      "syntax": "resolve:SYMBOL[:FROM_FILE]",
-      "description": "Symbol \u2192 file. LSP via mcp.tools.resolve when configured, else heuristic glob.",
-      "example": "resolve:MCPClient:tests/test_mcp_client.py"
-    },
-    "diag": {
-      "syntax": "diag:FILE",
-      "description": "LSP errors/warnings for FILE.",
-      "example": "diag:supertool.py"
-    },
-    "hover": {
-      "syntax": "hover:SYMBOL:FILE",
-      "description": "LSP hover: type + docs for SYMBOL.",
-      "example": "hover:MCPClient:supertool.py"
-    },
-    "rename": {
-      "syntax": "rename:OLD:NEW:FILE",
-      "description": "LSP workspace rename. Safer than sed.",
-      "example": "rename:oldName:newName:supertool.py"
     }
   },
   "ops": {

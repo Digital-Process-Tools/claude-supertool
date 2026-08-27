@@ -238,8 +238,14 @@ def test_the_census_covers_every_preset_file():
     empty = []
     for path in sorted(_PRESETS.glob("*.json")):
         data = json.loads(path.read_text(encoding="utf-8"))
-        if not (data.get("ops") or {}):
-            empty.append(path.name)
+        # A `builtin-ops` section documents ops the preset does not define
+        # (#2025): their `replaces` mapping, if any, is a fact about the
+        # built-in and belongs to core, so they are outside this census by
+        # construction rather than missing from it. A manifest with neither
+        # section is still the empty preset this test is about.
+        if data.get("ops") or data.get("builtin-ops"):
+            continue
+        empty.append(path.name)
     assert not empty, ("preset(s) with no ops: " + ", ".join(empty)
                        + " -- a preset contributing nothing to the census "
                          "makes its coverage number meaningless")

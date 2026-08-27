@@ -112,7 +112,13 @@ def test_a_form_entry_is_never_itself_a_dispatchable_name(
 def test_every_ops_entry_can_actually_run(shipped_config: dict) -> None:
     """A preset/project op resolves through `_resolve_custom_op`, which needs a
     `cmd`. An entry without one is a name in the registry that dispatches to
-    nothing, the same defect one section over."""
+    nothing, the same defect one section over.
+
+    No exemption, deliberately. A preset that documents a built-in it does not
+    define puts the entry in its own `builtin-ops` section (#2025), which this
+    sweep does not read — so `ops` keeps meaning "ops this manifest defines"
+    and the guard keeps its teeth.
+    """
     dead = sorted(name for name, info in (shipped_config.get("ops") or {}).items()
                   if not (isinstance(info, dict) and info.get("cmd")))
     assert not dead, f"ops entries with no cmd: {dead}"

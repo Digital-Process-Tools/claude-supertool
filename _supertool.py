@@ -574,11 +574,22 @@ def _shipped_preset_ops() -> Dict[str, str]:
             continue
         if not isinstance(data, dict):
             continue
-        preset_ops = data.get("ops")
-        if not isinstance(preset_ops, dict):
+        preset_ops = {}
+        for section in ("ops", "builtin-ops"):
+            found = data.get(section)
+            if isinstance(found, dict):
+                preset_ops.update(found)
+        if not preset_ops:
             continue
         for op_name, entry in preset_ops.items():
-            if not isinstance(op_name, str) or op_name in _BUILTIN_OPS:
+            # Deliberately NOT filtered against _BUILTIN_OPS. That filter stood
+            # in for "a preset must not shadow a built-in", which `dispatch`
+            # already guarantees structurally — `_resolve_custom_op` is reached
+            # only on the fallthrough, after every built-in branch has
+            # declined. Meanwhile it made a built-in documented in a preset
+            # (`presets/lsp.json`, #2025) invisible to this index, so the #614
+            # hint answered "no such op" for an op this binary dispatches.
+            if not isinstance(op_name, str):
                 continue
             if op_name in index:
                 continue
@@ -1203,6 +1214,52 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
             continue
 
         preset_dir = os.path.dirname(preset_path)
+
+        # A preset may also document ops it does NOT define: built-ins, whose
+        # code is in this file and whose behaviour no manifest can change
+        # (#2025). Those go in the manifest's own `builtin-ops` section and
+        # merge into the config's, never into `ops`.
+        #
+        # The section matters, it is not bookkeeping. Four independent guards
+        # sweep `config["ops"]` on the premise that a preset op is one the
+        # preset *defines* — every entry resolves to a script (#1269), declares
+        # a safety class (#1231), declares a path-containment boundary (#1287,
+        # #1350), and is accounted for by the `replaces` census (#1384). A
+        # doc-only entry satisfies none of those and must not: its script is
+        # this module, its class is `_OP_SAFETY_BUILTIN`, its paths go through
+        # the built-in chokepoint. Putting it in `ops` would mean teaching four
+        # sweeps an exception apiece; putting it here means none of them ever
+        # sees it, and the doc surfaces that read `builtin-ops` — `op_ops`,
+        # `_help_entry`, `_configured_op_names`, `_build_at_file_registry` —
+        # all reach it with no change at all.
+        preset_builtin_docs = preset_data.get("builtin-ops")
+        if isinstance(preset_builtin_docs, dict):
+            merged_builtin_docs = dict(config.get("builtin-ops") or {})
+            for doc_name, doc_def in preset_builtin_docs.items():
+                if not isinstance(doc_name, str):
+                    continue
+                # The project's own config wins, by the same rule `ops` uses
+                # — and key-for-key, through the same helper, for the same
+                # reason: `builtin-ops` entries carry behaviour overrides
+                # (`read.max_lines`, `grep.extensions`) as well as prose, so a
+                # project setting one key would otherwise delete the preset's
+                # whole entry and leave the op undocumented. That is #1356's
+                # stub, one section over.
+                project_entry = (config.get("builtin-ops") or {}).get(doc_name)
+                merged_builtin_docs[doc_name] = (
+                    _merge_op_def(doc_def, project_entry)
+                    if project_entry is not None else doc_def)
+                # Stamped by the loader, for the same reason `_op_sources` is:
+                # "did this preset contribute anything?" is asked against the
+                # provenance, never by re-walking the manifests, and a preset
+                # whose whole contribution is documentation contributed. Kept
+                # out of `_op_sources` itself, which answers about ops that
+                # exist in `config["ops"]` — a row there for a name the
+                # registry does not hold would be provenance for nothing.
+                doc_sources = config.setdefault("_preset_doc_contributions", {})
+                doc_sources.setdefault(name, []).append(doc_name)
+            config["builtin-ops"] = merged_builtin_docs
+
         preset_ops = preset_data.get("ops", {})
         for op_name, op_def in preset_ops.items():
             # Resolve script paths relative to where the preset JSON lives
@@ -18035,7 +18092,53 @@ def _shipped_config() -> Dict[str, Any]:
             else:
                 _SHIPPED_CONFIG_STATE = "unreadable"
         _SHIPPED_CONFIG = data if isinstance(data, dict) else {}
+        _fold_shipped_preset_docs(_SHIPPED_CONFIG, directory)
     return _SHIPPED_CONFIG
+
+
+def _fold_shipped_preset_docs(shipped: Dict[str, Any], directory: str) -> None:
+    """Fold the shipped presets' `builtin-ops` into the shipped reference.
+
+    A built-in's documentation may live in a preset manifest rather than in
+    `.supertool.json` (#2025, #2026), and where it lives is an implementation
+    detail of this install — not a fact about the caller's tree. Without this,
+    moving `vim`'s entry into `presets/vim.json` made `help:vim` answer "no
+    documented help" from any repo that does not list the preset, which is
+    exactly the failure #1773 was filed about, reintroduced one file over.
+
+    The listing bytes are still saved: `op_ops` renders the *project's* merged
+    config, which only holds what that project's presets contributed. This
+    reaches the `help:OP` fallback alone, where the question is what this
+    binary can document rather than what this repo loads.
+
+    Entries in `.supertool.json` win — it is the more specific reference — and
+    an unreadable manifest contributes nothing, by the same rule as everywhere
+    else: a preset we cannot read is an absence, never a fatal.
+    """
+    preset_dir = os.path.join(directory, "presets")
+    try:
+        entries = sorted(os.listdir(preset_dir))
+    except OSError:
+        return
+    folded = dict(shipped.get("builtin-ops") or {})
+    for fname in entries:
+        if not fname.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(preset_dir, fname), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        docs = data.get("builtin-ops")
+        if not isinstance(docs, dict):
+            continue
+        for name, entry in docs.items():
+            if isinstance(name, str) and name not in folded:
+                folded[name] = entry
+    if folded:
+        shipped["builtin-ops"] = folded
 
 
 def _shipped_reference_path() -> str:
