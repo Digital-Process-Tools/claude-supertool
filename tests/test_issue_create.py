@@ -925,10 +925,9 @@ class TestGithubIssueCreateTransportFallback:
 
         def fake_gh_json(args, stdin=None, timeout=30):
             rest_calls.append(args)
-            if args[:2] == ["api", f"repos/{GH_MINIMAL['repo']}/issues"] or (
-                    "issues" in args[1] and "-X" not in args):
-                return ([], "")  # dedup lookup: no open issue with this title
-            if args[0] == "api" and "-X" in args and "POST" in args:
+            if "POST" not in args:
+                return ([], "")  # dedup lookup (GET): no open issue with this title
+            if args[0] == "api" and "POST" in args:
                 return ({"number": 99,
                           "html_url": "https://github.com/Digital-Process-Tools/"
                                        "claude-supertool/issues/99"}, "")
@@ -942,6 +941,14 @@ class TestGithubIssueCreateTransportFallback:
         assert "transport=rest" in out
         assert "number=99" in out
         assert rest_calls, "REST fallback never called _gh_json"
+        # `gh api` defaults to POST the instant a `-f` parameter is present
+        # (its own --help says so), so a lookup with no explicit `-X GET`
+        # silently becomes a write against the wrong endpoint and 422s on a
+        # real `gh` binary -- caught by review, not by a fake that only
+        # checks the return value (#1790).
+        dedup_call = rest_calls[0]
+        assert "GET" in dedup_call, (
+            f"the dedup lookup did not pin its HTTP method to GET: {dedup_call}")
 
     def test_ordinary_failure_never_triggers_rest_fallback(self, monkeypatch, capsys, tmp_path):
         payload_file = _write_payload(tmp_path, GH_MINIMAL)
@@ -973,7 +980,7 @@ class TestGithubIssueCreateTransportFallback:
                                  "claude-supertool/issues/55"}
 
         def fake_gh_json(args, stdin=None, timeout=30):
-            if "-X" not in args:
+            if "POST" not in args:
                 return ([existing], "")
             raise AssertionError("a POST was attempted despite an existing match")
 
@@ -995,7 +1002,7 @@ class TestGithubIssueCreateTransportFallback:
                                            "(https://api.github.com/graphql)"))
 
         def fake_gh_json(args, stdin=None, timeout=30):
-            if "-X" not in args:
+            if "POST" not in args:
                 return (None, "gh timed out")
             raise AssertionError("a POST was attempted after a failed dedup lookup")
 
@@ -1019,11 +1026,12 @@ class TestGithubIssueCreateTransportFallback:
                                            "(https://api.github.com/graphql)"))
 
         def fake_gh_json(args, stdin=None, timeout=30):
-            if "-X" not in args and "milestones" in args[1]:
+            joined = " ".join(args)
+            if "POST" not in args and "milestones" in joined:
                 return ([], "")  # no milestone named v9.9
-            if "-X" not in args:
+            if "POST" not in args:
                 return ([], "")  # dedup lookup: nothing open with this title
-            if "-X" in args and "POST" in args:
+            if "POST" in args:
                 return ({"number": 12,
                           "html_url": "https://github.com/Digital-Process-Tools/"
                                        "claude-supertool/issues/12"}, "")

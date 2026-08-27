@@ -151,7 +151,15 @@ def _find_open_issue_by_title(repo: str, title: str,
     have been pushed off the first page. That is the same shape of limit the
     issue's own hand-rolled guard had.
     """
-    data, err = _gh_json(["api", f"repos/{repo}/issues",
+    # `gh api` defaults to POST the instant a `-f`/`-F` parameter is added
+    # (its own --help: "adding request parameters will automatically switch
+    # the request method to POST"). Without an explicit `-X GET` this call
+    # silently becomes `POST repos/{repo}/issues` -- the *create* endpoint,
+    # with no `title` in the body -- so it 422s on every real invocation and
+    # the dedup guard refuses to write on every genuine transport outage,
+    # which is the opposite of what condition 3 asks for. Caught in review,
+    # before it ever reached a real `gh` binary (#1790).
+    data, err = _gh_json(["api", "-X", "GET", f"repos/{repo}/issues",
                           "-f", "state=open", "-f", "per_page=100"],
                          timeout=timeout)
     if err:
@@ -172,7 +180,9 @@ def _resolve_milestone_number(repo: str, name: str,
     `note` is empty on success; on a miss it explains why, so the caller can
     name the field NOT APPLIED rather than silently drop it.
     """
-    data, err = _gh_json(["api", f"repos/{repo}/milestones",
+    # Same `-f` -> POST trap as `_find_open_issue_by_title` above -- an
+    # explicit `-X GET` is not optional here either (#1790).
+    data, err = _gh_json(["api", "-X", "GET", f"repos/{repo}/milestones",
                           "-f", "state=all", "-f", "per_page=100"],
                          timeout=timeout)
     if err:
