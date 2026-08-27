@@ -80,7 +80,6 @@ def test_trace_writes_full_log_and_prints_path_and_receipt(monkeypatch, tmp_path
     out = capsys.readouterr().out
     assert rc == 0
     assert "[trace]" in out
-    assert "20 lines" in out
     assert "->" in out
 
     written = list((root / "traces").glob("*.log"))
@@ -89,6 +88,11 @@ def test_trace_writes_full_log_and_prints_path_and_receipt(monkeypatch, tmp_path
     for line in lines:
         assert line in content
     assert str(written[0]) in out
+    # The receipt's own line count is counted off the written file, not the
+    # raw fetched log -- the header line the file also carries counts too.
+    m = re.search(r"\[trace\] (\d+) lines", out)
+    assert m is not None
+    assert int(m.group(1)) == content.count("\n")
 
 
 def test_trace_does_not_truncate_a_large_log(monkeypatch, tmp_path, capsys) -> None:
@@ -281,3 +285,78 @@ def test_trace_no_first_line_claim_when_absent(monkeypatch, tmp_path, capsys) ->
     out = capsys.readouterr().out
     assert rc == 0
     assert "[first]" not in out
+
+
+# ---------------------------------------------------------------------------
+# review findings (#626 self-review) — filename length, control-char safety,
+# line-count accuracy, and a root distinct from gl-issue's attachment dir
+# ---------------------------------------------------------------------------
+
+def test_trace_many_ids_does_not_produce_an_unwritable_filename(monkeypatch, tmp_path, capsys) -> None:
+    """40 failed jobs in one pipeline is realistic; the filename must not blow
+    a filesystem's name-length limit after every trace was already fetched."""
+    ids = [str(6900000 + i) for i in range(60)]
+    jobs = {i: {"trace": [f"line-{i}"], "status": "failed"} for i in ids}
+    argv = ["job.py", ",".join(ids), "trace"]
+    rc, root = _run_trace(monkeypatch, tmp_path, argv, jobs)
+    out = capsys.readouterr().out
+    assert rc == 0
+    written = list((root / "traces").glob("*.log"))
+    assert len(written) == 1
+    assert len(written[0].name) < 200
+    content = written[0].read_text()
+    for i in ids:
+        assert f"line-{i}" in content
+
+
+def test_trace_first_failure_is_immune_to_a_stray_control_byte(monkeypatch, tmp_path, capsys) -> None:
+    """A vertical tab mid-line must not be read as a line boundary — the same
+    class of defect #1119 fixed for every other view in this file."""
+    lines = [
+        "noise before\x0b1) Foo::bar",
+        "Failed asserting that false is true.",
+    ]
+    rc, root = _run_trace(monkeypatch, tmp_path, ["job.py", "123", "trace"],
+                          {"123": {"trace": lines, "status": "failed"}})
+    out = capsys.readouterr().out
+    assert rc == 0
+    # The vertical tab must not be read as a line start — "1) Foo::bar" is
+    # never the beginning of a real line in this trace.
+    assert "[first] 1) Foo::bar" not in out
+
+
+def test_trace_line_count_matches_the_written_file(monkeypatch, tmp_path, capsys) -> None:
+    jobs = {
+        "111": {"trace": ["a1", "a2"], "status": "failed"},
+        "222": {"trace": ["b1", "b2"], "status": "failed"},
+    }
+    rc, root = _run_trace(monkeypatch, tmp_path, ["job.py", "111,222", "trace"], jobs)
+    out = capsys.readouterr().out
+    assert rc == 0
+    written = list((root / "traces").glob("*.log"))
+    actual_lines = written[0].read_text().count("\n")
+    m = re.search(r"\[trace\] (\d+) lines", out)
+    assert m is not None
+    assert int(m.group(1)) == actual_lines
+
+
+def test_trace_root_is_distinct_from_the_issue_attachment_root(monkeypatch, tmp_path, capsys) -> None:
+    """`gl-issue` downloads attachments to `_image_root.default_root()` with no
+    suffix; the trace writer must not nest inside that same directory."""
+    calls: list[str] = []
+    real_default_root = job._image_root.default_root
+
+    def spy(suffix: str = "") -> str:
+        calls.append(suffix)
+        return str(tmp_path / f"root{suffix}")
+
+    monkeypatch.setattr(job._image_root, "default_root", spy)
+    monkeypatch.setattr(sys, "argv", ["job.py", "123", "trace"])
+    monkeypatch.setattr(job.subprocess, "run",
+                         _make_fake_multi_run({"123": {"trace": ["x"], "status": "failed"}}))
+    rc = job.main()
+    assert rc == 0
+    assert calls == ["-traces"], (
+        "the trace root must ask for a suffix distinct from gl-issue's "
+        "unsuffixed attachment root, not share it"
+    )

@@ -709,8 +709,16 @@ def _first_phpunit_failure(text: str) -> str:
     Reuses `_PHPUNIT_BLOCK_START`, already the marker `_phpunit_blocks` walks
     the log with — one definition of "a PHPUnit failure header" rather than a
     second regex that could drift from it.
+
+    Split with `_log_lines`, not `str.splitlines()` — a spawned reviewer
+    caught this copy using the banned split (#1119: eight extra separators
+    a CI trace can carry mid-line) for the one line this file derives
+    without it, and `_log_lines`'s `_untrusted.visible` pass is what keeps a
+    matched line's own escape sequences from reaching this receipt's stdout
+    unfiltered, the same guarantee every other rendered line in this file
+    already has.
     """
-    for line in text.splitlines():
+    for line in _log_lines(text):
         if _PHPUNIT_BLOCK_START.match(line):
             return line.strip()
     return ""
@@ -737,7 +745,13 @@ def write_traces(job_ids: list[str]) -> int:
       actually found — otherwise it says it could not tell, never a
       confident zero.
     """
-    root, why = _image_root.ensure(_image_root.default_root())
+    # A suffix distinct from `gl-issue`'s own `default_root()` call (#1493) —
+    # that one is the download root for issue attachments, and an unsuffixed
+    # call here would nest traces inside it. Two features sharing one root by
+    # accident is exactly what `gh-issue`'s own "-gh" suffix already exists to
+    # avoid one caller over (presets/github/issue.py), so this follows that,
+    # rather than inventing a second convention for the same problem.
+    root, why = _image_root.ensure(_image_root.default_root("-traces"))
     if root is None:
         print(f"ERROR: no trace directory this process owns could be established: {why}")
         return 1
@@ -750,7 +764,6 @@ def write_traces(job_ids: list[str]) -> int:
     written_ids: list[str] = []
     empty_ids: list[str] = []
     failed: list[tuple[str, str]] = []
-    total_lines = 0
     for job_id in job_ids:
         log, meta, error = _fetch_trace_and_meta(job_id)
         if error:
@@ -759,8 +772,6 @@ def write_traces(job_ids: list[str]) -> int:
         if not log.strip():
             empty_ids.append(job_id)
             continue
-        job_lines = _log_lines(log)
-        total_lines += len(job_lines)
         name = _untrusted.flat(str(meta.get("name", "?")))
         status = meta.get("status", "?")
         header = f"===== job #{job_id} — {name} (status: {status}) =====\n"
@@ -778,7 +789,21 @@ def write_traces(job_ids: list[str]) -> int:
         return 1 if failed else 0
 
     content = "\n".join(sections) if len(sections) > 1 else sections[0]
-    filename = "job-" + "-".join(written_ids) + ".log"
+    # Counted off the bytes actually written, not accumulated per-job before
+    # the header/join separators were added — a spawned reviewer caught the
+    # earlier version undercounting the very thing the receipt exists to
+    # state honestly.
+    total_lines = content.count("\n")
+    # A pipeline with dozens of failed jobs is the exact case this feature
+    # names as its motivation, and a filename built from every id in full
+    # can exceed a filesystem's name-length limit after every trace was
+    # already fetched — discarding work already done. Past a handful of ids
+    # the name says how many there are instead of listing them all; the
+    # ids themselves are still inside the file, in each section's own header.
+    if len(written_ids) > 6:
+        filename = f"job-{written_ids[0]}+{len(written_ids) - 1}more.log"
+    else:
+        filename = "job-" + "-".join(written_ids) + ".log"
     path = os.path.join(traces_dir, filename)
 
     existed_before = os.path.exists(path)

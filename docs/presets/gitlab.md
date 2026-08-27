@@ -464,21 +464,21 @@ which cost a whole round-trip to re-read a bound the very same response had alre
 
 `:raw` and `:grep` both exist to keep a CI trace out of context, and both still have a ceiling — `GL_JOB_RAW_MAX_LINES` caps the first, `GL_JOB_GREP_MAX_BYTES` caps the second's matches. Neither is a substitute for the full log when the cause turns out to need it, and a trace here runs to tens of thousands of lines.
 
-`:trace` ([#626](https://github.com/Digital-Process-Tools/claude-supertool/issues/626)) writes the whole thing to a file instead — under the process's own proven-ours temp root (the same root `gl-issue`'s attachment download uses, [#1493](https://github.com/Digital-Process-Tools/claude-supertool/issues/1493)), never under `.max/`, which this repo's own credential-directory list prunes from every `grep`/`glob` walk — and prints only the path plus a short receipt:
+`:trace` ([#626](https://github.com/Digital-Process-Tools/claude-supertool/issues/626)) writes the whole thing to a file instead — under the process's own proven-ours temp root (the same mechanism `gl-issue`'s attachment download uses, [#1493](https://github.com/Digital-Process-Tools/claude-supertool/issues/1493), with its own `-traces` suffix so it does not nest inside the attachment root), never under `.max/`, which this repo's own credential-directory list prunes from every `grep`/`glob` walk — and prints only the path plus a short receipt:
 
 ```bash
 ./supertool 'gl-job:6993342:trace'
 ```
 
 ```
-[trace] 22333 lines, 2.5 MB -> /tmp/supertool-images-501/traces/job-6993342.log
+[trace] 22333 lines, 2.5 MB -> /tmp/supertool-images-501-traces/traces/job-6993342.log
 [failures] 2 failures, 0 errors
 [first] 1) SiClientMissionBoard\Tests\PageIndexDelegateTest::testBasic
 ```
 
 Read the file with the ordinary read/grep ops from there, at full fidelity, with nothing capped.
 
-**Multiple ids concatenate into one file** — `gl-job:6993342,6993346:trace` — because a failed pipeline is usually several jobs failing for one cause, and reading them together is the point. Each job's section carries its own `===== job #ID — NAME (status: STATUS) =====` header. Repeated ids are deduped (first occurrence wins) rather than fetched twice.
+**Multiple ids concatenate into one file** — `gl-job:6993342,6993346:trace` — because a failed pipeline is usually several jobs failing for one cause, and reading them together is the point. Each job's section carries its own `===== job #ID — NAME (status: STATUS) =====` header. Repeated ids are deduped (first occurrence wins) rather than fetched twice. Past six ids the filename shortens to `job-FIRSTID+Nmore.log` instead of listing every id — a filename built from a few dozen ids can exceed a filesystem's own name-length limit, which would otherwise discard every trace that had just been fetched successfully; the full id list is still recoverable from each section's own header inside the file.
 
 **Three states, not two, in both directions.** A job whose trace could not be fetched is named with its error and skipped, not silently dropped — the call only returns non-zero when *every* requested id failed. A job with a genuinely empty trace is named as empty and contributes no section, rather than an empty one that would read as "this job produced nothing" when the truth is "nothing was captured yet". An existing file at the target path is overwritten, and the receipt says so and names the size it replaced.
 
