@@ -18139,12 +18139,54 @@ def op_help(op_name: str) -> str:
             f"Run 'ops' for the full list of operations.\n")
 
 
-# Threshold above which compact ops output gets a "truncation likely" warning.
-# Claude Code's hook-stdout cap appears to be ~7KB; anything over that gets
-# saved to disk and only a ~2KB preview is injected into the model's context,
-# silently hiding the tail of the ops list. (Empirical: 6.6KB landed full,
-# 11KB+ got truncated — threshold sits in between.)
-_HOOK_OUTPUT_CAP_BYTES = 7168
+# Claude Code's hook-stdout cap. Over it, the payload is written to disk and
+# only a 2,000-character preview is injected into the model's context, so the
+# tail of a listing is hidden behind something that still reads as a listing.
+#
+# Read out of the harness rather than guessed (#2029). In the shipped bundle
+# (`@anthropic-ai/claude-code`, `bin/claude.exe`):
+#
+#     var CKr=50000, mor=500000, AKr=4, A0u=400000, R0u=200000, i3=50, k0u=1e4;
+#
+#     async function jKe(e, t, r, n = k0u) {
+#         if (e.length <= n) return e;
+#         let o = await x2e(e, `hook-${t}-${r}`);
+#         if (I2e(o)) return M("tengu_hook_output_persisted", ...
+#
+# `k0u = 1e4`, and the comparison is `<=`, so exactly the cap passes. The
+# 2,000 is its own constant (`hor`) and is what the observed "Preview (first
+# 2KB)" line reports. It is the *hook* path specifically: the persisted file is
+# named `hook-<id>-<stream>`, the event is `tengu_hook_output_persisted`, and
+# tool results are capped separately and far higher by `CKr = 50000`.
+#
+# This value was 7168 for thirty-odd releases: a midpoint of an empirical
+# bracket, which its own comment said out loud — "6.6KB landed full, 11KB+ got
+# truncated". Both observations bracket 10,000 and are kept here as
+# corroboration; the midpoint drawn between them was 40% low, and it was the
+# premise of what every fresh session gets shown (hooks/session-start.sh) and
+# of the truncation warning `op_ops(compact=True)` prepends.
+#
+# UNITS. `e.length` is a JavaScript string length — UTF-16 code units, i.e.
+# characters. Supertool measures BYTES, and its listings are full of `—`, `→`,
+# `⚠`, `✓`: one character each, three bytes each. So a byte count over-reports
+# against this limit and can only refuse or warn EARLIER than the harness
+# would, never later. That is the safe direction and it is why this stays a
+# byte count rather than being "corrected" to characters — a conservative
+# bound survives the harness changing its own unit, and a tight one does not.
+# (Claude Code logs the same figure as `originalSizeBytes: e.length`, so the
+# confusion is not only ours.)
+_HOOK_OUTPUT_CAP_BYTES = 10000
+
+
+def _over_hook_cap(payload: str) -> bool:
+    """Would the harness persist this hook payload instead of injecting it?
+
+    One helper rather than an inline comparison at each site, because the
+    boundary is inclusive and `>` versus `>=` is exactly the kind of detail
+    that gets flipped by someone reading only the constant. Measured in
+    UTF-8 bytes — see the units note above.
+    """
+    return len(payload.encode("utf-8")) > _HOOK_OUTPUT_CAP_BYTES
 
 
 def _configured_op_names(config: Dict[str, Any]) -> set:
@@ -18359,7 +18401,7 @@ def op_ops(compact: bool = False, full: bool = False) -> str:
     # In compact mode, only warn if the body still won't fit the harness cap.
     # When it fits, no warning — the absence is itself a signal that the listing
     # is complete.
-    if compact and len(body.encode("utf-8")) > _HOOK_OUTPUT_CAP_BYTES:
+    if compact and _over_hook_cap(body):
         warning = (
             f"> {mark('⚠')} Output is {len(body.encode('utf-8'))} bytes, exceeds the "
             f"~{_HOOK_OUTPUT_CAP_BYTES}-byte SessionStart hook cap. The tail "
