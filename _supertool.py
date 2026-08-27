@@ -19253,6 +19253,72 @@ def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
     return heads, unread
 
 
+#: The operators `shlex.shlex(punctuation_chars=True)` treats specially --
+#: not `_GUARD_PUNCTUATION`, which also carries `{}` for a token-shape check
+#: that never fires on them (that tokeniser never emits a bare `{`/`}` as its
+#: own token, so they stay attached to whatever word they sit in). Kept as
+#: its own constant so `_guard_raw_segment_spans` splits on exactly what the
+#: tokeniser below it splits on, and no more.
+_GUARD_SEPARATOR_CHARS = "();<>|&"
+
+
+def _guard_raw_segment_spans(text: str) -> List[Tuple[int, int]]:
+    """Character `(start, end)` of every top-level shell segment in `text`.
+
+    Exists so a discarded segment's own text (#2010) can be a SLICE of what
+    the caller actually wrote, rather than a re-join of tokens `shlex` has
+    already dequoted and a redirect-drop loop has already thinned. Splits on
+    the same operators `_guard_segments_with_origins`'s tokeniser treats as
+    separators -- `;` `&` `|` and their doubled/mixed runs -- and, like that
+    tokeniser (#1684), does NOT split on a run containing `<` or `>`: a
+    redirection sits inside the segment it belongs to, target and all, not
+    at a boundary between two segments.
+
+    Quote and backslash tracking mirrors `_guard_drop_io_numbers`: a quote
+    character opens and closes a quoted run during which nothing is special
+    except its own close (plus backslash-escaping inside a double quote),
+    and a backslash outside quotes escapes exactly the next character. Never
+    raises -- an unterminated quote here is not this function's problem to
+    report; `_guard_segments_with_origins`'s own tokeniser raises `ValueError`
+    for that on the same `text`, before this function's spans are consumed.
+    """
+    spans: List[Tuple[int, int]] = []
+    start = 0
+    quote = ""
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if quote:
+            if ch == chr(92) and quote == chr(34) and i + 1 < n:
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in ("'", chr(34)):
+            quote = ch
+            i += 1
+            continue
+        if ch == chr(92) and i + 1 < n:
+            i += 2
+            continue
+        if ch in _GUARD_SEPARATOR_CHARS:
+            j = i
+            while j < n and text[j] in _GUARD_SEPARATOR_CHARS:
+                j += 1
+            run = text[i:j]
+            if "<" not in run and ">" not in run:
+                spans.append((start, i))
+                start = j
+            i = j
+            continue
+        i += 1
+    spans.append((start, n))
+    return spans
+
+
 def _guard_segments_with_origins(
         command: str
 ) -> Tuple[List[List[str]], List[str], List[int], List[str]]:
@@ -19280,10 +19346,32 @@ def _guard_segments_with_origins(
     fourth element (one raw text per top-level segment, before wrapper-word
     stripping) that produced `heads[i]` — so a caller holding the index of
     the earliest blocked head can name every earlier segment a refusal
-    silently throws away too (#1873).
+    silently throws away too (#1873). That fourth element is a character
+    SLICE of the prepared command (`_guard_raw_segment_spans`), not a
+    re-join of the tokenised words below -- unlike the word lists in the
+    first element, it keeps the quoting and the redirection a `blocked`
+    segment's own render otherwise loses (#2010), except for a handful of
+    all-punctuation-word shell idioms (a bare `{}`, an escaped `;`) that
+    fourth element does not special-case, where it falls back to the same
+    word-rejoin the first element already carries.
     """
     prepared, unread = _guard_open_substitutions(
         _guard_drop_io_numbers(_guard_strip_heredocs(command)))
+    # `origin_texts` is a raw character SLICE of `prepared`, one per
+    # top-level segment (#2010) -- not a re-join of tokens `shlex` has
+    # already dequoted. `_guard_raw_segment_spans` walks `prepared` itself,
+    # splitting on the same operators the tokeniser below does, so a
+    # discarded segment keeps the quoting and the redirect a token re-join
+    # could never recover (`shlex.shlex.instream.tell()` was tried first and
+    # rejected: in posix mode it reads one character of lookahead past the
+    # token it just returned to decide the token is finished, so its
+    # position is already past an UNSPACED separator like the `;` in
+    # `echo one; echo two` before that separator's own token is even
+    # fetched -- silently mis-splitting exactly the compact style most
+    # shell one-liners use).
+    segment_spans = _guard_raw_segment_spans(prepared)
+    origin_texts = [prepared[lo:hi].strip() for lo, hi in segment_spans]
+
     lexer = shlex.shlex(prepared, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     # Comments were already removed, line by line, with quote state (#1389).
@@ -19321,10 +19409,29 @@ def _guard_segments_with_origins(
         else:
             current.append(token)
     segments.append(current)
+    # `_guard_raw_segment_spans` splits on the same operators as the
+    # tokeniser above, in the same order, so ordinarily it produces exactly
+    # one span per entry in `segments`. It is not a full re-implementation
+    # of `shlex.shlex(punctuation_chars=True)`, though: that tokeniser also
+    # treats a WHITESPACE-BOUNDED word made entirely of `_GUARD_PUNCTUATION`
+    # chars as a separator even when none of them are its own operator
+    # characters -- `find . -exec ls {} \;` splits on the bare `{}` and the
+    # backslash-escaped `;` this scanner does not special-case, because
+    # neither is a real shell operator; `{` and `}` are ordinary characters
+    # to the shell and only end a command here because #1389 chose to treat
+    # an all-punctuation WORD as if it were one. A length mismatch means a
+    # segment boundary this scanner did not know to draw, and it is far
+    # cheaper to fall back to the plain word-rejoin `_guard_segments` used to
+    # return unconditionally than to keep growing this scanner one shell
+    # idiom at a time: `origins[i]` still resolves correctly either way, and
+    # a discarded command that recovers its old (imperfect) rendering is a
+    # better outcome than a `guard_command` call that raises on a `find`
+    # invocation nobody is even redirecting.
+    if len(segment_spans) != len(segments):
+        origin_texts = [" ".join(segment) for segment in segments]
 
     heads: List[List[str]] = []
     origins: List[int] = []
-    origin_texts = [" ".join(segment) for segment in segments]
     for index, segment in enumerate(segments):
         wrapped = False
         while segment and (segment[0] in _GUARD_PREFIX_WORDS
@@ -20113,10 +20220,17 @@ def _guard_discarded_segments(matched_origins: Sequence[int],
     pipe through `head` — both discovered only because a LATER receipt looked
     wrong, never because the refusal said so.
 
-    Unquoted and uncapped on purpose — `guard_refusal` renders this against
-    its own text budget, the same as every other list it prints, rather than
-    this function guessing a cap. An earlier version of this fix rendered a
-    finished note directly into `verdict.notes` and it was WRONG: `notes`
+    Not additionally quoted, and uncapped, on purpose -- this function does
+    not run the text through `shlex.quote` or anything like it, on top of
+    whatever quoting `origin_texts` already carries as a raw slice of what
+    the caller wrote (#2010). That answers a display-budget question --
+    `guard_refusal` renders this against its own text budget, the same as
+    every other list it prints, rather than this function guessing a cap --
+    and it is NOT an answer to fidelity: whether the text can be re-sent as
+    written is a property of `origin_texts` itself, decided where it is
+    built (`_guard_raw_segment_spans`), not here. An earlier version of this
+    fix rendered a finished note directly into `verdict.notes` and it was
+    WRONG: `notes`
     shares a fixed `_GUARD_MAX_NOTES` (3) slots with #1450's per-op ambiguity
     disclosures, and a command already carrying three of those had one
     silently dropped the moment this note took a fourth slot — confirmed by
