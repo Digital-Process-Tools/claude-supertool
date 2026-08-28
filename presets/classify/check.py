@@ -27,6 +27,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # for _console
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #2062)
 import scanner  # noqa: E402
 import model  # noqa: E402
 
@@ -96,6 +98,7 @@ def run(text: str) -> str:
 
 
 def main(arg: str) -> None:
+    use_utf8_stdout()
     text = resolve_text(arg)
     if not text.strip():
         sys.stderr.write("ERROR: nothing to classify (empty text)\n")

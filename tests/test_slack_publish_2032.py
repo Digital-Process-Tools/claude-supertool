@@ -339,3 +339,35 @@ def test_a_failed_permalink_lookup_does_not_undo_the_publish(capsys: pytest.Capt
     out = capsys.readouterr().out
     assert "ts=4.0" in out
     assert "URL:" not in out
+
+
+# --- #2062: main() pins stdout to UTF-8 before doing anything else ---------
+
+def test_main_calls_use_utf8_stdout_before_anything_else() -> None:
+    """`use_utf8_stdout()` must run before any Slack call or print -- it is
+    a precondition for stdout, not something ordered after the network round
+    trip. No non-ASCII glyph is reachable through this op's own prints today
+    (channel id, ts and permalink URL are all ASCII), so unlike `classify`'s
+    fix (tests/test_classify_check_2046.py::test_a_suspect_report_survives_a_
+    non_utf8_console) this cannot be reproduced as a live UnicodeEncodeError
+    -- asserted structurally instead, against the real `main()` at call time
+    rather than an AST guess at source order, so a future refactor that
+    reorders the body without moving the source line still fails this."""
+    order: list[str] = []
+
+    def fake_use_utf8_stdout() -> None:
+        order.append("use_utf8_stdout")
+
+    def fake_call(method, token, *, params=None, body=None, timeout=15):
+        order.append(f"call:{method}")
+        if method == "chat.postMessage":
+            return {"ok": True, "ts": "5.0"}
+        return {"ok": True, "permalink": ""}
+
+    with mock.patch.object(publish, "use_utf8_stdout", fake_use_utf8_stdout), \
+         mock.patch.object(publish, "call", fake_call), \
+         mock.patch.object(publish, "get_bot_token", return_value="xoxb-fake"):
+        publish.main("C0123456|hi")
+
+    assert order and order[0] == "use_utf8_stdout", (
+        f"use_utf8_stdout() must run before any Slack call: {order!r}")
