@@ -100,6 +100,8 @@ If your hook's answer changes whether the edit lands → validator. If it just o
 }
 ```
 
+Fire-and-forget: no return path, no `ts`, none of the outbound safety gating a deliberate post runs under. For a call-it-on-purpose post whose response you need back (a thread reply, a `ts` to edit later), use the `slack_publish` op instead — see [docs/presets/slack.md](presets/slack.md).
+
 ### Append to a per-session audit log
 
 ```json

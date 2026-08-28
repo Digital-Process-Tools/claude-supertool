@@ -136,6 +136,9 @@ _ABSENT = {
     "hashnode_comments": _NO_CLI, "hashnode_reply": _NO_CLI,
     "hashnode_react": _NO_CLI, "hashnode_status_since": _NO_CLI,
 
+    # --- presets/slack.json -------------------------------------------------
+    "slack_publish": _NO_CLI,
+
     # --- presets/watch.json ------------------------------------------------
     "watch": "`gh pr checks --watch` and `gh run watch` are FOREGROUND "
              "pollers on one id; this registers a background watcher with "

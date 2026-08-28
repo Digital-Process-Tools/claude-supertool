@@ -1,0 +1,7 @@
+{
+  "source": "slack",
+  "events": [
+    {"key": "slack_message", "label": "A new message appeared in the watched channel or thread"},
+    {"key": "slack_unreachable", "label": "The channel could not be polled -- no bot token, a revoked token, a missing scope, a deleted channel, or a Slack API error. Fires once per outage, not once per poll"}
+  ]
+}

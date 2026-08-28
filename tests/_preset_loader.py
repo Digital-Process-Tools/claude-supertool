@@ -49,6 +49,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #: Every sibling shim used by any preset. Evicting one a preset does not use is
 #: a no-op; failing to evict one it does use is the bug this guards against.
 SHIMS = (
+    "_api",
     "_atproto",
     "_auth",
     "_common",

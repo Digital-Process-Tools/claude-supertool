@@ -252,27 +252,32 @@ class TestTheShippedRegistryIsFullyDetected:
                  if supertool._entry_names_a_path(e) is not None]
         declared = [n for n in named if "paths" in presets[n]]
         # #1739 added `gh-pr-edit`, which DECLARES a boundary, so the named
-        # and declared counts each moved by one and the register did not. The
-        # register's own header comment in `_supertool.py` still reads "24
-        # shipped PRESET ops name a path, 5 declare a boundary, these 19 do
-        # not" and must read 25 / 6 / 19 — that file was held by another
+        # and declared counts each moved by one and the register did not.
+        # #2031/#2032 add `slack_publish`, which also DECLARES a boundary
+        # (`"paths": {"args": []}` — the `gl-api` precedent: a pipe-joined
+        # blob syntax where naming an argument position would validate the
+        # wrong thing, and the `file://` half is bounded by
+        # `_publish_safety.safe_resolve_body_path`'s own allowlist instead).
+        # The register's own header comment in `_supertool.py` still reads
+        # "24 shipped PRESET ops name a path, 5 declare a boundary, these 19
+        # do not" and must read 26 / 7 / 19 — that file was held by another
         # branch when this landed, so the comment is a sequenced follow-up
         # rather than an oversight. These four numbers are the only thing
         # under it.
-        assert len(named) == 25, sorted(named)
+        assert len(named) == 26, sorted(named)
         assert sorted(declared) == [
-            "claims", "gh-pr-edit", "gl-api", "xml", "xml_attr",
-            "xml_count"], sorted(declared)
+            "claims", "gh-pr-edit", "gl-api", "slack_publish", "xml",
+            "xml_attr", "xml_count"], sorted(declared)
         assert len(supertool._UNDECLARED_PATH_OPS) == 19
 
         whole = _registry()
         named_all = [n for n, e in whole.items()
                      if supertool._entry_names_a_path(e) is not None]
         declared_all = [n for n in named_all if "paths" in whole[n]]
-        assert len(named_all) == 25, sorted(named_all)
+        assert len(named_all) == 26, sorted(named_all)
         assert sorted(declared_all) == [
-            "claims", "gh-pr-edit", "gl-api", "xml", "xml_attr",
-            "xml_count"], sorted(declared_all)
+            "claims", "gh-pr-edit", "gl-api", "slack_publish", "xml",
+            "xml_attr", "xml_count"], sorted(declared_all)
 
     def test_this_repo_ships_no_project_only_path_naming_op(self) -> None:
         """`oss_train` was the one, and #1472 deleted it.
