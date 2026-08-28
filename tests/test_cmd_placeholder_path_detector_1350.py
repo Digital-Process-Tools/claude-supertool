@@ -263,8 +263,8 @@ class TestTheShippedRegistryIsFullyDetected:
         # boundary of its own inside `check.py::resolve_text` rather than
         # through a `parts` index. Named and declared each moved by one, the
         # 19-strong undeclared register did not. The register's own header
-        # comment in `_supertool.py` now reads "26 shipped PRESET ops name a
-        # path, 7 declare a boundary, these 19 do not" — these four numbers
+        # comment in `_supertool.py` now reads "27 shipped PRESET ops name a
+        # path, 8 declare a boundary, these 19 do not" — these four numbers
         # are the only thing under it.
         assert len(named) == 27, sorted(named)
         assert sorted(declared) == [
