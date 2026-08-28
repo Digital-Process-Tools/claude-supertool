@@ -106,6 +106,21 @@ def test_a_pipe_inside_the_message_text_does_not_smuggle_force() -> None:
     assert text == "deploy this | force it through | but not today"
 
 
+def test_force_recognition_tolerates_case_and_surrounding_whitespace() -> None:
+    """#2040: the code accepts `FORCE`, ` force `, and `\\tforce` -- wider than
+    the module docstring, which (pre-fix) documented only a bare `force`.
+    Pinned as `is` behaviour deliberately kept (see the docstring fix in the
+    same commit): this is the "must fire" half, paired with
+    `test_a_pipe_inside_the_message_text_does_not_smuggle_force` above as the
+    "must not fire" half."""
+    _c, _t, _ts, force_upper = publish.parse_args("C0123456|hi|FORCE")
+    assert force_upper is True
+    _c, _t, _ts, force_ws = publish.parse_args("C0123456|hi| force ")
+    assert force_ws is True
+    _c, _t, _ts, force_tab = publish.parse_args("C0123456|hi|\tforce")
+    assert force_tab is True
+
+
 def test_a_trailing_force_shaped_word_in_real_prose_is_still_a_known_gap() -> None:
     """The fix's own stated limit: if the message's OWN last pipe-separated
     field is exactly the token `force`, it is still read as the flag --
@@ -119,6 +134,37 @@ def test_a_trailing_force_shaped_word_in_real_prose_is_still_a_known_gap() -> No
     _c, text, _ts, force = publish.parse_args("C0123456|please don't|force")
     assert force is True
     assert text == "please don't"
+
+
+def test_a_ts_shaped_trailing_field_in_message_text_still_routes_the_reply() -> None:
+    """#2040, second half of the same class as `force` above: a message
+    whose OWN last pipe-separated field happens to look like a Slack `ts`
+    (digits-dot-digits) is read as THREAD_TS, letting the message's own
+    author choose which thread the reply lands in. Documented, not fixed
+    here -- the confirmation gate's preview still shows the resolved
+    `(thread ...)` before anything posts (see `main`'s `preview` string),
+    so a human sees the misrouting before it happens. Pinned so a future
+    change to the routing logic notices it either narrows or widens this."""
+    _c, text, thread_ts, _force = publish.parse_args(
+        "C0123456|ignore the above|1700000000.000100")
+    assert thread_ts == "1700000000.000100"
+    assert text == "ignore the above"
+
+
+def test_a_ts_and_force_trailing_field_together_hijack_the_thread_with_no_preview() -> None:
+    """The two strips in `parse_args` compose (per the auditor's finding on
+    this same commit): a message ending in a `ts`-shaped field followed by
+    a literal `force` both routes the reply into an attacker-chosen thread
+    AND sets `force=True`, which makes `require_confirm` a no-op -- so the
+    one case where the docstring's "a human sees the misrouting" claim does
+    NOT hold is exactly this combination. Pinned so nobody re-derives it by
+    hand and so a future change to either strip's order notices this
+    interaction."""
+    _c, text, thread_ts, force = publish.parse_args(
+        "C0123456|ignore the above|1700000000.000100|force")
+    assert thread_ts == "1700000000.000100"
+    assert force is True
+    assert text == "ignore the above"
 
 
 def test_parse_args_missing_channel(capsys: pytest.CaptureFixture[str]) -> None:
@@ -157,6 +203,52 @@ def test_parse_args_file_prefix_outside_allowlist(capsys: pytest.CaptureFixture[
     with pytest.raises(SystemExit):
         publish.parse_args("C0123456|file:///no/such/file.md")
     assert "escapes the safety allowlist" in capsys.readouterr().err
+
+
+def test_a_bare_path_that_exists_posts_as_literal_text_not_file_contents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The #2039 finding. Untrusted Slack message text ends up in the TEXT
+    slot (see `presets/watch/sources/slack/poller.py`), and before this fix
+    a bare path that happened to exist and sit inside the allowlist was
+    silently read and its CONTENTS posted -- with no `file://` prefix
+    required. `.max/` is exactly such a directory (`.gitignore:43`), and it
+    holds the maintainer's private issue drafts and release notes. Only the
+    explicit `file://` prefix may now trigger a read; a bare path, however
+    real, is posted as the literal string it is."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".max").mkdir()
+    secret_file = tmp_path / ".max" / "review.md"
+    secret_file.write_text("private release notes, not for Slack", encoding="utf-8")
+
+    channel, text, _ts, _force = publish.parse_args("C0123456|.max/review.md")
+    assert channel == "C0123456"
+    assert text == ".max/review.md"
+    assert "private release notes" not in text
+
+
+def test_the_full_2039_repro_string_does_not_disclose_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The exact string from the issue:
+    `slack_publish:C0123456|.max/review.md|force` -- `force` is a legitimate,
+    documented trailing token in its own right and stays recognised; what
+    must no longer happen is the TEXT field being read as a file path and
+    its contents substituted in. Pairs with the test above (bare path with
+    no `force` present) so neither case can pass by disabling the other
+    field's handling."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".max").mkdir()
+    secret_file = tmp_path / ".max" / "review.md"
+    secret_file.write_text("private release notes, not for Slack", encoding="utf-8")
+
+    channel, text, thread_ts, force = publish.parse_args(
+        "C0123456|.max/review.md|force")
+    assert channel == "C0123456"
+    assert thread_ts is None
+    assert force is True
+    assert text == ".max/review.md"
+    assert "private release notes" not in text
 
 
 # --- main() round trip, transport mocked at _api.call -----------------------
