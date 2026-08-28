@@ -17777,21 +17777,36 @@ def _doctor_symlink() -> Dict[str, Any]:
 
 
 def _doctor_tracked_files() -> Optional[List[str]]:
-    """`git ls-files`, or `None` when the answer could not be obtained.
+    """`git ls-files -z`, or `None` when the answer could not be obtained.
 
     `None` is load-bearing: a validator's scope cannot be reported as
     "not applicable" off a listing that itself failed, or a real gap reads
     as furniture nobody needs to install.
+
+    `-z` rather than the default rendering, split on NUL rather than
+    `str.splitlines()` (#2022). Two defects in one call, both closed by the
+    same flag:
+
+    - `splitlines()` folds on ten separators (U+2028/U+2029 among them);
+      `git ls-files`' own delimiter is LF alone. A tracked path containing
+      U+2028 became two list entries under `core.quotePath=false`, and the
+      fragment after the separator reached `_validator_run_one`'s `target`
+      argument -- a path handed straight to a subprocess.
+    - Git C-quotes an unusual filename (one holding a backslash, for
+      instance) in its default rendering -- `"ff\\ff.py"`, literal quotes
+      included -- which `_match_glob` can never match against an ordinary
+      glob. `-z` disables that quoting entirely rather than requiring a
+      second unquoting pass this function would then have to get right.
     """
     try:
-        r = subprocess.run(["git", "ls-files"], capture_output=True,
+        r = subprocess.run(["git", "ls-files", "-z"], capture_output=True,
                            text=True, timeout=15,
                            encoding="utf-8", errors="replace")
     except (OSError, subprocess.TimeoutExpired):
         return None
     if r.returncode != 0:
         return None
-    return [ln for ln in r.stdout.splitlines() if ln]
+    return [seg for seg in r.stdout.split("\x00") if seg]
 
 
 def _doctor_looks_absent(text: str) -> bool:
@@ -17918,8 +17933,9 @@ def _doctor_validators_section(config: Dict[str, Any], probe: bool) -> str:
                 continue
             if not probe:
                 unknown += 1
-                rows.append(f"- {name}: in scope ({target}) — could not tell "
-                            "without probing; run doctor:probe")
+                rows.append(f"- {name}: in scope "
+                            f"({_flat_field(target, disclose_newline=True)}) — "
+                            "could not tell without probing; run doctor:probe")
                 continue
             try:
                 data = _validator_run_one(name, spec, target)
@@ -17939,7 +17955,9 @@ def _doctor_validators_section(config: Dict[str, Any], probe: bool) -> str:
                 absent += 1
             else:
                 unknown += 1
-            rows.append(f"- {name} ({target}): {state} — {detail}")
+            rows.append(
+                f"- {name} ({_flat_field(target, disclose_newline=True)}): "
+                f"{state} — {_flat_field(detail)}")
     finally:
         if probe:
             if _prior_cache_env is None:
@@ -19157,6 +19175,13 @@ class GuardVerdict(NamedTuple):
     #: spending from the same text budget as everything else but never
     #: competing for the notes list's slot count.
     discarded: Tuple[str, ...] = ()
+    #: Subset of `discarded` this scanner could not render as a faithful
+    #: character slice (#2023) -- the #2010 fidelity guarantee does not
+    #: cover a handful of all-punctuation-word shell idioms
+    #: `_guard_raw_segment_spans` falls back to a word-rejoin for. Rendered
+    #: distinctly by `guard_refusal` so a re-typed idiom is never presented
+    #: as text the caller can re-send verbatim.
+    discarded_unfaithful: Tuple[str, ...] = ()
 
 
 class _Replacement(NamedTuple):
@@ -19483,8 +19508,8 @@ def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
     callers with no use for its origin map — see that function for the
     docstring this one used to carry in full.
     """
-    heads, unread, _origins, _origin_texts = _guard_segments_with_origins(
-        command)
+    heads, unread, _origins, _origin_texts, _origin_faithful = (
+        _guard_segments_with_origins(command))
     return heads, unread
 
 
@@ -19614,9 +19639,10 @@ def _guard_tokenize_prepared(prepared: str) -> List[List[str]]:
 
 def _guard_segments_with_origins(
         command: str
-) -> Tuple[List[List[str]], List[str], List[int], List[str]]:
+) -> Tuple[List[List[str]], List[str], List[int], List[str], List[bool]]:
     """`_guard_segments`, plus which top-level shell segment produced each
-    head, and that segment's own raw text (#1873).
+    head, that segment's own raw text (#1873), and whether that text is a
+    faithful character slice or the #2023 word-rejoin fallback.
 
     What it models: POSIX quoting, `;` `&&` `||` `|` `&` as separators,
     redirections as **removals** rather than separators (#1684 — the words on
@@ -19694,17 +19720,27 @@ def _guard_segments_with_origins(
     # sit at an unquoted real operator, so re-tokenising each slice on its
     # own reproduces exactly the stretch of the full token stream it covers.
     origin_texts: List[str] = []
+    # Parallel to `origin_texts`: True where that entry is a raw character
+    # slice of what the caller wrote (#2010's own fidelity guarantee), False
+    # where it is the word-rejoin fallback (#2023) -- a `_guard_raw_segment_spans`
+    # span containing one of the handful of all-punctuation-word shell idioms
+    # this scanner does not special-case (a bare `{}`, an escaped `;`). A
+    # consumer that re-sends a `False` entry verbatim is re-sending text that
+    # was never actually written that way; #2023 exists because nothing said
+    # so.
+    origin_faithful: List[bool] = []
     consumed = 0
     for lo, hi in segment_spans:
         raw_text = prepared[lo:hi].strip()
         count = len(_guard_tokenize_prepared(prepared[lo:hi]))
         if count <= 1:
             origin_texts.append(raw_text)
+            origin_faithful.append(True)
             consumed += 1
         else:
-            origin_texts.extend(
-                " ".join(segment)
-                for segment in segments[consumed:consumed + count])
+            for segment in segments[consumed:consumed + count]:
+                origin_texts.append(" ".join(segment))
+                origin_faithful.append(False)
             consumed += count
 
     heads: List[List[str]] = []
@@ -19761,7 +19797,7 @@ def _guard_segments_with_origins(
                     unread.append(note)
             heads.append(candidate)
             origins.append(index)
-    return heads, unread, origins, origin_texts
+    return heads, unread, origins, origin_texts, origin_faithful
 
 
 # The one spelling of `unless_flag` that is not a flag: any flag at all
@@ -20484,9 +20520,14 @@ def _guard_score(replacement: _Replacement, argv: Sequence[str]
     return 2 if replacement.value in values else None
 
 
-def _guard_discarded_segments(matched_origins: Sequence[int],
-                              origin_texts: Sequence[str]) -> Tuple[str, ...]:
-    """Raw text of every segment a `blocked` verdict also discards (#1873).
+def _guard_discarded_segments(
+        matched_origins: Sequence[int], origin_texts: Sequence[str],
+        origin_faithful: Sequence[bool] = ()
+) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+    """Raw text of every segment a `blocked` verdict also discards (#1873),
+    plus the subset of that text this scanner could not render faithfully
+    (#2023) -- an all-punctuation-word shell idiom (`xargs -I {} rm -rf {}`)
+    that `_guard_raw_segment_spans` falls back to a word-rejoin for.
 
     A `PreToolUse` hook decides on the whole Bash call at once — there is no
     partial-run outcome to offer. So when the earliest blocked segment is not
@@ -20516,23 +20557,43 @@ def _guard_discarded_segments(matched_origins: Sequence[int],
     — the ordinary case, and the blocked segment being first in the call.
     """
     if not matched_origins:
-        return ()
+        return (), ()
     earliest = min(matched_origins)
-    return tuple(text for text in origin_texts[:earliest] if text.strip())
+    discarded = tuple(text for text in origin_texts[:earliest] if text.strip())
+    if not origin_faithful:
+        return discarded, ()
+    unfaithful = tuple(
+        text for text, faithful in zip(origin_texts[:earliest], origin_faithful)
+        if text.strip() and not faithful)
+    return discarded, unfaithful
 
 
-def _guard_discard_line(discarded: Sequence[str], budget: int) -> str:
+def _guard_discard_line(discarded: Sequence[str], budget: int,
+                        unfaithful: Sequence[str] = ()) -> str:
     """One line naming `discarded`, bounded by `budget`, or "" for none.
 
     Deliberately not one of `_guard_notes`'s capped notes — see
     `GuardVerdict.discarded` and `_guard_discarded_segments` for why sharing
     that budget was the bug.
+
+    `unfaithful` (#2023) names the subset of `discarded` this scanner could
+    not render as a faithful character slice — an all-punctuation-word shell
+    idiom `_guard_raw_segment_spans` falls back to a word-rejoin for
+    (`xargs -I {} rm -rf {}` loses the `{}` placeholders binding its two
+    halves). That text is marked rather than presented beside faithfully
+    rendered text under the same "re-send them separately" instruction: a
+    reader who retypes a word-rejoin verbatim is retyping something nobody
+    wrote. Chosen over dropping the instruction outright (the issue's other
+    candidate shape) because most commands here carry no such idiom at all,
+    and the ordinary case should keep its plain, unqualified instruction.
     """
     if not discarded or budget <= 0:
         return ""
     shown = discarded[:3]
+    unfaithful_set = set(unfaithful)
     quoted: List[str] = []
     spent = 0
+    any_unfaithful_shown = False
     for text in shown:
         left = budget - spent
         if left <= 0:
@@ -20540,18 +20601,28 @@ def _guard_discard_line(discarded: Sequence[str], budget: int) -> str:
         piece = _guard_quote(text, min(_GUARD_USE_CAP, left))
         if not piece:
             break
-        quoted.append(piece)
+        if text in unfaithful_set:
+            quoted.append("`" + piece + "` (could not be rendered exactly "
+                          "— do not re-send as shown)")
+            any_unfaithful_shown = True
+        else:
+            quoted.append("`" + piece + "`")
         spent += len(piece)
     if not quoted:
         return ""
-    joined = ", ".join("`" + piece + "`" for piece in quoted)
+    joined = ", ".join(quoted)
     extra = (f" and {len(discarded) - 3} more" if len(discarded) > 3 else "")
     plural = "command" if len(discarded) == 1 else "commands"
     them = "it" if len(discarded) == 1 else "them"
+    if any_unfaithful_shown:
+        tail = (" — re-send the faithfully rendered ones separately; a "
+                "marked one could not be rendered exactly and must be "
+                "retyped by hand rather than re-sent as shown")
+    else:
+        tail = f" — re-send {them} separately"
     return (f"{len(discarded)} earlier {plural} in this call will NOT run "
             f"either, because a refusal covers the whole call rather than "
-            f"the part that named it: " + joined + extra
-            + f" — re-send {them} separately")
+            f"the part that named it: " + joined + extra + tail)
 
 
 def guard_command(command: str, config: Optional[Dict[str, Any]] = None
@@ -20580,8 +20651,8 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
 
     replacements, notes = _guard_replacements(config)
     try:
-        segments, unread, origins, origin_texts = _guard_segments_with_origins(
-            command)
+        segments, unread, origins, origin_texts, origin_faithful = (
+            _guard_segments_with_origins(command))
     except ValueError as exc:
         return GuardVerdict("undecided", (), tuple(notes) + (
             f"the command did not tokenise ({exc}), so no part of it was "
@@ -20776,10 +20847,11 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
         # disclosures, and a discard note prepended there silently dropped
         # one of those on a command already carrying three — see
         # `GuardVerdict.discarded`'s docstring for the repro that caught it.
-        discarded = _guard_discarded_segments(matched_origins, origin_texts)
+        discarded, discarded_unfaithful = _guard_discarded_segments(
+            matched_origins, origin_texts, origin_faithful)
         return GuardVerdict("blocked", tuple(matches),
                             tuple(notes) + tuple(uncovered), tuple(uncovered),
-                            discarded)
+                            discarded, discarded_unfaithful)
     if uncovered:
         # Ahead of `undecided`, and the order is the point: a decided "no op
         # covers this form" rendered as "the guard could not answer" would be
@@ -20962,7 +21034,8 @@ def guard_refusal(verdict: GuardVerdict) -> str:
     # capped notes list (#1873) — see `GuardVerdict.discarded`'s docstring for
     # why sharing that cap silently dropped a DIFFERENT, unrelated disclosure.
     discard_line = _guard_discard_line(verdict.discarded,
-                                       _GUARD_TEXT_BUDGET - spent)
+                                       _GUARD_TEXT_BUDGET - spent,
+                                       verdict.discarded_unfaithful)
     if discard_line:
         lines.append(discard_line)
         lines.append("")
