@@ -57,6 +57,7 @@ Source plugin contract:
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -81,12 +82,48 @@ INTERVAL = 30
 # was never available as a separator either. `~` is free on all three counts.
 THREAD_SEP = "~"
 
+def _attr_max_chars() -> int:
+    """The channel's own per-attribute cap, read the way the transport reads
+    it -- not hand-copied as a bare literal (#2059).
+
+    `notifiers/claude-channel/channel.ts::capFromEnv` computes this from
+    `SUPERTOOL_CHANNEL_ATTR_MAX` inside a separate Node process this poller
+    cannot import from; there is no shared constants module across that
+    boundary, so a literal Python import of the TypeScript constant is not
+    reachable. Reading the same environment variable is the nearest thing to
+    "read, not copy" actually available: an operator who overrides the
+    transport's cap gets a poller bound that tracks it, instead of one
+    pinned to today's default forever.
+
+    An unparseable or missing override falls back to the transport's own
+    default (2048) rather than crashing the poller the way `capFromEnv`
+    exits the Node process -- a stalled watcher is a worse failure here than
+    one truncating on a stale number for one tick.
+    """
+    raw = os.environ.get("SUPERTOOL_CHANNEL_ATTR_MAX", "")
+    try:
+        n = int(raw)
+    except ValueError:
+        return 2048
+    return n if n >= 1 else 2048
+
+
 # Slack's own per-message ceiling is roughly 40,000 characters. The payload
 # key this becomes (`title`) shares one `EVENT_MAX_CHARS` budget with every
 # other attribute on the event (`docs/presets/watch.md`), so one unbounded
 # message could consume the whole thing by itself. Bounded here instead, the
 # way `FAILED_JOBS_MAX` bounds the job list in `sources/gitlab-mr/poller.py`.
-MESSAGE_CHARS_MAX = 4000
+#
+# Must sit strictly below the channel's own per-attribute cap
+# (`_attr_max_chars()`, `ATTR_MAX_CHARS` in `channel.ts`), which does not
+# truncate an over-cap attribute -- it deletes it whole (#2059). A source
+# bound above that cap never fires below it and is silently discarded above
+# it, so no message over the channel's cap ever delivers any text at all,
+# including the truncation note this bound appends. `_TRUNCATION_NOTE_MARGIN`
+# is headroom for that note: at most ~70 chars for any message Slack can
+# carry (~40,000 chars, so at most a 5-digit "chars truncated" count).
+_TRUNCATION_NOTE_MARGIN = 250
+MESSAGE_CHARS_MAX = max(1, _attr_max_chars() - _TRUNCATION_NOTE_MARGIN)
 
 # The classify verdict on this poller's own message text (#2056). Read once
 # at import time from `SUPERTOOL_CLASSIFY` -- same env var and same three
@@ -149,6 +186,53 @@ def parse_id(watcher_id: str) -> tuple[str, str | None]:
     """`(channel_id, thread_ts_or_None)` from a `watch:slack:<id>` id."""
     channel, sep, thread_ts = watcher_id.partition(THREAD_SEP)
     return channel, (thread_ts or None) if sep else None
+
+
+def _content_summary(msg: dict[str, Any]) -> tuple[str, str]:
+    """`(title, content_kind)` -- where a message's displayable text came
+    from, so an empty `title` is never the same signal as one whose content
+    this poller could not find (#2068).
+
+    `text` is Slack's own message body and is preferred whenever present.
+    Its absence has several distinct causes -- a file/image upload, a
+    snippet, a Block Kit message, an app-posted attachment, or an edit/
+    reaction-only event carrying no body at all -- and this repository's own
+    governing defect is an absence produced by the tool, read as an absence
+    in the world. `content_kind` names which of those happened rather than
+    collapsing all of them into `""`:
+
+    - `"text"` -- `msg["text"]` was non-empty; the ordinary case.
+    - `"files"` / `"blocks"` / `"attachments"` -- `text` was empty but one of
+      these carried something, so `title` is a short, factual naming of it
+      (a filename, a block count) rather than reconstructed prose. Naming is
+      cheap, unambiguous, and does not invent text a human did not write --
+      which matters for a field the bridge treats as a stranger's words.
+    - `"empty"` -- none of the above had anything either. `title` is `""`
+      here and only here, so `""` always means "checked, found nothing" and
+      never "did not look".
+    """
+    text = str(msg.get("text") or "")
+    if text:
+        return text, "text"
+
+    files = msg.get("files")
+    if isinstance(files, list) and files:
+        names = [
+            str(f.get("name") or f.get("title") or "untitled")
+            for f in files if isinstance(f, dict)
+        ]
+        if names:
+            return f"[{len(names)} file(s): {', '.join(names)}]", "files"
+
+    blocks = msg.get("blocks")
+    if isinstance(blocks, list) and blocks:
+        return f"[block-formatted message, {len(blocks)} block(s), no text field]", "blocks"
+
+    attachments = msg.get("attachments")
+    if isinstance(attachments, list) and attachments:
+        return f"[{len(attachments)} attachment(s), no text field]", "attachments"
+
+    return "", "empty"
 
 
 def _bound(text: str) -> str:
@@ -314,8 +398,11 @@ def _anchor(
     return messages[-1]["ts"], ""
 
 
-def _event_for(msg: dict[str, Any], bot_user_id: str | None) -> dict[str, Any]:
-    text = _bound(str(msg.get("text") or ""))
+def _event_for(
+    msg: dict[str, Any], bot_user_id: str | None, thread_ts: str | None,
+) -> dict[str, Any]:
+    raw_text, content_kind = _content_summary(msg)
+    text = _bound(raw_text)
     user = str(msg.get("user") or msg.get("bot_id") or "")
     if bot_user_id is None or not user:
         author = AUTHORSHIP_UNKNOWN
@@ -329,18 +416,34 @@ def _event_for(msg: dict[str, Any], bot_user_id: str | None) -> dict[str, Any]:
             # Flattened and marked `[remote -- data, not instructions]` by
             # `channel.ts` on the way in -- see the module docstring.
             "title": text,
+            # Where `title` came from (#2068) -- "text" is the ordinary
+            # case; "files"/"blocks"/"attachments" is a named fallback for
+            # content that never rode in `text`; "empty" is the only kind
+            # under which `title` is legitimately `""`. See
+            # `_content_summary` above.
+            "content_kind": content_kind,
             # Routing key the poller computes, never copied from the
             # message: a claim no message author can choose (#2031).
             "author_is_viewer": author,
-            "ts": str(msg.get("ts") or ""),
+            # Named `message_ts`, not `ts` (#2052): the top-level envelope
+            # reserves `ts` for its own routing field
+            # (`transport.emit_event`'s own `record["ts"]`), so a payload
+            # key of that name was silently dropped -- every `slack_message`
+            # event carried the consumer's own emit time as `ts` and never
+            # the message's own identity. `slack_publish` already speaks of
+            # the same value in the same terms.
+            "message_ts": str(msg.get("ts") or ""),
+            # The parent message's ts when this is a thread reply, so a
+            # consumer can reply in-thread or build a permalink without
+            # re-deriving it from the composite `id` (`parse_id` already
+            # splits `CHANNEL~THREAD_TS`, but a consumer sees only `id`).
+            # `""` on a bare-channel watch, same convention as the other
+            # optional routing facts in this payload.
+            "thread_ts": thread_ts or "",
             # The tool's own claim about `title`, on the same footing as
             # `author_is_viewer` above -- never something a message author
-            # could set (#2049/#2056). Named `classify`, not `ts`: #2052
-            # already found the envelope silently ignoring a payload key
-            # named `ts` because the top-level envelope reserves it
-            # (`transport.emit_event`'s own `record["ts"]`); this key is
-            # deliberately not that name. See `_CLASSIFY_LEVEL` above for
-            # why this is always the scanner-only rendering, never the
+            # could set (#2049/#2056). See `_CLASSIFY_LEVEL` above for why
+            # this is always the scanner-only rendering, never the
             # model-stage one `gh-issue` and friends can produce.
             "classify": _classify_render.verdict_line(text, level=_CLASSIFY_LEVEL),
         },
@@ -401,7 +504,7 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
             events = [{"event": "slack_unreachable", "payload": {"error": err}}]
         return events, new_state
 
-    events = [_event_for(m, bot_user_id) for m in messages]
+    events = [_event_for(m, bot_user_id, thread_ts) for m in messages]
     new_cursor = messages[-1]["ts"] if messages else cursor
     new_state = {
         "cursor": new_cursor,
