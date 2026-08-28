@@ -397,6 +397,44 @@ def test_anchor_is_not_called_when_a_cursor_already_exists() -> None:
     assert all(c.get("limit") != 1 for c in calls)
 
 
+def test_thread_cold_start_anchors_on_the_latest_reply_not_the_root() -> None:
+    """conversations.replies is oldest-first (unlike conversations.history),
+    so a naive `limit=1` anchor call on a thread would return the thread's
+    ROOT message -- reproducing #2043 for any busy thread, since the next
+    tick would then ask for "everything since the root", i.e. the whole
+    thread. The anchor must land on the newest reply instead."""
+    poller = _load_poller()
+    thread_id = f"{CHANNEL}~1000000000.000000"
+    calls: list[dict] = []
+    thread_messages = [
+        _msg("1000000000.000000", "thread root"),
+        _msg("1000000001.000000", "reply 1"),
+        _msg("1000000002.000000", "reply 2 -- the newest"),
+    ]
+
+    def fake_call(method, token, *, params=None, body=None, timeout=15):
+        """Real `conversations.replies` is oldest-first and honours
+        `limit` -- a naive `limit=1` call gets the root, not the newest
+        reply. Emulate that rather than a stub that hands back everything
+        regardless of what was asked for, which would let a buggy anchor
+        pass by accident (the newest ts is in the full list either way)."""
+        calls.append(dict(params or {}))
+        limit = (params or {}).get("limit") or len(thread_messages)
+        return {
+            "ok": True,
+            "messages": thread_messages[:limit],
+            "has_more": limit < len(thread_messages),
+        }
+
+    with mock.patch.object(poller._api, "call", fake_call), \
+         mock.patch.object(poller, "resolve_bot_user_id", return_value=BOT_UID):
+        events1, state1 = poller.poll({}, {"source": "slack", "id": thread_id, "only": []})
+
+    assert events1 == []
+    assert state1["cursor"] == "1000000002.000000"  # newest reply, not the root
+    assert calls[0]["ts"] == "1000000000.000000"  # the thread being asked about
+
+
 def test_anchor_failure_on_cold_start_emits_unreachable_and_leaves_cursor_unset() -> None:
     poller = _load_poller()
 

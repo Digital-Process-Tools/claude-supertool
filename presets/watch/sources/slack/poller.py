@@ -239,35 +239,49 @@ def _anchor(
 
     A stream source's first tick begins at "now" rather than replaying
     history (#2043) -- see the module docstring for why a channel is not an
-    object with a beginning worth replaying. One `limit=1` call, never the
-    paginated fetch `_fetch` uses, so a channel with years of history costs
-    exactly as much as an empty one and the burst guard (`MAX_PAGES`) is
-    never in play for a tick that fetches nothing.
+    object with a beginning worth replaying.
 
     `(ts, "")` on success. `ts` is `None` when the channel/thread has no
     messages at all -- not a failure, just nothing to anchor on yet; the
     caller leaves `cursor` unset and the next tick tries the same way,
     exactly like an empty `_fetch` result would. `(None, why)` on any
     transport or API-level failure, same shape as `_fetch`.
+
+    The two branches are NOT symmetric, on purpose: `conversations.history`
+    is newest-first (see `_fetch` above), so the bare channel case is one
+    `limit=1` call regardless of how much history the channel carries, and
+    the burst guard never sees a cold start. `conversations.replies` is
+    oldest-first, so a `limit=1` call on a thread returns the thread's
+    ROOT message, not its latest reply -- taking that as the anchor would
+    reproduce #2043 for any thread with more replies than a single tick
+    can catch up on. There is no cheap "give me the newest reply" call for
+    a thread, so this reuses `_fetch` itself (same pagination, same
+    MAX_PAGES budget) and keeps only the newest `ts` it found, discarding
+    the messages -- a cold start emits nothing either way.
     """
-    method = "conversations.replies" if thread_ts else "conversations.history"
-    params: dict[str, Any] = {"channel": channel, "limit": 1}
-    if thread_ts:
-        params["ts"] = thread_ts
-    try:
-        resp = _api.call(method, token, params=params)
-    except _api.SlackTransportError as e:
-        return None, f"ERROR: Slack request failed for channel {channel!r}: {e}"
-    if not isinstance(resp, dict) or not resp.get("ok"):
-        err = str((resp or {}).get("error") or "unknown_error") if isinstance(resp, dict) else "malformed response"
-        return None, f"ERROR: Slack API refused {method} for channel {channel!r}: {err}"
-    raw = resp.get("messages")
-    if not isinstance(raw, list):
-        return None, f"ERROR: unexpected payload shape from Slack for channel {channel!r}"
-    msgs = [m for m in raw if isinstance(m, dict) and isinstance(m.get("ts"), str)]
-    if not msgs:
+    if thread_ts is None:
+        params: dict[str, Any] = {"channel": channel, "limit": 1}
+        try:
+            resp = _api.call("conversations.history", token, params=params)
+        except _api.SlackTransportError as e:
+            return None, f"ERROR: Slack request failed for channel {channel!r}: {e}"
+        if not isinstance(resp, dict) or not resp.get("ok"):
+            err = str((resp or {}).get("error") or "unknown_error") if isinstance(resp, dict) else "malformed response"
+            return None, f"ERROR: Slack API refused conversations.history for channel {channel!r}: {err}"
+        raw = resp.get("messages")
+        if not isinstance(raw, list):
+            return None, f"ERROR: unexpected payload shape from Slack for channel {channel!r}"
+        msgs = [m for m in raw if isinstance(m, dict) and isinstance(m.get("ts"), str)]
+        if not msgs:
+            return None, ""
+        return max(msgs, key=lambda m: float(m["ts"]))["ts"], ""
+
+    messages, err = _fetch(channel, thread_ts, token, None)
+    if messages is None:
+        return None, err
+    if not messages:
         return None, ""
-    return max(msgs, key=lambda m: float(m["ts"]))["ts"], ""
+    return messages[-1]["ts"], ""
 
 
 def _event_for(msg: dict[str, Any], bot_user_id: str | None) -> dict[str, Any]:
