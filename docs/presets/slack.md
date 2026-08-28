@@ -39,7 +39,7 @@ A **user token** (`xoxp-...`, User Token Scopes -- `scopes: user: [chat:write]` 
 
 `THREAD_TS` posts as a reply inside that thread's own `ts` — cheap to pass from the start, and the field the paired watch source's `slack_message` events already carry back to you (`payload.ts`) if you are replying to something the poller just delivered.
 
-TEXT is read from a file only with the explicit `file://` prefix (#2039). Unlike the other publish presets, TEXT here can be stranger-authored — the paired watch source hands back message text written by anyone in the workspace — so a bare path that happened to exist is never auto-resolved and read; it posts as the literal string it is.
+**Breaking change (#2039): the bare-path arm is withdrawn.** TEXT is read from a file only with the explicit `file://` prefix now -- a call that used to work as `slack_publish:C0123|.max/draft.md` (no prefix, relying on the path existing) now posts the literal string `.max/draft.md` instead of the file's contents, and needs `file://` added to keep reading the file. Unlike the other four publish/comment presets, which keep the bare-path convenience because their TEXT is always maintainer-typed, `slack_publish`'s TEXT can be stranger-authored -- the paired watch source hands back message text written by anyone in the workspace -- so a bare path that happened to exist inside the safety allowlist (`.max/` among them) let untrusted text choose a private file to disclose, with no marker in the call that a file was ever involved. If you have an existing call relying on the bare-path form, add `file://`.
 
 ## Not the same job as the notifier
 

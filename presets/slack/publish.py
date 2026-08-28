@@ -103,9 +103,13 @@ def parse_args(arg: str) -> tuple[str, str, str | None, bool]:
     misread as the flag or the thread to reply into, and there is no
     escaping delimiter that solves that in general for a scheme that packs
     an untrusted string and structured fields into one pipe-joined blob. The
-    `ts` case is left open deliberately (#2040): `require_confirm`'s preview
-    still shows the resolved `(thread ...)` before anything posts, so a
-    human sees the misrouting before it happens. It narrows the window from
+    `ts` case is left open deliberately (#2040): when `force` is NOT also
+    present, `require_confirm`'s preview shows the resolved `(thread ...)`
+    before anything posts, so a human sees the misrouting before it happens
+    -- but the two strips compose, so a message ending in a `ts`-shaped
+    field followed by a literal `force` hijacks the thread AND skips the
+    preview in one string; this is the same "any two pipes chosen right"
+    class the whole docstring is about, not a new one. It narrows the window from
     "any two pipes" to "the exact trailing token", which is the fix worth
     making without redesigning the argument grammar the issue asked for.
     """

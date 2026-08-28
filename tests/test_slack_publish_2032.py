@@ -151,6 +151,22 @@ def test_a_ts_shaped_trailing_field_in_message_text_still_routes_the_reply() -> 
     assert text == "ignore the above"
 
 
+def test_a_ts_and_force_trailing_field_together_hijack_the_thread_with_no_preview() -> None:
+    """The two strips in `parse_args` compose (per the auditor's finding on
+    this same commit): a message ending in a `ts`-shaped field followed by
+    a literal `force` both routes the reply into an attacker-chosen thread
+    AND sets `force=True`, which makes `require_confirm` a no-op -- so the
+    one case where the docstring's "a human sees the misrouting" claim does
+    NOT hold is exactly this combination. Pinned so nobody re-derives it by
+    hand and so a future change to either strip's order notices this
+    interaction."""
+    _c, text, thread_ts, force = publish.parse_args(
+        "C0123456|ignore the above|1700000000.000100|force")
+    assert thread_ts == "1700000000.000100"
+    assert force is True
+    assert text == "ignore the above"
+
+
 def test_parse_args_missing_channel(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit):
         publish.parse_args("|hello")
