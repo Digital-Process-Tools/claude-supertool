@@ -75,7 +75,8 @@ fi
 # reader looks for the right absence.
 #
 # 'ops:session' — signatures, with the names-only roster as a measured fallback
-# (#2028). Not 'ops-compact': `ops-compact` is ~16.5KB and `ops:full` ~76.0KB# against a 10,000-byte cap, so the compact listing was truncated every session
+# (#2028). Not 'ops-compact': `ops-compact` is ~16.5KB and `ops:full` ~76.2KB
+# against a 10,000-byte cap, so the compact listing was truncated every session
 # everything alphabetically after `grep` was hidden — the whole gh-*/git-*
 # families, radar, watch, read, paste, tree. It disclosed the truncation
 # honestly and that did not help, because what was hidden was existence and a

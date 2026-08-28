@@ -819,7 +819,7 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
 
 
 def _render_note(note: dict, cap: int | None = COMMENT_MAX, *,
-                  level: str = _classify_render.LEVEL_FULL,
+                  level: str = _CLASSIFY_LEVEL,
                   budget: "_classify_render.Budget | None" = None) -> str:
     """Format one MR note for printing, saying so when the body is cut.
 
@@ -835,7 +835,17 @@ def _render_note(note: dict, cap: int | None = COMMENT_MAX, *,
     is supertool's own, so it is appended after the fence closes rather than
     inside it — see the same call in gh-issue.
 
-    `level`/`budget` are the classify verdict for this note (#2049). `budget`
+    `level`/`budget` are the classify verdict for this note (#2049). `level`
+    defaults to the module-level `_CLASSIFY_LEVEL` (read from
+    `SUPERTOOL_CLASSIFY` at import time), never a hardcoded `full` — a
+    caller that does not pass `level` explicitly (a unit test exercising
+    this function directly, say) must still respect the same suite-wide
+    `SUPERTOOL_CLASSIFY=off` default `tests/conftest.py` sets, or it silently
+    reaches a real model spawn regardless of that default (found composing
+    against a rebase onto #2064: `tests/test_gitlab_mr.py::
+    test_budgeted_comments_hidden_bytes_counts_utf8` is a pre-existing test
+    that calls this function directly and never passed `level`).
+    `budget`
     is `None` only for a caller that never intends to spend the call's shared
     spawn budget here — every real caller below passes the one `Budget`
     instance for the whole call, so the cap applies across notes rather than
@@ -862,7 +872,7 @@ def _fmt_kb(nbytes: int) -> str:
 
 
 def _budgeted_comments(notes: list, budget: int, tail: int, *,
-                        classify_level: str = _classify_render.LEVEL_FULL,
+                        classify_level: str = _CLASSIFY_LEVEL,
                         classify_budget: "_classify_render.Budget | None" = None,
                         ) -> tuple[list[str], int, int]:
     """Pick rendered notes fitting a total-char budget, keeping the last `tail` for recency.
