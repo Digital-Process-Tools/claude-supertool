@@ -14,29 +14,31 @@ assumptions still hold against the real binary -- that `--tools ""` really
 does deny tool use, and that the fixed vocabulary actually comes back for an
 ordinary safe and an ordinary suspect input.
 
-Unlike `_live_gh.py`'s `TOKEN`/`UNCONFIGURED` machinery, this does not build
-a countable-skip summary in `conftest.py` -- one live test, not a whole
-tier, and `claude` is expected to be on PATH and authenticated in this
-environment already (it is what runs this very session). Reaching for that
-machinery here would be scope this op does not need; if a second live model
-test is ever added, revisit.
+Countable since #2073: this used to skip through a private, token-less
+`_require_claude()` on the premise that it was "one live test, not a whole
+tier" and that "`claude` is expected to be on PATH and authenticated in this
+environment already". Both were false by the time anyone checked -- it is
+four tests, not one, and none of the runners `.github/workflows/slow-tests.yml`
+schedules this on carry the binary. So every one of these four skipped on
+every CI run and the suite's own skip census, which enumerates five known
+reasons and prints a count for each, reported zero against all five while
+these four went unaccounted for. `tests/_classify_live.py` is the
+`_live_gh.py`-shaped fix: a shared `require_claude()` that skips carrying a
+grep-able token, and `conftest.py` counts it the same way it counts the other
+five.
 """
 from __future__ import annotations
-
-import shutil
 
 import pytest
 
 from _preset_loader import load_preset_module
+import _classify_live
 
 model = load_preset_module("classify", "model", prefix="cls_live_")
 
 pytestmark = pytest.mark.slow
 
-
-def _require_claude():
-    if shutil.which("claude") is None:
-        pytest.skip("claude is not on PATH in this environment")
+_require_claude = _classify_live.require_claude
 
 
 def test_an_ordinary_safe_message_comes_back_safe() -> None:

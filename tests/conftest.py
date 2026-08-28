@@ -62,6 +62,14 @@ try:
 except ImportError:  # pragma: no cover - only in the synthetic-repo suites
     _git_decline = None
 
+# Same tolerance, same reason (#2073): the gate in front of the `classify`
+# live model tests, and its countable skip -- see tests/_classify_live.py for
+# why this tier's expected count is not always 0.
+try:
+    import _classify_live  # noqa: E402
+except ImportError:  # pragma: no cover - only in the synthetic-repo suites
+    _classify_live = None
+
 # Same tolerance, same reason (#1998): the class guard for the #1981 race --
 # no test may create a `.py` file inside `repo_python_files()`'s walk root at
 # runtime. Not available in the synthetic-repo suites, which have no
@@ -522,12 +530,13 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     `688 skipped` is a number. `N of 688 skipped, because this runner has no
     create-symlink privilege` is a fact somebody can act on -- it is the
     difference between an absence in the world and an absence the tooling
-    produced. Five reasons are broken out that way, each in its own helper
+    produced. Six reasons are broken out that way, each in its own helper
     below: the create-symlink privilege (#1143), the post-edit lint budget
     (#1360), an adapter that spent its whole internal budget without reaching
-    a verdict (#794/#1604), the live GitHub API (#1568) and a `git status` that
-    would not answer about a path's working-tree state (#705). This sentence
-    said "two" for as long as there were three, and "four" for as long as there
+    a verdict (#794/#1604), the live GitHub API (#1568), a `git status` that
+    would not answer about a path's working-tree state (#705), and the real
+    `claude` binary the `classify` live tests need (#2073). This sentence said
+    "two" for as long as there were three, and "four" for as long as there
     were five -- the count is the thing that goes stale, so it is derived
     nowhere and stated here once.
 
@@ -544,6 +553,7 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     _adapter_wall_summary(terminalreporter, skipped)
     _live_gh_summary(terminalreporter, skipped)
     _git_decline_summary(terminalreporter, skipped)
+    _classify_live_summary(terminalreporter, skipped)
     _write_guard_summary(terminalreporter)
 
 
@@ -636,6 +646,29 @@ def _git_decline_summary(terminalreporter, skipped):
     n = _token_skips(skipped, _git_decline.TOKEN)
     terminalreporter.write_line(_git_decline.verdict_line(n, len(skipped)))
     terminalreporter.write_line(_git_decline.POPULATION)
+
+
+def _classify_live_summary(terminalreporter, skipped):
+    """Count the skips where the real `claude` binary was not reached (#2073).
+
+    Same shape as the four above, different expectation: this tier's
+    normal state is EITHER 0 or the full population, not always 0 -- see
+    `tests/_classify_live.py`'s module docstring for why, and its
+    `verdict_line` for the wording that says so instead of implying a
+    non-zero count is always a finding the way the git/GitHub gates do.
+
+    Printed at zero too, and with its denominator and population, so this
+    does not become the sixth token silently returning to "0 of N against
+    everything" the way #2073 found five doing already.
+    """
+    if _classify_live is None:
+        terminalreporter.write_line(
+            "classify-live: NOT CHECKED -- tests/_classify_live.py is not "
+            "in this tree")
+        return
+    n = _token_skips(skipped, _classify_live.TOKEN)
+    terminalreporter.write_line(_classify_live.verdict_line(n, len(skipped)))
+    terminalreporter.write_line(_classify_live.POPULATION)
 
 
 def _write_guard_summary(terminalreporter):
