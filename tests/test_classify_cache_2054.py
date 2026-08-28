@@ -22,6 +22,7 @@ must-not-fire pair in the same fixture rather than one half tested alone:
 from __future__ import annotations
 
 from _preset_loader import load_preset_module
+from _symlink import require_symlink
 
 cache = load_preset_module("classify", "cache", prefix="cls_cache_")
 # `cache.py` does its own bare `import model` internally (a sibling module,
@@ -197,3 +198,49 @@ def test_an_entry_with_an_unexpected_shape_is_unreadable(tmp_path) -> None:
         "an entry naming could-not-classify should never have been written "
         "in the first place -- reading one back must refuse it rather than "
         "hand back a verdict this cache is not supposed to be able to hold")
+
+
+# --- a symlink planted at the entry's own name is refused, not followed ----
+# `get()`'s `os.open(path, os.O_RDONLY | nofollow)` is the guard; nothing in
+# this module exercised it before this test, which is exactly the gap #2054's
+# own auditor round flagged: an edit that silently dropped the O_NOFOLLOW bit
+# (a "simplification" to a plain `open()`) would not have reddened anywhere.
+# `require_symlink()` -- not a `skipif(os.name == "nt")` -- so this runs
+# wherever the privilege is actually present, Windows included, rather than
+# hardcoding "Windows cannot" the way #1143's own module docstring warns
+# against.
+
+def test_a_symlink_planted_at_the_entry_name_is_refused_not_followed(
+        tmp_path) -> None:
+    require_symlink()
+    c = _cache(tmp_path)
+    victim_dir = tmp_path / "victim"
+    victim_dir.mkdir()
+    victim = victim_dir / "secret.json"
+    victim.write_text(
+        '{"state": "safe", "axes": [], "reason": "", "written": 0}',
+        encoding="utf-8")
+    root, why = c._root()
+    assert root is not None, "the cache root itself must establish cleanly: {0}".format(why)
+    entry_path = c._path(cache.key("hello"))
+    import os as _os
+    _os.symlink(str(victim), entry_path)
+
+    got, status = c.get("hello")
+
+    assert got is None, (
+        "a symlinked entry must never be followed into a verdict, even one "
+        "that happens to parse as a well-formed cache entry")
+    assert status != "miss", (
+        "a symlink at the name is a different fact than no entry at all")
+    assert "unreadable" in status
+    # The positive control this test's own docstring promises: an ordinary,
+    # non-symlinked entry at the same path still round-trips as a hit --
+    # proving the refusal above is actually about the symlink and not some
+    # unrelated brokenness in this fixture's setup.
+    _os.unlink(entry_path)
+    v = model.Verdict("safe", [], "")
+    assert c.put("hello", v) == ""
+    got2, status2 = c.get("hello")
+    assert status2 == "hit"
+    assert got2 == v

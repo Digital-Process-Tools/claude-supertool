@@ -54,6 +54,21 @@ environment -- this module owns none of the "extra config key" plumbing
 `docs/contributing.md` documents, and adding a knob nobody asked for is not
 this issue's job.
 
+**A symlink or reparse point planted at an entry's own name is refused, not
+followed.** `os.open(..., os.O_NOFOLLOW)` is the guard on POSIX; on Windows,
+where `O_NOFOLLOW` does not exist, `get()` falls back to an `os.lstat` check
+first (`stat.S_ISLNK` / `st_reparse_tag`), the same fallback
+`presets/_image_root.py::_verify_by_lstat` uses for the root directory
+itself -- REASONED from CPython's documented behaviour, not observed on a
+Windows host, the same grade that module records for its own Windows
+branch. Without either check, a co-tenant able to write inside the
+already-verified cache root (a different local uid squatting the leaf is
+refused by `_image_root.ensure`, but nothing stops another process running
+as the *same* uid) could plant a symlink at a predictable content-hash name
+and have `get()` hand back an attacker-chosen `safe`/`suspect` verdict for
+arbitrary text -- the boundary this repo's own untrusted-input convention
+exists to hold.
+
 **Never renders `could-not-classify` and never conflates "no entry" with "an
 entry exists and could not be read".** `get()` returns three states for
 "nothing usable was found" -- `"miss"` (no file), `"expired"` (a `safe`
@@ -82,6 +97,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import sys
 import tempfile
 import time
@@ -212,6 +228,26 @@ class Cache:
             return None, "unreadable (cache root: {0})".format(why)
         path = os.path.join(root, "{0}.json".format(key(text)))
         nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if not nofollow:
+            # Windows: `O_NOFOLLOW` does not exist, so `os.open` below would
+            # follow a symlink or reparse point planted at this name with no
+            # refusal at all -- `_image_root._verify_by_lstat` is the
+            # precedent for the fallback: `lstat` does not follow the final
+            # component, so a link is visible here even where the open-time
+            # flag cannot see it. REASONED from CPython's documented
+            # `st_reparse_tag`/`stat.S_ISLNK` behaviour, not observed on a
+            # Windows host -- the same grade `_image_root.py` records for
+            # its own Windows branch.
+            try:
+                st = os.lstat(path)
+            except FileNotFoundError:
+                return None, "miss"
+            except OSError as exc:
+                return None, "unreadable ({0})".format(type(exc).__name__)
+            if stat.S_ISLNK(st.st_mode) or getattr(st, "st_reparse_tag", 0):
+                return None, (
+                    "unreadable (a symlink or reparse point was refused, "
+                    "not followed)")
         try:
             fd = os.open(path, os.O_RDONLY | nofollow)
         except FileNotFoundError:
