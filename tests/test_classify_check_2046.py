@@ -9,8 +9,6 @@ survive the trip to the printed report without being read as `safe`.
 """
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from _preset_loader import load_preset_module
