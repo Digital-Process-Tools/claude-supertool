@@ -93,13 +93,50 @@ def test_tracked_files_must_not_split_a_u2028_filename_in_two() -> None:
     assert not any(f == "weird.py" for f in (files or []))
 
 
+@contextmanager
+def _tracking_one_file_via_index(name: str, *, quote_path: bool = True):
+    """Like `_tracking_one_file`, but writes the git INDEX entry directly
+    with plumbing rather than creating an OS filesystem entry named `name`.
+
+    A backslash is an ordinary filename byte to git and to POSIX, but it is
+    the path separator on Windows -- `open(os.path.join(d, "ff\\ff.py"))`
+    would resolve to a subdirectory `ff` that was never created, raising
+    before the test ever reaches the C-quoting assertion under test. Adding
+    the tree entry with `git update-index --add --cacheinfo` never asks the
+    OS to create a file by that name, so the same reproduction holds on
+    every platform CI runs this suite on.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        _run(["init", "-q"], d)
+        if not quote_path:
+            _run(["config", "core.quotePath", "false"], d)
+        env = {**os.environ, **_HERMETIC}
+        blob = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"], cwd=d, env=env,
+            input="x = 1\n", capture_output=True, text=True,
+            encoding="utf-8", errors="replace")
+        sha = blob.stdout.strip()
+        assert blob.returncode == 0 and sha, blob.stderr
+        r = _run(["update-index", "--add", "--cacheinfo",
+                  f"100644,{sha},{name}"], d)
+        assert r.returncode == 0, r.stderr
+        r = _run(["commit", "-q", "-m", "x"], d)
+        assert r.returncode == 0, r.stderr
+        cwd = os.getcwd()
+        os.chdir(d)
+        try:
+            yield d
+        finally:
+            os.chdir(cwd)
+
+
 def test_tracked_files_must_not_leave_c_quoting_on_a_backslash_name() -> None:
     """The reproduced finding 2 route: a backslash in the filename is
     C-quoted by git under stock config. The list must carry the real
     filename, not the quoted transcript, so `_match_glob` can still match it.
     """
     name = "ff\\ff.py"
-    with _tracking_one_file(name, quote_path=True):
+    with _tracking_one_file_via_index(name, quote_path=True):
         files = supertool._doctor_tracked_files()
     assert files == [name]
     assert supertool._match_glob(files[0], "*.py")
@@ -169,3 +206,27 @@ def test_classify_probe_render_does_not_forge_a_row_from_an_embedded_newline(
     # the real tally line.
     assert not any(ln.strip().startswith("- forged:") for ln in rendered_lines), (
         f"embedded newline in an adapter reason forged a row: {forged_rows!r}")
+
+
+def test_a_crashing_probe_does_not_forge_a_row_from_the_exception_text(
+        monkeypatch) -> None:
+    """Caught in review: the `except Exception` branch right next to the two
+    rows this fix just flattened does not flatten `str(exc)` either, and a
+    tracked filename can now legitimately carry a newline (the `-z` fix
+    hands the WHOLE name through instead of shredding it at the separator),
+    so an exception echoing its `target` argument verbatim can still forge a
+    row the same way finding 3 of #2022 describes.
+    """
+    name = "real\n- forged: resolves -- everything is fine.py"
+    config = {"validators": {"fake": {"match": "*.py", "cmd": "true {file}"}}}
+
+    def _fake_run_one(name_, spec, target, doc_maybe_stale=False):
+        raise ValueError(target)
+
+    monkeypatch.setattr(supertool, "_validator_run_one", _fake_run_one)
+    with _tracking_one_file(name, quote_path=False):
+        out = supertool._doctor_validators_section(config, probe=True)
+
+    rendered_lines = out.splitlines()
+    assert not any(ln.strip().startswith("- forged:") for ln in rendered_lines), (
+        f"exception text forged a row: {out!r}")

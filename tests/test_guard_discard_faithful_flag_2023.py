@@ -77,11 +77,12 @@ def test_a_punctuation_word_idiom_discard_is_flagged_unfaithful(
     cmd = 'ls | xargs -I {} rm -rf {} && gh pr view 1'
     verdict = supertool.guard_command(cmd)
     assert verdict.state == "blocked", verdict
-    # The degraded idiom's own discarded text(s) must be present AND flagged.
+    # The degraded idiom's own discarded text(s) must be present AND flagged
+    # by index into `verdict.discarded`.
     assert verdict.discarded_unfaithful, (
         "the xargs/rm segment must be flagged as not faithfully rendered")
-    for text in verdict.discarded_unfaithful:
-        assert text in verdict.discarded
+    for i in verdict.discarded_unfaithful:
+        assert 0 <= i < len(verdict.discarded)
 
 
 def test_discard_line_does_not_instruct_re_sending_an_unfaithful_segment(
@@ -100,3 +101,47 @@ def test_discard_line_does_not_instruct_re_sending_an_unfaithful_segment(
     # this render could not reproduce faithfully.
     if "re-send" in line:
         assert "separately" in line
+
+
+def test_a_faithful_segment_is_not_mislabeled_by_a_duplicate_unfaithful_text(
+        tmp_path, guard_config):
+    """Caught in review: `discarded_unfaithful` must identify WHICH
+    occurrence is unfaithful, not merely which TEXT value is -- two
+    discarded segments that happen to render to the same string (one
+    faithful, one a word-rejoin fallback from an unrelated span) must not
+    both be flagged just because a set-membership check cannot tell them
+    apart.
+    """
+    guard_config(tmp_path, _TWO_OPS)
+    # `true` appears twice: once as its own faithful `;`-separated segment,
+    # once as a word-rejoin fragment of `xargs -I {} true`'s degraded span.
+    cmd = 'true; xargs -I {} true && gh pr view 1'
+    heads, unread, origins, origin_texts, origin_faithful = (
+        supertool._guard_segments_with_origins(cmd))
+    assert origin_texts == ['true', 'xargs -I', 'true', 'gh pr view 1']
+    assert origin_faithful == [True, False, False, True]
+
+    verdict = supertool.guard_command(cmd)
+    assert verdict.state == "blocked", verdict
+    assert verdict.discarded == ('true', 'xargs -I', 'true')
+
+    line = supertool._guard_discard_line(
+        verdict.discarded, 2000, verdict.discarded_unfaithful)
+    # The FIRST `true` (the genuine `;`-segment) must render plainly -- it
+    # is exactly what the caller typed and is safe to re-send. Only the
+    # SECOND `true` (the word-rejoin fragment) may carry the warning.
+    assert "`true`, `xargs -I` (could not be rendered exactly" in line, line
+
+
+def test_an_unfaithful_segment_past_the_shown_window_is_still_disclosed(
+        tmp_path, guard_config):
+    """Caught in review: the "N more" tail for discarded segments beyond the
+    first three must not silently fold an unfaithful one into an unqualified
+    count -- the reader must be told at least one of the hidden segments
+    could not be rendered exactly.
+    """
+    guard_config(tmp_path, _TWO_OPS)
+    line = supertool._guard_discard_line(
+        ("cmd1", "cmd2", "cmd3", "xargs -I {} rm -rf {}"), 2000,
+        (3,))
+    assert "could not be rendered exactly" in line

@@ -17941,8 +17941,13 @@ def _doctor_validators_section(config: Dict[str, Any], probe: bool) -> str:
                 data = _validator_run_one(name, spec, target)
             except Exception as exc:  # noqa: BLE001 — a crashing probe is itself a finding
                 unknown += 1
+                # Flattened like every other adapter/filename-derived render
+                # in this loop (#2022 finding 3): `target` can legitimately
+                # carry a newline post-fix, and an exception commonly echoes
+                # its argument verbatim, so an unflattened str(exc) could
+                # forge a row here exactly as an unflattened `detail` did.
                 rows.append(f"- {name}: could not tell — probing it raised "
-                            f"{type(exc).__name__}: {exc}")
+                            f"{type(exc).__name__}: {_flat_field(str(exc))}")
                 continue
             if not isinstance(data, dict):
                 unknown += 1
@@ -19175,13 +19180,16 @@ class GuardVerdict(NamedTuple):
     #: spending from the same text budget as everything else but never
     #: competing for the notes list's slot count.
     discarded: Tuple[str, ...] = ()
-    #: Subset of `discarded` this scanner could not render as a faithful
+    #: INDICES into `discarded` this scanner could not render as a faithful
     #: character slice (#2023) -- the #2010 fidelity guarantee does not
     #: cover a handful of all-punctuation-word shell idioms
-    #: `_guard_raw_segment_spans` falls back to a word-rejoin for. Rendered
-    #: distinctly by `guard_refusal` so a re-typed idiom is never presented
-    #: as text the caller can re-send verbatim.
-    discarded_unfaithful: Tuple[str, ...] = ()
+    #: `_guard_raw_segment_spans` falls back to a word-rejoin for. By index
+    #: rather than text: two discarded entries can render to the identical
+    #: string while only one is the degraded fallback, and a text-keyed set
+    #: cannot tell them apart -- caught in review. Rendered distinctly by
+    #: `guard_refusal` so a re-typed idiom is never presented as text the
+    #: caller can re-send verbatim.
+    discarded_unfaithful: Tuple[int, ...] = ()
 
 
 class _Replacement(NamedTuple):
@@ -20523,11 +20531,20 @@ def _guard_score(replacement: _Replacement, argv: Sequence[str]
 def _guard_discarded_segments(
         matched_origins: Sequence[int], origin_texts: Sequence[str],
         origin_faithful: Sequence[bool] = ()
-) -> Tuple[Tuple[str, ...], Tuple[str, ...]]:
+) -> Tuple[Tuple[str, ...], Tuple[int, ...]]:
     """Raw text of every segment a `blocked` verdict also discards (#1873),
-    plus the subset of that text this scanner could not render faithfully
-    (#2023) -- an all-punctuation-word shell idiom (`xargs -I {} rm -rf {}`)
-    that `_guard_raw_segment_spans` falls back to a word-rejoin for.
+    plus the INDICES into that same tuple this scanner could not render
+    faithfully (#2023) -- an all-punctuation-word shell idiom
+    (`xargs -I {} rm -rf {}`) that `_guard_raw_segment_spans` falls back to
+    a word-rejoin for.
+
+    Indices, not text values: two discarded segments can render to the
+    identical STRING while only one of them is the degraded fallback (a
+    faithful `;`-separated `true` beside a `true` that is really a
+    word-rejoin fragment of an unrelated `xargs -I {} true` span). A
+    set-membership check over text values cannot tell those apart and
+    mislabels the faithful occurrence too -- caught in review against this
+    same fix, reproduced with exactly that command.
 
     A `PreToolUse` hook decides on the whole Bash call at once — there is no
     partial-run outcome to offer. So when the earliest blocked segment is not
@@ -20559,33 +20576,48 @@ def _guard_discarded_segments(
     if not matched_origins:
         return (), ()
     earliest = min(matched_origins)
-    discarded = tuple(text for text in origin_texts[:earliest] if text.strip())
-    if not origin_faithful:
-        return discarded, ()
-    unfaithful = tuple(
-        text for text, faithful in zip(origin_texts[:earliest], origin_faithful)
-        if text.strip() and not faithful)
-    return discarded, unfaithful
+    discarded_list: List[str] = []
+    unfaithful_indices: List[int] = []
+    for idx, text in enumerate(origin_texts[:earliest]):
+        if not text.strip():
+            continue
+        faithful = origin_faithful[idx] if idx < len(origin_faithful) else True
+        if not faithful:
+            unfaithful_indices.append(len(discarded_list))
+        discarded_list.append(text)
+    return tuple(discarded_list), tuple(unfaithful_indices)
 
 
 def _guard_discard_line(discarded: Sequence[str], budget: int,
-                        unfaithful: Sequence[str] = ()) -> str:
+                        unfaithful: Sequence[int] = ()) -> str:
     """One line naming `discarded`, bounded by `budget`, or "" for none.
 
     Deliberately not one of `_guard_notes`'s capped notes — see
     `GuardVerdict.discarded` and `_guard_discarded_segments` for why sharing
     that budget was the bug.
 
-    `unfaithful` (#2023) names the subset of `discarded` this scanner could
-    not render as a faithful character slice — an all-punctuation-word shell
-    idiom `_guard_raw_segment_spans` falls back to a word-rejoin for
-    (`xargs -I {} rm -rf {}` loses the `{}` placeholders binding its two
-    halves). That text is marked rather than presented beside faithfully
-    rendered text under the same "re-send them separately" instruction: a
-    reader who retypes a word-rejoin verbatim is retyping something nobody
-    wrote. Chosen over dropping the instruction outright (the issue's other
+    `unfaithful` (#2023) names, by INDEX into `discarded`, the entries this
+    scanner could not render as a faithful character slice — an
+    all-punctuation-word shell idiom `_guard_raw_segment_spans` falls back
+    to a word-rejoin for (`xargs -I {} rm -rf {}` loses the `{}`
+    placeholders binding its two halves). By index rather than by text
+    value: two discarded segments can render to the identical string while
+    only one of them is the degraded fallback, and a set-membership check
+    over text cannot tell those apart — caught in review, reproduced with a
+    faithful `;`-separated `true` sitting beside a `true` that is really a
+    word-rejoin fragment of an unrelated `xargs -I {} true` span.
+
+    That entry is marked rather than presented beside faithfully rendered
+    text under the same "re-send them separately" instruction: a reader who
+    retypes a word-rejoin verbatim is retyping something nobody wrote.
+    Chosen over dropping the instruction outright (the issue's other
     candidate shape) because most commands here carry no such idiom at all,
     and the ordinary case should keep its plain, unqualified instruction.
+
+    An unfaithful entry past the first three (`shown`, below) is not
+    silently folded into the unqualified "N more" tail either — also caught
+    in review — so the disclosure holds regardless of where in the list the
+    degraded entry falls.
     """
     if not discarded or budget <= 0:
         return ""
@@ -20594,14 +20626,14 @@ def _guard_discard_line(discarded: Sequence[str], budget: int,
     quoted: List[str] = []
     spent = 0
     any_unfaithful_shown = False
-    for text in shown:
+    for i, text in enumerate(shown):
         left = budget - spent
         if left <= 0:
             break
         piece = _guard_quote(text, min(_GUARD_USE_CAP, left))
         if not piece:
             break
-        if text in unfaithful_set:
+        if i in unfaithful_set:
             quoted.append("`" + piece + "` (could not be rendered exactly "
                           "— do not re-send as shown)")
             any_unfaithful_shown = True
@@ -20611,10 +20643,14 @@ def _guard_discard_line(discarded: Sequence[str], budget: int,
     if not quoted:
         return ""
     joined = ", ".join(quoted)
+    hidden_unfaithful = sum(1 for i in unfaithful_set if i >= len(shown))
     extra = (f" and {len(discarded) - 3} more" if len(discarded) > 3 else "")
+    if extra and hidden_unfaithful:
+        extra += (f" ({hidden_unfaithful} of which could not be rendered "
+                  "exactly)")
     plural = "command" if len(discarded) == 1 else "commands"
     them = "it" if len(discarded) == 1 else "them"
-    if any_unfaithful_shown:
+    if any_unfaithful_shown or hidden_unfaithful:
         tail = (" — re-send the faithfully rendered ones separately; a "
                 "marked one could not be rendered exactly and must be "
                 "retyped by hand rather than re-sent as shown")
