@@ -29,6 +29,7 @@ happened and a `ts` you cannot yet link to is not a `ts` you do not have.
 """
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -67,21 +68,64 @@ def _resolve_body(arg: str) -> str:
     return arg
 
 
+_SLACK_TS_RE = re.compile(r"\d{9,}\.\d{3,6}")
+
+
 def parse_args(arg: str) -> tuple[str, str, str | None, bool]:
-    """Return (channel, text, thread_ts, force)."""
-    parts = arg.split("|", 3)
-    if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
+    """Return (channel, text, thread_ts, force).
+
+    Parsed from the RIGHT, not with a bounded `split("|", 3)` (#2032 review).
+    TEXT is the one field here that can be Slack message content -- someone
+    else's words, possibly echoed back from a `slack_message` event by an
+    agent replying in a thread -- and unlike CHANNEL_ID/THREAD_TS/force it is
+    not itself pipe-free by construction. A left-bounded split consumes `|`
+    characters INSIDE the message first and only then reads what is left as
+    THREAD_TS/force, so a message body containing two or more `|` could
+    silently truncate the text and reinterpret its own tail as THREAD_TS or
+    -- worse -- as the literal token `force`, skipping `require_confirm`'s
+    human-confirmation gate on an "acts"-class op with nothing printed to
+    say so.
+
+    So `force` and `thread_ts` are recognised only when the LAST field(s),
+    after splitting on every `|`, EXACTLY match their own narrow shape --
+    the literal token `force` (case-insensitive), and a Slack `ts`
+    (digits, a literal dot, digits) -- and only then are they peeled off before the text is
+    reassembled from whatever pipe-joined fields remain. Everything else
+    stays part of TEXT, including a literal `|` in the message. This is a
+    mitigation, not a proof: a message whose own last field happens to BE a
+    bare `force` or a `ts`-shaped number is still misread, and there is no
+    escaping delimiter that solves that in general for a scheme that packs
+    an untrusted string and structured fields into one pipe-joined blob. It
+    narrows the window from "any two pipes" to "the exact trailing token",
+    which is the fix worth making without redesigning the argument grammar
+    the issue asked for.
+    """
+    parts = arg.split("|")
+    if len(parts) < 2 or not parts[0].strip():
         sys.stderr.write(
             "ERROR: usage slack_publish:CHANNEL_ID|TEXT_OR_FILE_OR_file://PATH[|THREAD_TS[|force]]\n"
         )
         sys.exit(2)
     channel = parts[0].strip()
-    text = _resolve_body(parts[1]).strip()
+    rest = parts[1:]
+    force = False
+    if len(rest) > 1 and rest[-1].strip().lower() == "force":
+        force = True
+        rest = rest[:-1]
+    thread_ts: str | None = None
+    if len(rest) > 1 and _SLACK_TS_RE.fullmatch(rest[-1].strip()):
+        thread_ts = rest[-1].strip()
+        rest = rest[:-1]
+    text_raw = "|".join(rest)
+    if not text_raw.strip():
+        sys.stderr.write(
+            "ERROR: usage slack_publish:CHANNEL_ID|TEXT_OR_FILE_OR_file://PATH[|THREAD_TS[|force]]\n"
+        )
+        sys.exit(2)
+    text = _resolve_body(text_raw).strip()
     if not text:
         sys.stderr.write("ERROR: message body is empty after resolving it\n")
         sys.exit(2)
-    thread_ts = parts[2].strip() if len(parts) > 2 and parts[2].strip() else None
-    force = len(parts) > 3 and parts[3].strip().lower() == "force"
     return channel, text, thread_ts, force
 
 

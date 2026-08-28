@@ -159,6 +159,21 @@ def resolve_bot_user_id(token: str) -> str | None:
     return str(uid) if uid else None
 
 
+# A poll page nothing forces to be exhausted, unlike the *-feed sources'
+# population fetch -- but a poll that stops at page 1 while Slack still says
+# `has_more` silently drops every message older than the newest 200 and
+# newer than the stored cursor, because the cursor advances to the newest
+# ts returned and those in-between messages can never satisfy `ts > cursor`
+# again (reviewer finding on #2031: a burst of 200+ new messages inside one
+# 30s interval was permanently unrecoverable). So this DOES page, up to
+# MAX_PAGES, the same shape `github-issue-feed` uses for its own population
+# cap -- and on exhausting it without `has_more` clearing, this refuses
+# (`None`) rather than advance the cursor past messages it never fetched.
+# A refusal here leaves the state's cursor untouched, so the next poll
+# retries the same window rather than silently skipping it.
+MAX_PAGES = 5
+
+
 def _fetch(
     channel: str, thread_ts: str | None, token: str, cursor: str | None,
 ) -> tuple[list[dict[str, Any]] | None, str]:
@@ -169,35 +184,52 @@ def _fetch(
     posted", which is this source's own healthy steady state -- the same
     argument `gitlab-mr-feed`'s `fetch_population` makes for `None` (#1602).
 
-    No population to establish, unlike the `*-feed` sources: Slack's own
-    `conversations.history`/`conversations.replies` already return the most
-    recent messages with no `oldest` given, so a first poll's "what I found"
-    is naturally bounded by the API's own page rather than needing a
-    `MAX_PAGES` refusal the way `github-issue-feed` does.
+    Unlike the `*-feed` sources there is no population to *establish* --
+    only new messages to catch up on -- so a first poll's "what I found" is
+    naturally bounded by one page rather than needing a refusal the way
+    `github-issue-feed`'s does. A later poll catching up on a burst is a
+    different question, and that is what `MAX_PAGES` above is for.
     """
     method = "conversations.replies" if thread_ts else "conversations.history"
-    params: dict[str, Any] = {"channel": channel, "limit": 200}
-    if thread_ts:
-        params["ts"] = thread_ts
-    if cursor:
-        params["oldest"] = cursor
-    try:
-        resp = _api.call(method, token, params=params)
-    except _api.SlackTransportError as e:
-        return None, f"ERROR: Slack request failed for channel {channel!r}: {e}"
-    if not isinstance(resp, dict) or not resp.get("ok"):
-        err = str((resp or {}).get("error") or "unknown_error") if isinstance(resp, dict) else "malformed response"
-        return None, f"ERROR: Slack API refused {method} for channel {channel!r}: {err}"
-    raw = resp.get("messages")
-    if not isinstance(raw, list):
-        return None, f"ERROR: unexpected payload shape from Slack for channel {channel!r}"
-    out = [m for m in raw if isinstance(m, dict) and isinstance(m.get("ts"), str)]
+    collected: list[dict[str, Any]] = []
+    page_cursor: str | None = None
+    for _page in range(MAX_PAGES):
+        params: dict[str, Any] = {"channel": channel, "limit": 200}
+        if thread_ts:
+            params["ts"] = thread_ts
+        if cursor:
+            params["oldest"] = cursor
+        if page_cursor:
+            params["cursor"] = page_cursor
+        try:
+            resp = _api.call(method, token, params=params)
+        except _api.SlackTransportError as e:
+            return None, f"ERROR: Slack request failed for channel {channel!r}: {e}"
+        if not isinstance(resp, dict) or not resp.get("ok"):
+            err = str((resp or {}).get("error") or "unknown_error") if isinstance(resp, dict) else "malformed response"
+            return None, f"ERROR: Slack API refused {method} for channel {channel!r}: {err}"
+        raw = resp.get("messages")
+        if not isinstance(raw, list):
+            return None, f"ERROR: unexpected payload shape from Slack for channel {channel!r}"
+        collected.extend(m for m in raw if isinstance(m, dict) and isinstance(m.get("ts"), str))
+        meta = resp.get("response_metadata")
+        page_cursor = meta.get("next_cursor") if isinstance(meta, dict) else None
+        if not resp.get("has_more") or not page_cursor:
+            break
+    else:
+        return None, (f"ERROR: more than {MAX_PAGES * 200} new messages in "
+                      f"channel {channel!r} since the last poll -- catching "
+                      f"up would take more than {MAX_PAGES} pages this tick")
     # conversations.history returns newest-first, conversations.replies
     # returns oldest-first -- sort explicitly rather than trust either.
-    out.sort(key=lambda m: float(m["ts"]))
+    # Numeric, not string: Slack's ts is fixed-width today so the two agree,
+    # but the filter below compares the same way the sort orders, on
+    # purpose, rather than two comparisons that happen to agree by luck.
+    collected.sort(key=lambda m: float(m["ts"]))
     if cursor is not None:
-        out = [m for m in out if m["ts"] > cursor]
-    return out, ""
+        cursor_f = float(cursor)
+        collected = [m for m in collected if float(m["ts"]) > cursor_f]
+    return collected, ""
 
 
 def _event_for(msg: dict[str, Any], bot_user_id: str | None) -> dict[str, Any]:

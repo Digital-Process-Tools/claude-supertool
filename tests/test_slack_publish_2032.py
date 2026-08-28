@@ -41,13 +41,84 @@ def test_parse_args_with_thread_ts() -> None:
 
 
 def test_parse_args_force_flag() -> None:
-    _c, _t, _ts, force = publish.parse_args("C0123456|hi||force")
+    """No thread_ts needed to reach `force` -- the parser recognises the
+    trailing `force` token by shape now, not by position (see
+    `test_parse_args_force_flag_with_thread_ts_present` for both together)."""
+    _c, _t, _ts, force = publish.parse_args("C0123456|hi|force")
+    assert force is True
+    _c2, text2, _ts2, _force2 = publish.parse_args("C0123456|hi|force")
+    assert text2 == "hi"
+
+
+def test_parse_args_force_flag_with_thread_ts_present() -> None:
+    _c, text, thread_ts, force = publish.parse_args(
+        "C0123456|hi|1699999999.000100|force")
+    assert text == "hi"
+    assert thread_ts == "1699999999.000100"
     assert force is True
 
 
 def test_parse_args_no_force_by_default() -> None:
     _c, _t, _ts, force = publish.parse_args("C0123456|hi")
     assert force is False
+
+
+def test_a_message_with_several_pipes_is_never_truncated_or_misread() -> None:
+    """The auditor's finding, the reachable half. Before this fix,
+    `split("|", 3)` on `C0123456|check this table: a | b | c | d` silently
+    dropped everything past the third `|` from TEXT and misread the
+    unrelated fragment `b` as THREAD_TS -- confirmed against the pre-fix
+    logic directly (not by reverting the file, which would redden a
+    concurrent suite run): `parse_args_old(...)` reproduced inline below
+    returns `('C0123456', 'check this table: a ', 'b', False)`, silently
+    corrupting both TEXT and THREAD_TS with no error printed. This is the
+    "must fire" half of the pairing below: the fixed parser must preserve
+    every pipe as part of the message and must not invent a THREAD_TS out
+    of message content that never claimed to be one."""
+    def parse_args_old(arg: str) -> tuple[str, str, str | None, bool]:
+        parts = arg.split("|", 3)
+        channel = parts[0].strip()
+        text = parts[1]
+        thread_ts = parts[2].strip() if len(parts) > 2 and parts[2].strip() else None
+        force = len(parts) > 3 and parts[3].strip().lower() == "force"
+        return channel, text, thread_ts, force
+
+    msg = "C0123456|check this table: a | b | c | d"
+    assert parse_args_old(msg) == (
+        "C0123456", "check this table: a ", "b", False), (
+        "the pre-fix reproduction itself no longer matches -- re-derive "
+        "the repro before trusting the fixed assertion below")
+
+    channel, text, thread_ts, force = publish.parse_args(msg)
+    assert channel == "C0123456"
+    assert text == "check this table: a | b | c | d"
+    assert thread_ts is None
+    assert force is False
+
+
+def test_a_pipe_inside_the_message_text_does_not_smuggle_force() -> None:
+    """The "must not fire" half, paired with the test above so a silent
+    harness cannot pass both by doing nothing: a message that does NOT end
+    in the exact word `force` never sets the flag, whatever else it says."""
+    _c, text, _ts, force = publish.parse_args(
+        "C0123456|deploy this | force it through | but not today")
+    assert force is False
+    assert text == "deploy this | force it through | but not today"
+
+
+def test_a_trailing_force_shaped_word_in_real_prose_is_still_a_known_gap() -> None:
+    """The fix's own stated limit: if the message's OWN last pipe-separated
+    field is exactly the token `force`, it is still read as the flag --
+    narrowed from "any construction with two or more pipes" to "the exact
+    trailing token", not eliminated (there is no delimiter-escaping scheme
+    that closes this in general for a grammar that packs an untrusted
+    string and structured fields into one pipe-joined blob). Documented in
+    `parse_args`'s own docstring; pinned here so a future rewrite notices
+    if it accidentally either widens the hole back open or genuinely
+    closes it (either changes this assertion)."""
+    _c, text, _ts, force = publish.parse_args("C0123456|please don't|force")
+    assert force is True
+    assert text == "please don't"
 
 
 def test_parse_args_missing_channel(capsys: pytest.CaptureFixture[str]) -> None:
@@ -120,9 +191,9 @@ def test_main_carries_thread_ts_into_the_post_body() -> None:
 
     with mock.patch.object(publish, "call", fake_call), \
          mock.patch.object(publish, "get_bot_token", return_value="xoxb-fake"):
-        publish.main("C0123456|reply|1.0")
+        publish.main("C0123456|reply|1700000000.000100")
 
-    assert calls[0][1]["thread_ts"] == "1.0"
+    assert calls[0][1]["thread_ts"] == "1700000000.000100"
 
 
 def test_main_prints_permalink_when_the_lookup_succeeds(capsys: pytest.CaptureFixture[str]) -> None:

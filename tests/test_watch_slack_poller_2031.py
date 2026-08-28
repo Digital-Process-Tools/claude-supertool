@@ -256,3 +256,79 @@ def test_bare_channel_id_calls_conversations_history() -> None:
          mock.patch.object(poller, "resolve_bot_user_id", return_value=BOT_UID):
         poller.poll({}, CTX)
     assert calls == ["conversations.history"]
+
+# --- pagination: a burst bigger than one page (reviewer finding) -----------
+
+def test_a_burst_bigger_than_one_page_is_not_silently_dropped() -> None:
+    """Before this fix, a single `has_more=True` page's newest ts became the
+    new cursor, permanently skipping every older-than-that message the page
+    never fetched -- they could never satisfy `ts > cursor` again. Two
+    pages here cover 250 "new" messages; every one of them must survive."""
+    poller = _load_poller()
+    page1 = {
+        "ok": True,
+        "messages": [_msg(f"{2000000000 + i}.000000", f"m{i}") for i in range(200)],
+        "has_more": True,
+        "response_metadata": {"next_cursor": "PAGE2"},
+    }
+    page2 = {
+        "ok": True,
+        "messages": [_msg(f"{2000000200 + i}.000000", f"m{200 + i}") for i in range(50)],
+        "has_more": False,
+    }
+    calls: list[dict] = []
+
+    def fake_call(method, token, *, params=None, body=None, timeout=15):
+        calls.append(dict(params or {}))
+        return page2 if params and params.get("cursor") == "PAGE2" else page1
+
+    with mock.patch.object(poller._api, "call", fake_call), \
+         mock.patch.object(poller, "resolve_bot_user_id", return_value=BOT_UID):
+        events, new_state = poller.poll({}, CTX)
+
+    assert len(events) == 250, len(events)
+    assert new_state["cursor"] == "2000000249.000000"
+    assert len(calls) == 2
+    assert calls[1]["cursor"] == "PAGE2"
+
+
+def test_exhausting_max_pages_refuses_rather_than_skip_the_rest() -> None:
+    """Every page still says has_more -- the poll must not invent a partial
+    population by advancing the cursor past what it never fetched. It
+    reports slack_unreachable (edge-triggered, same as any other outage)
+    and leaves state untouched, so the next poll retries the same window."""
+    poller = _load_poller()
+
+    def fake_call(method, token, *, params=None, body=None, timeout=15):
+        return {
+            "ok": True,
+            "messages": [_msg("1.0", "still going")],
+            "has_more": True,
+            "response_metadata": {"next_cursor": "NEXT"},
+        }
+
+    with mock.patch.object(poller._api, "call", fake_call), \
+         mock.patch.object(poller, "resolve_bot_user_id", return_value=BOT_UID):
+        events, new_state = poller.poll({}, CTX)
+
+    assert _keys(events) == ["slack_unreachable"]
+    assert new_state["lookup"] == poller.LOOKUP_UNAVAILABLE
+    assert "cursor" not in new_state
+
+
+def test_cursor_filter_compares_numerically_not_lexically() -> None:
+    """The sort key and the filter must agree: both numeric. A lexical
+    filter would read "9.5" as greater than "10.0" (string order), silently
+    losing or duplicating messages the moment a ts is not the fixed-width
+    shape Slack happens to use today."""
+    poller = _load_poller()
+    calls: list[dict] = []
+
+    def fake_call(method, token, *, params=None, body=None, timeout=15):
+        calls.append(dict(params or {}))
+        return {"ok": True, "messages": [_msg("10.000000", "kept")], "has_more": False}
+
+    with mock.patch.object(poller._api, "call", fake_call):
+        out, err = poller._fetch(CHANNEL, None, "xoxb-fake", cursor="9.500000")
+    assert err == ""
+    assert [m["ts"] for m in out] == ["10.000000"]
