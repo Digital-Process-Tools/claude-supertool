@@ -105,52 +105,6 @@ def test_tracked_files_must_not_split_a_u2028_filename_in_two() -> None:
     assert not any(f == "weird.py" for f in (files or []))
 
 
-@contextmanager
-def _tracking_one_file_via_index(name: str, *, quote_path: bool = True):
-    """Like `_tracking_one_file`, but writes the git INDEX entry directly
-    with plumbing rather than creating an OS filesystem entry named `name`.
-
-    For a name the OS filesystem itself refuses to create -- one holding a
-    literal newline, for instance, which Windows rejects at `open()` time
-    with `OSError: [Errno 22] Invalid argument` (observed on CI,
-    windows-latest). `git ls-files` reads the index, not the working tree,
-    so the tracked file never has to exist on disk at all for this scanner
-    to see it; `git update-index --add --cacheinfo` writes the tree entry
-    directly and never asks the OS to create a file by that name.
-
-    NOT a general escape hatch, though: git's own `--cacheinfo` parser
-    refuses a backslash in the path it is given -- `fatal: git
-    update-index: --cacheinfo cannot add ff\\ff.py`, also observed on CI,
-    windows-latest -- because a backslash is git's own path separator on
-    Windows, a restriction this plumbing route does not sidestep. A
-    fixture built on a Windows-reserved character (`\\`, `/`, `:`, `"`,
-    `<`, `>`, `|`, `?`, `*`) needs a different route or a different
-    character entirely; see `test_tracked_files_must_not_leave_c_quoting_on_a_non_ascii_name`.
-    """
-    with tempfile.TemporaryDirectory() as d:
-        _run(["init", "-q"], d)
-        if not quote_path:
-            _run(["config", "core.quotePath", "false"], d)
-        env = {**os.environ, **_HERMETIC}
-        blob = subprocess.run(
-            ["git", "hash-object", "-w", "--stdin"], cwd=d, env=env,
-            input="x = 1\n", capture_output=True, text=True,
-            encoding="utf-8", errors="replace")
-        sha = blob.stdout.strip()
-        assert blob.returncode == 0 and sha, blob.stderr
-        r = _run(["update-index", "--add", "--cacheinfo",
-                  f"100644,{sha},{name}"], d)
-        assert r.returncode == 0, r.stderr
-        r = _run(["commit", "-q", "-m", "x"], d)
-        assert r.returncode == 0, r.stderr
-        cwd = os.getcwd()
-        os.chdir(d)
-        try:
-            yield d
-        finally:
-            os.chdir(cwd)
-
-
 def test_tracked_files_must_not_leave_c_quoting_on_a_non_ascii_name() -> None:
     """The reproduced finding 2 route: a non-ASCII byte in the filename is
     C-quoted by git under stock config. The list must carry the real
@@ -242,29 +196,34 @@ def test_classify_probe_render_does_not_forge_a_row_from_an_embedded_newline(
 def test_a_crashing_probe_does_not_forge_a_row_from_the_exception_text(
         monkeypatch) -> None:
     """Caught in review: the `except Exception` branch right next to the two
-    rows this fix just flattened does not flatten `str(exc)` either, and a
-    tracked filename can now legitimately carry a newline (the `-z` fix
-    hands the WHOLE name through instead of shredding it at the separator),
-    so an exception echoing its `target` argument verbatim can still forge a
-    row the same way finding 3 of #2022 describes.
+    rows this fix just flattened does not flatten `str(exc)` either, so an
+    exception message carrying a newline can still forge a row the same way
+    finding 3 of #2022 describes.
 
-    Via `_tracking_one_file_via_index`, not `_tracking_one_file`: a literal
-    newline in a filename is refused by the Windows filesystem at file-
-    creation time (`OSError: [Errno 22] Invalid argument`, observed on CI,
-    windows-latest), before the test ever reaches the assertion under test.
-    `git ls-files` reads the index, not the working tree, so the file this
-    scenario needs never has to exist on disk at all -- the index entry
-    alone is sufficient, and git's own tree-entry format has no comparable
-    restriction on an embedded newline the way the OS filesystem does.
+    Second round on CI (#2036, windows-latest 3.11, job #98795655692): a
+    newline-carrying FILENAME was the original route to that exception
+    text, via `_tracking_one_file_via_index` -- but git's own path
+    validation refuses a newline in an index path on Windows too, before
+    the working tree is even consulted (`fatal: git update-index:
+    --cacheinfo cannot add real\n- forged: ...`), the same wall the
+    backslash fixture hit one commit earlier, one layer down.
+
+    The newline filename was never the property under test, though -- it
+    was one route to a multi-line exception message, and the assertion
+    only cares that the RENDER flattens whatever `str(exc)` is. So the
+    exception is raised directly with a multi-line message now, and the
+    fixture is an ordinary ASCII filename with no platform opinion at all.
+    Exercised identically on every platform in the CI matrix, no plumbing
+    and no skip needed.
     """
-    name = "real\n- forged: resolves -- everything is fine.py"
+    forged_message = "probe crashed\n- forged: resolves -- everything is fine"
     config = {"validators": {"fake": {"match": "*.py", "cmd": "true {file}"}}}
 
     def _fake_run_one(name_, spec, target, doc_maybe_stale=False):
-        raise ValueError(target)
+        raise ValueError(forged_message)
 
     monkeypatch.setattr(supertool, "_validator_run_one", _fake_run_one)
-    with _tracking_one_file_via_index(name, quote_path=False):
+    with _tracking_one_file("real.py"):
         out = supertool._doctor_validators_section(config, probe=True)
 
     rendered_lines = out.splitlines()
