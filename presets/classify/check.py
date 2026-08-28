@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""classify:TEXT|file://PATH -- answer safe / suspect / could-not-classify
+for a piece of untrusted text (#2046).
+
+Two stages, and the short-circuit only ever runs toward `suspect`:
+
+    scanner matches a known shape  -> suspect, no spawn (scanner.py)
+    scanner matches nothing        -> not a verdict; the spawn produces one
+    scanner could not run          -> could-not-classify
+
+`could-not-classify` never renders as `safe` -- see `model.classify`'s
+docstring for every path that leads there. This is a labeller, not a
+gatekeeper: it returns a verdict and never drops, filters, or blocks
+anything itself. Policy about what each level means belongs to the caller.
+
+**`file://` only, no bare-path arm** (#2039 is the reason: a bare-path arm
+on a sibling publish op was a documented convenience that became a
+disclosure vector the moment untrusted text reached the slot, and this op's
+entire input population IS untrusted text). A resolved path must stay inside
+the current working directory -- the same containment every other file-path
+op in this tree enforces -- so `file:///etc/passwd` or a path climbing out
+via `..` is refused before anything is read.
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import scanner  # noqa: E402
+import model  # noqa: E402
+
+_FILE_PREFIX = "file://"
+
+
+def resolve_text(arg: str) -> str:
+    """`file://PATH` reads PATH (contained to cwd); anything else is the
+    literal text to classify. Exits (2) on a bad `file://` path -- this is a
+    usage error about the CALL, not a verdict about the text, so it is
+    reported the same way every other preset op reports a bad path rather
+    than folding into `could-not-classify`."""
+    if not arg.startswith(_FILE_PREFIX):
+        return arg
+    raw_path = arg[len(_FILE_PREFIX):]
+    if not raw_path:
+        sys.stderr.write("ERROR: file:// with no path\n")
+        sys.exit(2)
+    cwd = Path.cwd().resolve()
+    try:
+        resolved = (cwd / raw_path).resolve()
+    except OSError:
+        sys.stderr.write(f"ERROR: cannot resolve path: {raw_path!r}\n")
+        sys.exit(2)
+    try:
+        resolved.relative_to(cwd)
+    except ValueError:
+        sys.stderr.write(
+            f"ERROR: classify file:// path escapes the working directory: "
+            f"{raw_path!r}\n  resolved to: {resolved}\n  cwd: {cwd}\n")
+        sys.exit(2)
+    if not resolved.is_file():
+        sys.stderr.write(f"ERROR: file not found: {raw_path!r}\n")
+        sys.exit(2)
+    try:
+        return resolved.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        sys.stderr.write(f"ERROR: cannot read {raw_path!r}: {exc}\n")
+        sys.exit(2)
+
+
+def run(text: str) -> str:
+    """The two-stage decision, returned as the op's printed report. Kept
+    apart from `main()` so a test can call it directly with a stubbed
+    `model.classify` and never spawn anything real."""
+    findings = scanner.scan(text)
+    if findings:
+        axes = ", ".join(f.axis for f in findings)
+        lines = [
+            "verdict: suspect",
+            f"scanner: suspect ({axes})",
+            "model: not-run",
+        ]
+        for f in findings:
+            lines.append(f"  {f.axis}: {f.detail}")
+        return "\n".join(lines)
+
+    verdict = model.classify(text)
+    lines = ["verdict: " + verdict.state, "scanner: clean"]
+    if verdict.state == "safe":
+        lines.append("model: safe")
+    elif verdict.state == "suspect":
+        lines.append(f"model: suspect ({', '.join(verdict.axes)})")
+    else:
+        lines.append(f"model: could-not-classify ({verdict.reason})")
+    return "\n".join(lines)
+
+
+def main(arg: str) -> None:
+    text = resolve_text(arg)
+    if not text.strip():
+        sys.stderr.write("ERROR: nothing to classify (empty text)\n")
+        sys.exit(2)
+    print(run(text))
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        sys.stderr.write(
+            "ERROR: usage classify:TEXT_OR_file://PATH\n")
+        sys.exit(2)
+    main(":".join(sys.argv[1:]))

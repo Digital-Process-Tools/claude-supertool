@@ -185,6 +185,10 @@ _ABSENT = {
                  "map to are claimed individually and the board is not one "
                  "of them",
     "plugin-marketplace": _SUPERTOOL_OWN,
+    "classify": "a novel two-stage analysis over arbitrary untrusted text -- "
+                "no raw command produces this verdict; the `claude -p` spawn "
+                "underneath it is an implementation detail, not a raw "
+                "invocation this op supersedes",
 }
 
 
