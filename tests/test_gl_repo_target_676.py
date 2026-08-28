@@ -104,6 +104,70 @@ def test_subgroup_path_is_accepted_for_a_gitlab_call(no_dispatch) -> None:
     assert no_dispatch == [("gl-issue:5", TARGET)]
 
 
+_PYTEST_EXIT_MEANINGS = {
+    0: "pass",
+    1: "tests failed",
+    2: "interrupted, or a collection error -- the child never finished "
+       "collecting, let alone running, the tests it was asked about",
+    3: "an internal pytest error",
+    4: "a usage error in the child's own invocation",
+    5: "no tests were collected",
+}
+
+
+def _assert_child_pytest_ran_and_passed(
+    result: subprocess.CompletedProcess,
+) -> None:
+    """Only exit code 1 is a verdict about the product under test -- #2067.
+
+    `assert result.returncode == 0` renders a collection-time crash (exit 2:
+    a stale temp path, an import error) identically to a real product
+    failure. That reading cost a log read, a filed issue and a CI re-run on
+    2026-08-28 to establish that the env-var leak this test exists to catch
+    was never in question -- the child died before it could check.
+    """
+    rc = result.returncode
+    if rc == 0:
+        return
+    detail = result.stdout[-2000:] + result.stderr[-2000:]
+    if rc == 1:
+        pytest.fail(f"the child pytest ran and disagreed (exit 1): {detail}")
+    meaning = _PYTEST_EXIT_MEANINGS.get(rc, f"an undocumented exit code {rc}")
+    pytest.fail(
+        f"the child pytest never produced a verdict -- exit {rc} "
+        f"({meaning}), not a product failure:\n{detail}"
+    )
+
+
+def test_a_child_that_crashes_at_collection_is_reported_as_a_harness_failure(
+) -> None:
+    """The positive control for #2067's own fix: a collection-time death
+    (exit 2) must not be reported the same way as a real test failure."""
+    result = subprocess.CompletedProcess(
+        args=[], returncode=2, stdout="",
+        stderr="Interrupted: 1 error during collection",
+    )
+    with pytest.raises(pytest.fail.Exception) as excinfo:
+        _assert_child_pytest_ran_and_passed(result)
+    message = str(excinfo.value)
+    assert "never produced a verdict" in message
+    assert "exit 2" in message
+    assert "ran and disagreed" not in message
+
+
+def test_a_real_child_failure_is_still_reported_as_a_product_failure() -> None:
+    """The other half of the same control: exit 1 must still read as the
+    product disagreeing, not as a harness problem."""
+    result = subprocess.CompletedProcess(
+        args=[], returncode=1, stdout="1 failed", stderr="",
+    )
+    with pytest.raises(pytest.fail.Exception) as excinfo:
+        _assert_child_pytest_ran_and_passed(result)
+    message = str(excinfo.value)
+    assert "ran and disagreed" in message
+    assert "never produced a verdict" not in message
+
+
 def test_the_env_var_main_sets_does_not_survive_into_the_next_test(tmp_path) -> None:
     """`main()`'s `repo:` pre-pass sets `os.environ["SUPERTOOL_REPO"]` for
     real -- a process-global side effect `monkeypatch` never touched, so its
@@ -149,7 +213,7 @@ def test_the_env_var_main_sets_does_not_survive_into_the_next_test(tmp_path) -> 
         )
     finally:
         probe.unlink(missing_ok=True)
-    assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
+    _assert_child_pytest_ran_and_passed(result)
 
 
 def test_two_segment_path_is_accepted_for_a_gitlab_call(no_dispatch) -> None:
