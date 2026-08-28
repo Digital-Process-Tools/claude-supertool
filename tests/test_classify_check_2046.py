@@ -140,8 +140,6 @@ def test_an_absolute_file_scheme_path_outside_cwd_is_refused(monkeypatch, tmp_pa
 
 # --- #2062: stdout pinned even when the glyph is computed, not a literal --
 
-@pytest.mark.skipif(sys.platform == "win32",
-                     reason="PYTHONIOENCODING simulates a non-UTF-8 console the same way on POSIX")
 def test_a_suspect_report_survives_a_non_utf8_console() -> None:
     """`tests/test_encoding_seam.py`'s AST census only sees a non-ASCII
     STRING LITERAL reaching `print` -- it cedes an interpolated value, and
@@ -151,7 +149,16 @@ def test_a_suspect_report_survives_a_non_utf8_console() -> None:
     fence-forgery finding's `detail` embeds the matched snippet verbatim
     (`scanner.py`), and `<system` in that match starts with U+27E8. Observed
     directly against the real entry point under a non-UTF-8 console
-    codepage -- not reasoned."""
+    codepage -- not reasoned.
+
+    Not `skipif`'d on win32: `PYTHONIOENCODING` sets `TextIOWrapper`'s
+    initial codec the same way on every platform -- it is not a POSIX
+    locale variable (contrast `test_a_bare_text_call_dies_under_an_ascii_
+    locale_and_a_pinned_one_does_not` in test_encoding_seam.py, which
+    genuinely is POSIX-only because it drives `LC_ALL`). `cp1252` is also
+    one of the three codepages the module docstring names as the actual
+    Windows console default, so this leg is the more, not less, relevant
+    one to run there."""
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "cp1252"
     proc = subprocess.run(
