@@ -137,3 +137,53 @@ def test_the_system_prompt_enumerates_every_declared_axis() -> None:
     _prompt, system_prompt, _timeout = fn.calls[0]
     for axis in model.AXES:
         assert axis in system_prompt
+
+# --- #2055: the spawn pins a model rather than inheriting the host default ---
+
+def test_default_spawn_pins_a_model_and_isolates_the_call(monkeypatch) -> None:
+    """The spawn must name --model explicitly (never inherit the host's
+    configured default -- #2055) and must run isolated: --safe-mode and a
+    cwd that is not the caller's own (#2053). Argv-only check; the live test
+    in test_classify_live_2046.py proves the isolation actually holds
+    against the real binary."""
+    captured = {}
+
+    def _fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["cwd"] = kwargs.get("cwd")
+        return model.subprocess.CompletedProcess(argv, 0, stdout="SAFE",
+                                                   stderr="")
+    monkeypatch.setattr(model.subprocess, "run", _fake_run)
+    monkeypatch.delenv("SUPERTOOL_MODEL", raising=False)
+
+    model._default_spawn("prompt", model._SYSTEM_PROMPT, 10)
+
+    argv = captured["argv"]
+    assert "--model" in argv, "the spawn must name a model, never inherit it"
+    assert argv[argv.index("--model") + 1] == model.DEFAULT_MODEL
+    assert "--safe-mode" in argv
+    cwd = captured["cwd"]
+    assert cwd is not None, "must run from an explicit, isolated cwd"
+    import os as _os
+    assert _os.path.abspath(cwd) != _os.path.abspath(_os.getcwd()), (
+        "must not run from the caller's own working directory")
+
+
+def test_default_spawn_honours_the_supertool_model_env_override(monkeypatch) -> None:
+    """#2055's configurability arm: a non-reserved `model` key on the op's
+    `.supertool.json` block reaches the subprocess as SUPERTOOL_MODEL
+    (docs/contributing.md, "Extra config keys as environment variables") --
+    same mechanism `presets/watch/naming.py` documents for `watch_name`."""
+    captured = {}
+
+    def _fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        return model.subprocess.CompletedProcess(argv, 0, stdout="SAFE",
+                                                   stderr="")
+    monkeypatch.setattr(model.subprocess, "run", _fake_run)
+    monkeypatch.setenv("SUPERTOOL_MODEL", "claude-opus-5-x")
+
+    model._default_spawn("prompt", model._SYSTEM_PROMPT, 10)
+
+    argv = captured["argv"]
+    assert argv[argv.index("--model") + 1] == "claude-opus-5-x"
