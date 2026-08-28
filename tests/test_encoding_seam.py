@@ -813,6 +813,39 @@ def stdout_pin_state(tree: ast.Module) -> str:
     return "unpinned"
 
 
+def computed_print_sites(tree: ast.Module) -> List[int]:
+    """Line numbers of `print()` calls whose argument is not a plain literal.
+
+    `non_ascii_print_literals` can only judge a string literal by inspection --
+    a `Constant` node it can read the characters of. Anything else reaching
+    `print` -- a name, a call, an f-string's interpolated half -- is opaque at
+    parse time: the census cannot say whether it carries a codepoint the
+    console cannot encode. #2065 is exactly this shape: `print(run(text))` in
+    `presets/classify/check.py` carried U+27E8 from a matched fence glyph at
+    runtime, no literal anywhere in the call, and both the literal scan and
+    `_untrusted` (which only covers interpolation, #2065's own reading) had
+    nothing to say about it -- which read as nothing being wrong.
+
+    Deliberately wider than #2065's own crash: an f-string's literal segments
+    are walked by `non_ascii_print_literals` (they are `Constant` nodes inside
+    the `JoinedStr`), but the f-string as a whole is not itself a `Constant`,
+    so `print(f'{x} y')` is computed here even though it carries no non-ASCII
+    literal segment of its own -- the interpolated value is exactly the part
+    neither guard can read.
+    """
+    sites: List[int] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "print"):
+            continue
+        for arg in node.args:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                continue
+            sites.append(node.lineno)
+            break
+    return sites
+
+
 def _glyph_census() -> List[Tuple[Path, List[Tuple[int, str]], str]]:
     rows = []
     for path in preset_entry_points():
@@ -912,6 +945,81 @@ def test_the_glyph_scan_reads_all_three_states(tmp_path: Path) -> None:
     assert stdout_pin_state(parsed["pinned.py"]) == "pinned"
     assert stdout_pin_state(parsed["unpinned.py"]) == "unpinned"
     assert stdout_pin_state(parsed["no_main.py"]) == "unreadable"
+
+
+def test_computed_print_sites_catches_what_the_literal_scan_cedes(
+    tmp_path: Path,
+) -> None:
+    """The positive and negative control for #2065's own detector.
+
+    `print(run(text))` -- the shape that actually crashed -- has to be
+    flagged; a plain ASCII literal and a non-ASCII literal both have to be
+    spared, because both are already fully judged by `non_ascii_print_literals`
+    and flagging them here too would double-count them under a different
+    name. The interpolated case is the one worth stating explicitly: it
+    carries no non-ASCII literal segment of its own, so the literal scan
+    (correctly) spares it, and this detector (deliberately) does not -- an
+    interpolated value is exactly the thing neither guard can read.
+    """
+    cases = {
+        "computed.py": "def main():\n    print(run(text))\n",
+        "literal_ascii.py": "def main():\n    print('a -> b')\n",
+        "literal_non_ascii.py": "def main():\n    print('a → b')\n",
+        "interpolated.py": "def main():\n    print(f'{x} y')\n",
+        "no_args.py": "def main():\n    print()\n",
+    }
+    parsed = {}
+    for name, src in cases.items():
+        target = tmp_path / name
+        target.write_text(src, encoding="utf-8")
+        parsed[name] = ast.parse(target.read_text(encoding="utf-8"))
+
+    assert computed_print_sites(parsed["computed.py"]) == [2]
+    assert computed_print_sites(parsed["literal_ascii.py"]) == []
+    assert computed_print_sites(parsed["literal_non_ascii.py"]) == []
+    assert computed_print_sites(parsed["interpolated.py"]) == [2]
+    assert computed_print_sites(parsed["no_args.py"]) == []
+
+
+def test_the_glyph_scan_reports_what_it_cannot_verify() -> None:
+    """#2065, the coverage half: `literals=[]` reads the same for a file that
+    prints only ASCII and one whose print is computed and could carry
+    anything at runtime -- `presets/classify/check.py` was the second shape,
+    it crashed on a real console, and the census had nothing to say about it.
+
+    Widening `test_every_preset_printing_a_non_ascii_literal_pins_its_stdout`
+    itself to also fail on every computed print was measured before landing,
+    not assumed: 41 of 103 preset entry points -- about 4 in 10 -- have an
+    unpinned `print()` call whose argument is not a literal. That is not a
+    small number to triage by hand in the same change that adds the
+    detector, and #2065 names the exact risk of doing it anyway: a guard
+    that fires on 4 in 10 files trains people to add the pin without
+    thinking, or to silence it, which is worse than the guard that says
+    nothing at all. So this stays a report rather than a second hard
+    failure -- the pin for each of the 41 is a decision for that entry
+    point's own author, weighing whether its computed value can plausibly
+    carry non-ASCII, not a decision this test is positioned to make for all
+    of them at once.
+
+    What is asserted, so the measurement cannot silently drift back to
+    unwritten: the count itself. A future preset added with an unpinned
+    computed print moves this number and turns it red here, which is
+    the only difference between a report and a guard nobody reads --
+    update the number (and re-read the file it names) rather than papering
+    over the assertion.
+    """
+    unpinned_with_computed = [
+        path for path, literals, state in _glyph_census()
+        if state == "unpinned"
+        and computed_print_sites(ast.parse(path.read_text(encoding="utf-8")))
+    ]
+    names = sorted(str(p.relative_to(ROOT)) for p in unpinned_with_computed)
+    assert len(unpinned_with_computed) == 41, (
+        f"{len(unpinned_with_computed)} unpinned entry points now have a "
+        "print() call whose argument is not a literal (was 41 when this was "
+        "written) -- update this count if the change is deliberate, or "
+        "investigate why it moved if it is not:\n  " + "\n  ".join(names)
+    )
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell shim on PATH")
