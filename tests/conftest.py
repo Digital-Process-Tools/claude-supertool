@@ -331,6 +331,21 @@ def pytest_configure(config):
     # runner, never of supertool. The shipped default stays 5s, pinned by
     # test_git_timeout_disclosure_650.py::test_the_suite_budget_does_not_move_the_product_default.
     os.environ.setdefault("SUPERTOOL_GIT_TIMEOUT", "30")
+    # #2049/#2056: `gh-issue`/`gh-pr`/`gl-issue`/`gl-mr` read `SUPERTOOL_CLASSIFY`
+    # at import time and default to `full` -- every non-empty body/comment they
+    # render then reaches `presets/classify/model.py::_default_spawn`, a real
+    # `claude -p` subprocess, unless a test stubs it or sets this. Dozens of
+    # pre-existing test files fully mock `gh`/`glab` but say nothing about
+    # classify, because classify did not exist when they were written; without
+    # this they would silently start shelling out to a real, network-reaching
+    # model call per body/comment -- slow, non-hermetic, and a real API cost on
+    # every CI run, discovered by measurement (a single previously-4s test file
+    # took over a minute). `setdefault`, like the other switches in this
+    # function: a test that deliberately wants to exercise classify wiring
+    # (`tests/test_gh_issue_classify_2049.py` and siblings) stubs the spawn
+    # directly rather than fighting this default, and a test that wants a real
+    # spawn monkeypatch.setenv's over it.
+    os.environ.setdefault("SUPERTOOL_CLASSIFY", "off")
     # #149: publish-body allowlist + confirm gate. Existing publish tests use
     # `tmp_path` for body files (outside the production .max/ / drafts/ /
     # posts/ / blog/ allowlist) and don't `|force`, so opt the suite in.
