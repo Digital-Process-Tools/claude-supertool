@@ -232,6 +232,61 @@ def _fetch(
     return collected, ""
 
 
+def _anchor(
+    channel: str, thread_ts: str | None, token: str,
+) -> tuple[str | None, str]:
+    """Latest message `ts` in the channel/thread, to anchor a cold start.
+
+    A stream source's first tick begins at "now" rather than replaying
+    history (#2043) -- a channel is not an object with a beginning worth
+    replaying, and asking for the whole history on tick one is what #2043
+    was. See `docs/presets/watch.md`'s "Cold start anchors on 'now'"
+    paragraph for the full reasoning; it is not repeated in the module
+    docstring above, which predates this function.
+
+    `(ts, "")` on success. `ts` is `None` when the channel/thread has no
+    messages at all -- not a failure, just nothing to anchor on yet; the
+    caller leaves `cursor` unset and the next tick tries the same way,
+    exactly like an empty `_fetch` result would. `(None, why)` on any
+    transport or API-level failure, same shape as `_fetch`.
+
+    The two branches are NOT symmetric, on purpose: `conversations.history`
+    is newest-first (see `_fetch` above), so the bare channel case is one
+    `limit=1` call regardless of how much history the channel carries, and
+    the burst guard never sees a cold start. `conversations.replies` is
+    oldest-first, so a `limit=1` call on a thread returns the thread's
+    ROOT message, not its latest reply -- taking that as the anchor would
+    reproduce #2043 for any thread with more replies than a single tick
+    can catch up on. There is no cheap "give me the newest reply" call for
+    a thread, so this reuses `_fetch` itself (same pagination, same
+    MAX_PAGES budget) and keeps only the newest `ts` it found, discarding
+    the messages -- a cold start emits nothing either way.
+    """
+    if thread_ts is None:
+        params: dict[str, Any] = {"channel": channel, "limit": 1}
+        try:
+            resp = _api.call("conversations.history", token, params=params)
+        except _api.SlackTransportError as e:
+            return None, f"ERROR: Slack request failed for channel {channel!r}: {e}"
+        if not isinstance(resp, dict) or not resp.get("ok"):
+            err = str((resp or {}).get("error") or "unknown_error") if isinstance(resp, dict) else "malformed response"
+            return None, f"ERROR: Slack API refused conversations.history for channel {channel!r}: {err}"
+        raw = resp.get("messages")
+        if not isinstance(raw, list):
+            return None, f"ERROR: unexpected payload shape from Slack for channel {channel!r}"
+        msgs = [m for m in raw if isinstance(m, dict) and isinstance(m.get("ts"), str)]
+        if not msgs:
+            return None, ""
+        return max(msgs, key=lambda m: float(m["ts"]))["ts"], ""
+
+    messages, err = _fetch(channel, thread_ts, token, None)
+    if messages is None:
+        return None, err
+    if not messages:
+        return None, ""
+    return messages[-1]["ts"], ""
+
+
 def _event_for(msg: dict[str, Any], bot_user_id: str | None) -> dict[str, Any]:
     text = _bound(str(msg.get("text") or ""))
     user = str(msg.get("user") or msg.get("bot_id") or "")
@@ -276,6 +331,28 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         bot_user_id = resolve_bot_user_id(token)
 
     cursor = state.get("cursor")
+    if cursor is None:
+        # Cold start: anchor on the latest message instead of asking for
+        # the whole channel history (#2043). A busy channel's full history
+        # would exhaust MAX_PAGES on the very first tick, and the burst
+        # guard would then refuse correctly -- for a request that should
+        # never have been made. Delivery begins with the next message
+        # posted, which is the documented semantic for a stream source.
+        anchor_ts, anchor_err = _anchor(channel, thread_ts, token)
+        if anchor_err:
+            new_state = dict(state)
+            new_state["lookup"] = LOOKUP_UNAVAILABLE
+            if bot_user_id:
+                new_state["bot_user_id"] = bot_user_id
+            events = []
+            if state.get("lookup") != LOOKUP_UNAVAILABLE:
+                events = [{"event": "slack_unreachable", "payload": {"error": anchor_err}}]
+            return events, new_state
+        new_state = {"bot_user_id": bot_user_id, "lookup": LOOKUP_OK}
+        if anchor_ts is not None:
+            new_state["cursor"] = anchor_ts
+        return [], new_state
+
     messages, err = _fetch(channel, thread_ts, token, cursor)
     if messages is None:
         new_state = dict(state)
