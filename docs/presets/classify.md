@@ -52,6 +52,29 @@ not the scope — see [#2046](https://github.com/Digital-Process-Tools/claude-su
    Anything else — prose, a timeout, a nonzero exit, an axis name outside the
    fixed five — is `could-not-classify`, never `safe`.
 
+   **Isolated, not just tool-denied (#2053).** `--tools ""` /
+   `--strict-mcp-config` / `--disable-slash-commands` deny tools, MCP
+   servers and skills — they say nothing about hooks, CLAUDE.md discovery,
+   plugins, custom commands or auto-memory, all of which reached the
+   classifier's context before this was fixed. The spawn also runs under
+   `--safe-mode` (disables all of those; kept OAuth working, unlike
+   `--bare`, which does not) from a fresh, non-git scratch directory per
+   call, so neither the caller's project files nor its own git status leak
+   in. `tests/test_classify_live_2046.py::test_hooks_claude_md_and_auto_memory_are_actually_isolated`
+   proves it against the real binary — a positive control shows a fixture
+   hook and CLAUDE.md really do leak under the un-isolated flag set, then
+   the same fixture proves the actual spawn function does not surface them.
+
+   **Model, pinned (#2055).** `--model` is always passed explicitly —
+   default `claude-haiku-4-5-20251001` (`model.DEFAULT_MODEL`), overridable
+   per repo with a `model` key in the op's `.supertool.json` block, which
+   reaches this subprocess as `SUPERTOOL_MODEL`. Unpinned, the spawn used
+   to silently inherit whatever the host had configured (up to a 1M-context
+   Opus session to emit one line of `SAFE`), and two operators classifying
+   the same text could get answers from two different models with no way to
+   tell — which undercut the whole "two runs are comparable" argument the
+   enumerated axes exist to make.
+
 The asymmetry is the design: almost every call reaches the spawn, because
 ordinary text rarely hits a known shape. The scanner buys certainty on the
 shapes it knows, not volume reduction.

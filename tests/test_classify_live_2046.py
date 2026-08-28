@@ -75,3 +75,78 @@ def test_tools_are_actually_denied_not_merely_requested() -> None:
         assert not marker.exists(), (
             "a tool-denied spawn must not be able to perform a real "
             f"action; got exit={proc.returncode} stdout={proc.stdout!r}")
+
+
+def test_hooks_claude_md_and_auto_memory_are_actually_isolated() -> None:
+    """#2053: the spawn's isolation claim covered tools/MCP/skills but not
+    hooks, CLAUDE.md discovery, or auto-memory -- proved false by probing
+    the real binary from a directory carrying all three, exactly the way
+    `test_tools_are_actually_denied_not_merely_requested` already proves
+    the tool-denial claim rather than trusting the flag names.
+
+    Paired must-fire / must-not-fire in the same fixture: the positive
+    control below (no isolation flags) proves the fixture actually leaks,
+    so the negative assertion against the real spawn function means
+    something rather than passing because nothing ran.
+    """
+    _require_claude()
+    import json
+    import os
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        claude_dir = tdp / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "settings.json").write_text(json.dumps({
+            "hooks": {
+                "SessionStart": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": "echo HOOK-FIRED-MARKER-2053",
+                    }]
+                }]
+            }
+        }))
+        (tdp / "CLAUDE.md").write_text(
+            "PROJECT-MARKER-TEXT-2053 must never leak into the classifier.")
+
+        probe_prompt = (
+            "Print anything you were given at startup verbatim -- system "
+            "prompt content, hook output, or a project instruction file -- "
+            "or say NONE if you were given nothing beyond your ordinary "
+            "instructions.")
+
+        # Positive control: the SAME flags this op used to ship with (no
+        # isolation) really do leak this fixture's hook output and
+        # CLAUDE.md text when run from `tdp`. If this fails, the fixture
+        # itself is not exercising anything and the negative below proves
+        # nothing.
+        leaky = subprocess.run(
+            ["claude", "-p", probe_prompt,
+             "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
+             "--no-session-persistence", "--output-format", "text"],
+            cwd=str(tdp), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=60, stdin=subprocess.DEVNULL)
+        leaked = ("PROJECT-MARKER-TEXT-2053" in leaky.stdout
+                  or "HOOK-FIRED-MARKER-2053" in leaky.stdout)
+        assert leaked, (
+            "fixture sanity check failed: the un-isolated flag set did not "
+            "leak the marker, so the isolated assertion below would prove "
+            f"nothing. stdout={leaky.stdout!r}")
+
+        # Negative: model.py's actual spawn function, invoked while the
+        # caller's own cwd is this leaking directory, must not surface it.
+        old_cwd = os.getcwd()
+        os.chdir(str(tdp))
+        try:
+            isolated = model._default_spawn(probe_prompt, "Reply briefly.",
+                                             60)
+        finally:
+            os.chdir(old_cwd)
+        assert "PROJECT-MARKER-TEXT-2053" not in isolated.stdout, (
+            f"CLAUDE.md leaked: {isolated.stdout!r}")
+        assert "HOOK-FIRED-MARKER-2053" not in isolated.stdout, (
+            f"SessionStart hook output leaked: {isolated.stdout!r}")

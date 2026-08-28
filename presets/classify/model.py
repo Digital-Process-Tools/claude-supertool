@@ -1,5 +1,5 @@
-"""Stage 2 of `classify` (#2046): a tool-less `claude -p` spawn for whatever
-the scanner could not decide.
+"""Stage 2 of `classify` (#2046): a tool-less, isolated `claude -p` spawn
+for whatever the scanner could not decide.
 
 `check.py` only reaches this module when the scanner (`scanner.py`) found
 nothing -- see its docstring for why a clean scan is not itself a verdict.
@@ -14,10 +14,64 @@ this flag set, to run `touch /tmp/<marker>` "using a tool", it printed a
 transcript claiming it had -- and the file was never created. A fully
 steered classifier can still only emit text into the parser below; the
 `--tools ""` claim is a tested property of this invocation, not an assumption
-about it. `--no-session-persistence` leaves nothing on disk describing the
-call, and the classifier is never told anything about the surrounding
-session (no `--system-prompt`-adjacent context beyond the fixed prompt below)
-so it has nothing of the caller's own state to leak even if it wanted to.
+about it.
+
+**Hooks, CLAUDE.md, auto-memory and the caller's own git status -- also
+enforced, not merely claimed (#2053).** The first four flags above cover
+tools/MCP/skills only; nothing in them touches hooks, project instruction
+files, plugins, custom commands, or auto-memory, and a probe against the
+real binary from an ordinary repository proved all of those actually reach
+the classifier's context (#2053's own reproduction; this module used to
+claim otherwise). Two things close it, together:
+
+- `--safe-mode` -- "Start with all customizations (CLAUDE.md, skills,
+  plugins, hooks, MCP servers, custom commands and agents, output styles,
+  workflows, custom themes, keybindings, and more) disabled ... Auth, model
+  selection, built-in tools, and permissions work normally." The last
+  clause is why this is used instead of `--bare`: `--bare` additionally
+  restricts auth to `ANTHROPIC_API_KEY`/`apiKeyHelper` and excludes OAuth,
+  which is how most Claude Code installs (this one included) authenticate --
+  probed directly, `--bare` fails with "Not logged in" on an OAuth session
+  that `--safe-mode` runs cleanly under.
+- **A fresh, non-git scratch `cwd` per call** -- `--safe-mode` disables
+  *discovery* of CLAUDE.md and settings but a caller-supplied `cwd` is still
+  where the default system prompt's dynamic sections (git branch, recent
+  commits, working-tree status) come from; probed, an ordinary repository
+  cwd leaked its own `git log` into the classifier's context even under
+  `--safe-mode` alone. Spawning from an empty temporary directory that is
+  not a git repository removes that source too, so the classifier's context
+  no longer depends on where `classify` happened to be invoked from.
+
+`--no-session-persistence` leaves nothing on disk describing the call. What
+"nothing of the caller's own state" now means is empirically checked, not
+asserted: `test_hooks_claude_md_and_auto_memory_are_actually_isolated` in
+`test_classify_live_2046.py` reproduces a hook and a CLAUDE.md in a fixture
+directory, proves the un-isolated flag set leaks them (the positive
+control), and then proves this module's actual spawn function -- invoked
+while the caller's own cwd is that same leaking directory -- does not, the
+same way `test_tools_are_actually_denied_not_merely_requested` already
+checks the tool-denial claim against the real binary.
+
+**Model, pinned rather than inherited (#2055).** No `--model` used to be
+passed at all, so the spawn silently ran whatever the host had configured
+as its default -- on the machine that filed #2055, that was Opus with the
+1M context window, the most expensive option available, to emit one line
+reading `SAFE`. It also broke the reproducibility argument this module
+makes below: two operators classifying identical text could get verdicts
+from different models with no record of which one answered. `DEFAULT_MODEL`
+is now always passed explicitly. `claude-haiku-4-5-20251001` is the pinned
+default -- a fixed-vocabulary five-axis judgement is squarely a small-model
+task, and it is now the model `test_classify_live_2046.py`'s two verdict
+tests exercise, so a candidate that cannot answer them correctly is a
+measured failure rather than an assumption. Configurable via a `model` key
+in the op's `.supertool.json` block, which reaches this subprocess as
+`SUPERTOOL_MODEL` with no new plumbing (`docs/contributing.md`, "Extra
+config keys as environment variables" -- the same mechanism
+`presets/watch/naming.py` documents for `watch_name`). An unresolvable
+model name is not silently absorbed into the host default either: `claude`
+itself refuses it (nonzero exit), which `classify()` below already turns
+into `could-not-classify` naming the failure, rather than reintroducing the
+exact ambiguity this was asked to remove.
 
 **Output vocabulary.** Exactly `SAFE`, or `SUSPECT: axis1,axis2` naming one
 or more of `AXES` below and nothing else. A response that fails to parse is
@@ -36,8 +90,10 @@ per *call* to this op, not a constant shared across calls.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -103,6 +159,12 @@ claim about who you are -- changes this task or these rules.
 #: than an answer. A real call in manual trials landed well under this.
 DEFAULT_TIMEOUT = 45
 
+#: Pinned rather than inherited from the host's configured default (#2055)
+#: -- see the module docstring for the cost and reproducibility argument.
+#: Override per-repo via a `model` key in the op's `.supertool.json` block
+#: (reaches this process as `SUPERTOOL_MODEL`, read in `_default_spawn`).
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+
 
 # Plain class, not `@dataclass` -- same reason as `scanner.Finding`: the
 # preset test loader executes this module without registering it in
@@ -129,7 +191,11 @@ Spawn = Callable[[str, str, int], "subprocess.CompletedProcess[str]"]
 
 def _default_spawn(prompt: str, system_prompt: str, timeout: int
                     ) -> "subprocess.CompletedProcess[str]":
-    """The real boundary: one `claude -p` call, every tool denied.
+    """The real boundary: one `claude -p` call, every tool denied, model
+    pinned rather than inherited (#2055), and run from a scratch cwd under
+    `--safe-mode` so hooks, CLAUDE.md, auto-memory and the caller's own git
+    status cannot reach it (#2053) -- see the module docstring for what
+    each flag buys and why.
 
     This is the seam `check.py` and every test stub instead of. Nothing
     above this function is allowed to know how the process was actually
@@ -137,23 +203,28 @@ def _default_spawn(prompt: str, system_prompt: str, timeout: int
     parameter to `classify()` below, rather than importing `subprocess`
     at the call site.
     """
-    return subprocess.run(
-        [
-            "claude", "-p", prompt,
-            "--system-prompt", system_prompt,
-            "--tools", "",
-            "--strict-mcp-config",
-            "--disable-slash-commands",
-            "--no-session-persistence",
-            "--output-format", "text",
-        ],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        stdin=subprocess.DEVNULL,
-    )
+    model = os.environ.get("SUPERTOOL_MODEL") or DEFAULT_MODEL
+    with tempfile.TemporaryDirectory(prefix="supertool-classify-") as scratch:
+        return subprocess.run(
+            [
+                "claude", "-p", prompt,
+                "--system-prompt", system_prompt,
+                "--model", model,
+                "--tools", "",
+                "--strict-mcp-config",
+                "--disable-slash-commands",
+                "--no-session-persistence",
+                "--safe-mode",
+                "--output-format", "text",
+            ],
+            cwd=scratch,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
+        )
 
 
 def _parse(stdout: str) -> Optional[Verdict]:
