@@ -232,6 +232,44 @@ def _fetch(
     return collected, ""
 
 
+def _anchor(
+    channel: str, thread_ts: str | None, token: str,
+) -> tuple[str | None, str]:
+    """Latest message `ts` in the channel/thread, to anchor a cold start.
+
+    A stream source's first tick begins at "now" rather than replaying
+    history (#2043) -- see the module docstring for why a channel is not an
+    object with a beginning worth replaying. One `limit=1` call, never the
+    paginated fetch `_fetch` uses, so a channel with years of history costs
+    exactly as much as an empty one and the burst guard (`MAX_PAGES`) is
+    never in play for a tick that fetches nothing.
+
+    `(ts, "")` on success. `ts` is `None` when the channel/thread has no
+    messages at all -- not a failure, just nothing to anchor on yet; the
+    caller leaves `cursor` unset and the next tick tries the same way,
+    exactly like an empty `_fetch` result would. `(None, why)` on any
+    transport or API-level failure, same shape as `_fetch`.
+    """
+    method = "conversations.replies" if thread_ts else "conversations.history"
+    params: dict[str, Any] = {"channel": channel, "limit": 1}
+    if thread_ts:
+        params["ts"] = thread_ts
+    try:
+        resp = _api.call(method, token, params=params)
+    except _api.SlackTransportError as e:
+        return None, f"ERROR: Slack request failed for channel {channel!r}: {e}"
+    if not isinstance(resp, dict) or not resp.get("ok"):
+        err = str((resp or {}).get("error") or "unknown_error") if isinstance(resp, dict) else "malformed response"
+        return None, f"ERROR: Slack API refused {method} for channel {channel!r}: {err}"
+    raw = resp.get("messages")
+    if not isinstance(raw, list):
+        return None, f"ERROR: unexpected payload shape from Slack for channel {channel!r}"
+    msgs = [m for m in raw if isinstance(m, dict) and isinstance(m.get("ts"), str)]
+    if not msgs:
+        return None, ""
+    return max(msgs, key=lambda m: float(m["ts"]))["ts"], ""
+
+
 def _event_for(msg: dict[str, Any], bot_user_id: str | None) -> dict[str, Any]:
     text = _bound(str(msg.get("text") or ""))
     user = str(msg.get("user") or msg.get("bot_id") or "")
@@ -276,6 +314,28 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         bot_user_id = resolve_bot_user_id(token)
 
     cursor = state.get("cursor")
+    if cursor is None:
+        # Cold start: anchor on the latest message instead of asking for
+        # the whole channel history (#2043). A busy channel's full history
+        # would exhaust MAX_PAGES on the very first tick, and the burst
+        # guard would then refuse correctly -- for a request that should
+        # never have been made. Delivery begins with the next message
+        # posted, which is the documented semantic for a stream source.
+        anchor_ts, anchor_err = _anchor(channel, thread_ts, token)
+        if anchor_err:
+            new_state = dict(state)
+            new_state["lookup"] = LOOKUP_UNAVAILABLE
+            if bot_user_id:
+                new_state["bot_user_id"] = bot_user_id
+            events = []
+            if state.get("lookup") != LOOKUP_UNAVAILABLE:
+                events = [{"event": "slack_unreachable", "payload": {"error": anchor_err}}]
+            return events, new_state
+        new_state = {"bot_user_id": bot_user_id, "lookup": LOOKUP_OK}
+        if anchor_ts is not None:
+            new_state["cursor"] = anchor_ts
+        return [], new_state
+
     messages, err = _fetch(channel, thread_ts, token, cursor)
     if messages is None:
         new_state = dict(state)
