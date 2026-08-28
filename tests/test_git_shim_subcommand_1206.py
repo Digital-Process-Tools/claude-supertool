@@ -144,11 +144,12 @@ def test_a_subcommand_named_only_as_an_argument_is_not_intercepted(
 #: reason is stated rather than assumed. `test_watch_mine_defaults` stubs
 #: `supertool`, whose op is always the first and only argument -- and an op name
 #: is spelled exactly like a subcommand, so nothing about the text distinguishes
-#: it. `test_pre_push_interpreter_572` used to be listed here and no longer needs
-#: to be: it compares `$1` against `-c`, and the rule below now works that out
-#: from git's grammar instead of from the file it lives in. That is the point of
-#: the change -- a filename exemption blesses every shim the file will ever
-#: contain, including a git one added tomorrow.
+#: it. `test_pre_push_interpreter_572` used to be listed here and came off when
+#: the rule below learned to work its exemption out from git's grammar instead
+#: of from the file a shim lives in -- that is the point of the change, since a
+#: filename exemption blesses every shim the file will ever contain, including a
+#: git one added tomorrow. (That file has since been deleted along with the
+#: pre-push hook it tested; the rule it motivated stands on its own.)
 _FIRST_ARG_IS_HONEST = {
     "test_watch_mine_defaults.py",
 }
@@ -571,16 +572,16 @@ def test_widening_the_match_does_not_flag_a_dollar_one_that_decides_nothing(
 def test_the_narrowing_did_not_just_move_the_hole_into_the_allowlist() -> None:
     """The filename exemption shrank; it must not have been traded for silence.
 
-    `test_pre_push_interpreter_572.py` came off the list because the rule now
-    derives its exemption from git's grammar. If it were still producing a hit,
-    the removal would have converted a stated exemption into a red test -- and
-    if the *scan* had been widened to compensate, this file would be exempt for
-    a reason nobody wrote down.
+    Its worked example was `test_pre_push_interpreter_572.py`, which came off
+    the list because the rule derives its exemption from git's grammar rather
+    than from the file a shim lives in. That file was deleted with the pre-push
+    hook it tested, so the example is gone and the property is not: the
+    allowlist holds exactly one name, and every other shim in the suite has to
+    earn its exemption from the grammar.
     """
-    assert "test_pre_push_interpreter_572.py" not in _FIRST_ARG_IS_HONEST
-    assert (TESTS / "test_pre_push_interpreter_572.py").is_file()
+    assert _FIRST_ARG_IS_HONEST == {"test_watch_mine_defaults.py"}
     named = {name for name, _line, _text in _sh_literals_matching_dollar_one()}
-    assert "test_pre_push_interpreter_572.py" not in named
+    assert named <= _FIRST_ARG_IS_HONEST, sorted(named - _FIRST_ARG_IS_HONEST)
 
 
 def test_the_scan_still_reads_every_test_module_it_did_before() -> None:

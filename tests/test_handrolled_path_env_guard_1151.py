@@ -174,8 +174,7 @@ def test_an_env_bound_in_another_function_is_unresolved_and_not_a_violation() ->
 def test_a_bash_or_git_child_is_not_this_guards_business() -> None:
     """Genuine instances of the shape, deliberately out of scope.
 
-    `tests/test_pre_push_interpreter_572.py` and
-    `tests/test_security_hardening_150.py` spawn bash/git with a scrubbed
+    `tests/test_security_hardening_150.py` spawns bash/git with a scrubbed
     environment on purpose. Those children do not need SYSTEMROOT to start, and
     a security test's scrubbed env is not obviously wrong. Flagging them would
     make the guard a nag, and a nag gets suppressed wholesale.

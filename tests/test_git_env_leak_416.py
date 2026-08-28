@@ -153,48 +153,15 @@ def test_the_deliberate_leak_did_not_survive():
     assert "GIT_DIR" not in os.environ
 
 
-def test_conftest_and_hook_scrub_the_same_variables():
-    hook = (SUITE_ROOT / ".githooks" / "pre-push").read_text(encoding="utf-8")
-    unset = [line for line in hook.splitlines() if line.startswith("unset ")]
-    assert len(unset) == 1, "pre-push should scrub in exactly one unset line"
-    assert unset[0].split()[1:] == list(conftest.GIT_ENV_VARS)
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell hook")
-def test_pre_push_hook_scrubs_before_invoking_pytest(tmp_path):
-    repo = tmp_path / "repo"
-    _make_outer_repo(repo)
-    shutil.copy(SUITE_ROOT / ".githooks" / "pre-push", repo / "pre-push")
-    stub = repo / "fake-python"
-    # Generated from EXPECTED_VARS rather than hand-listed: the hand-listed
-    # version reported only the five it knew about, so a sixth variable added
-    # to the hook could never have failed this test.
-    stub.write_text(
-        "#!/bin/sh\n"
-        + "".join(f'echo "SEEN {name}=[${{{name}-<unset>}}]"\n'
-                  for name in EXPECTED_VARS)
-        + "exit 0\n"
-    )
-    stub.chmod(0o755)
-
-    env = dict(os.environ)
-    env["PYTHON"] = str(stub)
-    # The hook is invoked with no argv and no stdin, which used to reach the
-    # suite through the not-git fallback arm (#1802 retired it). This test is
-    # about the env scrub that happens *before* the suite runs, so it asks for
-    # the run explicitly rather than depending on the zero-ref default.
-    env["PREPUSH_FULL"] = "1"
-    for name in EXPECTED_VARS:
-        env[name] = str(repo / ".git")
-    result = subprocess.run(
-        ["bash", "pre-push"], cwd=str(repo), capture_output=True, text=True, env=env, encoding="utf-8", errors="replace"
-    )
-
-    assert result.returncode == 0, result.stderr
-    seen = [line for line in result.stdout.splitlines() if line.startswith("SEEN ")]
-    assert len(seen) == len(EXPECTED_VARS)
-    assert all(line.endswith("=[<unset>]") for line in seen), result.stdout
-    assert "scrubbed inherited git env" in result.stdout
+# The two tests that used to sit here read `.githooks/pre-push` out of the tree
+# and ran it: one pinned its `unset` line against `conftest.GIT_ENV_VARS`, the
+# other executed the hook with every variable set and asserted the stub saw none
+# of them. The hook was removed in favour of CI as the only gate, so both were
+# assertions about a file that no longer exists. What they protected -- that the
+# suite never inherits git's hook-exported environment -- is still covered below
+# by `test_leaked_git_dir_never_reaches_a_fixture_repo` and its controls, which
+# exercise the conftest scrub directly rather than through the hook that used to
+# invoke it.
 
 
 def test_leaked_git_dir_never_reaches_a_fixture_repo(tmp_path):

@@ -178,16 +178,14 @@ def test_scrub_reports_nothing_when_the_environment_is_clean():
     assert env == {"PATH": "/usr/bin"}
 
 
-def test_hook_conftest_and_ops_scrub_one_agreed_set():
-    """The bash hook, the pytest fixture and the op launcher, in agreement.
+def test_conftest_and_ops_scrub_one_agreed_set():
+    """The pytest fixture and the op launcher, in agreement.
 
-    Three consumers of the same idea drifting apart is how #692 happened in
-    the first place: the hook learned it, nothing else did.
+    Two consumers of the same idea drifting apart is how #692 happened in the
+    first place. There used to be a third — `.githooks/pre-push`, read out of
+    the tree by this test — and the hook was removed in favour of CI as the
+    only gate, so the pair is what is left to hold together.
     """
-    hook = (SUITE_ROOT / ".githooks" / "pre-push").read_text(encoding="utf-8")
-    unset = [line for line in hook.splitlines() if line.startswith("unset ")]
-    assert len(unset) == 1, "pre-push should scrub in exactly one unset line"
-    assert unset[0].split()[1:] == list(supertool.GIT_ENV_VARS)
     assert conftest.GIT_ENV_VARS == supertool.GIT_ENV_VARS
 
 

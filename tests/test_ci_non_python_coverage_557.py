@@ -63,8 +63,8 @@ def shell_files() -> list[Path]:
     """Every tracked file this repository ships that a shell will execute.
 
     Discovered rather than listed: `.sh` by name plus anything whose first line
-    is a shell shebang, which is how `.githooks/pre-commit` and `pre-push` get
-    in — they have no extension. A list would have gone stale at the next hook.
+    is a shell shebang, which is how `.githooks/pre-commit` gets in — it has no
+    extension. A list would have gone stale at the next hook.
 
     Tracked files specifically, unlike `tests/_repo_walk.py`'s deliberately
     wider walk. That walk exists to catch a file *being written right now*; this
@@ -128,7 +128,6 @@ def test_the_shell_population_is_not_empty() -> None:
 @needs_bash
 @pytest.mark.parametrize("rel", [
     ".githooks/pre-commit",
-    ".githooks/pre-push",
     "hooks/session-start.sh",
     # No shebang - it is sourced, never executed - so it is discovered by the
     # `.sh` name alone. Named here because that is the whole of its claim to
@@ -160,7 +159,7 @@ def test_every_shell_file_parses(path: Path) -> None:
     """`bash -n`: parse, do not execute.
 
     Cheap enough to run on all twelve legs, and it catches the class of defect
-    that shipped `.githooks/pre-push` breakage in a repo whose CI ran no shell
+    that shipped `.githooks` breakage in a repo whose CI ran no shell
     at all. It is not a substitute for running the installers — see the
     uncovered inventory below.
     """

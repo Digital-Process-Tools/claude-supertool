@@ -259,7 +259,6 @@ REGISTER = {
     'tests/test_path_meta_bulk_1126.py::test_a_relative_symlink_is_still_answered_about_its_own_repo': B,
     'tests/test_path_meta_bulk_1126.py::test_a_symlink_gets_the_same_marker_from_either_route': B,
     'tests/test_path_meta_bulk_1126.py::test_a_symlink_is_never_answered_from_another_repo': B,
-    'tests/test_pre_push_interpreter_572.py::_Sandbox.__init__': P,
     'tests/test_read.py::test_path_meta_suffix_broken_symlink': B,
     'tests/test_read.py::test_read_meta_symlink': P,
     'tests/test_review_regressions_395.py::test_gate_follows_symlinks_to_the_real_repo': B,
