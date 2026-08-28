@@ -31,6 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # for _console
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #2062)
 import scanner  # noqa: E402
 import model  # noqa: E402
+import cache as classify_cache  # noqa: E402  (#2054 -- aliased so `run`'s own
+# `cache` parameter never shadows the module it is passed instances of)
 
 _FILE_PREFIX = "file://"
 
@@ -70,10 +72,19 @@ def resolve_text(arg: str) -> str:
         sys.exit(2)
 
 
-def run(text: str) -> str:
+def run(text: str, *, cache: object = None) -> str:
     """The two-stage decision, returned as the op's printed report. Kept
     apart from `main()` so a test can call it directly with a stubbed
-    `model.classify` and never spawn anything real."""
+    `model.classify` and never spawn anything real.
+
+    `cache` defaults to `None` -- forwarded verbatim to `model.classify`,
+    which itself defaults to no caching (#2054). `run()` calling `classify`
+    without it is unchanged from before this parameter existed; `main()`
+    below is the one caller that passes `classify_cache.default_cache()`,
+    so a real repeated invocation of this op (the case #2054 exists for)
+    gets the file-backed cache and every direct `run()` call in this
+    module's own test suite continues to exercise a bare `model.classify`
+    the way it always has."""
     findings = scanner.scan(text)
     if findings:
         axes = ", ".join(f.axis for f in findings)
@@ -86,7 +97,7 @@ def run(text: str) -> str:
             lines.append(f"  {f.axis}: {f.detail}")
         return "\n".join(lines)
 
-    verdict = model.classify(text)
+    verdict = model.classify(text, cache=cache)
     lines = ["verdict: " + verdict.state, "scanner: clean"]
     if verdict.state == "safe":
         lines.append("model: safe")
@@ -103,7 +114,14 @@ def main(arg: str) -> None:
     if not text.strip():
         sys.stderr.write("ERROR: nothing to classify (empty text)\n")
         sys.exit(2)
-    print(run(text))
+    # The real caller of `run()`, and the only one that opts into the
+    # verdict cache (#2054): every invocation of this op from the CLI, a
+    # human's or a repeated one, is a fresh subprocess -- see
+    # `classify_cache`'s own module docstring for why an in-process cache
+    # could never have helped here at all. `default_cache()` never raises;
+    # a cache that cannot establish its directory degrades to "nothing
+    # cached" rather than taking this call down with it.
+    print(run(text, cache=classify_cache.default_cache()))
 
 
 if __name__ == "__main__":

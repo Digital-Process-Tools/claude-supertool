@@ -53,6 +53,89 @@ def test_clean_text_reaches_the_model_stage(monkeypatch) -> None:
     assert calls == ["Deploy finished, all green."]
 
 
+# --- #2054: `run()` forwards its own `cache` kwarg to `model.classify` -----
+# `run()` defaults to `cache=None`, same as `model.classify` -- the standalone
+# op stays exactly as cheap as it was before #2054 unless a caller opts in.
+# `main()` is the one caller that does (see the live smoke test below).
+
+def test_run_defaults_to_no_cache_argument_at_all(monkeypatch) -> None:
+    """`_stub_model` replaces `check.model.classify` wholesale and records
+    every keyword it is called with, so this is a direct check on what
+    `run()` passes through by default -- not an inference from behaviour."""
+    received = {}
+
+    def _fake(text, **kwargs):
+        received.update(kwargs)
+        return check.model.Verdict("safe", [], "")
+
+    monkeypatch.setattr(check.model, "classify", _fake)
+    check.run("ordinary text with nothing scanner-detectable")
+    assert received.get("cache") is None, (
+        "run() must default to no cache, matching model.classify's own "
+        "default, so the standalone op is unchanged unless a caller opts in")
+
+
+def test_run_forwards_an_explicit_cache_to_model_classify(monkeypatch) -> None:
+    received = {}
+
+    def _fake(text, **kwargs):
+        received.update(kwargs)
+        return check.model.Verdict("safe", [], "")
+
+    monkeypatch.setattr(check.model, "classify", _fake)
+    sentinel = object()
+    check.run("ordinary text with nothing scanner-detectable", cache=sentinel)
+    assert received.get("cache") is sentinel
+
+
+def test_a_scanner_hit_never_touches_the_cache_argument(monkeypatch) -> None:
+    """A scanner hit short-circuits before `model.classify` is ever called
+    at all (see the short-circuit tests above) -- passing a `cache` through
+    `run()` must not change that. A cache object that raised on any call
+    would fail this test immediately; a plain sentinel proves the same
+    thing more simply, since `model.classify` is never reached to receive
+    it either way."""
+    calls = _stub_model(monkeypatch, "safe")
+    report = check.run("token: ghp_abcdefghijklmnopqrstuvwxyz012345",
+                        cache=object())
+    assert "verdict: suspect" in report
+    assert calls == []
+
+
+def test_main_wires_a_real_default_cache_end_to_end(monkeypatch, tmp_path,
+                                                      capsys) -> None:
+    """The one test in this file that goes through `main()` rather than
+    `run()` directly -- everything above proves the plumbing accepts and
+    forwards a `cache`; this proves `main()` actually constructs a real one
+    and that a second identical call skips the spawn entirely, which is the
+    whole reason #2054 exists. Only `subprocess.run` (the spawn boundary)
+    and the cache's own directory are stubbed -- `check.run`, `model.
+    classify` and `presets/classify/cache.py` all run unmodified."""
+    calls = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        return check.model.subprocess.CompletedProcess(argv, 0, stdout="SAFE",
+                                                         stderr="")
+
+    monkeypatch.setattr(check.model.subprocess, "run", _fake_run)
+    monkeypatch.delenv("SUPERTOOL_MODEL", raising=False)
+    monkeypatch.setattr(check.classify_cache, "default_cache",
+                         lambda: check.classify_cache.Cache(
+                             directory=str(tmp_path / "cache")))
+
+    check.main("ordinary text seen more than once")
+    check.main("ordinary text seen more than once")
+
+    out = capsys.readouterr().out
+    assert out.count("verdict: safe") == 2, (
+        "both calls must still report a real safe verdict -- the cache "
+        "must be transparent to the caller, not just cheap")
+    assert len(calls) == 1, (
+        "the second call for identical text must be served from the "
+        "cache, with the spawn never reached a second time")
+
+
 # --- could-not-classify never renders as safe, end to end -----------------
 
 def test_a_could_not_classify_model_result_is_not_reported_as_safe(monkeypatch) -> None:

@@ -122,3 +122,31 @@ Every call that does not hit a scanner shape spawns a real model call. Build
 expectations for volume around that, not around the scanner catching most
 traffic — measured cost and latency per call is one of the open items the
 originating issue leaves for whoever wires this into a high-volume caller.
+
+**Repeats are now free, for the one caller in this lane that opts in
+(#2054).** `check.py` is a fresh subprocess per call, so nothing in-process
+could ever have cached across invocations — a file-backed cache
+(`presets/classify/cache.py`) is what makes a second call for identical
+text free instead. `main()` (the real CLI entry point this op runs as) opts
+in automatically; `run()` and `model.classify()` both default to
+`cache=None` and stay exactly as before unless a caller passes one, so the
+suite's own direct calls to either are unaffected.
+
+Keyed on the bare text plus a version derived from `model.AXES` and
+`model._SYSTEM_PROMPT` — never on the fenced prompt, which carries a fresh
+per-process nonce and would never repeat. `safe` entries expire after
+`cache.SAFE_TTL_SECONDS` (24h); `suspect` entries do not expire at all, on
+the argument that `safe` is the verdict a caller acts on permissively and
+`suspect` is already treated with more scrutiny. `could-not-classify` is
+never written — the transient bucket must not calcify into a permanent
+verdict for that text.
+
+**Not yet reached: the caller #2049 actually wired.**
+`presets/_classify_render.py` — `gh-issue`, `gh-pr`, `gl-issue`, `gl-mr` —
+calls `model.classify()` in-process, not through `check.py`'s subprocess,
+and does not pass a `cache=` argument. That file is outside this issue's
+declared lane (`presets/classify/*.py`, `presets/classify.json`); wiring it
+in is a small follow-up for whoever owns that file next — import
+`presets/classify/cache.py` the way `model.py` and `scanner.py` are already
+imported, and pass `cache=<that module>.default_cache()` into the
+`model.classify(...)` call inside `verdict_line`.

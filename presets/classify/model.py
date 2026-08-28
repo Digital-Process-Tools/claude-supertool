@@ -247,11 +247,30 @@ def _parse(stdout: str) -> Optional[Verdict]:
 
 
 def classify(text: str, *, spawn: Spawn = _default_spawn,
-             timeout: int = DEFAULT_TIMEOUT) -> Verdict:
+             timeout: int = DEFAULT_TIMEOUT, cache: object = None) -> Verdict:
     """Run stage 2 on `text`. Never raises for an ordinary spawn failure --
     every failure mode this module can name becomes `could-not-classify`
     with a `reason`, per the three-state rule (`docs/validators.md`,
-    "Declining instead of guessing")."""
+    "Declining instead of guessing").
+
+    `cache` is `None` by default -- no cache lookup, no cache write, the
+    behaviour this function has always had, which is what every test
+    written before #2054 continues to rely on unchanged. Passed an object
+    with `.get(text) -> (Verdict | None, str)` and `.put(text, verdict) ->
+    str` (`presets/classify/cache.py`'s `Cache` is the real one; a call
+    site's own fake is legitimate too, and `test_classify_model_2046.py`'s
+    `_FakeCache` is exactly that), a hit skips the spawn entirely and a
+    genuine miss stores whatever the spawn produced -- except
+    `could-not-classify`, which is never handed to `cache.put` at all
+    (#2054's constraint 2: the transient bucket must not calcify into a
+    permanent verdict for that text). `cache.get`'s own status string
+    (`"miss"` / `"expired"` / `"unreadable (...)"`) is deliberately not
+    inspected here -- every one of them means "no usable verdict", and this
+    function only ever asks that one question."""
+    if cache is not None:
+        cached, _status = cache.get(text)
+        if cached is not None:
+            return cached
     prompt = _untrusted.fence(text)
     try:
         proc = spawn(prompt, _SYSTEM_PROMPT, timeout)
@@ -279,4 +298,6 @@ def classify(text: str, *, spawn: Spawn = _default_spawn,
             seen = seen[:80] + "…"
         return Verdict("could-not-classify", [],
                         f"model output did not parse: {seen!r}")
+    if cache is not None:
+        cache.put(text, verdict)
     return verdict
