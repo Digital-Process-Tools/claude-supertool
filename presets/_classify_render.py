@@ -109,9 +109,17 @@ CLASSIFY_BUDGET = 6
 #: ran out of budget" from every other reason a line might not say `safe`.
 NOT_RUN_BUDGET = "classify: not-run (call budget reached, see #2049)"
 
-_OFF_LINE = "classify: off (not configured to classify — see #2049)"
+# ASCII throughout, on purpose (#863's own argument, one level up):
+# `presets/_untrusted.py` routes its own em dashes and ellipses through a
+# codepage-detecting `_stream()` before printing them, because those glyphs
+# do not encode in cp437/cp850 -- every legacy Windows console codepage --
+# and a `UnicodeEncodeError` mid-`print` kills the process after the work
+# it was reporting already happened. These two lines are printed directly
+# by four call sites with no such routing, so the fix here is simpler:
+# never spell a character that needs it.
+_OFF_LINE = "classify: off (not configured to classify - see #2049)"
 _SCANNER_CLEAN_LINE = (
-    "classify: scanner-clean (model stage not configured to run — see #2049)"
+    "classify: scanner-clean (model stage not configured to run - see #2049)"
 )
 
 
