@@ -140,7 +140,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, MutableMapping, NamedTuple, Optional, Sequence, Tuple, Union
 
-VERSION = "0.51.0"
+VERSION = "0.52.0"
 
 #: The one "is this string a number" test the core shares (#1748), anchored with
 #: a capital-Z escape rather than `$` because Python's `$` also matches before a
