@@ -238,8 +238,11 @@ def _anchor(
     """Latest message `ts` in the channel/thread, to anchor a cold start.
 
     A stream source's first tick begins at "now" rather than replaying
-    history (#2043) -- see the module docstring for why a channel is not an
-    object with a beginning worth replaying.
+    history (#2043) -- a channel is not an object with a beginning worth
+    replaying, and asking for the whole history on tick one is what #2043
+    was. See `docs/presets/watch.md`'s "Cold start anchors on 'now'"
+    paragraph for the full reasoning; it is not repeated in the module
+    docstring above, which predates this function.
 
     `(ts, "")` on success. `ts` is `None` when the channel/thread has no
     messages at all -- not a failure, just nothing to anchor on yet; the
