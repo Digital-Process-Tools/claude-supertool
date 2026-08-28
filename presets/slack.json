@@ -1,0 +1,15 @@
+{
+  "description": "Post to Slack, deliberately (chat.postMessage). Fire-and-forget pings on the op stream are already covered by the Slack webhook notifier example in docs/notifiers.md -- this preset is for the case that example cannot cover: a call-it-on-purpose post whose response you need back (#2032).",
+  "requires": "python",
+  "ops": {
+    "slack_publish": {
+      "safety": "acts",
+      "cmd": "{python} {path}slack/publish.py {args}",
+      "timeout": 30,
+      "description": "Post a message to a Slack channel or thread (chat.postMessage). Returns the posted message's own ts, which a later thread reply or edit needs.",
+      "syntax": "slack_publish:CHANNEL_ID|TEXT_OR_FILE_OR_file://PATH[|THREAD_TS[|force]]",
+      "example": "slack_publish:C0123456|Deploy finished, all green.",
+      "paths": { "args": [] }
+    }
+  }
+}

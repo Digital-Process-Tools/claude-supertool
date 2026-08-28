@@ -19,6 +19,7 @@ Supertool merges preset ops at startup — project-level ops always override on 
 | `hashnode` | Publish, read, and engage on Hashnode | [hashnode.md](hashnode.md) | `python3`, `HASHNODE_TOKEN` |
 | `devto` | Publish, read, and engage on Dev.to | [devto.md](devto.md) | `python3`, `DEVTO_API_KEY` |
 | `bluesky` | Post, read, and engage on Bluesky | [bluesky.md](bluesky.md) | `python3`, `BLUESKY_HANDLE` + `BLUESKY_APP_PASSWORD` |
+| `slack` | Post to a Slack channel or thread, deliberately, and get the posted `ts` back | [slack.md](slack.md) | `python3`, `SLACK_BOT_TOKEN` |
 | `xml` | Read-only XPath queries over XML files | [xml.md](xml.md) | `python3` |
 | `watch` | Background pollers + async wake on external events (PRs, MRs, pipelines) | [watch.md](watch.md) | `gh` and/or `glab` per source |
 | `dashboard` | "What do I do next" — one read-only join over clone, CI, board, worktrees and lanes | [dashboard.md](dashboard.md) | `gh` CLI |

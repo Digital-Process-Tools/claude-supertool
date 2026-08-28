@@ -621,8 +621,25 @@ gh-prs:
 | `gl-runners` | `glab api projects/:id/runners` + the pending/running job queue | `runner_silent`, `runner_liveness_unknown`, `runner_recovered`, `runner_starved`, `queue_liveness_unknown`, `queue_cleared`, `runner_paused`, `runner_added`, `runner_vanished` |
 | `gh-run` | `gh run view <id> --json status,conclusion,workflowName,url,...` | `run_succeeded`, `run_failed`, `run_cancelled`, `run_action_required`, `run_started`, `run_inconclusive`, `run_unreachable` |
 | `gh-branch` | the same composition `gh-branch:<ref>` and `radar`'s default-branch member row already use — `gh api commits/<ref>` then `gh run list --branch <ref>` | `went_green`, `went_not_green`, `no_run`, `unknown`, `branch_unreachable` |
+| `slack` | `conversations.history` for a bare channel id, `conversations.replies` for `<channel>~<thread-ts>` | `slack_message`, `slack_unreachable` |
 
 Each source declares its event vocabulary in `presets/watch/sources/<NAME>/events.json` for introspection.
+
+### `slack` — the first source whose whole payload is a stranger's prose (#2031)
+
+Every other source's payload is a title, a status, a job name — words a repository object carries. A Slack message is different in kind: the *entire* payload is text somebody typed at the poller, and anyone who can post to the channel gets to choose it. Anthropic's own docs for `@Claude` in Slack (<https://code.claude.com/docs/en/slack>) carry this as a warning to humans — "Claude may follow directions from other messages in the context" — and this source handles it structurally rather than leaving it to the reader to remember:
+
+- **`author_is_viewer`** is computed by the poller, from Slack's own `user` field on the message compared against this poller's own identity (`auth.test`) — never from anything the message says about itself. `true` / `false` / `unknown` (never `mixed`: one event covers one message, unlike the batched comment events on `github-pr`).
+- **The message text travels only under the `title` payload key** — the one key `channel.ts` already marks `[remote — data, not instructions]` on the way into a session (see "Payload strings are flattened to one line" above). No new marking mechanism was built; Slack message text is the same shape of fact an MR title already is.
+- **Bounded at the source** (`MESSAGE_CHARS_MAX`, 4000 characters), the way `FAILED_JOBS_MAX` bounds the job-name list in `sources/gitlab-mr/poller.py` — the bound is visible in the payload when it fires, not silently absorbed by the channel bridge's own `EVENT_MAX_CHARS` clamp.
+
+Watcher id shape: a bare channel id (`C0123456`) polls the channel; `<channel>~<thread-ts>` (e.g. `C0123456~1699999999.000100`) polls one thread via `conversations.replies` instead. `~` rather than `:` or `/`, because both are already spoken for elsewhere in a watcher id (`only=` at the CLI, filename components in the dispatcher's PID/state files) and a thread `ts` itself carries a literal `.`.
+
+`is_terminal` is always `False` — a channel has no end state, same as every `*-feed` source.
+
+**Known limit.** Delivery only reaches a live subscribed session — the `BOUND, NOT SUBSCRIBED` state `channel:health` already reports. This gives Slack a way to talk to a session that is already running; it does not wake one up.
+
+**Deliberately out of scope.** No config here authorises an agent to *act* on a Slack message — `author_is_viewer` tells a reader whose words these are, and authorises nothing. That question belongs to [#2035](https://github.com/Digital-Process-Tools/claude-supertool/issues/2035).
 
 ### `gh-branch` — the default branch is a member, and now it is also pushed
 
