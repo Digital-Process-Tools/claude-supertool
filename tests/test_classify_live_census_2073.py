@@ -124,8 +124,15 @@ def test_every_test_in_the_live_file_is_gated_through_the_shared_call():
         "population changed -- update this pin and the issue's own count: "
         + repr([f.name for f in test_funcs]))
     for fn in test_funcs:
-        calls = [ast.dump(n.func) for n in ast.walk(fn)
-                 if isinstance(n, ast.Call)]
-        assert any("require_claude" in c for c in calls), (
-            fn.name + " does not call require_claude() -- its skip, if any, "
-            "would not carry " + _classify_live.TOKEN)
+        # Identity, not a substring of `ast.dump()` -- a substring match
+        # would also pass for a decoy call like `pre_require_claude()`
+        # that never reaches the shared gate at all, which is exactly the
+        # hand-rolled-skip failure mode this pin exists to catch (#1274's
+        # mechanism `D`, one layer over).
+        called_names = {n.func.id for n in ast.walk(fn)
+                        if isinstance(n, ast.Call)
+                        and isinstance(n.func, ast.Name)}
+        assert "_require_claude" in called_names, (
+            fn.name + " does not call _require_claude() -- its skip, if "
+            "any, would not carry " + _classify_live.TOKEN + ". Calls seen: "
+            + repr(sorted(called_names)))
