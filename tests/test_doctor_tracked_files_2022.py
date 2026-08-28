@@ -11,9 +11,21 @@ Two findings, one root, one fix (`git ls-files -z`, NUL-delimited):
    argument -- a path handed straight to a subprocess. Bounded by
    `core.quotePath=false`, an ordinary config choice, not an exotic one.
 2. `misreports`, non-blocking, fires under **stock** git config. A tracked
-   filename containing a backslash comes back C-quoted (`"ff\\ff.py"`,
-   literal quotes) and `_match_glob` cannot match a glob like `*.py` against
-   a quoted string -- an in-scope validator renders as "not applicable".
+   filename holding a byte git treats as "unusual" comes back C-quoted
+   (`"ff\\ff.py"` for a backslash, `"caf\\303\\251.py"` for a non-ASCII
+   `e`-acute) and `_match_glob` cannot match a glob like `*.py` against a
+   quoted string -- an in-scope validator renders as "not applicable".
+   Exercised here with a non-ASCII filename rather than the issue's own
+   backslash one: a backslash is git's own path separator on Windows and
+   `git update-index --cacheinfo` refuses it there even off the real
+   filesystem (`fatal: git update-index: --cacheinfo cannot add ff\\ff.py`,
+   observed on CI, windows-latest), so that exact fixture cannot exist on
+   every platform this suite runs on. A non-ASCII byte is C-quoted by the
+   identical mechanism (`core.quotePath`'s "unusual character" rule) and is
+   an ordinary, legal filename character on every platform in the CI
+   matrix, so the behaviour under test -- the quoting is left on and
+   `_match_glob` cannot see through it -- is exercised everywhere rather
+   than skipped anywhere.
 
 Every "must not fire" case here is paired with a "must fire" case in the same
 fixture, per this repo's own rule: a negative assertion that passes on a
@@ -98,13 +110,22 @@ def _tracking_one_file_via_index(name: str, *, quote_path: bool = True):
     """Like `_tracking_one_file`, but writes the git INDEX entry directly
     with plumbing rather than creating an OS filesystem entry named `name`.
 
-    A backslash is an ordinary filename byte to git and to POSIX, but it is
-    the path separator on Windows -- `open(os.path.join(d, "ff\\ff.py"))`
-    would resolve to a subdirectory `ff` that was never created, raising
-    before the test ever reaches the C-quoting assertion under test. Adding
-    the tree entry with `git update-index --add --cacheinfo` never asks the
-    OS to create a file by that name, so the same reproduction holds on
-    every platform CI runs this suite on.
+    For a name the OS filesystem itself refuses to create -- one holding a
+    literal newline, for instance, which Windows rejects at `open()` time
+    with `OSError: [Errno 22] Invalid argument` (observed on CI,
+    windows-latest). `git ls-files` reads the index, not the working tree,
+    so the tracked file never has to exist on disk at all for this scanner
+    to see it; `git update-index --add --cacheinfo` writes the tree entry
+    directly and never asks the OS to create a file by that name.
+
+    NOT a general escape hatch, though: git's own `--cacheinfo` parser
+    refuses a backslash in the path it is given -- `fatal: git
+    update-index: --cacheinfo cannot add ff\\ff.py`, also observed on CI,
+    windows-latest -- because a backslash is git's own path separator on
+    Windows, a restriction this plumbing route does not sidestep. A
+    fixture built on a Windows-reserved character (`\\`, `/`, `:`, `"`,
+    `<`, `>`, `|`, `?`, `*`) needs a different route or a different
+    character entirely; see `test_tracked_files_must_not_leave_c_quoting_on_a_non_ascii_name`.
     """
     with tempfile.TemporaryDirectory() as d:
         _run(["init", "-q"], d)
@@ -130,13 +151,23 @@ def _tracking_one_file_via_index(name: str, *, quote_path: bool = True):
             os.chdir(cwd)
 
 
-def test_tracked_files_must_not_leave_c_quoting_on_a_backslash_name() -> None:
-    """The reproduced finding 2 route: a backslash in the filename is
+def test_tracked_files_must_not_leave_c_quoting_on_a_non_ascii_name() -> None:
+    """The reproduced finding 2 route: a non-ASCII byte in the filename is
     C-quoted by git under stock config. The list must carry the real
     filename, not the quoted transcript, so `_match_glob` can still match it.
+
+    A non-ASCII name (`caf\\u00e9.py`) rather than the issue's own
+    backslash one (`ff\\ff.py`): both trigger the identical C-quoting
+    mechanism, but a backslash is git's own Windows path separator, so
+    `git update-index --cacheinfo` refuses it there even via plumbing --
+    observed on CI, windows-latest: `fatal: git update-index: --cacheinfo
+    cannot add ff\\ff.py`. A non-ASCII byte is an ordinary, legal filename
+    character on every platform this suite runs on, via plain `open()`, so
+    the behaviour under test is exercised everywhere rather than skipped
+    anywhere.
     """
-    name = "ff\\ff.py"
-    with _tracking_one_file_via_index(name, quote_path=True):
+    name = "café.py"
+    with _tracking_one_file(name, quote_path=True):
         files = supertool._doctor_tracked_files()
     assert files == [name]
     assert supertool._match_glob(files[0], "*.py")
@@ -216,6 +247,15 @@ def test_a_crashing_probe_does_not_forge_a_row_from_the_exception_text(
     hands the WHOLE name through instead of shredding it at the separator),
     so an exception echoing its `target` argument verbatim can still forge a
     row the same way finding 3 of #2022 describes.
+
+    Via `_tracking_one_file_via_index`, not `_tracking_one_file`: a literal
+    newline in a filename is refused by the Windows filesystem at file-
+    creation time (`OSError: [Errno 22] Invalid argument`, observed on CI,
+    windows-latest), before the test ever reaches the assertion under test.
+    `git ls-files` reads the index, not the working tree, so the file this
+    scenario needs never has to exist on disk at all -- the index entry
+    alone is sufficient, and git's own tree-entry format has no comparable
+    restriction on an embedded newline the way the OS filesystem does.
     """
     name = "real\n- forged: resolves -- everything is fine.py"
     config = {"validators": {"fake": {"match": "*.py", "cmd": "true {file}"}}}
@@ -224,7 +264,7 @@ def test_a_crashing_probe_does_not_forge_a_row_from_the_exception_text(
         raise ValueError(target)
 
     monkeypatch.setattr(supertool, "_validator_run_one", _fake_run_one)
-    with _tracking_one_file(name, quote_path=False):
+    with _tracking_one_file_via_index(name, quote_path=False):
         out = supertool._doctor_validators_section(config, probe=True)
 
     rendered_lines = out.splitlines()
