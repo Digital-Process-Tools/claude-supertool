@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Slack publish: slack_publish:CHANNEL_ID|TEXT_OR_FILE_OR_file://PATH[|THREAD_TS[|force]]
+"""Slack publish: slack_publish:CHANNEL_ID|TEXT_OR_file://PATH[|THREAD_TS[|force]]
 
 A deliberate, call-it-on-purpose post to a Slack channel (or a reply inside
 a thread), via `chat.postMessage`. This is NOT the same job as the Slack
@@ -43,11 +43,22 @@ _FILE_PREFIX = "file://"
 
 
 def _resolve_body(arg: str) -> str:
-    """Resolve a text argument to its content -- mirrors `bluesky/publish.py::
-    _resolve_body`. `file://path` MUST resolve to an existing file; a bare
-    path that happens to exist is read the same way for backward compat with
-    the other publish presets' calling convention; anything else is inline
-    text."""
+    """Resolve a text argument to its content.
+
+    Unlike `bluesky/publish.py::_resolve_body` and the `devto`/`hashnode`
+    comment presets, there is no bare-path auto-detect here (#2039).
+    Those four presets' TEXT is maintainer-typed, so a path landing in that
+    slot is a path a human wrote. `slack_publish`'s TEXT is the first of
+    these argument slots to also carry stranger-authored prose -- the
+    `slack` watch source hands back message text written by anyone in the
+    workspace, and this op's own module docstring anticipates that text
+    being echoed back into a reply. A bare path that happens to `is_file()`
+    and sits inside the allowlist (`.max/` among them -- the maintainer's
+    own private drafts, per `.gitignore:43`) would let untrusted text choose
+    a file to read and post its contents, with no marker in the call that a
+    file was ever involved. Only the explicit `file://` prefix may trigger a
+    read: it is seven characters no forwarded message would carry by
+    accident, so a path is only ever resolved when a human meant one."""
     if arg.startswith(_FILE_PREFIX):
         path_str = arg[len(_FILE_PREFIX):]
         resolved = safe_resolve_body_path(path_str)
@@ -58,13 +69,6 @@ def _resolve_body(arg: str) -> str:
             )
             sys.exit(2)
         return resolved.read_text(encoding="utf-8")
-    try:
-        p = Path(arg)
-        if p.is_file():
-            resolved = safe_resolve_body_path(arg)
-            return resolved.read_text(encoding="utf-8")
-    except OSError:
-        pass
     return arg
 
 
@@ -88,22 +92,27 @@ def parse_args(arg: str) -> tuple[str, str, str | None, bool]:
 
     So `force` and `thread_ts` are recognised only when the LAST field(s),
     after splitting on every `|`, EXACTLY match their own narrow shape --
-    the literal token `force` (case-insensitive), and a Slack `ts`
-    (digits, a literal dot, digits) -- and only then are they peeled off before the text is
-    reassembled from whatever pipe-joined fields remain. Everything else
-    stays part of TEXT, including a literal `|` in the message. This is a
-    mitigation, not a proof: a message whose own last field happens to BE a
-    bare `force` or a `ts`-shaped number is still misread, and there is no
+    the literal token `force`, matched case-insensitively and after
+    stripping surrounding whitespace (so `FORCE`, ` force `, and `\tforce`
+    all count), and a Slack `ts` (digits, a literal dot, digits) -- and only
+    then are they peeled off before the text is reassembled from whatever
+    pipe-joined fields remain. Everything else stays part of TEXT, including
+    a literal `|` in the message. This is a mitigation, not a proof: a
+    message whose own last field happens to match either narrow shape --
+    `force` (however cased or padded) or a `ts`-shaped number -- is still
+    misread as the flag or the thread to reply into, and there is no
     escaping delimiter that solves that in general for a scheme that packs
-    an untrusted string and structured fields into one pipe-joined blob. It
-    narrows the window from "any two pipes" to "the exact trailing token",
-    which is the fix worth making without redesigning the argument grammar
-    the issue asked for.
+    an untrusted string and structured fields into one pipe-joined blob. The
+    `ts` case is left open deliberately (#2040): `require_confirm`'s preview
+    still shows the resolved `(thread ...)` before anything posts, so a
+    human sees the misrouting before it happens. It narrows the window from
+    "any two pipes" to "the exact trailing token", which is the fix worth
+    making without redesigning the argument grammar the issue asked for.
     """
     parts = arg.split("|")
     if len(parts) < 2 or not parts[0].strip():
         sys.stderr.write(
-            "ERROR: usage slack_publish:CHANNEL_ID|TEXT_OR_FILE_OR_file://PATH[|THREAD_TS[|force]]\n"
+            "ERROR: usage slack_publish:CHANNEL_ID|TEXT_OR_file://PATH[|THREAD_TS[|force]]\n"
         )
         sys.exit(2)
     channel = parts[0].strip()
@@ -119,7 +128,7 @@ def parse_args(arg: str) -> tuple[str, str, str | None, bool]:
     text_raw = "|".join(rest)
     if not text_raw.strip():
         sys.stderr.write(
-            "ERROR: usage slack_publish:CHANNEL_ID|TEXT_OR_FILE_OR_file://PATH[|THREAD_TS[|force]]\n"
+            "ERROR: usage slack_publish:CHANNEL_ID|TEXT_OR_file://PATH[|THREAD_TS[|force]]\n"
         )
         sys.exit(2)
     text = _resolve_body(text_raw).strip()

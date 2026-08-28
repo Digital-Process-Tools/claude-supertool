@@ -5,10 +5,13 @@ Resolution order (first hit wins):
 2. ~/.config/slack/bot_token
 3. .slack-bot-token in cwd
 
-Create a bot token at https://api.slack.com/apps -- OAuth & Permissions ->
-Bot User OAuth Token (starts with `xoxb-`). It needs at least
-`channels:history` (or `groups:history` for private channels) to poll and
-`chat:write` to publish.
+Create a token at https://api.slack.com/apps -- in a browser, not the
+Slack desktop app's own Preferences, which has nothing related. Full
+sequence, including the manifest shortcut and the `xoxp-` (user token)
+tradeoff, is in `docs/presets/slack.md` (#2041). Short version: OAuth &
+Permissions -> Bot Token Scopes -> `chat:write` (to publish) and
+`channels:history`/`groups:history` (to poll) -> Install to Workspace ->
+Bot User OAuth Token (starts with `xoxb-`).
 
 Tokens never returned to stdout -- only used in HTTP requests. `presets/
 _secrets.py` already recognises the `xox[abprse]-` shapes these mint, so any
