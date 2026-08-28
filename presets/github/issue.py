@@ -20,11 +20,20 @@ import _http  # noqa: E402  (the destination policy and the bounded fetch — #8
 import _image_root  # noqa: E402  (the attachment root, created and proven ours — #1493)
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
+import _classify_render  # noqa: E402  (the verdict beside the fence — #2049)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 
 DESCRIPTION_MAX = 3000
 COMMENT_MAX = 1000
+
+# The `classify` verdict level for this op (#2049), read once at import
+# time -- like `IMAGE_HOSTS`' own `SUPERTOOL_IMAGE_HOSTS` above, this reads
+# an env var the dispatcher already set for this subprocess from the op's
+# own `presets/github.json` `classify` key. `presets/_classify_render.py`'s
+# module docstring is the design record: three levels, default `full`,
+# fails toward classifying on anything it does not recognise.
+_CLASSIFY_LEVEL = _classify_render.level_from_env()
 # Per-user, under the platform temp directory, created non-recursively at 0700
 # and proven ours before anything is written under it. This was the literal
 # "/tmp/supertool-images/gh" until #1506 — a fixed name in a shared,
@@ -664,12 +673,17 @@ def main() -> int:
 
     _print_linked_prs(iid, web_url)
 
+    # Classify budget for this call (#2049) -- one call, one budget, spent
+    # across the body and every comment below, never per-block.
+    classify_budget = _classify_render.Budget()
+
     # Description
     all_image_urls = _extract_image_urls(body)
     if body:
         print(f"\n## Description\n{_untrusted.fence(body)}")
         if body_withheld:
             print(f"\n{_body.cut_notice(body_withheld)}")
+        print(classify_budget.line(body, level=_CLASSIFY_LEVEL))
 
     # Comments — gh gives them directly in the issue JSON. The capped render
     # keeps the first three and the last seven rather than one end of the
@@ -698,6 +712,7 @@ def main() -> int:
         print(_untrusted.fence(c_body))
         if c_trunc:
             print(c_trunc)
+        print(classify_budget.line(c_body, level=_CLASSIFY_LEVEL))
         all_image_urls.extend(_extract_image_urls(comment.get("body") or ""))
 
     # Download images

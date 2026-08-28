@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
+import _classify_render  # noqa: E402  (the verdict beside the fence — #2049)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 import _checks  # noqa: E402  (the one check tally, shared with gh-prs / git-status)
@@ -28,6 +29,9 @@ import _pr_diff  # noqa: E402  (the review shape of a PR's diff — #875)
 
 DESCRIPTION_MAX = 2000
 COMMENT_MAX = 500
+
+# See presets/github/issue.py's identical constant for the reasoning (#2049).
+_CLASSIFY_LEVEL = _classify_render.level_from_env()
 # `gh pr diff` streams a whole patch; the dashboard's 10s is sized for JSON
 # metadata and an 80-file diff routinely outruns it.
 DIFF_TIMEOUT = 60
@@ -1232,11 +1236,16 @@ def main() -> int:
         except (subprocess.TimeoutExpired, json.JSONDecodeError):
             print(f"\nIssue: {ref}")
 
+    # Classify budget for this call (#2049) -- one call, one budget, spent
+    # across the body and every comment below, never per-block.
+    classify_budget = _classify_render.Budget()
+
     # Description
     if body:
         print(f"\n## Description\n{_untrusted.fence(body)}")
         if body_withheld:
             print(f"\n{_body.cut_notice(body_withheld)}")
+        print(classify_budget.line(body, level=_CLASSIFY_LEVEL))
     else:
         print("\n## Description\n_(empty)_")
 
@@ -1265,6 +1274,7 @@ def main() -> int:
         print(_untrusted.fence(c_body))
         if c_trunc:
             print(c_trunc)
+        print(classify_budget.line(c_body, level=_CLASSIFY_LEVEL))
 
     return 0
 

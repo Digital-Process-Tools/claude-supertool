@@ -22,10 +22,14 @@ import _image_root  # noqa: E402  (the attachment root, created and proven ours 
 import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
 import _secrets  # noqa: E402  (the one GitLab token-prefix list — #1645)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
+import _classify_render  # noqa: E402  (the verdict beside the fence — #2049)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 
 DESCRIPTION_MAX = 3000
+
+# See presets/github/issue.py's identical constant for the reasoning (#2049).
+_CLASSIFY_LEVEL = _classify_render.level_from_env()
 # Related MRs are listed, not summarised, so the list is capped. A *count* cut
 # it — the total was always printed correctly above a short list, which reads as
 # the numbers being wrong rather than as a ceiling being hit (#635).
@@ -438,11 +442,16 @@ def main() -> int:
     # asked for. `/issues/:iid/closed_by` is the endpoint for that question.
     _print_related_mrs(iid, full)
 
+    # Classify budget for this call (#2049) -- one call, one budget, spent
+    # across the description and every note below, never per-block.
+    classify_budget = _classify_render.Budget()
+
     # 3. Description (markdown attributes already stripped, above the cap)
     if description:
         print(f"\n## Description\n{_untrusted.fence(description)}")
         if description_withheld:
             print(f"\n{_body.cut_notice(description_withheld)}")
+        print(classify_budget.line(description, level=_CLASSIFY_LEVEL))
 
     # 4. Fetch comments (notes) — human only
     all_image_urls = _extract_image_urls(description)
@@ -478,6 +487,7 @@ def main() -> int:
                         print(_untrusted.fence(body))
                         if note_trunc:
                             print(note_trunc)
+                        print(classify_budget.line(body, level=_CLASSIFY_LEVEL))
                         # Extract images from comments too
                         all_image_urls.extend(_extract_image_urls(note.get("body") or ""))
                 else:
