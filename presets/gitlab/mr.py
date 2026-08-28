@@ -22,6 +22,7 @@ from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -
 from mrs import _conflict_label  # noqa: E402
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
+import _classify_render  # noqa: E402  (the verdict beside the fence — #2049)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 import _checks  # noqa: E402  (named_disclosure/NAMED_CAP — shared with gh-pr, #619)
@@ -33,6 +34,9 @@ import _secrets  # noqa: E402  (the one GitLab token-prefix list — #1645)
 DESCRIPTION_MAX = 2000
 COMMENT_MAX = 500
 COMMENT_TOTAL_MAX = 2000
+
+# See presets/github/issue.py's identical constant for the reasoning (#2049).
+_CLASSIFY_LEVEL = _classify_render.level_from_env()
 TAIL_COMMENTS = 2
 NAMESTATUS_DISPLAY_MAX = 50
 NAMESTATUS_FETCH_CAP = 500
@@ -814,7 +818,9 @@ def _format_error(stderr: str, resource: str, identifier: str) -> str:
             f"{_untrusted.flat(stderr.strip())}")
 
 
-def _render_note(note: dict, cap: int | None = COMMENT_MAX) -> str:
+def _render_note(note: dict, cap: int | None = COMMENT_MAX, *,
+                  level: str = _classify_render.LEVEL_FULL,
+                  budget: "_classify_render.Budget | None" = None) -> str:
     """Format one MR note for printing, saying so when the body is cut.
 
     A `cap` of None is the `:full` path, which had no way to ask for one: every
@@ -828,6 +834,12 @@ def _render_note(note: dict, cap: int | None = COMMENT_MAX) -> str:
     to render as a second, earlier note that the MR never held. The cut notice
     is supertool's own, so it is appended after the fence closes rather than
     inside it — see the same call in gh-issue.
+
+    `level`/`budget` are the classify verdict for this note (#2049). `budget`
+    is `None` only for a caller that never intends to spend the call's shared
+    spawn budget here — every real caller below passes the one `Budget`
+    instance for the whole call, so the cap applies across notes rather than
+    per note.
     """
     author = _untrusted.flat(_as_dict(note.get("author")).get("username", "?"))
     body = note.get("body") or ""
@@ -836,7 +848,11 @@ def _render_note(note: dict, cap: int | None = COMMENT_MAX) -> str:
         body = body[:cap]
         trunc = f"\n{_body.comment_cut_notice(cap)}"
     created = (note.get("created_at") or "")[:10]
-    return f"\n**{author}** ({created}):\n{_untrusted.fence(body)}{trunc}\n"
+    if budget is not None:
+        verdict = budget.line(body, level=level)
+    else:
+        verdict = _classify_render.verdict_line(body, level=level)
+    return f"\n**{author}** ({created}):\n{_untrusted.fence(body)}{trunc}\n{verdict}\n"
 
 
 def _fmt_kb(nbytes: int) -> str:
@@ -845,13 +861,27 @@ def _fmt_kb(nbytes: int) -> str:
     return f"{nbytes / 1024:.1f}KB"
 
 
-def _budgeted_comments(notes: list, budget: int, tail: int) -> tuple[list[str], int, int]:
+def _budgeted_comments(notes: list, budget: int, tail: int, *,
+                        classify_level: str = _classify_render.LEVEL_FULL,
+                        classify_budget: "_classify_render.Budget | None" = None,
+                        ) -> tuple[list[str], int, int]:
     """Pick rendered notes fitting a total-char budget, keeping the last `tail` for recency.
 
     Returns (rendered_lines, hidden_count, hidden_bytes). Notes are assumed
     sorted ascending (oldest first) — same order as the GitLab API.
+
+    `classify_level`/`classify_budget` reach every note's own `_render_note`
+    call (#2049). A real limitation, stated rather than hidden: every note
+    is rendered — and so classified — before this function decides which
+    ones the char budget below actually keeps, so a note later hidden here
+    can still have spent classify's own per-call spawn budget. Fixing the
+    ordering would mean classifying only after selection, which this
+    function's own char-budget math cannot do (it needs each note's
+    rendered length, verdict line included, to decide what fits) without
+    rendering twice.
     """
-    rendered_all = [_render_note(n) for n in notes]
+    rendered_all = [_render_note(n, level=classify_level, budget=classify_budget)
+                     for n in notes]
     if not rendered_all:
         return [], 0, 0
     tail_keep = min(tail, len(rendered_all))
@@ -1471,11 +1501,16 @@ def main() -> int:
         except OSError as e:
             print(f"{unavailable} (could not run glab: {e})")
 
+    # Classify budget for this call (#2049) -- one call, one budget, spent
+    # across the description and every note below, never per-block.
+    classify_budget = _classify_render.Budget()
+
     # Description
     if description:
         print(f"\n## Description\n{_untrusted.fence(description)}")
         if description_withheld:
             print(f"\n{_body.cut_notice(description_withheld)}")
+        print(classify_budget.line(description, level=_CLASSIFY_LEVEL))
     else:
         print("\n## Description\n_(empty)_")
 
@@ -1509,11 +1544,13 @@ def main() -> int:
         print(_PAGE_FULL)
     _print_unreadable(notes_skipped, notes_seen, "comments")
     if full:
-        for r in (_render_note(n, None) for n in human_notes):
+        for r in (_render_note(n, None, level=_CLASSIFY_LEVEL, budget=classify_budget)
+                  for n in human_notes):
             print(r, end="")
     else:
         rendered, hidden_count, hidden_bytes = _budgeted_comments(
             human_notes, COMMENT_TOTAL_MAX, TAIL_COMMENTS,
+            classify_level=_CLASSIFY_LEVEL, classify_budget=classify_budget,
         )
         for r in rendered:
             if r == "__GAP__":

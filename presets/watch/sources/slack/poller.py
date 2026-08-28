@@ -57,9 +57,13 @@ Source plugin contract:
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+import _classify_render  # noqa: E402  (the verdict beside the fence — #2056)
 
 # Messages arrive on human timescales and Slack's own Web API tier 3 budget
 # is roughly 50 requests/minute -- one `conversations.history` call per
@@ -83,6 +87,29 @@ THREAD_SEP = "~"
 # message could consume the whole thing by itself. Bounded here instead, the
 # way `FAILED_JOBS_MAX` bounds the job list in `sources/gitlab-mr/poller.py`.
 MESSAGE_CHARS_MAX = 4000
+
+# The classify verdict on this poller's own message text (#2056). Read once
+# at import time from `SUPERTOOL_CLASSIFY` -- same env var and same three
+# spellings `presets/_classify_render.py` documents for `gh-issue`/`gl-issue`
+# and friends, set the same way (an operator's shell profile before the
+# watcher starts, since a long-lived poller process has no per-call
+# dispatcher to inject it the way an op subprocess does).
+#
+# **Only ever the scanner, never the model stage, regardless of what this
+# reads.** #2056 is explicit about why: this poller runs on a 30s tick and
+# the model stage is a 45s `claude -p` spawn -- synchronous classification
+# in the poll loop would make the tick slower than its own interval, and an
+# async attach-later design (queue a spawn, fold the verdict into a later
+# event) is real machinery this issue does not build. So `LEVEL_FULL`
+# collapses to `LEVEL_SCANNER` here: an operator who asked for the full
+# treatment still gets the free, unsteerable half, and this poller's own
+# `classify` payload field can never claim more than that ran. `LEVEL_OFF`
+# is honoured as `LEVEL_OFF` -- turning classification off entirely is a
+# real, cheap thing to ask for, unlike asking for the spawn this file will
+# never make.
+_CLASSIFY_LEVEL = _classify_render.level_from_env()
+if _CLASSIFY_LEVEL == _classify_render.LEVEL_FULL:
+    _CLASSIFY_LEVEL = _classify_render.LEVEL_SCANNER
 
 LOOKUP_OK = "ok"
 LOOKUP_UNAVAILABLE = "unavailable"
@@ -306,6 +333,16 @@ def _event_for(msg: dict[str, Any], bot_user_id: str | None) -> dict[str, Any]:
             # message: a claim no message author can choose (#2031).
             "author_is_viewer": author,
             "ts": str(msg.get("ts") or ""),
+            # The tool's own claim about `title`, on the same footing as
+            # `author_is_viewer` above -- never something a message author
+            # could set (#2049/#2056). Named `classify`, not `ts`: #2052
+            # already found the envelope silently ignoring a payload key
+            # named `ts` because the top-level envelope reserves it
+            # (`transport.emit_event`'s own `record["ts"]`); this key is
+            # deliberately not that name. See `_CLASSIFY_LEVEL` above for
+            # why this is always the scanner-only rendering, never the
+            # model-stage one `gh-issue` and friends can produce.
+            "classify": _classify_render.verdict_line(text, level=_CLASSIFY_LEVEL),
         },
         "notify_title": "New Slack message",
         "notify_message": text[:200],

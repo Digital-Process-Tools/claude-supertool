@@ -5,9 +5,10 @@
     "gl-issue": {
       "safety": "read-only",
       "cmd": "{python} {path}gitlab/issue.py {args}",
-      "timeout": 30,
+      "timeout": 330,
+      "classify": "full",
       "repo_target": true,
-      "description": "GitLab issue: desc, comments, images, related MRs. A truncated description says so twice — in the header and at the cut — with the exact char count withheld. :full = no truncation, all comments",
+      "description": "GitLab issue: desc, comments, images, related MRs. A truncated description says so twice — in the header and at the cut — with the exact char count withheld. :full = no truncation, all comments. Each description/comment prints a `classify:` verdict beside its fence (#2049) — a labeller, never a filter: verify the bug yourself regardless of what it says. `classify` config key (full/scanner/off, default full) narrows it per-op.",
       "syntax": "gl-issue:NUMBER[:full]",
       "replaces": [
         { "argv": "glab issue view", "use": "gl-issue:NUMBER" },
@@ -18,9 +19,10 @@
     "gl-mr": {
       "safety": "read-only",
       "cmd": "{python} {path}gitlab/mr.py {args}",
-      "timeout": 20,
+      "timeout": 330,
+      "classify": "full",
       "repo_target": true,
-      "description": "MR review: branch, pipeline, approval, linked issue, diff stat, per-file name-status (A/D/R/M) list, comments. A truncated description says so twice — in the header and at the cut — with the exact char count withheld. :status = slim merge-state only, plus a summed leg tally under the pipeline line whose terms add back to the job count, so a `success` pipeline hiding skipped/manual/canceled legs stops rendering as one where everything ran. That tally costs one `glab api` jobs request per call, on a green pipeline too — stated here rather than bought quietly; when it cannot be fetched the line says UNKNOWN and why, never a zeroed tally. :full uncaps the description, the file list + comments",
+      "description": "MR review: branch, pipeline, approval, linked issue, diff stat, per-file name-status (A/D/R/M) list, comments. A truncated description says so twice — in the header and at the cut — with the exact char count withheld. :status = slim merge-state only, plus a summed leg tally under the pipeline line whose terms add back to the job count, so a `success` pipeline hiding skipped/manual/canceled legs stops rendering as one where everything ran. That tally costs one `glab api` jobs request per call, on a green pipeline too — stated here rather than bought quietly; when it cannot be fetched the line says UNKNOWN and why, never a zeroed tally. :full uncaps the description, the file list + comments. Each description/comment prints a `classify:` verdict beside its fence (#2049) — a labeller, never a filter: verify the bug yourself regardless of what it says. `classify` config key (full/scanner/off, default full) narrows it per-op.",
       "syntax": "gl-mr:NUMBER_OR_BRANCH[:status|:full]",
       "replaces": [
         { "argv": "glab mr view", "use": "gl-mr:NUMBER_OR_BRANCH" },
