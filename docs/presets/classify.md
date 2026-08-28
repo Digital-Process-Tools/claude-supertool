@@ -50,7 +50,12 @@ not the scope — see [#2046](https://github.com/Digital-Process-Tools/claude-su
    the text, fenced with `presets/_untrusted.py`'s per-call nonce, and must
    answer in exactly one of two shapes: `SAFE`, or `SUSPECT: axis,axis`.
    Anything else — prose, a timeout, a nonzero exit, an axis name outside the
-   fixed five — is `could-not-classify`, never `safe`.
+   fixed five — is `could-not-classify`, never `safe`. A nonzero-exit
+   `reason` names the diagnostic `claude` actually produced: preferring
+   stderr, falling back to stdout when stderr is empty (`claude` puts its
+   own error text there, not stderr — [#2060](https://github.com/Digital-Process-Tools/claude-supertool/issues/2060)),
+   and `!r`-escaped so a multi-line diagnostic cannot render as a second,
+   well-formed verdict block once printed ([#2061](https://github.com/Digital-Process-Tools/claude-supertool/issues/2061)).
 
    **Isolated, not just tool-denied (#2053).** `--tools ""` /
    `--strict-mcp-config` / `--disable-slash-commands` deny tools, MCP

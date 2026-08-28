@@ -69,9 +69,11 @@ in the op's `.supertool.json` block, which reaches this subprocess as
 config keys as environment variables" -- the same mechanism
 `presets/watch/naming.py` documents for `watch_name`). An unresolvable
 model name is not silently absorbed into the host default either: `claude`
-itself refuses it (nonzero exit), which `classify()` below already turns
-into `could-not-classify` naming the failure, rather than reintroducing the
-exact ambiguity this was asked to remove.
+itself refuses it (nonzero exit), which `classify()` below turns into
+`could-not-classify` naming the failure -- naming it correctly since #2060,
+which found the diagnostic on this path arriving on `claude`'s **stdout**,
+not its stderr, so the reason collapsed to the bare `spawn exited 1` until
+the reason builder was taught to fall back to stdout when stderr is empty.
 
 **Output vocabulary.** Exactly `SAFE`, or `SUSPECT: axis1,axis2` naming one
 or more of `AXES` below and nothing else. A response that fails to parse is
@@ -259,8 +261,15 @@ def classify(text: str, *, spawn: Spawn = _default_spawn,
     except OSError as exc:
         return Verdict("could-not-classify", [], f"spawn failed: {exc}")
     if proc.returncode != 0:
-        stderr = (proc.stderr or "").strip()
-        detail = f": {stderr}" if stderr else ""
+        # `claude` puts its own diagnostic on stdout, not stderr (#2060) --
+        # stderr is preferred when the process actually used it, stdout is
+        # the fallback for the (common) empty-stderr case, never both. `!r`
+        # escaped like every other untrusted value this module reports
+        # (see the parse-failure branch below) -- a multi-line diagnostic
+        # rendered raw can carry lines that read as this op's own verdict
+        # lines once printed by check.py (#2061).
+        diag = (proc.stderr or "").strip() or (proc.stdout or "").strip()
+        detail = f": {diag!r}" if diag else ""
         return Verdict("could-not-classify", [],
                         f"spawn exited {proc.returncode}{detail}")
     verdict = _parse(proc.stdout or "")

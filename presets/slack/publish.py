@@ -34,9 +34,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety, _console
 from _auth import get_bot_token  # noqa: E402
 from _api import SlackTransportError, call  # noqa: E402
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #2062)
 from _publish_safety import safe_resolve_body_path, require_confirm  # noqa: E402
 
 _FILE_PREFIX = "file://"
@@ -157,6 +158,7 @@ def fetch_permalink(channel: str, ts: str, token: str) -> str:
 
 
 def main(arg: str) -> None:
+    use_utf8_stdout()
     channel, text, thread_ts, force = parse_args(arg)
     preview = f"{channel}: {text}" + (f" (thread {thread_ts})" if thread_ts else "")
     require_confirm("slack_publish", preview, force=force)
