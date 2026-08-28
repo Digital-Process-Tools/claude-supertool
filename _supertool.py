@@ -3421,12 +3421,12 @@ def _dropped_tokens_refusal(
     return chr(10).join(lines) + chr(10)
 
 #: Preset ops that name a path and predate the declaration (#1287). **This set
-#: only ever shrinks.** It is not a policy — it is a debt register: 25 shipped
-#: PRESET ops name a path, 6 declare a boundary, these 19 do not. It opened at
+#: only ever shrinks.** It is not a policy — it is a debt register: 27 shipped
+#: PRESET ops name a path, 8 declare a boundary, these 19 do not. It opened at
 #: 20 — see the #1351 note below for the one it has lost. Counting this repo's
 #: own `.supertool.json` as well used to add one to each of those first two
 #: numbers, the extra being `oss_train`, deleted in #1472; the two scopes now
-#: agree at 25 and 6. All
+#: agree at 27 and 8. All
 #: four numbers are pinned in
 #: `tests/test_cmd_placeholder_path_detector_1350.py` so this comment cannot
 #: drift again.
@@ -3528,7 +3528,7 @@ def _entry_names_a_path(entry: Any) -> Optional[str]:
     The whole detector, in one place, returning the phrase the refusal prints.
     Two signals, OR'd, neither superseding the other:
 
-    * the `syntax` string names a `PATH`/`FILE` component — 24 shipped ops;
+    * the `syntax` string names a `PATH`/`FILE` component — 27 shipped ops;
     * the `cmd` template substitutes `{file}` or `{dir}` — **no shipped op
       today.** `oss_train` was the one and #1472 deleted it, so this arm's
       live instance is a fixture: a real `.supertool.json` driven through

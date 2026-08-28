@@ -13,6 +13,7 @@
     "dashboard",
     "claims",
     "plugin-marketplace",
+    "classify",
     "lsp",
     "vim"
   ],
