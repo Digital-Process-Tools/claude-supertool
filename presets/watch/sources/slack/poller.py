@@ -99,8 +99,20 @@ def _attr_max_chars() -> int:
     default (2048) rather than crashing the poller the way `capFromEnv`
     exits the Node process -- a stalled watcher is a worse failure here than
     one truncating on a stale number for one tick.
+
+    The parsing itself is a plain decimal `int()`, not JS's `Number()` --
+    `capFromEnv` also accepts hex (`0x3E8`), octal/binary prefixes and
+    scientific notation (`1e3`), all of which `int()` rejects here and this
+    falls back on. Full parity was considered and declined: those forms are
+    not a realistic way to set a size cap, and reproducing `Number()`'s
+    coercion grammar exactly (including what it does with leading/trailing
+    whitespace, `Infinity`, and non-integer results) is a second surface to
+    get subtly wrong for a benefit nobody would notice using. What this
+    falls back on is a mismatch reviewers should read as "narrower than
+    the transport, safely" -- never a crash, never a wrong-but-plausible
+    number.
     """
-    raw = os.environ.get("SUPERTOOL_CHANNEL_ATTR_MAX", "")
+    raw = os.environ.get("SUPERTOOL_CHANNEL_ATTR_MAX", "").strip()
     try:
         n = int(raw)
     except ValueError:
@@ -242,14 +254,50 @@ def _bound(text: str) -> str:
     `terminal_coverage`'s neighbours in this repo apply to every bound that
     can silently withhold: a reader who sees the number can tell a source
     that changed its own limit from one still running the old build.
+
+    The kept text plus the note is re-clamped against `_attr_max_chars()`
+    here, at truncation time, rather than trusted to fit because
+    `_TRUNCATION_NOTE_MARGIN` was subtracted when `MESSAGE_CHARS_MAX` was
+    computed (reviewer finding on #2059's own fix). The note's length is not
+    fixed -- it grows with the digit count of how much was cut -- and an
+    operator who lowers `SUPERTOOL_CHANNEL_ATTR_MAX` well below the margin
+    drives `MESSAGE_CHARS_MAX` down to its floor of 1, at which point a
+    static margin chosen for the *default* cap (2048) no longer bounds the
+    note against a much smaller one: reproducing #2059 one level down,
+    inside the fix for #2059. Re-clamping at call time, against whatever
+    the real cap is right now, keeps the guarantee (kept text + note fits
+    under the cap the channel will actually enforce) independent of what
+    margin was picked at import time.
+
+    The one residual case this cannot fix: a cap smaller than the note's
+    own minimum length (`SUPERTOOL_CHANNEL_ATTR_MAX` under roughly 65) has
+    no room to say anything at all, truncated or not -- there is no way to
+    report "N chars were cut" in fewer bytes than that sentence takes. That
+    is a degenerate override no real deployment sets (the default is 2048,
+    documented as ~17x the largest value ever observed), not a case worth
+    engineering around.
     """
     if len(text) <= MESSAGE_CHARS_MAX:
         return text
-    return (
-        text[:MESSAGE_CHARS_MAX]
-        + f" [+{len(text) - MESSAGE_CHARS_MAX} chars truncated at the source, "
-          f"MESSAGE_CHARS_MAX={MESSAGE_CHARS_MAX}]"
-    )
+    cap = _attr_max_chars()
+    kept = MESSAGE_CHARS_MAX
+    # `note`'s own length depends on `kept` (the "+N chars truncated" count
+    # grows or shrinks with it), so this is a small fixed-point search
+    # rather than one shot -- reducing `kept` to fit the note can change
+    # the note's own length by a digit, which can in turn change how much
+    # `kept` needs to shrink. Two iterations is enough in practice (the
+    # note's length changes by at most a digit or two per step, and `kept`
+    # only ever needs to move down), and a bounded loop means a pathological
+    # cap degrades to the residual documented above rather than looping.
+    for _ in range(4):
+        note = (
+            f" [+{len(text) - kept} chars truncated at the source, "
+            f"MESSAGE_CHARS_MAX={MESSAGE_CHARS_MAX}]"
+        )
+        if kept + len(note) <= cap or kept <= 0:
+            break
+        kept = max(0, cap - len(note))
+    return text[:kept] + note
 
 
 def resolve_bot_user_id(token: str) -> str | None:

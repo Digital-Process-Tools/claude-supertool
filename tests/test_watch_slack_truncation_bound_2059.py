@@ -124,6 +124,24 @@ def test_attr_max_chars_tracks_the_channels_own_env_override(monkeypatch: pytest
     assert poller.MESSAGE_CHARS_MAX > CHANNEL_ATTR_MAX_CHARS_DEFAULT
 
 
+def test_attr_max_chars_tolerates_surrounding_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SUPERTOOL_CHANNEL_ATTR_MAX", "  3000  ")
+    poller = _load_poller()
+    assert poller._attr_max_chars() == 3000
+
+
+def test_attr_max_chars_falls_back_rather_than_matching_the_transports_number_grammar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Documents a known, accepted gap rather than asserting parity: the
+    transport's `capFromEnv` uses JS `Number()`, which accepts hex and
+    scientific notation; this reads a plain decimal `int()` and falls back
+    safely rather than mismatching silently on those forms."""
+    monkeypatch.setenv("SUPERTOOL_CHANNEL_ATTR_MAX", "0x3E8")  # 1000 to Number()
+    poller = _load_poller()
+    assert poller._attr_max_chars() == CHANNEL_ATTR_MAX_CHARS_DEFAULT
+
+
 def test_attr_max_chars_falls_back_on_an_unparseable_override(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unlike the transport (which exits the process, #`capFromEnv`'s
     `EXIT_BAD_CAP`), a poller falls back rather than dying -- a stalled
@@ -132,3 +150,66 @@ def test_attr_max_chars_falls_back_on_an_unparseable_override(monkeypatch: pytes
     monkeypatch.setenv("SUPERTOOL_CHANNEL_ATTR_MAX", "not-a-number")
     poller = _load_poller()
     assert poller._attr_max_chars() == CHANNEL_ATTR_MAX_CHARS_DEFAULT
+
+
+def test_the_note_is_reclamped_against_a_small_override_not_just_the_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reviewer finding on this fix's own margin: `_TRUNCATION_NOTE_MARGIN`
+    is sized for the *default* cap (2048). An operator who lowers
+    `SUPERTOOL_CHANNEL_ATTR_MAX` well below the margin drives
+    `MESSAGE_CHARS_MAX` down to its floor of 1 -- at which point a note
+    whose own length grows with the digit count of what was cut could once
+    again exceed the real, much smaller cap, reproducing #2059 one level
+    down. `_bound` must re-clamp against the live cap at truncation time,
+    not just trust the margin computed at import time."""
+    small_cap = 300
+    monkeypatch.setenv("SUPERTOOL_CHANNEL_ATTR_MAX", str(small_cap))
+    poller = _load_poller()
+    assert poller.MESSAGE_CHARS_MAX == small_cap - poller._TRUNCATION_NOTE_MARGIN
+    bounded = poller._bound("x" * 5000)
+    assert len(bounded) <= small_cap
+    assert bounded != ""
+
+
+def test_the_note_is_reclamped_at_the_floor_where_the_margin_cannot_help() -> None:
+    """The floor case the reviewer actually found: a cap small enough that
+    `MESSAGE_CHARS_MAX` bottoms out at 1 -- well below the margin -- is
+    exactly where a static margin (sized for the *default* cap) stops
+    bounding the note against a much smaller one."""
+    poller = _load_poller()
+    assert poller.MESSAGE_CHARS_MAX >= 1
+    # Directly exercise the floor without needing an env override that
+    # would also change `_attr_max_chars()` (and so the clamp target) --
+    # patch `MESSAGE_CHARS_MAX` down to the floor and `_attr_max_chars` down
+    # to a cap the old, unclamped code would have overrun.
+    with mock.patch.object(poller, "MESSAGE_CHARS_MAX", 1), \
+         mock.patch.object(poller, "_attr_max_chars", return_value=100):
+        bounded = poller._bound("x" * 5000)
+    assert len(bounded) <= 100
+    assert bounded != ""
+
+
+def test_a_realistic_override_still_keeps_the_full_note() -> None:
+    """Must-not-fire pair: the re-clamp in `_bound` must not shave real
+    deployments' notes down for no reason -- only the degenerate small-cap
+    case above should ever need it."""
+    poller = _load_poller()
+    bounded = poller._bound("x" * 5000)
+    assert "MESSAGE_CHARS_MAX=" in bounded
+    assert bounded.startswith("x" * poller.MESSAGE_CHARS_MAX)
+
+
+def test_the_disclosed_truncated_count_always_matches_what_was_actually_kept() -> None:
+    """When the re-clamp shrinks `kept` below `MESSAGE_CHARS_MAX`, the note
+    must say how much was *actually* cut, not the count that would have
+    been true at the unclamped bound -- otherwise the disclosure itself
+    becomes the kind of lie #605/#609's disclosures exist to prevent."""
+    poller = _load_poller()
+    text = "x" * 5000
+    with mock.patch.object(poller, "MESSAGE_CHARS_MAX", 1), \
+         mock.patch.object(poller, "_attr_max_chars", return_value=200):
+        bounded = poller._bound(text)
+    kept_prefix = bounded.split(" [+", 1)[0]
+    disclosed = int(bounded.split("[+", 1)[1].split(" chars", 1)[0])
+    assert len(kept_prefix) + disclosed == len(text)

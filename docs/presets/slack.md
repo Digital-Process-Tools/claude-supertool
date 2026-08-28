@@ -37,7 +37,7 @@ A **user token** (`xoxp-...`, User Token Scopes -- `scopes: user: [chat:write]` 
 
 `CHANNEL_ID`, not a channel name: a name is resolved server-side and can be re-pointed by someone else out from under a saved call, while an id cannot. Find it in the Slack UI under the channel's details.
 
-`THREAD_TS` posts as a reply inside that thread's own `ts` — cheap to pass from the start, and the field the paired watch source's `slack_message` events already carry back to you (`payload.ts`) if you are replying to something the poller just delivered.
+`THREAD_TS` posts as a reply inside that thread's own `ts` — cheap to pass from the start, and the field the paired watch source's `slack_message` events already carry back to you (`payload.message_ts`, or `payload.thread_ts` when the message you are replying to was itself a thread reply) if you are replying to something the poller just delivered. Not named `payload.ts`: the channel bridge reserves that name for its own routing field, so the poller's own message-ts payload key was renamed away from it ([#2052](https://github.com/Digital-Process-Tools/claude-supertool/issues/2052)).
 
 **Breaking change (#2039): the bare-path arm is withdrawn.** TEXT is read from a file only with the explicit `file://` prefix now -- a call that used to work as `slack_publish:C0123|.max/draft.md` (no prefix, relying on the path existing) now posts the literal string `.max/draft.md` instead of the file's contents, and needs `file://` added to keep reading the file. Unlike the other four publish/comment presets, which keep the bare-path convenience because their TEXT is always maintainer-typed, `slack_publish`'s TEXT can be stranger-authored -- the paired watch source hands back message text written by anyone in the workspace -- so a bare path that happened to exist inside the safety allowlist (`.max/` among them) let untrusted text choose a private file to disclose, with no marker in the call that a file was ever involved. If you have an existing call relying on the bare-path form, add `file://`.
 
@@ -57,7 +57,7 @@ A **user token** (`xoxp-...`, User Token Scopes -- `scopes: user: [chat:write]` 
 # URL: https://yourteam.slack.com/archives/C0123456/p1700000000000200
 ```
 
-Reply in the same thread once you have the `ts` (from the output above, or from a `slack_message` event's `payload.ts`):
+Reply in the same thread once you have the `ts` (from the output above, or from a `slack_message` event's `payload.message_ts`):
 
 ```bash
 ./supertool 'slack_publish:C0123456|Following up on this thread.|1700000000.000200'
