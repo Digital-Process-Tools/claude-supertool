@@ -199,6 +199,48 @@ def test_an_entry_with_an_unexpected_shape_is_unreadable(tmp_path) -> None:
         "hand back a verdict this cache is not supposed to be able to hold")
 
 
+# --- #2104: the defensive floor on `state` has to cover `axes` too, or a
+# hand-edited (or otherwise corrupted) cache file can hand back a `suspect`
+# verdict naming an axis outside `model.AXES` -- which `_render_verdict`
+# then joins straight into the receipt at column 0. `model._parse` already
+# refuses this on the live path (`n not in AXES`), so a cache entry is the
+# only route to it, and the fix here is: apply the record-wide floor. -------
+
+def test_an_axis_name_outside_model_axes_is_unreadable(tmp_path) -> None:
+    """Must-fire half: a cache file naming an axis `model.AXES` does not
+    know about must be refused exactly like the existing could-not-classify
+    case above, not handed back as a verdict whose `axes` a caller then
+    joins unchecked into a rendered line."""
+    path_dir = tmp_path / "cache"
+    path_dir.mkdir(parents=True)
+    c2 = cache.Cache(directory=str(path_dir))
+    p = c2._path(cache.key("hello"))
+    import json
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"state": "suspect", "axes": ["not-a-real-axis"],
+                   "reason": "model flagged: not-a-real-axis",
+                   "written": 0}, f)
+    got, status = c2.get("hello")
+    assert got is None, (
+        "an axis outside model.AXES must never be handed back as part of a "
+        "verdict")
+    assert "unreadable" in status
+
+
+def test_a_suspect_entry_with_real_axis_names_still_hits(tmp_path) -> None:
+    """Must-not-fire pair for the test above: an ordinary suspect entry
+    whose axes are all real `model.AXES` members must still round-trip as a
+    hit -- proving the refusal above is about the bogus axis name and not
+    about `axes` entries in general."""
+    c = _cache(tmp_path)
+    v = model.Verdict("suspect", ["credential-shape", "role-persona"],
+                       "model flagged: credential-shape, role-persona")
+    assert c.put("hello", v) == ""
+    got, status = c.get("hello")
+    assert status == "hit"
+    assert got == v
+
+
 # --- a symlink planted at the entry's own name is refused, not followed ----
 # `get()`'s `os.open(path, os.O_RDONLY | nofollow)` is the guard; nothing in
 # this module exercised it before this test, which is exactly the gap #2054's

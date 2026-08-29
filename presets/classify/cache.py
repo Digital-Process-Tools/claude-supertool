@@ -271,6 +271,7 @@ class Cache:
         written = raw.get("written")
         if (state not in _CACHEABLE_STATES or not isinstance(axes, list)
                 or not all(isinstance(a, str) for a in axes)
+                or any(a not in model.AXES for a in axes)
                 or not isinstance(reason, str)
                 or not isinstance(written, (int, float))
                 or isinstance(written, bool)):
@@ -278,7 +279,15 @@ class Cache:
             # against a `could-not-classify` entry that should never have
             # existed in the first place (`put` refuses to write one, but a
             # `get` that trusted the file blindly would still hand one back
-            # if something else put it there).
+            # if something else put it there). The `axes` membership check
+            # (#2104) is the same floor applied to the rest of the record:
+            # `state` was never special-cased on purpose, it was simply the
+            # only field this function checked against its own module's
+            # vocabulary before now. `model._parse` already refuses a
+            # non-AXES name on the live model path (`n not in AXES`), so
+            # without this a hand-edited or corrupted cache file was the
+            # only way a bogus axis name could reach `_render_verdict` and
+            # be joined, unchecked, into the line the maintainer loop reads.
             return None, "unreadable (unexpected shape)"
         current = now if now is not None else time.time()
         if state == "safe" and (current - written) > self.safe_ttl:
