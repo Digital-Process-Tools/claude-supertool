@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 WATCH_DIR = Path(__file__).parent.parent / "presets" / "watch"
 sys.path.insert(0, str(WATCH_DIR))
 
@@ -30,6 +32,18 @@ POLLER = SOURCE_DIR / "poller.py"
 
 CHANNEL = "C0123456"
 BOT_UID = "U_BOT"
+
+
+@pytest.fixture(autouse=True)
+def _fake_bot_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same reasoning as `tests/test_watch_slack_poller_2031.py`'s own
+    fixture of this name: every test here that calls `poll()` unmocked
+    goes through the real `_auth.get_bot_token_or_none()`, which also
+    reads `~/.config/slack/bot_token` -- a file a maintainer's own machine
+    can have and CI never will. Without this, "did not raise" and "still
+    delivers the event" pass or fail depending on whose machine happens to
+    have a Slack token configured, not on whether the guard is correct."""
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-fake-not-a-real-token-2063")
 
 
 def _load_poller():
