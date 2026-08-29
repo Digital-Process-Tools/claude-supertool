@@ -1014,6 +1014,106 @@ class TestGithubIssueCreateTransportFallback:
         assert "ERROR" in out
         assert "duplicate" in out.lower()
 
+    def test_dedup_full_first_page_pages_on_to_find_the_match(self, monkeypatch, capsys, tmp_path):
+        """#2021: a full page (100 items) with no match on it is not proof
+        there is no duplicate -- GitHub orders open issues newest-first, so
+        the entries pushed off the first page are exactly the long-lived
+        ones a stalled maintainer loop is most likely to be re-filing. The
+        guard must page onward rather than treating a full page as `no
+        match`. Would still pass if the code did nothing UNLESS paired with
+        `test_dedup_partial_page_with_no_match_does_not_page_further` below,
+        which proves a short page ends the loop instead of looping forever."""
+        payload_file = _write_payload(tmp_path, GH_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setattr(
+            gh, "_gh",
+            lambda args, timeout=20: _err("HTTP 503: No server is currently "
+                                           "available to service your request. "
+                                           "(https://api.github.com/graphql)"))
+
+        page_one = [{"number": n, "title": f"other issue {n}"} for n in range(100)]
+        existing = {"number": 55, "title": GH_MINIMAL["title"],
+                    "html_url": "https://github.com/Digital-Process-Tools/"
+                                 "claude-supertool/issues/55"}
+        page_two = [existing]
+
+        def fake_gh_json(args, stdin=None, timeout=30):
+            if "POST" in args:
+                raise AssertionError(
+                    "a POST was attempted despite an existing match on page 2")
+            if "page=2" in args:
+                return (page_two, "")
+            return (page_one, "")
+
+        monkeypatch.setattr(gh, "_gh_json", fake_gh_json)
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "number=55" in out
+        assert "transport=rest" in out
+
+    def test_dedup_partial_page_with_no_match_does_not_page_further(self, monkeypatch, capsys, tmp_path):
+        """The counterpart to the test above: a page shorter than per_page
+        (100) is proof there is no next page, so the guard must proceed to
+        file rather than issuing a second request it does not need."""
+        payload_file = _write_payload(tmp_path, GH_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setattr(
+            gh, "_gh",
+            lambda args, timeout=20: _err("HTTP 503: No server is currently "
+                                           "available to service your request. "
+                                           "(https://api.github.com/graphql)"))
+
+        calls: list[list[str]] = []
+
+        def fake_gh_json(args, stdin=None, timeout=30):
+            calls.append(args)
+            if "POST" not in args:
+                return ([{"number": 1, "title": "unrelated"}], "")  # partial page
+            return ({"number": 99,
+                      "html_url": "https://github.com/Digital-Process-Tools/"
+                                   "claude-supertool/issues/99"}, "")
+
+        monkeypatch.setattr(gh, "_gh_json", fake_gh_json)
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "number=99" in out
+        get_calls = [c for c in calls if "POST" not in c]
+        assert len(get_calls) == 1, (
+            f"a partial page should end the pagination loop, got "
+            f"{len(get_calls)} lookup calls")
+
+    def test_dedup_lookup_refuses_rather_than_paging_forever(self, monkeypatch, capsys, tmp_path):
+        """A pathological repo (or a broken response) that returns a full
+        page every time must not loop forever or eventually POST blind --
+        it refuses the same way an outright `_gh_json` error does."""
+        payload_file = _write_payload(tmp_path, GH_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        monkeypatch.setattr(
+            gh, "_gh",
+            lambda args, timeout=20: _err("HTTP 503: No server is currently "
+                                           "available to service your request. "
+                                           "(https://api.github.com/graphql)"))
+
+        always_full_page = [{"number": n, "title": f"other issue {n}"} for n in range(100)]
+
+        def fake_gh_json(args, stdin=None, timeout=30):
+            if "POST" in args:
+                raise AssertionError(
+                    "a POST was attempted after the lookup should have refused")
+            return (always_full_page, "")
+
+        monkeypatch.setattr(gh, "_gh_json", fake_gh_json)
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "ERROR" in out
+        assert "duplicate" in out.lower() or "could not" in out.lower()
+
     def test_unresolved_milestone_is_named_not_applied_on_rest_fallback(self, monkeypatch, capsys, tmp_path):
         payload = dict(GH_MINIMAL)
         payload["milestone"] = "v9.9"
