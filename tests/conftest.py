@@ -369,6 +369,12 @@ def pytest_configure(config):
         os.pathsep.join(_tmp_roots),
     )
     os.environ.setdefault("SUPERTOOL_NO_PUBLISH_CONFIRM", "1")
+    # #2042: the disclosure marker is on by default in production. Suppress
+    # it suite-wide the same way confirm is suppressed above, so tests that
+    # pin an exact posted body (predating #2042) do not have to know about
+    # it -- tests/test_publish_disclosure_2042.py exercises the real
+    # on-by-default behavior directly, via its own fixture that unsets this.
+    os.environ.setdefault("SUPERTOOL_NO_PUBLISH_DISCLOSURE", "1")
     # #1656: every cache supertool writes goes through `_supertool._cache_root()`,
     # which is the one place `~/.cache/supertool` is spelled and reads
     # XDG_CACHE_HOME per call. Point it at a directory this process owns, so the

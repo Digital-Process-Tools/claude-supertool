@@ -24,6 +24,8 @@ from _auth import env_truthy, get_token
 from _graphql import gql, gql_safe
 from _outbound import append as track_append
 from _resolve import resolve_post_id
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
+from _publish_safety import apply_disclosure  # noqa: E402
 
 _FILE_PREFIX = "file://"
 
@@ -154,6 +156,7 @@ def main(arg: str) -> None:
                 "Use |force as 3rd field to override.\n"
             )
             sys.exit(1)
+    message, disclosure_state = apply_disclosure(message)
     data = gql(ADD_COMMENT, {"input": {"postId": post_id, "contentMarkdown": message}}, token)
     c = data["addComment"]["comment"]
     track_append({
@@ -163,6 +166,8 @@ def main(arg: str) -> None:
         "posted_at": c["dateAdded"],
     })
     print(f"(comment posted id={c['id']} at={c['dateAdded']})")
+    if disclosure_state != "appended":
+        print(f"(disclosure: {disclosure_state})")
 
 
 if __name__ == "__main__":

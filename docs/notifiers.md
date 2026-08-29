@@ -102,6 +102,8 @@ If your hook's answer changes whether the edit lands → validator. If it just o
 
 Fire-and-forget: no return path, no `ts`, none of the outbound safety gating a deliberate post runs under. For a call-it-on-purpose post whose response you need back (a thread reply, a `ts` to edit later), use the `slack_publish` op instead — see [docs/presets/slack.md](presets/slack.md).
 
+This `curl` is a raw notifier body, not a call through `presets/_publish_safety.py` — it does not get `slack_publish`'s authorship-disclosure marker (#2042) or its confirmation gate. A message posted this way carries no indication a machine sent it. If that matters for your channel, add the marker to the notifier's own JSON body, or route the post through `slack_publish` instead.
+
 ### Append to a per-session audit log
 
 ```json

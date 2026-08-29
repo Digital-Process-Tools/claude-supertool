@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
 from _atproto import get_session, xrpc
 from _auth import get_app_password, get_handle
-from _publish_safety import safe_resolve_body_path, require_confirm  # noqa: E402
+from _publish_safety import safe_resolve_body_path, require_confirm, apply_disclosure  # noqa: E402
 
 MAX_LEN = 300
 
@@ -187,6 +187,7 @@ def preflight_publish(reply_uri: str, session: dict) -> bool | None:
 
 def main(arg: str) -> None:
     body, reply_uri, force = parse_args(arg)
+    body, disclosure_state = apply_disclosure(body, max_len=MAX_LEN)
     require_confirm("bluesky_publish", body, force=force)
     handle = get_handle()
     session = get_session(handle, get_app_password())
@@ -229,6 +230,8 @@ def main(arg: str) -> None:
     web = f"https://bsky.app/profile/{handle}/post/{rkey}"
     print(f"(published uri={uri} cid={cid})")
     print(f"URL: {web}")
+    if disclosure_state != "appended":
+        print(f"(disclosure: {disclosure_state})")
 
 
 if __name__ == "__main__":

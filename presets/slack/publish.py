@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety, _c
 from _auth import get_bot_token  # noqa: E402
 from _api import SlackTransportError, call  # noqa: E402
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #2062)
-from _publish_safety import safe_resolve_body_path, require_confirm  # noqa: E402
+from _publish_safety import safe_resolve_body_path, require_confirm, apply_disclosure  # noqa: E402
 
 _FILE_PREFIX = "file://"
 
@@ -143,23 +143,37 @@ def parse_args(arg: str) -> tuple[str, str, str | None, bool]:
     return channel, text, thread_ts, force
 
 
-def fetch_permalink(channel: str, ts: str, token: str) -> str:
-    """Best-effort -- `""` on any failure. The publish already happened by
-    the time this runs; a permalink lookup failing must not read as the post
-    itself having failed."""
+def fetch_permalink(channel: str, ts: str, token: str) -> tuple[str, str]:
+    """Best-effort -- returns `("", note)` on any failure, never a bare `""`.
+    The publish already happened by the time this runs; a permalink lookup
+    failing must not read as the post itself having failed.
+
+    Three failure shapes collapsed into the same silent `""` before this fix
+    (#2074): a transport error, a Slack-level refusal (`ok: false`), and a
+    permalink that is genuinely absent despite `ok: true`. The caller printed
+    the `URL:` line only `if permalink`, so all three rendered as identical
+    nothing -- an operator could not tell "Slack has no permalink for this"
+    from "the lookup failed". `note` is empty on success and otherwise names
+    which of the three happened, so the caller can render a distinguishable
+    line per failure instead of one shared silence."""
     try:
         resp = call("chat.getPermalink", token,
                     params={"channel": channel, "message_ts": ts})
-    except SlackTransportError:
-        return ""
+    except SlackTransportError as e:
+        return "", f"permalink lookup failed: {e}"
     if not isinstance(resp, dict) or not resp.get("ok"):
-        return ""
-    return str(resp.get("permalink") or "")
+        err = resp.get("error") if isinstance(resp, dict) else None
+        return "", f"permalink lookup refused: {err or 'unknown_error'}"
+    permalink = str(resp.get("permalink") or "")
+    if not permalink:
+        return "", "permalink lookup answered ok with no permalink"
+    return permalink, ""
 
 
 def main(arg: str) -> None:
     use_utf8_stdout()
     channel, text, thread_ts, force = parse_args(arg)
+    text, disclosure_state = apply_disclosure(text)
     preview = f"{channel}: {text}" + (f" (thread {thread_ts})" if thread_ts else "")
     require_confirm("slack_publish", preview, force=force)
     token = get_bot_token()
@@ -177,9 +191,13 @@ def main(arg: str) -> None:
         sys.exit(1)
     ts = str(resp.get("ts") or "")
     print(f"(published channel={channel} ts={ts})")
-    permalink = fetch_permalink(channel, ts, token) if ts else ""
+    if disclosure_state != "appended":
+        print(f"(disclosure: {disclosure_state})")
+    permalink, note = fetch_permalink(channel, ts, token) if ts else ("", "no ts to look up")
     if permalink:
         print(f"URL: {permalink}")
+    else:
+        print(f"(no permalink: {note})")
 
 
 if __name__ == "__main__":
