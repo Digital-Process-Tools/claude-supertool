@@ -131,18 +131,19 @@ def test_diagnostic_assertions_are_immune_to_the_tmp_path_digits(
     assert "cannot suggest" in _hint(out)
 
 
-def test_hint_immunity_still_catches_a_real_negative_line_number(
-        tmp_path: Path) -> None:
+def test_hint_immunity_still_catches_a_real_negative_line_number() -> None:
     """Positive control for the test above: `_hint` narrows WHERE the
-    assertion looks, and must not also narrow WHAT it catches. A hint that
-    genuinely regressed to the negative-line-number defect #1489 was filed
-    about still has to fail -- otherwise the fix above is just a looser
-    assertion that happens to pass.
+    assertion looks, and must not also narrow WHAT it catches. A whole
+    `out` that genuinely regressed to the negative-line-number defect
+    #1489 was filed about still has to fail THROUGH `_hint` itself --
+    otherwise the fix above is just a looser assertion that happens to
+    pass, and this is the test that would have caught that.
     """
-    regressed_hint = ("\n  \u21b3 cannot suggest a nearest match: "
-                       "candidates line -19, 8, 13 and 22 more.\n")
+    out = ("ERROR: old string not found in /tmp/pytest-19004/app.py\n"
+           "  \u21b3 cannot suggest a nearest match: candidates line "
+           "-19, 8, 13 and 22 more.\n")
     with pytest.raises(AssertionError):
-        assert "line -" not in regressed_hint
+        assert "line -" not in _hint(out)
 
 
 def test_a_long_anchor_still_reaches_the_at_least_disclosure(
