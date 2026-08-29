@@ -190,10 +190,13 @@ def main() -> int:
             print("No failed jobs.")
             return 0
         # A job id from GitLab's own job-listing API, not from the job's own
-        # `.gitlab-ci.yml`-controlled stdout -- but `_untrusted.flat` is
-        # idempotent and cheap, and this id also builds a filename in
-        # `write_traces` (#626), so flattening it here is defence in depth
-        # rather than a response to a specific forgery this field can carry.
+        # `.gitlab-ci.yml`-controlled stdout. `_untrusted.flat` here is
+        # display hygiene only -- it is idempotent and cheap, but it leaves a
+        # traversal string like `../../../../tmp/x` byte-for-byte unchanged,
+        # so it is not what stops this id from reaching a path. `write_traces`
+        # (#626) builds a filename straight from these ids and is the one
+        # that refuses a non-digit id (#2103) -- for every caller, not just
+        # this one.
         ids = [_untrusted.flat(str(j.get("id"))) for j in failed if j.get("id") is not None]
         return gitlab_job.write_traces(ids)
 

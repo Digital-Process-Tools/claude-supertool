@@ -29,6 +29,7 @@ import _branch_locale  # noqa: E402  (where the branch is checked out — shared
 import _untrusted  # noqa: E402  (an MR's branch, title and author are the opener's text — #965)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
+import _digits  # noqa: E402  (the one ASCII-digit test, shared since #1727)
 import _image_root  # noqa: E402  (the trace root, created and proven ours — #1493/#626)
 import _job_argv  # noqa: E402  (the argv shape both job presets share — #1145)
 import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
@@ -769,6 +770,35 @@ def write_traces(job_ids: list[str]) -> int:
     if traces_dir is None:
         print(f"ERROR: the traces directory could not be established: {why}")
         return 1
+
+    # #2103 -- the filename below is built straight from `job_ids`, and
+    # `pipeline.py`'s `:traces` route hands this function ids it never
+    # validated as digits-only (only `_untrusted.flat`, a display
+    # neutraliser that leaves a traversal string like `../../../../tmp/x`
+    # byte-for-byte unchanged). `gl-job:ID:trace` already validates through
+    # `_job_argv.refuse_job_ids` before calling here, so this re-checks that
+    # route too -- cheap (one regex per id) and it means this writer is safe
+    # for every caller, present or future, rather than only the ones that
+    # remember to check first. The refusal is deliberately reported here,
+    # at the one place both routes converge, rather than duplicated (and
+    # possibly worded differently) at each call site.
+    #
+    # Not `_job_argv.refuse_job_id` directly: that message frames the id as
+    # something the *caller typed* ("the op string was mangled ... re-run
+    # with the digits alone: gl-job:JOB_ID"), which is wrong and unactionable
+    # from `gl-pipeline:ID:traces` -- nobody typed a job id there, it came
+    # out of a job-listing API response, and there is no `gl-job:JOB_ID` to
+    # re-run.
+    for job_id in job_ids:
+        if not _digits.DIGITS.match(job_id):
+            print(
+                f"ERROR: job id {job_id!r} is not numeric -- nothing was "
+                f"written. Trace writing takes GitLab job ids from a job "
+                f"listing or fetch, and a non-numeric one means that data "
+                f"was not what it should have been; refusing rather than "
+                f"building a file path out of it."
+            )
+            return 1
 
     sections: list[str] = []
     written_ids: list[str] = []
