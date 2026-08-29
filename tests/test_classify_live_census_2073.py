@@ -115,7 +115,7 @@ def test_every_test_in_the_live_file_is_gated_through_the_shared_call():
     `_classify_live.require_claude`, not a private helper."""
     import ast
 
-    src = (TESTS / "test_classify_live_2046.py").read_text()
+    src = (TESTS / "test_classify_live_2046.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     test_funcs = [n for n in tree.body
                   if isinstance(n, ast.FunctionDef)
