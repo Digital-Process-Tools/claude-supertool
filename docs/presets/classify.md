@@ -141,12 +141,13 @@ the argument that `safe` is the verdict a caller acts on permissively and
 never written — the transient bucket must not calcify into a permanent
 verdict for that text.
 
-**Not yet reached: the caller #2049 actually wired.**
+**The caller #2049 actually wired is now reached too (#2097).**
 `presets/_classify_render.py` — `gh-issue`, `gh-pr`, `gl-issue`, `gl-mr` —
-calls `model.classify()` in-process, not through `check.py`'s subprocess,
-and does not pass a `cache=` argument. That file is outside this issue's
-declared lane (`presets/classify/*.py`, `presets/classify.json`); wiring it
-in is a small follow-up for whoever owns that file next — import
-`presets/classify/cache.py` the way `model.py` and `scanner.py` are already
-imported, and pass `cache=<that module>.default_cache()` into the
-`model.classify(...)` call inside `verdict_line`.
+calls `model.classify()` in-process, not through `check.py`'s subprocess.
+Its `Budget` (one instance per op call, threading through every unit that
+call renders) now builds a `presets/classify/cache.py` `Cache` by default,
+so a body or comment already classified answers from disk on a repeat
+instead of spawning again — a cache hit does not spend the call's spawn
+budget either. `verdict_line` itself keeps `cache=None` as its own
+default, unchanged, for the one caller that reaches it directly without a
+`Budget` (`gitlab/mr.py`'s uncapped test path).
