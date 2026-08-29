@@ -333,6 +333,28 @@ def resolve_bot_user_id(token: str) -> str | None:
 MAX_PAGES = 5
 
 
+def _safe_ts_float(raw: Any) -> tuple[float | None, str]:
+    """`(value, "")` on a parseable `ts`/`cursor`, `(None, why)` otherwise.
+
+    Every `float()` conversion in this module runs through here (#2063).
+    `_fetch`'s own docstring promises `(None, why)` on any failure, and
+    every other arm honours it -- an unreachable Slack, a revoked token, an
+    unexpected payload shape. A bare `float(m["ts"])` inside a sort or
+    filter key was the one path that did not: a non-numeric value raised
+    `ValueError` straight out of `poll()` and killed the watcher instead of
+    reporting and staying alive.
+
+    Reachability is not demonstrated -- Slack's own API does not return a
+    non-numeric `ts`, and HTTPS plus same-origin redirects stand in front of
+    a spoofed response. This guards the contract as stated rather than a
+    route that is known to reach it.
+    """
+    try:
+        return float(raw), ""
+    except (TypeError, ValueError):
+        return None, f"ERROR: non-numeric ts {raw!r} from Slack"
+
+
 def _fetch(
     channel: str, thread_ts: str | None, token: str, cursor: str | None,
 ) -> tuple[list[dict[str, Any]] | None, str]:
@@ -384,11 +406,19 @@ def _fetch(
     # Numeric, not string: Slack's ts is fixed-width today so the two agree,
     # but the filter below compares the same way the sort orders, on
     # purpose, rather than two comparisons that happen to agree by luck.
-    collected.sort(key=lambda m: float(m["ts"]))
+    parsed: list[tuple[float, dict[str, Any]]] = []
+    for m in collected:
+        value, err = _safe_ts_float(m["ts"])
+        if err:
+            return None, err
+        parsed.append((value, m))
+    parsed.sort(key=lambda pair: pair[0])
     if cursor is not None:
-        cursor_f = float(cursor)
-        collected = [m for m in collected if float(m["ts"]) > cursor_f]
-    return collected, ""
+        cursor_f, err = _safe_ts_float(cursor)
+        if err:
+            return None, err
+        parsed = [(v, m) for v, m in parsed if v > cursor_f]
+    return [m for _, m in parsed], ""
 
 
 def _anchor(
@@ -436,7 +466,13 @@ def _anchor(
         msgs = [m for m in raw if isinstance(m, dict) and isinstance(m.get("ts"), str)]
         if not msgs:
             return None, ""
-        return max(msgs, key=lambda m: float(m["ts"]))["ts"], ""
+        parsed: list[tuple[float, dict[str, Any]]] = []
+        for m in msgs:
+            value, err = _safe_ts_float(m["ts"])
+            if err:
+                return None, err
+            parsed.append((value, m))
+        return max(parsed, key=lambda pair: pair[0])[1]["ts"], ""
 
     messages, err = _fetch(channel, thread_ts, token, None)
     if messages is None:
