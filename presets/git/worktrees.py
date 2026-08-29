@@ -261,7 +261,7 @@ def branch_ever_committed(branch: str, runner=None):
     if not branch:
         return None
     # `_git_verbatim`, not `_git`: `%gs` is a reflog SUBJECT, which for a commit
-    # entry is somebody's commit message. `_git` runs `subprocess.run(text=True)`
+    # entry is somebody's commit message. `_git` runs `Popen(text=True)`
     # and text mode rewrites a lone CR and a CRLF to LF before any preset sees
     # the stream, so a crafted message could split into extra records that read
     # as git's own. With the translation off a reflog line cannot contain LF by

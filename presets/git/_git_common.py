@@ -241,7 +241,7 @@ def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedPro
         return subprocess.CompletedProcess(
             args=cmd, returncode=TIMEOUT_RC, stdout="",
             stderr=(f"communicate() failed: {exc.__class__.__name__} - "
-                   f"{exc or 'no reason given'}"),
+                   f"{str(exc) or 'no reason given'}"),
         )
     return subprocess.CompletedProcess(
         args=cmd, returncode=proc.returncode, stdout=stdout, stderr=stderr,
@@ -291,7 +291,7 @@ def _git_verbatim(args: list[str], timeout: int | None = None) -> subprocess.Com
         return subprocess.CompletedProcess(
             args=cmd, returncode=TIMEOUT_RC, stdout="",
             stderr=(f"communicate() failed: {exc.__class__.__name__} - "
-                   f"{exc or 'no reason given'}"),
+                   f"{str(exc) or 'no reason given'}"),
         )
     return subprocess.CompletedProcess(
         args=cmd, returncode=proc.returncode,
@@ -465,7 +465,7 @@ def _list_conflicts() -> tuple[list[str], str]:
 
     **And it reads through `_git_verbatim`, because `-z` is only exact if
     nothing rewrites the bytes on the way back.** `_git` runs
-    `subprocess.run(text=True)`, and Python's universal-newline translation
+    `Popen(text=True)`, and Python's universal-newline translation
     turns a bare CR — and a CRLF — into LF *inside* a NUL record, before any
     split sees it. A POSIX filename may hold a CR (every byte but NUL and '/'
     is legal), so with text mode on, the name handed back was not the name on

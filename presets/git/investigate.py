@@ -39,7 +39,7 @@ import _untrusted  # noqa: E402  (git hands log subjects and file CONTENT back r
 #:   vertical tab — none of which git writes in this stream — so a source line
 #:   spelling `<U+2028>author Mallory<U+2028><TAB>text` produced a blame row
 #:   carrying an author, a date and a line number no commit ever had.
-#: * `_git` itself, which runs `subprocess.run(text=True)` and therefore
+#: * `_git` itself, which runs `Popen(text=True)` and therefore
 #:   rewrites a lone CR into LF before any splitter sees it. Measured on git
 #:   2.46.2 against a real repository: `x = 1<CR>author Mallory<CR><TAB>I did
 #:   this` arrived as three lines, two of them reading as git's. No splitter

@@ -284,3 +284,46 @@ def test_a_communicate_oserror_still_reaches_stop_not_a_silent_leak(
     assert created and created[0].calls, (
         "a broken pipe on the first communicate() must still reach _stop() -- "
         "reading it as \'the child is gone\' is the exact #1888/#1912 leak")
+
+
+def test_a_communicate_error_with_no_message_still_says_something(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """MUST FIRE. `exc or "no reason given"` tests the exception OBJECT's
+    truthiness, which is always True and never falls back -- `str(exc) or
+    "no reason given"` is what `validators/git-status/git-status.py` copied
+    this arm from actually writes, and reads `str(exc)`, which IS empty for
+    a bare `OSError()`. A stderr that silently drops to "communicate()
+    failed: OSError - " (trailing blank) is a smaller instance of the exact
+    defect this whole issue is about: an absence read as an answer.
+    """
+    mod = _load()
+
+    class _BlankErrorProc:
+        def __init__(self, cmd) -> None:
+            self.args = cmd
+            self.returncode = None
+            self.calls: list = []
+
+        def communicate(self, timeout=None):
+            if self.calls:
+                return "", ""
+            raise OSError()
+
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            self.calls.append("terminate")
+
+        def kill(self):
+            self.calls.append("kill")
+
+    monkeypatch.setattr(mod.subprocess, "Popen",
+                        lambda cmd, **kw: _BlankErrorProc(cmd))
+    result = mod._git(["status", "--porcelain"], timeout=1)
+
+    assert result.returncode == mod.TIMEOUT_RC, result
+    assert "no reason given" in result.stderr, (
+        "an exception with no message must still say so explicitly, not "
+        "trail off into an empty string a reader cannot distinguish from a "
+        "truncated line: " + repr(result.stderr))
