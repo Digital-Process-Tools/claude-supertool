@@ -216,6 +216,16 @@ def verdict_line(text: str, *, level: str = LEVEL_FULL, spawn=None,
         return _SCANNER_CLEAN_LINE
     spawn_fn = spawn if spawn is not None else model._default_spawn
     v = model.classify(text, spawn=spawn_fn, timeout=timeout, cache=cache)
+    return _render_verdict(v)
+
+
+def _render_verdict(v: "model.Verdict") -> str:
+    """`verdict_line`'s tail, factored out so `Budget.line` can render a
+    cache hit it has already fetched without a second `model.classify`
+    call -- which would mean a second `cache.get` (#2097 review finding:
+    checking the cache once in `Budget.line` and then unconditionally
+    calling `verdict_line`, which checks it again inside `model.classify`,
+    read the same on-disk entry twice on every hit)."""
     if v.state == "safe":
         return "classify: safe"
     if v.state == "suspect":
@@ -251,9 +261,15 @@ class Budget:
               timeout: int = model.DEFAULT_TIMEOUT) -> str:
         if level == LEVEL_FULL and text.strip() and not scanner.scan(text):
             cached, _status = self.cache.get(text)
-            if cached is None:
-                if self.remaining <= 0:
-                    return NOT_RUN_BUDGET
-                self.remaining -= 1
+            if cached is not None:
+                # Answer from the fetch already made, rather than handing
+                # `cache=self.cache` to `verdict_line` and letting
+                # `model.classify` repeat the exact same `cache.get` a
+                # second time for every hit -- the common case once a call
+                # has any repeats at all.
+                return _render_verdict(cached)
+            if self.remaining <= 0:
+                return NOT_RUN_BUDGET
+            self.remaining -= 1
         return verdict_line(text, level=level, spawn=spawn, timeout=timeout,
                              cache=self.cache)
