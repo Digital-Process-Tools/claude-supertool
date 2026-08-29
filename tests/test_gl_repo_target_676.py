@@ -33,9 +33,6 @@ import pytest
 import supertool
 from _child_temp_diagnostics import describe, snapshot_temp_state
 from _nested_pytest_verdict import (
-    PYTEST_EXIT_MEANINGS as _PYTEST_EXIT_MEANINGS,
-)
-from _nested_pytest_verdict import (
     assert_child_pytest_ran_and_passed as _assert_child_pytest_ran_and_passed,
 )
 
