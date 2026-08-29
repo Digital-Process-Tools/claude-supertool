@@ -61,6 +61,38 @@ named every issue but their own
 `--check` and the write-time validator both refuse a fragment that omits it,
 so you hear about it in your own PR rather than from a release commit.
 
+**A `removed` fragment must declare compatibility, as one more bullet in the
+same list:**
+
+```
+- Compatibility: breaking|compatible - <reason>
+```
+
+so, in a real fragment, one of:
+
+```
+- Compatibility: breaking - <reason>
+- Compatibility: compatible - <reason>
+```
+
+`/oss:release` proposes the next version number from these fragments, and a
+`removed` fragment that declares nothing **stops the proposal** rather than
+defaulting quietly — a patch bump over a breaking change is indistinguishable in
+the tag from a considered one. A verdict that is neither word stops it too, so a
+value nothing recognises never grades as compatible. The reason after the verdict
+is required: a bare flag is the same unsourced verdict one field further along,
+and the sentence is the part worth having. Declaring both stops it as well.
+
+The match is case-insensitive and the bullet may sit anywhere in the body. Only
+`removed` is required to carry one — every other section may, and one that says
+nothing is read as compatible, with the count of such fragments reported out loud
+at release. A field on every fragment is a field on every fragment to get wrong,
+so it is required exactly where the question is genuinely open.
+
+It is a plain bullet rather than front matter, so the assembler needs no special
+case and the claim ships into `CHANGELOG.md` where a user reads it, instead of
+being metadata the fold deletes.
+
 **A fragment is bullets and prose, and the guard is a CommonMark parser.** A
 fragment is inserted into `CHANGELOG.md` verbatim, so a line here that CommonMark
 reads as a heading or a link-reference definition becomes one in the released

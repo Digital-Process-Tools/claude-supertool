@@ -6,6 +6,7 @@
   "allow_vim_shell": true,
   "presets": [
     "github",
+    "slack",
     "git",
     "xml",
     "mcp",
@@ -371,7 +372,7 @@
     },
     "jit-index": {
       "cmd": "{python} {supertool_dir}/validators/jit-index/jit-index.py {file}",
-      "match": "*00-manual/00-index.tsv",
+      "match": "*jit-context/*.tsv",
       "hooks_into": [
         "edit",
         "replace",
@@ -433,6 +434,71 @@
       ],
       "rollback_on_fail": true,
       "timeout": 30
+    },
+    "shellcheck": {
+      "cmd": "{python} {supertool_dir}/validators/shellcheck/shellcheck.py {file}",
+      "match": "*.{sh,bash}",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 30
+    },
+    "shellcheck-githooks": {
+      "cmd": "{python} {supertool_dir}/validators/shellcheck/shellcheck.py {file}",
+      "match": ".githooks/*",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 30
+    },
+    "bash-check": {
+      "cmd": "{python} {supertool_dir}/validators/bash-check/bash-check.py {file}",
+      "match": "*.{sh,bash}",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": true,
+      "timeout": 15
+    },
+    "bash-check-githooks": {
+      "cmd": "{python} {supertool_dir}/validators/bash-check/bash-check.py {file}",
+      "match": ".githooks/*",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": true,
+      "timeout": 15
+    },
+    "xmllint": {
+      "cmd": "{python} {supertool_dir}/validators/xmllint/xmllint.py {file}",
+      "match": "*.xml",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": true,
+      "timeout": 15
     },
     "markdownlint": {
       "cmd": "{python} {supertool_dir}/validators/markdownlint/markdownlint.py {file}",

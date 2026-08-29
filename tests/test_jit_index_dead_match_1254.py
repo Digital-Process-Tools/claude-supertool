@@ -33,6 +33,7 @@ assert the verdict keys are *absent*, which a fabricated `ok:true` cannot do.
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import shutil
@@ -284,8 +285,31 @@ class TestThisRepo:
 class TestRegistration:
 
     def test_declared_in_this_repos_config(self):
+        """The claim is coverage, not a literal glob.
+
+        This asserted `match == "*00-manual/00-index.tsv"` until 2026-08-29, and
+        that string left four of the seven tracked `.claude/jit-context/**/*.tsv`
+        files unvalidated -- both `01-oss` indexes and both `01-paths.tsv`. A rule
+        indexed in an unvalidated layer is exactly the dead-escape this file exists
+        to refuse, arriving one directory over. Deriving the population from the
+        tree instead means widening the glob is a pass and narrowing it back is a
+        red, which is the direction that matters.
+        """
         cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
         entry = cfg["validators"]["jit-index"]
-        assert entry["match"] == "*00-manual/00-index.tsv"
         for op in ("edit", "replace", "replace_lines", "paste", "append"):
             assert op in entry["hooks_into"]
+
+        indexes = sorted(
+            p.relative_to(REPO).as_posix()
+            for p in (REPO / ".claude" / "jit-context").rglob("*.tsv")
+        )
+        assert indexes, "no jit-context index found; the layout changed"
+
+        # The core matches an entry's `match` against the path with fnmatch after
+        # brace expansion; this glob carries no braces, so fnmatch alone is the
+        # same question the core asks.
+        unmatched = [p for p in indexes if not fnmatch.fnmatch(p, entry["match"])]
+        assert not unmatched, (
+            "jit-index's match {!r} does not reach {}".format(entry["match"], unmatched)
+        )
