@@ -293,10 +293,25 @@ def _git_verbatim(args: list[str], timeout: int | None = None) -> subprocess.Com
             stderr=(f"communicate() failed: {exc.__class__.__name__} - "
                    f"{str(exc) or 'no reason given'}"),
         )
+    # Routed through an intermediate `CompletedProcess` -- carrying the raw
+    # bytes as its own `.stdout`/`.stderr` -- rather than decoding `raw_out`/
+    # `raw_err` directly (#2033 follow-up). `tests/test_forged_child_stream_
+    # line_1475.py`'s census recognises a child stream by the SYNTACTIC shape
+    # `<name>.stdout` / `<name>.stderr`, not by taint through a tuple-unpack
+    # assignment (`raw_out, raw_err = proc.communicate()` taints neither name,
+    # by that scanner's own documented blind spot for a `Tuple` target). The
+    # two decode() calls below are the SAME two raw relay sites the old
+    # `done = subprocess.run(...)` shape had -- nothing about what they carry
+    # changed -- so they are kept in the one shape that stays visible to the
+    # guard that exists to catch exactly this, rather than reconciling the
+    # published count down to match a smaller field of view.
+    done = subprocess.CompletedProcess(
+        args=cmd, returncode=proc.returncode, stdout=raw_out, stderr=raw_err,
+    )
     return subprocess.CompletedProcess(
-        args=cmd, returncode=proc.returncode,
-        stdout=raw_out.decode("utf-8", "replace"),
-        stderr=raw_err.decode("utf-8", "replace"),
+        args=cmd, returncode=done.returncode,
+        stdout=done.stdout.decode("utf-8", "replace"),
+        stderr=done.stderr.decode("utf-8", "replace"),
     )
 
 

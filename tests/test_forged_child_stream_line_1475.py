@@ -8,7 +8,7 @@ so a U+2028 survives *inside* a relayed line and everything the reader anchors
 at column 0 becomes the writer's to choose.
 
 **The fix is at the seam, not at the sites.** Seven sites were named and the
-sweep below finds 137 sites in 32 files, which is what a per-site fix earns:
+sweep below finds 139 sites in 32 files, which is what a per-site fix earns:
 the same defect re-filed once per call. So
 
 * `_git_common._first_error_line` flattens what it returns. Every caller —
@@ -205,7 +205,7 @@ def test_a_tab_survives_the_commit_relay() -> None:
 # grows quietly — which is the failure mode of the thing it would be guarding".
 #
 # **So this is not a zero-assertion, and pretending otherwise is what would
-# make it useless.** Measured on this branch: 137 candidate sites in 32 files
+# make it useless.** Measured on this branch: 139 candidate sites in 32 files
 # across `presets/git`, `presets/github` and `presets/gitlab`. Not all are
 # defects — `push._local_head` returns `r.stdout.strip()`, and that is a SHA —
 # and closing them is four lanes of work this PR is not.
@@ -424,18 +424,27 @@ _SCANNED = ("presets/github", "presets/gitlab", "presets/git")
 
 #: file -> how many child-stream relays reach a sink unmarked. May only shrink.
 CENSUS = {
-    # 7 -> 5, #2033: `_git`/`_git_verbatim` moved off `subprocess.run(timeout=)`
-    # onto `Popen` + `communicate()` so a stalled write can be asked to stop
-    # (SIGTERM, a bounded grace, then SIGKILL) instead of being SIGKILLed with
-    # `.git/index.lock` still held. The two decode()s the +2 below used to name
-    # are UNCHANGED transport -- same raw bytes, same `CompletedProcess(stdout=,
-    # stderr=)` sink -- but the scan no longer sees them: `stdout, stderr =
-    # proc.communicate(...)` is a tuple-unpack assignment, and `_unmarked`'s own
-    # docstring already names this as a blind spot ("a top-level `text, code =
-    # _render(...)`") -- only a plain `Name` target carries taint onward, and a
-    # `Tuple` target carries none. Not a new gap and not fixed here; this row is
-    # the count the existing blind spot now applies to.
-    "presets/git/_git_common.py": 5,
+    # +2, #1693: `_git_verbatim`'s two `done.std*.decode(...)`. This ratchet is
+    # allowed to rise only with a reason in the diff, and the reason is that
+    # these two are not renders — they are the TRANSPORT, the same expression
+    # `_git` gets for free because `text=True` does its decoding inside
+    # `subprocess`. Flattening either would corrupt every stream every caller
+    # in this package reads. The sweep matches a shape (`return <expr>` carrying
+    # a child stream) and cannot tell a decode from a print, which is exactly
+    # the disclosure the count exists to make rather than hide.
+    #
+    # #2033 moved `_git`/`_git_verbatim` off `subprocess.run(timeout=)` onto
+    # `Popen` + `communicate()`, and `_git_verbatim`'s first draft there read
+    # `stdout, stderr = proc.communicate(...)` -- a tuple-unpack assignment
+    # this scanner's own `_unmarked` docstring already names as a blind spot
+    # ("a top-level `text, code = _render(...)`"), so the two decode() sites
+    # below would have gone invisible with the number quietly lowered to
+    # match. Kept visible instead: the raw bytes are routed through an
+    # intermediate `CompletedProcess(stdout=, stderr=)` so the two decode()
+    # calls read `.stdout`/`.stderr` off a NAME, the syntactic shape this
+    # scanner recognises regardless of taint -- same two sites, same seven,
+    # nothing reconciled down.
+    "presets/git/_git_common.py": 7,
     "presets/git/blame.py": 2,
     # 13 -> 10, #1918: not a MARKS site at all — the per-value rewrite of
     # `_unmarked` replaced `_streams_in`'s blind whole-subtree walk with one
