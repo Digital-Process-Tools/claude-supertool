@@ -153,9 +153,12 @@ def _disclosure_config() -> tuple[bool, str]:
     """(enabled, marker text) -- env var > `.supertool.json` > default (on).
 
     Same opt-out lookup order as `require_confirm` and the body allowlist.
-    ASCII by construction -- `_DEFAULT_DISCLOSURE_TEXT` and any override are
-    printed and sent, and a console reading a non-UTF-8 codepage kills the
-    process at the `print` after the work already happened (#2066).
+    ASCII enforced here, not merely assumed: `_DEFAULT_DISCLOSURE_TEXT` is
+    ASCII by construction, and a `publish_disclosure_text` override that is
+    not ASCII is rejected in favor of the default rather than passed
+    through -- both are printed and sent, and a console reading a
+    non-UTF-8 codepage kills the process at the `print` after the work
+    already happened (#2066).
     """
     if os.environ.get("SUPERTOOL_NO_PUBLISH_DISCLOSURE") == "1":
         return False, ""
@@ -164,7 +167,15 @@ def _disclosure_config() -> tuple[bool, str]:
         return False, ""
     text = cfg.get("publish_disclosure_text")
     if isinstance(text, str) and text.strip():
-        return True, text.strip()
+        candidate = text.strip()
+        if candidate.isascii():
+            return True, candidate
+        sys.stderr.write(
+            f"WARNING: publish_disclosure_text {candidate!r} is not ASCII -- "
+            "a console reading a non-UTF-8 codepage can crash on it after "
+            "the publish already happened (#2066). Falling back to the "
+            f"default marker ({_DEFAULT_DISCLOSURE_TEXT!r}).\n"
+        )
     return True, _DEFAULT_DISCLOSURE_TEXT
 
 

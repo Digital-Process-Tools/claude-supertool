@@ -97,3 +97,25 @@ def test_marker_fits_within_max_len_when_there_is_room(strict_disclosure) -> Non
     assert state == "appended"
     assert len(result) <= 300
     assert "short post" in result
+
+
+def test_non_ascii_override_falls_back_to_the_default_marker(
+    strict_disclosure, tmp_path, capsys,
+) -> None:
+    """The docstring claims the marker is "ASCII by construction" -- true
+    only of the shipped default, not of an operator-supplied override
+    (found in review, #2042). A non-ASCII `publish_disclosure_text` must
+    not reach a `print()` unchecked -- on a non-UTF-8 console codepage
+    that raises `UnicodeEncodeError` after the publish already happened
+    (#2066's own class). Falling back to the default is the fix; silently
+    accepting it would be the same defect this issue was filed over, one
+    layer down."""
+    (tmp_path / ".supertool.json").write_text(
+        '{"publish_disclosure_text": "— written by a robot"}',
+        encoding="utf-8",
+    )
+    body, state = _publish_safety.apply_disclosure("hello")
+    assert state == "appended"
+    assert body.encode("ascii")  # never a non-ASCII marker on the wire
+    assert _publish_safety._DEFAULT_DISCLOSURE_TEXT in body
+    assert "not ASCII" in capsys.readouterr().err
