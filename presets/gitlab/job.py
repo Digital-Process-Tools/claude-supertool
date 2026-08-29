@@ -672,11 +672,21 @@ def _fetch_trace_and_meta(job_id: str) -> tuple[str, dict, str]:
         return "", meta, f"ERROR: glab timed out fetching the trace for job #{job_id}"
 
     if result.returncode != 0:
-        return "", meta, _format_error(result.stderr, "Job log", job_id)
+        return "", meta, _format_error(_untrusted.flat(result.stderr), "Job log", job_id)
 
     log = result.stdout
     log = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', log)
     log = re.sub(r'\x1b\]8;[^;]*;[^\x1b]*\x1b\\', '', log)
+    # The trace's own lines, disclosed the way `_log_lines` discloses them for
+    # parsing (#1119) -- a job's own `.gitlab-ci.yml` and its own commands
+    # write this stdout, so a separator or escape sequence forged here must
+    # not survive to a column-0 line in the written file or the receipt that
+    # quotes it (#1475). Inlined rather than routed through `_log_lines`
+    # itself: this scan is per-call, not per-function, so a call to a helper
+    # that already marks its own return does not clear the taint at THIS
+    # call site -- only the marking call directly in this scope does.
+    log = chr(10).join(_untrusted.visible(line, keep=chr(9))
+                        for line in _untrusted.split_lines(log))
     return log, meta, ""
 
 

@@ -189,7 +189,12 @@ def main() -> int:
         if not failed:
             print("No failed jobs.")
             return 0
-        ids = [str(j.get("id")) for j in failed if j.get("id") is not None]
+        # A job id from GitLab's own job-listing API, not from the job's own
+        # `.gitlab-ci.yml`-controlled stdout -- but `_untrusted.flat` is
+        # idempotent and cheap, and this id also builds a filename in
+        # `write_traces` (#626), so flattening it here is defence in depth
+        # rather than a response to a specific forgery this field can carry.
+        ids = [_untrusted.flat(str(j.get("id"))) for j in failed if j.get("id") is not None]
         return gitlab_job.write_traces(ids)
 
     if mode == "active":

@@ -84,7 +84,7 @@ def test_trace_writes_full_log_and_prints_path_and_receipt(monkeypatch, tmp_path
 
     written = list((root / "traces").glob("*.log"))
     assert len(written) == 1
-    content = written[0].read_text()
+    content = written[0].read_text(encoding="utf-8")
     for line in lines:
         assert line in content
     assert str(written[0]) in out
@@ -102,7 +102,7 @@ def test_trace_does_not_truncate_a_large_log(monkeypatch, tmp_path, capsys) -> N
                           {"9": {"trace": lines, "status": "failed"}})
     assert rc == 0
     content = (root / "traces").glob("*.log")
-    text = next(iter(content)).read_text()
+    text = next(iter(content)).read_text(encoding="utf-8")
     assert "line1\n" in text or text.startswith("line1")
     assert "line6000" in text
     assert text.count("\n") >= 6000
@@ -136,7 +136,7 @@ def test_trace_multiple_ids_concatenates_into_one_file(monkeypatch, tmp_path, ca
     assert rc == 0
     written = list((root / "traces").glob("*.log"))
     assert len(written) == 1
-    content = written[0].read_text()
+    content = written[0].read_text(encoding="utf-8")
     assert "alpha-line-one" in content
     assert "beta-line-one" in content
     assert "111" in content and "222" in content
@@ -194,7 +194,7 @@ def test_trace_overwrites_an_existing_file_and_says_so(monkeypatch, tmp_path, ca
     out = capsys.readouterr().out
     assert rc == 0
     assert "overwrote" in out.lower()
-    content = existing.read_text()
+    content = existing.read_text(encoding="utf-8")
     assert "new-content-line" in content
     assert "stale-old-content" not in content
 
@@ -220,7 +220,7 @@ def test_trace_partial_fetch_failure_still_writes_the_others(monkeypatch, tmp_pa
     assert rc == 0
     written = list((root / "traces").glob("*.log"))
     assert len(written) == 1
-    content = written[0].read_text()
+    content = written[0].read_text(encoding="utf-8")
     assert "good-line" in content
     assert "222" in out
     assert "not found" in out.lower()
@@ -304,7 +304,7 @@ def test_trace_many_ids_does_not_produce_an_unwritable_filename(monkeypatch, tmp
     written = list((root / "traces").glob("*.log"))
     assert len(written) == 1
     assert len(written[0].name) < 200
-    content = written[0].read_text()
+    content = written[0].read_text(encoding="utf-8")
     for i in ids:
         assert f"line-{i}" in content
 
@@ -334,7 +334,7 @@ def test_trace_line_count_matches_the_written_file(monkeypatch, tmp_path, capsys
     out = capsys.readouterr().out
     assert rc == 0
     written = list((root / "traces").glob("*.log"))
-    actual_lines = written[0].read_text().count("\n")
+    actual_lines = written[0].read_text(encoding="utf-8").count("\n")
     m = re.search(r"\[trace\] (\d+) lines", out)
     assert m is not None
     assert int(m.group(1)) == actual_lines
