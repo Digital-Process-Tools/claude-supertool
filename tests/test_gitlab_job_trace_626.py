@@ -154,6 +154,7 @@ def test_trace_rejects_an_empty_piece_in_the_list(monkeypatch, tmp_path, capsys)
     rc, _ = _run_trace(monkeypatch, tmp_path, ["job.py", "111,,222", "trace"], {})
     out = capsys.readouterr().out
     assert rc == 1
+    assert "numeric" in out
 
 
 def test_trace_dedupes_a_repeated_id(monkeypatch, tmp_path, capsys) -> None:
@@ -299,7 +300,6 @@ def test_trace_many_ids_does_not_produce_an_unwritable_filename(monkeypatch, tmp
     jobs = {i: {"trace": [f"line-{i}"], "status": "failed"} for i in ids}
     argv = ["job.py", ",".join(ids), "trace"]
     rc, root = _run_trace(monkeypatch, tmp_path, argv, jobs)
-    out = capsys.readouterr().out
     assert rc == 0
     written = list((root / "traces").glob("*.log"))
     assert len(written) == 1
@@ -344,7 +344,6 @@ def test_trace_root_is_distinct_from_the_issue_attachment_root(monkeypatch, tmp_
     """`gl-issue` downloads attachments to `_image_root.default_root()` with no
     suffix; the trace writer must not nest inside that same directory."""
     calls: list[str] = []
-    real_default_root = job._image_root.default_root
 
     def spy(suffix: str = "") -> str:
         calls.append(suffix)
