@@ -10,7 +10,7 @@ from _auth import get_token
 from _graphql import gql
 from _outbound import append as track_append
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
-from _publish_safety import apply_disclosure  # noqa: E402
+from _publish_safety import apply_disclosure, safe_resolve_body_path  # noqa: E402
 
 ADD_REPLY = """
 mutation AddReply($input: AddReplyInput!) {
@@ -36,18 +36,19 @@ def _resolve_body(arg: str) -> tuple[str, bool]:
     """
     if arg.startswith(_FILE_PREFIX):
         path = arg[len(_FILE_PREFIX):]
-        p = Path(path)
-        if not p.is_file():
+        resolved = safe_resolve_body_path(path)
+        if not resolved.is_file():
             sys.stderr.write(
                 f"ERROR: file not found: {path}\n"
                 "(file:// prefix requires the file to exist — typo or wrong path?)\n"
             )
             sys.exit(2)
-        return p.read_text(encoding="utf-8"), True
+        return resolved.read_text(encoding="utf-8"), True
     try:
         p = Path(arg)
         if p.is_file():
-            return p.read_text(encoding="utf-8"), True
+            resolved = safe_resolve_body_path(arg)
+            return resolved.read_text(encoding="utf-8"), True
     except OSError:
         pass
     return arg, False

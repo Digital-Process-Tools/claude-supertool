@@ -214,7 +214,10 @@ def test_hashnode_comment_file_prefix_missing_errors(capsys: pytest.CaptureFixtu
     with pytest.raises(SystemExit):
         mod.parse_args("post-id|file:///nonexistent/typo.md")
     err = capsys.readouterr().err
-    assert "file not found" in err
+    # #2082: ALSO rejected by the publish-body allowlist before the
+    # existence check, same ordering as devto/bluesky above. Either
+    # message is acceptable — both signal abort.
+    assert "file not found" in err or "escapes the safety allowlist" in err
 
 
 def test_hashnode_reply_file_prefix(tmp_path: Path) -> None:
@@ -230,7 +233,10 @@ def test_hashnode_reply_file_prefix_missing_errors(capsys: pytest.CaptureFixture
     with pytest.raises(SystemExit):
         mod.parse_args("comm-7|file:///nonexistent/typo.md")
     err = capsys.readouterr().err
-    assert "file not found" in err
+    # #2082: ALSO rejected by the publish-body allowlist before the
+    # existence check, same ordering as devto/bluesky above. Either
+    # message is acceptable — both signal abort.
+    assert "file not found" in err or "escapes the safety allowlist" in err
 
 
 def test_bluesky_publish_file_prefix(tmp_path: Path) -> None:
