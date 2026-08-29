@@ -183,7 +183,6 @@ def test_a_corrupt_cache_file_is_unreadable_not_a_miss_and_not_a_verdict(tmp_pat
 
 
 def test_an_entry_with_an_unexpected_shape_is_unreadable(tmp_path) -> None:
-    c = _cache(tmp_path)
     path_dir = tmp_path / "cache"
     path_dir.mkdir(parents=True)
     c2 = cache.Cache(directory=str(path_dir))
