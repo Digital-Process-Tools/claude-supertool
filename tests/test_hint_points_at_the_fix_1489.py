@@ -16,7 +16,22 @@ from __future__ import annotations
 import difflib
 from pathlib import Path
 
+import pytest
+
 import supertool
+
+
+def _hint(out: str) -> str:
+    r"""Everything after the `ERROR: old string not found in <path>` line.
+
+    `<path>` is pytest's own `tmp_path`, and pytest's session counter puts an
+    arbitrary run of digits into it -- `-19` included, once the counter rolls
+    past 19000 (#2083). An assertion about the DIAGNOSTIC has to be checked
+    against this, never against the whole string with the path still in it,
+    or the assertion starts passing or failing for reasons that have nothing
+    to do with the hint.
+    """
+    return out.split("\n", 1)[1] if "\n" in out else ""
 
 
 # ---------------------------------------------------------------------------
@@ -41,8 +56,8 @@ def test_block_anchor_scores_the_block_not_its_first_line(tmp_path: Path) -> Non
         "def handler(request):\n    log('second')\n    return beta(req)",
         "x", str(f))
     assert "ERROR: old string not found" in out
-    assert f"nearest match at lines {second}-{second + 2}" in out
-    assert "lines 1-3" not in out
+    assert f"nearest match at lines {second}-{second + 2}" in _hint(out)
+    assert "lines 1-3" not in _hint(out)
 
 
 def test_two_identical_blocks_withhold_the_line_number(tmp_path: Path) -> None:
@@ -63,9 +78,9 @@ def test_two_identical_blocks_withhold_the_line_number(tmp_path: Path) -> None:
         "def handler(request):\n    log('same')\n    return alpha(req)",
         "x", str(f))
     assert "ERROR: old string not found" in out
-    assert "cannot suggest" in out
-    assert "nearest match at line" not in out
-    assert "44" in out
+    assert "cannot suggest" in _hint(out)
+    assert "nearest match at line" not in _hint(out)
+    assert "44" in _hint(out)
 
 
 def test_more_ties_than_windows_scored_says_at_least(tmp_path: Path) -> None:
@@ -83,10 +98,52 @@ def test_more_ties_than_windows_scored_says_at_least(tmp_path: Path) -> None:
     out = supertool.op_edit(
         "def handler(request):\n    log('changed')\n    return alpha(request)",
         "x", str(f))
-    assert "cannot suggest" in out
-    assert "at least 25 places" in out
-    assert "line -" not in out
-    assert "-19" not in out
+    assert "cannot suggest" in _hint(out)
+    assert "at least 25 places" in _hint(out)
+    assert "line -" not in _hint(out)
+    assert "-19" not in _hint(out)
+
+
+def test_diagnostic_assertions_are_immune_to_the_tmp_path_digits(
+        tmp_path: Path) -> None:
+    """#2083: `out`'s first line is `ERROR: ... in <path>`, and `<path>` is
+    pytest's own `tmp_path` -- carrying an arbitrary run of digits from
+    pytest's session counter, `-19` included once it rolls past 19000. An
+    assertion against the WHOLE string passes or fails on that noise; the
+    diagnostic reached through `_hint(out)` must not.
+
+    The colliding shape is built directly, under this test's own `tmp_path`,
+    rather than waited for -- the real counter takes ~19000 runs to arrive.
+    """
+    d = tmp_path / "pytest-19004" / "test_more_ties_than_windows_sc0"
+    d.mkdir(parents=True)
+    f = d / "app.py"
+    block = "def handler(request):\n    log('same')\n    return alpha(request)\n"
+    f.write_text(("# filler\n# filler\n" + block) * 25)
+    out = supertool.op_edit(
+        "def handler(request):\n    log('changed')\n    return alpha(request)",
+        "x", str(f))
+    # The path noise really is in the whole string -- that is the defect
+    # #2083 reports, reproduced here rather than assumed.
+    assert "-19" in out
+    # ... but the diagnostic itself never carries it.
+    assert "-19" not in _hint(out)
+    assert "cannot suggest" in _hint(out)
+
+
+def test_hint_immunity_still_catches_a_real_negative_line_number() -> None:
+    """Positive control for the test above: `_hint` narrows WHERE the
+    assertion looks, and must not also narrow WHAT it catches. A whole
+    `out` that genuinely regressed to the negative-line-number defect
+    #1489 was filed about still has to fail THROUGH `_hint` itself --
+    otherwise the fix above is just a looser assertion that happens to
+    pass, and this is the test that would have caught that.
+    """
+    out = ("ERROR: old string not found in /tmp/pytest-19004/app.py\n"
+           "  \u21b3 cannot suggest a nearest match: candidates line "
+           "-19, 8, 13 and 22 more.\n")
+    with pytest.raises(AssertionError):
+        assert "line -" not in _hint(out)
 
 
 def test_a_long_anchor_still_reaches_the_at_least_disclosure(
@@ -114,11 +171,11 @@ def test_a_long_anchor_still_reaches_the_at_least_disclosure(
     old = "\n".join(["    pass"] * 29 + ["    return y"])
     out = supertool.op_edit(old, "x", str(f))
     assert "ERROR: old string not found" in out
-    assert "cannot suggest" in out
-    assert "at least 34 places" in out
+    assert "cannot suggest" in _hint(out)
+    assert "at least 34 places" in _hint(out)
     # The window it would have named, and the count it would have hidden.
-    assert "nearest match at lines" not in out
-    assert "and 33 more" in out
+    assert "nearest match at lines" not in _hint(out)
+    assert "and 33 more" in _hint(out)
 
 
 def test_repeated_single_line_withholds_too(tmp_path: Path) -> None:
@@ -129,8 +186,8 @@ def test_repeated_single_line_withholds_too(tmp_path: Path) -> None:
         f"def f{i}():\n    return None\n" for i in range(6)))
     out = supertool.op_edit("    return Nine", "x", str(f))
     assert "ERROR: old string not found" in out
-    assert "cannot suggest" in out
-    assert "nearest match at line" not in out
+    assert "cannot suggest" in _hint(out)
+    assert "nearest match at line" not in _hint(out)
 
 
 def test_an_unambiguous_block_is_still_named(tmp_path: Path) -> None:
@@ -138,7 +195,7 @@ def test_an_unambiguous_block_is_still_named(tmp_path: Path) -> None:
     f = tmp_path / "app.py"
     f.write_text("alpha = 1\nbeta = 2\ngamma = 3\n")
     out = supertool.op_edit("alpha = 1\nbeta = 22\n", "x", str(f))
-    assert "nearest match at lines 1-2" in out
+    assert "nearest match at lines 1-2" in _hint(out)
 
 
 def test_a_minified_file_bounds_the_scan_by_work_not_by_the_clock(
@@ -184,7 +241,7 @@ def test_a_minified_file_bounds_the_scan_by_work_not_by_the_clock(
     # The decline has to be the BUDGET one. `cannot suggest` alone is not a
     # pin: with the budget lifted this same input declines for a tie instead,
     # so the loose wording passed against an unbounded scan.
-    assert "cost more than the scan's budget" in out
+    assert "cost more than the scan's budget" in _hint(out)
     per_call = supertool._EDIT_NEAR_MAX_CHARS ** 2
     assert sum(cells) <= supertool._EDIT_NEAR_BUDGET, sum(cells)
     assert len(cells) <= supertool._EDIT_NEAR_BUDGET // per_call + 1, len(cells)
@@ -196,8 +253,8 @@ def test_a_clipped_score_says_what_it_scored(tmp_path: Path) -> None:
     f = tmp_path / "wide.txt"
     f.write_text("a" * 1500 + "tail\nzzz\n")
     out = supertool.op_edit("a" * 1400 + "q", "x", str(f))
-    assert "nearest match at line 1" in out
-    assert "scored on the first 1000 characters" in out
+    assert "nearest match at line 1" in _hint(out)
+    assert "scored on the first 1000 characters" in _hint(out)
     assert len(out.splitlines()) == 2
 
 
