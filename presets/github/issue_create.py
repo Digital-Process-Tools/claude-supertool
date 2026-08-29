@@ -136,6 +136,14 @@ def _is_graphql_transport_failure(text: str) -> bool:
     return False
 
 
+_DEDUP_PER_PAGE = 100
+# 50 pages of 100 -- 5,000 open issues -- is far beyond anything this repo or
+# any repo this tool manages has ever carried; past it this refuses rather
+# than paging forever against a repo (or a broken response) that always
+# reports a full page. See the refusal message below for what a caller sees.
+_DEDUP_MAX_PAGES = 50
+
+
 def _find_open_issue_by_title(repo: str, title: str,
                                timeout: int = 30) -> tuple[dict | None, str]:
     """`(existing issue, error)` -- an open issue with this exact title, so a
@@ -145,32 +153,42 @@ def _find_open_issue_by_title(repo: str, title: str,
     A non-empty error means the lookup itself could not answer; the caller
     must refuse to write rather than treat that as "no match".
 
-    One page (up to 100 open issues) via REST, which is a real limit worth
-    naming rather than pretending away: a repository with more than 100 open
-    issues could still get a duplicate if the matching title is old enough to
-    have been pushed off the first page. That is the same shape of limit the
-    issue's own hand-rolled guard had.
+    Pages through REST rather than reading one page (#2021): a page that
+    comes back exactly `per_page` items long is not proof the title is not
+    on the *next* page -- GitHub's REST default ordering is newest-first, so
+    the entries pushed off the first page are exactly the long-lived ones a
+    stalled maintainer loop is most likely to be re-filing after an outage.
+    A page shorter than `per_page` is proof there is no next page, so the
+    loop stops there rather than issuing a request it does not need.
     """
-    # `gh api` defaults to POST the instant a `-f`/`-F` parameter is added
-    # (its own --help: "adding request parameters will automatically switch
-    # the request method to POST"). Without an explicit `-X GET` this call
-    # silently becomes `POST repos/{repo}/issues` -- the *create* endpoint,
-    # with no `title` in the body -- so it 422s on every real invocation and
-    # the dedup guard refuses to write on every genuine transport outage,
-    # which is the opposite of what condition 3 asks for. Caught in review,
-    # before it ever reached a real `gh` binary (#1790).
-    data, err = _gh_json(["api", "-X", "GET", f"repos/{repo}/issues",
-                          "-f", "state=open", "-f", "per_page=100"],
-                         timeout=timeout)
-    if err:
-        return (None, err)
-    if not isinstance(data, list):
-        return (None, f"unexpected response shape from repos/{repo}/issues")
-    for item in data:
-        if (isinstance(item, dict) and item.get("title") == title
-                and "pull_request" not in item):
-            return (item, "")
-    return (None, "")
+    for page in range(1, _DEDUP_MAX_PAGES + 1):
+        # `gh api` defaults to POST the instant a `-f`/`-F` parameter is
+        # added (its own --help: "adding request parameters will
+        # automatically switch the request method to POST"). Without an
+        # explicit `-X GET` this call silently becomes `POST
+        # repos/{repo}/issues` -- the *create* endpoint, with no `title` in
+        # the body -- so it 422s on every real invocation and the dedup
+        # guard refuses to write on every genuine transport outage, which is
+        # the opposite of what condition 3 asks for. Caught in review,
+        # before it ever reached a real `gh` binary (#1790).
+        data, err = _gh_json(["api", "-X", "GET", f"repos/{repo}/issues",
+                              "-f", "state=open",
+                              "-f", f"per_page={_DEDUP_PER_PAGE}",
+                              "-f", f"page={page}"],
+                             timeout=timeout)
+        if err:
+            return (None, err)
+        if not isinstance(data, list):
+            return (None, f"unexpected response shape from repos/{repo}/issues")
+        for item in data:
+            if (isinstance(item, dict) and item.get("title") == title
+                    and "pull_request" not in item):
+                return (item, "")
+        if len(data) < _DEDUP_PER_PAGE:
+            return (None, "")
+    return (None, f"more than {_DEDUP_MAX_PAGES * _DEDUP_PER_PAGE} open "
+                  f"issues -- could not page through all of them via REST "
+                  f"to confirm no duplicate exists")
 
 
 def _resolve_milestone_number(repo: str, name: str,
