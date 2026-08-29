@@ -18,8 +18,10 @@ import subprocess
 import sys
 from collections import Counter
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
+import job as gitlab_job  # noqa: E402  (shares the trace writer with gl-job — #626)
 import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
 import _secrets  # noqa: E402  (the one GitLab token-prefix list — #1645)
 import _untrusted  # noqa: E402  (a job name is CI-config text, and this is a column-aligned table — #965)
@@ -32,7 +34,7 @@ _ACTIVE_STATUSES = {"running", "pending"}
 # one-line count in the default view instead of one row each.
 _NOISE_STATUSES = {"manual", "created", "skipped"}
 
-_FILTERS = {"full", "active", "failed"}
+_FILTERS = {"full", "active", "failed", "traces"}
 
 
 def _parse_paginated_json(raw: str) -> list[dict]:
@@ -178,6 +180,22 @@ def main() -> int:
         _print_table(failed)
         _print_failed_detail(failed)
         return 0
+
+    if mode == "traces":
+        # #626 — the pipeline is the actual entry point ("pipeline failed"),
+        # not a job id, so this hands the same failed-job ids `:failed`
+        # already computes to `gl-job`'s trace writer rather than growing a
+        # second implementation of it here.
+        if not failed:
+            print("No failed jobs.")
+            return 0
+        # A job id from GitLab's own job-listing API, not from the job's own
+        # `.gitlab-ci.yml`-controlled stdout -- but `_untrusted.flat` is
+        # idempotent and cheap, and this id also builds a filename in
+        # `write_traces` (#626), so flattening it here is defence in depth
+        # rather than a response to a specific forgery this field can carry.
+        ids = [_untrusted.flat(str(j.get("id"))) for j in failed if j.get("id") is not None]
+        return gitlab_job.write_traces(ids)
 
     if mode == "active":
         active = [j for j in jobs if j.get("status") in _ACTIVE_STATUSES]

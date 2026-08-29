@@ -29,6 +29,7 @@ import _branch_locale  # noqa: E402  (where the branch is checked out — shared
 import _untrusted  # noqa: E402  (an MR's branch, title and author are the opener's text — #965)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
+import _image_root  # noqa: E402  (the trace root, created and proven ours — #1493/#626)
 import _job_argv  # noqa: E402  (the argv shape both job presets share — #1145)
 import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
 import _secrets  # noqa: E402  (the one GitLab token-prefix list — #1645)
@@ -625,6 +626,233 @@ def _emit_grep_hits(
         )
 
 
+def _human_size(num_bytes: int) -> str:
+    """`N bytes` rendered as KB/MB, the unit the receipt actually needs.
+
+    A tiny test trace read `0.0 MB` under a fixed unit, which is technically
+    correct and reads as "nothing was written". KB below 1 MB keeps the
+    number legible without inventing precision the byte count doesn't have.
+    """
+    if num_bytes < 1024 * 1024:
+        return f"{num_bytes / 1024:.1f} KB"
+    return f"{num_bytes / (1024 * 1024):.1f} MB"
+
+
+def _fetch_trace_and_meta(job_id: str) -> tuple[str, dict, str]:
+    """`(log, meta, "")` for one job id — `(_, _, error)` when the trace itself
+    could not be fetched.
+
+    Metadata is best-effort: a failed metadata call still lets the trace
+    through with `name`/`status` reading `?`, because the trace is the thing
+    `:trace` exists to get and a cosmetic header field must never block it.
+    The trace fetch is not best-effort — its failure is the caller's to
+    report per-id, never silently skipped.
+    """
+    meta: dict = {"name": "?", "status": "?"}
+    try:
+        meta_result = subprocess.run(
+            ["glab", "api",
+             _repo_target.gl_api_path(f"projects/:id/jobs/{job_id}")],
+            capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
+        )
+        if meta_result.returncode == 0:
+            meta = json.loads(meta_result.stdout)
+    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        pass
+
+    try:
+        result = subprocess.run(
+            ["glab", "api",
+             _repo_target.gl_api_path(f"projects/:id/jobs/{job_id}/trace")],
+            capture_output=True, text=True, timeout=20, encoding="utf-8", errors="replace",
+        )
+    except FileNotFoundError:
+        return "", meta, "ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli"
+    except subprocess.TimeoutExpired:
+        return "", meta, f"ERROR: glab timed out fetching the trace for job #{job_id}"
+
+    if result.returncode != 0:
+        return "", meta, _format_error(_untrusted.flat(result.stderr), "Job log", job_id)
+
+    log = result.stdout
+    log = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', log)
+    log = re.sub(r'\x1b\]8;[^;]*;[^\x1b]*\x1b\\', '', log)
+    # The trace's own lines, disclosed the way `_log_lines` discloses them for
+    # parsing (#1119) -- a job's own `.gitlab-ci.yml` and its own commands
+    # write this stdout, so a separator or escape sequence forged here must
+    # not survive to a column-0 line in the written file or the receipt that
+    # quotes it (#1475). Inlined rather than routed through `_log_lines`
+    # itself: this scan is per-call, not per-function, so a call to a helper
+    # that already marks its own return does not clear the taint at THIS
+    # call site -- only the marking call directly in this scope does.
+    log = chr(10).join(_untrusted.visible(line, keep=chr(9))
+                        for line in _untrusted.split_lines(log))
+    return log, meta, ""
+
+
+# PHPUnit's own run summary — `Tests: 10, Assertions: 20, Failures: 2, Errors: 0.`
+# Both keys are required together: a trace carrying one without the other is
+# not this format, and a summary quoting only the piece it happened to find
+# would be a guess dressed as a count.
+_SUMMARY_FAILURES = re.compile(r'\bFailures:\s*(\d+)')
+_SUMMARY_ERRORS = re.compile(r'\bErrors:\s*(\d+)')
+
+
+def _summary_counts(text: str) -> tuple[int, int] | None:
+    """The last `(failures, errors)` PHPUnit printed, or None.
+
+    None — not `(0, 0)` — when the trace carries no recognisable summary
+    line. `[failures] 0 failures, 0 errors` on a trace this pattern was never
+    meant to describe would be the exact absence this codebase keeps filing:
+    the tool's own inability to tell read back as a clean result.
+    """
+    fail_hits = list(_SUMMARY_FAILURES.finditer(text))
+    err_hits = list(_SUMMARY_ERRORS.finditer(text))
+    if not fail_hits or not err_hits:
+        return None
+    return int(fail_hits[-1].group(1)), int(err_hits[-1].group(1))
+
+
+def _first_phpunit_failure(text: str) -> str:
+    """The first `N) Class::method` failure header in the trace, or "".
+
+    Reuses `_PHPUNIT_BLOCK_START`, already the marker `_phpunit_blocks` walks
+    the log with — one definition of "a PHPUnit failure header" rather than a
+    second regex that could drift from it.
+
+    Split with `_log_lines`, not `str.splitlines()` — a spawned reviewer
+    caught this copy using the banned split (#1119: eight extra separators
+    a CI trace can carry mid-line) for the one line this file derives
+    without it, and `_log_lines`'s `_untrusted.visible` pass is what keeps a
+    matched line's own escape sequences from reaching this receipt's stdout
+    unfiltered, the same guarantee every other rendered line in this file
+    already has.
+    """
+    for line in _log_lines(text):
+        if _PHPUNIT_BLOCK_START.match(line):
+            return line.strip()
+    return ""
+
+
+def write_traces(job_ids: list[str]) -> int:
+    """Write the full trace for one or more job ids to disk (#626).
+
+    Prints only the path and a short summary — never the trace itself, which
+    is the whole point: `:raw` floods context and `:grep` truncates, and a CI
+    trace can be tens of thousands of lines. Multiple ids are concatenated
+    under one header per job into a single file, because a failed pipeline is
+    usually several jobs failing for the same cause and the point is to read
+    them together.
+
+    Three states apply twice over, never silently collapsed to two:
+    - a job whose trace fetch failed is named, with its error, and the other
+      ids are still written — only when *every* id fails does this return
+      non-zero and write nothing;
+    - a job whose trace is genuinely empty is named as such, and contributes
+      no section — writing an empty section would read as "this job produced
+      nothing" when what's true is "nothing was captured yet";
+    - the summary line is a count only when a recognisable PHPUnit line was
+      actually found — otherwise it says it could not tell, never a
+      confident zero.
+    """
+    # A suffix distinct from `gl-issue`'s own `default_root()` call (#1493) —
+    # that one is the download root for issue attachments, and an unsuffixed
+    # call here would nest traces inside it. Two features sharing one root by
+    # accident is exactly what `gh-issue`'s own "-gh" suffix already exists to
+    # avoid one caller over (presets/github/issue.py), so this follows that,
+    # rather than inventing a second convention for the same problem.
+    root, why = _image_root.ensure(_image_root.default_root("-traces"))
+    if root is None:
+        print(f"ERROR: no trace directory this process owns could be established: {why}")
+        return 1
+    traces_dir, why = _image_root.ensure(os.path.join(root, "traces"))
+    if traces_dir is None:
+        print(f"ERROR: the traces directory could not be established: {why}")
+        return 1
+
+    sections: list[str] = []
+    written_ids: list[str] = []
+    empty_ids: list[str] = []
+    failed: list[tuple[str, str]] = []
+    for job_id in job_ids:
+        log, meta, error = _fetch_trace_and_meta(job_id)
+        if error:
+            failed.append((job_id, error))
+            continue
+        if not log.strip():
+            empty_ids.append(job_id)
+            continue
+        name = _untrusted.flat(str(meta.get("name", "?")))
+        status = meta.get("status", "?")
+        header = f"===== job #{job_id} — {name} (status: {status}) =====\n"
+        body = log if log.endswith("\n") else log + "\n"
+        sections.append(header + body)
+        written_ids.append(job_id)
+
+    if not written_ids:
+        print(f"## No trace written — {len(job_ids)} job(s) requested, "
+              f"{len(empty_ids)} empty, {len(failed)} could not be fetched")
+        for job_id, error in failed:
+            print(f"  #{job_id}: {error}")
+        for job_id in empty_ids:
+            print(f"  #{job_id}: trace is empty (0 lines) — the job may not have run yet")
+        return 1 if failed else 0
+
+    content = "\n".join(sections) if len(sections) > 1 else sections[0]
+    # Counted off the bytes actually written, not accumulated per-job before
+    # the header/join separators were added — a spawned reviewer caught the
+    # earlier version undercounting the very thing the receipt exists to
+    # state honestly.
+    total_lines = content.count("\n")
+    # A pipeline with dozens of failed jobs is the exact case this feature
+    # names as its motivation, and a filename built from every id in full
+    # can exceed a filesystem's name-length limit after every trace was
+    # already fetched — discarding work already done. Past a handful of ids
+    # the name says how many there are instead of listing them all; the
+    # ids themselves are still inside the file, in each section's own header.
+    if len(written_ids) > 6:
+        filename = f"job-{written_ids[0]}+{len(written_ids) - 1}more.log"
+    else:
+        filename = "job-" + "-".join(written_ids) + ".log"
+    path = os.path.join(traces_dir, filename)
+
+    existed_before = os.path.exists(path)
+    previous_size = os.path.getsize(path) if existed_before else 0
+
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(content)
+    except OSError as exc:
+        print(f"ERROR: could not write {path}: {exc.strerror or exc}")
+        return 1
+
+    size = os.path.getsize(path)
+    print(f"[trace] {total_lines} lines, {_human_size(size)} -> {path}")
+    if existed_before:
+        print(f"(overwrote existing file, previously {_human_size(previous_size)})")
+    if failed:
+        print(f"[note] {len(failed)} of {len(job_ids)} requested job(s) could not be fetched:")
+        for job_id, error in failed:
+            print(f"  #{job_id}: {error}")
+    if empty_ids:
+        shown = ", ".join(f"#{j}" for j in empty_ids)
+        print(f"[note] {len(empty_ids)} of {len(job_ids)} requested job(s) had an empty trace: {shown}")
+
+    counts = _summary_counts(content)
+    if counts is not None:
+        failures, errors = counts
+        print(f"[failures] {failures} failures, {errors} errors")
+    else:
+        print("[summary] could not tell — no PHPUnit-style 'Failures: N, Errors: N' "
+              "line found in the trace(s); read the file directly")
+
+    first = _first_phpunit_failure(content)
+    if first:
+        print(f"[first] {first}")
+
+    return 0
+
+
 def main() -> int:
     use_utf8_stdout()
     if len(sys.argv) < 2:
@@ -635,11 +863,28 @@ def main() -> int:
     # used to reach a render. Refuse before anything is fetched: an id or a mode
     # the op cannot serve must never appear in output that looks like a read.
     job_id = sys.argv[1]
+    mode = sys.argv[2] if len(sys.argv) > 2 else ""
+
+    # `:trace` (#626) takes its own comma-separated id shape and is dispatched
+    # before the single-id checks below, rather than folded into `_job_argv`'s
+    # shared MODES — that constant is read by `gh-job` too, and adding `trace`
+    # there would let `gh-job:ID:trace` pass argv validation for a mode it does
+    # not implement, which is exactly the silent-fallthrough bug #1145 fixed.
+    if mode == "trace":
+        if len(sys.argv) > 3:
+            print("ERROR: gl-job:ID:trace takes no argument after 'trace' — "
+                  "nothing was read. Usage: gl-job:JOB_ID[,JOB_ID...]:trace")
+            return 1
+        job_ids, refusal = _job_argv.refuse_job_ids("gl-job", "GitLab", job_id)
+        if refusal:
+            print(refusal)
+            return 1
+        return write_traces(job_ids)
+
     refusal = _job_argv.refuse_job_id("gl-job", "GitLab", job_id)
     if refusal:
         print(refusal)
         return 1
-    mode = sys.argv[2] if len(sys.argv) > 2 else ""
     refusal = _job_argv.refuse_mode("gl-job", mode)
     if refusal:
         print(refusal)
