@@ -105,8 +105,11 @@ def test_classify_off_disables_even_the_scanner(monkeypatch: pytest.MonkeyPatch)
 def test_classify_key_is_not_named_ts() -> None:
     """#2052's own reserved-key finding: a payload key literally named `ts`
     is silently ignored by the envelope. The verdict field must not reuse
-    that name."""
+    that name -- and, since #2052's own fix, neither must the message's own
+    timestamp: it travels as `message_ts`, and `ts` is not a payload key
+    this poller emits at all any more."""
     poller = _load_poller()
     payload = _one_event(poller, "hello")
     assert "classify" in payload
-    assert payload["ts"] != payload["classify"]
+    assert "ts" not in payload
+    assert payload["message_ts"] != payload["classify"]

@@ -382,7 +382,12 @@ A payload key with one of those names is **ignored, and said so**: the event
 carries a `collided` attribute and a body line naming the key, its size and the
 reserved set, so a poller author finds out rather than wondering why their field
 never arrives. The fix on the producer side is to rename the field —
-`mr_id`, `event_kind`, `observed_ts` — not to hope it lands.
+`mr_id`, `event_kind`, `observed_ts` — not to hope it lands. The `slack` source
+did exactly this ([#2052](https://github.com/Digital-Process-Tools/claude-supertool/issues/2052)):
+its payload used to carry a key literally named `ts`, one of the reserved
+names above, so every `slack_message` event's `ts` attribute was the
+consumer's own emit time and never the message's — the field is now
+`message_ts`.
 
 Note this also used to lose the *whole* event: a large `payload.id` overwrote the
 routing id, which then failed the per-attribute cap, and the event was refused
