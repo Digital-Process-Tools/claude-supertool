@@ -230,6 +230,7 @@ REGISTER = {
     'tests/test_append_op_383.py::test_append_through_symlink_writes_to_the_target': B,
     'tests/test_attachment_root_ownership_1493.py::test_a_symlinked_root_gets_no_bytes_written_through_it': B,
     'tests/test_claims_path_containment_1283.py::test_a_symlink_inside_the_root_pointing_out_is_refused': B,
+    'tests/test_classify_cache_2054.py::test_a_symlink_planted_at_the_entry_name_is_refused_not_followed': B,
     'tests/test_coverage_gate_workdir_877.py::test_refuses_when_the_work_dir_path_is_a_symlink': B,
     'tests/test_edge_cases_at_file_security.py::TestSymlinkedAtFile.test_symlink_followed_and_read': B,
     'tests/test_edge_cases_at_file_security.py::TestSymlinkedAtFile.test_symlink_to_nonexistent_target_errors_cleanly': B,

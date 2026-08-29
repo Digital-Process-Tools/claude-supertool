@@ -204,6 +204,99 @@ def test_default_spawn_pins_a_model_and_isolates_the_call(monkeypatch) -> None:
         "must not run from the caller's own working directory")
 
 
+# --- #2054: an optional verdict cache seam --------------------------------
+# `cache` is `None` by default and every test above relies on that: none of
+# them pass one, so none of them touch anything but the stubbed `spawn`. The
+# tests below are the ones that actually exercise the seam, with a minimal
+# fake rather than the real file-backed `presets/classify/cache.py` -- that
+# module gets its own dedicated test file (`test_classify_cache_2054.py`);
+# what matters here is only that `classify()` calls `cache.get`/`cache.put`
+# at the right moments and never for the wrong verdict.
+
+class _FakeCache:
+    """Records every call. `hit` is what `get()` returns; `None` means miss."""
+
+    def __init__(self, hit=None):
+        self.hit = hit
+        self.get_calls = []
+        self.put_calls = []
+
+    def get(self, text):
+        self.get_calls.append(text)
+        return (self.hit, "hit" if self.hit is not None else "miss")
+
+    def put(self, text, verdict):
+        self.put_calls.append((text, verdict))
+        return ""
+
+
+def test_a_cache_hit_never_spawns() -> None:
+    """The bar the brief sets directly: assert the spawn was NOT made, with
+    the seam stubbed and counted -- not "the second call is faster", which
+    would pass on noise."""
+    cached = model.Verdict("safe", [], "")
+    fake = _FakeCache(hit=cached)
+    fn = _spawn("SUSPECT: role-persona")  # would answer differently if reached
+    v = model.classify("hello", spawn=fn, cache=fake)
+    assert v == cached
+    assert fn.calls == [], "a cache hit must never reach the spawn"
+    assert fake.get_calls == ["hello"]
+
+
+def test_a_cache_miss_spawns_and_then_stores_the_real_verdict() -> None:
+    """Must-fire half of the pair directly above: on a miss, the spawn DOES
+    run, and its result IS stored -- a `cache=` that never actually writes
+    would make the hit test above vacuous instead of a real guarantee."""
+    fake = _FakeCache(hit=None)
+    fn = _spawn("SAFE")
+    v = model.classify("hello", spawn=fn, cache=fake)
+    assert v == model.Verdict("safe", [], "")
+    assert len(fn.calls) == 1, "a miss must still reach the spawn"
+    assert fake.put_calls == [("hello", v)]
+
+
+def test_could_not_classify_is_never_handed_to_the_cache(monkeypatch) -> None:
+    """Constraint 2, at the seam: a spawn that fails must never reach
+    `cache.put` at all -- not `put` called-and-refused, not called at all.
+    Paired with the miss test above, which is the must-fire half: an
+    ordinary safe verdict IS put; a transient failure never is."""
+    fake = _FakeCache(hit=None)
+    fn = _spawn("prose instead of the fixed vocabulary")
+    v = model.classify("hello", spawn=fn, cache=fake)
+    assert v.state == "could-not-classify"
+    assert fake.put_calls == [], (
+        "could-not-classify must never be handed to the cache's put(), "
+        "even to have it refuse -- the seam itself must not call it")
+
+
+def test_a_scanner_style_none_hit_still_spawns_like_an_ordinary_miss() -> None:
+    """A cache that answers (None, "expired") or (None, "unreadable (...)")
+    must be indistinguishable from a plain miss at this seam -- `classify()`
+    only ever asks "did I get a verdict back", never inspects the status
+    string. Exercised here via `_FakeCache`'s own always-`(None, "miss")`
+    shape, which already covers every "no usable verdict" status by
+    construction: `classify()` has no branch that could tell them apart."""
+    fake = _FakeCache(hit=None)
+    fn = _spawn("SAFE")
+    model.classify("x", spawn=fn, cache=fake)
+    assert len(fn.calls) == 1
+
+
+def test_no_cache_argument_means_no_cache_interaction_at_all() -> None:
+    """The default (`cache=None`) is what every test above this section
+    relies on implicitly -- this is the one that says so directly, so a
+    change that makes `classify()` reach for cache machinery even when
+    none was passed shows up here rather than only as altered call counts
+    scattered across two dozen unrelated tests."""
+    fn = _spawn("SAFE")
+    v = model.classify("hello", spawn=fn)
+    assert v == model.Verdict("safe", [], "")
+    # Nothing to assert on a cache that was never constructed -- the
+    # absence of a crash or of any cache-shaped attribute access is the
+    # claim, and `_FakeCache` not appearing anywhere in this test is that
+    # claim made structurally rather than by inspection.
+
+
 def test_default_spawn_honours_the_supertool_model_env_override(monkeypatch) -> None:
     """#2055's configurability arm: a non-reserved `model` key on the op's
     `.supertool.json` block reaches the subprocess as SUPERTOOL_MODEL
