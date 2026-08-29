@@ -75,7 +75,8 @@ def main() -> int:
         # on len(sys.argv). See #620.
         print(
             "ERROR: gl-issue-create needs a payload — "
-            "gl-issue-create:@FILE (JSON or TOML with title/description)."
+            "gl-issue-create:@FILE, or gl-issue-create:@- to read it from "
+            "stdin (JSON or TOML with title/description)."
         )
         return 1
 

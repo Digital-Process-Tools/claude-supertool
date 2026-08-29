@@ -49,10 +49,10 @@
       "timeout": 30,
       "repo_target": "payload:project",
       "description": "Create a GitLab issue from a JSON/TOML payload file. Supports milestone_id, labels, assignee_ids, estimate (quick action), and issue links.",
-      "syntax": "gl-issue-create:@FILE",
+      "syntax": "gl-issue-create:@FILE | gl-issue-create:@-",
       "example": "gl-issue-create:@.max/new-issue.json",
       "replaces": [
-        { "argv": "glab issue create", "use": "gl-issue-create:@FILE" }
+        { "argv": "glab issue create", "use": "gl-issue-create:@-" }
       ]
     },
     "gl-pipeline": {

@@ -111,14 +111,15 @@ def parse_args(argv: List[str]) -> Tuple[str, str, bool, str]:
     if not tokens:
         return ("", "", False, (
             "ERROR: gh-pr-edit needs a PR number and a payload — "
-            "gh-pr-edit:NUMBER:@FILE (the same JSON/TOML gh-pr-create takes)."))
+            "gh-pr-edit:NUMBER:@FILE, or @- for stdin (the same JSON/TOML "
+            "gh-pr-create takes)."))
 
     number = tokens[0]
     if not _digits.is_ascii_int(number):
         return ("", "", False, (
             f"ERROR: {number!r} is not a PR number. gh-pr-edit takes the "
             f"number of a pull request that already exists — "
-            f"gh-pr-edit:NUMBER:@FILE."))
+            f"gh-pr-edit:NUMBER:@FILE, or gh-pr-edit:NUMBER:@- for stdin."))
 
     rest = tokens[1:]
     unlink = False

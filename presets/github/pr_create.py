@@ -342,7 +342,8 @@ def main() -> int:  # noqa: C901
     path = raw_arg[1:] if raw_arg.startswith("@") else raw_arg
     if not path:
         print("ERROR: gh-pr-create needs a payload — "
-              "gh-pr-create:@FILE (JSON or TOML with title/body/base).")
+              "gh-pr-create:@FILE, or gh-pr-create:@- to read it from "
+              "stdin (JSON or TOML with title/body/base).")
         return 1
     if path != "-" and Path(path).is_dir():
         print(f"ERROR: payload path is a directory, not a file: {path}")

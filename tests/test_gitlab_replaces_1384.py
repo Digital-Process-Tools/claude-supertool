@@ -80,7 +80,7 @@ def _uses(command: str):
     ("glab mr view feat/1384", "gl-mr:NUMBER_OR_BRANCH"),
     ("glab mr list --per-page 50", "gl-mrs"),
     ("glab issue view 42", "gl-issue:NUMBER"),
-    ("glab issue create --title x", "gl-issue-create:@FILE"),
+    ("glab issue create --title x", "gl-issue-create:@-"),
     ("glab ci trace 224356863", "gl-job:NUMBER"),
 ])
 def test_a_raw_glab_call_names_the_op_that_answers_it(
