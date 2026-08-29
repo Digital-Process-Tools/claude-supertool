@@ -74,24 +74,38 @@ _HOSTED_REMOTE = ("origin" + chr(9) + "https://github.com/acme/x.git (fetch)" +
                   "https://github.com/acme/x.git (push)" + chr(10))
 
 
+class _GitRemoteProc:
+    """A `Popen` double standing in for `_git`'s own "remote -v" call (#2033
+    moved `_git` off `subprocess.run` onto `Popen`)."""
+
+    def __init__(self, stdout: str) -> None:
+        self.returncode = 0
+        self._stdout = stdout
+
+    def communicate(self, timeout=None):
+        return self._stdout, ""
+
+
+def _git_remote_popen(cmd, **_kw):
+    # `_git` prepends `--no-optional-locks` ahead of the subcommand (#1945),
+    # so the discriminator can no longer assume the subcommand sits at
+    # cmd[1] -- it looks for "remote" anywhere in a `git` argv.
+    assert cmd and cmd[0] == "git" and "remote" in cmd, cmd
+    return _GitRemoteProc(_HOSTED_REMOTE)
+
+
 def _runs(cli):
-    """`subprocess.run` double: git answers about the repo, the CLI about the branch.
+    """`subprocess.run` double: the CLI's own answer.
 
     Since #948 the lookup asks git which remotes exist before it spends a CLI
     call — a repo with no forge remote has no tracker, and that is knowable
-    without one. `_git` goes through this same `subprocess.run`, so a double
-    that replied with the CLI's script to `git remote -v` would answer "no
-    remotes" and short-circuit, and the test would quietly stop exercising the
-    arm it is named after. Each test below therefore says which repo it is in.
+    without one. `_git` reaches git through `subprocess.Popen` (#2033), a
+    separate seam patched by `_git_remote_popen` above wherever this is used,
+    so this double only has to answer for the CLI probe.
 
     `cli` is a `CompletedProcess`, or a callable taking argv.
     """
     def run(cmd, **kw):
-        # `_git` prepends `--no-optional-locks` ahead of the subcommand
-        # (#1945), so the discriminator can no longer assume the subcommand
-        # sits at cmd[1] -- it looks for "remote" anywhere in a `git` argv.
-        if cmd and cmd[0] == "git" and "remote" in cmd:
-            return _proc(0, stdout=_HOSTED_REMOTE)
         # `hasattr(..., "returncode")`, not `callable(...)`: a `mock.Mock`
         # stub result is itself callable, and calling it returns another Mock.
         return cli if hasattr(cli, "returncode") else cli(cmd)
@@ -108,7 +122,8 @@ def test_a_timeout_is_not_an_absence() -> None:
         raise subprocess.TimeoutExpired(cmd="gh", timeout=5)
 
     with mock.patch.object(common.shutil, "which", _only("gh")), \
-         mock.patch.object(common.subprocess, "run", _runs(timeout)):
+         mock.patch.object(common.subprocess, "run", _runs(timeout)), \
+         mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         res = common.query_open_mr_result("feature/x")
 
     assert res.answered is False, (
@@ -122,7 +137,8 @@ def test_an_expired_token_is_not_an_absence() -> None:
     with mock.patch.object(common.shutil, "which", _only("gh")), \
          mock.patch.object(common.subprocess, "run", _runs(_proc(
              4, stderr="gh: To get started with GitHub CLI, please run: "
-                       "gh auth login" + chr(10)))):
+                       "gh auth login" + chr(10)))), \
+         mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         res = common.query_open_mr_result("feature/x")
 
     assert res.answered is False, res.reason
@@ -132,7 +148,8 @@ def test_an_expired_token_is_not_an_absence() -> None:
 def test_output_that_is_not_json_is_not_an_absence() -> None:
     with mock.patch.object(common.shutil, "which", _only("gh")), \
          mock.patch.object(common.subprocess, "run",
-                           _runs(_proc(0, stdout="<html>proxy</html>"))):
+                           _runs(_proc(0, stdout="<html>proxy</html>"))), \
+         mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         res = common.query_open_mr_result("feature/x")
 
     assert res.answered is False, res.reason
@@ -142,7 +159,8 @@ def test_an_empty_list_is_an_answer() -> None:
     """The healthy "no PR yet" case has to stay a fact, or the fix is noise."""
     with mock.patch.object(common.shutil, "which", _only("gh")), \
          mock.patch.object(common.subprocess, "run",
-                           _runs(_proc(0, stdout="[]"))):
+                           _runs(_proc(0, stdout="[]"))), \
+         mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         res = common.query_open_mr_result("feature/x")
 
     assert res.answered is True
@@ -183,7 +201,8 @@ def test_glab_answering_none_is_not_undone_by_gh_failing_after_it() -> None:
                                 chr(10))
 
     with mock.patch.object(common.shutil, "which", lambda n: f"/usr/bin/{n}"), \
-         mock.patch.object(common.subprocess, "run", _runs(cli)):
+         mock.patch.object(common.subprocess, "run", _runs(cli)), \
+         mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         res = common.query_open_mr_result("feature/x")
 
     assert res.answered is True, res.reason
@@ -201,7 +220,8 @@ def test_no_cli_at_all_is_not_an_absence_either() -> None:
 def test_a_found_pr_is_answered() -> None:
     with mock.patch.object(common.shutil, "which", _only("gh")), \
          mock.patch.object(common.subprocess, "run",
-                           _runs(_proc(0, stdout=_PR_JSON))):
+                           _runs(_proc(0, stdout=_PR_JSON))), \
+         mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         res = common.query_open_mr_result("feature/x")
 
     assert res.answered is True
@@ -213,7 +233,8 @@ def test_the_thin_wrapper_still_returns_the_dict() -> None:
     """`git-commit`'s post-commit hint keeps its old signature."""
     with mock.patch.object(common.shutil, "which", _only("gh")), \
          mock.patch.object(common.subprocess, "run",
-                           _runs(_proc(0, stdout=_PR_JSON))):
+                           _runs(_proc(0, stdout=_PR_JSON))), \
+         mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         assert common.query_open_mr("feature/x") == {
             "source": "github", "iid": 7, "target": "main", "pipeline": None,
             "pipeline_id": None, "pipeline_url": None, "merge_status": None}
@@ -248,7 +269,8 @@ def test_the_glab_call_uses_flags_this_glab_actually_has() -> None:
         return _proc(0, stdout="[]")
 
     with mock.patch.object(common.shutil, "which", _only("glab")), \
-         mock.patch.object(common.subprocess, "run", _runs(cli)):
+         mock.patch.object(common.subprocess, "run", _runs(cli)), \
+         mock.patch.object(common.subprocess, "Popen", _git_remote_popen):
         common.query_open_mr_result("feature/x")
 
     assert len(seen) == 1, seen
@@ -337,19 +359,27 @@ def _lookup_against(url: str, cli):
     first version of this test passed on Linux and macOS and failed on Windows.
     """
     with mock.patch.object(common.shutil, "which", _only("gh")), \
-         mock.patch.object(common.subprocess, "run",
-                           _runs_in_repo(url, cli)):
+         mock.patch.object(common.subprocess, "run", _runs_in_repo(cli)), \
+         mock.patch.object(common.subprocess, "Popen",
+                           _git_remote_popen_for(url)):
         return common.query_open_mr_result("feature")
 
 
-def _runs_in_repo(url: str, cli):
+def _runs_in_repo(cli):
+    """`_git` no longer reaches `subprocess.run` (#2033) -- the "remote -v"
+    branch moved to `_git_remote_popen_for` below, so this double only ever
+    has to answer for the CLI."""
     def run(cmd, *_a, **_k):
-        # Same discriminator fix as `_runs` above, and for the same reason
-        # (#1945).
-        if cmd and cmd[0] == "git" and "remote" in cmd:
-            return _proc(0, stdout=_remote_v(url))
         return cli if hasattr(cli, "returncode") else cli(cmd)
     return run
+
+
+def _git_remote_popen_for(url: str):
+    """`_git_remote_popen`, parametrised over the remote's own URL shape."""
+    def popen(cmd, **_kw):
+        assert cmd and cmd[0] == "git" and "remote" in cmd, cmd
+        return _GitRemoteProc(_remote_v(url))
+    return popen
 
 
 @pytest.mark.parametrize("url", [

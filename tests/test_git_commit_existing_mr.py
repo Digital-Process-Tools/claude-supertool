@@ -29,20 +29,34 @@ _HOSTED_REMOTE = ("origin" + chr(9) + "https://gitlab.com/acme/x.git (fetch)" +
                   "https://gitlab.com/acme/x.git (push)" + chr(10))
 
 
-def _runs(cli):
-    """`subprocess.run` double: git answers about the repo, the CLI about the branch.
+class _GitRemoteProc:
+    """A `Popen` double standing in for `_git`'s own "remote -v" call (#2033
+    moved `_git` off `subprocess.run` onto `Popen`)."""
 
-    Since #948 the lookup asks `git remote -v` before it spends a CLI call, and
-    `_git` shares this same `subprocess.run`. Answering the git call with the
-    CLI's script would report a repo with no remotes — no tracker, no MR — and
-    each test below would stop reaching the arm it is named after.
+    def __init__(self, stdout: str) -> None:
+        self.returncode = 0
+        self._stdout = stdout
+
+    def communicate(self, timeout=None):
+        return self._stdout, ""
+
+
+def _git_remote_popen(cmd, **_kw):
+    # `_git` prepends `--no-optional-locks` ahead of the subcommand (#1945),
+    # so the discriminator can no longer assume the subcommand sits at
+    # cmd[1] -- it looks for "remote" anywhere in a `git` argv.
+    assert cmd and cmd[0] == "git" and "remote" in cmd, cmd
+    return _GitRemoteProc(_HOSTED_REMOTE)
+
+
+def _runs(cli):
+    """`subprocess.run` double: the CLI's own answer.
+
+    `_git` reaches git through `subprocess.Popen` (#2033), patched separately
+    by `_git_remote_popen` above wherever this is used, so this double only
+    has to answer for the CLI probe.
     """
     def run(cmd, *_a, **_k):
-        # `_git` prepends `--no-optional-locks` ahead of the subcommand
-        # (#1945), so the discriminator can no longer assume the subcommand
-        # sits at cmd[1] -- it looks for "remote" anywhere in a `git` argv.
-        if cmd and cmd[0] == "git" and "remote" in cmd:
-            return _proc(_HOSTED_REMOTE)
         # `hasattr(..., "returncode")`, not `callable(...)`: a `mock.Mock`
         # stub result is itself callable, and calling it returns another Mock.
         return cli if hasattr(cli, "returncode") else cli(cmd)
@@ -62,7 +76,8 @@ def test_glab_match_returns_bang_iid() -> None:
     fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/glab" if c == "glab" else None)
     fake_run = _runs(_proc('[{"iid": 21816, "title": "x"}]'))
     with mock.patch.object(_common.shutil, "which", fake_which), \
-         mock.patch.object(_common.subprocess, "run", fake_run):
+         mock.patch.object(_common.subprocess, "run", fake_run), \
+         mock.patch.object(_common.subprocess, "Popen", _git_remote_popen):
         assert commit._existing_mr_for_branch("feature/x") == "!21816"
 
 
@@ -70,7 +85,8 @@ def test_gh_fallback_when_no_glab() -> None:
     fake_which = mock.Mock(side_effect=lambda c: "/usr/bin/gh" if c == "gh" else None)
     fake_run = _runs(_proc('[{"number": 172}]'))
     with mock.patch.object(_common.shutil, "which", fake_which), \
-         mock.patch.object(_common.subprocess, "run", fake_run):
+         mock.patch.object(_common.subprocess, "run", fake_run), \
+         mock.patch.object(_common.subprocess, "Popen", _git_remote_popen):
         assert commit._existing_mr_for_branch("feature/x") == "#172"
 
 
@@ -90,7 +106,8 @@ def test_glab_empty_list_falls_through_to_gh() -> None:
         return _proc('[{"number": 9}]')  # gh: PR exists
 
     with mock.patch.object(_common.shutil, "which", fake_which), \
-         mock.patch.object(_common.subprocess, "run", _runs(fake_run)):
+         mock.patch.object(_common.subprocess, "run", _runs(fake_run)), \
+         mock.patch.object(_common.subprocess, "Popen", _git_remote_popen):
         assert commit._existing_mr_for_branch("feature/x") == "#9"
 
 
@@ -105,7 +122,8 @@ def test_glab_timeout_falls_through() -> None:
         return _proc('[{"number": 42}]')
 
     with mock.patch.object(_common.shutil, "which", fake_which), \
-         mock.patch.object(_common.subprocess, "run", _runs(fake_run)):
+         mock.patch.object(_common.subprocess, "run", _runs(fake_run)), \
+         mock.patch.object(_common.subprocess, "Popen", _git_remote_popen):
         assert commit._existing_mr_for_branch("feature/x") == "#42"
 
 
@@ -120,5 +138,6 @@ def test_glab_malformed_json_falls_through() -> None:
         return _proc('[{"number": 7}]')
 
     with mock.patch.object(_common.shutil, "which", fake_which), \
-         mock.patch.object(_common.subprocess, "run", _runs(fake_run)):
+         mock.patch.object(_common.subprocess, "run", _runs(fake_run)), \
+         mock.patch.object(_common.subprocess, "Popen", _git_remote_popen):
         assert commit._existing_mr_for_branch("feature/x") == "#7"
