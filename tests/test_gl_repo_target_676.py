@@ -31,6 +31,13 @@ from typing import Any
 import pytest
 
 import supertool
+from _child_temp_diagnostics import describe, snapshot_temp_state
+from _nested_pytest_verdict import (
+    PYTEST_EXIT_MEANINGS as _PYTEST_EXIT_MEANINGS,
+)
+from _nested_pytest_verdict import (
+    assert_child_pytest_ran_and_passed as _assert_child_pytest_ran_and_passed,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TARGET = "group/subgroup/project"
@@ -104,39 +111,11 @@ def test_subgroup_path_is_accepted_for_a_gitlab_call(no_dispatch) -> None:
     assert no_dispatch == [("gl-issue:5", TARGET)]
 
 
-_PYTEST_EXIT_MEANINGS = {
-    0: "pass",
-    1: "tests failed",
-    2: "interrupted, or a collection error -- the child never finished "
-       "collecting, let alone running, the tests it was asked about",
-    3: "an internal pytest error",
-    4: "a usage error in the child's own invocation",
-    5: "no tests were collected",
-}
-
-
-def _assert_child_pytest_ran_and_passed(
-    result: subprocess.CompletedProcess,
-) -> None:
-    """Only exit code 1 is a verdict about the product under test -- #2067.
-
-    `assert result.returncode == 0` renders a collection-time crash (exit 2:
-    a stale temp path, an import error) identically to a real product
-    failure. That reading cost a log read, a filed issue and a CI re-run on
-    2026-08-28 to establish that the env-var leak this test exists to catch
-    was never in question -- the child died before it could check.
-    """
-    rc = result.returncode
-    if rc == 0:
-        return
-    detail = result.stdout[-2000:] + result.stderr[-2000:]
-    if rc == 1:
-        pytest.fail(f"the child pytest ran and disagreed (exit 1): {detail}")
-    meaning = _PYTEST_EXIT_MEANINGS.get(rc, f"an undocumented exit code {rc}")
-    pytest.fail(
-        f"the child pytest never produced a verdict -- exit {rc} "
-        f"({meaning}), not a product failure:\n{detail}"
-    )
+# _PYTEST_EXIT_MEANINGS and _assert_child_pytest_ran_and_passed used to be
+# defined here directly (#2067). Shared with test_repo_target_673.py as of
+# #2015 -- the GitHub twin ran the identical nested-pytest probe technique
+# with no such classifier at all, so an occurrence there still misreported
+# a harness death as a product disagreement. See tests/_nested_pytest_verdict.py.
 
 
 def test_a_child_that_crashes_at_collection_is_reported_as_a_harness_failure(
@@ -203,6 +182,7 @@ def test_the_env_var_main_sets_does_not_survive_into_the_next_test(tmp_path) -> 
         "    assert 'SUPERTOOL_REPO' not in os.environ, os.environ.get('SUPERTOOL_REPO')\n",
         encoding="utf-8",
     )
+    before = snapshot_temp_state()
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pytest",
@@ -213,7 +193,11 @@ def test_the_env_var_main_sets_does_not_survive_into_the_next_test(tmp_path) -> 
         )
     finally:
         probe.unlink(missing_ok=True)
-    _assert_child_pytest_ran_and_passed(result)
+    after = snapshot_temp_state()
+    _assert_child_pytest_ran_and_passed(
+        result,
+        extra_detail=describe("before", before) + "\n" + describe("after", after),
+    )
 
 
 def test_two_segment_path_is_accepted_for_a_gitlab_call(no_dispatch) -> None:

@@ -34,6 +34,8 @@ from typing import Any
 import pytest
 
 import supertool
+from _child_temp_diagnostics import describe, snapshot_temp_state
+from _nested_pytest_verdict import assert_child_pytest_ran_and_passed
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -146,6 +148,7 @@ def test_the_env_var_main_sets_does_not_survive_into_the_next_test(tmp_path) -> 
         "    assert 'SUPERTOOL_REPO' not in os.environ, os.environ.get('SUPERTOOL_REPO')\n",
         encoding="utf-8",
     )
+    before = snapshot_temp_state()
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pytest",
@@ -156,7 +159,11 @@ def test_the_env_var_main_sets_does_not_survive_into_the_next_test(tmp_path) -> 
         )
     finally:
         probe.unlink(missing_ok=True)
-    assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
+    after = snapshot_temp_state()
+    assert_child_pytest_ran_and_passed(
+        result,
+        extra_detail=describe("before", before) + "\n" + describe("after", after),
+    )
 
 
 def test_repo_op_allowed_immediately_after_cwd(tmp_path, no_dispatch,
