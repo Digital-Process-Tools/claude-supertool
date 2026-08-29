@@ -1495,6 +1495,173 @@ def _disable_rtk_and_config():
     os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
 
 
+#: Every credential (or credential-adjacent) value the four preset auth
+#: readers resolve from disk once their own env var is absent -- #2096.
+#: `presets/{slack,bluesky,devto,hashnode}/_auth.py` each define their own
+#: `_read_first(env, *paths)`, checked in this order: env var, then
+#: `~/.config/<preset>/<name>`, then a `.{preset}-...` file in the cwd.
+PRESET_CREDENTIAL_ENV_VARS = (
+    "SLACK_BOT_TOKEN",
+    "BLUESKY_HANDLE",
+    "BLUESKY_APP_PASSWORD",
+    "DEVTO_API_KEY",
+    "HASHNODE_TOKEN",
+    "HASHNODE_PUBLICATION_ID",
+)
+
+#: External toolchains this suite shells out to (never through Python, always
+#: through `subprocess`, inheriting the full process environment) that pick a
+#: default install location under `$HOME` the same way the four presets pick
+#: a default credential location -- resolved once, at fixture setup, from the
+#: REAL home rather than the redirected one, so redirecting HOME for #2096
+#: does not also strip a toolchain of its own config. Regression: #2112,
+#: CI job 99087584607 -- rustup could not choose a default cargo toolchain
+#: once HOME pointed at an empty directory, because `RUSTUP_HOME`/`CARGO_HOME`
+#: were never set explicitly and rustup's own default is `$HOME/.rustup` and
+#: `$HOME/.cargo`. Every mapped var is set only when the real environment did
+#: not already set it explicitly -- an explicit CI override of, say,
+#: `CARGO_HOME` must win over a default this fixture invents.
+#:
+#: Not a closed list. `validators/*/*.py` never pass `env=` to `subprocess`,
+#: so every adapter this suite shells out to inherits this fixture's HOME
+#: unless named here. Every real-tool `skipif(not shutil.which(...))` gate in
+#: this suite was read, not just the ones in the two files that already had a
+#: failure: `cargo` and `gofmt`/`terraform` in `tests/test_validators_tier2.py`
+#: plus `tests/test_cargo_sibling_attribution_754.py` (cargo), and also `go`
+#: (`tests/test_validators_go_vet_669.py`) and `ruby`
+#: (`tests/test_ruby_check.py`). gofmt and terraform are plain binaries with
+#: no "which version is default" indirection the way rustup has, so neither
+#: reads a HOME-derived config to answer that question. `go vet`/`go build`
+#: create `GOCACHE`/`GOPATH` on demand under a fresh, writable location rather
+#: than requiring one to already exist and be populated -- the redirected
+#: HOME satisfies that -- and this CI run's own failures were exclusively
+#: the five cargo tests, none of the go-vet ones, which is consistent with
+#: that reasoning rather than independent proof of it. Ruby was not checked
+#: as thoroughly: this repo's CI installs no explicit Ruby toolchain step
+#: (`.github/workflows/tests.yml` has none), so whatever the runner image
+#: preinstalls is what `ruby-check`'s tests exercise, and whether that is a
+#: system Ruby (unaffected) or an rbenv/rvm-managed one keyed off
+#: `$HOME/.rbenv`/`$HOME/.rvm` (which would fail exactly like rustup) was not
+#: independently confirmed -- reasoned from the same CI run reporting no
+#: ruby-check failures, not observed by reading the runner image itself. The
+#: next adapter that gains a rustup-shaped default-version lookup will fail
+#: exactly this way and needs its own entry, not a rewrite of the mechanism.
+EXTERNAL_TOOLCHAIN_HOME_VARS = {
+    "RUSTUP_HOME": ".rustup",
+    "CARGO_HOME": ".cargo",
+}
+
+
+def _preserve_home_derived_toolchain_config(monkeypatch, real_home: str) -> None:
+    """Re-set every var in `EXTERNAL_TOOLCHAIN_HOME_VARS` to what it already
+    resolves to under the REAL home, before `_no_real_preset_credentials`
+    redirects HOME out from under it.
+
+    An explicit value already in the environment wins -- CI or a developer
+    may have pointed `CARGO_HOME` somewhere other than `$HOME/.cargo` on
+    purpose, and this must not paper over that with an invented default.
+    """
+    import os as _os
+
+    for var, subdir in EXTERNAL_TOOLCHAIN_HOME_VARS.items():
+        existing = _os.environ.get(var)
+        resolved = existing if existing else str(Path(real_home) / subdir)
+        monkeypatch.setenv(var, resolved)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_preset_credentials(monkeypatch, tmp_path_factory):
+    """#2096 -- a test that reaches a preset auth reader without stubbing it
+    must not resolve the maintainer's own on-disk credential.
+
+    `_read_first`'s second and third arms are both machine-local rather than
+    CI-local: `~/.config/<preset>/<name>` and a `.{preset}-...` file in the
+    cwd. A test written and run on a machine that happens to have one
+    configured takes a different code path than CI without anything in the
+    test admitting it -- `tests/test_watch_slack_ts_guard_2063.py` did
+    exactly that, passing locally against a real `~/.config/slack/bot_token`
+    and failing on every runner, on an assertion that named neither
+    credentials nor the environment.
+
+    This clears the six env vars the four readers check and points HOME
+    (and USERPROFILE, which `os.path.expanduser` prefers on Windows) at an
+    empty directory with no `.config/<preset>/` inside it, so the disk arm
+    of `_read_first` cannot resolve regardless of what exists on the
+    machine actually running the suite. HOMEDRIVE/HOMEPATH -- Windows own
+    fallback once USERPROFILE is absent -- are cleared too, the same
+    precaution `tests/test_tilde_path_1300.py::home` already takes: as long
+    as nothing later in the same test deletes USERPROFILE, `ntpath.expanduser`
+    never reaches them, but leaving them live would reopen this exact class
+    on Windows for whichever test does.
+
+    Redirecting HOME reaches further than the four presets, though: every
+    `subprocess`-invoked adapter under `validators/` inherits the full
+    process environment (none of them pass `env=`), so anything reading a
+    HOME-derived default breaks the same way #2096's own credential arm did
+    -- just for a tool, not a secret. #2112 caught the first instance:
+    rustup resolves its default toolchain from `RUSTUP_HOME`/`CARGO_HOME`,
+    defaulting to `$HOME/.rustup` and `$HOME/.cargo`, and with HOME pointed
+    at an empty directory it can choose no default, so every real-crate
+    `cargo-check` test in CI failed with a tool error rather than a verdict
+    -- on the machine this fixture was written on, cargo is not
+    rustup-managed, so nothing here reproduced it locally. `_preserve_home_derived_toolchain_config`
+    below resolves `EXTERNAL_TOOLCHAIN_HOME_VARS` from the REAL home before
+    the redirect and re-sets them, so a toolchain that already had a config
+    location keeps it. It is a named allowlist, not a general fix -- see
+    that mapping's own comment for what it does and does not cover.
+
+    `tmp_path_factory.mktemp`, not the `tmp_path` fixture: `tmp_path` is
+    shared by whatever *other* fixture or the test body itself requests it,
+    and this fixture runs for every test whether or not it uses `tmp_path`
+    for something else entirely. Requesting `tmp_path` here and nesting the
+    fake home under it plants a stray subdirectory inside the very
+    directory a test is asserting the exact contents of --
+    `test_ls_empty_dir` (`assert "(0 items)" in out`) and
+    `test_image_fetch_ssrf_817.py::test_download_refuses_a_non_image_content_type`
+    (asserts no leaked byte across every file under `tmp_path`) both failed
+    against a real, unrelated regression measured while building this fix
+    with exactly that mistake. `tmp_path_factory.mktemp` returns a
+    directory nothing else in the test is entitled to.
+
+    Deliberately not addressed here: the cwd arm. Redirecting the process
+    cwd for every one of this suite's test files, for four presets' sake,
+    is a far wider blast radius than this fixture's env/HOME reset --
+    `test_preset_auth_env_isolation_2096.py` guards that arm separately, by
+    asserting none of the six known filenames exist at the repo root a test
+    run happens to start from, rather than by suppressing the read.
+
+    Ordering: a conftest-defined autouse fixture is set up before a
+    same-scope autouse fixture defined in a test module, so a file's own
+    `monkeypatch.setenv(...)` -- see
+    `test_watch_slack_ts_guard_2063.py::_fake_bot_token` -- still wins by
+    the time the test body runs. A test that wants a real-looking token is
+    unaffected by this fixture existing.
+    """
+    import os
+
+    for var in PRESET_CREDENTIAL_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    # os.path.expanduser("~") ALONE, not os.environ.get("HOME") or ...:
+    # on POSIX it already reads HOME (identical result), but on Windows
+    # Python dispatches to ntpath, which checks USERPROFILE first regardless
+    # of what launched the process -- and this suite's own CI runs pytest
+    # under `shell: bash` even on windows-latest (.github/workflows/tests.yml),
+    # where Git Bash's own HOME is an MSYS-style POSIX path
+    # (/c/Users/runneradmin) that does not match what rustup's Windows
+    # lookup actually uses. os.environ.get("HOME") or expanduser would have
+    # preferred that mismatched value on such a runner; Path(real_home) on
+    # a WindowsPath given a POSIX-rooted string does not resolve to the
+    # real profile directory at all. expanduser("~") sidesteps HOME
+    # entirely on Windows and gets the native path.
+    real_home = os.path.expanduser("~")
+    _preserve_home_derived_toolchain_config(monkeypatch, real_home)
+    fake_home = tmp_path_factory.mktemp("preset-auth-fake-home-2096")
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.delenv("HOMEDRIVE", raising=False)
+    monkeypatch.delenv("HOMEPATH", raising=False)
+
+
 # ---------------------------------------------------------------------------
 # Preset-derived ops: the opt-in for the autouse config reset (#1812)
 # ---------------------------------------------------------------------------

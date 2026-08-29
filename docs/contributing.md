@@ -646,6 +646,51 @@ Derived from the *running* interpreter, which is where that check ends and `_net
 
 Why this is a rule and not a nicety: a live call makes the leg a statement about somebody else's DNS and redirect policy. #1312 was filed off a red on PR #1302, whose diff was one test file and one markdown table; Hashnode had started answering 301, `_http.urlopen` correctly refused the off-origin hop, and the test rendered that correct refusal as a product defect.
 
+### A preset auth reader is also armed for every test -- you do not opt in ([#2096](https://github.com/Digital-Process-Tools/claude-supertool/issues/2096))
+
+`presets/{slack,bluesky,devto,hashnode}/_auth.py` each define their own
+`_read_first(env, *paths)`: check an env var, then fall through to
+`~/.config/<preset>/<name>`, then to a `.{preset}-...` file in the cwd. The
+second and third arms are machine-local, not CI-local -- a test that never
+mentions the env var takes a different code path on a machine that happens to
+have a real credential configured than it does on CI, without anything in the
+test admitting it. `tests/test_watch_slack_ts_guard_2063.py` did exactly that:
+green against a maintainer's real `~/.config/slack/bot_token`, red on every
+runner, on an assertion (`assert ['slack_unreachable'] == ['slack_message']`)
+that named neither credentials nor the environment.
+
+`tests/conftest.py`'s autouse `_no_real_preset_credentials` clears
+`SLACK_BOT_TOKEN`, `BLUESKY_HANDLE`, `BLUESKY_APP_PASSWORD`, `DEVTO_API_KEY`,
+`HASHNODE_TOKEN` and `HASHNODE_PUBLICATION_ID`, and points `HOME` (and
+`USERPROFILE`, which `os.path.expanduser` prefers on Windows) at an empty
+directory carrying no `.config/<preset>/`, for every test in the suite. A test
+that wants a real-looking token still stubs one -- see
+`test_watch_slack_ts_guard_2063.py::_fake_bot_token` -- and its own
+`monkeypatch.setenv` wins, because a same-scope autouse fixture defined in a
+test module is set up *after* one defined in `conftest.py`.
+
+**Not covered: the cwd arm.** Redirecting the process cwd for every file in a
+~4000-test suite, for four presets' sake, is a far wider blast radius than an
+env/HOME reset. A stray `.slack-bot-token`, `.bluesky-handle`,
+`.bluesky-app-password`, `.devto-token`, `.hashnode-token` or
+`.hashnode-publication-id` dropped at a worktree root would still be picked up
+by any test run from there --
+`tests/test_preset_auth_env_isolation_2096.py::test_a_stray_credential_file_in_the_repo_cwd_is_not_silently_picked_up`
+asserts none of the six exist at the process cwd, loudly, rather than
+suppressing the read.
+
+**A helper fixture nested under `tmp_path` corrupts the test it runs
+alongside, not just the one it means to protect.** The first version of
+`_no_real_preset_credentials` requested the `tmp_path` fixture and created its
+fake home underneath it -- the same directory a test itself uses via its own
+`tmp_path` argument, since pytest hands out one instance per test regardless
+of how many fixtures ask for it. `test_ls_empty_dir`
+(`assert "(0 items)" in out`) and
+`test_image_fetch_ssrf_817.py::test_download_refuses_a_non_image_content_type`
+(asserts no leaked byte across every file under `tmp_path`) both failed against
+a directory neither test had put there. `tmp_path_factory.mktemp(...)` is the
+fix: it returns a directory nothing else in the test is entitled to.
+
 ### Every temp repo you `git init` already has fsmonitor suppressed -- you do not opt in
 
 `tests/conftest.py`'s `pytest_configure` sets `GIT_CONFIG_COUNT=1`,
