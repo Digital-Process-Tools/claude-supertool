@@ -432,6 +432,18 @@ CENSUS = {
     # in this package reads. The sweep matches a shape (`return <expr>` carrying
     # a child stream) and cannot tell a decode from a print, which is exactly
     # the disclosure the count exists to make rather than hide.
+    #
+    # #2033 moved `_git`/`_git_verbatim` off `subprocess.run(timeout=)` onto
+    # `Popen` + `communicate()`, and `_git_verbatim`'s first draft there read
+    # `stdout, stderr = proc.communicate(...)` -- a tuple-unpack assignment
+    # this scanner's own `_unmarked` docstring already names as a blind spot
+    # ("a top-level `text, code = _render(...)`"), so the two decode() sites
+    # below would have gone invisible with the number quietly lowered to
+    # match. Kept visible instead: the raw bytes are routed through an
+    # intermediate `CompletedProcess(stdout=, stderr=)` so the two decode()
+    # calls read `.stdout`/`.stderr` off a NAME, the syntactic shape this
+    # scanner recognises regardless of taint -- same two sites, same seven,
+    # nothing reconciled down.
     "presets/git/_git_common.py": 7,
     "presets/git/blame.py": 2,
     # 13 -> 10, #1918: not a MARKS site at all — the per-value rewrite of

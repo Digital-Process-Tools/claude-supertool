@@ -78,6 +78,13 @@ _GIT_TIMEOUT_DEFAULT = 10
 #: this constant separately, with the same value and the same comment.
 TIMEOUT_RC = 124
 
+#: How long a stalled git is given to remove its own lock after SIGTERM
+#: before SIGKILL (#2033, same value and same reasoning as
+#: `validators/git-status/git-status.py::TERM_GRACE_S`). Short on purpose:
+#: this is a courtesy to a process that is already over budget, not a second
+#: budget. Real git handles SIGTERM and unlinks its lockfile well inside this.
+_TERM_GRACE_S = 2
+
 
 def git_timeout(default: int | None = None) -> int:
     """Default budget for a git call, overridable per environment (#650).
@@ -88,6 +95,85 @@ def git_timeout(default: int | None = None) -> int:
     """
     base = _GIT_TIMEOUT_DEFAULT if default is None else default
     return env_int("SUPERTOOL_GIT_TIMEOUT", base, minimum=1)
+
+
+def _settled(proc: "subprocess.Popen", grace: int) -> bool:
+    """Did the child stop within `grace` seconds? Reaps it if so (#2033).
+
+    Copied from `validators/git-status/git-status.py::_settled` rather than
+    re-derived -- the issue that asked for this function named the exact trap
+    to avoid: **`communicate()` failing says nothing about the child.** It is
+    the PIPES that broke, and a broken pipe is a different event from a dead
+    process (#1888, #1912, measured there against a real child on CPython
+    3.13.15: closing the stdout fd under a live `sleep 600` raises
+    `OSError(9, "Bad file descriptor")` with the child still running). Treating
+    that as "the child is gone" would leave a live git holding
+    `.git/index.lock`, which is the exact bug this function exists to stop
+    causing. So a pipe failure falls back to `wait()`, which touches no pipe
+    and answers the question actually being asked.
+    """
+    try:
+        proc.communicate(timeout=grace)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+    except (OSError, ValueError):
+        # The pipes are unusable -- an fd closed underneath us, or a file
+        # object already closed. Neither is evidence about the process, so
+        # ask the process.
+        try:
+            proc.wait(timeout=grace)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+        except OSError:
+            return False
+
+
+def _stop(proc: "subprocess.Popen") -> None:
+    """Ask the child to stop, then insist (#2033, same mechanism as #1882).
+
+    `subprocess.run(timeout=)`'s `TimeoutExpired` arm is `Popen.kill()` --
+    SIGKILL, no grace -- so a stalled `git commit`/`checkout`/`merge`/`push`
+    reached through `_git`/`_git_verbatim` never got the chance to unlink the
+    `.git/index.lock` it was holding, wedging every later write in that
+    repository until a human deleted the file by hand. `--no-optional-locks`
+    (#1945) closed this for the read-only calls this chokepoint also makes --
+    it is a documented no-op on a write command, by its own comment a few
+    lines above -- so the write commands still need an actor that can ask git
+    to clean up after itself, which only git itself can do.
+
+    **Windows.** *Reasoned, not observed here*: `Popen.terminate()` and
+    `Popen.kill()` are both `TerminateProcess` there, so the grace period buys
+    nothing on that platform -- `validators/git-status/git-status.py::_stop`
+    observed the equivalent outcome on CI (windows-latest/3.10) for its own,
+    structurally identical, function; this one has not been separately run
+    there. Either way it is a property of the platform, not of this function,
+    so it is not branched on: a live child's pipes going quiet is stopped
+    identically on every platform, and the branch would only make the
+    Windows path a different, less exercised shape to save two seconds on a
+    call that has already blown its budget.
+    """
+    try:
+        proc.terminate()
+    except OSError:
+        # The child is already gone, or the platform refused the signal.
+        # Either way there is nothing to ask, and the kill below is a no-op
+        # on a dead child.
+        pass
+    if _settled(proc, _TERM_GRACE_S):
+        return
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    if not _settled(proc, _TERM_GRACE_S):
+        # Killed and not reaped inside the grace: a zombie until this
+        # process exits and init reaps it. Deliberately not escalated further
+        # -- the caller is about to report the timeout and move on, and
+        # blocking longer to tidy a zombie would spend the caller's own
+        # budget on something the OS finishes for free.
+        pass
 
 
 def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
@@ -108,39 +194,69 @@ def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedPro
     courtesy calls in `git-status` must not silently cap it. `status.py` had
     the reverse precedence; it was reachable only through its own default, so
     nothing depended on it.
+
+    **Popen + `_stop()`, not `subprocess.run(timeout=)` (#2033).** `run()`'s
+    own `TimeoutExpired` arm has already called `Popen.kill()` -- SIGKILL, no
+    grace -- by the time it reaches any `except` clause here, so there was
+    never a point at which this function could interpose a SIGTERM while
+    still calling `run()`. Driving `Popen` directly is what buys the window in
+    which `_stop()` can ask first.
+
+    The `TIMEOUT_RC` / `"timed out after {budget}s"` contract is unchanged for
+    the plain-timeout case, on purpose: no caller distinguishes "SIGTERM was
+    enough" from "SIGKILL was needed", and the issue that asked for this
+    function said explicitly that the receipt need not either. A `communicate()`
+    failure -- the pipes broke, not necessarily the child, see `_settled` --
+    reaches the same `TIMEOUT_RC` with its own stderr, since no caller here
+    checks stderr's wording either; only `returncode != 0` is load-bearing.
     """
     budget = git_timeout() if timeout is None else timeout
     # --no-optional-locks precedes the subcommand -- it is a git global flag
     # (#1945, same mechanism as #1944 one file over). git diff/status refresh
-    # the on-disk index and take .git/index.lock to do it; `_git`'s own
-    # TimeoutExpired arm below reaches `Popen.kill()` -- SIGKILL, no grace --
-    # so a stalled call never gets the chance to unlink a lock it holds. The
-    # flag removes the lock from existence instead: git treats the call as
+    # the on-disk index and take .git/index.lock to do it; `_stop()` above
+    # sends SIGTERM specifically so a stalled git traps it and unlinks that
+    # lock on its way out. The flag removes the lock from existence instead
+    # for the read-only calls this chokepoint makes: git treats the call as
     # read-only and skips the index writeback, so killing the process at any
     # point leaves nothing behind. It is a no-op on the write commands this
     # same chokepoint also runs (commit, checkout, stash push, push, merge)
-    # -- it suppresses OPTIONAL locks only, verified against real git 2.46.2.
+    # -- it suppresses OPTIONAL locks only, verified against real git 2.46.2
+    # -- which is exactly why those commands still need `_stop()`.
     cmd = ["git", "--no-optional-locks"] + args
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace",
+    )
     try:
-        return subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=budget, encoding="utf-8", errors="replace",
-        )
+        stdout, stderr = proc.communicate(timeout=budget)
     except subprocess.TimeoutExpired:
+        _stop(proc)
         return subprocess.CompletedProcess(
             args=cmd, returncode=TIMEOUT_RC, stdout="",
             stderr=f"timed out after {budget}s",
         )
+    except (OSError, ValueError) as exc:
+        if not _settled(proc, _TERM_GRACE_S):
+            _stop(proc)
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=TIMEOUT_RC, stdout="",
+            stderr=(f"communicate() failed: {exc.__class__.__name__} - "
+                   f"{str(exc) or 'no reason given'}"),
+        )
+    return subprocess.CompletedProcess(
+        args=cmd, returncode=proc.returncode, stdout=stdout, stderr=stderr,
+    )
 
 
 def _git_verbatim(args: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
     """`_git`, with Python's universal-newline translation OFF (#1693).
 
-    Same budget, same `TIMEOUT_RC` contract, same decode. The one difference is
-    that `_git` runs `subprocess.run(text=True)`, and text mode rewrites **a
-    lone CR and a CRLF into LF** on the way in — so by the time any preset here
-    receives a stream, a carriage return the child actually wrote is already
-    indistinguishable from a line break the child actually wrote.
+    Same budget, same `TIMEOUT_RC` contract, same decode, same `_stop()` grace
+    (#2033). The one difference is that `_git` runs `Popen(text=True)`, and
+    text mode rewrites **a lone CR and a CRLF into LF** on the way in — so by
+    the time any preset here receives a stream, a carriage return the child
+    actually wrote is already indistinguishable from a line break the child
+    actually wrote.
 
     That is invisible almost everywhere and decisive in one place. `git blame
     --line-porcelain` interleaves its own headers with the blamed file's OWN
@@ -160,13 +276,38 @@ def _git_verbatim(args: list[str], timeout: int | None = None) -> subprocess.Com
     # --no-optional-locks precedes the subcommand -- see `_git`'s own comment
     # on the same flag (#1945) for the mechanism; it applies identically here.
     cmd = ["git", "--no-optional-locks"] + args
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        done = subprocess.run(cmd, capture_output=True, timeout=budget)
+        raw_out, raw_err = proc.communicate(timeout=budget)
     except subprocess.TimeoutExpired:
+        _stop(proc)
         return subprocess.CompletedProcess(
             args=cmd, returncode=TIMEOUT_RC, stdout="",
             stderr=f"timed out after {budget}s",
         )
+    except (OSError, ValueError) as exc:
+        if not _settled(proc, _TERM_GRACE_S):
+            _stop(proc)
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=TIMEOUT_RC, stdout="",
+            stderr=(f"communicate() failed: {exc.__class__.__name__} - "
+                   f"{str(exc) or 'no reason given'}"),
+        )
+    # Routed through an intermediate `CompletedProcess` -- carrying the raw
+    # bytes as its own `.stdout`/`.stderr` -- rather than decoding `raw_out`/
+    # `raw_err` directly (#2033 follow-up). `tests/test_forged_child_stream_
+    # line_1475.py`'s census recognises a child stream by the SYNTACTIC shape
+    # `<name>.stdout` / `<name>.stderr`, not by taint through a tuple-unpack
+    # assignment (`raw_out, raw_err = proc.communicate()` taints neither name,
+    # by that scanner's own documented blind spot for a `Tuple` target). The
+    # two decode() calls below are the SAME two raw relay sites the old
+    # `done = subprocess.run(...)` shape had -- nothing about what they carry
+    # changed -- so they are kept in the one shape that stays visible to the
+    # guard that exists to catch exactly this, rather than reconciling the
+    # published count down to match a smaller field of view.
+    done = subprocess.CompletedProcess(
+        args=cmd, returncode=proc.returncode, stdout=raw_out, stderr=raw_err,
+    )
     return subprocess.CompletedProcess(
         args=cmd, returncode=done.returncode,
         stdout=done.stdout.decode("utf-8", "replace"),
@@ -339,7 +480,7 @@ def _list_conflicts() -> tuple[list[str], str]:
 
     **And it reads through `_git_verbatim`, because `-z` is only exact if
     nothing rewrites the bytes on the way back.** `_git` runs
-    `subprocess.run(text=True)`, and Python's universal-newline translation
+    `Popen(text=True)`, and Python's universal-newline translation
     turns a bare CR — and a CRLF — into LF *inside* a NUL record, before any
     split sees it. A POSIX filename may hold a CR (every byte but NUL and '/'
     is legal), so with text mode on, the name handed back was not the name on

@@ -67,8 +67,29 @@ def test_expired_git_call_reports_the_same_way_from_every_preset(preset: str) ->
         f"presets/git/{preset}.py runs git but exposes no `_git` — it should "
         f"import it from {OWNER}")
 
-    with mock.patch("subprocess.run",
-                    side_effect=subprocess.TimeoutExpired(cmd="git", timeout=1)):
+    class _StalledProc:
+        """A `Popen` double whose `communicate()` never answers (#2033 moved
+        `_git` off `subprocess.run(timeout=)` onto `Popen`, so this test's own
+        double has to move with it -- see `tests/test_git_common_stranded_lock_2033.py`
+        for the real-child version of the same claim)."""
+
+        def __init__(self, cmd, **_kw) -> None:
+            self.args = cmd
+            self.returncode = 0
+
+        def communicate(self, timeout=None):
+            raise subprocess.TimeoutExpired(cmd=self.args, timeout=timeout or 0)
+
+        def terminate(self) -> None:
+            pass
+
+        def kill(self) -> None:
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    with mock.patch("subprocess.Popen", side_effect=_StalledProc):
         res = git(["status", "--porcelain"])
 
     assert isinstance(res, subprocess.CompletedProcess)
@@ -94,11 +115,30 @@ def test_explicit_budget_is_the_budget_that_is_used(preset: str) -> None:
     git = getattr(mod, "_git", None)
     assert git is not None
 
-    with mock.patch("subprocess.run") as run:
-        run.return_value = subprocess.CompletedProcess([], 0, "", "")
+    class _AnsweringProc:
+        """A `Popen` double that answers immediately, recording the timeout
+        `communicate()` was given (#2033 moved `_git` off `subprocess.run`)."""
+
+        def __init__(self, cmd, **_kw) -> None:
+            self.args = cmd
+            self.returncode = 0
+            self.communicate_timeout = None
+
+        def communicate(self, timeout=None):
+            self.communicate_timeout = timeout
+            return "", ""
+
+    created: list = []
+
+    def _fake_popen(cmd, **kw):
+        proc = _AnsweringProc(cmd, **kw)
+        created.append(proc)
+        return proc
+
+    with mock.patch("subprocess.Popen", side_effect=_fake_popen):
         git(["status"], timeout=173)
-    assert run.call_args.kwargs["timeout"] == 173, (
-        f"{preset}: an explicit timeout must reach subprocess.run unchanged")
+    assert created and created[-1].communicate_timeout == 173, (
+        f"{preset}: an explicit timeout must reach Popen.communicate() unchanged")
 
 
 # ── the structure: one implementation, and it stays one ────────────────────
