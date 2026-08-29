@@ -144,6 +144,60 @@ def require_confirm(action: str, preview: str, *, force: bool = False) -> None:
     sys.exit(2)
 
 
+# --- authorship disclosure (#2042) ---------------------------------------
+
+_DEFAULT_DISCLOSURE_TEXT = "[AI-generated]"
+
+
+def _disclosure_config() -> tuple[bool, str]:
+    """(enabled, marker text) -- env var > `.supertool.json` > default (on).
+
+    Same opt-out lookup order as `require_confirm` and the body allowlist.
+    ASCII by construction -- `_DEFAULT_DISCLOSURE_TEXT` and any override are
+    printed and sent, and a console reading a non-UTF-8 codepage kills the
+    process at the `print` after the work already happened (#2066).
+    """
+    if os.environ.get("SUPERTOOL_NO_PUBLISH_DISCLOSURE") == "1":
+        return False, ""
+    cfg = _supertool_config()
+    if bool(cfg.get("no_publish_disclosure")):
+        return False, ""
+    text = cfg.get("publish_disclosure_text")
+    if isinstance(text, str) and text.strip():
+        return True, text.strip()
+    return True, _DEFAULT_DISCLOSURE_TEXT
+
+
+def apply_disclosure(body: str, *, max_len: Optional[int] = None) -> tuple[str, str]:
+    """Append a machine-authorship marker to a publish body.
+
+    Returns `(new_body, state)`:
+      "appended"   -- the marker is in `new_body`.
+      "suppressed" -- opted out via env or `.supertool.json`; `new_body == body`.
+      "dropped"    -- on by default but did not fit within `max_len`
+                      (Bluesky's 300-char cap makes this concrete);
+                      `new_body == body`, unmodified rather than truncated.
+
+    On by default: with no configuration at all, `state` is "appended".
+    Silence about authorship must be a decision somebody recorded -- in the
+    environment or `.supertool.json` -- never a side effect of the body
+    merely being long, which is why "dropped" is its own state rather than
+    silently truncating the marker or the body to make room.
+
+    Called before the caller builds its confirmation preview, so a human
+    confirming a publish sees the disclaimer that will actually be attached
+    (one of the issue's open questions) rather than the bare body.
+    """
+    enabled, marker = _disclosure_config()
+    if not enabled:
+        return body, "suppressed"
+    separator = "\n\n"
+    tagged = body + separator + marker
+    if max_len is not None and len(tagged) > max_len:
+        return body, "dropped"
+    return tagged, "appended"
+
+
 # --- token file mode check -----------------------------------------------
 
 def check_token_file_mode(path: Path) -> None:

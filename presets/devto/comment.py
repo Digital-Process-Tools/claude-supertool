@@ -50,7 +50,7 @@ from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -
 from _outbound import append as track_append
 from _resolve import resolve_article_id
 from _session import fetch_csrf_token, get_session_cookie, web_post_json
-from _publish_safety import safe_resolve_body_path  # noqa: E402
+from _publish_safety import safe_resolve_body_path, apply_disclosure  # noqa: E402
 from _http import RedirectRefused, ResponseTooLarge, read_capped, urlopen  # noqa: E402
 
 WEB_BASE = "https://dev.to"
@@ -180,6 +180,7 @@ def main(arg: str) -> None:
                 "Use |force as 4th field to override.\n"
             )
             sys.exit(1)
+    message, disclosure_state = apply_disclosure(message)
     csrf = fetch_csrf_token(cookie)
     body: dict[str, object] = {
         "comment": {
@@ -218,6 +219,8 @@ def main(arg: str) -> None:
         "posted_at": _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     })
     print(f"(comment posted id={cid} url={url} mode=session)")
+    if disclosure_state != "appended":
+        print(f"(disclosure: {disclosure_state})")
     _print_post_confirmation(str(aid), str(cid))
 
 

@@ -49,6 +49,8 @@ A **user token** (`xoxp-...`, User Token Scopes -- `scopes: user: [chat:write]` 
 
 `slack_publish` is `"safety": "acts"` — marked `!` in `ops:roster` because it changes something outside this tree (a message becomes visible to a Slack workspace, which this tool cannot undo). It runs under `presets/_publish_safety.py`'s confirmation gate the same way `bluesky_publish` and `devto_publish` do: a bare call without `|force`, `SUPERTOOL_NO_PUBLISH_CONFIRM=1`, or `"no_publish_confirm": true` in `.supertool.json` refuses rather than posts.
 
+**Authorship disclosure (#2042).** The posted body carries a trailing `[AI-generated]` marker by default -- a reader in the channel, or the operator themselves a week later in their own scrollback, has nothing else to go on: a bot token posts under an APP badge, but a user token posts as the human who authorized it, with no visible difference from a message they typed. The confirmation preview shown before `|force` is required already includes the marker, so what you confirm is what gets sent. Suppress it with `SUPERTOOL_NO_PUBLISH_DISCLOSURE=1` or `"no_publish_disclosure": true` in `.supertool.json` (both print `(disclosure: suppressed)` on the receipt instead of silently omitting it), or override the text with `"publish_disclosure_text"` in `.supertool.json`.
+
 ## Example
 
 ```bash

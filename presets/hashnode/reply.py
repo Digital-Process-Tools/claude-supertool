@@ -9,6 +9,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _auth import get_token
 from _graphql import gql
 from _outbound import append as track_append
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
+from _publish_safety import apply_disclosure  # noqa: E402
 
 ADD_REPLY = """
 mutation AddReply($input: AddReplyInput!) {
@@ -64,6 +66,7 @@ def parse_args(arg: str) -> tuple[str, str]:
 
 def main(arg: str) -> None:
     cid, message = parse_args(arg)
+    message, disclosure_state = apply_disclosure(message)
     token = get_token()
     # Resolve post_id from parent comment for outbound tracking
     parent_data = gql(PARENT_POST_QUERY, {"cid": cid}, token)
@@ -77,6 +80,8 @@ def main(arg: str) -> None:
         "posted_at": r["dateAdded"],
     })
     print(f"(reply posted id={r['id']} at={r['dateAdded']})")
+    if disclosure_state != "appended":
+        print(f"(disclosure: {disclosure_state})")
 
 
 if __name__ == "__main__":
