@@ -19,7 +19,7 @@ import subprocess
 import pytest
 
 PYTEST_EXIT_MEANINGS = {
-    2: "an internal pytest error during collection -- the child never finished "
+    2: "interrupted, or a collection error -- the child never finished "
        "collecting, let alone running, the tests it was asked about",
     3: "an internal pytest error",
     4: "a usage error in the child's own invocation",

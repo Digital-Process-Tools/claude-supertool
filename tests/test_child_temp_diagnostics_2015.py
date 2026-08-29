@@ -15,6 +15,7 @@ import os
 import tempfile
 
 from _child_temp_diagnostics import describe, snapshot_temp_state
+from _symlink import require_symlink
 
 
 def test_snapshot_reports_the_real_system_tempdir():
@@ -27,6 +28,7 @@ def test_snapshot_realpath_matches_os_path_realpath_of_a_symlinked_alias(tmp_pat
     """The contract this whole issue turns on: whatever primitive this
     module uses for canonicalisation must actually resolve a symlink/
     junction alias, not merely echo the raw path back."""
+    require_symlink()
     real_target = tmp_path / "real"
     real_target.mkdir()
     alias = tmp_path / "alias"
