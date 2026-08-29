@@ -1495,6 +1495,82 @@ def _disable_rtk_and_config():
     os.environ["SUPERTOOL_VIM_NO_PERSIST"] = "1"
 
 
+#: Every credential (or credential-adjacent) value the four preset auth
+#: readers resolve from disk once their own env var is absent -- #2096.
+#: `presets/{slack,bluesky,devto,hashnode}/_auth.py` each define their own
+#: `_read_first(env, *paths)`, checked in this order: env var, then
+#: `~/.config/<preset>/<name>`, then a `.{preset}-...` file in the cwd.
+PRESET_CREDENTIAL_ENV_VARS = (
+    "SLACK_BOT_TOKEN",
+    "BLUESKY_HANDLE",
+    "BLUESKY_APP_PASSWORD",
+    "DEVTO_API_KEY",
+    "HASHNODE_TOKEN",
+    "HASHNODE_PUBLICATION_ID",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_preset_credentials(monkeypatch, tmp_path_factory):
+    """#2096 -- a test that reaches a preset auth reader without stubbing it
+    must not resolve the maintainer's own on-disk credential.
+
+    `_read_first`'s second and third arms are both machine-local rather than
+    CI-local: `~/.config/<preset>/<name>` and a `.{preset}-...` file in the
+    cwd. A test written and run on a machine that happens to have one
+    configured takes a different code path than CI without anything in the
+    test admitting it -- `tests/test_watch_slack_ts_guard_2063.py` did
+    exactly that, passing locally against a real `~/.config/slack/bot_token`
+    and failing on every runner, on an assertion that named neither
+    credentials nor the environment.
+
+    This clears the six env vars the four readers check and points HOME
+    (and USERPROFILE, which `os.path.expanduser` prefers on Windows) at an
+    empty directory with no `.config/<preset>/` inside it, so the disk arm
+    of `_read_first` cannot resolve regardless of what exists on the
+    machine actually running the suite. HOMEDRIVE/HOMEPATH -- Windows'
+    fallback once USERPROFILE is absent -- are cleared too, the same
+    precaution `tests/test_tilde_path_1300.py::home` already takes: as long
+    as nothing later in the same test deletes USERPROFILE, `ntpath.expanduser`
+    never reaches them, but leaving them live would reopen this exact class
+    on Windows for whichever test does.
+
+    `tmp_path_factory.mktemp`, not the `tmp_path` fixture: `tmp_path` is
+    shared by whatever *other* fixture or the test body itself requests it,
+    and this fixture runs for every test whether or not it uses `tmp_path`
+    for something else entirely. Requesting `tmp_path` here and nesting the
+    fake home under it plants a stray subdirectory inside the very
+    directory a test is asserting the exact contents of --
+    `test_ls_empty_dir` (`assert "(0 items)" in out`) and
+    `test_image_fetch_ssrf_817.py::test_download_refuses_a_non_image_content_type`
+    (asserts no leaked byte across every file under `tmp_path`) both failed
+    against a real, unrelated regression measured while building this fix
+    with exactly that mistake. `tmp_path_factory.mktemp` returns a
+    directory nothing else in the test is entitled to.
+
+    Deliberately not addressed here: the cwd arm. Redirecting the process
+    cwd for every one of this suite's test files, for four presets' sake,
+    is a far wider blast radius than this fixture's env/HOME reset --
+    `test_preset_auth_env_isolation_2096.py` guards that arm separately, by
+    asserting none of the six known filenames exist at the repo root a test
+    run happens to start from, rather than by suppressing the read.
+
+    Ordering: a conftest-defined autouse fixture is set up before a
+    same-scope autouse fixture defined in a test module, so a file's own
+    `monkeypatch.setenv(...)` -- see
+    `test_watch_slack_ts_guard_2063.py::_fake_bot_token` -- still wins by
+    the time the test body runs. A test that wants a real-looking token is
+    unaffected by this fixture existing.
+    """
+    for var in PRESET_CREDENTIAL_ENV_VARS:
+        monkeypatch.delenv(var, raising=False)
+    fake_home = tmp_path_factory.mktemp("preset-auth-fake-home-2096")
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.delenv("HOMEDRIVE", raising=False)
+    monkeypatch.delenv("HOMEPATH", raising=False)
+
+
 # ---------------------------------------------------------------------------
 # Preset-derived ops: the opt-in for the autouse config reset (#1812)
 # ---------------------------------------------------------------------------
