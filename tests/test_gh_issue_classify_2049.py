@@ -33,7 +33,8 @@ def _fake_gh(stdout: str) -> Any:
     return subprocess.CompletedProcess(args=["gh"], returncode=0, stdout=stdout, stderr="")
 
 
-def _install(monkeypatch, *, body: str, comments: list[dict], spawn_stdout: str = "SAFE") -> None:
+def _install(monkeypatch, tmp_path, *, body: str, comments: list[dict],
+             spawn_stdout: str = "SAFE") -> None:
     issue_payload = json.dumps({
         "number": 42, "title": "Plan", "state": "OPEN", "labels": [],
         "milestone": None, "assignees": [], "author": {"login": "florian"},
@@ -53,13 +54,27 @@ def _install(monkeypatch, *, body: str, comments: list[dict], spawn_stdout: str 
         return _Proc(stdout=spawn_stdout)
     monkeypatch.setattr(issue._classify_render.model, "_default_spawn", spawn)
 
+    # #2097 wired a real, file-backed verdict cache into every `Budget()`
+    # this op builds. Several tests here classify the literal string "an
+    # ordinary bug report" under different `spawn_stdout`s, and the real
+    # on-disk default (shared by uid, not by test) would let an earlier
+    # test's cached "safe" answer a later test that expects
+    # `could-not-classify` -- reproduced once as a real failure before this
+    # fixture was given its own `tmp_path`-rooted cache per test, the same
+    # isolation `tests/test_classify_cache_2054.py` already gives
+    # `cache.py`'s own tests directly.
+    fresh_cache = issue._classify_render.classify_cache.Cache(
+        directory=str(tmp_path / "classify-cache"))
+    monkeypatch.setattr(issue._classify_render.classify_cache, "default_cache",
+                         lambda: fresh_cache)
+
 
 def _comment(login: str, body: str) -> dict:
     return {"author": {"login": login}, "body": body, "createdAt": "2026-05-07T20:00:00Z"}
 
 
-def test_body_gets_a_classify_line(monkeypatch, capsys) -> None:
-    _install(monkeypatch, body="an ordinary bug report", comments=[])
+def test_body_gets_a_classify_line(monkeypatch, capsys, tmp_path) -> None:
+    _install(monkeypatch, tmp_path, body="an ordinary bug report", comments=[])
     monkeypatch.setattr(sys, "argv", ["issue.py", "42"])
     monkeypatch.setattr(issue, "_CLASSIFY_LEVEL", issue._classify_render.LEVEL_FULL)
     rc = issue.main()
@@ -68,8 +83,8 @@ def test_body_gets_a_classify_line(monkeypatch, capsys) -> None:
     assert "classify: safe" in out
 
 
-def test_each_comment_gets_its_own_classify_line(monkeypatch, capsys) -> None:
-    _install(monkeypatch, body="body text",
+def test_each_comment_gets_its_own_classify_line(monkeypatch, capsys, tmp_path) -> None:
+    _install(monkeypatch, tmp_path, body="body text",
              comments=[_comment("a", "first comment"), _comment("b", "second comment")])
     monkeypatch.setattr(sys, "argv", ["issue.py", "42"])
     monkeypatch.setattr(issue, "_CLASSIFY_LEVEL", issue._classify_render.LEVEL_FULL)
@@ -80,8 +95,8 @@ def test_each_comment_gets_its_own_classify_line(monkeypatch, capsys) -> None:
     assert out.count("classify: safe") == 3
 
 
-def test_could_not_classify_never_renders_as_safe(monkeypatch, capsys) -> None:
-    _install(monkeypatch, body="an ordinary bug report", comments=[],
+def test_could_not_classify_never_renders_as_safe(monkeypatch, capsys, tmp_path) -> None:
+    _install(monkeypatch, tmp_path, body="an ordinary bug report", comments=[],
              spawn_stdout="I refuse to answer in the fixed vocabulary.")
     monkeypatch.setattr(sys, "argv", ["issue.py", "42"])
     monkeypatch.setattr(issue, "_CLASSIFY_LEVEL", issue._classify_render.LEVEL_FULL)
@@ -92,9 +107,9 @@ def test_could_not_classify_never_renders_as_safe(monkeypatch, capsys) -> None:
     assert "classify: safe" not in out
 
 
-def test_off_level_never_renders_safe_and_never_spawns(monkeypatch, capsys) -> None:
+def test_off_level_never_renders_safe_and_never_spawns(monkeypatch, capsys, tmp_path) -> None:
     calls = []
-    _install(monkeypatch, body="an ordinary bug report", comments=[])
+    _install(monkeypatch, tmp_path, body="an ordinary bug report", comments=[])
 
     def spy(prompt, system_prompt, timeout):
         calls.append(1)

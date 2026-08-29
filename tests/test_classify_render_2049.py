@@ -179,9 +179,36 @@ def test_level_from_env_falls_back_to_full_on_garbage(monkeypatch) -> None:
 
 
 # --- Budget: only a full-level, clean-scan unit ever spends it ------------
+#
+# Every test below that builds a `Budget` without an explicit `cache=`
+# passes `_FakeCache()` (an always-miss, no-op-put stub) rather than
+# letting `Budget` reach for its real on-disk default. `Budget`'s
+# production default IS the real `classify_cache.default_cache()`
+# (#2097 -- see `test_budget_defaults_to_the_real_classify_cache` below),
+# and that default is deliberately file-backed and shared across
+# processes; three of these tests reuse the literal strings "one"/"two"/
+# "three"/"a"/"b"/"c", and a second run of this file in the same session
+# used to see "one" and "two" already cached from the first run and
+# silently stop exhausting the budget -- reproduced once, then fixed here
+# rather than left to reappear on whichever CI leg happens to share a temp
+# directory across two test processes.
+
+
+class _FakeCache:
+    """Always misses, records nothing durable -- an isolated stand-in for
+    `Budget`'s real default so these tests measure budget accounting only,
+    the same isolation `tests/test_classify_model_2046.py::_FakeCache`
+    gives `model.classify`'s own tests."""
+
+    def get(self, text):
+        return None, "miss"
+
+    def put(self, text, verdict):
+        return ""
+
 
 def test_budget_exhausts_after_n_full_spawns() -> None:
-    b = render.Budget(n=2)
+    b = render.Budget(n=2, cache=_FakeCache())
     spawn = _spawn("SAFE")
     assert b.line("one", level=render.LEVEL_FULL, spawn=spawn) == "classify: safe"
     assert b.line("two", level=render.LEVEL_FULL, spawn=spawn) == "classify: safe"
@@ -189,7 +216,7 @@ def test_budget_exhausts_after_n_full_spawns() -> None:
 
 
 def test_budget_is_never_spent_by_off_or_scanner_levels() -> None:
-    b = render.Budget(n=1)
+    b = render.Budget(n=1, cache=_FakeCache())
     spawn = _spawn("SAFE")
     # Two off/scanner calls, neither should touch the one unit of budget.
     b.line("a", level=render.LEVEL_OFF, spawn=spawn)
@@ -203,7 +230,7 @@ def test_budget_is_never_spent_by_off_or_scanner_levels() -> None:
 def test_budget_is_never_spent_by_a_scanner_hit_at_full_level() -> None:
     """A scanner hit at level=full never reaches the spawn, so it must not
     consume the model-stage budget either."""
-    b = render.Budget(n=1)
+    b = render.Budget(n=1, cache=_FakeCache())
     calls = []
     def spy(prompt, system_prompt, timeout):
         calls.append(1)
@@ -212,3 +239,59 @@ def test_budget_is_never_spent_by_a_scanner_hit_at_full_level() -> None:
     assert line.startswith("classify: suspect (fence-forgery")
     assert calls == []
     assert b.remaining == 1
+
+
+# --- Budget + cache wiring (#2097) -----------------------------------------
+
+def test_budget_defaults_to_the_real_classify_cache(monkeypatch) -> None:
+    """Production behaviour: a `Budget()` built with no `cache=` argument --
+    exactly what `github/issue.py`, `github/pr.py`, `gitlab/issue.py` and
+    `gitlab/mr.py` all do -- must reach for the real, file-backed cache
+    #2054 shipped, not silently stay uncached. Stubbing `default_cache`
+    with a sentinel and checking identity is the only way to prove this
+    without actually touching the real temp directory."""
+    sentinel = object()
+    monkeypatch.setattr(render.classify_cache, "default_cache", lambda: sentinel)
+    assert render.Budget().cache is sentinel
+
+
+def test_repeated_body_across_two_budgets_spawns_once(tmp_path) -> None:
+    """The load-bearing assertion #2097 exists to make true: two separate
+    `Budget` instances -- one per op invocation, as every real call site
+    builds -- sharing one on-disk cache directory must spawn the model
+    stage for a body's first appearance and never again for a
+    byte-identical repeat. The second `Budget`'s spawn raises if it is
+    ever called at all, so this fails loudly rather than passing on
+    noise ("the second call was faster")."""
+    directory = str(tmp_path / "cache")
+
+    first = render.Budget(n=6, cache=render.classify_cache.Cache(directory=directory))
+    assert first.line("repeat me", level=render.LEVEL_FULL,
+                       spawn=_spawn("SAFE")) == "classify: safe"
+
+    def must_not_be_called(prompt, system_prompt, timeout):
+        raise AssertionError("a cache hit must never reach the spawn")
+
+    second = render.Budget(n=6, cache=render.classify_cache.Cache(directory=directory))
+    assert second.line("repeat me", level=render.LEVEL_FULL,
+                        spawn=must_not_be_called) == "classify: safe"
+
+
+def test_a_cache_hit_never_spends_the_budget(tmp_path) -> None:
+    """Must-fire pairing with the test above: a cache hit must not count
+    against the cap either, or a run of nothing but repeats would still
+    exhaust it on units that never actually spawn -- the exact waste
+    #2054 exists to remove, reintroduced one layer up."""
+    directory = str(tmp_path / "cache")
+    render.Budget(n=1, cache=render.classify_cache.Cache(directory=directory)).line(
+        "seen before", level=render.LEVEL_FULL, spawn=_spawn("SAFE"))
+
+    b = render.Budget(n=1, cache=render.classify_cache.Cache(directory=directory))
+    line = b.line("seen before", level=render.LEVEL_FULL,
+                   spawn=_spawn("SUSPECT: role-persona"))
+    assert line == "classify: safe", "must answer from the cache, not re-spawn"
+    assert b.remaining == 1, "a cache hit must not spend the budget it never needed"
+    # The one unit is still there for a genuinely new unit.
+    assert b.line("never seen before", level=render.LEVEL_FULL,
+                  spawn=_spawn("SAFE")) == "classify: safe"
+    assert b.remaining == 0
