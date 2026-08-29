@@ -24,12 +24,14 @@ Hashnode publishing, discovery, and engagement via GraphQL. Replaces manual API 
 | `hashnode_search` | `hashnode_search:QUERY[:N]` | Text search within your publication: matching post titles and slugs |
 | `hashnode_status_since` | `hashnode_status_since[:ISO_TIMESTAMP]` | Briefing: new comments, follower count, top posts since timestamp (auto-tracks last check) |
 
+**Breaking change (#2082): body-file paths are now allowlisted.** `hashnode_publish`'s `MD_FILE`, `hashnode_comment`'s `MESSAGE_OR_FILE` and `hashnode_reply`'s `MESSAGE_OR_FILE` used to read any existing bare path or `file://PATH` straight off disk. Both arms now resolve through the same publish-body allowlist `bluesky_publish`, `devto_comment` and `devto_publish` already enforce -- `.max/`, `drafts/`, `posts/` or `blog/`, relative to cwd -- and a path outside it is refused with `ERROR: publish body path escapes the safety allowlist` instead of being read. Extend the allowlist via `SUPERTOOL_PUBLISH_BODY_ALLOWLIST` (env, `os.pathsep`-separated) or `"publish_body_allowlist": [...]` in `.supertool.json`. An existing call whose body file lives outside those directories needs to move it, or extend the allowlist, to keep working.
+
 ## Common workflows
 
 **Cross-publish a blog post from Dev.to or a local markdown file:**
 
 ```bash
-./supertool 'hashnode_publish:My Post Title|/tmp/post.md|https://dev.to/me/my-post|ai,tooling|https://example.com/og.png'
+./supertool 'hashnode_publish:My Post Title|drafts/post.md|https://dev.to/me/my-post|ai,tooling|https://example.com/og.png'
 ```
 
 The canonical URL ensures search engines attribute the original correctly.

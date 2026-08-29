@@ -20,8 +20,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
 from _auth import get_publication_id, get_token
 from _graphql import gql, gql_safe
+from _publish_safety import safe_resolve_body_path  # noqa: E402
 
 QUERY = """
 mutation PublishPost($input: PublishPostInput!) {
@@ -52,7 +54,9 @@ def parse_args(arg: str) -> dict[str, object]:
     used_file_prefix = raw_path.startswith("file://")
     if used_file_prefix:
         raw_path = raw_path[len("file://"):]
-    md_path = Path(raw_path)
+    # #2082: body file must live under publish allowlist (.max/, drafts/, posts/, blog/),
+    # the same guard bluesky/publish.py and devto/publish.py apply (#149).
+    md_path = safe_resolve_body_path(raw_path)
     if used_file_prefix and not md_path.is_file():
         sys.stderr.write(
             f"ERROR: file not found: {raw_path}\n"
