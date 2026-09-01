@@ -21,10 +21,17 @@ import supertool
 
 @pytest.fixture
 def stub_dispatch(monkeypatch):
-    """Replace `dispatch` — the documented monkeypatch contract (#1359)."""
+    """Replace `dispatch` — the documented monkeypatch contract (#1359).
+
+    Also bypasses #2122's batch pre-validation, which runs ahead of
+    `dispatch` in `main()` and so is not reachable by stubbing `dispatch`
+    alone. This suite's op strings (a bare "@-") exist to exercise the
+    stale-verdict-flag logic, not the op registry.
+    """
     seen: list[str] = []
     monkeypatch.setattr(supertool, "dispatch", lambda a: (seen.append(a), "")[-1])
     monkeypatch.setattr(supertool, "log_call", lambda *a, **k: None)
+    monkeypatch.setattr(supertool, "_batch_prevalidation_refusal", lambda argv: None)
     return seen
 
 
@@ -60,6 +67,11 @@ def test_a_real_refusal_on_a_previous_call_does_not_carry(
     assert supertool._call_failed() is True
     monkeypatch.setattr(supertool, "dispatch", lambda a: "")
     monkeypatch.setattr(supertool, "log_call", lambda *a, **k: None)
+    # #2122's batch pre-validation runs ahead of dispatch(), so the bare
+    # "@-" placeholder above needs the same bypass the fixture-based tests
+    # in this module get -- this test reaches for the raw monkeypatch calls
+    # directly rather than the fixture, so it needs its own.
+    monkeypatch.setattr(supertool, "_batch_prevalidation_refusal", lambda argv: None)
     assert supertool.main(["edit:@-", "@-"]) == 0
 
 

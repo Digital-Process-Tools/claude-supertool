@@ -2645,6 +2645,100 @@ def _synonym_invocation_note(op: str, named: List[str]) -> str:
             f"Syntax: {syntax}\n")
 
 
+def _batch_op_head(arg: str) -> str:
+    """The op NAME `dispatch()` would resolve `arg` to, without running it.
+
+    Mirrors the two ways `_dispatch_impl` splits an arg before it looks the
+    name up: a `:::` opener splits there, everything else splits on the
+    first `:` via `_split_arg`. The `:::no-exclude` suffix and the `@payload`
+    routing that come after in `_dispatch_impl` never change which NAME is
+    being asked for, so neither is reproduced here -- this only answers the
+    one question #2122's pre-validation needs.
+    """
+    if arg.endswith(_NO_EXCLUDE_SUFFIX):
+        arg = arg[: -len(_NO_EXCLUDE_SUFFIX)]
+    if re.match(r"^([a-zA-Z_][a-zA-Z0-9_-]*):::", arg):
+        parts = arg.split(":::")
+    else:
+        parts = _split_arg(arg)
+    return parts[0] if parts else ""
+
+
+def _op_is_unroutable(op: str) -> bool:
+    """True only for a NAME `_dispatch_impl` cannot resolve to any handler.
+
+    Deliberately narrower than "will succeed" (#2122's own must-not-fire
+    case): a shipped preset op this config does not enable still routes
+    here, because dispatch answers it with its own explanatory ERROR
+    ("unavailable here, not unknown") rather than the plain unknown-op one --
+    the op's EXISTENCE is a documented fact about this binary even when its
+    availability here is not. A custom op whose command later fails to
+    spawn, or a builtin given the wrong number of arguments, is a RUNTIME
+    failure and is not knowable before anything runs; only the naming
+    question is, which is the only question pre-validation is allowed to
+    ask (`_unknown_op_message`'s own docstring: a typo and a custom op we
+    never saw stay unknown, on purpose -- the same rule applies here).
+    """
+    if op in _BUILTIN_OPS - {"vi"} or op in _DISPATCH_ONLY_OPS or op in _MAIN_LEVEL_OPS:
+        return False
+    config = _load_config()
+    if op in (config.get("ops") or {}):
+        return False
+    if op in (config.get("aliases") or {}):
+        return False
+    if op in _shipped_preset_ops():
+        return False
+    return True
+
+
+def _batch_prevalidation_refusal(argv: List[str]) -> "Optional[str]":
+    """Refuse a whole multi-op call before any member runs, if one member's
+    op name is unroutable (#2122).
+
+    Every positional argument is an op, so a mistyped option (`--offset`)
+    becomes a batch member of its own. Before this existed, the refusal was
+    already correct -- an ERROR and exit 1 for every such member -- but it
+    arrived only after every EARLIER member had already run to completion,
+    so a one-character slip after an unbounded `read:` bought the largest
+    possible read and explained, afterwards, that it should not have.
+
+    Mirrors the raw-command guard's own rule for a call it refuses: a
+    refusal covers the whole call, never only the part that named it. A
+    batch is one call; running a prefix of it that the caller did not mean
+    is the worst available outcome -- work is done, output is spent, and
+    the caller has to reconstruct which half happened.
+
+    Returns `None` when every member routes (the ordinary case, and the
+    only one #1234's own batch -- a real `grep` op that fails at RUNTIME on
+    its argument -- must still take, unchanged).
+    """
+    if len(argv) < 2:
+        return None
+    bad = [(i, a, _batch_op_head(a)) for i, a in enumerate(argv)
+           if _op_is_unroutable(_batch_op_head(a))]
+    if not bad:
+        return None
+    msg = (
+        f"ERROR: batch refused before running: {len(bad)} of {len(argv)} "
+        "members are not a routable op name.\n"
+        "A batch validates every member's op name before any of them runs "
+        "-- a member nobody can route means the caller did not get the "
+        "batch they meant, and running the ops ahead of it is the worst "
+        "available outcome (#2122).\n"
+    )
+    for i, raw, op in bad:
+        if op.startswith("-"):
+            prev_op = _batch_op_head(argv[i - 1]) if i > 0 else ""
+            hint = (f"; ops take their arguments positionally, e.g. "
+                    f"{prev_op}:PATH:...\n" if prev_op else
+                    "; ops take their arguments positionally, not as "
+                    "flags\n")
+            msg += f"  [{i}] {raw!r} looks like a flag" + hint
+        else:
+            msg += f"  [{i}] {raw!r} -- unknown operation: {op}\n"
+    return msg
+
+
 def _unknown_op_message(op: str) -> str:
     """Answer "can I do this?" in three states, not two (#614).
 
@@ -17773,6 +17867,33 @@ def _doctor_symlink() -> Dict[str, Any]:
     except OSError:
         result["path_resolves_to_running_module"] = None
     result["running_module"] = running
+
+    # #2121: a path mismatch alone does not mean stale. A launcher script
+    # that resolves the newest install at run time (CLAUDE.md's own
+    # documented remedy for #2071's dangling-symlink trap) necessarily
+    # fails the path comparison above while being exactly as current as
+    # the module answering this call. Ask the cheaper question directly:
+    # run the PATH entry with `version` and compare what it answers.
+    # Three states, not two -- `current` / `stale` / `unknown` -- because
+    # folding "could not run" into either would either mask a genuinely
+    # stale build or false-alarm a healthy one.
+    result["path_version"] = None
+    result["path_version_state"] = None
+    if result["path_resolves_to_running_module"] is False and not result["dangling"]:
+        try:
+            proc = subprocess.run([which, "version"], capture_output=True,
+                                  text=True, timeout=5, encoding="utf-8",
+                                  errors="replace")
+            match = (re.match(r"supertool\s+(\S+)", proc.stdout.strip())
+                     if proc.returncode == 0 else None)
+        except (OSError, subprocess.TimeoutExpired):
+            match = None
+        if match:
+            result["path_version"] = match.group(1)
+            result["path_version_state"] = (
+                "current" if match.group(1) == VERSION else "stale")
+        else:
+            result["path_version_state"] = "unknown"
     return result
 
 
@@ -18051,11 +18172,23 @@ def op_doctor(arg: str = "") -> str:
             state = "DANGLING" if sym["dangling"] else "ok"
             lines.append(f"- symlink target: {sym['symlink_target']} ({state})")
         if sym.get("path_resolves_to_running_module") is False:
-            lines.append(
-                "- NOTE: differs from the module answering this call "
-                f"({sym['running_module']}) — expected inside a worktree "
-                "(CLAUDE.md: run python3 supertool.py there, not the global "
-                "symlink); otherwise the symlink may point at a stale build.")
+            version_state = sym.get("path_version_state")
+            if version_state == "stale":
+                lines.append(
+                    f"- NOTE: PATH entry answers as supertool "
+                    f"{sym['path_version']}, this call is running {VERSION} "
+                    "— stale build, update or reinstall it.")
+            elif version_state == "current":
+                pass
+            else:
+                lines.append(
+                    "- NOTE: could not tell whether the PATH entry "
+                    f"({sym['which']}) is current — it differs by path from "
+                    f"the module answering this call ({sym['running_module']}) "
+                    "and running it with `version` did not answer, so this "
+                    "is neither confirmed current nor confirmed stale "
+                    "(CLAUDE.md: run python3 supertool.py inside a worktree, "
+                    "not the global symlink, if that is what this is).")
     lines.append("")
 
     config = _load_config()
@@ -29932,6 +30065,16 @@ def _main(argv: List[str]) -> int:
             "others a file payload (e.g. edit:@.max/e1.toml), or fold them "
             "into one 'batch:@-' ops array.\n"
         )
+        return 1
+
+    # #2122 — validate every member's op NAME before any of them runs. Must
+    # sit after the pre-passes above (cwd:/repo: are consumed, not batch
+    # members) and before anything below writes a byte of op output, or the
+    # thing this exists to prevent — an expensive earlier member running to
+    # completion before a later member's typo is diagnosed — happens anyway.
+    _prevalidation_error = _batch_prevalidation_refusal(argv)
+    if _prevalidation_error is not None:
+        sys.stderr.write(_prevalidation_error)
         return 1
 
     # Loader warnings, once, before any op output. Skipping an unreadable

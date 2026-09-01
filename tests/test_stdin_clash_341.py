@@ -15,10 +15,18 @@ import supertool
 
 @pytest.fixture
 def stub_dispatch(monkeypatch):
-    """Record dispatched ops; never touch real stdin or the filesystem."""
+    """Record dispatched ops; never touch real stdin or the filesystem.
+
+    Also bypasses #2122's batch pre-validation, which sits ahead of dispatch
+    and therefore cannot be short-circuited by stubbing `dispatch` alone --
+    this fixture's whole point is exercising the stdin-clash pre-pass with
+    op-shaped strings (a bare "@-") that are not real op names and were
+    never meant to be checked against the registry.
+    """
     seen: list[str] = []
     monkeypatch.setattr(supertool, "dispatch", lambda a: (seen.append(a), "")[-1])
     monkeypatch.setattr(supertool, "log_call", lambda *a, **k: None)
+    monkeypatch.setattr(supertool, "_batch_prevalidation_refusal", lambda argv: None)
     return seen
 
 
