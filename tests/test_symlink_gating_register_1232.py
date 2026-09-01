@@ -247,6 +247,7 @@ REGISTER = {
     'tests/test_gc_474.py::test_entry_whose_stat_fails_is_kept_and_reported': A,
     'tests/test_gh_issue_attachment_root_1506.py::test_a_root_that_is_a_symlink_gets_no_bytes_written_through_it': B,
     'tests/test_gh_issue_attachment_root_1506.py::test_a_symlink_planted_at_the_per_issue_directory_is_not_written_through': B,
+    'tests/test_child_temp_diagnostics_2015.py::test_snapshot_realpath_matches_os_path_realpath_of_a_symlinked_alias': B,
     'tests/test_git_env_leak_416.py::_build_project': E,
     'tests/test_git_state_guard.py::_guarded_project': E,
     'tests/test_git_timeout_disclosure_650.py::_git_only_path': P,
