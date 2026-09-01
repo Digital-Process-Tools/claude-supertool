@@ -64,6 +64,7 @@ from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -
 import _checks  # noqa: E402
 import _remote_default as _rd  # noqa: E402
 import _repo_target  # noqa: E402
+import _payload_keys  # noqa: E402  (unrecognised-key refusal, shared with the other three @payload ops -- #2123)
 import _untrusted  # noqa: E402
 import _digits  # noqa: E402
 
@@ -91,6 +92,18 @@ UNLINK = "unlink"
 # way to apply. Named in the receipt; never silently dropped.
 NOT_APPLIED = ("base", "head", "draft", "labels", "assignees", "reviewers",
                "milestone")
+
+# Every key this op reads from a payload, plus NOT_APPLIED above and the two
+# `gh-pr-create`-only flags -- `literal_backslashes` and `no_close` (#1967,
+# #1838) -- that never apply to an edit either. A `gh-pr-edit` payload is
+# routinely a `gh-pr-create` payload reused verbatim to correct a published
+# pull request, so every key that op accepts must stay accepted here too
+# (#2123) -- refusing them would break a working call for a shape this
+# op was designed to take.
+ACCEPTED_KEYS = set(NOT_APPLIED) | {
+    "repo", "title", "body", "body_file", "literal_backslashes", "no_close",
+}
+ALIASES: dict = {}
 
 CRLF = chr(13) + chr(10)
 CR = chr(13)
@@ -469,6 +482,11 @@ def main() -> int:  # noqa: C901
     if not isinstance(payload, dict):
         print("ERROR: payload is not a table of fields (expected JSON or TOML "
               "with body or body_file)")
+        return 1
+
+    key_err = _payload_keys.check(payload, ACCEPTED_KEYS, ALIASES, "gh-pr-edit")
+    if key_err:
+        print(key_err)
         return 1
 
     repo_conflict, repo_source = _repo_target.resolve_or_conflict(payload, "gh-pr-edit")

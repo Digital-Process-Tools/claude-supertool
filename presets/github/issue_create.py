@@ -75,12 +75,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _remote_default as _rd  # noqa: E402
 import _repo_target  # noqa: E402  (repo: op precedence over payload's own field -- #1909)
+import _payload_keys  # noqa: E402  (unrecognised-key refusal, shared with the other three @payload ops -- #2123)
 import _untrusted  # noqa: E402  (the GitHub API writes the failure body — #1606)
 
 # The transport that actually answered. Named in every receipt (#1790) so a
 # degraded write is never indistinguishable from an ordinary one.
 TRANSPORT_GRAPHQL = "graphql"
 TRANSPORT_REST_FALLBACK = "rest (fallback -- mutation transport unavailable)"
+
+# Every key this op reads from a payload. Checked against the payload before
+# anything is created (#2123) -- a key outside this set is refused rather
+# than silently dropped.
+ACCEPTED_KEYS = {
+    "repo", "title", "body", "body_file", "labels", "assignees", "milestone",
+}
+
+# `description`/`description_file` -- what `gl-issue-create` and the GitLab
+# API itself call the field -- silently created an empty issue here on
+# 2026-09-01 (#2123): this op wants `body`/`body_file`. Accepted as an alias
+# in both directions rather than only documented, since a misfiled issue
+# from that slip is expensive to unpick on a live tracker.
+ALIASES = {
+    "description": "body",
+    "description_file": "body_file",
+}
 
 
 def _gh(args: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
@@ -289,6 +307,15 @@ def main() -> int:
         return 1
     except (json.JSONDecodeError, ValueError) as e:
         print(f"ERROR: failed to parse payload: {e} (expected JSON or TOML with title/body)")
+        return 1
+
+    key_err = _payload_keys.check(payload, ACCEPTED_KEYS, ALIASES, "gh-issue-create")
+    if key_err:
+        print(key_err)
+        return 1
+    payload, alias_err = _payload_keys.resolve_aliases(payload, ALIASES)
+    if alias_err:
+        print(alias_err)
         return 1
 
     repo_conflict, repo_source = _repo_target.resolve_or_conflict(payload, "gh-issue-create")

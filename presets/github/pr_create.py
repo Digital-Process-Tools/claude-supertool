@@ -47,6 +47,7 @@ from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -
 import _checks  # noqa: E402
 import _remote_default as _rd  # noqa: E402
 import _repo_target  # noqa: E402
+import _payload_keys  # noqa: E402  (unrecognised-key refusal, shared with the other three @payload ops -- #2123)
 import _untrusted  # noqa: E402
 import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
 
@@ -70,6 +71,17 @@ LITERAL_BS_KEY = "literal_backslashes"
 # what it disables, so a template carrying it unconditionally reads wrong on
 # sight rather than looking like ordinary configuration.
 NO_CLOSE_KEY = "no_close"
+
+# Every key this op reads from a payload. Checked against the payload before
+# anything is created (#2123) -- a key outside this set is refused rather
+# than silently dropped. No alias vocabulary here: `body`/`body_file` are
+# this op's own native names and nothing else in this repo calls a pull
+# request body anything different.
+ACCEPTED_KEYS = {
+    "repo", "title", "base", "head", "body", "body_file", "draft", "labels",
+    "assignees", "reviewers", "milestone", LITERAL_BS_KEY, NO_CLOSE_KEY,
+}
+ALIASES: dict = {}
 
 _LITERAL_BS_QUOTE = re.compile(r'\\"')
 
@@ -363,6 +375,11 @@ def main() -> int:  # noqa: C901
     except (json.JSONDecodeError, ValueError) as e:
         print(f"ERROR: failed to parse payload: {e} "
               f"(expected JSON or TOML with title/body/base)")
+        return 1
+
+    key_err = _payload_keys.check(payload, ACCEPTED_KEYS, ALIASES, "gh-pr-create")
+    if key_err:
+        print(key_err)
         return 1
 
     repo_conflict, repo_source = _repo_target.resolve_or_conflict(payload, "gh-pr-create")

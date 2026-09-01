@@ -21,7 +21,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _remote_default as _rd  # noqa: E402
 import _repo_target  # noqa: E402  (repo: op precedence over payload's own field -- #1909)
+import _payload_keys  # noqa: E402  (unrecognised-key refusal, shared with the other three @payload ops -- #2123)
 import _untrusted  # noqa: E402  (glab relays the API's own error body — #1485)
+
+# Every key this op reads from a payload. Checked against the payload before
+# anything is created (#2123) -- a key outside this set is refused rather
+# than silently dropped.
+ACCEPTED_KEYS = {
+    "project", "title", "description", "description_file", "milestone_id",
+    "labels", "assignee_ids", "estimate", "links",
+}
+
+# `body`/`body_file` -- what `gh-issue-create` and the GitHub API itself
+# call the field -- silently created an issue with no description here on
+# 2026-09-01 (#2123): this op wants `description`/`description_file`.
+# Accepted as an alias rather than only documented, since a misfiled issue
+# from that slip is expensive to unpick on a live tracker.
+ALIASES = {
+    "body": "description",
+    "body_file": "description_file",
+}
 
 
 def _glab(args: list[str], timeout: int = 20) -> subprocess.CompletedProcess[str]:
@@ -111,6 +130,15 @@ def main() -> int:
         return 1
     except (json.JSONDecodeError, ValueError) as e:
         print(f"ERROR: failed to parse payload: {e} (expected JSON or TOML with title/description)")
+        return 1
+
+    key_err = _payload_keys.check(payload, ACCEPTED_KEYS, ALIASES, "gl-issue-create")
+    if key_err:
+        print(key_err)
+        return 1
+    payload, alias_err = _payload_keys.resolve_aliases(payload, ALIASES)
+    if alias_err:
+        print(alias_err)
         return 1
 
     repo_conflict, repo_source = _repo_target.resolve_or_conflict(payload, "gl-issue-create", "project")
