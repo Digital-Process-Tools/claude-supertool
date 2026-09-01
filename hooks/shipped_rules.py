@@ -238,6 +238,94 @@ def _body(rule: Rule):
     return prose + chr(10) + chr(10) + _TRAILER.format(name=rule.name)
 
 
+#: Characters a compound Bash call's top-level boundaries are made of, for
+#: this module's own discard disclosure (#1873's second half). `_supertool.py`
+#: has its own copy of this same idea, `_GUARD_SEPARATOR_CHARS` --  not
+#: reused here, deliberately: this file is read before `_supertool` is
+#: imported, on purpose, to keep the common case (nothing shipped matches)
+#: from paying that import (#1377). A rule that matches has already paid for
+#: a `re.search`, so a second, small, in-file segmenter costs nothing the
+#: fast path cares about. `<` and `>` are carried in the SAME set as `;&|`
+#: rather than checked separately, on purpose: a run has to be scanned whole
+#: before it is known to contain one, and `2>&1`'s `&` is only rescued by
+#: that whole-run check when `>` was part of the run to begin with -- leave
+#: it out and the `&` in `2>&1` is scanned alone and read as a lone
+#: background operator, splitting one discarded write into two fragments
+#: (`_guard_raw_segment_spans`'s own #1684).
+_DISCARD_SEPARATORS = ";()<>|&"
+
+
+def _discarded_segments(prefix: str):
+    """Top-level command texts in *prefix*, the part of a command BEFORE a
+    shipped rule's own match, split on `;`, `&&`, `||` and a lone `&`.
+
+    Quote and backslash tracking mirrors `_supertool._guard_raw_segment_spans`:
+    a quote opens and closes a quoted run during which nothing is special
+    except its own close (plus backslash-escaping inside a double quote), and
+    a backslash outside quotes escapes exactly the next character. A run of
+    separator characters that also contains `<` or `>` is a redirection, not
+    a boundary -- `2>&1` must not read as a `&`-separator splitting one write
+    into two fragments, the exact bug `_guard_raw_segment_spans` was written
+    to avoid in the registry route (#1684). Never raises: an unterminated
+    quote here is not this function's problem to report, and a `match()`
+    caller only reaches this AFTER the real tokeniser-backed guard (or this
+    same regex layer) has already decided whether to deny the command --
+    this function only decides what else to say about that decision.
+    """
+    segments = []
+    start = 0
+    quote = ""
+    i = 0
+    n = len(prefix)
+    while i < n:
+        ch = prefix[i]
+        if quote:
+            if ch == chr(92) and quote == chr(34) and i + 1 < n:
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in ("'", chr(34)):
+            quote = ch
+            i += 1
+            continue
+        if ch == chr(92) and i + 1 < n:
+            i += 2
+            continue
+        if ch in _DISCARD_SEPARATORS:
+            j = i
+            while j < n and prefix[j] in _DISCARD_SEPARATORS:
+                j += 1
+            run = prefix[i:j]
+            if "<" not in run and ">" not in run:
+                segments.append(prefix[start:i])
+                start = j
+            i = j
+            continue
+        i += 1
+    segments.append(prefix[start:n])
+    return [s.strip() for s in segments if s.strip()]
+
+
+def _discard_line(command: str, match_start: int) -> str:
+    """What #1873 asks this layer to add: name what a `deny` also discards.
+
+    Empty when nothing precedes the match -- the common case, a single
+    command, has nothing to disclose and gets no line at all.
+    """
+    discarded = _discarded_segments(command[:match_start])
+    if not discarded:
+        return ""
+    named = "; ".join("`" + seg + "`" for seg in discarded)
+    return (
+        chr(10) + chr(10)
+        + "A `PreToolUse` refusal is all-or-nothing across the whole Bash "
+        "call, so " + str(len(discarded)) + " earlier command(s) in this "
+        "same call would not run either: " + named)
+
+
 def match(command: str, plugin_root: str, project_dir: str):
     """(verb, text) for the first shipped rule that claims *command*.
 
@@ -249,7 +337,8 @@ def match(command: str, plugin_root: str, project_dir: str):
     rules, skipped = load(plugin_root)
     lowered = command.lower()
     for rule in rules:
-        if not rule.regex.search(lowered):
+        found = rule.regex.search(lowered)
+        if not found:
             continue
         if owned_by_project(rule.name, project_dir):
             continue
@@ -263,6 +352,8 @@ def match(command: str, plugin_root: str, project_dir: str):
                 "command and its body could not be read from " + rule.path
                 + ". The command was allowed - this is a statement about the "
                 "rule, not about the command.")
+        if rule.verb == "deny":
+            text = text + _discard_line(command, found.start())
         return rule.verb, text
 
     if skipped and os.path.isfile(
