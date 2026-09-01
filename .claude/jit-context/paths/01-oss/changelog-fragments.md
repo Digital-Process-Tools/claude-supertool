@@ -27,6 +27,10 @@ where nothing can read it. The reason is part of the field: a bare verdict is th
 answer one field further along. Other sections may carry the bullet and are read as compatible when
 they do not.
 
+The fragment check reads this line too, so a declaration that will not parse -- a word that is
+neither verdict, a verdict with no reason, both at once, or a `removed` fragment carrying none --
+is a finding on the pull request that introduced it rather than a stopped release days later.
+
 **Do not hand-edit `CHANGELOG.md`** while this directory exists. The fold overwrites it and deletes
 the fragments; an entry written directly into the file is lost at the next release, silently,
 because the fold has no way to know it was meant to stay.

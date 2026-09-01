@@ -65,7 +65,18 @@ LOCAL_SETTINGS_PATH = ".claude/settings.local.json"
 # Adding one is a deliberate act: it means the key is something every clone
 # should inherit, not something the harness maintains for this machine. If a red
 # leg brought you here, read the docstring above before widening this set.
-ALLOWED_TOP_LEVEL_KEYS = frozenset({"hooks"})
+#
+# `statusLine` travels because it is repository configuration, not machine state:
+# its command is `python3 "$CLAUDE_PROJECT_DIR"/.oss/statusline.py`, which names
+# no path outside the checkout and resolves on every clone. #1964 first settled
+# the opposite -- that a display choice should be opted into per maintainer -- and
+# that reading was reversed: config every developer working on this repo should
+# get is exactly what a tracked settings file is for, and routing it to the
+# untracked per-machine copy means each of them re-derives it by hand. The
+# `$CLAUDE_PROJECT_DIR` spelling is load-bearing, and
+# `tests/test_statusline_wiring_documented_1964.py` is what pins it: an absolute
+# path here would pass this allowlist and ship one machine's disk to every clone.
+ALLOWED_TOP_LEVEL_KEYS = frozenset({"hooks", "statusLine"})
 
 # Keys the harness has actually been observed writing into a tracked settings
 # file. Used only to make a failure message more useful; the *guard* is the
