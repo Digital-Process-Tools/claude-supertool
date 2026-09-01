@@ -19,7 +19,7 @@ def _gh_pr_create_description() -> str:
 def test_description_does_not_claim_reported_not_refused():
     desc = _gh_pr_create_description()
     assert "Reported, NOT refused" not in desc
-    assert "exit code is 0" not in desc.replace("gh-pr-merge", "")
+    assert "exit code is 0" not in desc
 
 
 def test_description_says_it_refuses_and_names_no_close():
