@@ -77,7 +77,25 @@ def test_no_registry_name_answers_unknown_operation() -> None:
             )
 
 
-@pytest.mark.parametrize("config", [".supertool.json", ".supertool.example.json"])
+#: The three places a project's own `builtin-ops` block can name a ghost op.
+#: `presets/*.json` is #2080's addition -- #2025 made `builtin-ops` reachable
+#: from a shipped preset manifest, and this parametrize stayed at the two
+#: project config files it was written against in #1285, so every preset's
+#: own `builtin-ops` (`lsp.json`, `vim.json`, and any future one) went
+#: unguarded: `presets/ghost.json` carrying a `blame` entry passed this suite
+#: outright before this line was added. Built once at collection time, not
+#: cached, so a preset added later is swept without editing this file.
+_BUILTIN_OP_CONFIGS = [
+    ".supertool.json",
+    ".supertool.example.json",
+    *sorted(
+        str(p.relative_to(ROOT))
+        for p in (ROOT / "presets").glob("*.json")
+    ),
+]
+
+
+@pytest.mark.parametrize("config", _BUILTIN_OP_CONFIGS)
 def test_no_config_calls_a_non_builtin_a_builtin(config: str) -> None:
     """The fifth registry, and the only one a user copies (#1285).
 
