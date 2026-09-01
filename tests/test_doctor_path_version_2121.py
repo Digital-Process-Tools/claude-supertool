@@ -96,3 +96,35 @@ def test_path_entry_that_cannot_be_run_is_reported_as_unknown(monkeypatch, tmp_p
 
     out = supertool.op_doctor("")
     assert "could not tell" in out.lower() or "unknown" in out.lower()
+
+def test_a_dangling_symlink_does_not_claim_version_was_run(
+    monkeypatch, tmp_path
+) -> None:
+    """Review finding on the first cut: the `unknown` NOTE said "running it
+    with `version` did not answer" about a subprocess that was never
+    spawned. The version check is deliberately skipped for a dangling
+    symlink, and the DANGLING line above it is already a stronger, correct
+    diagnosis -- hedging under it says less than the line it follows.
+    """
+    fake_which = str(tmp_path / "supertool")
+    monkeypatch.setattr(supertool.shutil, "which", lambda name: fake_which)
+    monkeypatch.setattr(supertool.os.path, "islink", lambda p: p == fake_which)
+    monkeypatch.setattr(supertool.os, "readlink",
+                        lambda p: str(tmp_path / "gone" / "_supertool.py"))
+
+    spawned: list = []
+
+    def _record(cmd, **kwargs):
+        spawned.append(cmd)
+        raise OSError("should not be reached for a dangling link")
+    monkeypatch.setattr(supertool.subprocess, "run", _record)
+
+    sym = supertool._doctor_symlink()
+    assert sym["dangling"] is True
+    # Never attempted, so there is no answer to report either way.
+    assert sym["path_version_state"] is None
+    assert [c for c in spawned if c and c[0] == fake_which] == []
+
+    out = supertool.op_doctor("")
+    assert "DANGLING" in out
+    assert "did not answer" not in out

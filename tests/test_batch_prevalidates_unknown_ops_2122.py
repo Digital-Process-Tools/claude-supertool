@@ -86,3 +86,107 @@ def test_a_flag_shaped_member_is_diagnosed_as_a_flag(
     assert rc == 1
     assert "flag" in combined.lower()
     assert "positionally" in combined.lower()
+
+# ---------------------------------------------------------------------------
+# Review findings on the first cut of this fix -- each of these failed against
+# it and passes against the shipped one.
+# ---------------------------------------------------------------------------
+
+def test_the_flag_hint_never_names_an_unroutable_neighbour(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The first cut used `argv[i - 1]` blindly, so in this issue's own
+    headline example the member before `--limit` was `900` -- itself
+    unroutable -- and the hint read `900:PATH:...` one line under
+    `unknown operation: 900`: a remedy contradicting the diagnosis directly
+    above it. The hint must name the nearest earlier member that ROUTES.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "big.txt").write_text("x\n", encoding="utf-8")
+
+    supertool.main(["read:big.txt", "--offset", "900", "--limit", "5"])
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+
+    assert "read:PATH:..." in combined
+    assert "900:PATH:..." not in combined
+    assert "5:PATH:..." not in combined
+
+
+def test_a_refused_batch_keeps_the_help_a_single_op_typo_gets(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Refusing earlier must not buy the caller a THINNER diagnosis. A typo
+    alone gets #614's `Did you mean` and the roster; the same typo inside a
+    batch must still get both.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "x.txt").write_text("x\n", encoding="utf-8")
+
+    supertool.main(["raed:x.txt", "wc:x.txt"])
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+
+    assert "Did you mean:" in combined
+    assert "read" in combined
+    assert "Valid operations:" in combined
+
+
+def test_the_roster_is_printed_once_not_once_per_bad_member(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Four typos must not print the 40+-name roster four times -- spending,
+    on a refusal, exactly the output this issue exists to save.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "x.txt").write_text("x\n", encoding="utf-8")
+
+    supertool.main(["read:x.txt", "raed:x.txt", "wcc:x.txt", "grepp:x:x.txt"])
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+
+    assert combined.count("Valid operations:") == 1
+
+
+def test_a_config_that_failed_to_parse_still_says_so_before_the_refusal(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """The absence the tool produced, read as an absence in the world.
+
+    A `.supertool.json` that fails to parse drops every custom op it
+    declared. Refusing the batch BEFORE the loader warnings are printed
+    would answer `unknown operation: mycustomop` about an op the caller
+    really did define, with nothing on screen saying the config never
+    loaded. The refusal must sit after those warnings, not before.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".supertool.json").write_text("{not json at all", encoding="utf-8")
+    (tmp_path / "x.txt").write_text("x\n", encoding="utf-8")
+    # The config cache is process-global; force a re-read in this cwd.
+    monkeypatch.setattr(supertool, "_CONFIG", None, raising=False)
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", False, raising=False)
+
+    supertool.main(["mycustomop:x", "read:x.txt"])
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+
+    assert "mycustomop" in combined            # the refusal still names it
+    assert ".supertool.json" in combined       # and the config is disclosed
+
+
+def test_a_non_dict_ops_config_does_not_wave_a_substring_through(
+    monkeypatch
+) -> None:
+    """`op in config["ops"]` against a STRING is a Python substring test, so
+    `foo` read as routable against `"xyzfooabc"` -- the guard silently
+    permitting exactly what it exists to refuse. A malformed config must
+    degrade this to "not a custom op", never to "yes, routable".
+    """
+    monkeypatch.setattr(supertool, "_CONFIG",
+                        {"ops": "xyzfooabc", "aliases": "barbaz"}, raising=False)
+    monkeypatch.setattr(supertool, "_CONFIG_CHECKED", True, raising=False)
+
+    assert supertool._op_is_unroutable("foo") is True
+    assert supertool._op_is_unroutable("bar") is True
+    # A real builtin is unaffected by the malformed config.
+    assert supertool._op_is_unroutable("read") is False

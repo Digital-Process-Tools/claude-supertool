@@ -2682,9 +2682,17 @@ def _op_is_unroutable(op: str) -> bool:
     if op in _BUILTIN_OPS - {"vi"} or op in _DISPATCH_ONLY_OPS or op in _MAIN_LEVEL_OPS:
         return False
     config = _load_config()
-    if op in (config.get("ops") or {}):
+    # `isinstance(..., dict)`, not a truthiness check: a project config whose
+    # `"ops"` is a bare string survives `_merge_presets` uncoerced on both of
+    # its early-return paths, and `op in "some-string"` is a Python SUBSTRING
+    # test -- `foo` would read as routable against `"xyzfooabc"` and be waved
+    # through the very guard this function exists to be. A malformed config
+    # must degrade this check to "not a custom op", never to "yes, routable".
+    ops = config.get("ops")
+    if isinstance(ops, dict) and op in ops:
         return False
-    if op in (config.get("aliases") or {}):
+    aliases = config.get("aliases")
+    if isinstance(aliases, dict) and op in aliases:
         return False
     if op in _shipped_preset_ops():
         return False
@@ -2728,7 +2736,18 @@ def _batch_prevalidation_refusal(argv: List[str]) -> "Optional[str]":
     )
     for i, raw, op in bad:
         if op.startswith("-"):
-            prev_op = _batch_op_head(argv[i - 1]) if i > 0 else ""
+            # The op this flag was meant as an argument TO is the nearest
+            # earlier member that actually routes — not simply `argv[i-1]`.
+            # In this issue's own headline example the member before
+            # `--limit` is `900`, itself unroutable, and naming it produced
+            # `900:PATH:...` one line under "unknown operation: 900": a
+            # remedy contradicting the diagnosis directly above it.
+            prev_op = ""
+            for j in range(i - 1, -1, -1):
+                candidate = _batch_op_head(argv[j])
+                if not _op_is_unroutable(candidate):
+                    prev_op = candidate
+                    break
             hint = (f"; ops take their arguments positionally, e.g. "
                     f"{prev_op}:PATH:...\n" if prev_op else
                     "; ops take their arguments positionally, not as "
@@ -2736,6 +2755,19 @@ def _batch_prevalidation_refusal(argv: List[str]) -> "Optional[str]":
             msg += f"  [{i}] {raw!r} looks like a flag" + hint
         else:
             msg += f"  [{i}] {raw!r} -- unknown operation: {op}\n"
+            # The per-member half of the help a single-op call gets (#614's
+            # `Did you mean` and its synonym note). Refusing the batch
+            # earlier must not buy the caller a THINNER diagnosis than the
+            # same typo would have got on its own.
+            for line in _unknown_op_message(op).splitlines():
+                if line.startswith(("Did you mean:", "       ")):
+                    msg += f"      {line.strip()}\n"
+    # The roster once, not once per member: it is the same 40+ names every
+    # time, and a batch of four typos would otherwise print it four times —
+    # spending on a refusal exactly the output this issue exists to save.
+    for line in _unknown_op_message(bad[0][2]).splitlines():
+        if line.startswith(("Valid operations:", "Plus ")):
+            msg += line + "\n"
     return msg
 
 
@@ -18180,6 +18212,14 @@ def op_doctor(arg: str = "") -> str:
                     "— stale build, update or reinstall it.")
             elif version_state == "current":
                 pass
+            elif sym.get("dangling"):
+                # The version check is deliberately not attempted for a
+                # dangling symlink, so the `unknown` arm below must not be
+                # printed here: it would say "running it with `version` did
+                # not answer" about a subprocess that was never spawned, and
+                # hedge under the DANGLING line above it, which is a
+                # stronger and already-correct diagnosis (#2121).
+                pass
             else:
                 lines.append(
                     "- NOTE: could not tell whether the PATH entry "
@@ -30067,16 +30107,6 @@ def _main(argv: List[str]) -> int:
         )
         return 1
 
-    # #2122 — validate every member's op NAME before any of them runs. Must
-    # sit after the pre-passes above (cwd:/repo: are consumed, not batch
-    # members) and before anything below writes a byte of op output, or the
-    # thing this exists to prevent — an expensive earlier member running to
-    # completion before a later member's typo is diagnosed — happens anyway.
-    _prevalidation_error = _batch_prevalidation_refusal(argv)
-    if _prevalidation_error is not None:
-        sys.stderr.write(_prevalidation_error)
-        return 1
-
     # Loader warnings, once, before any op output. Skipping an unreadable
     # config beats a startup traceback that blocks every op — but a skip
     # nobody can see is the other way to lose (#418), so it goes to stderr,
@@ -30094,6 +30124,21 @@ def _main(argv: List[str]) -> int:
     _mixed_call = _mixed_tree_pair()
     if _mixed_call is not None:
         sys.stderr.write(f"supertool: {_mixed_tree_note(_mixed_call)}\n")
+
+    # #2122 — validate every member's op NAME before any of them runs, and
+    # refuse the whole call if one does not route. Position is load-bearing
+    # in BOTH directions. It sits after the two stderr blocks above, not
+    # before them: a config that failed to parse drops every custom op it
+    # declared, so refusing here without those warnings having been printed
+    # would answer "unknown operation: mycustomop" about an op the caller
+    # really did define — the tool's own absence read as an absence in the
+    # world, which is the defect class this repository keeps having. It sits
+    # before everything below, because the byte after this is op output and
+    # the expensive earlier member this exists to stop is the first of them.
+    _prevalidation_error = _batch_prevalidation_refusal(argv)
+    if _prevalidation_error is not None:
+        sys.stderr.write(_prevalidation_error)
+        return 1
 
     # Normal batched-ops mode
     total_out_bytes = 0
