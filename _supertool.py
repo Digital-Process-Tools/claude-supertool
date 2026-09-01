@@ -26569,16 +26569,26 @@ def _payload_double_backslash_note(raw: str) -> str:
     return "".join(lines)
 
 
-# Fields whose value lands verbatim as file bytes. A doubled backslash here is
-# the only half of #1027 that reaches disk -- `old` is an anchor that cannot
-# match, and `vim`'s `script` is an instruction language where the tool cannot
-# say what the file ends up holding, so neither is refused.
+# Fields whose value lands verbatim, permanently, as bytes someone reads later.
+# A doubled backslash here is the only half of #1027 that reaches that state --
+# `old` is an anchor that cannot match, and `vim`'s `script` is an instruction
+# language where the tool cannot say what the file ends up holding, so neither
+# is refused.
+#
+# `message` joined this set for #1249's item 3, on the same reasoning one step
+# removed from a file: `git-commit`'s refusal machinery was write-BOUND, and a
+# commit message is not a file, so the doubling warned and the commit
+# proceeded -- and the recorded consequence was a commit message about
+# backslash misreporting that itself misreported backslashes, fixed afterwards
+# with a raw `git` amend outside the payload route entirely. A commit message
+# has no anchor reading, so there is no `old`-shaped note-only case to keep for
+# it the way there is for `new`/`content`.
 #
 # Kept as a set rather than derived from the @file registry: the registry knows
 # a field's POSITION, not whether its bytes are written, and a rule that
 # refused every non-`old` field would refuse `path` -- where a Windows payload
 # spells a separator with exactly two backslashes and is correct.
-_PAYLOAD_DBS_WRITE_KEYS = frozenset({"new", "content"})
+_PAYLOAD_DBS_WRITE_KEYS = frozenset({"new", "content", "message"})
 
 # The one key that says "I meant two characters" (#1096).
 _PAYLOAD_LITERAL_BS_KEY = "literal_backslashes"
@@ -26691,6 +26701,104 @@ def _literal_bs_field_list_example(
         if key not in seen:
             seen.append(key)
     return "[" + ", ".join(chr(34) + k + chr(34) for k in seen) + "]"
+
+
+# The shell single-quote escape idiom for embedding an apostrophe inside a
+# single-quoted string: close the quote, emit a literal quote another way,
+# reopen. Two common spellings -- double-quote a lone quote (`'"'"'`), or
+# backslash-escape it (`'\''`). Either resolves to one apostrophe inside a
+# SHELL's own quoting. Neither resolves to anything inside a TOML literal
+# block -- which is what a payload's `content =` / `new =` field IS -- so the
+# whole sequence lands on disk at its full length, the write reports success,
+# and every validator agrees, because the sequence is legal text in nearly
+# every language this repo edits. (#2114)
+_SHELL_QUOTE_ESCAPE_FORMS = (
+    "'" + chr(34) + "'" + chr(34) + "'",   # \'"\'"\'
+    "'" + chr(92) + "''",                  # \'\\\'\'
+)
+
+
+def _toml_literal_shell_quote_escape_findings(
+        raw: str) -> List[Tuple[str, str, str, int]]:
+    """`(key, label, first line, count)` per literal block whose write-bound
+    field carries the shell single-quote escape idiom (#2114).
+
+    Scoped to write-bound fields only, the same set `_payload_double_backslash_
+    refusal` uses and for the same reason: `old` is an anchor and never lands
+    a byte, and `vim`'s `script` is an instruction language this scan cannot
+    read the outcome of. A basic `\"\"\"` block is out of scope for a
+    different reason -- there the quote and double-quote characters are
+    ordinary content that the block's own escaping already governs, not a
+    payload author reaching for a shell habit inside a block that has no
+    escapes to reach for.
+    """
+    findings: List[Tuple[str, str, str, int]] = []
+    opener = chr(39) * 3
+    i = raw.find(opener)
+    while i >= 0:
+        end, run, nxt = _toml_multiline_close(raw, i + 3, chr(39), False)
+        if run < 0:
+            break
+        content = raw[i + 3:end]
+        key_m = _PAYLOAD_KEY_BEFORE_VALUE.search(raw[:i])
+        key = key_m.group(1) if key_m else "?"
+        if key.lower() in _PAYLOAD_DBS_WRITE_KEYS:
+            positions = [content.find(form) for form in _SHELL_QUOTE_ESCAPE_FORMS
+                         if form in content]
+            total = sum(content.count(form) for form in _SHELL_QUOTE_ESCAPE_FORMS)
+            if positions:
+                hit_at = min(positions)
+                start = content.rfind(chr(10), 0, hit_at) + 1
+                stop = content.find(chr(10), hit_at)
+                line = content[start:] if stop < 0 else content[start:stop]
+                seen = len(_TOML_OPS_HEADER.findall(raw[:i]))
+                label = key if seen == 0 else "ops[" + str(seen - 1) + "]." + key
+                findings.append(
+                    (key, label, _flat_field(line.strip())[:_TOML_LITERAL_TAIL_CHARS],
+                     total))
+        i = raw.find(opener, nxt)
+    return findings
+
+
+def _payload_shell_quote_escape_note(raw: str) -> str:
+    """Warn -- never refuse, never rewrite -- when a write-bound literal field
+    carries the shell single-quote escape idiom verbatim (#2114).
+
+    #834's trailing-backslash refusal works because BOTH readings of that
+    backslash have another spelling, so refusing strands nothing. This idiom
+    has no such second spelling to offer: a payload correctly documenting it
+    writes the exact same bytes a payload that meant a plain apostrophe wrote
+    by mistake -- this repository's own docs are an instance of the first
+    case -- and the tool cannot tell those apart from the bytes alone.
+    Refusing would strand the correct write with no way out; a warning says
+    the same words either way and blocks neither author, which is the
+    "Declining instead of guessing" shape one level down from a refusal:
+    say what was found, and leave the decision where it belongs.
+
+    Never rewrites, for the same reason `_payload_double_backslash_note`
+    does not: collapsing the idiom to a bare apostrophe would guess at intent,
+    and a wrong guess is strictly worse than the bug it replaces.
+    """
+    findings = _toml_literal_shell_quote_escape_findings(raw)
+    if not findings:
+        return ""
+    arrow = mark(chr(8627))
+    out = [
+        "a " + chr(39) * 3 + " literal block carries the shell single-quote "
+        "escape idiom (close the quote, emit one another way, reopen) in a "
+        "field that is WRITTEN to the file. A literal block processes NO "
+        "escapes, so if this was meant as one apostrophe it lands as the "
+        "whole sequence instead -- and if it is documentation OF the idiom, "
+        "this is correct and the write is unaffected either way. Nothing is "
+        "refused or rewritten; this only says which field to look at." + chr(10)
+    ]
+    for _key, label, line, total in findings:
+        out.append(
+            "  " + arrow + " `" + label + "` -- " + str(total)
+            + " occurrence" + ("" if total == 1 else "s") + ", e.g. " + chr(96)
+            + line + chr(96) + chr(10)
+        )
+    return "".join(out)
 
 
 def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
@@ -26980,6 +27088,9 @@ def _load_at_file(ref: str, note: bool = True) -> Any:
         if refusal:
             raise ValueError(f"@file payload refused ({source}): {refusal}")
         text = _payload_double_backslash_note(raw)
+        if text:
+            _PAYLOAD_WARNINGS.append(text)
+        text = _payload_shell_quote_escape_note(raw)
         if text:
             _PAYLOAD_WARNINGS.append(text)
     return parsed
