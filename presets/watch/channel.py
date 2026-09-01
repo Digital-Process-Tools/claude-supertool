@@ -1077,8 +1077,8 @@ def _refusal_lines(path: str) -> list[str]:
         if why == _REFUSAL_ABSENT:
             return []
         return [
-            f"  refused  : a refusal marker exists for this socket but could not be "
-            f"read —",
+            "  refused  : a refusal marker exists for this socket but could not be "
+            "read —",
             f"             {_untrusted.flat(why)}. Same defensive read `read_health` "
             "uses for the",
             "             health file (#148, #1184/#1187) — this declines rather than",
@@ -1857,7 +1857,7 @@ def probe(path: str, *, wait: float = PROBE_WAIT_SECS) -> tuple[int, str]:
         )
     return RC_UNKNOWN, report(
         "channel: CANNOT DETERMINE", _health_note(), *identity, counters,
-        f"  consumer : bound, alive, publishing — and it has not read this line off",
+        "  consumer : bound, alive, publishing — and it has not read this line off",
         f"             the wire within {waited:.1f}s. Wedged on its read loop and",
         "             merely slower than this budget are the same picture from here,",
         "             so this is not reported as a finding",
