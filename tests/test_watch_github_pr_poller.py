@@ -89,6 +89,55 @@ def test_rollup_neutral_skipped_treated_as_success() -> None:
     assert poller._rollup_state(rollup) == "SUCCESS"
 
 
+
+def _leg(name: str, conclusion: str, started: str, completed: str) -> dict:
+    """One `statusCheckRollup` CheckRun node, in the shape gh returns."""
+    return {
+        "name": name,
+        "status": "COMPLETED" if conclusion else "IN_PROGRESS",
+        "conclusion": conclusion,
+        "startedAt": started,
+        "completedAt": completed,
+    }
+
+
+def test_rollup_supersession_2070() -> None:
+    """#2070 — a check run a later same-named run replaced must not vote.
+
+    #1803/#1804 gave `git-branch`/`gh-pr` renders this arithmetic through
+    `_checks.github_superseded()`; the watch poller had its own third copy
+    that never got the sweep. Reported case (jbkkz, PR #198): the successful
+    `fragment` leg started three seconds after the cancelled one completed —
+    exactly #1792's discriminator, not #1640's overlap.
+    """
+    # must-not-fire: the cancelled leg is superseded by the later success.
+    superseded_then_fixed = [
+        _leg("fragment", "CANCELLED",
+             "2026-08-27T10:00:00Z", "2026-08-27T10:00:30Z"),
+        _leg("fragment", "SUCCESS",
+             "2026-08-27T10:00:33Z", "2026-08-27T10:01:10Z"),
+    ]
+    assert poller._rollup_state(superseded_then_fixed) == "SUCCESS"
+
+    # must-fire: a genuine failure with no later same-named run still counts.
+    genuine_failure = [
+        _leg("fragment", "FAILURE",
+             "2026-08-27T10:00:00Z", "2026-08-27T10:00:30Z"),
+    ]
+    assert poller._rollup_state(genuine_failure) == "FAILURE"
+
+    # must-fire: #1640's overlapping same-named code-scanning runs both
+    # count — wall clocks overlap, so neither supersedes the other, and a
+    # failure in either still reddens the rollup.
+    overlapping_same_name = [
+        _leg("Analyze (python)", "SUCCESS",
+             "2026-08-13T22:23:05Z", "2026-08-13T22:25:52Z"),
+        _leg("Analyze (python)", "FAILURE",
+             "2026-08-13T22:23:05Z", "2026-08-13T22:26:13Z"),
+    ]
+    assert poller._rollup_state(overlapping_same_name) == "FAILURE"
+
+
 # ---- poll -------------------------------------------------------------------
 
 def test_no_change_emits_nothing() -> None:

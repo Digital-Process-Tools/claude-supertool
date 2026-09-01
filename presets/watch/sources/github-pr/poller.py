@@ -15,6 +15,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,20 @@ INTERVAL = 30
 #                     (resource, identifier), so the PR watcher borrows it
 #                     rather than growing a third copy of the same if-ladder.
 _GITHUB_DIR = Path(__file__).parents[3] / "github"
+_PRESETS_DIR = _GITHUB_DIR.parent
+
+# `_checks` holds the one supersession arithmetic (#1792/#1803/#1804) — a leg
+# a later same-named run replaced must not vote as a failure. This poller had
+# grown its own third copy of that logic (#2070), never swept, so a cancelled
+# leg a same-named success later fixed still fired an unsolicited
+# `checks_failed` and stuck there: the next tick only emits on a *change*, so
+# a wrongly-red PR stayed wrongly-red on the board until some unrelated
+# transition moved it. `presets/` is a plain directory, not a package, so this
+# is a path-insert-then-import rather than a package-relative one — the same
+# pattern `presets/watch/tiers/gl_mrs.py` already uses to reach `_filter_tokens`.
+if str(_PRESETS_DIR) not in sys.path:
+    sys.path.insert(0, str(_PRESETS_DIR))
+import _checks  # noqa: E402
 
 
 def _load(name: str, filename: str):
@@ -123,30 +138,31 @@ def _rollup_state(rollup: list | None) -> str:
     Mirrors the heuristic the GitHub UI uses: FAILURE if any failed, PENDING
     if any still running, SUCCESS if everything passed. Empty list / None
     means no checks configured — we return "" so we don't fire events.
+
+    Reads through `_checks.github_live_states()` (#2070) rather than voting
+    every entry raw: a leg a later same-named run replaced (#1792) must not
+    read as a failure here either, or a `checks_failed` fires on a PR the
+    merge gate already calls clean — unsolicited, and sticky, because the
+    next tick only emits on a *change*, so a wrongly-red PR stays wrongly-red
+    on the board until some unrelated transition moves it. `github_live_states()`
+    keeps #1640's two overlapping same-named runs live — neither started
+    after the other finished, so neither supersedes, and both still have to
+    pass.
     """
     if not isinstance(rollup, list) or not rollup:
         return ""
-    statuses = []
-    for c in rollup:
-        if not isinstance(c, dict):
-            continue
-        # Two flavours: check runs (status/conclusion) and statuses (state).
-        conclusion = (c.get("conclusion") or "").upper()
-        status = (c.get("status") or "").upper()
-        state = (c.get("state") or "").upper()
-        if status and status not in ("COMPLETED", ""):
-            statuses.append("PENDING")
-            continue
-        if conclusion:
-            statuses.append(conclusion)
-            continue
-        if state:
-            statuses.append(state)
-    if any(s in ("FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR") for s in statuses):
+    checks = [c for c in rollup if isinstance(c, dict)]
+    if not checks:
+        return ""
+    live = _checks.github_live_states(checks)
+    if not live:
+        return ""
+    if any(_checks.is_red(s) for s in live):
         return "FAILURE"
-    if any(s in ("PENDING", "QUEUED", "IN_PROGRESS", "WAITING") for s in statuses):
+    if any(_checks.bucket(s) == "pending" for s in live):
         return "PENDING"
-    if statuses and all(s in ("SUCCESS", "NEUTRAL", "SKIPPED") for s in statuses):
+    if all(_checks.bucket(s) == "passed" or s in _checks.BENIGN_STATES
+           for s in live):
         return "SUCCESS"
     return ""
 
