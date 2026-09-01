@@ -1015,6 +1015,12 @@ Resolution order (most specific wins): explicit `project` in the payload → `de
 
 **`description_file` gets the same treatment as the payload itself** ([#630](https://github.com/Digital-Process-Tools/claude-supertool/issues/630)). A missing, directory, or unreadable `description_file` used to leak a raw traceback — the payload load had a guard, the second read ten lines later did not. It now reports `ERROR: description_file not found: PATH`, `ERROR: description_file is a directory, not a file: PATH`, or `ERROR: permission denied reading description_file: PATH — ...`, naming the field so it's never confused with a payload-file error.
 
+### An unrecognised payload key is refused, before anything is created
+
+**A key this op does not read used to be silently dropped** ([#2123](https://github.com/Digital-Process-Tools/claude-supertool/issues/2123)). Writing `body` where this op wants `description` created a GitLab issue with no description at all — GitLab filled it with the project's default template, so the created issue read as a blank form, and the call still returned `PASS` with an `iid` and a URL. Now every key `gl-issue-create` does not consume is refused before `glab` is ever invoked, naming the offending key(s) and the full accepted set: `project`, `title`, `description`, `description_file`, `milestone_id`, `labels`, `assignee_ids`, `estimate`, `links`, plus the alias below.
+
+**`body`/`body_file` are accepted as aliases for `description`/`description_file`** — what `gh-issue-create` and the GitHub API itself call the field. A payload written for the GitHub op and pointed at this one now still lands rather than silently discarding the text — `body` folds onto `description` before anything is validated. Setting both with different values is refused rather than one winning silently.
+
 ## Authoring notes
 
 Preset JSON: `presets/gitlab.json`. Helper scripts: `presets/gitlab/`. `gl-mr` accepts either an MR number or a branch name — it resolves branches to MRs automatically.
