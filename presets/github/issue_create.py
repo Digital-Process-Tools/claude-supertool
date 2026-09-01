@@ -253,7 +253,8 @@ def main() -> int:
         # on len(sys.argv). See #620.
         print(
             "ERROR: gh-issue-create needs a payload — "
-            "gh-issue-create:@FILE (JSON or TOML with title/body)."
+            "gh-issue-create:@FILE, or gh-issue-create:@- to read it from "
+            "stdin (JSON or TOML with title/body)."
         )
         return 1
 

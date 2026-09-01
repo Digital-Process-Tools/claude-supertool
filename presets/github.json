@@ -33,10 +33,10 @@
       "cmd": "{python} {path}github/issue_create.py {arg}",
       "timeout": 30,
       "description": "Create a GitHub issue from a JSON/TOML payload file. Supports labels, assignees, and milestone (by title).",
-      "syntax": "gh-issue-create:@FILE",
+      "syntax": "gh-issue-create:@FILE | gh-issue-create:@-",
       "example": "gh-issue-create:@.max/new-issue.json",
       "replaces": [
-        { "argv": "gh issue create", "unless_flag": ["--web", "-w"], "use": "gh-issue-create:@FILE" }
+        { "argv": "gh issue create", "unless_flag": ["--web", "-w"], "use": "gh-issue-create:@-" }
       ],
       "repo_target": "payload"
     },
@@ -45,10 +45,10 @@
       "cmd": "{python} {path}github/pr_create.py {arg}",
       "timeout": 120,
       "description": "Open a pull request from a JSON/TOML payload file, and hand back the receipt the four hand-rolled calls used to assemble. Payload route because a PR body is long markdown with colons and fences that cannot survive :-tokenization. base is REQUIRED and is never defaulted — master and a release branch are equally plausible from one cwd, and a wrong base silently retargets the merge; head defaults to the current branch and repo to the origin remote, both stated with their source so a wrong one is visible immediately. The receipt names: number and URL; base/head as resolved; whether any check actually STARTED (zero checks is rendered as 'nothing has been created', never as pending, with the ~15min creation window and a stated UNKNOWN past it); the issues the body links, parsed with the same closing-reference reader gh-pr uses, so a malformed Closes line is reported at creation rather than discovered after the merge. Reported, NOT refused: the pull request is opened either way and the exit code is 0, so that block IS the check and the caller has to read it — repair one with gh-pr-edit:NUMBER:@FILE, which does gate. And the next command. Ends on a one-line [result] verdict.",
-      "syntax": "gh-pr-create:@FILE",
+      "syntax": "gh-pr-create:@FILE | gh-pr-create:@-",
       "example": "gh-pr-create:@.max/pr.toml",
       "replaces": [
-        { "argv": "gh pr create", "unless_flag": ["--web", "-w", "--dry-run"], "use": "gh-pr-create:@FILE" }
+        { "argv": "gh pr create", "unless_flag": ["--web", "-w", "--dry-run"], "use": "gh-pr-create:@-" }
       ],
       "repo_target": "payload"
     },
@@ -57,15 +57,15 @@
       "cmd": "{python} {path}github/pr_edit.py {args}",
       "timeout": 120,
       "description": "Update a PUBLISHED pull request's body (and title) from the same JSON/TOML payload gh-pr-create takes, with the closing-reference check that a hand-replaced body bypasses. Correcting a published record is what this loop asks authors to do and it was the one publishing action with no op: `gh pr edit` fetches the PR through GraphQL first and the field set includes projectCards, which GitHub has sunset, so on a repository with Projects classic it fails outright before writing anything (observed 2026-08-15 on this repo, exit 1). This goes through REST PATCH, which does not touch projects. Before the write it reads the published body and re-parses it with _checks.closing_issue_refs, the same reader gh-pr and gh-pr-merge use, in THREE gate states: the references survived, one was DROPPED, or the published body could not be read at all — and the third is not the first. The last two REFUSE and write nothing; the single token `unlink` is how a deliberate re-scope says it means it, and the refusal names it. The surviving arm names the TRANSITION, not the pre-edit set: `carried through: #N`, `added: #N`, both, or neither. A `Closes` line that moved into a code fence or an HTML comment counts as dropped, because GitHub does not honour one there either. After the write it compares the body the PATCH response carries against the bytes it sent, byte for byte, in the same call — EXACT, line endings NORMALISED by the server, MISMATCH naming both lengths and the first differing line, or UNKNOWN when the response carried no body field. Only EXACT and NORMALISED exit 0: a write that landed something else is never rendered as a success, which is what the raw route's bare timestamp did. The title is sent only when the payload carries one AND it differs from what is published, and either way the receipt says which. base, head, draft, labels, assignees, reviewers and milestone are NAMED as not applied rather than silently dropped — the payload is gh-pr-create's and carries them.",
-      "syntax": "gh-pr-edit:NUMBER:@FILE[:unlink]",
+      "syntax": "gh-pr-edit:NUMBER:@FILE[:unlink] | gh-pr-edit:NUMBER:@-[:unlink]",
       "example": "gh-pr-edit:1737:@.max/pr.toml",
       "paths": { "args": [2], "root": "cwd" },
       "replaces": [
-        { "argv": "gh pr edit", "flag": "--body-file", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@FILE" },
-        { "argv": "gh pr edit", "flag": "--body", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@FILE" },
-        { "argv": "gh pr edit", "flag": "-b", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@FILE" },
-        { "argv": "gh pr edit", "flag": "--title", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@FILE" },
-        { "argv": "gh pr edit", "flag": "-t", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@FILE" }
+        { "argv": "gh pr edit", "flag": "--body-file", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@-" },
+        { "argv": "gh pr edit", "flag": "--body", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@-" },
+        { "argv": "gh pr edit", "flag": "-b", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@-" },
+        { "argv": "gh pr edit", "flag": "--title", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@-" },
+        { "argv": "gh pr edit", "flag": "-t", "unless_flag": ["--web", "-w"], "use": "gh-pr-edit:NUMBER:@-" }
       ],
       "repo_target": "payload"
     },

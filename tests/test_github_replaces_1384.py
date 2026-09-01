@@ -69,7 +69,7 @@ def _uses(command: str):
     ("gh issue view 1384 --json body", "gh-issue:NUMBER"),
     ("gh issue view 1384 --comments", "gh-issue:NUMBER:full"),
     ("gh issue view 1384 -c", "gh-issue:NUMBER:full"),
-    ("gh issue create --title x --body y", "gh-issue-create:@FILE"),
+    ("gh issue create --title x --body y", "gh-issue-create:@-"),
     ("gh pr list --state open --limit 50", "gh-prs"),
     ("gh run view 17123456", "gh-run:NUMBER[:attempt=K]"),
     # #1715: `--attempt` was already claimed by the bare entry — `unless_flag`

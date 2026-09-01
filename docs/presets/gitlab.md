@@ -908,7 +908,7 @@ Each op declares the raw invocation it supersedes as `replaces` in `presets/gitl
 | `glab mr list` | `gl-mrs` |
 | `glab issue view` | `gl-issue:NUMBER` |
 | `glab issue view --comments` / `-c` | `gl-issue:NUMBER:full` |
-| `glab issue create` | `gl-issue-create:@FILE` |
+| `glab issue create` | `gl-issue-create:@-` |
 | `glab ci trace` | `gl-job:NUMBER` |
 | `glab ci get --pipeline-id` / `-p` | `gl-pipeline:NUMBER` |
 | `glab api PATH`, with no flag at all | `gl-api:PATH` |
@@ -1011,7 +1011,7 @@ Otherwise inherits from `glab auth status` — no project-specific tokens needed
 
 Resolution order (most specific wins): explicit `project` in the payload → `defaults.gitlab_project` → the `origin` git remote when its host contains `gitlab`. In a GitLab checkout the remote covers it with zero config; the explicit default is for when `origin` points elsewhere.
 
-**A missing `@FILE` is declined, not crashed on.** `gl-issue-create` invoked with no payload argument at all — `./supertool gl-issue-create` — used to hit `Path("").read_text()`, which resolves to the current directory, and leak a five-frame `IsADirectoryError` traceback, the same defect as `gh-issue-create` ([#620](https://github.com/Digital-Process-Tools/claude-supertool/issues/620)). It now prints `ERROR: gl-issue-create needs a payload — gl-issue-create:@FILE (JSON or TOML with title/description).` and exits 1. An `@FILE` that names an actual directory reports `ERROR: payload path is a directory, not a file: PATH` instead of the same traceback, and a payload that fails to parse names the expected shape rather than only echoing the parser's own message.
+**A missing `@FILE` is declined, not crashed on.** `gl-issue-create` invoked with no payload argument at all — `./supertool gl-issue-create` — used to hit `Path("").read_text()`, which resolves to the current directory, and leak a five-frame `IsADirectoryError` traceback, the same defect as `gh-issue-create` ([#620](https://github.com/Digital-Process-Tools/claude-supertool/issues/620)). It now prints `ERROR: gl-issue-create needs a payload — gl-issue-create:@FILE, or gl-issue-create:@- to read it from stdin (JSON or TOML with title/description).` and exits 1. An `@FILE` that names an actual directory reports `ERROR: payload path is a directory, not a file: PATH` instead of the same traceback, and a payload that fails to parse names the expected shape rather than only echoing the parser's own message.
 
 **`description_file` gets the same treatment as the payload itself** ([#630](https://github.com/Digital-Process-Tools/claude-supertool/issues/630)). A missing, directory, or unreadable `description_file` used to leak a raw traceback — the payload load had a guard, the second read ten lines later did not. It now reports `ERROR: description_file not found: PATH`, `ERROR: description_file is a directory, not a file: PATH`, or `ERROR: permission denied reading description_file: PATH — ...`, naming the field so it's never confused with a payload-file error.
 
