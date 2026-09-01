@@ -69,14 +69,19 @@ def test_message_chars_max_is_strictly_below_the_channel_attr_cap() -> None:
 def test_a_message_just_over_the_channel_cap_still_delivers_truncated_text() -> None:
     """The actual failure mode: before the fix, a 2049-char message's
     `title` attribute -- 2049 chars after the source bound never fired --
-    was dropped whole by the channel, delivering no text at all."""
+    was dropped whole by the channel, delivering no text at all.
+
+    Exercised directly against `_bound` rather than through `poll()`: #2044
+    moved `content_kind == "text"` bodies to a file with no bound at all
+    (the whole point -- a file does not have to fit one shared attribute
+    budget), so `title` no longer carries this text for that content kind.
+    `_bound` itself is unchanged and still the live mechanism for the
+    "files"/"blocks"/"attachments" fallbacks, which is what this file's own
+    docstring is actually pinning.
+    """
     poller = _load_poller()
     long_text = "x" * (CHANNEL_ATTR_MAX_CHARS_DEFAULT + 1)
-    with mock.patch.object(poller, "resolve_bot_user_id", return_value=BOT_UID), \
-         mock.patch.object(poller, "_fetch", return_value=(
-             [{"ts": "1.0", "text": long_text, "user": BOT_UID}], "")):
-        events, _ = poller.poll({"cursor": "0.5", "bot_user_id": BOT_UID}, CTX)
-    title = events[0]["payload"]["title"]
+    title = poller._bound(long_text)
     assert title != ""
     assert _channel_would_deliver(title, CHANNEL_ATTR_MAX_CHARS_DEFAULT), (
         f"title is {len(title)} chars, over the channel's own cap of "
@@ -88,28 +93,22 @@ def test_a_message_just_over_the_channel_cap_still_delivers_truncated_text() -> 
 def test_a_message_at_slacks_own_ceiling_still_delivers_truncated_text() -> None:
     """Slack's real per-message ceiling (~40,000 chars) is the worst case
     for the truncation note's own length (`+NNNNN chars truncated`) -- this
-    is the case that could blow the margin if it were too tight."""
+    is the case that could blow the margin if it were too tight. See the
+    note on the previous test for why this calls `_bound` directly."""
     poller = _load_poller()
     long_text = "x" * 40000
-    with mock.patch.object(poller, "resolve_bot_user_id", return_value=BOT_UID), \
-         mock.patch.object(poller, "_fetch", return_value=(
-             [{"ts": "1.0", "text": long_text, "user": BOT_UID}], "")):
-        events, _ = poller.poll({"cursor": "0.5", "bot_user_id": BOT_UID}, CTX)
-    title = events[0]["payload"]["title"]
+    title = poller._bound(long_text)
     assert title != ""
     assert _channel_would_deliver(title, CHANNEL_ATTR_MAX_CHARS_DEFAULT)
 
 
 def test_a_short_message_under_the_bound_is_never_touched() -> None:
     """Must-not-fire pair: a message safely under the new, lower bound must
-    still pass through byte-for-byte, not get truncated preemptively."""
+    still pass through byte-for-byte, not get truncated preemptively. See
+    the note two tests up for why this calls `_bound` directly."""
     poller = _load_poller()
     short_text = "hello team"
-    with mock.patch.object(poller, "resolve_bot_user_id", return_value=BOT_UID), \
-         mock.patch.object(poller, "_fetch", return_value=(
-             [{"ts": "1.0", "text": short_text, "user": BOT_UID}], "")):
-        events, _ = poller.poll({"cursor": "0.5", "bot_user_id": BOT_UID}, CTX)
-    assert events[0]["payload"]["title"] == short_text
+    assert poller._bound(short_text) == short_text
 
 
 def test_attr_max_chars_tracks_the_channels_own_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
