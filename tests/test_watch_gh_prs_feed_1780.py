@@ -105,7 +105,10 @@ def _fake_gh(monkeypatch, prs, code=0, err=""):
 
 
 def _no_default_branch(monkeypatch):
-    monkeypatch.setattr(tier, "default_branch_report", lambda *a, **k: ([], True))
+    # #2024: default_branch_report now also reports the standing poller's
+    # own health as a third, independent value -- see its own docstring.
+    monkeypatch.setattr(tier, "default_branch_report",
+                        lambda *a, **k: ([], True, True))
 
 
 def _recording_watch(status_by_source: dict[str, str] | None = None):

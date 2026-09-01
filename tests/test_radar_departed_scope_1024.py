@@ -112,7 +112,10 @@ def quiet_reconcile(monkeypatch):
 
 
 def _board(monkeypatch, rows, watched):
-    monkeypatch.setattr(tier, "default_branch_report", lambda *a, **k: ([], True))
+    # #2024: default_branch_report now also reports the standing poller's
+    # own health as a third, independent value -- see its own docstring.
+    monkeypatch.setattr(tier, "default_branch_report",
+                        lambda *a, **k: ([], True, True))
     monkeypatch.setattr(tier, "repo_name",
                         lambda: "Digital-Process-Tools/claude-supertool")
     monkeypatch.setattr(tier, "watch_coverage", lambda: set(watched))
@@ -325,7 +328,10 @@ def test_a_departure_makes_the_tier_unhealthy(state_dir, monkeypatch):
     summary line, so a healthy verdict there suppresses the one arm added so a
     departure is not read as nothing happening. The board never reaches stdout.
     """
-    monkeypatch.setattr(tier, "default_branch_report", lambda *a, **k: ([], True))
+    # #2024: default_branch_report now also reports the standing poller's
+    # own health as a third, independent value -- see its own docstring.
+    monkeypatch.setattr(tier, "default_branch_report",
+                        lambda *a, **k: ([], True, True))
     monkeypatch.setattr(tier, "repo_name", lambda: "o/r")
     monkeypatch.setattr(tier, "watch_coverage", lambda: {"1005", "1013"})
     monkeypatch.setattr(tier.subprocess, "run",
