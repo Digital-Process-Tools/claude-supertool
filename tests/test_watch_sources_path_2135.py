@@ -328,6 +328,65 @@ def test_op_blocks_that_disagree_are_the_core_refusal_not_a_note(tmp_path):
     assert sourcepath.config_notes("radar", start_dir=str(tmp_path)) == []
 
 
+# --- what the review pass on the first commit found --------------------------
+
+def test_a_reserved_source_name_is_refused_on_the_search_path(tmp_path):
+    """#1593 reserved `channel-probe` so a synthetic probe event can never be
+    confused with a watcher's, and enforced it by enumerating the shipped
+    directory. A search path is a space no test can enumerate, so the check has
+    to be made at load time or the guarantee narrows in silence."""
+    external = tmp_path / "private"
+    _make_source(external, transport.PROBE_SOURCE)
+    resolved = sourcepath.resolve({sourcepath.PATH_ENV: str(external)})
+    assert transport.PROBE_SOURCE in sourcepath.RESERVED_NAMES
+    assert sourcepath.find(transport.PROBE_SOURCE, resolved)[0] is None
+    assert [n for n, _ in sourcepath.reserved_hits(resolved)] == [transport.PROBE_SOURCE]
+    lines = "\n".join(sourcepath.disclosure_lines(resolved))
+    assert transport.PROBE_SOURCE in lines
+    assert "reserved" in lines
+    assert str(external) in lines
+
+
+def test_naming_the_shipped_directory_is_not_reported_as_unusable():
+    """It is redundant, not unusable: it is searched, first, every time. The
+    first version said `names no usable directory`, which is false about a knob
+    the operator set correctly if pointlessly."""
+    resolved = sourcepath.resolve({sourcepath.PATH_ENV: str(sourcepath.SHIPPED_DIR)})
+    assert resolved.redundant == (str(sourcepath.SHIPPED_DIR),)
+    lines = " ".join(sourcepath.disclosure_lines(resolved))
+    assert "no usable directory" not in lines
+    assert "already on the path" in lines
+
+
+def test_a_path_that_is_set_and_wholly_unusable_still_says_so(tmp_path):
+    resolved = sourcepath.resolve({sourcepath.PATH_ENV: os.path.join("rel", "dir")})
+    assert any("NOT searched" in line for line in sourcepath.disclosure_lines(resolved))
+
+
+def test_a_config_that_cannot_be_read_is_not_read_as_declaring_nothing(tmp_path):
+    """`watch` and `unwatch` never call `naming.project_notes`, so folding
+    `unreadable` in with `silent` left the two most-run ops saying nothing at
+    all about a config nobody could parse."""
+    (tmp_path / ".supertool.json").write_text("{not json", encoding="utf-8")
+    notes = sourcepath.config_notes("watch", start_dir=str(tmp_path))
+    assert notes != []
+    joined = " ".join(notes)
+    assert "unknown" in joined
+    assert sourcepath.CONFIG_KEY in joined
+
+
+def test_the_dispatcher_loads_from_the_resolution_it_was_handed(tmp_path, monkeypatch):
+    """`cmd_watch` resolves once and reports on that resolution; loading from a
+    second one would let what ran and what was printed describe two different
+    moments on disk."""
+    external = tmp_path / "private"
+    _make_source(external, "server-diag")
+    resolved = sourcepath.resolve({sourcepath.PATH_ENV: str(external)})
+    monkeypatch.delenv(sourcepath.PATH_ENV, raising=False)
+    assert dispatcher._load_source("server-diag") is None
+    assert dispatcher._load_source("server-diag", resolved) is not None
+
+
 # --- the change is documented ------------------------------------------------
 
 def test_the_change_is_findable():

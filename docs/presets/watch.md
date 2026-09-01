@@ -633,7 +633,8 @@ What *is* checked, and each is refused out loud rather than skipped:
 | a shipped name (`gitlab-mr`, `slack`, …) | **shipped wins.** The external one is never loaded, and every surface names it: `source gitlab-mr in /opt/... is shadowed by the shipped source of the same name and was NOT loaded`. Silently skipping it is the same defect one layer down — the operator believes their source is loaded and it is not |
 | a relative path | not searched, and named. A poller detaches, re-execs and runs for days, and `radar` re-derives the path from wherever it is invoked, so the directory a relative entry resolves against is not the one you typed it in |
 | a path that is not a directory, or cannot be reached | not searched, and named with the `OSError` type. "Missing" and "could not look" are different facts and both are printed |
-| the shipped directory named again | a duplicate, quietly. It is always searched first |
+| a reserved name (`channel-probe`) | never loaded, and named. [#1593](https://github.com/Digital-Process-Tools/claude-supertool/issues/1593) reserved it so a synthetic probe event can never be confused with a watcher's, and enforced that by enumerating the shipped directory — a search path is a space no test can enumerate, so the refusal is made at load time instead |
+| the shipped directory named again | redundant, and said as redundant rather than as unusable. It is always searched first |
 
 **All five watch ops resolve it through one function** (`presets/watch/sourcepath.py::find`), reached by `dispatcher._load_source`, which is also how `radar` and the `gl-mrs` tier load a poller. A key declared for `watch` alone would give a source `watch` can start and `radar` can neither resolve nor re-spawn — the half-configured shape of [#1309](https://github.com/Digital-Process-Tools/claude-supertool/issues/1309) and [#1732](https://github.com/Digital-Process-Tools/claude-supertool/issues/1732) arriving through the config door a third time. So every surface prints which ops declared the key and which did not. Declaring it with *different* values on two op blocks does not reach the preset at all: supertool refuses the op ([#1009](https://github.com/Digital-Process-Tools/claude-supertool/issues/1009)).
 
@@ -2739,7 +2740,7 @@ Nothing automatic clears it. Two operator actions do, and both mean "I have seen
 
 ## Writing a new source
 
-Drop a folder under `presets/watch/sources/<NAME>/`:
+Drop a folder under `presets/watch/sources/<NAME>/`, or — since [#2135](https://github.com/Digital-Process-Tools/claude-supertool/issues/2135) — under any directory on `SUPERTOOL_WATCH_SOURCES_PATH` (see "A source outside the plugin" above). The shape is the same and the shipped directory is always searched first:
 
 ```
 sources/your-source/

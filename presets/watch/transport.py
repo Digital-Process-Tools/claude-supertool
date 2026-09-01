@@ -1104,7 +1104,13 @@ def emit_event(
 #: Reserved is a checked property, not a promise: no directory under
 #: `presets/watch/sources/` may answer to this name, and
 #: `tests/test_watch_channel_probe_1593.py` enumerates that directory rather
-#: than trusting the comment. The consequence of getting it wrong is that a
+#: than trusting the comment. Since #2135 a source may also live on
+#: `SUPERTOOL_WATCH_SOURCES_PATH`, which is a space no test can enumerate, so
+#: `sourcepath.RESERVED_NAMES` refuses this name there at load time and names
+#: the directory it refused -- the guarantee would otherwise have narrowed in
+#: silence to the directories that happen to ship.
+#:
+#: The consequence of getting it wrong is that a
 #: `<channel watcher_source="...">` tag produced by a probe would be
 #: indistinguishable in a session from one produced by a real watcher — a
 #: synthetic event read as news, which is the same class of defect as

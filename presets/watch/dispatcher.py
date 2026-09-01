@@ -6,12 +6,14 @@ SOURCE/ID. The child detaches (setsid + double-fork) and runs the source's
 `poller.poll()` function in a loop until terminal or until killed.
 
 The dispatcher does NOT contain source-specific logic. It only:
-  - Resolves the source's poller module from presets/watch/sources/
+  - Resolves the source's poller module through `sourcepath.find` (#2135)
   - Manages PID files
   - Spawns + kills children
   - Renders the `watches` table
 
-A source plugin lives at `presets/watch/sources/<NAME>/poller.py` and exposes:
+A source plugin lives at `<dir>/<NAME>/poller.py`, where `<dir>` is
+`presets/watch/sources/` or any directory on `SUPERTOOL_WATCH_SOURCES_PATH`
+(#2135, `presets/watch/sourcepath.py`). It exposes:
   - INTERVAL: int — seconds between polls
   - poll(state: dict, ctx: dict) -> tuple[list[dict], dict]
         returns (events_to_emit, new_state)
@@ -42,7 +44,7 @@ import sourcepath  # noqa: E402  (a source may live outside the plugin, #2135)
 import transport  # noqa: E402
 
 
-def _load_source(name: str):
+def _load_source(name: str, resolved: "sourcepath.Resolved | None" = None):
     """Import the poller module for SOURCE, from wherever it is allowed to live.
 
     The one door into `sourcepath.find`, and deliberately so: `radar` and
@@ -51,7 +53,7 @@ def _load_source(name: str):
     `__file__ / "sources"` anywhere in this preset is the half-configured shape
     of #1309 re-entering by the back door (#2135).
     """
-    poller_path, _origin = sourcepath.find(name)
+    poller_path, _origin = sourcepath.find(name, resolved)
     if poller_path is None:
         return None
     spec = importlib.util.spec_from_file_location(f"watch_source_{name}", poller_path)
@@ -115,7 +117,10 @@ def cmd_watch(parts: list[str]) -> int:
         print(f"ERROR: {e}")
         return 1
     resolved = sourcepath.resolve()
-    poller = _load_source(source)
+    # The same resolution the refusal below reports on. Resolving twice would
+    # stat every entry twice and, worse, let what was loaded and what is
+    # reported describe two different moments on disk.
+    poller = _load_source(source, resolved)
     if poller is None:
         # Every directory that was consulted, and every one that was declared
         # and could not be (#2135). `Available: <shipped>` named neither the

@@ -65,6 +65,22 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _untrusted
 
 import _untrusted  # noqa: E402  (a path and a directory entry are somebody else's text, #1522)
 import naming  # noqa: E402  (flat_path, the config walk, and the five op names)
+import transport  # noqa: E402  (the reserved probe source, #1593)
+
+#: Source names no external directory may answer to, whatever it holds.
+#:
+#: `transport.PROBE_SOURCE` was reserved by #1593 so a synthetic probe event can
+#: never be confused with a real watcher's, and the reservation was a *checked*
+#: property rather than a promise: `tests/test_watch_channel_probe_1593.py`
+#: enumerates `presets/watch/sources/`. A search path widens the space that test
+#: enumerates, so the check has to move here or the guarantee quietly narrows to
+#: the directories that happen to ship -- and an external `channel-probe` would
+#: emit events a session cannot tell from the probe's own.
+#:
+#: Imported rather than restated: a second copy of the name is a second thing to
+#: keep in step, and the whole defect being prevented is two spellings of one
+#: identity drifting apart.
+RESERVED_NAMES = (transport.PROBE_SOURCE,)
 
 PATH_ENV = "SUPERTOOL_WATCH_SOURCES_PATH"
 
@@ -110,6 +126,11 @@ class Resolved(NamedTuple):
     #: Exactly what `PATH_ENV` held, so a surface can say the knob is unset
     #: rather than saying nothing.
     raw: str
+    #: Entries that named a directory already on the list -- in practice the
+    #: shipped one. Not `refused`: they *are* searched, first, and reporting
+    #: them as unusable would be false about a knob the operator set correctly
+    #: if redundantly.
+    redundant: tuple[str, ...] = ()
 
 
 def resolve(env: dict[str, str] | None = None) -> Resolved:
@@ -125,6 +146,7 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
 
     external: list[Path] = []
     refused: list[Refused] = []
+    redundant: list[str] = []
     # The shipped directory is searched first, always, so naming it again on the
     # path is a duplicate rather than an addition -- and searching it twice would
     # report every shipped source as shadowing itself.
@@ -146,6 +168,7 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
             continue
         key = os.path.normcase(os.path.normpath(entry))
         if key in seen:
+            redundant.append(entry)
             continue
         seen.add(key)
         try:
@@ -164,7 +187,8 @@ def resolve(env: dict[str, str] | None = None) -> Resolved:
         external.append(Path(entry))
 
     return Resolved(shipped=SHIPPED_DIR, external=tuple(external),
-                    refused=tuple(refused), raw=raw)
+                    refused=tuple(refused), raw=raw,
+                    redundant=tuple(redundant))
 
 
 def _is_one_component(name: str) -> bool:
@@ -192,7 +216,7 @@ def find(name: str, resolved: Resolved | None = None) -> tuple[Path | None, str]
     a collision -- it is said, not swallowed.
     """
     resolved = resolve() if resolved is None else resolved
-    if not _is_one_component(name):
+    if not _is_one_component(name) or name in RESERVED_NAMES:
         return None, ""
     candidate = Path(resolved.shipped) / name / "poller.py"
     if candidate.is_file():
@@ -249,6 +273,24 @@ def shadowed(resolved: Resolved) -> tuple[tuple[str, Path], ...]:
     return tuple(out)
 
 
+def reserved_hits(resolved: Resolved) -> tuple[tuple[str, Path], ...]:
+    """External sources wearing a reserved name -- never loaded, always named.
+
+    Shipped-name shadowing and this are the same refusal with different
+    reasoning, and they are reported separately because the reasons differ: a
+    shipped source exists and wins, while nothing at all answers to
+    `RESERVED_NAMES` and the name is refused so that a synthetic probe event
+    stays distinguishable from a watcher's (#1593).
+    """
+    out: list[tuple[str, Path]] = []
+    for directory in resolved.external:
+        names, _ = names_in(directory)
+        for name in names:
+            if name in RESERVED_NAMES:
+                out.append((name, Path(directory)))
+    return tuple(out)
+
+
 def _flat_names(names: tuple[str, ...]) -> str:
     """Directory entries from somebody else's filesystem, on our own board."""
     return ", ".join(_untrusted.flat(n, disclose_newline=True) for n in names)
@@ -296,14 +338,26 @@ def disclosure_lines(resolved: Resolved) -> list[str]:
     for refusal in resolved.refused:
         out.append(f"{PATH_ENV} entry {naming.flat_path(refusal.entry)} is NOT "
                    f"searched -- it {refusal.why}")
+    for entry in resolved.redundant:
+        out.append(f"{PATH_ENV} entry {naming.flat_path(entry)} names a "
+                   f"directory already on the path (the shipped one is always "
+                   f"searched first), so it adds nothing")
     for name, directory in shadowed(resolved):
         out.append(f"source {_untrusted.flat(name, disclose_newline=True)} in "
                    f"{naming.flat_path(str(directory))} is shadowed by the "
                    f"shipped source of the same name and was NOT loaded -- "
                    f"shipped sources always win")
-    if resolved.raw.strip() and not resolved.external and not resolved.refused:
+    for name, directory in reserved_hits(resolved):
+        out.append(f"source {_untrusted.flat(name, disclose_newline=True)} in "
+                   f"{naming.flat_path(str(directory))} was NOT loaded -- that "
+                   f"name is reserved (#1593) so that a probe event stays "
+                   f"distinguishable from a watcher's")
+    if (resolved.raw.strip() and not resolved.external
+            and not resolved.refused and not resolved.redundant):
         # Non-empty, every entry blank. Saying nothing here would render a knob
-        # that is set and doing nothing as a knob nobody set.
+        # that is set and doing nothing as a knob nobody set -- and the two
+        # conditions above it matter, because an entry that was refused or that
+        # named the shipped directory is not "no usable directory".
         out.append(f"{PATH_ENV} is set and names no usable directory, so only "
                    f"the shipped sources are available")
     return out
@@ -323,11 +377,20 @@ def config_notes(op: str, start_dir: str | None = None) -> list[str]:
     Silent when nothing declares the key: the default is every op searching the
     shipped directory, and there is no half-set state in that.
     """
-    state, path, declaring, _why = naming.declared_op_values(CONFIG_KEY, start_dir)
+    state, path, declaring, why = naming.declared_op_values(CONFIG_KEY, start_dir)
+    if state == naming.DECLARED_UNREADABLE:
+        # Not folded in with "declares nothing", which is what it was and which
+        # is this repo's own defect class: a look that failed rendering as a
+        # fact about the world. `naming.project_notes` says something adjacent
+        # on three of the five surfaces -- but only under a named channel, and
+        # `watch` and `unwatch` never call it at all, so on the two ops run most
+        # often an unreadable config produced no line at all. The claim here is
+        # its own: whether the key is declared for every watch op is unknown.
+        where = _untrusted.flat(path, disclose_newline=True)
+        return [f"{where or naming.CONFIG_NAME} could not be read ({why}), so "
+                f"whether {CONFIG_KEY} is declared for every watch op is "
+                f"unknown -- not no"]
     if state != naming.DECLARED_FOUND or not declaring:
-        # `unreadable` is deliberately silent here rather than duplicated:
-        # `naming.project_notes` already reports an unreadable config on every
-        # surface this function's output is printed beside.
         return []
     silent = tuple(sorted(set(WATCH_OPS) - set(declaring)))
     if not silent:

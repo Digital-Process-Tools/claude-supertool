@@ -545,6 +545,10 @@ runs in the poller process with your privileges, and anyone who can write to a
 directory on the path — or to the `.supertool.json` naming it — can run
 arbitrary code as you. Nothing is sandboxed, signed or ownership-checked.
 
+**A reserved name is refused too.** `channel-probe` is reserved (#1593) so a
+probe's synthetic event stays distinguishable from a watcher's; an external
+source of that name is never loaded and is named where it was found.
+
 **Shipped sources cannot be shadowed.** An external `gitlab-mr` is never loaded,
 and is named on every surface rather than skipped in silence: the operator who
 put it there believes it is the one running. Relative entries, missing
