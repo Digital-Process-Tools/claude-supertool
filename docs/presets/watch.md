@@ -608,6 +608,49 @@ gh-prs:
 
 **It is an argument, not its own op, and that is deliberate.** `ops.radar.radar_tiers` merges into the op it is keyed by, so a `radar-state` op would need a second copy of the tier list — and a read-only view describing a different tier set from the one radar runs is exactly the defect this view exists to remove. A tier that exposes no `radar_state()` says so, rather than rendering as an empty block that reads as healthy.
 
+## A source outside the plugin — `SUPERTOOL_WATCH_SOURCES_PATH` ([#2135](https://github.com/Digital-Process-Tools/claude-supertool/issues/2135))
+
+A source used to have exactly one possible home, `presets/watch/sources/<NAME>/`, inside the installed plugin — a directory every plugin update overwrites and a symlink into it does not survive. So a poller nobody may publish could not be watched at all: `watch:my-source:scope` answered `unknown source`, and with it went the pid slots, `unwatch`, the `watches` board and radar's healing.
+
+`SUPERTOOL_WATCH_SOURCES_PATH` is a list of extra directories, separated by the platform's path separator (`:` on POSIX, `;` on Windows). Each holds `<NAME>/poller.py` in exactly the shape `presets/watch/README.md` documents.
+
+It is an ordinary environment variable, so a non-reserved key in an op's `.supertool.json` block reaches it with no plumbing at all (`docs/contributing.md`, "Extra config keys as environment variables") — the same route `watch_name` takes:
+
+```json
+{ "ops": { "watch":   { "watch_sources_path": "/opt/private/watch-sources" },
+           "unwatch": { "watch_sources_path": "/opt/private/watch-sources" },
+           "watches": { "watch_sources_path": "/opt/private/watch-sources" },
+           "radar":   { "watch_sources_path": "/opt/private/watch-sources" },
+           "channel": { "watch_sources_path": "/opt/private/watch-sources" } } }
+```
+
+**⚠ This imports and executes Python from a path the caller supplies.** A directory on this path is loaded with `importlib` and its `poller.py` runs in the poller process with your privileges, on a value that came from an environment variable or from a JSON file in a repository. Anyone who can write to a directory on the path — or to the `.supertool.json` that names it — can run arbitrary code as you. Nothing checks a signature, an owner or a mode: "the path came from config" is a weaker guarantee than it sounds when the config is a file in a repo you cloned. Treat a `watch_sources_path` in somebody else's project the way you would treat a `Makefile` in it.
+
+What *is* checked, and each is refused out loud rather than skipped:
+
+| Entry | Answer |
+|---|---|
+| a shipped name (`gitlab-mr`, `slack`, …) | **shipped wins.** The external one is never loaded, and every surface names it: `source gitlab-mr in /opt/... is shadowed by the shipped source of the same name and was NOT loaded`. Silently skipping it is the same defect one layer down — the operator believes their source is loaded and it is not |
+| a relative path | not searched, and named. A poller detaches, re-execs and runs for days, and `radar` re-derives the path from wherever it is invoked, so the directory a relative entry resolves against is not the one you typed it in |
+| a path that is not a directory, or cannot be reached | not searched, and named with the `OSError` type. "Missing" and "could not look" are different facts and both are printed |
+| a reserved name (`channel-probe`) | never loaded, and named. [#1593](https://github.com/Digital-Process-Tools/claude-supertool/issues/1593) reserved it so a synthetic probe event can never be confused with a watcher's, and enforced that by enumerating the shipped directory — a search path is a space no test can enumerate, so the refusal is made at load time instead |
+| the shipped directory named again | redundant, and said as redundant rather than as unusable. It is always searched first |
+
+**All five watch ops resolve it through one function** (`presets/watch/sourcepath.py::find`), reached by `dispatcher._load_source`, which is also how `radar` and the `gl-mrs` tier load a poller. A key declared for `watch` alone would give a source `watch` can start and `radar` can neither resolve nor re-spawn — the half-configured shape of [#1309](https://github.com/Digital-Process-Tools/claude-supertool/issues/1309) and [#1732](https://github.com/Digital-Process-Tools/claude-supertool/issues/1732) arriving through the config door a third time. So every surface prints which ops declared the key and which did not. Declaring it with *different* values on two op blocks does not reach the preset at all: supertool refuses the op ([#1009](https://github.com/Digital-Process-Tools/claude-supertool/issues/1009)).
+
+**`unknown source` now says where it looked.** It used to print `Available: <shipped names>`, which named neither the directory those came from nor the directory the operator had just configured:
+
+```
+ERROR: unknown source 'server-diag'. Searched:
+  /path/to/plugin/presets/watch/sources (shipped): gh-branch, gh-run, github-issue-feed, ...
+  /opt/private/watch-sources (SUPERTOOL_WATCH_SOURCES_PATH): server-diagnostics
+  /opt/gone (SUPERTOOL_WATCH_SOURCES_PATH): NOT searched -- could not be reached (FileNotFoundError)
+```
+
+With nothing configured the last line reads `SUPERTOOL_WATCH_SOURCES_PATH is not set, so nothing outside the plugin was searched`, which is the state a first-time reader is in.
+
+**Nothing is pinned across the poller's re-exec, and that is checked rather than assumed.** `transport.poller_env` pins the state directory and the socket because those are *derived* from `SUPERTOOL_WATCH_NAME` and re-deriving them in the exec'd image was not equivalent ([#1477](https://github.com/Digital-Process-Tools/claude-supertool/issues/1477)/[#1534](https://github.com/Digital-Process-Tools/claude-supertool/issues/1534)). This value is used exactly as the environment carries it and `poller_env` is `dict(os.environ)` plus those two pins, so it survives by construction — a property `tests/test_watch_sources_path_2135.py` asserts, because an env built from an allowlist instead would drop it and a re-exec'd poller would answer `unknown source` about the source it was already polling.
+
 ## Bundled sources
 
 | Source | Polls | Events |
@@ -2719,7 +2762,7 @@ Nothing automatic clears it. Two operator actions do, and both mean "I have seen
 
 ## Writing a new source
 
-Drop a folder under `presets/watch/sources/<NAME>/`:
+Drop a folder under `presets/watch/sources/<NAME>/`, or — since [#2135](https://github.com/Digital-Process-Tools/claude-supertool/issues/2135) — under any directory on `SUPERTOOL_WATCH_SOURCES_PATH` (see "A source outside the plugin" above). The shape is the same and the shipped directory is always searched first:
 
 ```
 sources/your-source/

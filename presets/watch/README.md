@@ -462,7 +462,10 @@ subscription — no central config to manage:
 
 ## Writing a new source
 
-Drop a folder under `presets/watch/sources/<NAME>/`:
+Drop a folder under `presets/watch/sources/<NAME>/` — or, since
+[#2135](https://github.com/Digital-Process-Tools/claude-supertool/issues/2135),
+under any directory on `SUPERTOOL_WATCH_SOURCES_PATH` (see "Where a source may
+live" below, and `docs/presets/watch.md` for the full write-up):
 
 ```
 sources/your-source/
@@ -514,6 +517,44 @@ def is_terminal(state: dict) -> bool:
 
 The dispatcher handles PID files, signals, transport, the `only=` filter, and
 state persistence. Source code stays focused on "what changed?".
+
+### Where a source may live
+
+`presets/watch/sources/` is searched first and always. `SUPERTOOL_WATCH_SOURCES_PATH`
+adds directories after it, separated by the platform's path separator, so a
+poller that must stay private does not have to live in a directory the next
+plugin update overwrites. It is an ordinary environment variable, so an op's
+`.supertool.json` block reaches it with no plumbing at all
+(`docs/contributing.md`, "Extra config keys as environment variables"):
+
+```json
+{ "ops": { "watch":   { "watch_sources_path": "/opt/private/watch-sources" },
+           "unwatch": { "watch_sources_path": "/opt/private/watch-sources" },
+           "watches": { "watch_sources_path": "/opt/private/watch-sources" },
+           "radar":   { "watch_sources_path": "/opt/private/watch-sources" },
+           "channel": { "watch_sources_path": "/opt/private/watch-sources" } } }
+```
+
+**Declare it on all five ops.** A key in one op block reaches only that op's
+subprocess, so `watch` alone gives a source `watch` can start and `radar` can
+neither resolve nor re-spawn — the half-configured shape of #1309. Every watch
+op prints which ops declared it and which did not.
+
+**This imports and executes Python from a caller-supplied path.** `poller.py`
+runs in the poller process with your privileges, and anyone who can write to a
+directory on the path — or to the `.supertool.json` naming it — can run
+arbitrary code as you. Nothing is sandboxed, signed or ownership-checked.
+
+**A reserved name is refused too.** `channel-probe` is reserved (#1593) so a
+probe's synthetic event stays distinguishable from a watcher's; an external
+source of that name is never loaded and is named where it was found.
+
+**Shipped sources cannot be shadowed.** An external `gitlab-mr` is never loaded,
+and is named on every surface rather than skipped in silence: the operator who
+put it there believes it is the one running. Relative entries, missing
+directories and non-directories are refused the same way — named, with the
+reason, in `watches`, `radar`, `channel:health` and in the `unknown source`
+error, which lists every directory it searched.
 
 ## Phase 2 — channel consumer
 

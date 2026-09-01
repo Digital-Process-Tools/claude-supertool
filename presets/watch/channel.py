@@ -119,6 +119,7 @@ sys.path.insert(0, str(Path(__file__).parent))  # for naming, our own sibling
 import _proc  # noqa: E402  (the one liveness probe, shared with gl-mrs / gh-prs)
 import _untrusted  # noqa: E402  (the health file is somebody else's text, #1187)
 import naming  # noqa: E402  (one name above the two path variables, #1477)
+import sourcepath  # noqa: E402  (where sources may live, one resolver, #2135)
 import transport  # noqa: E402  (the wire shape a probe emits, #1593)
 
 #: Absent on Windows, where it is `0` and the open below carries no guard. Same
@@ -1051,6 +1052,10 @@ def _channel_lines(path: str, resolved: naming.Resolved) -> list[str]:
     # or the one surface an operator opens when they suspect a shared channel is
     # the one that does not say.
     body.extend(naming.project_notes(resolved, naming.declared_names()))
+    # The fifth op (#2135). `channel:health` is the surface an operator opens
+    # when a watcher they configured is not there, and a search path declared
+    # for some ops and not others is one of the two reasons it would not be.
+    body.extend(sourcepath.op_lines("channel"))
     body.extend(consumer_lines(resolved))
     if not body:
         return []

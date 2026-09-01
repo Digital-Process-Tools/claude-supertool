@@ -397,6 +397,44 @@ def find_config(start_dir: str | None = None) -> tuple[str, str]:
         here = parent
 
 
+def declared_op_values(key: str, start_dir: str | None = None
+                       ) -> tuple[str, str, dict[str, str], str]:
+    """(state, config path, {op: value} for each op block declaring `key`, why).
+
+    The parse `declared_names` used to hold inline, one key wider (#2135):
+    `watch_sources_path` asks the same four-state question of the same file, and
+    two copies of a four-state classifier is two places to get it wrong -- which
+    is the argument `state_dir_listing` already makes one module over.
+
+    `state` is one of the `DECLARED_*` constants. Only `DECLARED_FOUND` carries
+    a non-empty mapping, and `DECLARED_UNREADABLE` is never collapsed into
+    `DECLARED_NO_CONFIG`: the first is the admission that the question was not
+    answered, the second is a fact about the world.
+    """
+    path, unreachable = find_config(start_dir)
+    if unreachable:
+        return DECLARED_UNREADABLE, "", {}, unreachable
+    if not path:
+        return DECLARED_NO_CONFIG, "", {}, ""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            doc = json.load(handle)
+    except (OSError, ValueError) as err:
+        return DECLARED_UNREADABLE, path, {}, type(err).__name__
+    if not isinstance(doc, dict):
+        return (DECLARED_UNREADABLE, path, {},
+                f"top level is {type(doc).__name__}, not an object")
+    ops = doc.get("ops")
+    blocks = ops if isinstance(ops, dict) else {}
+    declaring = {
+        op: block[key]
+        for op, block in blocks.items()
+        if isinstance(block, dict) and isinstance(block.get(key), str)
+        and block[key]
+    }
+    return (DECLARED_FOUND if declaring else DECLARED_SILENT), path, declaring, ""
+
+
 def declared_names(start_dir: str | None = None) -> Declared:
     """What the project above `start_dir` declares about the watch channel.
 
@@ -404,33 +442,13 @@ def declared_names(start_dir: str | None = None) -> Declared:
     is imported by a detached poller. `transport.channel_disclosure` calls it on
     the render path, where there is a reader.
     """
-    path, unreachable = find_config(start_dir)
-    if unreachable:
-        return Declared(state=DECLARED_UNREADABLE, path="", names=(),
-                        declaring_ops=(), silent_ops=(), why=unreachable)
-    if not path:
-        return Declared(state=DECLARED_NO_CONFIG, path="", names=(),
+    state, path, declaring, why = declared_op_values("watch_name", start_dir)
+    if state == DECLARED_UNREADABLE:
+        return Declared(state=state, path=path, names=(),
+                        declaring_ops=(), silent_ops=(), why=why)
+    if state == DECLARED_NO_CONFIG:
+        return Declared(state=state, path="", names=(),
                         declaring_ops=(), silent_ops=tuple(WATCH_OPS))
-    try:
-        with open(path, encoding="utf-8") as handle:
-            doc = json.load(handle)
-    except (OSError, ValueError) as err:
-        return Declared(state=DECLARED_UNREADABLE, path=path, names=(),
-                        declaring_ops=(), silent_ops=(),
-                        why=type(err).__name__)
-    if not isinstance(doc, dict):
-        return Declared(state=DECLARED_UNREADABLE, path=path, names=(),
-                        declaring_ops=(), silent_ops=(),
-                        why=f"top level is {type(doc).__name__}, not an object")
-
-    ops = doc.get("ops")
-    blocks = ops if isinstance(ops, dict) else {}
-    declaring = {
-        op: block["watch_name"]
-        for op, block in blocks.items()
-        if isinstance(block, dict) and isinstance(block.get("watch_name"), str)
-        and block["watch_name"]
-    }
     silent = tuple(sorted(set(WATCH_OPS) - set(declaring)))
     if not declaring:
         return Declared(state=DECLARED_SILENT, path=path, names=(),

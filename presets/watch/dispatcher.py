@@ -6,12 +6,14 @@ SOURCE/ID. The child detaches (setsid + double-fork) and runs the source's
 `poller.poll()` function in a loop until terminal or until killed.
 
 The dispatcher does NOT contain source-specific logic. It only:
-  - Resolves the source's poller module from presets/watch/sources/
+  - Resolves the source's poller module through `sourcepath.find` (#2135)
   - Manages PID files
   - Spawns + kills children
   - Renders the `watches` table
 
-A source plugin lives at `presets/watch/sources/<NAME>/poller.py` and exposes:
+A source plugin lives at `<dir>/<NAME>/poller.py`, where `<dir>` is
+`presets/watch/sources/` or any directory on `SUPERTOOL_WATCH_SOURCES_PATH`
+(#2135, `presets/watch/sourcepath.py`). It exposes:
   - INTERVAL: int — seconds between polls
   - poll(state: dict, ctx: dict) -> tuple[list[dict], dict]
         returns (events_to_emit, new_state)
@@ -38,15 +40,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))  # for _untrusted
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _untrusted  # noqa: E402  (the state files are somebody else's text, #1197)
 import naming  # noqa: E402  (which knob put the state directory where it is, #1477)
+import sourcepath  # noqa: E402  (a source may live outside the plugin, #2135)
 import transport  # noqa: E402
 
-SOURCES_DIR = Path(__file__).parent / "sources"
 
+def _load_source(name: str, resolved: "sourcepath.Resolved | None" = None):
+    """Import the poller module for SOURCE, from wherever it is allowed to live.
 
-def _load_source(name: str):
-    """Import the poller module for SOURCE from sources/<name>/poller.py."""
-    poller_path = SOURCES_DIR / name / "poller.py"
-    if not poller_path.exists():
+    The one door into `sourcepath.find`, and deliberately so: `radar` and
+    `tiers/gl_mrs` call this function rather than resolving a directory of their
+    own, so all five watch ops search the same path in the same order. A second
+    `__file__ / "sources"` anywhere in this preset is the half-configured shape
+    of #1309 re-entering by the back door (#2135).
+    """
+    poller_path, _origin = sourcepath.find(name, resolved)
+    if poller_path is None:
         return None
     spec = importlib.util.spec_from_file_location(f"watch_source_{name}", poller_path)
     if spec is None or spec.loader is None:
@@ -108,11 +116,27 @@ def cmd_watch(parts: list[str]) -> int:
     except ValueError as e:
         print(f"ERROR: {e}")
         return 1
-    poller = _load_source(source)
+    resolved = sourcepath.resolve()
+    # The same resolution the refusal below reports on. Resolving twice would
+    # stat every entry twice and, worse, let what was loaded and what is
+    # reported describe two different moments on disk.
+    poller = _load_source(source, resolved)
     if poller is None:
-        avail = ", ".join(sorted(p.name for p in SOURCES_DIR.iterdir() if p.is_dir())) or "(none)"
-        print(f"ERROR: unknown source {source!r}. Available: {avail}")
+        # Every directory that was consulted, and every one that was declared
+        # and could not be (#2135). `Available: <shipped>` named neither the
+        # directory those came from nor the one the operator had just
+        # configured, so an absence arrived without saying where it looked --
+        # in the single message a user hits while setting the feature up.
+        print(f"ERROR: unknown source {source!r}. Searched:")
+        for line in sourcepath.search_report(resolved):
+            print(line)
         return 1
+    # After the refusal, not before it: the refusal already prints every
+    # directory and every declined entry, and printing both put the same
+    # sentence on screen twice on the one path where a reader is reading
+    # carefully.
+    for line in sourcepath.op_lines("watch", resolved):
+        print(f"watch: {line}")
     status, pid = start_poller(source, watcher_id, only)
     if status == "alive":
         # Never silent, and never rendered like a clean start: an operator who
@@ -325,6 +349,13 @@ def cmd_unwatch(parts: list[str]) -> int:
     except ValueError as e:
         print(f"ERROR: {e}")
         return 1
+    # Where sources come from, on this op too (#2135). `unwatch` loads no
+    # poller, so this changes nothing it does -- and that is the point: a
+    # `watch_sources_path` declared for `watch` alone is a fleet one op can
+    # start and another cannot account for, and the op that says nothing is the
+    # one where the operator never finds out.
+    for line in sourcepath.op_lines("unwatch"):
+        print(f"unwatch: {line}")
     # One `ps` for both: `watcher_pids` needs only the `mine` bucket to decide
     # what it may act on, and the #1893 disclosure below needs the other two.
     # `poller_census` is what `scan_poller_pids` already computes internally,
@@ -502,6 +533,8 @@ def cmd_list() -> int:
     # the default paths with no override — a banner on every board is one nobody
     # reads. One accessor, so this and `radar` cannot disagree.
     for line in transport.channel_disclosure():
+        print(f"watches: {line}")
+    for line in sourcepath.op_lines("watches"):
         print(f"watches: {line}")
     census = transport.poller_census()
     rows, scan_ok = transport.list_watchers(census)
