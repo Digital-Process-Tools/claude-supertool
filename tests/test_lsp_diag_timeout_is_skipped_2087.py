@@ -37,6 +37,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent))
+from _adapter_budget import adapter_budget  # noqa: E402
+
 REPO = Path(__file__).resolve().parent.parent
 ADAPTER = REPO / "validators" / "lsp-diag" / "lsp-diag.py"
 
@@ -66,7 +69,8 @@ def test_a_hung_supertool_child_is_skipped_not_a_finding(tmp_path: Path) -> None
     env["SUPERTOOL_BIN"] = str(stub)
     env["SUPERTOOL_LSP_DIAG_TIMEOUT"] = "0.2"
     r = subprocess.run([sys.executable, str(ADAPTER), str(target)],
-                       capture_output=True, text=True, env=env, timeout=15,
+                       capture_output=True, text=True, env=env,
+                       timeout=adapter_budget(ADAPTER),
                        encoding="utf-8", errors="replace")
     assert r.stdout.strip(), f"adapter produced no output; stderr:\n{r.stderr}"
     receipt = json.loads(r.stdout.strip().splitlines()[-1])

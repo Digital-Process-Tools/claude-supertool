@@ -30,9 +30,17 @@ REPO = Path(__file__).resolve().parents[1]
 ADAPTER = REPO / "validators" / "changelog-fragment" / "changelog-fragment.py"
 ASSEMBLER = REPO / ".github" / "scripts" / "assemble_changelog.py"
 
+#: A hermetic fixture's own fragment name, deliberately NOT this PR's own
+#: issue number (#1293's own remedy): this PR's own pending changelog fragment
+#: is a real, currently-tracked file that the tag shipping this change
+#: deletes -- a fixture spelling that same name would go from a correct
+#: reference to a stale one on the very release this adapter change ships in.
+#: 999999 names no issue this repo has ever filed.
+FIXTURE_ISSUE = "999999"
 WELL_FORMED = (
-    "- **A fragment** ([#2072](https://github.com/Digital-Process-Tools/"
-    "claude-supertool/issues/2072)). Body text.\n"
+    "- **A fragment** ([#" + FIXTURE_ISSUE + "](https://github.com/"
+    "Digital-Process-Tools/claude-supertool/issues/" + FIXTURE_ISSUE + ")). "
+    "Body text.\n"
 )
 
 
@@ -61,7 +69,7 @@ def test_assembler_at_oss_location_is_found(tmp_path):
     oss.mkdir(parents=True)
     shutil.copy2(ASSEMBLER, oss / "assemble_changelog.py")
 
-    result = _run(_write(project, "2072.fixed.md", WELL_FORMED))
+    result = _run(_write(project, FIXTURE_ISSUE + ".fixed.md", WELL_FORMED))
     assert "skipped" not in result, result
     assert result["ok"] is True, result
 
@@ -74,7 +82,7 @@ def test_assembler_at_scripts_location_is_found(tmp_path):
     scripts.mkdir(parents=True)
     shutil.copy2(ASSEMBLER, scripts / "assemble_changelog.py")
 
-    result = _run(_write(project, "2072.fixed.md", WELL_FORMED))
+    result = _run(_write(project, FIXTURE_ISSUE + ".fixed.md", WELL_FORMED))
     assert "skipped" not in result, result
     assert result["ok"] is True, result
 
@@ -84,7 +92,7 @@ def test_no_assembler_anywhere_names_every_location_tried(tmp_path):
     project = tmp_path
     (project / "changelog.d").mkdir(parents=True)
 
-    result = _run(_write(project, "2072.fixed.md", WELL_FORMED))
+    result = _run(_write(project, FIXTURE_ISSUE + ".fixed.md", WELL_FORMED))
     assert "skipped" in result
     msg = result["skipped"]
     assert "does not declare" not in msg, msg
