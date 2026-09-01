@@ -145,6 +145,7 @@ sys.path.insert(0, str(_WATCH.parent))
 import _checks  # noqa: E402
 import _filter_tokens  # noqa: E402  (the one tokenizer the boards share)
 import _repo_target  # noqa: E402
+import _st_hint  # noqa: E402  (a runnable invocation, not a hardcoded one -- #905)
 import _untrusted  # noqa: E402
 
 
@@ -750,9 +751,139 @@ def feed_blind(scope: str) -> str:
 # ---------------------------------------------------------------------------
 # 4. the default branch — the member that is not a PR
 # ---------------------------------------------------------------------------
+#
+# #2024: the row above answered "is master green right now", on demand, once
+# per radar tick. Nothing pushed that answer between ticks, so the poller
+# everyone actually wanted -- the one that survives a reboot or a `pkill` and
+# tells a consumer the moment master goes red -- was the one nobody had
+# running. `sources/gh-branch/poller.py` (#1953) is that poller; this section
+# spawns and heals it exactly like `github-pr-feed` above, through the same
+# `_watch` callable, so radar owns the death cap and the ledger.
 
-def default_branch_report(ref: str | None, repo: str) -> tuple[list[str], bool]:
-    """`(lines, could_tell)` for the branch nothing else watches.
+BRANCH_SOURCE = "gh-branch"
+
+# Every event `sources/gh-branch/events.json` can emit -- not just
+# `went_green`. Subscribing to `went_green` alone would make a `gh` outage
+# that could not even look arrive as silence, which is the same shape of bug
+# this whole section exists to close: `branch_unreachable` is what a lookup
+# failure emits, and it is edge-triggered (once per outage, not once per
+# poll) so it must be on the filter or it is never seen at all.
+BRANCH_ONLY = ("went_green", "went_not_green", "no_run", "unknown",
+               "branch_unreachable")
+
+#: The poller's own `LOOKUP_UNAVAILABLE`, spelled again rather than imported
+#: — see `FEED_LOOKUP_UNAVAILABLE`'s own docstring for why.
+BRANCH_LOOKUP_UNAVAILABLE = "unavailable"
+
+
+def other_branch_scopes(scope: str) -> list[str]:
+    """Live `gh-branch` pollers watching a ref other than this board's.
+
+    Read-only, mirroring `other_feed_scopes` exactly: pid files only, nothing
+    spawned, nothing killed.
+
+    The hazard it names is sharper than the feed's own duplicate-discovery
+    cost. Changing the feed's filter respawns the feed and does not retire
+    the stray -- worst case, something is discovered twice. A branch poller
+    has the same "the old one is not retired" shape and it bites harder: after
+    a `master` -> `main` rename that keeps the old ref alive (the ordinary
+    case), a stale poller left running on `master` keeps emitting
+    `went_green` forever, and that green is indistinguishable from a real one
+    -- a false verdict about the branch people actually merge into, not
+    merely a duplicate. That is worse than the silence #2024 closes, which is
+    why a stray here is read and named on the board rather than left as a
+    disclosed, accepted cost the way the feed's is: it costs `healthy` in
+    `radar_report` (never `quiet_when_healthy`-suppressible) and the warning
+    names the exact scope an operator clears with one call --
+    `unwatch:gh-branch:<stray ref>`. If the old ref were deleted instead of
+    kept, the poller would say so itself (`branch_unreachable`) and the case
+    would already be loud; this reader exists for the quiet, kept-old-ref
+    shape, which is the only one that was ever silent.
+    """
+    return sorted({
+        str(row.get("id") or "")
+        for row in transport.list_active_pids()
+        if row.get("source") == BRANCH_SOURCE and str(row.get("id") or "") != scope
+    } - {""})
+
+
+def branch_poller_error(scope: str) -> str:
+    """Last error the branch poller recorded, or "" when it is polling cleanly.
+
+    Same shape as `feed_error`: the dispatcher clears this key on a
+    successful poll, so a message here is current rather than a scar.
+    """
+    state = transport.read_state(BRANCH_SOURCE, scope)
+    return _untrusted.flat(str((state.get("last_error") or {}).get("message") or ""))
+
+
+def branch_poller_blind(scope: str) -> str:
+    """Why the branch poller could not establish a state, or "" when it could.
+
+    A third fact, not a rewording of the two above -- see `feed_blind`'s own
+    docstring for the argument: a poll that reached GitHub and got a 401
+    raises nothing inside the poller, so it returns cleanly having seen
+    nothing, and both `_watch`'s own status and `branch_poller_error` report
+    a healthy poller over that silence unless this is read separately.
+    """
+    state = transport.read_state(BRANCH_SOURCE, scope).get("source_state") or {}
+    if not isinstance(state, dict) or state.get("lookup") != BRANCH_LOOKUP_UNAVAILABLE:
+        return ""
+    return (_untrusted.flat(str(state.get("error") or ""))
+            or "(branch poller recorded no error message)")
+
+
+def _branch_poller_warnings(poller: str, err: str, others: list[str],
+                            blind: str = "") -> list[str]:
+    """`_feed_warnings`'s twin for the standing `gh-branch` poller (#2024).
+
+    Silent when the poller is `alive`/`spawned` with no error, no blind spot
+    and no stray scope — the same "speak only when there is something to
+    say" calibration `default_branch_report` already applies to the board
+    row itself (see its own docstring and #1077): a board that named a
+    healthy poller on every tick would be exactly the habituation failure
+    this tier is already built against, and it would also defeat the
+    existing "blank on a fully-resolved green" contract these lines are
+    prepended to. What must never be silent is degradation — see the return
+    value's own reasoning below.
+    """
+    out = []
+    if poller == "failed":
+        out.append("radar: WARNING — default branch poller is down. A branch "
+                   "that goes green or red after this point will not be "
+                   "reported until the next radar tick.")
+    elif poller == "capped":
+        out.append("radar: WARNING — default branch poller has died too often "
+                   "and is no longer being respawned. A branch that goes "
+                   "green or red after this point will not be reported until "
+                   "the next radar tick.")
+    elif poller == "unknown":
+        out.append("radar: WARNING — default branch poller coverage is "
+                   "UNKNOWN for this board (#673, the same repo-blind pid "
+                   "naming that leaves per-PR watch coverage unknown under a "
+                   "repo target). Nothing was spawned; run radar from a clone "
+                   "of that repo to get coverage back.")
+    elif err:
+        out.append(f"radar: WARNING — default branch poller is failing to "
+                   f"poll: {err}")
+    if blind:
+        out.append(f"radar: WARNING — default branch poller is alive but "
+                   f"could not establish the branch's state on its last "
+                   f"poll: {blind}")
+    for other in others:
+        out.append(f"radar: WARNING — a default branch poller is also live "
+                   f"for {other!r}, which this board is not reporting on. "
+                   f"After a rename that kept the old ref, its green is "
+                   f"indistinguishable from a real one for anyone still "
+                   f"reading it — run "
+                   f"{_st_hint.st_hint(f'unwatch:gh-branch:{other}')} to "
+                   f"retire it.")
+    return out
+
+
+def default_branch_report(ref: str | None, repo: str,
+                          watch=None) -> tuple[list[str], bool, bool]:
+    """`(lines, could_tell, poller_ok)` for the branch nothing else watches.
 
     Composed from `gh-branch`'s own selection, verdict, reconciliation **and
     scope**, so the answer here and the answer from `gh-branch:master` are the
@@ -767,22 +898,46 @@ def default_branch_report(ref: str | None, repo: str) -> tuple[list[str], bool]:
     `ref is None` means "not configured" and resolves the repo's own default
     branch; `""` means the operator switched the member off. Two different
     intentions, and collapsing them would either cost a call nobody asked for
-    or drop the row that this whole member exists for.
+    or drop the row that this whole member exists for. `""` also means: do
+    not spawn a poller either -- switching the row off is the operator's
+    call being honoured, not overridden (#2024).
+
+    `poller_ok` is a **third, independent** claim, deliberately not folded
+    into `could_tell`: `could_tell` is about the query this call just made,
+    `poller_ok` is about the standing watcher between now and the next tick.
+    A red master reported by a perfectly healthy direct query is
+    `could_tell=True` regardless of whether the poller is up -- conflating
+    the two would have made `test_a_red_master_is_unaffected`'s own claim
+    false. `watch` defaults to `_no_watch`, which always answers "failed":
+    a caller with no spawner configured cannot claim the poller is up.
     """
+    watch = watch or _no_watch
     if ref is None:
         ref = branch._repo_identity()[1]
     if not ref:
-        return [], True
+        return [], True, True
+
+    poller = watch(BRANCH_SOURCE, ref, list(BRANCH_ONLY))
+    poller_err = branch_poller_error(ref) if poller == "alive" else ""
+    poller_blind = branch_poller_blind(ref) if poller == "alive" else ""
+    poller_others = other_branch_scopes(ref)
+    poller_lines = _branch_poller_warnings(poller, poller_err, poller_others,
+                                           poller_blind)
+    poller_ok = (poller not in ("failed", "capped", "unknown")
+                and not poller_err and not poller_blind and not poller_others)
 
     sha, age, err = branch._head_commit(ref)
     if err:
-        return [f"radar: {ref} — {branch.UNKNOWN}: {err} The default branch's "
-                f"state is not established; a red master looks exactly like "
-                f"this line being absent."], False
+        return (poller_lines +
+                [f"radar: {ref} — {branch.UNKNOWN}: {err} The default branch's "
+                 f"state is not established; a red master looks exactly like "
+                 f"this line being absent."], False, poller_ok)
 
     runs, err = branch._run_list(ref)
     if err or runs is None:
-        return [f"radar: {ref} — {branch.UNKNOWN}: {err or 'run list unreadable'}"], False
+        return (poller_lines +
+                [f"radar: {ref} — {branch.UNKNOWN}: {err or 'run list unreadable'}"],
+                False, poller_ok)
 
     selected = branch.runs_on_sha(runs, sha)
     _prev_sha, prev_names = branch.previous_head(runs, sha)
@@ -838,7 +993,7 @@ def default_branch_report(ref: str | None, repo: str) -> tuple[list[str], bool]:
     # clearance over a set of unknown size is not one.
     could_tell = (state == branch.NOT_GREEN
                   or (state == branch.GREEN and not unresolved))
-    return lines, could_tell
+    return poller_lines + lines, could_tell, poller_ok
 
 
 # ---------------------------------------------------------------------------
@@ -1199,8 +1354,8 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
         feed, feed_err, blind, other_scopes = "unknown", "", "", []
 
     raw_ref = options.get("default_branch")
-    branch_lines, branch_ok = default_branch_report(
-        None if raw_ref is None else str(raw_ref), repo)
+    branch_lines, branch_ok, branch_poller_ok = default_branch_report(
+        None if raw_ref is None else str(raw_ref), repo, watch)
 
     label = scope_label(filters, repo)
     key = snapshot_key(filters, repo)
@@ -1240,7 +1395,8 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     # its own feed against health (#1780): a feed that is down, capped,
     # unknown or blind is this tier failing at the one job #1779 was filed
     # about, and a quiet radar must not hide that.
-    healthy = bool(branch_ok) and not uncovered and covered is not None \
+    healthy = bool(branch_ok) and bool(branch_poller_ok) \
+        and not uncovered and covered is not None \
         and not unchecked(open_prs) and not departed \
         and feed not in ("failed", "capped", "unknown") \
         and not feed_err and not blind and not other_scopes

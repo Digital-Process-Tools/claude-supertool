@@ -21,10 +21,17 @@ import supertool
 
 @pytest.fixture
 def stub_dispatch(monkeypatch):
-    """Replace `dispatch` — the documented monkeypatch contract (#1359)."""
+    """Replace `dispatch` — the documented monkeypatch contract (#1359).
+
+    Also bypasses #2122's batch pre-validation, which runs ahead of
+    `dispatch` in `main()` and so is not reachable by stubbing `dispatch`
+    alone. This suite's op strings (a bare "@-") exist to exercise the
+    stale-verdict-flag logic, not the op registry.
+    """
     seen: list[str] = []
     monkeypatch.setattr(supertool, "dispatch", lambda a: (seen.append(a), "")[-1])
     monkeypatch.setattr(supertool, "log_call", lambda *a, **k: None)
+    monkeypatch.setattr(supertool, "_batch_prevalidation_refusal", lambda argv: None)
     return seen
 
 
@@ -60,6 +67,11 @@ def test_a_real_refusal_on_a_previous_call_does_not_carry(
     assert supertool._call_failed() is True
     monkeypatch.setattr(supertool, "dispatch", lambda a: "")
     monkeypatch.setattr(supertool, "log_call", lambda *a, **k: None)
+    # #2122's batch pre-validation runs ahead of dispatch(), so the bare
+    # "@-" placeholder above needs the same bypass the fixture-based tests
+    # in this module get -- this test reaches for the raw monkeypatch calls
+    # directly rather than the fixture, so it needs its own.
+    monkeypatch.setattr(supertool, "_batch_prevalidation_refusal", lambda argv: None)
     assert supertool.main(["edit:@-", "@-"]) == 0
 
 
@@ -70,13 +82,24 @@ def test_the_clear_does_not_swallow_a_refusal_raised_inside_dispatch(
     The flag must be established BEFORE dispatch runs, never after: a sub-op
     that refuses at any depth still has to reach the parent's verdict.
     """
+    reached: list[str] = []
+
     def refusing(arg: str) -> str:
+        reached.append(arg)
         supertool._mark_op_failure()
         return "ERROR: no" + chr(10)
 
     monkeypatch.setattr(supertool, "dispatch", refusing)
     monkeypatch.setattr(supertool, "log_call", lambda *a, **k: None)
+    # Same bypass as the fixture above, and for the same reason: #2122's
+    # batch pre-validation would refuse the bare "@-" placeholder ahead of
+    # `dispatch` and hand back rc 1 without the mechanism under test ever
+    # running -- an exit code that looks identical and proves nothing.
+    monkeypatch.setattr(supertool, "_batch_prevalidation_refusal", lambda argv: None)
     assert supertool.main(["edit:@-", "@-"]) == 1
+    # The rc above must come FROM the refusal raised inside dispatch, which
+    # is only true if dispatch was reached at all.
+    assert reached == ["edit:@-", "@-"]
 
 
 def test_verdict_helper_reports_only_its_own_call(monkeypatch) -> None:

@@ -175,20 +175,29 @@ def test_the_two_receipt_lines_never_contradict_each_other(old, new):
 # #1835 — one word in gh-pr-create's help text
 # ===========================================================================
 
-def test_gh_pr_create_does_not_claim_to_catch_a_malformed_closing_line():
-    """It reports and then opens the pull request, exit 0. `caught` reads as
-    *prevented*, and that reading propagated downstream into a consuming repo's
-    skill as `refuses`, which is false and made the receipt — the only place the
-    problem is visible — look skippable."""
+def test_gh_pr_create_says_it_catches_a_malformed_closing_line():
+    """#1835's own premise -- "it reports and then opens the pull request,
+    exit 0" -- was true when this test was written and is false since #1970:
+    a malformed Closes line hits the same _checks.closing_issue_refs() empty
+    result as no Closes line at all, so it is refused before anything
+    publishes, exactly like the no-reference case #2126 corrected the
+    description to describe. `caught` is now the accurate word, matching
+    both docs/presets/github.md and pr_create.py's own module docstring
+    ("caught here instead of discovered after the merge")."""
     desc = _GH_OPS["gh-pr-create"]["description"]
-    assert "caught at creation" not in desc
-    assert "reported at creation" in desc
+    assert "caught at creation" in desc
+    assert "reported at creation" not in desc
 
 
-def test_gh_pr_create_says_it_does_not_refuse_and_names_the_repair():
+def test_gh_pr_create_says_it_refuses_and_names_the_escape():
+    """#1970 made the closing-reference check a refusal (nothing created,
+    non-zero exit); the description was corrected to match in #2126, after
+    this test pinned the pre-#1970 wording for over a year without noticing
+    the behaviour it described had changed underneath it."""
     desc = _GH_OPS["gh-pr-create"]["description"]
-    assert "NOT refused" in desc
-    assert "gh-pr-edit" in desc, "the op that adds the line afterwards"
+    assert "NOT refused" not in desc
+    assert "refuses" in desc.lower()
+    assert "no_close" in desc
 
 
 def test_gh_pr_edit_still_documents_the_refusal_it_actually_makes():
