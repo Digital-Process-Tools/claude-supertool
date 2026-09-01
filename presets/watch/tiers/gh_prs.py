@@ -762,10 +762,6 @@ def feed_blind(scope: str) -> str:
 
 BRANCH_SOURCE = "gh-branch"
 
-BRANCH_LABEL = {"alive": "poller ok", "spawned": "poller respawned",
-                "failed": "poller DOWN", "capped": "poller DOWN (respawn capped)",
-                "unknown": "poller coverage UNKNOWN (#673)"}
-
 # Every event `sources/gh-branch/events.json` can emit -- not just
 # `went_green`. Subscribing to `went_green` alone would make a `gh` outage
 # that could not even look arrive as silence, which is the same shape of bug
