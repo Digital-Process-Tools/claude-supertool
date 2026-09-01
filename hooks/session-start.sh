@@ -52,6 +52,14 @@ in_foreign_supertool_tree() {
 # compared.
 own_stale_symlink_version() {
     local target="$1" plugin_dir target_dir
+    # A shape match alone is not proof: a symlink can name a version segment
+    # that was never installed, including bytes an attacker chose (this
+    # target is data a project's own tracked symlink can carry, same as any
+    # other file content). Requiring the target to actually exist closes
+    # that, because an attacker able to plant a symlink in a project does
+    # not thereby gain write access to the plugin cache this compares
+    # against -- they cannot make a nonexistent path there exist.
+    [ -e "$target" ] || return 1
     plugin_dir="$(dirname "$(dirname "$BIN")")"
     target_dir="$(dirname "$(dirname "$target")")"
     [ "$(basename "$target")" = "$(basename "$BIN")" ] || return 1
@@ -69,8 +77,15 @@ elif [ -L "./supertool" ] && [ "$(readlink "./supertool")" = "$BIN" ]; then
     :
 elif [ -L "./supertool" ] && OLD_VERSION="$(own_stale_symlink_version "$(readlink "./supertool")")"; then
     NEW_VERSION="$(basename "$(dirname "$BIN")")"
-    echo "> ./supertool pointed at this plugin's own $OLD_VERSION — its own symlink from an earlier release, not a stranger's file. The plugin is now $NEW_VERSION; repointing it so calls are answered by the current version."
-    ln -sf "$BIN" "./supertool" 2>/dev/null
+    # The repoint is attempted before the message is chosen, not after, so
+    # the sentence names what actually happened rather than what was merely
+    # intended -- the same "a receipt must not claim more than it verified"
+    # rule as everywhere else here.
+    if ln -sf "$BIN" "./supertool" 2>/dev/null; then
+        echo "> ./supertool pointed at this plugin's own $OLD_VERSION — its own symlink from an earlier release, not a stranger's file. The plugin is now $NEW_VERSION; repointed it so calls are answered by the current version."
+    else
+        echo "> ./supertool pointed at this plugin's own $OLD_VERSION — its own symlink from an earlier release, not a stranger's file. The plugin is now $NEW_VERSION, but repointing it failed; calls will still be answered by $OLD_VERSION until this is fixed by hand."
+    fi
 elif [ -e "./supertool" ] || [ -L "./supertool" ]; then
     echo "> ./supertool already exists here and is not the plugin symlink — leaving it untouched."
 else

@@ -131,3 +131,43 @@ def test_the_current_symlink_is_still_left_alone_silently(tmp_path):
     said = result.stdout + result.stderr
     assert "0.47.0" not in said
     assert "already exists here and is not the plugin symlink" not in said
+
+
+@windows_has_no_usable_bash
+def test_a_shape_matching_target_that_does_not_exist_is_not_recognised(tmp_path):
+    """Adversarial must-not-fire: recognition needs a real file, not just a
+    path shaped like a sibling version.
+
+    `own_stale_symlink_version()` used to decide purely from string shape --
+    `dirname(dirname(target))` matching the plugin cache root and a matching
+    basename -- with no check that `target` names anything real. A symlink
+    whose target merely has that shape, pointing at a version directory that
+    was never installed, could carry an arbitrary version segment (including
+    control bytes) that the hook would echo into its own stdout and then use
+    to justify repointing the link. Requiring the target to exist closes that:
+    an attacker who does not control the plugin cache cannot make a
+    nonexistent path exist there.
+    """
+    cache = _versioned_cache(tmp_path, "0.51.0")
+    new_root = cache / "0.51.0"
+
+    project = tmp_path / "project"
+    project.mkdir()
+    link = project / "supertool"
+    # Same cache root, same basename, but "0.47.0" was never installed here.
+    link.symlink_to(cache / "0.47.0" / "supertool.py")
+
+    result = _run_hook(project, new_root)
+
+    assert os.readlink(link) == str(cache / "0.47.0" / "supertool.py"), (
+        "a shape-matching target that does not exist on disk must not be "
+        "repointed -- it is not provably this hook's own artifact"
+    )
+    said = result.stdout + result.stderr
+    assert "0.47.0" not in said, (
+        f"a nonexistent version must not be named as though it were "
+        f"recognised, got: {said!r}"
+    )
+    assert "already exists here and is not the plugin symlink" in said, (
+        f"the stranger-file message must fire instead, got: {said!r}"
+    )
