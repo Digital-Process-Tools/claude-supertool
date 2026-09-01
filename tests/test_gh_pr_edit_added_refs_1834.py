@@ -185,10 +185,15 @@ def test_gh_pr_create_does_not_claim_to_catch_a_malformed_closing_line():
     assert "reported at creation" in desc
 
 
-def test_gh_pr_create_says_it_does_not_refuse_and_names_the_repair():
+def test_gh_pr_create_says_it_refuses_and_names_the_escape():
+    """#1970 made the closing-reference check a refusal (nothing created,
+    non-zero exit); the description was corrected to match in #2126, after
+    this test pinned the pre-#1970 wording for over a year without noticing
+    the behaviour it described had changed underneath it."""
     desc = _GH_OPS["gh-pr-create"]["description"]
-    assert "NOT refused" in desc
-    assert "gh-pr-edit" in desc, "the op that adds the line afterwards"
+    assert "NOT refused" not in desc
+    assert "refuses" in desc.lower()
+    assert "no_close" in desc
 
 
 def test_gh_pr_edit_still_documents_the_refusal_it_actually_makes():
