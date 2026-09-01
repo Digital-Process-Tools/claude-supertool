@@ -195,6 +195,45 @@ def test_a_dead_poller_does_not_change_could_tell(monkeypatch):
     assert poller_ok is False
 
 
+def test_a_dead_poller_costs_health_even_when_the_board_is_healthy(
+        state_dir, monkeypatch):
+    """`radar_report`'s own `healthy` verdict must fold in `poller_ok`, not
+    only `branch_ok` -- auditor finding on this same lane (class B): every
+    `assert not healthy` case in this file up to this point routed through
+    `_no_board`, which forces `branch._head_commit` to error and makes
+    `branch_ok` False on its own, so none of them could tell whether
+    `bool(branch_poller_ok)` actually participates in the conjunction or was
+    silently dropped. Confirmed by deleting that conjunct locally: every
+    other test in this file still passed. This one forces the board itself
+    to be genuinely healthy (`could_tell=True`, via a forced `NOT_GREEN` --
+    a red master the tier *could* tell, same technique as
+    `test_a_dead_poller_does_not_change_could_tell` above) while the
+    standing poller is down, and pins that `healthy` is False anyway.
+    """
+    _fake_gh(monkeypatch, [_pr(1)])
+    monkeypatch.setattr(tier.branch, "_head_commit",
+                        lambda ref: ("a" * 40, 5, ""))
+    monkeypatch.setattr(tier.branch, "_run_list", lambda ref: ([], ""))
+    monkeypatch.setattr(tier.branch, "scope_for",
+                        lambda repo, sha, selected: ("scope", [], False))
+    monkeypatch.setattr(tier.branch, "_reconcile",
+                        lambda repo, selected, fetched: (None, []))
+    monkeypatch.setattr(tier.branch, "verdict",
+                        lambda *a, **k: (tier.branch.NOT_GREEN, "forced red"))
+    watch, _ = _recording_watch({tier.BRANCH_SOURCE: "failed"})
+
+    _direct_lines, could_tell, _poller_ok = tier.default_branch_report(
+        "main", "o/r", watch)
+    assert could_tell is True  # the board itself is healthy -- sanity check
+
+    _healthy_lines, healthy = tier.radar_report(
+        {"_arg": "", "_watch": watch, "default_branch": "main"})
+
+    assert not healthy, (
+        "the board's own query was healthy, but the standing poller is "
+        "down -- radar_report's healthy verdict must still be False")
+
+
 # ---------------------------------------------------------------------------
 # blind, dead, capped and stray pollers must be visible, not just "alive"
 # ---------------------------------------------------------------------------
