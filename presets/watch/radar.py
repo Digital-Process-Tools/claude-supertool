@@ -87,6 +87,7 @@ sys.path.insert(0, str(_HERE.parent))  # for _untrusted
 import _untrusted  # noqa: E402  (the state files are somebody else's text, #1423)
 import channel  # noqa: E402  (one subscription answer for both surfaces, #1543)
 import dispatcher  # noqa: E402
+import sourcepath  # noqa: E402  (where sources may live, one resolver, #2135)
 import transport  # noqa: E402
 
 
@@ -400,7 +401,8 @@ def channel_banner() -> list[str]:
     through the one `transport` accessor `watches` uses, so the two boards
     cannot disagree about the same channel.
     """
-    return ["radar: " + line for line in transport.channel_disclosure()]
+    return ["radar: " + line
+            for line in transport.channel_disclosure() + sourcepath.op_lines("radar")]
 
 
 def delivery_banner() -> list[str]:
