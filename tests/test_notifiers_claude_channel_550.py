@@ -310,3 +310,53 @@ def test_a_new_session_can_bind_after_the_previous_one_is_gone(sock_path: str) -
         assert b.next_message()["params"]["meta"]["id"] == "552"
     finally:
         b.close()
+
+
+# --- #2133: the refusal above is also persisted, for a reader who is not ----
+# --- this process's own stderr ----------------------------------------------
+#
+# `refuse()` already knew exactly why it lost the socket; the message asserted
+# above went only to stderr, and #2133 measured a real session where nothing
+# downstream of `CONNECTION_CLOSED` ever read it. `presets/watch/channel.py`'s
+# `read_refusal` is the other end of the same file.
+
+def test_the_refusal_leaves_a_marker_beside_the_socket(sock_path: str) -> None:
+    a = _spawn(sock_path)
+    b = None
+    try:
+        b = _spawn(sock_path, expect_start=False)
+        code = b.wait_exit()
+        assert code == EXIT_SOCKET_CONFLICT, (
+            f"second server exited {code}; stderr={b.stderr_lines}")
+        marker_path = f"{sock_path}.refused.json"
+        assert os.path.exists(marker_path), (
+            f"no refusal marker at {marker_path}; stderr={b.stderr_lines}")
+        record = json.loads(Path(marker_path).read_text(encoding="utf-8"))
+        assert record["pid"] == b.proc.pid, record
+        assert "another claude-channel server is listening there" in record["reason"], record
+        assert record["sock_path"] == sock_path, record
+        assert record["ts"], "a refusal marker with no timestamp cannot be aged"
+    finally:
+        if b is not None:
+            b.close()
+        a.close()
+
+
+def test_a_fresh_bind_clears_a_stale_marker(sock_path: str) -> None:
+    """A marker left by a collision that is over must not read as one still
+    happening. The next process to bind this socket clears it on its way in,
+    so what survives a `channel:health` read happened during *that*
+    consumer's own run."""
+    marker_path = f"{sock_path}.refused.json"
+    Path(marker_path).write_text(json.dumps({
+        "pid": 999999, "ts": "2020-01-01T00:00:00Z",
+        "reason": "a collision from a previous session, days ago",
+        "sock_path": sock_path,
+    }), encoding="utf-8")
+
+    a = _spawn(sock_path)
+    try:
+        assert not os.path.exists(marker_path), (
+            "a fresh bind must clear a leftover refusal marker, not carry it forward")
+    finally:
+        a.close()

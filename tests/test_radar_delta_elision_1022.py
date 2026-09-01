@@ -98,7 +98,10 @@ def _fake_gh(monkeypatch, rows):
 
 def _board(monkeypatch, rows, watched):
     """One `radar_report` over `rows`, with everything but the board stubbed."""
-    monkeypatch.setattr(tier, "default_branch_report", lambda *a, **k: ([], True))
+    # #2024: default_branch_report now also reports the standing poller's
+    # own health as a third, independent value -- see its own docstring.
+    monkeypatch.setattr(tier, "default_branch_report",
+                        lambda *a, **k: ([], True, True))
     monkeypatch.setattr(tier, "repo_name",
                         lambda: "Digital-Process-Tools/claude-supertool")
     monkeypatch.setattr(tier, "watch_coverage", lambda: set(watched))

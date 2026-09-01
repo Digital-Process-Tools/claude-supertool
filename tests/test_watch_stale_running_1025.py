@@ -144,7 +144,10 @@ def test_gh_a_green_pr_is_never_stale():
 def test_gh_snapshot_written_by_radar_report_carries_since(tmp_path, monkeypatch):
     monkeypatch.setattr(gh.transport, "STATE_DIR", str(tmp_path))
     monkeypatch.setattr(gh.snapshot.transport, "STATE_DIR", str(tmp_path))
-    monkeypatch.setattr(gh, "default_branch_report", lambda *a, **k: ([], True))
+    # #2024: default_branch_report now also reports the standing poller's
+    # own health as a third, independent value -- see its own docstring.
+    monkeypatch.setattr(gh, "default_branch_report",
+                        lambda *a, **k: ([], True, True))
     monkeypatch.setattr(gh, "_reconcile_one", lambda p: ("", []))
     monkeypatch.setattr(gh, "live_open_prs", lambda f: [_gh_pr()])
     monkeypatch.setattr(gh, "repo_name", lambda: "o/r")

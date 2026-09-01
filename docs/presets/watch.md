@@ -1331,6 +1331,7 @@ Pollers emit through three channels (all best-effort, none can crash the poller)
 | UDS socket (NDJSON) | `/tmp/supertool-watch.sock` | Live event stream — consumers read this |
 | Status file (JSON) | `/tmp/supertool-watch-{source}__{id}.state.json` | Last-known state for `watches` op + offline inspection, plus the poller's own `only` filter so another tier can tell what it will ever emit, and `last_emit` — what the socket write actually meant |
 | Consumer health (JSON) | `{sock_path}.health.json` | Written by the consumer, not by a poller: its own count of lines read, forwarded and dropped, re-stamped on a 10s heartbeat. What `channel:health` reads |
+| Refusal marker (JSON) | `{sock_path}.refused.json` | Written by a rival consumer that lost this socket ([#550](https://github.com/Digital-Process-Tools/claude-supertool/issues/550)) on its way out — pid, reason, timestamp. The bound consumer clears it the instant it (re)binds, so what survives is evidence from *this* run. `channel:health` renders it as a `refused` line and `subscription()` reads it too ([#2133](https://github.com/Digital-Process-Tools/claude-supertool/issues/2133), below) |
 | macOS osascript | system notification center | Desktop ping on terminal status / error |
 
 Override the socket path with the `SUPERTOOL_WATCH_SOCK` env var — set it to
@@ -1888,16 +1889,37 @@ the consumer).
 | The tag names a server the harness does not have configured — what a `--mcp-config` server produces | `BOUND, NOT SUBSCRIBED` |
 | The socket-holder has been reparented to pid 1, so its session has exited | `BOUND, NOT SUBSCRIBED` |
 | The tag names a configured server | `FORWARDING` |
+| The tag names a configured server, but a rival channel server was refused this exact socket during this run | `CANNOT DETERMINE`, naming the collision ([#2133](https://github.com/Digital-Process-Tools/claude-supertool/issues/2133)) |
 | No `ps`, no `claude` on PATH, an argv that does not tokenise, a spawner not recognisable as a session, a tag list whose values could be one name with a space | `CANNOT DETERMINE`, **with the reason** |
 | A tag that cannot be a server name — empty, a leading `-`, a control character | `CANNOT DETERMINE`, **with the reason** ([#1559](https://github.com/Digital-Process-Tools/claude-supertool/issues/1559)) |
 | A tag the lookup budget ran out before reaching | `CANNOT DETERMINE`, named as unasked ([#1558](https://github.com/Digital-Process-Tools/claude-supertool/issues/1558)) |
 
-The last row is the point rather than the fallback: a probe that could not run
-must never render as the answer it was looking for. What the positive arm does
-*not* establish is said on the line itself — that the configured server the tag
-names is the one holding **this** socket. Two channel-capable servers under one
-session satisfy the two halves separately, and closing that would take a third
-probe that still could not see inside the session.
+The last two rows are the point rather than the fallback: a probe that could not
+run must never render as the answer it was looking for. What the positive arm
+does *not* establish is said on the line itself — that the configured server
+the tag names is the one holding **this** socket. Two channel-capable servers
+under one session satisfy the two halves separately, and closing that fully
+would take a probe that still could not see inside the session.
+
+**One case of that gap is closed, not by a better probe but by a witness
+(#2133).** A session launched with `.mcp.json` declaring `claude-channel` *and*
+the launcher's `--dangerously-load-development-channels server:NAME` naming a
+second one gets exactly this: both resolve the same socket, one binds and the
+other correctly refuses (#550), and the harness reported **both** as
+`CONNECTION_CLOSED` in the incident that filed this — a session with no live
+connection to either declared server, while the bound consumer forwarded events
+into a transport nothing was reading. `channel:health` read `FORWARDING`,
+`session : subscribed`, both true and useless. The losing server's refusal
+already names the exact reason; it now also writes that reason into
+`{sock_path}.refused.json` on its way out (see the transport table above)
+instead of only to a stderr nobody downstream of `CONNECTION_CLOSED` was going
+to read. When that marker exists for the socket a tag is about to be accepted
+for, `subscription()` returns `CANNOT DETERMINE` instead of `FORWARDING` — this
+run has first-hand evidence a rival lost the exact same socket, which a
+`claude mcp get` lookup could never establish on its own (see below). This does
+not close the gap in general — a session that never collided still cannot be
+told apart from one whose second server departed cleanly before this consumer
+ever looked — it closes the one instance for which this run holds a witness.
 
 **The tag is somebody else's text and reaches an argv this tool builds, so it is
 shape-checked and passed after `--`**
