@@ -1949,7 +1949,7 @@ An external contributor should still open one PR per change; the maintainer-side
 convention is not license to bundle unrelated fixes just because they landed the same
 day.
 
-## `.oss/statusline.py` is opt-in, not wired
+## `.oss/statusline.py` is wired in the tracked settings
 
 `.oss/statusline.py` is tracked. It arrives through `/oss:scaffold --apply`
 (#1956), which owns the file and overwrites it wholesale on every install — see
@@ -1957,23 +1957,24 @@ its own header comment and `.github/scripts/coverage_gate.py`'s `NOT_MEASURED`
 entry for it. Tracking it is right: without a committed copy, a fresh clone gets
 none of what the maintainer's own checkout already has.
 
-**Wiring it is a different question, and this repository answers it "no."**
-`.claude/settings.json` is tracked and read by every clone the moment it is
-checked out. It already carries one executed thing — the `PreToolUse` guard —
-and that precedent does not extend to a status line: the guard protects this
-repository's own commands from a class of mistake documented elsewhere in this
-file, on every contributor's behalf, whether they asked for it or not. A status
-line is cosmetic and per-maintainer — it decides what renders in *your* prompt,
-not what a shared command is allowed to do — and imposing that choice on
-everyone who clones this repository, without an opt-in step, is a different
-kind of decision than the guard is. #1964 records both readings and settles on
-this one.
+**Wiring it is a different question, and #1964 answered it twice.** The first
+answer was no: a status line is cosmetic, so a `statusLine` key in a tracked
+`.claude/settings.json` imposes one maintainer's display choice on everybody who
+clones, which the `PreToolUse` guard in the same file does not — that guard
+protects this repository's own commands on every contributor's behalf.
 
-**So `.claude/settings.json` deliberately does not carry a `statusLine` key.**
-If you want the status line locally, opt in yourself — this reads the same
-script every scaffolded install does, without changing anything tracked. Put
-this in `.claude/settings.local.json` (untracked; create it if you do not
-have one):
+**That reading was reversed, and the reason is what the alternative costs.** The
+untracked file it sent people to, `.claude/settings.local.json`, is *per-machine*
+state — the harness's own plugin roster and this machine's paths. Configuration
+every developer working on this repository should have is not that; it is exactly
+what the tracked file is for. Routing it to the local copy means each of them
+derives the same wiring by hand and none of them can see that the others did.
+The imposition argument survives only for something that names a particular
+machine, and this does not: the command resolves through `$CLAUDE_PROJECT_DIR`,
+so it runs whichever checkout is open and nothing outside it.
+
+**So `.claude/settings.json` carries the key, and `/oss:scaffold --apply` writes
+it:**
 
 ```json
 {
@@ -1984,8 +1985,16 @@ have one):
 }
 ```
 
-`tests/test_statusline_wiring_documented_1964.py` pins this: it fails if
-`.claude/settings.json` ever gains a `statusLine` key without this section
-being updated in the same PR, and it fails if this section and the tracked
-config both go silent about the file at once — the exact state #1964 found,
-where a component ships with nothing tracked saying whether it is on purpose.
+Two tests hold this, and they hold different halves.
+`tests/test_settings_no_machine_state_1747.py` lists `statusLine` in
+`ALLOWED_TOP_LEVEL_KEYS` — that file is an allowlist precisely so a key nobody
+here decided on fails closed, so adding one is a deliberate act with a reason
+recorded next to it. `tests/test_statusline_wiring_documented_1964.py` fails if
+the key goes away, if this section stops describing it, or if the command stops
+resolving through `$CLAUDE_PROJECT_DIR` — the allowlist reads top-level keys and
+not their interiors, and says so, so an absolute `/Users/someone/...` command
+would sail through it and ship one machine's disk to every clone.
+
+If you do not want the status line in your own sessions, `statusLine` in
+`.claude/settings.local.json` overrides the tracked one; that is the per-machine
+file, and opting *out* is the direction that genuinely is per-machine.

@@ -16,18 +16,27 @@ user's clone carries and nothing in their own configuration will ever invoke.
 * commit the `statusLine` key, so the tracked file is tracked-and-wired, or
 * leave it deliberately unwired, and say so somewhere a reader will meet it.
 
-This repository chose the second: a `statusLine` key in a tracked
-`.claude/settings.json` would run a status line in every contributor's session
-the moment they clone, without them opting in, and a display choice is not the
-same kind of imposition as the tracked `PreToolUse` guard that already runs on
-every clone -- the guard protects the repository's own commands; a status line
-is cosmetic and per-maintainer.
+**This repository chose the second and then reversed it.** The original reading
+was that a status line is cosmetic and per-maintainer, so wiring it in a tracked
+file imposes a display choice on everybody who clones. What that reading missed
+is what the untracked alternative costs: `.claude/settings.local.json` is
+per-*machine* state, so routing the key there means every developer who wants to
+work on this repository re-derives the same wiring by hand, and none of them can
+see that the others did. Configuration that every developer of a repository
+should have is precisely what a tracked settings file is for -- and the command,
+`python3 "$CLAUDE_PROJECT_DIR"/.oss/statusline.py`, names nothing outside the
+checkout, so it carries none of the machine state #1747 exists to keep out.
 
-This test pins that decision so the gap #1964 was filed about cannot reopen
-silently: `.oss/statusline.py` must be *either* referenced by something tracked
-that will actually run it, *or* documented as an opt-in step a maintainer takes
-deliberately. Losing both -- the tracked reference or the doc -- is exactly the
-state #1964 found.
+So the tracked key is now the pinned state, and the assertions below moved with
+it rather than being deleted: the file must be wired AND the doc section must
+say so. The gap #1964 was filed about is unchanged -- `.oss/statusline.py`
+shipped with nothing tracked saying whether that was on purpose -- and losing
+either half reopens it.
+
+The `$CLAUDE_PROJECT_DIR` spelling is asserted rather than assumed. An absolute
+`/Users/someone/...` command passes `tests/test_settings_no_machine_state_1747.py`'s
+top-level key allowlist (it reads keys, not their interiors, and says so), so
+this file is the only thing standing between one machine's disk and every clone.
 """
 from __future__ import annotations
 
@@ -37,20 +46,38 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
-def _settings_wires_statusline() -> bool:
+def _statusline_command() -> str | None:
+    """The command the tracked settings would run, or ``None`` if nothing is wired.
+
+    ``None`` covers a missing file and a missing key alike; both mean the same
+    thing to every caller here, and neither is a shape the assertions below want
+    to distinguish. A `statusLine` that is not an object, or carries no string
+    `command`, returns the empty string -- present and unusable, which must not
+    read as either wired or absent.
+    """
     settings_path = REPO_ROOT / ".claude" / "settings.json"
     if not settings_path.is_file():
-        return False
+        return None
     settings = json.loads(settings_path.read_text(encoding="utf-8"))
-    return "statusLine" in settings
+    if "statusLine" not in settings:
+        return None
+    block = settings["statusLine"]
+    if not isinstance(block, dict):
+        return ""
+    command = block.get("command")
+    return command if isinstance(command, str) else ""
 
 
-def _contributing_documents_statusline_as_opt_in() -> bool:
+def _settings_wires_statusline() -> bool:
+    return bool(_statusline_command())
+
+
+def _contributing_documents_statusline() -> bool:
     text = (REPO_ROOT / "docs" / "contributing.md").read_text(encoding="utf-8")
     return (
         "statusline.py" in text
-        and "opt-in" in text.lower()
-        and "settings.local.json" in text
+        and "settings.json" in text
+        and "CLAUDE_PROJECT_DIR" in text
     )
 
 
@@ -61,23 +88,44 @@ def test_statusline_is_tracked():
     assert (REPO_ROOT / ".oss" / "statusline.py").is_file()
 
 
-def test_statusline_is_wired_or_documented_as_opt_in():
+def test_statusline_is_wired_and_documented():
     """The third state -- shipped, and nothing tracked says whether that is on
-    purpose -- must not be reachable. Either the tracked settings wire it, or
-    the docs say plainly that wiring it is a maintainer's own opt-in step."""
-    wired = _settings_wires_statusline()
-    documented = _contributing_documents_statusline_as_opt_in()
-    assert wired or documented, (
-        ".oss/statusline.py is tracked but neither wired in .claude/settings.json "
-        "nor documented in docs/contributing.md as an opt-in step (#1964) -- this "
-        "is the exact silent-orphan state #1964 was filed to close"
+    purpose -- must not be reachable. The tracked settings wire it, and the doc
+    section says so; losing either half is the state #1964 found."""
+    assert _settings_wires_statusline(), (
+        ".oss/statusline.py is tracked but .claude/settings.json wires no usable "
+        "statusLine command (#1964). Every developer working on this repository "
+        "should get the same wiring from the checkout; the untracked "
+        ".claude/settings.local.json is per-machine state and makes each of them "
+        "re-derive it by hand"
+    )
+    assert _contributing_documents_statusline(), (
+        "docs/contributing.md no longer documents the statusline wiring (#1964) -- "
+        "a tracked key that runs in every clone must be described where a "
+        "contributor meets it"
     )
 
 
-def test_settings_json_does_not_wire_statusline():
-    """This repository's decision, pinned: `.claude/settings.json` stays free of
-    a `statusLine` key, because that key would run on every clone the moment it
-    is checked out, with no opt-in step for the contributor who did not ask for
-    it. Flipping this decision means also flipping the docs test above and
-    updating this test in the same PR, not letting the two drift apart."""
-    assert not _settings_wires_statusline()
+def test_settings_json_wires_statusline_through_the_project_dir_variable():
+    """The wiring must resolve on every clone, not on the machine that wrote it.
+
+    `tests/test_settings_no_machine_state_1747.py` guards which top-level keys
+    travel, and states plainly that it reads the top-level surface only -- an
+    absolute `/Users/someone/...` inside an allowed key passes it. This is the
+    interior guard that key owes, per that file's own closing paragraph.
+    """
+    command = _statusline_command()
+    assert command, "no statusLine command to check -- see the test above"
+    assert "$CLAUDE_PROJECT_DIR" in command, (
+        "the tracked statusLine command does not resolve through "
+        "$CLAUDE_PROJECT_DIR, so it names some particular checkout rather than "
+        "whichever one is open: " + command
+    )
+    assert "$HOME" not in command and not command.startswith("/"), (
+        "the tracked statusLine command reaches outside the checkout, which "
+        "ships one machine's disk to every clone (#1747): " + command
+    )
+    assert ".oss/statusline.py" in command, (
+        "the tracked statusLine command does not run .oss/statusline.py, so "
+        "this file is pinning something other than what it documents: " + command
+    )
