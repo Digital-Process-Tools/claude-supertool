@@ -397,6 +397,8 @@ Three rules produce that line, and nothing else does: a hand-maintained synonym 
 
 When no rule fires the message is silent about it, which is the point: a suggestion that is wrong costs the reader a round-trip that silence would not have. The roster below the suggestion is never replaced by it.
 
+**In a multi-op call, an unroutable member refuses the whole call before any member runs** ([#2122](https://github.com/Digital-Process-Tools/claude-supertool/issues/2122)). Every positional argument is its own op, so a mistyped flag becomes a batch member of its own — `supertool 'read:big.md' --offset 900 --limit 5` used to run the unbounded `read:` to completion before saying `--offset` was not an op, spending the largest possible cost right before the message that explains it should not have. Every member's op *name* is now checked against the registry up front, and the call refuses with none of its members run if one does not route — a flag-shaped member (`--offset`) is named as one, with a pointer at the positional form of the op it likely followed. This is narrower than "will succeed": a real op given a bad argument still runs in place and fails there, exactly as before — only a name that cannot route at all is knowable ahead of time.
+
 **The escape hatch is `cwd:`** — the first op in a call, which `chdir`s before dispatch so the rest of the call resolves against that project's config:
 
 ```bash
