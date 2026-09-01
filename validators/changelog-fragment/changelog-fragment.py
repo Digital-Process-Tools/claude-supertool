@@ -17,9 +17,11 @@ followed by a red matrix would be #1132 inverted, which is worse than #1132.
 
 **Nothing here is keyed on a hardcoded path.** Scope is the `match` glob in the
 project's `.supertool.json`, and the rules are the project's own script, found
-by walking up from the file (`$SUPERTOOL_CHANGELOG_ASSEMBLER` overrides the
-default location). A project with no such script gets `skipped`, not `ok`:
-supertool runs against repos that have never heard of `changelog.d/`.
+by walking up from the file, trying every entry in `ASSEMBLER_LOCATIONS` in
+order at each parent (`$SUPERTOOL_CHANGELOG_ASSEMBLER` overrides with one
+exact path instead of the list — #2072). A project with no such script gets
+`skipped`, not `ok`: supertool runs against repos that have never heard of
+`changelog.d/`.
 
 Three states. `ok`, a finding, and `skipped` when this cannot answer — no
 assembler above the file, the file is not a fragment at all, or markdown-it-py

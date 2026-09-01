@@ -19,6 +19,7 @@ page, not these tables.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -82,9 +83,12 @@ def test_no_registry_name_answers_unknown_operation() -> None:
 #: from a shipped preset manifest, and this parametrize stayed at the two
 #: project config files it was written against in #1285, so every preset's
 #: own `builtin-ops` (`lsp.json`, `vim.json`, and any future one) went
-#: unguarded: `presets/ghost.json` carrying a `blame` entry passed this suite
-#: outright before this line was added. Built once at collection time, not
-#: cached, so a preset added later is swept without editing this file.
+#: unguarded: a scratch, never-committed `presets/ghost.json` carrying a
+#: `blame` entry, tried by hand while diagnosing #2080, passed this suite
+#: outright before this line was added -- reproducible with any preset naming
+#: an op absent from `supertool._valid_op_names()`. Built once at collection
+#: time, not cached, so a preset added later is swept without editing this
+#: file.
 _BUILTIN_OP_CONFIGS = [
     ".supertool.json",
     ".supertool.example.json",
@@ -93,6 +97,24 @@ _BUILTIN_OP_CONFIGS = [
         for p in (ROOT / "presets").glob("*.json")
     ),
 ]
+
+
+def test_preset_glob_is_non_empty() -> None:
+    """The same guard `test_every_registry_is_non_empty` gives the other four.
+
+    A `presets/*.json` glob that silently resolved to nothing -- a wrong
+    `ROOT`, a renamed `presets/` directory, a stripped install -- would make
+    `test_no_config_calls_a_non_builtin_a_builtin` generate zero cases for the
+    presets half of `_BUILTIN_OP_CONFIGS` and report a clean sweep over
+    nothing, the exact shape #2080 fixed one registry over. 15+ shipped
+    presets exist today; this is a floor, not a pin, so adding or removing a
+    preset does not make this brittle.
+    """
+    preset_configs = [c for c in _BUILTIN_OP_CONFIGS if c.startswith("presets" + os.sep)]
+    assert len(preset_configs) > 5, (
+        f"presets/*.json glob collapsed to {preset_configs!r} — the sweep "
+        f"stopped sweeping"
+    )
 
 
 @pytest.mark.parametrize("config", _BUILTIN_OP_CONFIGS)
