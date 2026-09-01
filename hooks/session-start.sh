@@ -41,6 +41,32 @@ in_foreign_supertool_tree() {
     return 1
 }
 
+# A symlink into a *sibling* version directory of this same plugin's cache is
+# this hook's own artifact from a previous release (#2071), not a stranger's
+# file: `$BIN` carries the *currently running* version's path, so a plugin
+# update alone makes the previous session's own symlink fail an exact-equality
+# check against it. Comparing everything but the version segment is reading
+# the hook's own handwriting, not deciding a local file is genuine — #711/
+# #737's refusal above is about a `supertool.py` the checkout owns, which
+# this is not: nothing here is read or executed, only two path strings are
+# compared.
+own_stale_symlink_version() {
+    local target="$1" plugin_dir target_dir
+    # A shape match alone is not proof: a symlink can name a version segment
+    # that was never installed, including bytes an attacker chose (this
+    # target is data a project's own tracked symlink can carry, same as any
+    # other file content). Requiring the target to actually exist closes
+    # that, because an attacker able to plant a symlink in a project does
+    # not thereby gain write access to the plugin cache this compares
+    # against -- they cannot make a nonexistent path there exist.
+    [ -e "$target" ] || return 1
+    plugin_dir="$(dirname "$(dirname "$BIN")")"
+    target_dir="$(dirname "$(dirname "$target")")"
+    [ "$(basename "$target")" = "$(basename "$BIN")" ] || return 1
+    [ -n "$target_dir" ] && [ "$target_dir" = "$plugin_dir" ] || return 1
+    basename "$(dirname "$target")"
+}
+
 if in_foreign_supertool_tree; then
     echo "> No ./supertool wrapper created here: this directory is its own supertool tree, so a wrapper pointing at the plugin install would run the plugin core against this tree's config and presets — the mix every custom op declines (#678)."
     echo "> Use: python3 supertool.py 'op:args' — core, config and presets from one tree."
@@ -49,6 +75,17 @@ if in_foreign_supertool_tree; then
     fi
 elif [ -L "./supertool" ] && [ "$(readlink "./supertool")" = "$BIN" ]; then
     :
+elif [ -L "./supertool" ] && OLD_VERSION="$(own_stale_symlink_version "$(readlink "./supertool")")"; then
+    NEW_VERSION="$(basename "$(dirname "$BIN")")"
+    # The repoint is attempted before the message is chosen, not after, so
+    # the sentence names what actually happened rather than what was merely
+    # intended -- the same "a receipt must not claim more than it verified"
+    # rule as everywhere else here.
+    if ln -sf "$BIN" "./supertool" 2>/dev/null; then
+        echo "> ./supertool pointed at this plugin's own $OLD_VERSION — its own symlink from an earlier release, not a stranger's file. The plugin is now $NEW_VERSION; repointed it so calls are answered by the current version."
+    else
+        echo "> ./supertool pointed at this plugin's own $OLD_VERSION — its own symlink from an earlier release, not a stranger's file. The plugin is now $NEW_VERSION, but repointing it failed; calls will still be answered by $OLD_VERSION until this is fixed by hand."
+    fi
 elif [ -e "./supertool" ] || [ -L "./supertool" ]; then
     echo "> ./supertool already exists here and is not the plugin symlink — leaving it untouched."
 else
