@@ -156,6 +156,16 @@ CHANNEL_VARS = (naming.NAME_ENV, naming.SOCK_ENV, naming.STATE_DIR_ENV)
 #: rebuilt inside its own fix.
 HEALTH_SUFFIX = ".health.json"
 
+#: Where the losing side of #550's collision leaves a record on its way out
+#: (#2133). `channel.ts`'s `refuse()` already knows exactly why it lost this
+#: socket -- its stderr message says so -- but that text used to go nowhere a
+#: reader could reach: the harness had already marked the session's channel
+#: servers `CONNECTION_CLOSED` before anyone opened a terminal. This is that
+#: same fact, persisted beside the socket instead of only spoken to stderr.
+#: The bound consumer clears it the instant it (re)binds, so what remains here
+#: happened during *this* consumer's own run, not some earlier session's.
+REFUSAL_SUFFIX = ".refused.json"
+
 #: How long a consumer's counters may go unrefreshed before they stop counting
 #: as evidence. `channel.ts` rewrites the file on a heartbeat every 10s whether
 #: or not events are flowing, precisely so that "idle" and "wedged" are
@@ -502,24 +512,37 @@ def read_health(path: str) -> tuple[dict | None, str]:
     subject is declining beats guessing, answering with a stack trace, for two
     bytes any same-uid writer can put in `/tmp`.
     """
-    health_path = path + HEALTH_SUFFIX
-    if not os.path.lexists(health_path):
-        return None, (
+    return _read_json_sidecar(
+        path + HEALTH_SUFFIX,
+        absent=(
             "the bound consumer publishes no counters — it predates this field, or it is "
             "not claude-channel"
-        )
+        ))
+
+
+def _read_json_sidecar(sidecar_path: str, *, absent: str) -> tuple[dict | None, str]:
+    """Read one JSON object a consumer wrote beside its own socket.
+
+    Shared by `read_health` and `read_refusal` (#2133): same world-writable
+    directory, same same-uid symlink risk (#148, #1184/#1187), same defensive
+    open. `absent` is the caller's reason for "nothing at this path" — the two
+    sidecars mean different things by that: no counters published yet, versus
+    no rival has ever recorded losing this socket.
+    """
+    if not os.path.lexists(sidecar_path):
+        return None, absent
     try:
-        fd = os.open(health_path, os.O_RDONLY | _NOFOLLOW)
+        fd = os.open(sidecar_path, os.O_RDONLY | _NOFOLLOW)
     except OSError as err:
         # ELOOP on Linux and macOS, EMLINK on the BSDs — both mean the name was
         # a symlink and O_NOFOLLOW refused it.
         if err.errno in (errno.ELOOP, errno.EMLINK):
             return None, (
-                f"{health_path} is a symlink and was not followed — a health file is "
+                f"{sidecar_path} is a symlink and was not followed — this file is "
                 "written in place by the consumer, so this is somebody redirecting the "
                 "read at another file"
             )
-        return None, f"{health_path} could not be read ({type(err).__name__})"
+        return None, f"{sidecar_path} could not be read ({type(err).__name__})"
     # `O_NOFOLLOW` refuses a symlink; it does not refuse a *directory*, and
     # `os.open` on one succeeds. The wrap is then what fails
     # (`IsADirectoryError` on POSIX, `PermissionError` on Windows — #618/#627),
@@ -531,7 +554,7 @@ def read_health(path: str) -> tuple[dict | None, str]:
         handle = os.fdopen(fd, "r", encoding="utf-8")
     except OSError as err:
         os.close(fd)
-        return None, f"{health_path} could not be read ({type(err).__name__})"
+        return None, f"{sidecar_path} could not be read ({type(err).__name__})"
     try:
         with handle as f:
             record = json.load(f)
@@ -543,10 +566,28 @@ def read_health(path: str) -> tuple[dict | None, str]:
         # is a same-uid denial of service on the op that reports the outage.
         # Both are `ValueError` subclasses and the base is caught deliberately:
         # a third decode failure must decline too, not crash the report.
-        return None, f"{health_path} could not be read ({type(err).__name__})"
+        return None, f"{sidecar_path} could not be read ({type(err).__name__})"
     if not isinstance(record, dict):
-        return None, f"{health_path} is not a JSON object"
+        return None, f"{sidecar_path} is not a JSON object"
     return record, ""
+
+
+def read_refusal(path: str) -> tuple[dict | None, str]:
+    """A rival consumer's own record of losing this socket, or None and why.
+
+    Written by the process that hit `EADDRINUSE`, confirmed a live listener
+    (#550) and exited rather than take it — exactly the refusal #2133 measured
+    going only to stderr, unread by a session already past `CONNECTION_CLOSED`
+    for both of its channel declarations. This is the same fact, read from the
+    marker that process leaves beside the socket on its way out.
+
+    The bound consumer clears this file the moment it (re)binds (see
+    `channel.ts`), so a record here happened during *this* consumer's own
+    run — not a stale leftover from a collision that has since gone away.
+    """
+    return _read_json_sidecar(
+        path + REFUSAL_SUFFIX,
+        absent="no rival consumer has recorded losing this socket")
 
 
 def _health_objection(record: dict, *, allow_stale: bool = False) -> str:
@@ -1007,6 +1048,39 @@ def _channel_lines(path: str, resolved: naming.Resolved) -> list[str]:
     return [f"  channel  : {body[0]}"] + [f"             {line}" for line in body[1:]]
 
 
+def _refusal_lines(path: str) -> list[str]:
+    """What a rival consumer said when it lost this socket, or nothing (#2133).
+
+    Established from the losing process's own stderr, quoted verbatim into a
+    file it writes on the way out — see `read_refusal`. Nothing here decides
+    whether the report's own verdict is good or bad on account of it;
+    `subscription()` is where that decision lives. This only makes the fact
+    readable, which #2133 measured it was not: the refusal happened, the
+    session's channel servers were `CONNECTION_CLOSED`, and nobody — man or
+    op — ever read the message that explained why.
+
+    Silent when there is nothing to say. A report that grew a `refused` line
+    on every call, evidence or not, would be exactly the noise this repo's own
+    style guide forbids.
+    """
+    record, _why = read_refusal(path)
+    if record is None:
+        return []
+    reason = record.get("reason")
+    reason_text = (_untrusted.flat(reason) if isinstance(reason, str) and reason
+                    else "unknown reason")
+    pid = record.get("pid")
+    pid_text = str(pid) if isinstance(pid, int) else "?"
+    ts_text = _stamp(record, "ts")
+    return [
+        f"  refused  : pid {pid_text} lost this socket at {ts_text} — {reason_text}",
+        "             a second claude-channel server was configured for this",
+        "             session and exited without binding it. If this session also",
+        "             carries a channel MCP declaration outside the one that bound",
+        "             this socket, that collision recurs every time it launches (#2133)",
+    ]
+
+
 def _holder_lines(path: str) -> list[str]:
     """Who holds this socket, for the two arms that decline before the peer check.
 
@@ -1205,7 +1279,7 @@ def _looks_like_a_session(argv: str) -> bool:
     return first == CLAUDE_BIN or first.endswith("/" + CLAUDE_BIN)
 
 
-def subscription(pid: Any, pid_note: str = "") -> Subscription:
+def subscription(pid: Any, pid_note: str = "", path: str | None = None) -> Subscription:
     """Is any session subscribed to the channel this consumer serves? (#1543)
 
     The chain, and every link of it is read rather than assumed: the consumer
@@ -1219,6 +1293,18 @@ def subscription(pid: Any, pid_note: str = "") -> Subscription:
     Two channel-capable servers under one session satisfy both halves
     separately. It is a narrower doubt than the one #1543 was filed about, and
     naming it is cheaper than a probe that would still not close it.
+
+    `path`, optional, is #2133's addition: when the caller has a socket to
+    check, a tag naming a *configured* server is no longer read as
+    `subscribed` if this run's own evidence (`read_refusal`) says a rival was
+    refused this exact socket. `claude mcp get` cannot make that call itself —
+    #1558 established that probing it spawns a second process, so a live
+    singleton legitimately fails that same connect every time, and "Failed to
+    connect" from the lookup is not a usable signal. The marker is a different
+    and stronger kind of evidence: not a fresh probe racing the collision, but
+    a record the collision already happened, written by the process that lost
+    it, during this consumer's own run. Callers with no socket to check (the
+    existing #1543 unit tests among them) get exactly the old behaviour.
     """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return _sub(SUB_UNKNOWN,
@@ -1292,6 +1378,27 @@ def subscription(pid: Any, pid_note: str = "") -> Subscription:
             continue
         answer, ask_why = _configured(name, min(CLAUDE_TIMEOUT, remaining))
         if answer:
+            if path is not None:
+                collision, _why = read_refusal(path)
+                if collision is not None:
+                    reason = collision.get("reason")
+                    reason_text = (_untrusted.flat(reason)
+                                    if isinstance(reason, str) and reason
+                                    else "unknown reason")
+                    return _sub(
+                        SUB_UNKNOWN,
+                        f"NOT established — {TAG_PREFIX}{_untrusted.flat(name)} is "
+                        f"configured, but a rival",
+                        (f"claude-channel server was refused this exact socket "
+                         f"during this run ({reason_text}, see `refused` above). "
+                         "Two channel",
+                         "servers configured for one session (#2133) means a "
+                         "configured tag proves",
+                         "nothing about which one the harness actually holds a "
+                         "connection to —",
+                         "`claude mcp get` cannot tell them apart (#1558), so this "
+                         "lands in the",
+                         "third state rather than the positive one"))
             return _sub(SUB_SUBSCRIBED,
                         f"subscribed — session pid {ppid} carries "
                         f"{TAG_PREFIX}{_untrusted.flat(name)}, and the",
@@ -1327,11 +1434,11 @@ def subscription_for_socket(path: str) -> Subscription:
     """
     holder, why = peer_pid(path)
     if holder is not None:
-        return subscription(holder)
+        return subscription(holder, path=path)
     record, _ = read_health(path)
     claimed = record.get("pid") if isinstance(record, dict) else None
     if isinstance(claimed, int):
-        return subscription(claimed, "self-reported by the health file")
+        return subscription(claimed, "self-reported by the health file", path)
     return _sub(SUB_UNKNOWN,
                 "NOT established — no consumer pid was resolved for this socket",
                 (why or "the health file names no pid",))
@@ -1371,6 +1478,7 @@ def health(path: str) -> tuple[int, str]:
     state, detail = probe_socket(path)
     head = [f"  socket   : {path}", f"             {detail}"]
     head += _channel_lines(path, RESOLVED)
+    head += _refusal_lines(path)
 
     if state == "no-listener":
         body = ["channel: NOT DELIVERING", *head,
@@ -1449,7 +1557,8 @@ def health(path: str) -> tuple[int, str]:
     # renders identically to a quiet morning, so the subscription answer decides
     # the verdict rather than being printed under one that contradicts it.
     sub = subscription(holder if holder is not None else claimed,
-                       "" if holder is not None else "self-reported by the health file")
+                       "" if holder is not None else "self-reported by the health file",
+                       path)
     counters = [
         f"  counters : {_num(_counter(record, 'lines_read'))} lines read, "
         f"{_num(_counter(record, 'forwarded'))} forwarded, "
