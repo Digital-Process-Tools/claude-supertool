@@ -1122,7 +1122,12 @@ def main() -> int:
     # goes out once, immediately ahead of the first such block, per the same
     # placement rule `render_check` uses (`_untrusted.banner.__doc__`): the
     # reader who acts on the first thing printed must see it before content.
-    print(_untrusted.banner())
+    # Gated on `total`, not printed unconditionally: `raw_mode` on a 0-line
+    # log returns one line below with no fence ever opened, and a banner
+    # promising markers a render never prints teaches a reader to skip the
+    # next one (`_untrusted.py`'s own docstring, #819's rule applied here).
+    if total > 0:
+        print(_untrusted.banner())
 
     # 3. Raw mode — dump (sliced) trace, skip filters
     if raw_mode:

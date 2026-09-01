@@ -923,7 +923,13 @@ def write_traces(job_ids: list[str]) -> int:
 
     first = _first_phpunit_failure(content)
     if first:
-        print(f"[first] {first}")
+        # #2048: a one-line quote out of the trace, and this repo's own
+        # convention for a one-line remote value is `flat()`, not a fence —
+        # two marker lines around one line of text is the noise that gets a
+        # convention abandoned (`_untrusted.py`'s own docstring). Already
+        # `scrub()`-safe via `_log_lines`/`_first_phpunit_failure`; `flat()`
+        # on top is what keeps it on the one line this receipt owns.
+        print(f"[first] {_untrusted.flat(first)}")
 
     return 0
 
@@ -1144,7 +1150,12 @@ def main() -> int:
     # commands wrote it — and is fenced with `_untrusted.open_marker()` /
     # `close_marker()`. The banner goes out once, immediately ahead of the
     # first such block, per the same placement rule the GitHub twin uses.
-    print(_untrusted.banner())
+    # Gated on `total`, not printed unconditionally: `raw_mode` on a 0-line
+    # trace returns one line below with no fence ever opened, and a banner
+    # promising markers a render never prints teaches a reader to skip the
+    # next one (`_untrusted.py`'s own docstring, #819's rule applied here).
+    if total > 0:
+        print(_untrusted.banner())
 
     # 3. Raw mode — dump (sliced) trace, skip filters
     if raw_mode:
