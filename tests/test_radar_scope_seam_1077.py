@@ -130,7 +130,17 @@ def _report(monkeypatch, gh: _Gh):
     monkeypatch.setattr(branch._declared_legs.subprocess, "run", gh)
     monkeypatch.setattr(branch._declared_workflows.subprocess, "run", gh)
     monkeypatch.setattr(tier.subprocess, "run", gh)
-    return tier.default_branch_report("master", "o/r")
+    # #2024 gave `default_branch_report` a standing poller of its own,
+    # spawned through `watch` and reported as a third, independent
+    # `poller_ok` -- see that function's own docstring for why it is not
+    # folded into `could_tell`. This file is entirely about the *query*
+    # `could_tell` covers, so the poller is stubbed healthy here rather than
+    # left at the bare `_no_watch` default (which always answers "failed"
+    # and would put a standing-poller warning on every board this file
+    # renders, including the fully green ones `lines == []` still pins).
+    lines, could_tell, _poller_ok = tier.default_branch_report(
+        "master", "o/r", lambda *a, **k: "alive")
+    return lines, could_tell
 
 
 # ---------------------------------------------------------------------------
