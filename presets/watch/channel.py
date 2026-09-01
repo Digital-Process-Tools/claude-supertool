@@ -166,6 +166,17 @@ HEALTH_SUFFIX = ".health.json"
 #: happened during *this* consumer's own run, not some earlier session's.
 REFUSAL_SUFFIX = ".refused.json"
 
+#: The `why` `read_refusal` hands back when nothing is wrong -- literally
+#: nothing: no rival has ever recorded losing this socket. Every call site
+#: compares against this by name rather than treating any `record is None` as
+#: that one answer, because the same return shape covers a second, very
+#: different case: the marker exists and could not be *read* -- a same-uid
+#: symlink at the predictable name, the exact attack #148/#1184/#1187 already
+#: guard the health file against, or ordinary corruption. Folding the two
+#: together would let either one hide the collision this file exists to
+#: surface, by making the evidence unreadable rather than absent.
+_REFUSAL_ABSENT = "no rival consumer has recorded losing this socket"
+
 #: How long a consumer's counters may go unrefreshed before they stop counting
 #: as evidence. `channel.ts` rewrites the file on a heartbeat every 10s whether
 #: or not events are flowing, precisely so that "idle" and "wedged" are
@@ -585,9 +596,7 @@ def read_refusal(path: str) -> tuple[dict | None, str]:
     `channel.ts`), so a record here happened during *this* consumer's own
     run — not a stale leftover from a collision that has since gone away.
     """
-    return _read_json_sidecar(
-        path + REFUSAL_SUFFIX,
-        absent="no rival consumer has recorded losing this socket")
+    return _read_json_sidecar(path + REFUSAL_SUFFIX, absent=_REFUSAL_ABSENT)
 
 
 def _health_objection(record: dict, *, allow_stale: bool = False) -> str:
@@ -1063,9 +1072,21 @@ def _refusal_lines(path: str) -> list[str]:
     on every call, evidence or not, would be exactly the noise this repo's own
     style guide forbids.
     """
-    record, _why = read_refusal(path)
+    record, why = read_refusal(path)
     if record is None:
-        return []
+        if why == _REFUSAL_ABSENT:
+            return []
+        return [
+            f"  refused  : a refusal marker exists for this socket but could not be "
+            f"read —",
+            f"             {_untrusted.flat(why)}. Same defensive read `read_health` "
+            "uses for the",
+            "             health file (#148, #1184/#1187) — this declines rather than",
+            "             guessing, so a same-uid symlink at this predictable name "
+            "cannot hide",
+            "             behind a report that reads exactly like no collision at "
+            "all (#2133)",
+        ]
     reason = record.get("reason")
     reason_text = (_untrusted.flat(reason) if isinstance(reason, str) and reason
                     else "unknown reason")
@@ -1379,7 +1400,7 @@ def subscription(pid: Any, pid_note: str = "", path: str | None = None) -> Subsc
         answer, ask_why = _configured(name, min(CLAUDE_TIMEOUT, remaining))
         if answer:
             if path is not None:
-                collision, _why = read_refusal(path)
+                collision, collision_why = read_refusal(path)
                 if collision is not None:
                     reason = collision.get("reason")
                     reason_text = (_untrusted.flat(reason)
@@ -1399,6 +1420,24 @@ def subscription(pid: Any, pid_note: str = "", path: str | None = None) -> Subsc
                          "`claude mcp get` cannot tell them apart (#1558), so this "
                          "lands in the",
                          "third state rather than the positive one"))
+                if collision_why != _REFUSAL_ABSENT:
+                    # A marker exists and could not be read — the same symlink
+                    # or corruption risk `_refusal_lines` declines on (#2133).
+                    # Reading that as "no collision" would be exactly the
+                    # absence-read-as-presence defect this file exists to
+                    # remove, one call site over from where it was fixed.
+                    return _sub(
+                        SUB_UNKNOWN,
+                        f"NOT established — {TAG_PREFIX}{_untrusted.flat(name)} is "
+                        f"configured, but a refusal",
+                        (f"marker for this socket could not be read "
+                         f"({_untrusted.flat(collision_why)}), so a collision",
+                         "during this run cannot be ruled out. Same defensive read "
+                         "`read_health` uses",
+                         "(#148, #1184/#1187) — guessing 'no rival' off an "
+                         "unreadable marker would be",
+                         "the same defect this state exists to remove, one call "
+                         "site over"))
             return _sub(SUB_SUBSCRIBED,
                         f"subscribed — session pid {ppid} carries "
                         f"{TAG_PREFIX}{_untrusted.flat(name)}, and the",

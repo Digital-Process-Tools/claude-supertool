@@ -51,7 +51,13 @@ for _dir in (str(REPO / "presets" / "watch"), str(REPO / "presets"), str(REPO / 
         sys.path.insert(0, _dir)
 
 import channel  # noqa: E402
+import _symlink  # noqa: E402
 from _changelog_findable import assert_change_is_findable  # noqa: E402
+
+needs_nofollow = pytest.mark.skipif(
+    not hasattr(os, "O_NOFOLLOW"),
+    reason="this platform has no O_NOFOLLOW, so the guard cannot be enforced",
+)
 
 CONSUMER_ARGV = "bun /Users/x/notifiers/claude-channel/channel.ts"
 SESSION_PID = 4242
@@ -161,6 +167,23 @@ def test_a_written_marker_is_read_back(forwarding):
     assert "listening" in record["reason"], record
 
 
+@needs_nofollow
+def test_an_unreadable_marker_is_not_the_same_absence_as_no_marker(forwarding):
+    """An absent marker and an unreadable one both return `(None, ...)` from
+    `read_refusal` -- but they must not say the same thing. A same-uid symlink
+    at the predictable `.refused.json` name is exactly the attack #1184/#1187
+    already guard the health file against; folding "refused, but I could not
+    read it" into "nobody refused" would let that attack hide the one piece of
+    evidence this whole file exists to surface."""
+    _symlink.require_symlink()
+    os.symlink(str(Path(forwarding).parent / "nowhere.json"),
+               f"{forwarding}{REFUSAL_SUFFIX}")
+    record, why = channel.read_refusal(forwarding)
+    assert record is None, record
+    assert "symlink" in why, why
+    assert why != "no rival consumer has recorded losing this socket", why
+
+
 # --- remedy 1: the collision is readable from `channel:health` -------------
 
 def test_health_surfaces_a_refusal_recorded_during_this_run(forwarding, monkeypatch):
@@ -184,6 +207,27 @@ def test_health_says_nothing_about_a_refusal_when_none_was_recorded(
     _, report = channel.health(forwarding)
     assert "9999" not in report, report
     assert "listening there" not in report, report
+
+
+@needs_nofollow
+def test_health_says_something_when_the_marker_could_not_be_read(
+        forwarding, monkeypatch):
+    """The third state, at the render boundary: `_refusal_lines` must not
+    render an unreadable marker identically to no marker at all. Silence here
+    is what a same-uid attacker -- or ordinary corruption -- gets for free if
+    the two are folded together, on the exact surface #2133 built to stop
+    exactly that shape of silence."""
+    _symlink.require_symlink()
+    _process_table(monkeypatch, TAGGED)
+    _configured(monkeypatch, True)
+    _, absent_report = channel.health(forwarding)
+
+    os.symlink(str(Path(forwarding).parent / "nowhere.json"),
+               f"{forwarding}{REFUSAL_SUFFIX}")
+    _, unreadable_report = channel.health(forwarding)
+    assert "symlink" in unreadable_report, unreadable_report
+    assert unreadable_report != absent_report, (
+        "an unreadable marker must not render identically to no marker")
 
 
 # --- remedy 2: `subscribed` stops overclaiming -------------------------------
@@ -215,6 +259,25 @@ def test_a_configured_tag_with_no_recorded_collision_is_still_forwarding(
     assert report.splitlines()[0] == "channel: FORWARDING", report
     assert rc == channel.RC_FORWARDING, report
     assert "subscribed" in report, report
+
+
+@needs_nofollow
+def test_an_unreadable_marker_does_not_get_read_as_no_collision(
+        forwarding, monkeypatch):
+    """The sharper case of the same bug, in the verdict rather than the
+    report: `subscription()` must not take an unreadable marker as licence to
+    return `subscribed`. It cannot rule the collision in, and on this file's
+    own terms it must therefore not rule it out either -- `CANNOT DETERMINE`,
+    not the positive answer, exactly as an ordinary lookup failure already
+    does a few lines above this one."""
+    _symlink.require_symlink()
+    _process_table(monkeypatch, TAGGED)
+    _configured(monkeypatch, True)
+    os.symlink(str(Path(forwarding).parent / "nowhere.json"),
+               f"{forwarding}{REFUSAL_SUFFIX}")
+    rc, report = channel.health(forwarding)
+    assert report.splitlines()[0] != "channel: FORWARDING", report
+    assert rc != channel.RC_FORWARDING, report
 
 
 def test_subscription_called_with_no_path_is_unaffected(monkeypatch):
