@@ -418,6 +418,19 @@ function drop(line: string, reason: string): void {
 const HEALTH_PATH = `${SOCK_PATH}.health.json`;
 
 /**
+ * Where this process leaves a record if it loses the socket to a rival
+ * (#2133). `refuse()` already knows exactly why it lost — the message below —
+ * and that used to go only to stderr, unread: the harness had already marked
+ * both of a session's channel declarations `CONNECTION_CLOSED` before anyone
+ * had a terminal open to read it. `presets/watch/channel.py`'s `read_refusal`
+ * is the other end of this file; the two must agree on the suffix, and
+ * `tests/test_watch_channel_collision_2133.py` writes it by hand rather than
+ * import it from here, so a drift between the two shows up as a failing read
+ * instead of a silently-never-matching string.
+ */
+const REFUSAL_PATH = `${SOCK_PATH}.refused.json`;
+
+/**
  * How often the counters are re-stamped with no traffic at all.
  *
  * An idle radar and a wedged one publish the same numbers; only a moving
@@ -920,6 +933,26 @@ const EXIT_SOCKET_CONFLICT = 3;
  */
 let bound = false;
 
+/**
+ * Best-effort record of a refusal, for a reader that is not this process's
+ * own stderr (#2133). Failures here are swallowed on purpose, the same way
+ * `writeHealthNow` swallows them: the exit code and the stderr message above
+ * are the deliverable, this is a breadcrumb, and an unwritable marker must
+ * not turn a clean refusal into a crash.
+ */
+function writeRefusalMarker(reason: string): void {
+  const tmp = `${REFUSAL_PATH}.${process.pid}.tmp`;
+  const record = { pid: process.pid, ts: isoNow(), reason, sock_path: SOCK_PATH };
+  try {
+    fs.writeFileSync(tmp, `${JSON.stringify(record, null, 2)}\n`);
+    fs.renameSync(tmp, REFUSAL_PATH);
+  } catch {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {}
+  }
+}
+
 function refuse(reason: string): never {
   process.stderr.write(
     `claude-channel: refusing to start — ${reason}\n` +
@@ -930,6 +963,7 @@ function refuse(reason: string): never {
       `  To give this session its own: set SUPERTOOL_WATCH_SOCK to an unused path,\n` +
       `  here and on every poller that feeds it. Or stop the other session.\n`,
   );
+  writeRefusalMarker(reason);
   process.exit(EXIT_SOCKET_CONFLICT);
 }
 
@@ -1025,10 +1059,27 @@ function tryListen(srv: net.Server): Promise<NodeJS.ErrnoException | null> {
  * proved nothing is listening — so recovery from a crashed server, the case
  * the original unlink existed for, still works.
  */
+/**
+ * Drop a leftover refusal marker the instant this process binds (#2133).
+ *
+ * A marker left by a rival that lost this socket days ago, sitting under a
+ * consumer that has bound and rebound many times since, would read as a
+ * collision still happening. Clearing it on every successful bind means what
+ * survives here happened during *this* consumer's own run — a fresh
+ * collision, not an old one. Best-effort, like every other write beside this
+ * socket: a marker that fails to delete is stale evidence, not a crash.
+ */
+function clearRefusalMarker(): void {
+  try {
+    fs.unlinkSync(REFUSAL_PATH);
+  } catch {}
+}
+
 async function bindOrRefuse(srv: net.Server): Promise<void> {
   const first = await tryListen(srv);
   if (first === null) {
     bound = true;
+    clearRefusalMarker();
     return;
   }
   if (first.code !== "EADDRINUSE") refuse(`bind failed: ${first.code || String(first)}`);
@@ -1071,6 +1122,7 @@ async function bindOrRefuse(srv: net.Server): Promise<void> {
     refuse(`lost the socket to another server while clearing it: ${second.code || String(second)}`);
   }
   bound = true;
+  clearRefusalMarker();
 }
 
 const server = net.createServer((conn) => {

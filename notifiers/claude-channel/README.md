@@ -418,6 +418,22 @@ failure this is preventing. Two ways forward:
   it overrides the name, and setting only one of the pair is the failure mode the
   name exists to remove.
 
+**The refusal is also left as a marker beside the socket**
+([#2133](https://github.com/Digital-Process-Tools/claude-supertool/issues/2133)),
+not only spoken to this process's own stderr. The exact scenario that filed it:
+a session's `.mcp.json` declares this server *and* the launcher's
+`--dangerously-load-development-channels server:NAME` flag names a second one —
+both resolve the same socket, one wins the race above and the other refuses,
+and the harness reported **both** as `CONNECTION_CLOSED` at session start, so
+nobody was ever positioned to read the stderr line explaining why. The losing
+process now also writes its reason, pid and timestamp to
+`{sock_path}.refused.json`; the winning consumer clears any such marker the
+instant it (re)binds, so what a later `channel:health` finds there happened
+during *that* consumer's own run. `presets/watch/channel.py`'s `read_refusal`
+is the reader, and `subscription()` demotes what would otherwise read as
+`FORWARDING` to `CANNOT DETERMINE` when the marker is present for the tag about
+to be accepted.
+
 Concurrent sessions sharing a *single* stream of events would need a broker
 that fans one event out to every connected server. That is not this — see
 "Out of scope".
