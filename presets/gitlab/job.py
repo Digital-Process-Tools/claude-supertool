@@ -313,16 +313,20 @@ def _print_unmatched_failure(
             f"\n{head} — no cause is named, so this is not a classification. "
             f"Shown, not hidden:"
         )
+        print(_untrusted.open_marker())
         for line_num, text in discounted:
             print(f"  {line_num:>5} | {text}")
+        print(_untrusted.close_marker())
     section = _last_section(lines)
     if section:
         print(f"Last step entered: {section}")
     tail = lines[-tail_n:] if len(lines) > tail_n else lines
     print(f"\n## Log tail (last {len(tail)} lines of {total})")
     start = total - len(tail) + 1
+    print(_untrusted.open_marker())
     for i, line in enumerate(tail):
         print(f"  {start + i:>5} | {line}")
+    print(_untrusted.close_marker())
     print(
         f"\nNext:  {_st_hint.st_hint(f'gl-job:{job_id}:raw')}  or  "
         f"'gl-job:{job_id}:grep:PATTERN'  — the whole trace is still there."
@@ -426,8 +430,14 @@ def _log_lines(log: str) -> list[str]:
 
     Tabs are kept: a trace line is a block and its indentation is the author's
     content, which is the same call `_untrusted.scrub` makes for a fence.
+
+    Routed through `scrub`, not `visible`, since #2048: every printed excerpt
+    of these lines now sits inside `_untrusted.open_marker()` /
+    `close_marker()`, and a line shaped like this render's own marker must
+    not be able to close that fence from inside — the same #693/#851 defect
+    `scrub` already exists to close for `fence()`.
     """
-    return [_untrusted.visible(line, keep=chr(9))
+    return [_untrusted.scrub(line)
             for line in _untrusted.split_lines(log)]
 
 
@@ -618,7 +628,9 @@ def _emit_grep_hits(
         header += (f" [CAPPED: {shown_matches} shown, output limited to {budget} "
                    f"bytes by size — raise {knob}=N]")
     print(header)
+    print(_untrusted.open_marker())
     sys.stdout.write("".join(planned))
+    print(_untrusted.close_marker())
     if cut:
         print(
             f"... ({shown_matches} of {match_count} matching lines shown — output "
@@ -686,7 +698,11 @@ def _fetch_trace_and_meta(job_id: str) -> tuple[str, dict, str]:
     # itself: this scan is per-call, not per-function, so a call to a helper
     # that already marks its own return does not clear the taint at THIS
     # call site -- only the marking call directly in this scope does.
-    log = chr(10).join(_untrusted.visible(line, keep=chr(9))
+    # `scrub`, not `visible`, for the same #2048 reason as `_log_lines`: a
+    # trace written to disk by `write_traces` below is still remote text, and
+    # a line shaped like this module's fence markers must not survive intact
+    # into a file a reader may later cat into a fenced context.
+    log = chr(10).join(_untrusted.scrub(line)
                         for line in _untrusted.split_lines(log))
     return log, meta, ""
 
@@ -733,6 +749,18 @@ def _first_phpunit_failure(text: str) -> str:
         if _PHPUNIT_BLOCK_START.match(line):
             return line.strip()
     return ""
+
+
+# #2105: `_fetch_trace_and_meta` spends up to 10s (metadata) + 20s (trace) =
+# 30s per id, serially, and `gl-job`/`gl-pipeline`'s declared op timeouts are
+# raised in `presets/gitlab.json` to cover exactly this many ids at that
+# per-id cost with margin. Past the cap the ids are named as not-fetched
+# rather than attempted and silently lost to the kill -- the same choice the
+# filename logic below already makes at the same threshold, for the same
+# reason ("a pipeline with dozens of failed jobs" is the feature's own
+# stated motivation, and dozens is not something either op's timeout can
+# ever be raised far enough to cover unconditionally).
+MAX_TRACE_IDS = env_int("GL_JOB_TRACE_MAX_IDS", 6, minimum=1)
 
 
 def write_traces(job_ids: list[str]) -> int:
@@ -799,6 +827,23 @@ def write_traces(job_ids: list[str]) -> int:
                 f"building a file path out of it."
             )
             return 1
+
+    # #2105: fetched serially at up to 30s each, against a declared op
+    # timeout sized for exactly `MAX_TRACE_IDS` of them. An id beyond the
+    # cap is not attempted at all -- attempting it risks the kill discarding
+    # every trace already fetched this call, silently, with no file and no
+    # receipt. Named here instead, once, before anything is fetched.
+    skipped_ids: list[str] = []
+    if len(job_ids) > MAX_TRACE_IDS:
+        skipped_ids = job_ids[MAX_TRACE_IDS:]
+        job_ids = job_ids[:MAX_TRACE_IDS]
+        print(
+            f"[note] {len(skipped_ids)} of {len(skipped_ids) + len(job_ids)} "
+            f"requested job(s) were not fetched -- this call is capped at "
+            f"{MAX_TRACE_IDS} ids so the fetch stays inside the op's own "
+            f"timeout budget (raise with GL_JOB_TRACE_MAX_IDS=N): "
+            f"{', '.join(skipped_ids)}"
+        )
 
     sections: list[str] = []
     written_ids: list[str] = []
@@ -1094,6 +1139,13 @@ def main() -> int:
         print(f"URL: {web_url}")
     print(f"Log: {total} lines total")
 
+    # #2048: everything below this point that prints a slice of the trace's
+    # own lines is remote text — a job's own `.gitlab-ci.yml` and its own
+    # commands wrote it — and is fenced with `_untrusted.open_marker()` /
+    # `close_marker()`. The banner goes out once, immediately ahead of the
+    # first such block, per the same placement rule the GitHub twin uses.
+    print(_untrusted.banner())
+
     # 3. Raw mode — dump (sliced) trace, skip filters
     if raw_mode:
         if total == 0:
@@ -1138,12 +1190,16 @@ def main() -> int:
                 f"\n## Raw lines {start}-{start + cap - 1} of {total} "
                 f"[CAPPED at {cap} — {hint}]"
             )
+            print(_untrusted.open_marker())
             for i, line in enumerate(kept):
                 print(f"  {start + i:>5} | {line}")
+            print(_untrusted.close_marker())
             return 0
         print(f"\n## Raw lines {start}-{start + len(shown) - 1} of {total}")
+        print(_untrusted.open_marker())
         for i, line in enumerate(shown):
             print(f"  {start + i:>5} | {line}")
+        print(_untrusted.close_marker())
         return 0
 
     # 3b. Grep mode — ad-hoc regex over the trace, context + gap markers.
@@ -1167,8 +1223,10 @@ def main() -> int:
             tail = lines[-tail_lines:] if len(lines) > tail_lines else lines
             print(f"Showing last {len(tail)} lines as fallback:")
             start = total - len(tail) + 1
+            print(_untrusted.open_marker())
             for i, line in enumerate(tail):
                 print(f"  {start + i:>5} | {line}")
+            print(_untrusted.close_marker())
             return 0
         match_count = sum(1 for line in lines if rx.search(line))
         _emit_grep_hits(lines, sorted(hits), rx, match_count,
@@ -1219,11 +1277,13 @@ def main() -> int:
             print(f"\n## Error blocks ({matched_count} lines matched) — but see below")
         else:
             print(f"\n## All error blocks ({matched_count} lines matched, no tail truncation)")
+        print(_untrusted.open_marker())
         for line_num, text in error_sections:
             if line_num == -1:
                 print(text)
             else:
                 print(f"  {line_num:>5} | {text}")
+        print(_untrusted.close_marker())
         if mismatch:
             print(mismatch)
         if resolution_line:
@@ -1232,11 +1292,13 @@ def main() -> int:
 
     if error_sections and job_status == "failed" and not boilerplate_only:
         print(f"\n## Error context ({len([e for e in error_sections if e[0] > 0])} lines matched)")
+        print(_untrusted.open_marker())
         for line_num, text in error_sections:
             if line_num == -1:
                 print(text)  # gap marker
             else:
                 print(f"  {line_num:>5} | {text}")
+        print(_untrusted.close_marker())
 
         if resolution_line:
             print(f"\n{resolution_line}")
@@ -1245,8 +1307,10 @@ def main() -> int:
         print(f"\n## Tail (last {tail_lines} lines)")
         shown = lines[-tail_lines:] if len(lines) > tail_lines else lines
         start = total - len(shown) + 1
+        print(_untrusted.open_marker())
         for i, line in enumerate(shown):
             print(f"  {start + i:>5} | {line}")
+        print(_untrusted.close_marker())
     elif job_status == "failed":
         # Nothing matched on a job that failed — say so, do not just print a tail
         # and let the reader infer the log was clean (#445). Reached now also
@@ -1262,8 +1326,10 @@ def main() -> int:
             print(f"({skipped} lines skipped)")
         print()
         start = total - len(shown) + 1
+        print(_untrusted.open_marker())
         for i, line in enumerate(shown):
             print(f"  {start + i:>5} | {line}")
+        print(_untrusted.close_marker())
 
     return 0
 

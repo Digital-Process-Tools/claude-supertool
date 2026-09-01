@@ -962,7 +962,8 @@ def default_branch_report(ref: str | None, repo: str,
     # this was the caller that did not. Without it the tier published the same
     # unscoped green #846 exists to stop — on the one board that reports master
     # on every tick.
-    scope, scope_lines, unresolved = branch.scope_for(repo, sha, selected)
+    scope, scope_lines, unresolved = branch.scope_for(
+        repo, sha, selected, age_secs=age, grace=branch._GRACE)
     state, sentence = branch.verdict(selected, legs, missing, sha, age,
                                      branch._GRACE, marker, scope=scope)
 

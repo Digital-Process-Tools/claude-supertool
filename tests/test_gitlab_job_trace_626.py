@@ -295,7 +295,14 @@ def test_trace_no_first_line_claim_when_absent(monkeypatch, tmp_path, capsys) ->
 
 def test_trace_many_ids_does_not_produce_an_unwritable_filename(monkeypatch, tmp_path, capsys) -> None:
     """40 failed jobs in one pipeline is realistic; the filename must not blow
-    a filesystem's name-length limit after every trace was already fetched."""
+    a filesystem's name-length limit after every trace was already fetched.
+
+    #2105 caps how many ids one call actually fetches (`MAX_TRACE_IDS`), so
+    a fetch of 60 is no longer this op's own behaviour — raised here to keep
+    this test's own point (the filename, not the fetch count) intact rather
+    than folding two different claims into one number.
+    """
+    monkeypatch.setattr(job, "MAX_TRACE_IDS", 60)
     ids = [str(6900000 + i) for i in range(60)]
     jobs = {i: {"trace": [f"line-{i}"], "status": "failed"} for i in ids}
     argv = ["job.py", ",".join(ids), "trace"]

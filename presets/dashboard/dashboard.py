@@ -718,7 +718,8 @@ def collect_default(repo: str, default_branch: str) -> Section:
     # printing "every workflow on X concluded and every leg passed" over a
     # commit three of whose four declared workflows had produced no run.
     scope, scope_lines, _unresolved = _gh_branch.scope_for(
-        repo, sha, selected, declared_pair=declared_pair)
+        repo, sha, selected, declared_pair=declared_pair,
+        age_secs=age, grace=_gh_branch._GRACE)
     state, sentence = _gh_branch.verdict(selected, legs, missing, sha, age,
                                          unreconciled=marker, scope=scope)
 

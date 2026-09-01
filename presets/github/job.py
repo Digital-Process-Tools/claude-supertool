@@ -449,8 +449,10 @@ def _print_unmatched_failure(
     tail = lines[-tail_n:] if len(lines) > tail_n else lines
     print(f"\n## Log tail (last {len(tail)} lines of {total})")
     start = total - len(tail) + 1
+    print(_untrusted.open_marker())
     for i, line in enumerate(tail):
         print(f"  {start + i:>5} | {line}")
+    print(_untrusted.close_marker())
     print(
         f"\nNext:  ./supertool 'gh-job:{job_id}:raw'  or  "
         f"'gh-job:{job_id}:grep:PATTERN'  — the whole trace is still there."
@@ -697,8 +699,14 @@ def _log_lines(log: str) -> list[str]:
 
     Tabs are kept: a log line is a block and its indentation is the author's
     content, which is the same call `_untrusted.scrub` makes for a fence.
+
+    Routed through `scrub`, not `visible`, since #2048: every printed excerpt
+    of these lines now sits inside `_untrusted.open_marker()` /
+    `close_marker()`, and a line shaped like this render's own marker must
+    not be able to close that fence from inside — the same #693/#851 defect
+    `scrub` already exists to close for `fence()`.
     """
-    return [_untrusted.visible(line, keep=chr(9))
+    return [_untrusted.scrub(line)
             for line in _untrusted.split_lines(log)]
 
 
@@ -858,7 +866,9 @@ def _emit_grep_hits(
         header += (f" [CAPPED: {shown_matches} shown, output limited to {budget} "
                    f"bytes by size — raise {knob}=N]")
     print(header)
+    print(_untrusted.open_marker())
     sys.stdout.write("".join(planned))
+    print(_untrusted.close_marker())
     if cut:
         print(
             f"... ({shown_matches} of {match_count} matching lines shown — output "
@@ -1106,6 +1116,14 @@ def main() -> int:
         print(f"Cross-check the raw bytes with: gh api {logs_path}")
         return 0
 
+    # #2048: everything below this point that prints a slice of the log's
+    # own lines is remote text — a CI job's own commands wrote it — and is
+    # fenced with `_untrusted.open_marker()` / `close_marker()`. The banner
+    # goes out once, immediately ahead of the first such block, per the same
+    # placement rule `render_check` uses (`_untrusted.banner.__doc__`): the
+    # reader who acts on the first thing printed must see it before content.
+    print(_untrusted.banner())
+
     # 3. Raw mode — dump (sliced) trace, skip filters
     if raw_mode:
         if total == 0:
@@ -1128,8 +1146,10 @@ def main() -> int:
             end = min(end, total)
         shown = lines[start - 1:end]
         print(f"\n## Raw lines {start}-{start + len(shown) - 1} of {total}")
+        print(_untrusted.open_marker())
         for i, line in enumerate(shown):
             print(f"  {start + i:>5} | {line}")
+        print(_untrusted.close_marker())
         return 0
 
     # 3b. Grep mode — ad-hoc regex over the log, context + gap markers.
@@ -1153,8 +1173,10 @@ def main() -> int:
             tail = lines[-tail_lines:] if len(lines) > tail_lines else lines
             print(f"Showing last {len(tail)} lines as fallback:")
             start = total - len(tail) + 1
+            print(_untrusted.open_marker())
             for i, line in enumerate(tail):
                 print(f"  {start + i:>5} | {line}")
+            print(_untrusted.close_marker())
             return 0
         match_count = sum(1 for line in lines if rx.search(line))
         _emit_grep_hits(lines, sorted(hits), rx, match_count,
@@ -1198,11 +1220,13 @@ def main() -> int:
             print(f"\n## Error blocks ({matched_count} lines matched) — but see below")
         else:
             print(f"\n## All error blocks ({matched_count} lines matched, no tail truncation)")
+        print(_untrusted.open_marker())
         for line_num, text in error_sections:
             if line_num == -1:
                 print(text)
             else:
                 print(f"  {line_num:>5} | {text}")
+        print(_untrusted.close_marker())
         if mismatch:
             print(mismatch)
         if resolution_line:
@@ -1211,11 +1235,13 @@ def main() -> int:
 
     if error_sections and display_status == "failure":
         print(f"\n## Error context ({len([e for e in error_sections if e[0] > 0])} lines matched)")
+        print(_untrusted.open_marker())
         for line_num, text in error_sections:
             if line_num == -1:
                 print(text)
             else:
                 print(f"  {line_num:>5} | {text}")
+        print(_untrusted.close_marker())
 
         if resolution_line:
             print(f"\n{resolution_line}")
@@ -1223,8 +1249,10 @@ def main() -> int:
         print(f"\n## Tail (last {tail_lines} lines)")
         shown = lines[-tail_lines:] if len(lines) > tail_lines else lines
         start = total - len(shown) + 1
+        print(_untrusted.open_marker())
         for i, line in enumerate(shown):
             print(f"  {start + i:>5} | {line}")
+        print(_untrusted.close_marker())
     elif display_status == "failure":
         # Nothing matched on a job that failed — say so, do not just print a
         # tail and let the reader infer the log was clean (#453/#445).
@@ -1237,8 +1265,10 @@ def main() -> int:
             print(f"({skipped} lines skipped)")
         print()
         start = total - len(shown) + 1
+        print(_untrusted.open_marker())
         for i, line in enumerate(shown):
             print(f"  {start + i:>5} | {line}")
+        print(_untrusted.close_marker())
 
     return 0
 
