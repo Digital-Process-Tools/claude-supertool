@@ -14,6 +14,11 @@ This module is the instrument, not the fix. It answers the issue's own
 "what would settle it": capture the tempdir's own realpath and existence,
 and the env vars a child inherits it through, immediately around the spawn,
 so the next occurrence carries evidence instead of just the crash.
+
+A sixth occurrence landed after this module was written (see
+`tests/_isolated_child_tmp.py`'s own docstring for what it added to the
+count and the mitigation it motivated); "five" above is a historical count
+as of this module's own authorship, not the count as of the issue's close.
 """
 from __future__ import annotations
 
