@@ -80,6 +80,32 @@ def test_scope_for_does_not_count_a_waiting_workflow_as_unresolved(monkeypatch) 
     assert lines, "the waiting workflow must still be named, just not as open"
 
 
+def test_scope_clause_itself_is_not_left_alarming_for_a_waiting_workflow(monkeypatch) -> None:
+    """`scope_clause` is the sentence glued onto the `Verdict:` line that
+    `main()` and the dashboard print unconditionally — a reader who reads
+    only the headline must not see the pre-#2117 "NOT covered" wording with
+    no hint that the workflow is merely early. Caught reviewing #2117 itself:
+    `unresolved` and `undispatched_lines` were fixed, `scope_clause` was not.
+    """
+    declared_pair = ([_PUSH_WF], "")
+    monkeypatch.setattr(branch, "workflow_names", lambda selected: ["other"])
+    clause, _lines, _unresolved = branch.scope_for(
+        "o/r", "a" * 40, {"other": {}}, declared_pair=declared_pair,
+        age_secs=5, grace=branch._GRACE)
+    assert "still" in clause and "window" in clause, (
+        f"the headline scope clause gives no hint the workflow is merely "
+        f"inside its creation window: {clause!r}")
+
+
+def test_scope_clause_is_unchanged_when_nothing_is_waiting(monkeypatch) -> None:
+    """The #846 wording, byte for byte, when the window does not apply."""
+    declared_pair = ([_PUSH_WF], "")
+    monkeypatch.setattr(branch, "workflow_names", lambda selected: ["other"])
+    clause, _lines, _unresolved = branch.scope_for(
+        "o/r", "a" * 40, {"other": {}}, declared_pair=declared_pair)
+    assert "still" not in clause and "window" not in clause, clause
+
+
 # ---------------------------------------------------------------------------
 # past the window / age unknown: unchanged
 # ---------------------------------------------------------------------------

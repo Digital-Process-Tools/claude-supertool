@@ -674,7 +674,8 @@ def stale_listing_lines(runs: object, selected: dict, sha: str,
     return lines
 
 
-def scope_clause(undispatched: list, unestablished: str, n_wf: int) -> str:
+def scope_clause(undispatched: list, unestablished: str, n_wf: int, *,
+                 waiting: int = 0, grace: int = _GRACE) -> str:
     """The sentence a GREEN needs so it stops over-claiming (#846).
 
     `gh-branch`'s green has always meant *every workflow that produced a run on
@@ -691,6 +692,17 @@ def scope_clause(undispatched: list, unestablished: str, n_wf: int) -> str:
     Empty when everything declared produced a run: a qualifier printed on every
     render is one nobody reads on the render where it matters, and this repo has
     paid for that twice.
+
+    `waiting` is #2117's own gap, caught reviewing #2117 itself: `scope_for`
+    already knows some of the "NOT covered" names below are only inside their
+    creation window (`unresolved` excludes them, and `undispatched_lines`
+    reads them as "still expected"), but this sentence — the one glued
+    directly onto the `Verdict:` line both `main()` and the dashboard print
+    unconditionally — named every not-covered workflow with no such
+    qualifier, so a reader who only reads the headline saw the pre-#2117
+    wording regardless. `waiting` states how many of `n` are merely early,
+    without pretending the scope claim itself is any different: the GREEN
+    genuinely does not cover a workflow with no run yet, window or not.
     """
     if unestablished:
         # `these {n_wf} are` was a bare plural over a count that is routinely 1
@@ -721,11 +733,16 @@ def scope_clause(undispatched: list, unestablished: str, n_wf: int) -> str:
     # These two were written correctly and are routed through `_agrees` anyway:
     # this clause is appended onto the same rendered line as the verdict, and a
     # count word that agrees by hand today is the shape #841 was.
+    tail = ""
+    if waiting:
+        tail = (f" {waiting} of {n} {_agrees(waiting, 'is', 'are')} still "
+                f"inside the {_window(grace)} creation window and "
+                f"{_agrees(waiting, 'is', 'are')} expected to run.")
     return (f" This covers the {n_wf} "
             f"{_agrees(n_wf, 'workflow', 'workflows')} that produced a run; "
             f"{n} declared in {_declared_workflows.WORKFLOW_DIR} at this commit "
             f"produced none and {_agrees(n, 'is', 'are')} NOT covered: "
-            f"{names}.")
+            f"{names}.{tail}")
 
 
 def scope_for(repo: str, sha: str, selected: dict, *,
@@ -808,7 +825,8 @@ def scope_for(repo: str, sha: str, selected: dict, *,
     # workflows that produced a run" and is compared by the reader against a
     # declared *workflow* set. `len(selected)` is a run count since #1640, and
     # the two differ on exactly the commit that issue is about.
-    return (scope_clause(undispatched, "", len(present)),
+    return (scope_clause(undispatched, "", len(present),
+                         waiting=len(loud) - len(still_open), grace=grace),
             undispatched_lines(undispatched, age_secs, grace), unresolved)
 
 

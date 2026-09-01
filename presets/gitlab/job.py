@@ -740,8 +740,9 @@ def _first_phpunit_failure(text: str) -> str:
     Split with `_log_lines`, not `str.splitlines()` — a spawned reviewer
     caught this copy using the banned split (#1119: eight extra separators
     a CI trace can carry mid-line) for the one line this file derives
-    without it, and `_log_lines`'s `_untrusted.visible` pass is what keeps a
-    matched line's own escape sequences from reaching this receipt's stdout
+    without it, and `_log_lines`'s `_untrusted.scrub` pass (`visible` before
+    #2048) is what keeps a matched line's own escape sequences — and, since
+    #2048, its own fence-marker shapes — from reaching this receipt's stdout
     unfiltered, the same guarantee every other rendered line in this file
     already has.
     """
