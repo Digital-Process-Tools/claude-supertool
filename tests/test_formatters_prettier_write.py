@@ -107,3 +107,79 @@ def test_file_needing_format_via_stub(tmp_path: Path) -> None:
     assert_ok(data)
     total_changes = data["metrics"]["lines_added"] + data["metrics"]["lines_removed"]
     assert total_changes > 0
+
+
+def _load_adapter_module():
+    """Import prettier-write.py in-process (its filename cannot be a
+    normal `import` target) so a test can monkeypatch `subprocess.run` and
+    inspect the argv it was actually called with.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("prettier_write_adapter_2191", ADAPTER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_prettier_bin_program_files_style_path_is_not_split_at_the_space(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#2191 -- a Windows-Program-Files-shaped PRETTIER_BIN, actually
+    installed there (a real file with the execute bit set), must be used AS
+    ONE PATH. Before the fix, POSIX-mode `shlex.split` split the unquoted
+    path at the space in "Program Files", and the adapter ran
+    `["<tmp>/Program", ...]` -- a binary that does not exist, reported as
+    PRETTIER_BIN not found, even though the real one was sitting right
+    there.
+    """
+    bin_dir = tmp_path / "Program Files" / "prettier"
+    bin_dir.mkdir(parents=True)
+    real_bin = bin_dir / "prettier.exe"
+    real_bin.write_text("")
+    real_bin.chmod(0o755)
+
+    f = tmp_path / "x.js"
+    f.write_text("const x=1\n")
+
+    monkeypatch.setenv("PRETTIER_BIN", real_bin.as_posix())
+    monkeypatch.setattr(sys, "argv", ["prettier-write.py", str(f)])
+
+    mod = _load_adapter_module()
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    captured_emit = []
+    monkeypatch.setattr(mod, "emit", lambda obj: captured_emit.append(obj))
+
+    mod.main()
+
+    assert captured["cmd"][0] == real_bin.as_posix(), captured["cmd"]
+    assert_ok(captured_emit[0])
+
+
+def test_prettier_bin_shlex_quoted_stub_still_works(tmp_path: Path) -> None:
+    """The pre-existing multi-token test-stub convention (PRETTIER_BIN set
+    to a shlex-quoted `python /path/stub.py` command line) must still
+    resolve after the migration to resolve_bin_cmd() -- that is the
+    fallback path resolve_bin_cmd() takes when the raw value does not
+    itself resolve to a single executable file.
+    """
+    f = tmp_path / "x.js"
+    f.write_text("const x=1\n")
+    stub = _python_stub(tmp_path, "prettier_stub", (
+        "import sys\n"
+        "sys.exit(0)\n"
+    ))
+    env = {**os.environ, "PRETTIER_BIN": stub}
+    r = subprocess.run(
+        [sys.executable, str(ADAPTER), str(f)],
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 0
+    data = json.loads(r.stdout.strip())
+    assert_ok(data)

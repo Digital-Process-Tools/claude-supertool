@@ -121,3 +121,79 @@ def test_live_clean_php(tmp_path: Path) -> None:
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert_ok(data)
+
+
+def _load_adapter_module():
+    """Import php-cs-fixer.py in-process (its filename cannot be a normal
+    `import` target) so a test can monkeypatch `subprocess.run` and inspect
+    the argv it was actually called with.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("php_cs_fixer_adapter_2191", ADAPTER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_phpcsfixer_bin_program_files_style_path_is_not_split_at_the_space(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#2191 -- a Windows-Program-Files-shaped PHPCSFIXER_BIN, actually
+    installed there (a real file with the execute bit set), must be used AS
+    ONE PATH. Before the fix, POSIX-mode `shlex.split` split the unquoted
+    path at the space in "Program Files", and the adapter ran
+    `["<tmp>/Program", ...]` -- a binary that does not exist, reported as
+    PHPCSFIXER_BIN not found, even though the real one was sitting right
+    there.
+    """
+    bin_dir = tmp_path / "Program Files" / "php-cs-fixer"
+    bin_dir.mkdir(parents=True)
+    real_bin = bin_dir / "php-cs-fixer.exe"
+    real_bin.write_text("")
+    real_bin.chmod(0o755)
+
+    f = tmp_path / "x.php"
+    f.write_text("<?php\n$x=1;\n")
+
+    monkeypatch.setenv("PHPCSFIXER_BIN", real_bin.as_posix())
+    monkeypatch.setattr(sys, "argv", ["php-cs-fixer.py", str(f)])
+
+    mod = _load_adapter_module()
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    captured_emit = []
+    monkeypatch.setattr(mod, "emit", lambda obj: captured_emit.append(obj))
+
+    mod.main()
+
+    assert captured["cmd"][0] == real_bin.as_posix(), captured["cmd"]
+    assert_ok(captured_emit[0])
+
+
+def test_phpcsfixer_bin_shlex_quoted_stub_still_works(tmp_path: Path) -> None:
+    """The pre-existing multi-token test-stub convention (PHPCSFIXER_BIN set
+    to a shlex-quoted `python /path/stub.py` command line) must still
+    resolve after the migration to resolve_bin_cmd() -- that is the
+    fallback path resolve_bin_cmd() takes when the raw value does not
+    itself resolve to a single executable file.
+    """
+    f = tmp_path / "x.php"
+    f.write_text("<?php\n$x=1;\n")
+    stub = _python_stub(tmp_path, "phpcsfixer_stub", (
+        "import sys\n"
+        "sys.exit(0)\n"
+    ))
+    env = {**os.environ, "PHPCSFIXER_BIN": stub}
+    r = subprocess.run(
+        [sys.executable, str(ADAPTER), str(f)],
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 0
+    data = json.loads(r.stdout.strip())
+    assert_ok(data)
