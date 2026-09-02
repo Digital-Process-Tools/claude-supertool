@@ -228,6 +228,82 @@ def find(name: str, resolved: Resolved | None = None) -> tuple[Path | None, str]
     return None, ""
 
 
+#: What an external directory must hold to be a radar *tier* for the name it
+#: wears, beside the `poller.py` that makes the same directory a watch source
+#: (#2165). One directory per population, both halves in it: a tier and a source
+#: for one population are one concern, and a second search path for the second
+#: half is a second thing to keep in step -- which is how the two ends up
+#: describing a fleet nobody polls.
+#:
+#: Radar's own tiers do not live here and are not named by this file: a shipped
+#: tier is `presets/watch/tiers/<name>.py`, resolved by `radar._tier_module`
+#: before this search path is consulted at all. Shipped wins, as it does for a
+#: source, for the same reason and with the same disclosure.
+TIER_FILE = "tier.py"
+
+
+def find_tier(name: str, resolved: Resolved | None = None) -> tuple[Path | None, str]:
+    """(`tier.py` for `name`, the directory it came from), or (None, "").
+
+    External directories only. A shipped tier is radar's own file and radar
+    resolves it first; this answers the question radar asks *after* that, so a
+    hit here can never displace a shipped board -- and `radar.tier_shadow_lines`
+    names the external file that was passed over rather than swallowing it.
+
+    Reads the same `Resolved` a source does, so a relative entry refused for a
+    poller is refused for a tier without the rule being written twice.
+    """
+    resolved = resolve() if resolved is None else resolved
+    if not _is_one_component(name):
+        return None, ""
+    for directory in resolved.external:
+        candidate = Path(directory) / name / TIER_FILE
+        if candidate.is_file():
+            return candidate, str(directory)
+    return None, ""
+
+
+def tier_names_in(directory: Path | str) -> tuple[tuple[str, ...], str]:
+    """(the tier names in `directory`, why the listing failed) -- `names_in` for tiers.
+
+    Three states again, and the middle one is the reason this exists: a
+    directory that could not be listed must not render as a directory holding
+    no tiers, or radar's "I could not resolve your tier" names a search that
+    never happened as one that came back empty.
+    """
+    entries, state, why = naming.state_dir_listing(str(directory))
+    if state == naming.STATE_DIR_UNREADABLE:
+        return (), why
+    if state == naming.STATE_DIR_ABSENT:
+        return (), (f"{naming.flat_path(str(directory))} is gone -- it was a "
+                    f"directory when the search path was resolved")
+    return tuple(n for n in entries
+                 if (Path(directory) / n / TIER_FILE).is_file()), ""
+
+
+def tier_search_report(resolved: Resolved) -> list[str]:
+    """Every directory a tier lookup consulted and what it held.
+
+    The counterpart of `search_report`, and it exists for the same measured
+    reason: an absence that does not name where it looked is this tracker's
+    most-filed defect class, and radar's version of it lands in the one message
+    an operator meets while wiring their first tier.
+    """
+    lines: list[str] = []
+    for directory in resolved.external:
+        names, why = tier_names_in(directory)
+        lines.append(f"  {naming.flat_path(str(directory))} ({PATH_ENV}): "
+                     + (_flat_names(names) or why or f"(no {TIER_FILE})"))
+    for refusal in resolved.refused:
+        lines.append(f"  {naming.flat_path(refusal.entry)} ({PATH_ENV}): "
+                     f"NOT searched -- {refusal.why}")
+    if not resolved.raw.strip():
+        lines.append(f"  {PATH_ENV} is not set, so nothing outside the plugin "
+                     f"was searched. Set it to a directory holding "
+                     f"<name>/{TIER_FILE} to add your own tier.")
+    return lines
+
+
 def names_in(directory: Path | str) -> tuple[tuple[str, ...], str]:
     """(the source names in `directory`, why the listing failed).
 

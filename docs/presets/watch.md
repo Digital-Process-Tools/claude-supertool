@@ -443,10 +443,36 @@ Radar injects two reserved keys into `options` before the call. Config cannot se
 
 ### Where a tier lives
 
-Names resolve in two places, in order, and neither is a table that can drift when a file moves:
+Names resolve in three places, in order, and none is a table that can drift when a file moves:
 
 1. **`presets/watch/tiers/<name>.py`** (dashes as underscores). For a tier that needs radar's own internals — the transport, the dispatcher, the shared watch defaults. `gl-mrs` is here: `presets/gitlab/mrs.py` is a GitLab preset and the watch preset already depends on it, so putting reconcile machinery there would make the dependency mutual.
 2. **the script the preset's op declares.** Any op joins by exposing `radar_report`. `gl-runners` is here — its report needs nothing but its own API helpers.
+3. **`<dir>/<name>/tier.py` on `SUPERTOOL_WATCH_SOURCES_PATH`** ([#2165](https://github.com/Digital-Process-Tools/claude-supertool/issues/2165)). The first two routes both land inside the installed plugin, so a project that declares its op in its own `.supertool.json` could poll a population with a private watch source and then had no way to put a line about it on the board.
+
+The third route is the sources path on purpose, not a variable of its own: the tier sits in the same directory as the `poller.py` for the same population, because they are one concern and two knobs for it is one to forget.
+
+```text
+/opt/private/watch-sources/
+└── server-diag/
+    ├── poller.py     # watch:server-diag:fleet  — the events
+    └── tier.py       # radar_tiers {"server-diag": {}} — the board row
+```
+
+```json
+{ "ops": { "watch":  { "watch_sources_path": "/opt/private/watch-sources" },
+           "radar":  { "watch_sources_path": "/opt/private/watch-sources",
+                       "radar_tiers": { "gl-mrs": {}, "server-diag": {} } } } }
+```
+
+> **⚠ This imports and executes Python from a path you supplied**, exactly as the sources path does for a poller. Anyone who can write to a directory on that path, or to the `.supertool.json` that names it, runs code as you. Nothing here is a sandbox and nothing here pretends to be one.
+
+Three things are said out loud rather than swallowed, and each is a decision:
+
+- **A shipped tier still wins**, and the external `tier.py` it hides is **named** on the board. An external `gl-mrs` quietly replacing the shipped board with arbitrary Python out of a config file is the swap an operator most needs told about.
+- **A name is one path component.** `../elsewhere` and `a/b` resolve to nothing, so a tier name arriving from a config file cannot walk out of the directory it names.
+- **A tier nothing answers to prints every directory that was searched** — the shipped `tiers/`, the preset ops, and each entry on the path with what it held. `Check the name` alone is the absence that does not say where it looked, landing in the one message this feature is met through.
+
+A tier that raises while being *loaded* is newly possible, since route 3 imports somebody else's file. It is caught and named like a tier that raises while reporting: one project's broken tier never costs another its board.
 
 ### Silence rules, and the third state
 

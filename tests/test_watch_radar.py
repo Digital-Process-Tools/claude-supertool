@@ -1457,10 +1457,16 @@ def test_radars_own_context_keys_are_not_reported_as_unknown_options(env) -> Non
 
 
 def test_an_unresolvable_tier_name_is_reported(env) -> None:
+    """A name nothing answered to, and a module that loaded without the
+    function, are two different facts and no longer arrive in one sentence
+    (#2165): the first is the one an operator can act on, and it now names the
+    directories that were searched instead of only the config key."""
     env["monkeypatch"].setenv(radar.TIERS_ENV, json.dumps({"gl-runnerz": {}}))
     env["monkeypatch"].setattr(radar, "_tier_module", lambda n: None)
     lines, ok, failures = radar.tier_reports()
-    assert any("gl-runnerz" in line and "radar_report" in line for line in failures)
+    assert any("gl-runnerz" in line and "could not be resolved" in line
+               for line in failures)
+    assert any("looked in:" in line for line in failures)
     assert ok is False
     assert lines == []
 
