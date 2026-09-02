@@ -12447,7 +12447,12 @@ def op_append(path: str, content: str) -> str:
         return f"ERROR: failed to write {path}: {e}\n"
 
     all_lines = _split_lines(new_content)
-    added = block.count("\n")
+    # Not `block.count("\n")`: that undercounts (or zeroes) whenever `block`
+    # is terminated with the file's own CR-only convention -- a leftover from
+    # when this was always LF-terminated, so counting "\n" was always exact.
+    # `_split_lines_keepends` is the same line definition the receipt below
+    # and `all_lines` above are already built from (#1085).
+    added = len(_split_lines_keepends(block))
     start_line = len(all_lines) - added + 1
     new_size = len(new_content.encode("utf-8", errors="surrogateescape"))
     verb = "appended to" if existed else "created"

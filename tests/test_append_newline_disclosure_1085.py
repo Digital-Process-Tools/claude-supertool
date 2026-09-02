@@ -79,3 +79,15 @@ def test_append_to_new_file_still_uses_lf(tmp_path: Path) -> None:
     out = _supertool.op_append(str(f), "hello")
     assert "ERROR" not in out, out
     assert f.read_bytes() == b"hello\n"
+
+
+def test_append_line_count_correct_for_cr_only_convention(tmp_path: Path) -> None:
+    """A bare-CR convention file: `added` must count actual appended lines,
+    not `\\n` occurrences -- a block terminated with `\\r` has none."""
+    f = tmp_path / "cr.txt"
+    f.write_bytes(b"line1\rline2\r")
+    out = _supertool.op_append(str(f), "appended1\rappended2")
+    assert "ERROR" not in out, out
+    assert f.read_bytes() == b"line1\rline2\rappended1\rappended2\r"
+    assert "2 lines at 3-4" in out, out
+    assert "0 lines" not in out, out
