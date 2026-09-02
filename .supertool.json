@@ -363,6 +363,20 @@
       "rollback_on_fail": false,
       "timeout": 30
     },
+    "new-file-lint": {
+      "cmd": "{python} .github/scripts/new_file_ruff_gate.py {file}",
+      "match": "*.py",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "append",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 30
+    },
     "jsonlint": {
       "cmd": "{python} {supertool_dir}/validators/jsonlint/jsonlint.py {file}",
       "match": "*.json",

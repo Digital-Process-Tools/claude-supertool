@@ -90,6 +90,14 @@ try:
 except ImportError:  # pragma: no cover - only in the synthetic-repo suites
     _core_timeout_census = None
 
+# Same tolerance, same reason (#1635): the tree-integrity canary. Not
+# available in the synthetic-repo suites, which have no repo root of their
+# own worth watching.
+try:
+    import _root_canary  # noqa: E402
+except ImportError:  # pragma: no cover - only in the synthetic-repo suites
+    _root_canary = None
+
 # `presets/mcp/_paths.py` probes its platform capabilities at *import*
 # (`_LISTDIR_TAKES_FD`, `_RELATIVE_OPS`, `_ANCESTRY_DIR_FD`) precisely so that a
 # test double installed over `os.listdir`/`os.chmod`/`os.open` is never read as
@@ -461,6 +469,40 @@ def pytest_configure(config):
         _write_guard.install()
 
 
+def pytest_sessionstart(session):
+    """#1635: snapshot the tree's own load-bearing markers before anything
+    runs, so a run that leaves them gone is caught rather than reported as a
+    green suite over an emptied tree. See tests/_root_canary.py.
+
+    Controller only. An xdist worker looks at the same filesystem as the
+    controller, so a second snapshot from it would tell us nothing a race
+    with the controller's own check could not already race with -- and the
+    worker's `sessionfinish` has no terminal to report to and no exit
+    status of its own to influence (mirrors `_core_timeout_census`'s
+    `_is_worker` split, one file over).
+    """
+    if hasattr(session.config, "workerinput") or _root_canary is None:
+        return
+    session.config._supertool_root_canary_before = (
+        _root_canary.snapshot(REPO_ROOT))
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """The other half of the pair above. Forces the exit status rather than
+    only printing, because a suite that removed its own tree and then
+    reported every test green is the exact absence this repo's own notes
+    keep finding under a different surface -- read here, not guessed at."""
+    if hasattr(session.config, "workerinput") or _root_canary is None:
+        return
+    before = getattr(session.config, "_supertool_root_canary_before", None)
+    if before is None:
+        return
+    finding = _root_canary.verdict(before, _root_canary.snapshot(REPO_ROOT))
+    if finding:
+        session.config._supertool_root_canary_finding = finding
+        session.exitstatus = 1
+
+
 def pytest_unconfigure(config):
     """Take the #1656 cache redirect's directory back down.
 
@@ -561,6 +603,17 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
     _git_decline_summary(terminalreporter, skipped)
     _classify_live_summary(terminalreporter, skipped)
     _write_guard_summary(terminalreporter)
+    _root_canary_summary(terminalreporter, config)
+
+
+def _root_canary_summary(terminalreporter, config) -> None:
+    """Print the #1635 canary's verdict when it has one. Silent otherwise --
+    unlike the skip counters above, the canary's *normal* outcome is nothing
+    to report, and a line printed on every green run for a check that never
+    fires is exactly the kind of noise that gets a real one skimmed past."""
+    finding = getattr(config, "_supertool_root_canary_finding", None)
+    if finding:
+        terminalreporter.write_line("root-canary(#1635): " + finding, red=True)
 
 
 def _token_skips(skipped, token: str) -> int:
