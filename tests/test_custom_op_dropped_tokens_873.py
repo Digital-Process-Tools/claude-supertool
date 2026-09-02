@@ -270,7 +270,9 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # two optional fields, so it is `{args}` too.
         # 88 → 89 in #2046: `classify` takes TEXT_OR_file://PATH as one
         # colon-rejoined blob, so its cmd is `{args}` too.
-        assert len(rows) == 89, len(rows)
+        # 89 → 90 in #2078: `gh-issue-comment` takes NUMBER and the payload,
+        # so its cmd is `{args}` too.
+        assert len(rows) == 90, len(rows)
         multi = [n for n, _f, _e, c in rows
                  if "{args}" in c or "{argjoin}" in c]
         one = [n for n, _f, _e, c in rows
@@ -284,7 +286,9 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # line (see the population count's own comment above).
         # 64 → 65 in #2046: `classify` is `{args}` from the first line too
         # (see the population count's own comment above).
-        assert (len(multi), len(one), len(none)) == (65, 20, 4), (
+        # 65 → 66 in #2078: `gh-issue-comment` is `{args}` from the first
+        # line too (see the population count's own comment above).
+        assert (len(multi), len(one), len(none)) == (66, 20, 4), (
             len(multi), len(one), len(none))
         # The 4 placeholder-free ops are outside this gate on purpose — see
         # `_unconsumed_arg_tokens`. Named so the exclusion is a list, not a
