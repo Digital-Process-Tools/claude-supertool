@@ -1074,14 +1074,14 @@ def _record_op_sources(config: Dict[str, Any],
 
 #: Keys `_resolve_custom_op`'s launcher never exports as `SUPERTOOL_<KEY>` —
 #: its own control fields, not config for the subprocess to read (#692,
-#: #1347, #1357, #1672). Module-level and shared with
+#: #1347, #1357, #1672, #1675). Module-level and shared with
 #: `_op_config_key_collisions` below so the two can never disagree about
 #: which keys actually become an env var: a set redeclared at each site would
 #: let one drift and the other not, and the drift would be silent — exactly
 #: the defect class this whole file exists to remove.
 _OP_CONFIG_RESERVED_KEYS = {
     "cmd", "timeout", "description", "syntax", "example", "status",
-    "restartMcp", "replaces", "paths", "exitStatus",
+    "restartMcp", "replaces", "paths", "exitStatus", "form", "hint",
 }
 
 
@@ -18883,6 +18883,16 @@ def op_help(op_name: str) -> str:
         if desc:
             out.append("")
             out.append(str(desc))
+        form_parent = info.get("form")
+        if form_parent:
+            # #1675 — the other half of the registry/help disagreement:
+            # `registry:NAME` now says the same thing for a declared form, so
+            # neither surface leaves a reader concluding the name is a real,
+            # independent op.
+            out.append("")
+            out.append(f"Declared form of `{form_parent}` (#1245) — not an "
+                       f"independent op name; `registry:{form_parent}` is "
+                       f"the registry entry.")
         ops_list = info.get("ops", [])
         if ops_list:
             out.append("")
@@ -19516,7 +19526,25 @@ def _registry_not_enabled_line() -> str:
 
 
 def _registry_unknown_op(op_name: str) -> str:
-    """Three states for a name the registry does not hold (#614's rule)."""
+    """Three states for a name the registry does not hold (#614's rule).
+
+    A fourth, added for #1675: a `builtin-ops` entry declaring `form` names a
+    documented *spelling* of another op (`grep-count` for `grep:...:count`,
+    `#1245`), not a dispatchable name — `registry` used to say "no op named"
+    about it, the identical sentence it gives a name nobody ever declared.
+    Checked first, project config before the shipped reference, the same
+    order `_help_entry` already resolves in — so a reader who checks
+    `registry` and one who checks `help` learn the same fact.
+    """
+    for config in (_load_config(), _shipped_config()):
+        info = _help_entry(config, op_name)
+        if isinstance(info, dict) and info.get("form"):
+            parent = info["form"]
+            return (f"'{op_name}' is a declared form of `{parent}` "
+                    f"(spelling: `{info.get('syntax', op_name)}`), not an op "
+                    f"name of its own — it has no registry entry of its own.\n"
+                    f"  `registry:{parent}` is the entry; `help:{op_name}` "
+                    f"documents the spelling.\n")
     preset = _shipped_preset_ops().get(op_name)
     if preset is not None:
         return (f"ERROR: '{op_name}' is not in this project's registry, but it "
@@ -28013,6 +28041,14 @@ def _build_at_file_registry() -> None:
                 # A documented *form* of another op, not an op (#1245). Its
                 # syntax is the parent's, so a route keyed on this entry's own
                 # name — `read-grep:@-` — is one the dispatcher would refuse.
+                continue
+            if op_name in _READ_OP_AT_FIELDS:
+                # The read family is dispatched straight from
+                # `_READ_OP_AT_FIELDS`, never from this registry (#625, see
+                # the comment on that dict) — a config `syntax` here can only
+                # change what `help:OP` prints, never what dispatch accepts
+                # (#2081). Honouring it would make the rendered keys a
+                # misreport a manifest can trigger.
                 continue
             syntax = info.get("syntax", "")
             if not syntax:
