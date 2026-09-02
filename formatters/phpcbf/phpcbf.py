@@ -24,6 +24,7 @@ from difflib import unified_diff
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "validators" / "common"))
 from refusal import guard_main  # noqa: E402
+from bin_resolve import resolve_bin_cmd  # noqa: E402
 
 
 def emit(obj: dict) -> None:
@@ -59,11 +60,15 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
     phpcbf_bin_cmd_str = os.environ.get("PHPCBF_BIN", "phpcbf")
-    # Accept either a single binary path or a shlex-split command line.
-    # Cross-platform test stubs pass e.g. "python /path/stub.py" so the
+    # Accept either a single binary path (may contain a space, e.g.
+    # the default Windows install location under "C:\\Program Files")
+    # or a shlex-quoted command line. Cross-platform test stubs pass
+    # e.g. "python /path/stub.py" (each token shlex.quote'd) so the
     # stub runs on Windows too (no #!/usr/bin/env bash dependency).
-    import shlex as _shlex
-    bin_cmd = _shlex.split(phpcbf_bin_cmd_str.replace("\\", "/"), posix=True) or ["phpcbf"]
+    # resolve_bin_cmd() tries the whole string as one path first, and
+    # only falls back to shlex.split when that does not resolve to a
+    # real executable (#2176, #2191).
+    bin_cmd = resolve_bin_cmd(phpcbf_bin_cmd_str, "phpcbf")
     phpcbf_bin = bin_cmd[0]
     phpcbf_standard = os.environ.get("PHPCBF_STANDARD", "PSR12")
 
