@@ -330,7 +330,7 @@ Every mutating op (`edit`, `replace`, `replace_lines`, `paste`, `append`, `vim`)
 
 Example: edit a `.json` file with a missing comma → `jsonlint` catches it → file reverts → receipt shows the parse error with line/col.
 
-20 validators bundled out of the box (PHP, XML, JSON, YAML, INI, Python syntax + types, Bash, JS, TS, HTML inline `<script>`, SCSS, Markdown, Ruby, Dockerfile, Go, Terraform, Rust, TOML, GitHub Actions workflows). Graceful skip when toolchain missing.
+21 validators bundled out of the box (PHP, XML, JSON, YAML, INI, Python syntax + types, Bash, JS, TS, HTML inline `<script>`, SCSS, Markdown, Ruby, Dockerfile, Go, Terraform, Rust, TOML, GitHub Actions workflows, GitLab CI configs). Graceful skip when toolchain missing — `ci-lint` (#1797) additionally reports a third state, `skipped`, when it reached `glab` but could not reach GitLab itself (offline, unauthenticated), since a network failure must never read as an invalid config and trigger a rollback.
 
 Results are cached per file-content hash **plus a fingerprint of the tools themselves** (adapter scripts, binaries, and any `validator_fingerprint_paths` such as your lockfile), so upgrading an analyser invalidates the answers it produced instead of replaying them. The key also carries a **meaning version** — a hash of `validators/SCHEMA.md` and the core-only field set — so a change to what a cached field *means* misses instead of being read under the new rules. A TTL (`validator_cache_ttl_hours`, default 24h) backstops whatever the key still can't see. Non-deterministic engine failures are never cached.
 
@@ -344,7 +344,7 @@ Full reference: [docs/validators.md](docs/validators.md) — bundled list, how t
 
 Formatters run after every edit, before validators — `edit → format → validate → rollback if validate fails`. They mutate the file in place (`prettier --write`, `gofmt -w`) so validators always see canonical output.
 
-`prettier` ships as the first bundled formatter. `rollback_on_fail` defaults to `false` — formatters are cosmetic; the validator is the safety net.
+`prettier` ships as the first bundled formatter. Four adapters under `formatters/` emit the structured SCHEMA.md shape (metrics, structured errors): `php-cs-fixer`, `phpcbf`, `prettier-write`, and `ruff-format` for Python (#2085) — `ruff format` rather than `black` since this repo's own CI already depends on ruff. `.supertool.example.json`'s bundled table also lists simpler raw-`cmd` entries (`black --quiet {file}`, `gofmt -w {file}`, …) for languages with no adapter script; either style works, the adapter just adds metrics. `rollback_on_fail` defaults to `false` — formatters are cosmetic; the validator is the safety net.
 
 A formatter rewrites the **whole file**, so it runs only where the repo shows it wants one: the tool's own config (`.prettierrc`, `phpcs.xml`, `pyproject.toml` with `[tool.black]`, …), searched from the *edited file's* directory up to **its** repo root; a manifest naming the tool; or an `env` entry in the spec carrying the rules. Otherwise the file is validated and left alone, and the receipt says which formatter was skipped. Set `"requires_config": false` on a spec to always run it, or `SUPERTOOL_FORMAT_WITHOUT_CONFIG=1` for a whole invocation. Tools supertool has no marker for are never gated.
 

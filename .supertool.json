@@ -512,6 +512,34 @@
       ],
       "rollback_on_fail": false,
       "timeout": 30
+    },
+    "ci-lint": {
+      "cmd": "{python} {supertool_dir}/validators/ci-lint/ci-lint.py {file}",
+      "resolve": "{python} {supertool_dir}/validators/common/ci_lint_resolve_root.py {file}",
+      "match": ".gitlab-ci.yml",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": true,
+      "timeout": 35
+    },
+    "ci-lint-includes": {
+      "cmd": "{python} {supertool_dir}/validators/ci-lint/ci-lint.py {file}",
+      "resolve": "{python} {supertool_dir}/validators/common/ci_lint_resolve_root.py {file}",
+      "match": ".gitlab/ci/*.yml",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste", "append",
+        "vim"
+      ],
+      "rollback_on_fail": true,
+      "timeout": 35
     }
   }
 }

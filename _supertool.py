@@ -18130,6 +18130,155 @@ def _doctor_validators_section(config: Dict[str, Any], probe: bool) -> str:
     return "\n".join(lines)
 
 
+def _doctor_looks_absent_formatter(text: str) -> bool:
+    """`_doctor_looks_absent`, widened for the formatter half's own failure
+    shape (#2086) -- kept as a separate function rather than editing the
+    validator's shared heuristic, so this addition cannot change what a
+    validator probe reports.
+
+    A SCHEMA-emitting formatter phrases an absent binary exactly like a
+    validator does ("RUFF_BIN not found: ruff") and the base heuristic
+    already catches that. A *legacy*, non-JSON formatter has no adapter
+    script standing between it and `subprocess.run(shell=False, ...)`, so
+    a missing binary there is Python's own `FileNotFoundError` text --
+    "[Errno 2] No such file or directory: 'binary'" -- which contains
+    neither "not found" nor "not installed". Left unwidened, every legacy
+    formatter's absent-binary case would misreport as "could not tell".
+    """
+    low = (text or "").lower()
+    if _doctor_looks_absent(text):
+        return True
+    return "no such file or directory" in low
+
+
+def _doctor_classify_formatter_probe(data: Any) -> "Tuple[str, str]":
+    """Sort one `_formatter_run_one` verdict into resolves/absent/could-not-tell.
+
+    Mirrors `_doctor_classify_probe` (#1950) for the formatter twin of the
+    same dispatch (#2086) -- the shapes differ enough that reusing the
+    validator classifier directly would misread a formatter's own decline.
+
+    A SCHEMA-emitting formatter (`php-cs-fixer`, `phpcbf`, `prettier-write`,
+    `ruff-format`) reports an absent binary the same way every validator
+    does: an inline `errors` entry with `code: "adapter"`, never a `skipped`
+    key -- formatters have no third state of their own, see
+    `_formatter_run_one`. A legacy, non-JSON formatter (a bare `cmd` with no
+    adapter script) carries no `errors` list at all on failure; its only
+    signal is `ok: False` plus a top-level `msg` set by `_formatter_run_one`
+    itself (`OSError`, a timeout). Both routes are checked, in that order,
+    before falling back to the bare `ok` key -- an unreadable verdict must
+    never default to "resolves", the same rule #1950 states for validators.
+    """
+    if not isinstance(data, dict):
+        return "could not tell", "probe returned no verdict"
+    errors = data.get("errors") or []
+    if any(isinstance(e, dict) and e.get("code") == "adapter" for e in errors):
+        msg = str(errors[0].get("msg", "")) if errors else ""
+        if _doctor_looks_absent_formatter(msg):
+            return "absent", msg
+        return "could not tell", msg
+    msg = data.get("msg")
+    if msg is not None:
+        if _doctor_looks_absent_formatter(str(msg)):
+            return "absent", str(msg)
+        return "could not tell", str(msg)
+    if "ok" in data:
+        return "resolves", f"ok={data.get('ok')}"
+    return "could not tell", "adapter replied without a verdict"
+
+
+def _doctor_formatters_section(config: Dict[str, Any], probe: bool) -> str:
+    """The formatter twin of `_doctor_validators_section` (#2086).
+
+    `doctor` reported validator toolchains in full (#1950) and said nothing
+    about formatters, so a repo with no working Python formatter -- the
+    subject of #2085 -- had no way to learn that from the one op that exists
+    to answer "what is this environment able to check/fix". The silence
+    read exactly like formatters being fine, which is this repo's own
+    defect class (CLAUDE.md, "The defect this codebase keeps having") aimed
+    at its own diagnostic.
+
+    Same cost split as the validator half: scope (does any tracked file
+    match this formatter's `match` glob) is always computed, because a
+    `git ls-files` listing is already paid for by the validator section run
+    moments earlier. Binary resolution costs a real subprocess and stays
+    behind `doctor:probe`, for the same reason -- up to N adapters is not a
+    cost a bare `doctor` should pay by default.
+
+    Unlike validators, `doctor:probe`'s formatter probe does not disable
+    `_formatter_run_one`'s cache: formatters have none to disable (no
+    caching layer exists for them, unlike `_validator_run_one`'s
+    `~/.cache/supertool/validators/`), so there is nothing to bypass.
+    """
+    formatters = config.get("formatters") or {}
+    lines: List[str] = ["## Formatters (#2086)"]
+    if not formatters:
+        lines.append("- no \"formatters\" section in .supertool.json — no "
+                     "formatter configured")
+        return "\n".join(lines)
+
+    files = _doctor_tracked_files()
+    scope_unknown = files is None
+
+    resolves = absent = unknown = not_applicable = 0
+    rows: List[str] = []
+    for name in sorted(formatters):
+        spec = formatters[name]
+        if not isinstance(spec, dict):
+            continue
+        glob = spec.get("match", "*")
+        target: Optional[str] = None
+        if not scope_unknown:
+            for f in files:  # type: ignore[union-attr]
+                if _match_glob(f, glob):
+                    target = f
+                    break
+
+        if scope_unknown:
+            unknown += 1
+            rows.append(f"- {name}: could not tell whether this tree has a "
+                        "matching file (`git ls-files` did not answer)")
+            continue
+        if target is None:
+            not_applicable += 1
+            rows.append(f"- {name}: not applicable (no tracked file matches "
+                        f"`{glob}`)")
+            continue
+        if not probe:
+            unknown += 1
+            rows.append(f"- {name}: in scope "
+                        f"({_flat_field(target, disclose_newline=True)}) — "
+                        "could not tell without probing; run doctor:probe")
+            continue
+        try:
+            data = _formatter_run_one(name, spec, target)
+        except Exception as exc:  # noqa: BLE001 — a crashing probe is itself a finding
+            unknown += 1
+            rows.append(f"- {name}: could not tell — probing it raised "
+                        f"{type(exc).__name__}: {_flat_field(str(exc))}")
+            continue
+        if not isinstance(data, dict):
+            unknown += 1
+            rows.append(f"- {name}: could not tell — probe returned no verdict")
+            continue
+        state, detail = _doctor_classify_formatter_probe(data)
+        if state == "resolves":
+            resolves += 1
+        elif state == "absent":
+            absent += 1
+        else:
+            unknown += 1
+        rows.append(
+            f"- {name} ({_flat_field(target, disclose_newline=True)}): "
+            f"{state} — {_flat_field(detail)}")
+
+    lines.append(f"- {len(formatters)} configured, {resolves} resolves, "
+                 f"{absent} absent, {unknown} could not tell, "
+                 f"{not_applicable} not applicable")
+    lines.extend(rows)
+    return "\n".join(lines)
+
+
 def op_doctor(arg: str = "") -> str:
     """Report the environment supertool runs in, and what it dispatches to.
 
@@ -18239,6 +18388,8 @@ def op_doctor(arg: str = "") -> str:
     lines.append("")
 
     lines.append(_doctor_validators_section(config, probe))
+    lines.append("")
+    lines.append(_doctor_formatters_section(config, probe))
     return "\n".join(lines) + "\n"
 
 
