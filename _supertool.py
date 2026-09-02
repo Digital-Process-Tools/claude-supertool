@@ -24037,7 +24037,11 @@ def _formatter_render_row(result: Dict[str, Any]) -> Optional[str]:
 
     Returns None (silent) when the formatter was a no-op:
     ok=True and metrics.lines_added == 0 and metrics.lines_removed == 0.
-    Failures always produce a row.
+    Failures always produce a row. So does a `verify_failed` payload (#2162):
+    it carries the same ok=True, 0/0-metrics shape as a genuine no-op, and
+    without this exception it would go silent for the wrong reason -- the
+    tool ran and may have changed the file, only the post-run re-read that
+    would have proven it failed.
     """
     # Every adapter-supplied field on this row goes through `_flat_cell`, for
     # the reason in its docstring: the validator twin has routed `tool`,
@@ -24050,6 +24054,12 @@ def _formatter_render_row(result: Dict[str, Any]) -> Optional[str]:
     metrics = result.get("metrics") or {}
     added = metrics.get("lines_added", 0)
     removed = metrics.get("lines_removed", 0)
+    # `verify_failed` (#2162): a formatter that ran and then hit an `OSError`
+    # re-reading the file to compute the diff reports `metrics.lines_added`
+    # and `lines_removed` as 0 either way -- identical to a genuine no-op.
+    # Silently dropping this row would say "nothing changed" about a file
+    # that may well have. Never silent, regardless of `ok`.
+    verify_failed = result.get("verify_failed")
 
     # Legacy non-JSON adapter: show raw output verbatim (can't compute metrics).
     # Silent only when the formatter ran cleanly AND printed nothing.
@@ -24070,6 +24080,12 @@ def _formatter_render_row(result: Dict[str, Any]) -> Optional[str]:
                 _flat_field(ln) for ln in _LINE_BREAK_RE_STR.split(raw))
             return f"{name:8s}: {status}       {body}"
         return f"{name:8s}: {status}"
+
+    if verify_failed:
+        detail = _flat_cell(str(verify_failed), 120)
+        status = "ok" if ok else "fail"
+        return (f"{name:8s}: {status}       ({dur}ms)  formatted, but could "
+                f"not verify what changed: {detail}")
 
     if ok and added == 0 and removed == 0:
         return None  # silent no-op

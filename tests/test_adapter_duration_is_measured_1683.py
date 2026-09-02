@@ -46,6 +46,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 VALIDATORS = REPO / "validators"
+FORMATTERS = REPO / "formatters"
 
 #: Attributes of `time` that return a clock reading.
 CLOCKS = ("time", "monotonic", "perf_counter",
@@ -132,11 +133,17 @@ def _fabricated_durations(source: str):
 
 def _adapters():
     """Every `validators/*/*.py` -- the 36 adapters and the 4 shared helpers
-    under `common/`. The helpers are swept rather than filtered out: one of
-    them, `refusal.py`, builds the `skipped` and `absent` payloads several
-    adapters emit, so a fabricated duration could be written there once and
-    reach all of them."""
-    found = sorted(VALIDATORS.glob("*/*.py"))
+    under `common/` -- plus every `formatters/*/*.py` (#2159). The helpers
+    are swept rather than filtered out: one of them, `refusal.py`, builds the
+    `skipped` and `absent` payloads several adapters emit, so a fabricated
+    duration could be written there once and reach all of them. Formatters
+    join for the same reason `guard_main`'s own sweep does: the clause this
+    file tests reads a classifier consumes (`stalled_at_its_own_wall`), and a
+    formatter's `duration_ms` is read by that classifier exactly like a
+    validator's -- restricting the population to where #1683 happened to be
+    measured, rather than to what the contract covers, would leave a fourth
+    fabricated-timeout constant class sitting one directory over, unswept."""
+    found = sorted(VALIDATORS.glob("*/*.py")) + sorted(FORMATTERS.glob("*/*.py"))
     assert found, "no files found -- the sweep below would pass vacuously"
     return found
 

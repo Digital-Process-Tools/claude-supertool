@@ -47,7 +47,9 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | Python (SCHEMA adapter)                  | `ruff-format`   | `ruff` (already a dependency of most Python CI)  | `formatters/ruff-format/ruff-format.py` — metrics + structured errors, unlike the raw-`cmd` rows above (#2085) |
 | Go                                       | `gofmt`         | Go toolchain                                     | Ships with Go — no extra install              |
 | Rust                                     | `rustfmt`       | Rust toolchain                                   | Ships with `rustup` — `rustup component add rustfmt` |
-| PHP (PSR-12)                             | `phpcbf`        | PHP_CodeSniffer via Composer                     | `composer global require squizlabs/php_codesniffer` |
+| PHP (PSR-12, SCHEMA adapter)             | `phpcbf`        | PHP_CodeSniffer via Composer                     | `formatters/phpcbf/phpcbf.py` — metrics + structured errors, unlike the raw-`cmd` rows above; `composer global require squizlabs/php_codesniffer` |
+| PHP (SCHEMA adapter)                     | `php-cs-fixer`  | `php-cs-fixer` (PHP-CS-Fixer)                    | `formatters/php-cs-fixer/php-cs-fixer.py` — metrics + structured errors; `composer global require friendsofphp/php-cs-fixer` |
+| JS, TS, CSS, JSON, YAML, Markdown (SCHEMA adapter) | `prettier-write` | `prettier` npm package                  | `formatters/prettier-write/prettier-write.py` — metrics + structured errors, an alternative to the raw-`cmd` `prettier` row above |
 | Bash / shell                             | `shfmt`         | `shfmt` binary                                   | `brew install shfmt` / `go install mvdan.cc/sh/v3/cmd/shfmt@latest` |
 | Terraform / HCL                          | `terraform-fmt` | Terraform CLI                                    | Ships with Terraform — `brew install terraform` |
 | Ruby                                     | `rubocop`       | RuboCop gem                                      | `gem install rubocop`; `-a` = auto-fix only   |
@@ -175,3 +177,9 @@ edited: src/config.json
 ```
 
 When the formatter succeeds silently (the normal case), no formatter block appears — the output is clean.
+
+## `verify_failed` — a SCHEMA-adapter formatter that could not confirm its own result
+
+The four SCHEMA-adapter formatters (`ruff-format`, `php-cs-fixer`, `prettier-write`, `phpcbf` — see "Bundled formatters" above) compute `metrics.lines_added` / `lines_removed` by re-reading the file after the tool exits. If that re-read hits an `OSError` (the file was deleted or its permissions changed between the format run and the read), falling back to "no changes" would publish `ok: true` with `metrics: {lines_added: 0, lines_removed: 0}` — byte-identical to the receipt for a file the tool genuinely left untouched (#2162).
+
+When that happens, the payload instead carries `verify_failed: "<reason>"` alongside the same `ok: true`, 0/0 metrics. `_formatter_render_row` reads it before the silent-no-op check, so this case always renders a row — `formatted, but could not verify what changed: <reason>` — rather than disappearing into the quiet-clean-run path every genuine no-op takes. Its absence means the metrics are a real measurement; its presence means the 0/0 is "could not tell", not "nothing happened".

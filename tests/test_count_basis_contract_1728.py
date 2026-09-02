@@ -319,6 +319,13 @@ def test_a_conforming_capping_adapter_still_rolls_an_edit_back(
 #: `cargo-check` and `phpstan` are deliberately absent: they are the two the
 #: `_validator_measured_count` docstring cites as the divergent conventions, so
 #: they are the two most likely to be copied, and they now say which they are.
+#:
+#: The four `formatters/*` adapters joined here rather than being made to
+#: declare (#2159): each always emits exactly `count: 0, errors: []` on
+#: success or `count: 1, errors: [ONE row]` on failure -- `count` and
+#: `len(errors)` never diverge, so there is no pre-subtraction and no cap for
+#: `count_basis`/`errors_truncated` to describe. A declaration with nothing
+#: to say would be decoration, not a guarantee.
 _GRANDFATHERED = frozenset({
     "bash-check", "changelog-fragment", "eslint", "git-status", "gitleaks",
     "go-vet", "gofmt-check", "hadolint", "html-check", "inilint", "jit-index",
@@ -327,16 +334,26 @@ _GRANDFATHERED = frozenset({
     "py-compile", "pyright", "rector-mcp", "ruby-check", "ruff", "shellcheck",
     "stylelint", "terraform-check", "tomllint", "tsc-check", "xmllint",
     "yaml-check",
+    "php-cs-fixer", "phpcbf", "prettier-write", "ruff-format",
 })
 
 
 def _adapters() -> dict:
-    """Every shipped adapter, by name, mapped to its source text."""
+    """Every shipped adapter, by name, mapped to its source text.
+
+    `validators/` and `formatters/` both (#2159): `_validator_measured_count`
+    and `_validator_regressed` are read by the same contract this file tests
+    regardless of which directory an adapter's JSON came from, so restricting
+    the sweep to where the issue that named this file happened to look would
+    leave a formatter free to ship the exact saturated-cap shape #1728 is
+    about, unswept.
+    """
     out = {}
-    for path in sorted((ROOT / "validators").glob("*/*.py")):
-        if path.parent.name == "common" or path.stem != path.parent.name:
-            continue
-        out[path.stem] = path.read_text(encoding="utf-8")
+    for root in (ROOT / "validators", ROOT / "formatters"):
+        for path in sorted(root.glob("*/*.py")):
+            if path.parent.name == "common" or path.stem != path.parent.name:
+                continue
+            out[path.stem] = path.read_text(encoding="utf-8")
     if len(out) < 30:
         raise AssertionError(
             f"the adapter sweep found {len(out)} adapters, which is not a "
