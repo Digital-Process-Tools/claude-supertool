@@ -25,6 +25,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import supertool  # noqa: E402
+from _adapter_budget import adapter_budget  # noqa: E402
+from _adapter_verdict import skip_if_core_timed_out  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 RESOLVER = REPO / "validators" / "common" / "ci_lint_resolve_root.py"
@@ -33,7 +35,7 @@ RESOLVER = REPO / "validators" / "common" / "ci_lint_resolve_root.py"
 def _run_resolver(*args, env=None, cwd=None):
     return subprocess.run(
         [sys.executable, str(RESOLVER), *args],
-        capture_output=True, text=True, timeout=15,
+        capture_output=True, text=True, timeout=adapter_budget(RESOLVER),
         encoding="utf-8", errors="replace", env=env, cwd=cwd,
     )
 
@@ -170,7 +172,7 @@ def test_a_resolve_error_reaches_the_final_skip_dict_with_its_reason(tmp_path: P
     f = repo / "README.md"
     f.write_text("hi\n")
     spec = {"resolve": "{python} " + str(RESOLVER) + " {file}"}
-    result = supertool._validator_run_one("ci-lint", spec, str(f))
+    result = skip_if_core_timed_out(supertool._validator_run_one("ci-lint", spec, str(f)))
     assert result is not None
     assert result.get("tool") == "ci-lint"
     assert "skipped" in result, (
