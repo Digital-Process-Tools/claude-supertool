@@ -134,7 +134,17 @@ def main() -> None:
         emit(absent(TOOL, file, INSTALL_HINT, int((time.time() - start) * 1000)))
         return
 
-    is_new, reason = _is_new_at_head(os.path.abspath(file))
+    # #2155 follow-up: `realpath`, not `abspath`. `git rev-parse
+    # --show-toplevel` reports the PHYSICAL repo root -- every symlink in the
+    # path resolved -- while `abspath` only makes a path absolute and leaves
+    # symlinks in place. Mixing the two makes `os.path.relpath` compute
+    # nonsense the moment any component between the file and the repo root
+    # is a symlink (macOS's `/tmp` -> `/private/tmp`, a symlinked worktree,
+    # a symlinked home directory), and a nonsense relpath makes `git cat-file
+    # -e HEAD:<path>` fail for a path that IS at HEAD -- silently
+    # misclassifying an already-committed file as new and re-enabling
+    # F401/F841/F541 on code this validator has no business relitigating.
+    is_new, reason = _is_new_at_head(os.path.realpath(file))
     if is_new is None:
         emit(skipped(TOOL, file,
                      "could not determine whether this path has history at "

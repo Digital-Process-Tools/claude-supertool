@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from _symlink import require_symlink
+
 REPO = Path(__file__).resolve().parents[1]
 GATE_PATH = REPO / ".github" / "scripts" / "new_file_ruff_gate.py"
 
@@ -168,6 +170,27 @@ def test_ruff_absent_is_the_third_state_not_a_pass(
     # SUPERTOOL_REQUIRE_VALIDATORS names this tool -- either way it must not
     # be `ok: true` about a file ruff never opened.
     assert verdict.get("ok") is not True, verdict
+
+
+def test_a_committed_file_reached_through_a_symlinked_ancestor_is_not_new(
+        repo: Path, tmp_path: Path) -> None:
+    """Reviewer-found regression: `git rev-parse --show-toplevel` reports the
+    PHYSICAL repo root (every symlink resolved); `os.path.abspath` does not
+    resolve symlinks. Reached through a symlinked ancestor (macOS's own
+    `/tmp` -> `/private/tmp` is exactly this shape), the two disagreed and
+    `os.path.relpath` computed a path `git cat-file -e HEAD:<path>` could
+    never find -- silently reporting an already-committed file as new and
+    re-enabling F401/F841/F541 on code this gate has no business
+    relitigating. `main()` now resolves through `os.path.realpath` before
+    calling `_is_new_at_head`, which is what this test pins."""
+    require_symlink()
+    link = tmp_path / "via_symlink"
+    link.symlink_to(repo, target_is_directory=True)
+    verdict = _run_gate(link / "old.py")
+    assert "skipped" in verdict, (
+        "a file already committed at HEAD, reached through a symlink, was "
+        f"reported as new instead of being left to the shared `ruff` "
+        f"validator: {verdict!r}")
 
 
 def test_extra_rules_is_imported_not_copied_from_lint_new_files(

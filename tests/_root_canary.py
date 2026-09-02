@@ -32,10 +32,16 @@ MARKERS = (".git", "pyproject.toml", "supertool.py")
 
 
 def _kind(path: Path) -> str:
-    """A marker's kind rather than a presence bit -- a `.git` that changed
-    from a worktree's file to nothing, or from a clone's directory to a file,
-    is also worth reporting, and a bare bool would collapse both into the
-    same "still there" as an untouched marker."""
+    """A marker's kind rather than a presence bit. `verdict()` below only
+    ever flags a non-absent -> absent transition, so a `dir` <-> `file`
+    change (a worktree's `.git` file replaced by a clone's `.git` directory,
+    or the reverse) is captured in the snapshot but is NOT currently
+    reported by `verdict()` -- see
+    `test_a_marker_changing_kind_counts_as_vanished_not_as_unchanged` for
+    that boundary stated as an assertion. Kept as a 3-state kind rather than
+    a bare bool anyway: it is cheap, it is the honest shape of what a marker
+    IS, and it leaves room for `verdict()` to grow that comparison later
+    without this function changing."""
     if path.is_dir():
         return "dir"
     if path.exists():
