@@ -18440,11 +18440,11 @@ def _init_parse_remote(url):
     url = url.strip()
     if not url:
         return None
-    scp = re.match(r"^[\w.+-]+@([^:/]+):(.+)$", url)
+    scp = re.match(r"^[\w.+-]+@([^:/]+):(.+)$", url)  # anchored-ok: url is .strip()ed above
     if scp:
         host, path = scp.group(1), scp.group(2)
     else:
-        uri = re.match(
+        uri = re.match(  # anchored-ok: url is .strip()ed above
             r"^[a-zA-Z][\w+.-]*://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+)$", url)
         if not uri:
             return None

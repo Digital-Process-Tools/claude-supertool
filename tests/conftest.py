@@ -1273,6 +1273,11 @@ RESET_GLOBALS = (
 #    something untrue about their lifetime.
 RESET_EXEMPT_GLOBALS = (
     "_GC_DEFAULT_RETENTION_DAYS",
+    # The jsonlint validator block `init` writes into a fresh .supertool.json
+    # (#858). Written once at import, never mutated: op_init copies it with
+    # `dict(...)` and serialises the copy to JSON, so no caller holds a
+    # reference that outlives its own frame.
+    "_INIT_JSONLINT_SPEC",
     # Which config keys `_resolve_custom_op`'s launcher never exports as an
     # env var, and the set `_op_config_key_collisions` reads the same list
     # from so the two can never disagree (#1009). Constant, written once at
