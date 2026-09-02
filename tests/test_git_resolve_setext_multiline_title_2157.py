@@ -139,6 +139,38 @@ BARE_DASH_AFTER_MULTILINE_PARAGRAPH = (
 )
 
 
+# CommonMark: "a paragraph cannot be interrupted by ... an ordered list item
+# with a start number other than 1" -- so a line shaped like `2. ...` sitting
+# above an underline is ordinary paragraph continuation text, not a new
+# block, and belongs IN the title. Only a start number of `1` may interrupt.
+MULTILINE_TITLE_WITH_NON_ONE_ORDERED_LINE = (
+    "Changelog\n"
+    "=========\n"
+    "\n"
+    "See step\n"
+    "2. of the migration guide\n"
+    "---------------------------\n"
+    "\n"
+    "<<<<<<< HEAD\n"
+    "- ours: fixed the marker gate\n"
+    "=======\n"
+    "- theirs: fixed the digest\n"
+    ">>>>>>> branch\n"
+)
+
+
+def test_a_non_one_ordered_line_stays_in_the_title(tmp_path: Path) -> None:
+    """A line starting `2. ` (or any digit other than `1`) does not interrupt
+    a paragraph per CommonMark, so it must remain part of the title rather
+    than resetting the lookback buffer -- only `1.`/`1)` may interrupt."""
+    f = _write(tmp_path, MULTILINE_TITLE_WITH_NON_ONE_ORDERED_LINE)
+    headings = resolve._heading_paths(resolve._union_lines(f.read_text(encoding="utf-8")))
+    titles = [p[-1] for p, _tagged in headings]
+    assert "See step 2. of the migration guide" in titles, (
+        f"a non-1 ordered-list-looking line wrongly interrupted the title -- got {titles!r}"
+    )
+
+
 def test_a_multiline_setext_title_duplicate_is_caught(tmp_path: Path) -> None:
     """MUST FIRE. #2157's own reported gap: the same heading recognised under
     two different names because only the underline's immediate predecessor
@@ -159,18 +191,45 @@ def test_a_blank_line_still_breaks_the_lookback(tmp_path: Path) -> None:
 
 def test_a_multiline_setext_heading_used_once_unions_quietly(tmp_path: Path) -> None:
     """MUST NOT FIRE. The ordinary case: one multi-line setext heading, used
-    once."""
+    once.
+
+    `dups == []` alone would still pass if the join were still truncated to
+    the last line only ("runs across two lines" is just as unique, and just
+    as un-duplicated, as the full title) -- it is not evidence the multi-line
+    join actually happened. Read `_heading_paths` directly and require the
+    FULL two-line text as the recorded title, not the old single-line
+    truncation, so a regression back to last-line-only reads red here even
+    though nothing duplicates."""
     f = _write(tmp_path, MULTILINE_SETEXT_SINGLE_USE)
     dups = resolve._duplicated_headings(str(f))
     assert dups == []
+    text = f.read_text(encoding="utf-8")
+    headings = resolve._heading_paths(resolve._union_lines(text))
+    titles = [p[-1] for p, _tagged in headings]
+    assert "A heading whose text runs across two lines" in titles, (
+        f"the multi-line title was not joined in full -- got {titles!r}"
+    )
 
 
 def test_a_bare_dash_after_a_multiline_paragraph_is_never_a_heading(tmp_path: Path) -> None:
     """MUST FIRE (on the real duplicate), MUST NOT fabricate a heading from
     the two-line paragraph above the bare `-`. A false ancestor there would
     reparent the second `### Fixed` and hide the genuine cross-side
-    duplicate."""
+    duplicate.
+
+    The two literal `### Fixed` ATX headings alone are enough to make `dups`
+    truthy regardless of what the bare `-` does, so that assertion by itself
+    proves nothing about the guard this test names. Read `_heading_paths`
+    directly and assert neither buffered paragraph line ever became a title
+    -- that is the actual claim, and it is the one a false-heading regression
+    would break."""
     f = _write(tmp_path, BARE_DASH_AFTER_MULTILINE_PARAGRAPH)
     dups = resolve._duplicated_headings(str(f))
     assert dups, "a bare '-' after a two-line paragraph swallowed it as a false heading and hid the real duplicate"
     assert any("Fixed" in d for d in dups)
+    text = f.read_text(encoding="utf-8")
+    headings = resolve._heading_paths(resolve._union_lines(text))
+    titles = [p[-1] for p, _tagged in headings]
+    assert not any("Some heading" in t or "text spanning two lines" in t for t in titles), (
+        f"the bare '-' fabricated a heading from the paragraph above it -- got {titles!r}"
+    )

@@ -128,7 +128,15 @@ _SETEXT_UNDERLINE_RE = re.compile(r"^[ ]{0,3}(=+|-{2,})[ \t]*\Z")
 # title neither line actually was). A `*`/`_` thematic break is the other
 # CommonMark paragraph-ender that is not already covered by the `=`/`-`
 # setext-underline regex above.
-_BLOCK_INTERRUPT_RE = re.compile(r"^[ ]{0,3}(>|[-*+][ \t]|\d{1,9}[.)][ \t])")
+#
+# The ordered-list branch only matches a start number of `1` -- CommonMark's
+# own rule: "a paragraph cannot be interrupted by ... an ordered list item
+# with a start number other than 1", so a line like `2. continues the same
+# sentence` is ordinary paragraph text, not a new block, and must stay in
+# the buffer (found in review: an earlier draft matched any `\d+[.)]`,
+# which silently widened the "real duplicate goes unseen" gap this function
+# exists to close for any title line shaped like `N. ...`/`N) ...`).
+_BLOCK_INTERRUPT_RE = re.compile(r"^[ ]{0,3}(>|[-*+][ \t]|1[.)][ \t])")
 _THEMATIC_BREAK_STAR_UNDERSCORE_RE = re.compile(r"^[ ]{0,3}([*_])(?:[ \t]*\1){2,}[ \t]*\Z")
 
 
@@ -212,13 +220,19 @@ def _heading_paths(lines: list[tuple[str, bool]]) -> list[tuple[tuple[str, ...],
     a decorative style going unrecognised.
 
     `buffer` accumulates that run: every line is added to it *unless* it is itself
-    consumed by another construct (a heading, a fence delimiter, an underline that
-    did or did not form a heading) or is blank, either of which clears the buffer,
-    same as it always has for the single-line case. The underline only means "the
-    lines above it were a title" when the buffer is non-empty; getting that
-    adjacency wrong in the permissive direction would read a bare `---` thematic
-    break as a heading with the paragraph above it as its title, corrupting every
-    path built from the lines after it — so a candidate underline with an empty
+    consumed by another construct -- a heading, a fence delimiter, an underline
+    that did or did not form a heading, a blank line, a list-item/blockquote
+    marker (`_BLOCK_INTERRUPT_RE`), or a `*`/`_` thematic break
+    (`_THEMATIC_BREAK_STAR_UNDERSCORE_RE`) -- any of which clears the buffer
+    instead of extending the title, same as it always has for the single-line
+    case. The list/blockquote/thematic-break stops exist because a paragraph
+    genuinely ends at one of those, same as it ends at a blank line: without
+    them, a `- bullet` line sitting directly above an unrelated title would be
+    folded into it as bogus title text. The underline only means "the lines
+    above it were a title" when the buffer is non-empty; getting that adjacency
+    wrong in the permissive direction would read a bare `---` thematic break as
+    a heading with the paragraph above it as its title, corrupting every path
+    built from the lines after it — so a candidate underline with an empty
     buffer is read as ordinary text, same as a version that could not decide at
     all.
     """
