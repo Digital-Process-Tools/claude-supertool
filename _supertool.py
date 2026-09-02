@@ -2927,6 +2927,7 @@ _OP_SAFETY_BUILTIN: Dict[str, str] = {
     "tail": "read-only", "tree": "read-only", "validate": "read-only",
     "validate_staged": "read-only", "version": "read-only",
     "wc": "read-only", "workspace": "read-only", "doctor": "read-only",
+    "payload-lint": "read-only",
     # writes — changes files in this tree
     "append": "writes", "batch": "writes", "edit": "writes",
     "format": "writes", "format_staged": "writes", "gc": "writes",
@@ -2971,7 +2972,7 @@ _PARALLEL_SAFE_OPS = {
     "read", "grep", "glob", "ls", "head", "tail", "wc", "stat",
     "map", "tree", "around", "around_line", "between", "diff",
     "version", "validate", "validate_staged", "workspace",
-    "resolve", "diag", "hover", "help", "doctor",
+    "resolve", "diag", "hover", "help", "doctor", "payload-lint",
 }
 
 
@@ -27760,7 +27761,10 @@ def _load_at_file_raw(ref: str, note: bool = True) -> "Tuple[Any, str, str]":
     \"\"\"basic\"\"\" block (escapes apply, so backslashes double) or to the JSON
     payload form, which needs no delimiter at all. #394.
 
-    Returns the parsed value (dict, list, etc.).
+    Returns (parsed value, raw source text, source label) -- the raw text
+    and label exist for `payload-lint` (#1032), which needs the source to
+    read provenance off it; every other caller uses `_load_at_file`, the
+    thin wrapper that discards the last two.
     Raises ValueError with a human-readable message on any error.
     """
     if ref == "@payload" or ref.startswith("@payload "):
@@ -27866,9 +27870,20 @@ def _payload_field_provenance(raw: str, key: str) -> str:
 
 def _payload_lint_field_report(raw: str, key: str, value: Any) -> str:
     """One line per field for `payload-lint` -- shape and provenance,
-    never a verdict (#1032). This op reports; it does not decide."""
+    never a verdict (#1032). This op reports; it does not decide.
+
+    `key!r` rather than `key` bare (#1032 audit finding, class C): a TOML
+    basic-string key may itself carry an escaped newline, and an unescaped
+    key landing at the front of the line lets the payload's OWN field name
+    forge a second, standalone line that impersonates this op's own
+    output -- observed forging a fake `anchor check ... matches N time(s)`
+    line. `!r` keeps the key on one line regardless of what it contains,
+    the same defence every OTHER value in this function already had via
+    `!r` (the not-text branch) or via the escaped rendering `len()`/count
+    already imply.
+    """
     if not isinstance(value, str):
-        return f"  {key}: {type(value).__name__} = {value!r} (not text)"
+        return f"  {key!r}: {type(value).__name__} = {value!r} (not text)"
     n_lines = value.count(chr(10)) + 1 if value else 0
     prov = _payload_field_provenance(raw, key)
     flags = []
@@ -27876,9 +27891,15 @@ def _payload_lint_field_report(raw: str, key: str, value: Any) -> str:
         flags.append("carries a literal backslash")
     if "\r" in value:
         flags.append("carries a stray \\r")
-    if any(ln != ln.rstrip() for ln in value.split(chr(10))):
+    # Strip a trailing CR before checking for trailing whitespace, or a
+    # CRLF field trips BOTH flags for the same two bytes (#1032 review):
+    # `ln.rstrip()` also eats the `\\r` the check above already named,
+    # reporting one defect as two.
+    _no_cr = [ln[:-1] if ln.endswith(chr(13)) else ln
+              for ln in value.split(chr(10))]
+    if any(ln != ln.rstrip() for ln in _no_cr):
         flags.append("has a trailing-whitespace line")
-    line = f"  {key}: {len(value)} chars, {n_lines} line(s), provenance={prov}"
+    line = f"  {key!r}: {len(value)} chars, {n_lines} line(s), provenance={prov}"
     if flags:
         line += " -- " + ", ".join(flags)
     return line
@@ -27917,6 +27938,33 @@ def _payload_lint_anchor_report(parsed: Dict[str, Any]) -> str:
             f"matches {count} time(s)" + chr(10))
 
 
+def _payload_lint_path_candidates(parsed: Any) -> "List[str]":
+    """Every path `op_payload_lint` is about to open, read or resolve
+    (#1032 review, class C follow-up).
+
+    Mirrors the three shapes `op_payload_lint` itself recognizes: a bare
+    ops array, `{"ops": [...]}`, and a single-op table. Anything else
+    (a malformed item, a missing/non-string `path`) contributes nothing --
+    those are reported as their own "could not be determined" states
+    further down, not silently treated as contained.
+    """
+    if isinstance(parsed, list):
+        items = parsed
+    elif isinstance(parsed, dict) and isinstance(parsed.get("ops"), list):
+        items = parsed["ops"]
+    elif isinstance(parsed, dict):
+        items = [parsed]
+    else:
+        return []
+    candidates = []
+    for item in items:
+        if isinstance(item, dict):
+            p = item.get("path")
+            if isinstance(p, str) and p:
+                candidates.append(p)
+    return candidates
+
+
 def op_payload_lint(ref: str) -> str:
     """Parse an @file/@- payload and report its shape, run nothing (#1032).
 
@@ -27940,6 +27988,18 @@ def op_payload_lint(ref: str) -> str:
         parsed, raw, source = _load_at_file_raw(ref, note=False)
     except ValueError as exc:
         return f"ERROR: {exc}\n"
+
+    # Every path this op is about to open or resolve -- the anchor
+    # snapshot's target, each ops-array item's path -- through the same
+    # gate every other path-bearing route passes through, BEFORE any of
+    # them is opened, resolved or reported. Without this, `payload-lint`
+    # was an existence-and-content oracle for any path on disk: an @file
+    # payload naming `/etc/hosts` as `path` returned whether it exists and
+    # how many times an arbitrary `old` string occurred in it, unlike every
+    # other op (#1032 review, class C follow-up).
+    contained = _containment_error(_payload_lint_path_candidates(parsed))
+    if contained:
+        return contained
 
     lines = [f"payload-lint: {source}"]
 

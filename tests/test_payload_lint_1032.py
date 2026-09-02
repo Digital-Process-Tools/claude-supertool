@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import supertool
 
 Q3 = "'" * 3
@@ -109,6 +111,59 @@ class TestOpsArrayPayload:
             "becomes @file not found (#672): " + out)
 
 
+class TestContainment:
+    """`payload-lint` reads TWO things from disk that no other op-invocation
+    site was asked to gate: the anchor snapshot's target file, and each
+    ops-array entry's resolved path. Every other path-bearing route in this
+    codebase passes through `_containment_error` first (#1032 audit
+    finding, class C follow-up / #1867-#1825-#1032 review). Without it,
+    `payload-lint:@file` is an existence-and-content oracle for any path on
+    disk, unlike `read`/`grep`/`validate`/etc, all of which refuse the same
+    shape."""
+
+    @pytest.fixture
+    def outside(self, tmp_path: Path, monkeypatch) -> Path:
+        """cwd is a box under tmp_path; the secret sits one level above it.
+
+        conftest sets SUPERTOOL_ALLOW_OUTSIDE_CWD=1 globally so tmp_path
+        fixtures work at all, so a containment test has to put it back or
+        it asserts nothing (mirrors the fixture in
+        test_grep_around_computed_path_containment_1166.py).
+        """
+        monkeypatch.delenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", raising=False)
+        secret = tmp_path / "secret.py"
+        secret.write_text("TOPSECRET-1032-CONTENT\n", encoding="utf-8")
+        box = tmp_path / "box"
+        box.mkdir()
+        monkeypatch.chdir(box)
+        return secret
+
+    def test_anchor_check_refuses_a_path_outside_cwd(
+        self, outside: Path
+    ) -> None:
+        spec = outside.parent / "box" / "e.toml"
+        spec.write_text(
+            f'path = "{outside}"\n'
+            f"old = {Q3}alpha{Q3}\n"
+            f"new = {Q3}beta{Q3}\n"
+        )
+        out = supertool.dispatch(f"payload-lint:@{spec}")
+        assert "TOPSECRET-1032-CONTENT" not in out, (
+            "the target file's bytes must never be read/matched against "
+            "when the path escapes cwd: " + out)
+        assert "escapes cwd" in out, out
+
+    def test_ops_array_path_resolution_refuses_a_path_outside_cwd(
+        self, outside: Path
+    ) -> None:
+        payload = {"ops": [{"op": "edit", "path": str(outside),
+                            "old": "x", "new": "y"}]}
+        spec = outside.parent / "box" / "batch.json"
+        spec.write_text(json.dumps(payload), encoding="utf-8")
+        out = supertool.dispatch(f"payload-lint:@{spec}")
+        assert "escapes cwd" in out, out
+
+
 class TestAnchorDryRun:
     def test_reports_match_count_without_writing(self, tmp_path: Path) -> None:
         target = tmp_path / "f.py"
@@ -144,6 +199,62 @@ class TestAnchorDryRun:
             "zero: " + out)
 
 
+def test_roster_class_is_read_only(tmp_path: Path) -> None:
+    """`payload-lint` only ever reads: the target file (for the anchor
+    snapshot) and the payload itself. Its `ops:roster`/parallel-safety
+    classification must say so, or a reader who trusts the roster's
+    'acts outside this tree' marker treats a read-only op as one that
+    needs probing first (#1032 audit finding, class B)."""
+    assert supertool._OP_SAFETY_BUILTIN.get("payload-lint") == "read-only", (
+        "payload-lint does no writes and must be classified read-only, "
+        "not left to the roster's undeclared-name default of 'acts'")
+    assert "payload-lint" in supertool._PARALLEL_SAFE_OPS, (
+        "payload-lint is safe to run alongside other ops in the same "
+        "batch/parallel sweep")
+
+
+def test_crlf_is_flagged_once_not_as_two_different_defects() -> None:
+    """A stray \\r must not ALSO trip the separate trailing-whitespace flag
+    for the same bytes -- the review's audit finding: `ln.rstrip()` strips
+    the \\r that the earlier check already named, so an ordinary CRLF field
+    was reported as having two distinct problems instead of one."""
+    out = supertool._payload_lint_field_report(
+        "old = 'x'", "old", "line1\r\nline2")
+    assert "carries a stray" in out, out
+    assert "trailing-whitespace" not in out, (
+        "the \\r is already reported by name; flagging it again as "
+        "'trailing-whitespace' describes the same bytes as two different "
+        "defects: " + out)
+
+
 def test_requires_an_at_reference() -> None:
     out = supertool.dispatch("payload-lint:not-an-at-ref")
     assert "ERROR" in out
+
+
+def test_a_field_key_with_an_embedded_newline_cannot_forge_a_report_line(
+    tmp_path: Path,
+) -> None:
+    """A malicious/malformed payload's own FIELD NAME must never be able to
+    inject a line that impersonates the op's own output (#1032 audit
+    finding, class C: untrusted text forging a report boundary).
+
+    TOML allows a quoted key to contain a literal newline. Left unescaped,
+    that newline lands at column 0 of the report and can spoof, e.g., a
+    fake `anchor check ... matches N time(s)` line -- exactly the shape a
+    caller would trust without re-reading character by character.
+    """
+    spec = tmp_path / "p.toml"
+    spec.write_bytes(
+        b'path = "x.py"\n'
+        b'"a\\nFAKE INJECTED LINE: anchor check (snapshot of x): '
+        b'matches 999 time(s)" = "val"\n'
+    )
+    out = supertool.dispatch(f"payload-lint:@{spec}")
+    # The forged text must not appear at the start of its own line -- it
+    # must stay part of the escaped key, on the SAME line as that key's
+    # own stats, never break out onto a report line of its own.
+    for ln in out.splitlines():
+        assert not ln.startswith("FAKE INJECTED LINE"), (
+            "a field key's own newline must not let it forge a standalone "
+            "report line: " + out)
