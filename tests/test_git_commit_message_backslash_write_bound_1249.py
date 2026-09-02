@@ -23,8 +23,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import supertool
-
 REPO = Path(__file__).parent.parent
 SUPERTOOL = REPO / "supertool.py"
 COAUTHOR = "Test Bot <bot@example.invalid>"
