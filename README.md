@@ -13,7 +13,7 @@
 [![License](https://img.shields.io/badge/license-Community-brightgreen)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.54.0-orange)](.claude-plugin/plugin.json)
 
-Saves tokens. Saves money. Saves turns. Works the same in interactive sessions and autonomous runs — humans pair-programming with Claude Code use it every day, not just Kevin-style headless agents. Stdlib only, zero deps, Python 3.9+ — a thin launcher (`supertool.py`) delegating to one core module (`_supertool.py`) plus the presets, validators, formatters and notifiers you enable per repo.
+Saves tokens. Saves money. Saves turns. Works the same in interactive sessions and autonomous runs — humans pair-programming with Claude Code use it every day, not just Kevin-style headless agents. Stdlib only, zero deps, Python 3.9+ — a thin launcher (`supertool.py`) delegating to one core module (`_supertool.py`) plus the presets, [validators](docs/validators.md), [formatters](docs/formatters.md) and [notifiers](docs/notifiers.md) you enable per repo.
 
 ```bash
 # 7 ops, 1 round-trip, parallel where safe
@@ -115,12 +115,13 @@ One call answers branch, ahead/behind, recent history and every dirty path — w
 
 ## Beyond the ops table
 
-Four subsystems the table above only gestures at, each with its own doc:
+Five subsystems the table above only gestures at, each with its own doc:
 
 - **Validators & formatters** — every mutating op runs your project's registered linters/formatters first, three-state (`ok` / finding / `skipped`), and rolls a write back on a validator failure. [docs/validators.md](docs/validators.md), [docs/formatters.md](docs/formatters.md).
 - **Notifiers** — fire-and-forget observers that tap the op stream for side effects: an editor diff view, Slack, a desktop notification. [docs/notifiers.md](docs/notifiers.md).
 - **`watch` / `radar` / `channel`** — background pollers and async wake for PRs, MRs and pipelines, reconciled into one tier. [docs/presets/watch.md](docs/presets/watch.md).
-- **LSP ops via warm MCP daemons** — `workspace`/`resolve`/`diag`/`hover`/`rename` reach a language server through a process that stays hot across calls. [docs/mcp-integration.md](docs/mcp-integration.md), [docs/mcp-warm-process-servers.md](docs/mcp-warm-process-servers.md).
+- **LSP ops via a warm MCP daemon** — `workspace`/`resolve`/`diag`/`hover`/`rename` reach a language server through a process that stays hot across calls. [docs/presets/lsp.md](docs/presets/lsp.md), [docs/mcp-integration.md](docs/mcp-integration.md).
+- **Warm-process MCP servers for heavy tools** — the same warm-daemon pattern, applied to PHP toolchains (Rector, PHPUnit) as validator adapters that stay bootstrapped across calls. [docs/mcp-warm-process-servers.md](docs/mcp-warm-process-servers.md).
 
 ## Security — cwd containment
 
