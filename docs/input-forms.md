@@ -289,6 +289,21 @@ your own line centred on the pair and a caret under it:
 The retry on this route is the whole payload, so a refusal that named one of
 three offences cost three full re-sends of a file that had already been parsed
 in full — measured at four re-sends in one agent run, on payloads up to 14 KB.
+
+**Whole-payload is the only coherent unit here, not an unexamined default**
+([#2119](https://github.com/Digital-Process-Tools/claude-supertool/issues/2119)).
+This scan runs at *parse* time, over the raw source, before any op exists to
+attach a partial result to — a `batch` of nine ops that fails this check has
+not yet been split into nine ops, it is still one string. There is no unit
+smaller than "the payload" to accept or refuse at that point; a `[[ops]]`
+boundary is a line-counting heuristic over that same string, not a fact the
+scan could hand a partial acceptance to (the same argument `literal_backslashes`'s
+own top-level-only scoping rests on, two sections down). What *is* answerable,
+and is answered above and below, is the per-refusal cost: locating every
+occurrence in one pass, and exempting by field name rather than by payload,
+both shrink what the re-send has to fix without changing that a re-send is
+what it is.
+
 The excerpt is centred on the pair rather than taken from the head of the line
 because a shell `printf` format is frequently 200 characters in, and the head of
 that line does not contain the offending bytes at all. Beyond four occurrences
@@ -358,6 +373,50 @@ fallback used for Python <3.11 closed at the first three quotes and choked on th
 surplus, so the spelling this section recommends parsed on 3.11+ and failed below
 it — the [#684](https://github.com/Digital-Process-Tools/claude-supertool/issues/684)
 rule, one delimiter over.
+
+### A commit message is write-bound too
+
+([#1249](https://github.com/Digital-Process-Tools/claude-supertool/issues/1249))
+`git-commit:@-`'s `message` field is in the write-bound set alongside `new`
+and `content`: an even backslash run there is **refused**, not merely noted,
+because the bytes land permanently in history exactly as they land in a file.
+It was outside that set until this was reported, and the gap had a concrete
+cost — a commit message *about* backslash misreporting that itself
+misreported backslashes, because the guard warned and the commit went ahead,
+and the fix afterwards needed a raw `git` amend outside the payload route
+entirely. `literal_backslashes` applies to `message` the same way it applies
+to any other write-bound field; there is no `old`-shaped anchor reading for a
+commit message, so there is no note-only case to preserve for it.
+
+### The shell single-quote escape idiom lands verbatim, and is warned
+
+([#2114](https://github.com/Digital-Process-Tools/claude-supertool/issues/2114))
+A write-bound literal field (`new`, `content`, `message`) carrying the shell
+idiom for embedding an apostrophe inside a single-quoted string — close the
+quote, emit a literal quote another way, reopen — writes those literal
+characters, not the apostrophe it usually stands for: `'"'"'` (double-quote
+form) or `'\''` (backslash form). A shell's own quoting resolves either to
+one apostrophe; a TOML literal block resolves neither, because it processes no
+escapes at all, so the whole sequence lands on disk, the write reports
+success, and every validator agrees — the sequence is legal text in nearly
+every language this repo edits.
+
+This is a **warning, not a refusal**, unlike the backslash guards above, and
+for a reason specific to it: #834's refusal works because both readings of a
+trailing backslash have another spelling, so refusing strands nothing. This
+idiom has no second spelling to offer — a payload correctly *documenting* the
+idiom writes the exact same bytes a payload that meant a plain apostrophe
+wrote by mistake (`presets/_refname.py`'s own comment on `shlex.quote`'s
+escaping is an instance of the first case), and the tool cannot tell those
+two apart from the bytes alone.
+Refusing would strand the correct write with no way out; the warning names
+the field and quotes the occurrence back, and leaves the decision — and the
+write itself — exactly where it already was.
+
+A lone embedded apostrophe, and the same bytes inside a `"""` basic block
+(where they are ordinary content the block's own escaping already governs,
+not a shell habit reaching for an escape that block doesn't need), are never
+flagged.
 
 ### An invalid escape is an error, on every Python
 
