@@ -202,7 +202,7 @@ Just install. The session-start hook runs `./supertool 'introduction' 'output-fo
 
 > **Heads-up — hook output cap.** Claude Code truncates hook stdout around 7KB; over that, only a ~2KB preview reaches the model and the rest is silently saved to disk.
 >
-> No descriptive listing fits: `ops:full` is ~77.8KB here and `ops-compact` ~16.7KB, so the startup listing used to be truncated on *every* session, hiding every op alphabetically after `grep` — the whole `gh-*` and `git-*` families, `radar`, `watch`, `paste`, `tree`. What was hidden was existence, and a reader cannot miss what they never learned about.
+> No descriptive listing fits: `ops:full` is ~78.53KB here and `ops-compact` ~17.42KB, so the startup listing used to be truncated on *every* session, hiding every op alphabetically after `grep` — the whole `gh-*` and `git-*` families, `radar`, `watch`, `paste`, `tree`. What was hidden was existence, and a reader cannot miss what they never learned about.
 >
 > `ops:roster` is ~2.0KB: every op name and nothing else, each carrying a safety class — unmarked is read-only and safe to call blind, `*` writes files in this tree, `!` changes something outside it or starts something that outlives the call. Descriptions are one call away and richer there: `help:OP` gives the full contract, the semantics and an example. Plain `'ops'` is every signature at ~4.3KB, and `'ops:full'` is every description (#1774) — neither hides a row, and the signature listing states in bytes what asking for the descriptions will cost.
 
@@ -366,6 +366,8 @@ Full reference: [docs/formatters.md](docs/formatters.md) — config shape, bundl
 ## `.supertool.json` — project configuration
 
 Supertool works with no configuration. The `.supertool.json` is optional — it enables self-documenting ops for LLM onboarding via `./supertool 'introduction' 'ops'`. Create one in your project root; supertool walks up from cwd to find it. A starter template ships as `.supertool.example.json`.
+
+Without one, preset ops (`gh-pr`, `gh-issue`, `git-trail`, `gl-mr`, …) simply do not exist in that repo ([#614](https://github.com/Digital-Process-Tools/claude-supertool/issues/614)) — so `./supertool 'init'` derives a starter one instead of hand-writing it: `defaults.github_repo`/`defaults.gitlab_project` from the `origin` remote, the matching platform preset plus `git`, and a validator only where a matching tracked file exists and its tool actually resolves. It previews by default; `init:write` commits. It never overwrites an existing `.supertool.json` and declines rather than guesses on a missing or unrecognised remote ([#858](https://github.com/Digital-Process-Tools/claude-supertool/issues/858)).
 
 Full reference (sections, `builtin-ops` overrides, custom ops, aliases, dispatch order, placeholders, env vars): [docs/configuration.md](docs/configuration.md).
 

@@ -1,5 +1,7 @@
 {
-  "defaults": { "github_repo": "Digital-Process-Tools/claude-supertool" },
+  "defaults": {
+    "github_repo": "Digital-Process-Tools/claude-supertool"
+  },
   "compact": false,
   "rtk": false,
   "allow_outside_cwd": true,
@@ -22,18 +24,20 @@
     "py-lsp": {
       "cmd": "cclsp",
       "match": "*.py",
-      "env": { "CCLSP_CONFIG_PATH": ".claude/cclsp.json" },
+      "env": {
+        "CCLSP_CONFIG_PATH": ".claude/cclsp.json"
+      },
       "tools": {
         "resolve": "find_workspace_symbols",
-        "refs":    "find_references",
-        "diag":    "get_diagnostics",
-        "hover":   "get_hover",
-        "rename":  "rename_symbol"
+        "refs": "find_references",
+        "diag": "get_diagnostics",
+        "hover": "get_hover",
+        "rename": "rename_symbol"
       },
       "timeout": 60
     }
   },
-  "introduction": "./supertool 'op:args' 'op:args'... Batch 6-7 ops/call. Single quotes per op. Paths from root. Use ops not raw cmds (mysql_read, phpstan, batched reads). Read only before Edit.\n\n@file route (edit/replace/replace_lines/append/paste/vim; also read/grep/around/between/validate): op:@payload or op:@- (stdin). Only ONE '@-' per call (#341) — for several mutations in one call use batch:@- with an [[ops]] array. Auto-detect: starts with { \u2192 JSON, else TOML. TOML '''triple-single-quote''' preserves backslashes/quotes/newlines \u2014 best for code blocks. Fields match syntax tokens lowercased (edit:::OLD:::NEW:::PATH \u2192 old, new, path).\n\nPayload content is parsed, never evaluated: a function call written there stays text. For a newline inside the '''literal''' block, type a real newline. For a processed escape sequence, use a basic block (triple double quote) instead.",
+  "introduction": "./supertool 'op:args' 'op:args'... Batch 6-7 ops/call. Single quotes per op. Paths from root. Use ops not raw cmds (mysql_read, phpstan, batched reads). Read only before Edit.\n\n@file route (edit/replace/replace_lines/append/paste/vim; also read/grep/around/between/validate): op:@payload or op:@- (stdin). Only ONE '@-' per call (#341) — for several mutations in one call use batch:@- with an [[ops]] array. Auto-detect: starts with { → JSON, else TOML. TOML '''triple-single-quote''' preserves backslashes/quotes/newlines — best for code blocks. Fields match syntax tokens lowercased (edit:::OLD:::NEW:::PATH → old, new, path).\n\nPayload content is parsed, never evaluated: a function call written there stays text. For a newline inside the '''literal''' block, type a real newline. For a processed escape sequence, use a basic block (triple double quote) instead.",
   "output-format": "Each op: header + body.\n```\n--- op:args ---\n(meta)\noutput\n```",
   "builtin-ops": {
     "read": {
@@ -44,7 +48,7 @@
     "read-grep": {
       "form": "read",
       "syntax": "read:PATH:::grep=PATTERN",
-      "description": "Inline filter \u2014 only matching lines, line nums kept",
+      "description": "Inline filter — only matching lines, line nums kept",
       "example": "read:supertool.py:::grep=def op_",
       "hint": true
     },
@@ -56,7 +60,7 @@
     "grep-count": {
       "form": "grep",
       "syntax": "grep:PATTERN:PATH:LIMIT:CONTEXT:count",
-      "description": "Count mode \u2014 match counts/file, no content. Renders 'PATH: N matches', never a bare 'PATH:N' \u2014 that reads as a line number (#988)",
+      "description": "Count mode — match counts/file, no content. Renders 'PATH: N matches', never a bare 'PATH:N' — that reads as a line number (#988)",
       "example": "grep:def:supertool.py:100:0:count",
       "hint": true
     },
@@ -114,7 +118,7 @@
     },
     "around_line": {
       "syntax": "around_line:PATH:LINE[:N]",
-      "description": "N lines around LINE (def 10). Target marked \u2192",
+      "description": "N lines around LINE (def 10). Target marked →",
       "example": "around_line:supertool.py:100:5",
       "hint": true
     },
@@ -133,6 +137,12 @@
       "syntax": "doctor[:probe]",
       "description": "Report the environment supertool runs in (#1857) and, per validator, whether the toolchain it dispatches to actually resolves here (#1950). Always: interpreter path/version/architecture with an architecture mismatch (Rosetta 2 or equivalent) flagged loudly rather than buried in a report line — a performance fact, not a fault, measured at ~3x slower interpreter starts and ~3.4x slower subprocess-spawn CPU time on the machine that filed #1857; performance/efficiency CPU core split where the platform exposes it, since supertool does not size worker pools itself but a caller that does needs this rather than logical CPU count alone; whether the supertool symlink on PATH dangles; the resolved .supertool.json and configured watch fleet. For every configured validator: whether a tracked file in this tree even matches its scope, reported for free. doctor:probe additionally invokes each in-scope validator own resolution path against a real matching file and reads the verdict it already emits — never a shutil.which sweep, which reports green where the tool the adapter actually shells out to (e.g. through npx) is the one that is missing — sorting each into resolves / absent / could not tell, never collapsing the third into either of the first two. Costs one subprocess per in-scope validator, so it is opt-in rather than the default.",
       "example": "doctor:probe",
+      "hint": true
+    },
+    "init": {
+      "syntax": "init[:write]",
+      "description": "Derive and write a starter .supertool.json for the current repo (#858). Reads the origin remote for defaults.github_repo/gitlab_project, enables the matching platform preset plus git (xml only if tracked), and declares a validator only when a matching tracked file exists AND its adapter's binary actually resolves on PATH. Conservative rtk/allow_outside_cwd/allow_vim_shell defaults, never copied from this repo's own checkout config. Bare init PREVIEWS -- nothing written until init:write. Refuses and writes nothing on a missing/unrecognised remote, a call outside the repo root, or an existing .supertool.json (never overwritten).",
+      "example": "init:write",
       "hint": true
     },
     "help": {
@@ -167,14 +177,14 @@
     },
     "replace": {
       "syntax": "replace:::OLD:::NEW:::PATH",
-      "description": "Replace OLD\u2192NEW in PATH. Returns receipt. Use ::: when content has ':'",
+      "description": "Replace OLD→NEW in PATH. Returns receipt. Use ::: when content has ':'",
       "example": "replace:::TYPE_CUSTOMER:::TYPE_ENUM_CUSTOMER:::src/",
       "status": 1,
       "hint": true
     },
     "edit": {
       "syntax": "edit:::OLD:::NEW:::PATH",
-      "description": "Single-file, single-occurrence edit (mirrors native Edit). Errors if 0 or >1 matches. Bypasses Edit's must-Read-first state \u2014 saves a round-trip. Use ::: separator (single ':' also accepted when content has no colons). An edit whose NEW contains its OLD keeps its anchor alive, so RE-RUNNING it applies it AGAIN. That still happens (a repeated append is a real use), but the receipt now says so: a 're-applied:' note under the 'edited' line, plus 'K re-applied' in the [result] footer.",
+      "description": "Single-file, single-occurrence edit (mirrors native Edit). Errors if 0 or >1 matches. Bypasses Edit's must-Read-first state — saves a round-trip. Use ::: separator (single ':' also accepted when content has no colons). An edit whose NEW contains its OLD keeps its anchor alive, so RE-RUNNING it applies it AGAIN. That still happens (a repeated append is a real use), but the receipt now says so: a 're-applied:' note under the 'edited' line, plus 'K re-applied' in the [result] footer.",
       "example": "edit:::return False:::return True:::supertool.py",
       "status": 1,
       "hint": true
@@ -195,7 +205,7 @@
     },
     "paste": {
       "syntax": "paste:::PATH:::CONTENT",
-      "description": "NARROW USE: replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits \u2014 vim is default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon \u2192 holds any chars. Overwriting an EXISTING file copies its outgoing bytes to ~/.cache/supertool/paste-backup/ first and the receipt names the copy — nothing is refused, and no such line means nothing was displaced (#1650).",
+      "description": "NARROW USE: replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — vim is default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars. Overwriting an EXISTING file copies its outgoing bytes to ~/.cache/supertool/paste-backup/ first and the receipt names the copy — nothing is refused, and no such line means nothing was displaced (#1650).",
       "example": "paste:::tests/new_test.php:::<?php\\ndeclare(strict_types=1);\\n...",
       "status": 1,
       "hint": true
@@ -272,10 +282,26 @@
     },
     "git-diff": {
       "red_flags_extra": [
-        { "pattern": "\\bbreakpoint\\s*\\(", "ext": ".py", "label": "breakpoint()" },
-        { "pattern": "pdb\\.set_trace", "ext": ".py", "label": "pdb.set_trace" },
-        { "pattern": "\\bimport i?pdb\\b", "ext": ".py", "label": "import pdb" },
-        { "pattern": "\\bfrom i?pdb\\b", "ext": ".py", "label": "from pdb import" }
+        {
+          "pattern": "\\bbreakpoint\\s*\\(",
+          "ext": ".py",
+          "label": "breakpoint()"
+        },
+        {
+          "pattern": "pdb\\.set_trace",
+          "ext": ".py",
+          "label": "pdb.set_trace"
+        },
+        {
+          "pattern": "\\bimport i?pdb\\b",
+          "ext": ".py",
+          "label": "import pdb"
+        },
+        {
+          "pattern": "\\bfrom i?pdb\\b",
+          "ext": ".py",
+          "label": "from pdb import"
+        }
       ]
     }
   },
@@ -284,7 +310,18 @@
     "cursor-witness": {
       "cmd": "{python} {supertool_dir}/notifiers/cursor-witness/notify.py {op} {file} {line} {line_end} {before_file}",
       "match": "*",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "append", "vim", "read", "around_line", "between", "map"]
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "append",
+        "vim",
+        "read",
+        "around_line",
+        "between",
+        "map"
+      ]
     }
   },
   "gc": {
@@ -301,7 +338,14 @@
     "lsp-diag": {
       "cmd": "{python} {supertool_dir}/validators/lsp-diag/lsp-diag.py {file}",
       "match": "*.{py,php,class.php,js,ts,jsx,tsx}",
-      "hooks_into": ["edit", "replace", "replace_lines", "paste", "append", "vim"],
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "append",
+        "vim"
+      ],
       "rollback_on_fail": false,
       "timeout": 15
     },
@@ -312,7 +356,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -325,7 +370,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -338,7 +384,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -351,7 +398,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -364,7 +412,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -377,7 +426,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -390,7 +440,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -403,7 +454,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -416,7 +468,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -429,7 +482,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -442,7 +496,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -455,7 +510,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -468,7 +524,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -481,7 +538,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -494,7 +552,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -507,7 +566,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": false,
@@ -521,7 +581,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": true,
@@ -535,7 +596,8 @@
         "edit",
         "replace",
         "replace_lines",
-        "paste", "append",
+        "paste",
+        "append",
         "vim"
       ],
       "rollback_on_fail": true,
