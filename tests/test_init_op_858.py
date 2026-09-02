@@ -231,3 +231,76 @@ def test_init_dispatches_through_the_op_string(tmp_path, monkeypatch) -> None:
     out = supertool.dispatch("init")
     assert "unknown operation" not in out
     assert "acme/widgets" in out
+
+
+def test_init_write_routes_through_the_shared_validator_wrapper(tmp_path, monkeypatch) -> None:
+    """`init:write` was the one call site in the whole module invoking
+    `op_paste()` bare instead of through `_run_with_validators` -- the
+    wrapper every other mutating op's dispatch branch goes through for
+    mutation counting, notifier firing and rollback handling (review
+    finding 1). Asserted structurally (the wrapper is called with the real
+    path/content) rather than by asserting a validator fires in the
+    receipt: jsonlint can only apply by way of an already-loaded
+    `.supertool.json`, and by construction `init:write` only ever runs
+    where none exists yet, so nothing declared inside the file it just
+    wrote is loaded in time to validate that same write."""
+    repo = _repo(tmp_path)
+    monkeypatch.chdir(repo)
+    calls = []
+    real_wrapper = supertool._run_with_validators
+
+    def _spy(op, parts, do_op):
+        calls.append((op, parts))
+        return real_wrapper(op, parts, do_op)
+    monkeypatch.setattr(supertool, "_run_with_validators", _spy)
+
+    out = supertool.op_init("write")
+
+    assert (repo / ".supertool.json").is_file(), out
+    assert calls == [("paste", ["paste", ".supertool.json",
+                                supertool.json.dumps(
+                                    supertool.json.loads(
+                                        (repo / ".supertool.json").read_text(
+                                            encoding="utf-8")),
+                                    indent=2) + "\n"])], calls
+
+
+def test_init_declines_when_git_ls_files_fails(tmp_path, monkeypatch) -> None:
+    """A real `git ls-files` failure must not read the same as "this repo
+    tracks no matching files" -- collapsing the two would silently drop
+    xml/ruff/shellcheck out of a generated config with no way to tell a
+    real gap from a tool that could not look (audit finding 1)."""
+    repo = _repo(tmp_path)
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(supertool, "_init_tracked_files", lambda root: None)
+    out = supertool.op_init("")
+    assert "ERROR" in out
+    assert "ls-files" in out
+    assert not (repo / ".supertool.json").exists()
+
+
+def test_init_repo_root_compare_tolerates_case_that_normcase_folds(tmp_path, monkeypatch) -> None:
+    """Mirrors `_safe_path`'s own fix for the identical Windows problem:
+    `git rev-parse --show-toplevel` and `os.getcwd()` can spell the same
+    directory with different case (a real fact on NTFS; simulated here on
+    POSIX by uppercasing what `git` answers with, since this box cannot
+    produce a genuinely case-differing path). A plain `!=` would wrongly
+    refuse a caller standing exactly at their repo root; `os.path.normcase`
+    is a no-op on POSIX, so this only proves the comparison SURVIVES a case
+    difference where the platform says two spellings are the same file --
+    it is not a claim that POSIX itself has such a pair (audit finding 3,
+    reasoned rather than fully observed on this box)."""
+    repo = _repo(tmp_path)
+    monkeypatch.chdir(repo)
+    real_run_git = supertool._init_run_git
+
+    def _shout_toplevel(args, cwd):
+        out = real_run_git(args, cwd)
+        if args[:2] == ["rev-parse", "--show-toplevel"] and out:
+            return out.upper()
+        return out
+    monkeypatch.setattr(supertool, "_init_run_git", _shout_toplevel)
+    monkeypatch.setattr(supertool.os.path, "normcase", lambda p: p.upper())
+
+    out = supertool.op_init("")
+    assert "only writes at the repo root" not in out, out

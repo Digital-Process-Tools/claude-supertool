@@ -18458,6 +18458,35 @@ def _init_parse_remote(url):
     return host, path
 
 
+def _init_tracked_files(root):
+    """`git ls-files` in ``root``, or ``None`` when the call could not be
+    trusted -- not the same question as `_init_run_git`'s "" == None fold.
+
+    `_init_run_git` treats empty stdout the same as a failure, which is the
+    right read for a remote URL (an empty answer means no remote either
+    way) and the wrong one here: a real `git ls-files` failure (timeout, a
+    corrupted index, a permission error) must not read the same as "this
+    repo genuinely tracks no files yet" (#858 review). Collapsing the two
+    would let `init` silently drop `xml`/`ruff`/`shellcheck` out of a
+    generated config with no way for the caller to tell a real gap from a
+    tool that could not look -- the exact failure `_doctor_tracked_files`
+    a few thousand lines away in this same file exists to avoid, and whose
+    None-propagation discipline this mirrors rather than reuses (they run
+    against different cwds: `_doctor_tracked_files` reads the process cwd,
+    `init` must read an already-resolved repo root that can differ from it
+    before the root-vs-cwd check below has even run).
+    """
+    try:
+        r = subprocess.run(["git", "ls-files"], capture_output=True,
+                           text=True, timeout=15, cwd=root,
+                           encoding="utf-8", errors="replace")
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    return [seg for seg in r.stdout.split("\n") if seg]
+
+
 def _init_platform(host):
     """github, gitlab, or None for a host `init` does not recognise.
 
@@ -18537,10 +18566,18 @@ def op_init(mode: str = "") -> str:
       (`shutil.which(...)`) actually resolves -- declaring a validator that
       cannot run is the silent-pass class this repo's own contract forbids
       (`docs/validators.md` "Declining instead of guessing").
-    - **rtk / allow_outside_cwd / allow_vim_shell**: always `False`. This
-      repo's own `.supertool.json` sets `allow_outside_cwd: true` because it
-      is supertool's own checkout -- a stranger's repo must not inherit a
+    - **allow_outside_cwd / allow_vim_shell**: always `False`. This repo's
+      own `.supertool.json` sets `allow_outside_cwd: true` because it is
+      supertool's own checkout -- a stranger's repo must not inherit a
       widened capability it never asked for.
+    - **rtk**: always `False` too, but for a different reason -- #858 asks
+      for it explicitly, alongside the other two, as one of the "safe
+      defaults, not copies of whatever the last repo used". Unlike the
+      other two this is not a widened *capability* (`rtk` only decides
+      whether `read`/`grep`/`wc` delegate to an optional external binary
+      for compressed output, on a repo with no config at all `_rtk_enabled`
+      already defaults it to on) -- worth keeping distinct in review, but
+      the issue is explicit that the field belongs in this list regardless.
 
     Two more refusals, both about the write itself rather than what to
     write: an existing `.supertool.json` is never overwritten, hand-written
@@ -18552,11 +18589,18 @@ def op_init(mode: str = "") -> str:
     not exist yet.
 
     Previews by default -- prints the JSON it would write and does not touch
-    disk. `init:write` (or `:apply`/`:commit`) commits it, through
-    `op_paste` so the write gets the same atomic-write, parent-dir-creation
-    and post-write-validator handling every other mutating op gets (the new
-    file matches jsonlint's own `*.json` scope, so writing it re-validates
-    the JSON it just emitted).
+    disk. `init:write` (or `:apply`/`:commit`) commits it through the same
+    `_run_with_validators` wrapper the dispatcher's own `paste` branch uses
+    (op_paste() called bare, outside that wrapper, was this op's one direct
+    call site in the whole module -- #858 review finding 1) rather than a
+    bare `op_paste()` call: mutation counting, notifier firing and rollback
+    handling all run the same way a caller-typed `paste` would get them.
+    One thing it does NOT buy, and the two must not be conflated: a
+    validator jsonlint declares can only be *applicable* by way of an
+    already-loaded `.supertool.json` -- and by construction the write only
+    ever runs where none exists yet (the refusal above), so the config that
+    would validate the file `init:write` just created is not loaded until a
+    later, separate call reads it back in.
     """
     write = mode.strip().lower() in ("write", "apply", "commit")
 
@@ -18566,7 +18610,12 @@ def op_init(mode: str = "") -> str:
         return ("ERROR: not inside a git working tree (or the repo is bare) "
                 "-- init needs a real repo root to derive defaults from.\n")
     root = os.path.abspath(root)
-    if root != cwd:
+    # Windows: `git rev-parse --show-toplevel` can answer with a lowercase
+    # drive letter and forward slashes independent of how `os.getcwd()`
+    # spells the same directory. `os.path.normcase` is the fix `_safe_path`
+    # already applies to this exact problem elsewhere in this file --
+    # POSIX-side it is a no-op, so the comparison stays exact there.
+    if os.path.normcase(root) != os.path.normcase(cwd):
         return (f"ERROR: init only writes at the repo root -- run it from "
                 f"{root}, not {cwd}.\n")
 
@@ -18606,8 +18655,14 @@ def op_init(mode: str = "") -> str:
                 "does not know which preset family to enable. Write "
                 ".supertool.json by hand.\n")
 
-    files_out = _init_run_git(["ls-files"], root)
-    tracked = files_out.split("\n") if files_out else []
+    tracked = _init_tracked_files(root)
+    if tracked is None:
+        return ("ERROR: `git ls-files` did not answer -- cannot tell "
+                "whether the xml preset or the ruff/shellcheck validators "
+                "belong in this config, and guessing 'no' would silently "
+                "drop them for a repo that may well need them. Write "
+                ".supertool.json by hand, or re-run init once git answers "
+                "here.\n")
 
     presets = [platform, "git"]
     if any(f.endswith(".xml") for f in tracked):
@@ -18638,7 +18693,17 @@ def op_init(mode: str = "") -> str:
 
     out = []
     if write:
-        out.append(op_paste(".supertool.json", content))
+        # Through the same wrapper every "paste" dispatch goes through
+        # (`_supertool.py`'s "elif op == \"paste\":" branch), not a bare
+        # `op_paste()` call -- that was this op's only direct call site in
+        # the module and skipped formatter/validator/rollback/notifier
+        # handling entirely (#858 review finding 1). `_OP_TARGETS["paste"]`
+        # reads `parts[1]` as the path, so a synthetic parts list gets the
+        # real target path validated and reported exactly like a caller
+        # who typed `paste:::.supertool.json:::...` themselves.
+        out.append(_run_with_validators(
+            "paste", ["paste", ".supertool.json", content],
+            lambda: op_paste(".supertool.json", content)))
     else:
         out.append(f"PREVIEW -- nothing written. Run 'init:write' to create "
                    f"{config_path}.\n")
