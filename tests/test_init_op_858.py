@@ -21,9 +21,7 @@ Judgment calls, each pinned by a test below:
 from __future__ import annotations
 
 import json
-import os
 import subprocess
-import sys
 from pathlib import Path
 
 import supertool
