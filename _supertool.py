@@ -6603,15 +6603,19 @@ def _op_around(pattern: str, path: str, n: int = 10) -> str:
         suggest = None
         # `pattern` becomes the PATH slot of the suggested `around_line:`
         # call, and this route reaches an unresolved `pattern` no colon-CLI
-        # caller could: dispatch's own `_PATH_ARG_POSITIONS` gate refuses
-        # `around:/etc/hosts:3` before `op_around` ever runs, but the
-        # `@payload`/`batch` route applies no containment to `pattern` (it
-        # is a regex there, not a declared path). Printing the suggestion
-        # unconditionally advertised a call the colon route itself refuses
-        # for containment (#1146) -- the same shape as the `git-checkout`
-        # hint in #850: never prescribe a command the tool's own sibling
-        # rejects. `_containment_error` mirrors the gate `_swap_suggest`
-        # (#1711) already applies to its own candidate below.
+        # caller could: `around` was dropped from `_PATH_ARG_POSITIONS`
+        # entirely (#1166 -- see `_around_line_delegation`'s own comment),
+        # and the colon route's actual gate for this exact swapped-argument
+        # shape is `_around_line_delegation`'s `_gate_paths([pattern])`,
+        # which refuses `around:/etc/hosts:3` before `op_around` ever runs.
+        # The `@payload`/`batch` route applies no containment to `pattern`
+        # at all (it is a regex there, not a declared path), so it could
+        # reach this branch with an out-of-bounds `pattern` and print a
+        # suggestion the colon route's own gate refuses (#1146) -- the same
+        # shape as the `git-checkout` hint in #850: never prescribe a
+        # command the tool's own sibling rejects. `_containment_error`
+        # mirrors the gate `_swap_suggest` (#1711) already applies to its
+        # own candidate below.
         if _is_ascii_int(path) and _containment_error([pattern]) is None:
             suggest = (
                 "`around` takes PATTERN:PATH[:N] — "
