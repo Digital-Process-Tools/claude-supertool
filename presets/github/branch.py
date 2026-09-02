@@ -674,7 +674,8 @@ def stale_listing_lines(runs: object, selected: dict, sha: str,
     return lines
 
 
-def scope_clause(undispatched: list, unestablished: str, n_wf: int) -> str:
+def scope_clause(undispatched: list, unestablished: str, n_wf: int, *,
+                 waiting: int = 0, grace: int = _GRACE) -> str:
     """The sentence a GREEN needs so it stops over-claiming (#846).
 
     `gh-branch`'s green has always meant *every workflow that produced a run on
@@ -691,6 +692,17 @@ def scope_clause(undispatched: list, unestablished: str, n_wf: int) -> str:
     Empty when everything declared produced a run: a qualifier printed on every
     render is one nobody reads on the render where it matters, and this repo has
     paid for that twice.
+
+    `waiting` is #2117's own gap, caught reviewing #2117 itself: `scope_for`
+    already knows some of the "NOT covered" names below are only inside their
+    creation window (`unresolved` excludes them, and `undispatched_lines`
+    reads them as "still expected"), but this sentence — the one glued
+    directly onto the `Verdict:` line both `main()` and the dashboard print
+    unconditionally — named every not-covered workflow with no such
+    qualifier, so a reader who only reads the headline saw the pre-#2117
+    wording regardless. `waiting` states how many of `n` are merely early,
+    without pretending the scope claim itself is any different: the GREEN
+    genuinely does not cover a workflow with no run yet, window or not.
     """
     if unestablished:
         # `these {n_wf} are` was a bare plural over a count that is routinely 1
@@ -721,15 +733,21 @@ def scope_clause(undispatched: list, unestablished: str, n_wf: int) -> str:
     # These two were written correctly and are routed through `_agrees` anyway:
     # this clause is appended onto the same rendered line as the verdict, and a
     # count word that agrees by hand today is the shape #841 was.
+    tail = ""
+    if waiting:
+        tail = (f" {waiting} of {n} {_agrees(waiting, 'is', 'are')} still "
+                f"inside the {_window(grace)} creation window and "
+                f"{_agrees(waiting, 'is', 'are')} expected to run.")
     return (f" This covers the {n_wf} "
             f"{_agrees(n_wf, 'workflow', 'workflows')} that produced a run; "
             f"{n} declared in {_declared_workflows.WORKFLOW_DIR} at this commit "
             f"produced none and {_agrees(n, 'is', 'are')} NOT covered: "
-            f"{names}.")
+            f"{names}.{tail}")
 
 
 def scope_for(repo: str, sha: str, selected: dict, *,
-              declared_pair: tuple | None = None) -> tuple[str, list[str], str]:
+              declared_pair: tuple | None = None,
+              age_secs: object = None, grace: int = _GRACE) -> tuple[str, list[str], str]:
     """`(clause, lines, unresolved)` — #846's scope check, for every caller.
 
     Exists as a seam rather than as four lines inlined in `main()` because
@@ -763,6 +781,18 @@ def scope_for(repo: str, sha: str, selected: dict, *,
     the same predicate `undispatched_lines` renders on, so the two cannot
     drift — and `None` (an `on:` block that could not be read) counts as loud
     on both sides.
+
+    `age_secs`/`grace` add a third split inside "loud" (#2117): a push-triggered
+    workflow with no run yet, on a commit still inside `grace` seconds old, is
+    not the same open question as one well past it — GitHub creates workflow
+    runs asynchronously, the same latency `_checks.absence()` already accounts
+    for on the check-run side, and `verdict()`'s own `missing`-workflow branch
+    two functions up already uses this exact window for the sibling case ("ran
+    on the previous head, absent here"). A caller that does not pass `age_secs`
+    gets exactly today's behaviour — nothing here is inside-the-window by
+    default. `unresolved` only ever names the still-open ones: a workflow that
+    is merely waiting on its own creation latency is not a question for a
+    caller deciding whether to speak.
     """
     if not selected:
         return "", [], ""
@@ -786,19 +816,34 @@ def scope_for(repo: str, sha: str, selected: dict, *,
     loud = [w for w in undispatched
             if _declared_workflows.is_push_triggered(w.get("triggers"))
             is not False]
+    still_open = [w for w in loud if not _waiting_on_first_run(w, age_secs, grace)]
     unresolved = ""
-    if loud:
-        unresolved = (f"{len(loud)} declared workflow(s) a push should reach "
+    if still_open:
+        unresolved = (f"{len(still_open)} declared workflow(s) a push should reach "
                       f"produced no run on {sha[:7]}")
     # Counted in workflows, not in runs: this clause says "this covers the N
     # workflows that produced a run" and is compared by the reader against a
     # declared *workflow* set. `len(selected)` is a run count since #1640, and
     # the two differ on exactly the commit that issue is about.
-    return (scope_clause(undispatched, "", len(present)),
-            undispatched_lines(undispatched), unresolved)
+    return (scope_clause(undispatched, "", len(present),
+                         waiting=len(loud) - len(still_open), grace=grace),
+            undispatched_lines(undispatched, age_secs, grace), unresolved)
 
 
-def undispatched_lines(undispatched: list) -> list[str]:
+def _waiting_on_first_run(wf: dict, age_secs: object, grace: int) -> bool:
+    """Is this declared, push-triggered, no-run-yet workflow still inside the
+    window in which GitHub has always created the run (#2117)?
+
+    Never true for a workflow whose `on:` block could not be read at all —
+    that is a different unknown, about whether the file could be parsed, and
+    a young commit says nothing about that.
+    """
+    return (wf.get("triggers") is not None
+            and age_secs is not None and int(age_secs) <= grace)
+
+
+def undispatched_lines(undispatched: list, age_secs: object = None,
+                       grace: int = _GRACE) -> list[str]:
     """Name what the verdict does not cover, loudest case on its own line.
 
     Split by trigger, because the two absences are different questions. A
@@ -808,6 +853,14 @@ def undispatched_lines(undispatched: list) -> list[str]:
     summary. A workflow declaring a **push** trigger and producing no run is a
     real open question, and gets its own line saying the question is open rather
     than answering it.
+
+    A commit still inside the creation window (`age_secs <= grace`, #2117) is a
+    third case rather than a caveat on the second: "declared, should have run,
+    and produced none" is the state a release gate blocks on, and a run GitHub
+    simply has not created yet is not that state. `age_secs=None` — the
+    default, and what every caller written before #2117 still passes —
+    reproduces exactly today's wording, so this is additive rather than a
+    reinterpretation of an existing call.
     """
     if not undispatched:
         return []
@@ -824,6 +877,12 @@ def undispatched_lines(undispatched: list) -> list[str]:
         if triggers is None:
             said = ("its `on:` block could not be read, so whether a push "
                     "reaches it is UNKNOWN")
+        elif _waiting_on_first_run(wf, age_secs, grace):
+            said = (f"triggers: {', '.join(_untrusted.flat(str(t)) for t in triggers)} "
+                    f"— a push trigger IS declared; no run yet, and the head "
+                    f"commit is {_duration(age_secs)} old, inside the "
+                    f"{_window(grace)} window in which a first run has always "
+                    f"appeared, so one is still expected")
         else:
             said = (f"triggers: {', '.join(_untrusted.flat(str(t)) for t in triggers)} "
                     f"— a push trigger IS declared and this commit has no run "
@@ -1449,7 +1508,8 @@ def main() -> int:
     # already declines, and two more API calls would buy nothing.
     scope, scope_lines, _unresolved = scope_for(
         repo, sha, selected,
-        declared_pair=declared_pair if mode != MODE_COMMIT else None)
+        declared_pair=declared_pair if mode != MODE_COMMIT else None,
+        age_secs=age, grace=_GRACE)
     state, sentence = verdict(selected, legs, missing, sha, age, _GRACE,
                               marker, scope=scope)
 

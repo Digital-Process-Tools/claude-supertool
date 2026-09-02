@@ -182,7 +182,7 @@ def test_a_dead_poller_does_not_change_could_tell(monkeypatch):
                         lambda ref: ("a" * 40, 5, ""))
     monkeypatch.setattr(tier.branch, "_run_list", lambda ref: ([], ""))
     monkeypatch.setattr(tier.branch, "scope_for",
-                        lambda repo, sha, selected: ("scope", [], False))
+                        lambda repo, sha, selected, **kw: ("scope", [], False))
     monkeypatch.setattr(tier.branch, "_reconcile",
                         lambda repo, selected, fetched: (None, []))
     monkeypatch.setattr(tier.branch, "verdict",
@@ -215,7 +215,7 @@ def test_a_dead_poller_costs_health_even_when_the_board_is_healthy(
                         lambda ref: ("a" * 40, 5, ""))
     monkeypatch.setattr(tier.branch, "_run_list", lambda ref: ([], ""))
     monkeypatch.setattr(tier.branch, "scope_for",
-                        lambda repo, sha, selected: ("scope", [], False))
+                        lambda repo, sha, selected, **kw: ("scope", [], False))
     monkeypatch.setattr(tier.branch, "_reconcile",
                         lambda repo, selected, fetched: (None, []))
     monkeypatch.setattr(tier.branch, "verdict",

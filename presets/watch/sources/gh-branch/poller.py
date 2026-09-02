@@ -131,7 +131,8 @@ def _snapshot(ref: str) -> tuple[str, str, str, str, str]:
     if repo_err:
         return "", "", sha, "", repo_err
     marker, _shortfall = branch._reconcile(repo, selected, fetched)
-    scope, _scope_lines, _unresolved = branch.scope_for(repo, sha, selected)
+    scope, _scope_lines, _unresolved = branch.scope_for(
+        repo, sha, selected, age_secs=age, grace=branch._GRACE)
     state, sentence = branch.verdict(selected, legs, missing, sha, age,
                                      branch._GRACE, marker, scope=scope)
     return state, sentence, sha, repo, ""
