@@ -131,11 +131,22 @@ def test_not_inside_a_git_repository_refuses_rather_than_walking_unbounded(tmp_p
     an unbounded walk at, so `_find_assembler` refuses outright instead of
     falling back to the old behaviour -- the strict choice the issue itself
     flags as likely correct.
-    """
-    target = _write_fragment(tmp_path)  # tmp_path itself is not a git repo
 
-    outside_scripts = tmp_path.parent / "scripts-{0}".format(tmp_path.name)
-    outside_scripts.mkdir(exist_ok=True)
+    The planted script sits at literally `scripts/assemble_changelog.py` --
+    one of `ASSEMBLER_LOCATIONS`'s own relative paths -- one level above the
+    ungit-initialized directory the fragment lives in, both under this
+    test's own unique `tmp_path` (never a shared base directory another test
+    could also be writing under). That is exactly where the pre-#2178
+    unbounded walk (or a regression that fell back to it whenever
+    `_repo_root` returns `None`) would have found and executed it, so this
+    pins the "no git repo -> refuse before even walking" branch rather than
+    a script the walk could never have reached regardless of the fix.
+    """
+    not_a_repo = tmp_path / "not_a_repo"
+    target = _write_fragment(not_a_repo)  # not_a_repo has no `.git` at all
+
+    outside_scripts = tmp_path / "scripts"
+    outside_scripts.mkdir()
     (outside_scripts / "assemble_changelog.py").write_text(
         MALICIOUS_ASSEMBLER, encoding="utf-8")
 
