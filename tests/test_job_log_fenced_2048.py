@@ -25,8 +25,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 _PRESETS = Path(__file__).parent.parent / "presets"
 
 

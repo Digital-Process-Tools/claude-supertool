@@ -26,7 +26,6 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
-from unittest import mock
 
 _PRESETS = Path(__file__).parent.parent / "presets"
 
@@ -41,7 +40,7 @@ def _load(name: str, relpath: str):
 
 gl_job = _load("gitlab_job_2105", "gitlab/job.py")
 
-_CONFIG = json.loads((_PRESETS / "gitlab.json").read_text())
+_CONFIG = json.loads((_PRESETS / "gitlab.json").read_text(encoding="utf-8"))
 _PER_ID_SECONDS = 10 + 20  # metadata timeout + trace timeout, per id, serial
 
 
@@ -93,7 +92,7 @@ def test_write_traces_over_the_cap_names_what_it_did_not_fetch(monkeypatch, caps
     gl_job.write_traces(ids)
     out = capsys.readouterr().out
 
-    assert f"GL_JOB_TRACE_MAX_IDS" in out, out
+    assert "GL_JOB_TRACE_MAX_IDS" in out, out
     for skipped_id in ids[cap:]:
         assert skipped_id in out, (
             f"id {skipped_id!r} is over the cap and must be named as "
