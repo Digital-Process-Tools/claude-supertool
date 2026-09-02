@@ -31,6 +31,13 @@ from _adapter_verdict import skip_if_core_timed_out  # noqa: E402
 REPO = Path(__file__).resolve().parent.parent
 RESOLVER = REPO / "validators" / "common" / "ci_lint_resolve_root.py"
 
+# Forward slashes, for use in a `spec["resolve"]` template string: those go
+# through `_validator_resolve`'s `shlex.split(cmd)`, which treats a backslash
+# as an escape character and mangles a raw Windows path -- the same reason
+# `_INSTALL_DIR`/`{supertool_dir}` (`_supertool.py:518`) is forward-slashed
+# rather than passed through as `os.sep` gives it.
+RESOLVER_SLASHED = str(RESOLVER).replace(os.sep, "/")
+
 
 def _run_resolver(*args, env=None, cwd=None):
     return subprocess.run(
@@ -153,7 +160,7 @@ def test_genuine_no_root_config_still_reads_as_nothing_to_check(tmp_path: Path) 
     r = _run_resolver(str(f))
     assert r.returncode == 0, r.stderr
     out = r.stdout.strip()
-    spec = {"resolve": "{python} " + str(RESOLVER) + " {file}"}
+    spec = {"resolve": "{python} " + RESOLVER_SLASHED + " {file}"}
     resolved = supertool._validator_resolve(spec, str(f))
     assert resolved is None, (
         "a repo with genuinely no root .gitlab-ci.yml must still resolve to "
@@ -171,7 +178,7 @@ def test_a_resolve_error_reaches_the_final_skip_dict_with_its_reason(tmp_path: P
     repo.mkdir()
     f = repo / "README.md"
     f.write_text("hi\n")
-    spec = {"resolve": "{python} " + str(RESOLVER) + " {file}"}
+    spec = {"resolve": "{python} " + RESOLVER_SLASHED + " {file}"}
     result = skip_if_core_timed_out(supertool._validator_run_one("ci-lint", spec, str(f)))
     assert result is not None
     assert result.get("tool") == "ci-lint"
