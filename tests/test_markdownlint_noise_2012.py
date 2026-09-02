@@ -151,8 +151,14 @@ def _markdownlint_absent_reason() -> str | None:
     of those assertions passes (or fails) for the wrong reason: an absence
     of the tool, not an absence -- or presence -- of findings. Grepped
     against .github/workflows/*.yml at the time this was written: nothing
-    on any of the twelve pytest legs installs markdownlint-cli, so this is
-    not a hypothetical machine, it is every CI run."""
+    on any of the twelve pytest legs installs markdownlint-cli, so this was
+    not a hypothetical machine, it was every CI run of that matrix. #2019
+    installs markdownlint-cli in the separate `coverage` job instead (one
+    ubuntu leg that runs the whole suite off the twelve-leg critical path),
+    so this probe is what makes that leg's own pytest run exercise the real
+    thing rather than skip -- a machine with no markdownlint on PATH is
+    still every leg of the twelve-leg matrix, just no longer every leg
+    that runs this module."""
     probe = subprocess.run(
         [sys.executable, str(ADAPTER), "README.md"],
         capture_output=True, text=True, cwd=REPO,
