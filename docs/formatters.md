@@ -44,6 +44,7 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 |------------------------------------------|-----------------|--------------------------------------------------|-----------------------------------------------|
 | XML, SCSS, CSS, JS, JSON, YAML, Markdown | `prettier`      | `prettier` npm package                           | `npm install -g prettier`                     |
 | Python                                   | `black`         | `black` pip package                              | `pip install black`                           |
+| Python (SCHEMA adapter)                  | `ruff-format`   | `ruff` (already a dependency of most Python CI)  | `formatters/ruff-format/ruff-format.py` — metrics + structured errors, unlike the raw-`cmd` rows above (#2085) |
 | Go                                       | `gofmt`         | Go toolchain                                     | Ships with Go — no extra install              |
 | Rust                                     | `rustfmt`       | Rust toolchain                                   | Ships with `rustup` — `rustup component add rustfmt` |
 | PHP (PSR-12)                             | `phpcbf`        | PHP_CodeSniffer via Composer                     | `composer global require squizlabs/php_codesniffer` |

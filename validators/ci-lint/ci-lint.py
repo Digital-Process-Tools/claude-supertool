@@ -59,8 +59,21 @@ TOOL = "ci-lint"
 # against the shipped binary's own string table -- never guessed at, since a
 # guessed marker is exactly the kind of claim this adapter exists to avoid
 # making about a file it never actually parsed.
-_INVALID_MARKER = "is invalid."
+#
+# `_INVALID_MARKER` alone is a bare substring, and glab's own compiled format
+# is `"%s is invalid."` -- the `%s` half is the file, not decoration. Checking
+# the tail alone would fold Trap 2 (a network/auth failure that must stay
+# `skipped`) back into a false `ok: false`: an expired-token message plausibly
+# contains the words "is invalid." on their own (e.g. "your personal access
+# token is invalid."), which would roll back a correct edit exactly the way
+# the issue's own Trap 2 warns against. `_invalid_marker_for(file)` ties the
+# match to THIS file's own name, which an unrelated auth message has no
+# reason to contain.
 _VALID_MARKER = "is valid"
+
+
+def _invalid_marker_for(file: str) -> str:
+    return f"{os.path.basename(file).lower()} is invalid."
 
 #: `count` is always exactly 1 on a real finding (`glab` reports the whole
 #: config's validity as one verdict, never a per-line list) and 1 on every
@@ -79,7 +92,7 @@ def main() -> None:
         emit({"tool": TOOL, "file": "", "ok": False, "count": 1,
               "errors": [{"line": None, "col": None, "severity": "error",
                           "code": "adapter", "msg": "no file arg"}],
-              "duration_ms": 0})
+              "duration_ms": 0, **COUNT_CONTRACT})
         return
 
     file = sys.argv[1]
@@ -101,7 +114,7 @@ def main() -> None:
         emit({"tool": TOOL, "file": file, "ok": False, "count": 1,
               "errors": [{"line": None, "col": None, "severity": "error",
                           "code": "adapter", "msg": "file not found"}],
-              "duration_ms": 0})
+              "duration_ms": 0, **COUNT_CONTRACT})
         return
 
     start = time.time()
@@ -126,15 +139,15 @@ def main() -> None:
 
     if r.returncode == 0 and _VALID_MARKER in low:
         emit({"tool": TOOL, "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": dur})
+              "errors": [], "duration_ms": dur, **COUNT_CONTRACT})
         return
 
-    if _INVALID_MARKER in low:
+    if _invalid_marker_for(file) in low:
         msg = combined.strip()[:500]
         emit({"tool": TOOL, "file": file, "ok": False, "count": 1,
               "errors": [{"line": None, "col": None, "severity": "error",
                           "code": TOOL, "msg": msg}],
-              "duration_ms": dur})
+              "duration_ms": dur, **COUNT_CONTRACT})
         return
 
     # Everything else -- repo/host resolution failure, an HTTP status off

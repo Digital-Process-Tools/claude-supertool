@@ -18182,6 +18182,21 @@ def _doctor_classify_formatter_probe(data: Any) -> "Tuple[str, str]":
         if _doctor_looks_absent_formatter(str(msg)):
             return "absent", str(msg)
         return "could not tell", str(msg)
+    raw = data.get("raw")
+    if isinstance(raw, str) and not data.get("ok", True) and (
+        "Traceback (most recent call last)" in raw
+    ):
+        # `_formatter_run_one`'s "legacy fallback" branch fires whenever
+        # stdout does not parse as SCHEMA JSON -- which is exactly what a
+        # crashing formatter SCRIPT (not the underlying tool) produces too:
+        # a raw `cmd` that fails to format a file and a custom adapter that
+        # raised before calling `emit()` are otherwise indistinguishable
+        # here, both landing on `ok: False` with no `errors`/`msg` key. A
+        # Python traceback in `raw` is the one signal that tells them apart
+        # without guessing, so it is read before the bare `ok` fallback
+        # below reports the crash as a working toolchain that merely found
+        # something wrong with this file.
+        return "could not tell", "adapter raised an exception -- " + raw[:200]
     if "ok" in data:
         return "resolves", f"ok={data.get('ok')}"
     return "could not tell", "adapter replied without a verdict"

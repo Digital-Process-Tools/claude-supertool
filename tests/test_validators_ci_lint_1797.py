@@ -218,3 +218,51 @@ def test_resolver_no_arg_prints_nothing() -> None:
                         text=True, timeout=adapter_budget(RESOLVER), encoding="utf-8", errors="replace")
     assert r.returncode == 0
     assert r.stdout.strip() == ""
+
+def test_invalid_marker_is_tied_to_the_files_own_name_not_a_bare_substring(tmp_path: Path) -> None:
+    """An auth/token message that happens to contain the words 'is invalid.'
+    on its own must still be `skipped`, never misread as this file failing
+    real GitLab validation -- the collision an unqualified substring check
+    would create, and exactly what Trap 2 warns rollback_on_fail against."""
+    f = tmp_path / ".gitlab-ci.yml"
+    f.write_text("stages:\n  - build\n")
+    body = (
+        "import sys\n"
+        "sys.stderr.write('your personal access token is invalid.\\n')\n"
+        "sys.exit(1)\n"
+    )
+    bin_cmd = _python_stub(tmp_path, "stub_token_invalid", body)
+    env = {**os.environ, "GLAB_BIN": bin_cmd}
+    data = _run(f, env)
+    assert data["tool"] == "ci-lint"
+    assert "skipped" in data
+    assert "ok" not in data
+
+
+def test_count_contract_is_declared_on_every_verdict_bearing_emit(tmp_path: Path) -> None:
+    """`COUNT_CONTRACT` is spliced into every emit call that carries `count`,
+    not just declared as a module-level constant nothing reads (SCHEMA.md:
+    declaring it is mandatory for a shipped adapter)."""
+    f = tmp_path / ".gitlab-ci.yml"
+    f.write_text("stages:\n  - build\n")
+
+    bin_cmd = _python_stub(
+        tmp_path, "stub_valid",
+        "import sys; print('CI/CD YAML is valid!'); sys.exit(0)\n",
+    )
+    env = {**os.environ, "GLAB_BIN": bin_cmd}
+    data = _run(f, env)
+    assert data["count_basis"] == "measured"
+    assert data["errors_truncated"] is False
+
+    body = (
+        "import sys\n"
+        "sys.stderr.write('.gitlab-ci.yml is invalid.\\n1 job: bad stage\\n')\n"
+        "sys.exit(1)\n"
+    )
+    bin_cmd = _python_stub(tmp_path, "stub_invalid2", body)
+    env = {**os.environ, "GLAB_BIN": bin_cmd}
+    data = _run(f, env)
+    assert data["count_basis"] == "measured"
+    assert data["errors_truncated"] is False
+

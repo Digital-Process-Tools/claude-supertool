@@ -161,3 +161,32 @@ def test_doctor_classify_formatter_probe_failed_run_that_is_not_absence() -> Non
             "duration_ms": 5}
     state, _ = supertool._doctor_classify_formatter_probe(data)
     assert state == "resolves"
+
+
+def test_doctor_classify_formatter_probe_never_calls_a_crashed_adapter_resolves() -> None:
+    """A custom formatter script that raises before calling `emit()` produces
+    the same shape `_formatter_run_one`'s legacy-fallback branch gives a
+    genuinely failing raw-`cmd` tool: `ok: False`, no `errors`, no `msg`, only
+    `raw` holding whatever the crashing process printed. A traceback in that
+    `raw` text is the one signal that tells the two apart, and it must land
+    on 'could not tell', never on 'resolves' -- a broken adapter script is
+    not evidence the toolchain works."""
+    data = {"name": "fake-fmt", "ok": False,
+            "raw": "Traceback (most recent call last):\n  File \"fake.py\", "
+                   "line 3, in <module>\nZeroDivisionError: division by zero",
+            "duration_ms": 12, "metrics": {"lines_added": 0, "lines_removed": 0}}
+    state, detail = supertool._doctor_classify_formatter_probe(data)
+    assert state == "could not tell"
+    assert "exception" in detail
+
+
+def test_doctor_classify_formatter_probe_legacy_failure_without_traceback_still_resolves() -> None:
+    """The sibling case: a legacy raw-`cmd` tool that ran and genuinely could
+    not format the file (no traceback, just its own error text in `raw`) is
+    still 'resolves' -- the toolchain is reachable, it just found something
+    wrong with this file. Only a traceback flips this to 'could not tell'."""
+    data = {"name": "fake-fmt", "ok": False, "raw": "fake-fmt: syntax error",
+            "duration_ms": 12, "metrics": {"lines_added": 0, "lines_removed": 0}}
+    state, _ = supertool._doctor_classify_formatter_probe(data)
+    assert state == "resolves"
+
