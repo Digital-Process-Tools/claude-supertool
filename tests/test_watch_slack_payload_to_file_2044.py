@@ -190,7 +190,7 @@ def test_retention_evicts_the_oldest_file_first(tmp_path, monkeypatch) -> None:
     second = poller._write_message_file("C1", None, "2.0", "false", "text", "middle")
     _time.sleep(0.01)
     third = poller._write_message_file("C1", None, "3.0", "false", "text", "newest")
-    store = tmp_path / "slack-messages"
+    store = poller._message_store_dir("C1")
     remaining = {p.name for p in store.iterdir()}
     assert Path(first).name not in remaining, "the oldest file must be evicted first"
     assert Path(second).name in remaining, remaining

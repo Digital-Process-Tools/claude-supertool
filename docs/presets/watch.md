@@ -703,6 +703,7 @@ Every other source's payload is a title, a status, a job name — words a reposi
 - **`content_kind`** ([#2068](https://github.com/Digital-Process-Tools/claude-supertool/issues/2068)) names where the body came from, so an empty `title` is never ambiguous with one this poller could not extract. `msg["text"]` alone misses a file/image upload, a snippet, a Block Kit message, and most app-posted attachments — every one of those used to arrive as `title=""`, indistinguishable from a message that really was empty. `"text"` is the free-form case that now moves to a file; `"files"` / `"blocks"` / `"attachments"` means `text` was empty but the poller found and *named* one of those instead (a filename, a block count — never reconstructed prose, and short enough to stay inline exactly as before, since these are poller-computed descriptions rather than a stranger's paragraph); `"empty"` is the only kind under which both `title` and `payload_path` are legitimately `""`.
 - **Bounded at the source** (`MESSAGE_CHARS_MAX`) for every arm except the one that moved to a file, the way `FAILED_JOBS_MAX` bounds the job-name list in `sources/gitlab-mr/poller.py` — the bound is visible in the payload when it fires, not silently absorbed by the channel bridge's own `EVENT_MAX_CHARS` clamp. The bound tracks the channel's own per-attribute cap (`SUPERTOOL_CHANNEL_ATTR_MAX`, default 2048) with headroom for the truncation note itself, rather than a bare literal picked without reference to it ([#2059](https://github.com/Digital-Process-Tools/claude-supertool/issues/2059)) — before that fix the bound (4000) sat *above* the channel's cap, which does not truncate an over-cap attribute but deletes it whole, so no message over 2048 characters delivered any text at all, truncation note included. A file written by #2044 is not clipped at all — the whole reason the text moved was that a file does not have to fit one shared attribute budget.
 - **`message_ts`** and **`thread_ts`** ([#2052](https://github.com/Digital-Process-Tools/claude-supertool/issues/2052)) carry the message's own Slack timestamp and, on a thread watch, its parent's. Not named `ts`: the channel bridge reserves that name for its own routing field (see "Reserved payload keys" in `presets/watch/README.md`), and a payload key of that name was silently dropped — every `slack_message` event's `ts` attribute was the *consumer's* emit time, never the message's own identity, which broke in-thread replies and permalinks alike. `thread_ts` is `""` on a bare-channel watch; `parse_id` already splits `CHANNEL~THREAD_TS` for the poller's own use, but a consumer only ever saw the composite `id`.
+- **Each watched channel keeps its own message-body pool** ([#2149](https://github.com/Digital-Process-Tools/claude-supertool/issues/2149)) — `slack-messages/<channel-key>/`, one subdirectory per channel under `STATE_DIR`, each with its own 500-file eviction cap. Every Slack poller on a host used to write into one shared `slack-messages/` directory under one shared cap, so a burst on a busy channel could evict a quiet channel's older files before any agent had opened them, and #2044 is exactly what made that matter — the event carries `payload_path` and nothing else, so a file evicted under the cap is indistinguishable from one never written. Scoping the pool per channel turns the cap back into a promise about *that* channel alone, at the cost the issue names on purpose: total disk is now the cap times the number of watched channels rather than a fixed 500 files, unbounded in channel count rather than in messages.
 - **`classify`** ([#2056](https://github.com/Digital-Process-Tools/claude-supertool/issues/2056)) is the tool's own claim about `title`, on the same footing as `author_is_viewer` — never something a message author can set. Unlike the `classify` verdict `gh-issue`/`gl-issue` and friends render ([#2049](https://github.com/Digital-Process-Tools/claude-supertool/issues/2049)), this is **always the scanner-only half**: `classify: suspect (…)` when the deterministic stage (`presets/classify/scanner.py`) matched, `classify: scanner-clean (…)` otherwise, or `classify: off (…)` when `SUPERTOOL_CLASSIFY=off`. It never reaches the model stage — a `claude -p` spawn is 45s against this poller's own 30s tick, so running it synchronously here would make the tick slower than its own interval, and an async attach-later design is explicitly not built by this issue. `classify: scanner-clean` is never rendered as `safe`: a clean deterministic scan is not a verdict (`presets/classify/check.py`'s own asymmetry), and this field must not claim a stage that never ran.
 
 Watcher id shape: a bare channel id (`C0123456`) polls the channel; `<channel>~<thread-ts>` (e.g. `C0123456~1699999999.000100`) polls one thread via `conversations.replies` instead. `~` rather than `:` or `/`, because both are already spoken for elsewhere in a watcher id (`only=` at the CLI, filename components in the dispatcher's PID/state files) and a thread `ts` itself carries a literal `.`.
@@ -1358,6 +1359,7 @@ Pollers emit through three channels (all best-effort, none can crash the poller)
 | Status file (JSON) | `/tmp/supertool-watch-{source}__{id}.state.json` | Last-known state for `watches` op + offline inspection, plus the poller's own `only` filter so another tier can tell what it will ever emit, and `last_emit` — what the socket write actually meant |
 | Consumer health (JSON) | `{sock_path}.health.json` | Written by the consumer, not by a poller: its own count of lines read, forwarded and dropped, re-stamped on a 10s heartbeat. What `channel:health` reads |
 | Refusal marker (JSON) | `{sock_path}.refused.json` | Written by a rival consumer that lost this socket ([#550](https://github.com/Digital-Process-Tools/claude-supertool/issues/550)) on its way out — pid, reason, timestamp. The bound consumer clears it the instant it (re)binds, so what survives is evidence from *this* run. `channel:health` renders it as a `refused` line and `subscription()` reads it too ([#2133](https://github.com/Digital-Process-Tools/claude-supertool/issues/2133), below) |
+| Received receipt (JSON) | `{sock_path}.received.json` | Written by `channel:received:N` — a session's own report of how many events it has received, compared against `forwarded` ([#2150](https://github.com/Digital-Process-Tools/claude-supertool/issues/2150), below). The only sidecar here written from the receiving side rather than the forwarder's |
 | macOS osascript | system notification center | Desktop ping on terminal status / error |
 
 Override the socket path with the `SUPERTOOL_WATCH_SOCK` env var — set it to
@@ -1794,6 +1796,87 @@ to be different things.
 to the socket at all, which is the normal state of most sessions. The footers
 name that case rather than letting the board report an ordinary session as
 broken.
+
+## A long-lived poller runs the code it was forked with — `VERSION` ([#2179](https://github.com/Digital-Process-Tools/claude-supertool/issues/2179))
+
+A poller running old code is not an error; it is old *correct* behaviour, so
+it produces well-formed events that are simply wrong, and nothing else on the
+board can notice. A poller forked before a fix landed keeps running the
+pre-fix logic indefinitely — nothing restarts it, and `STARTED` is a
+timestamp, not a diff against the source.
+
+`watches` now carries a `VERSION` column, next to `DELIVERY`:
+
+```
+SOURCE  ID          PID    STARTED               LAST_EVENT     DELIVERY  VERSION
+slack   G017S75R2BV  92092  2026-08-28T12:58:17Z  slack_message  accepted  STALE
+```
+
+Three values, and the third is load-bearing:
+
+| Value | What is known |
+|---|---|
+| `current` | this poller's own recorded fork-time fingerprint (the newest mtime across `presets/watch/`'s `.py` files, taken once at fork) matches the source on disk right now |
+| `STALE` | it does not — something under `presets/watch/` changed since this poller forked. A row is printed naming the fingerprints |
+| `unknown` | the comparison could not be made at all: no fingerprint was recorded (a poller from before #2179), a recorded fingerprint could not be read, or this render could not read its own source |
+
+`unknown` must never be read as `current` — "nobody can tell" and "proven
+current" send an operator to opposite conclusions about a poller that has
+been running for days. **Report-only, the same requirement `DELIVERY` carries
+above and for the same reason**: nothing here restarts a stale poller
+automatically. `unwatch:SOURCE:ID` then `watch:SOURCE:ID` picks up the
+current source.
+
+The fingerprint is coarse deliberately — one value for the whole
+`presets/watch/` tree rather than one per source file, since every source
+plugin shares `dispatcher.py`, `transport.py` and `naming.py`. The cost: a
+change to any one source's `poller.py` reads every *other* source as freshly
+stale too, until they are restarted. That is the safe direction; a false
+`STALE` costs a look, a false `current` costs nothing at all.
+
+## A session's own receipt — `channel:received:N` ([#2150](https://github.com/Digital-Process-Tools/claude-supertool/issues/2150))
+
+Every counter this bridge publishes — `forwarded`, `dropped`, `lines_read` —
+is the forwarder describing its own outbox. None of them can see the inbox:
+the bridge sends a JSON-RPC notification with no id and no response, so
+whether an event actually arrived in a session is observable only from
+*inside* that session ([#2051](https://github.com/Digital-Process-Tools/claude-supertool/issues/2051)'s
+own finding, remedy 1).
+
+`channel:received:N` is that receipt: a session's own report of how many
+channel events it has received so far, compared against `forwarded`'s
+advance over the same window since the last report.
+
+```
+./supertool 'channel:received:17'
+channel: received report for /tmp/supertool-watch.sock
+  this session reports 17 received so far
+  7 received since the last report, 7 forwarded over the same window
+  AGREE
+```
+
+Three states:
+
+| State | Meaning |
+|---|---|
+| `AGREE` (exit 0) | the delta this call reports equals `forwarded`'s delta over the same window |
+| `DISAGREE by N` (exit 1) | the two deltas differ by `N` |
+| `UNSETTLED` (exit 3) | no window could be diffed: `forwarded` is not readable right now, there is no prior receipt for this socket (the first call ever made against it), or the prior receipt does not hold a readable pair to diff from |
+
+`UNSETTLED` must never render as `AGREE` — a session that never calls this at
+all, and a session whose counts genuinely agree, are not the same fact and
+must not read alike. The receipt lives beside the socket at
+`{sock_path}.received.json`, the same sidecar convention as the health and
+refusal files, and is written on every call regardless of which state it
+reports, so the next call always has a baseline.
+
+**How an agent knows to call it, and what a disagreement means, are not
+settled by this op.** #2150 named both as open questions rather than bugs:
+nothing here prompts a session to report, and a mismatch is reported with its
+size and nothing more — it does not distinguish events genuinely in flight
+from a poller that died mid-send from a hop that is down. The three-state
+receipt is the mechanism; deciding when to call it and what to do with a
+disagreement is still an operator's judgement.
 
 ## Opening a session the channel can reach — `bin/oss-workspace` ([#1538](https://github.com/Digital-Process-Tools/claude-supertool/issues/1538), [#1729](https://github.com/Digital-Process-Tools/claude-supertool/issues/1729))
 

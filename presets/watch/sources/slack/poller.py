@@ -504,8 +504,30 @@ _MESSAGE_STORE_SUBDIR = "slack-messages"
 _MESSAGE_RETENTION_MAX = 500
 
 
-def _message_store_dir() -> Path:
-    d = Path(transport.STATE_DIR) / _MESSAGE_STORE_SUBDIR
+def _message_store_dir(channel: str) -> Path:
+    """This channel's own message-body pool, never a shared one (#2149).
+
+    Every Slack poller on a host used to write into one `slack-messages`
+    directory under a shared 500-file cap, keyed by nothing at all. A busy
+    channel's burst evicted a quiet channel's older files before any agent
+    had opened them, and #2044 is exactly what made that matter: the event
+    carries `payload_path` and nothing else, so an evicted file is a lost
+    message body with no way to tell "evicted" from "never written".
+
+    Scoped per channel rather than raising the cap or switching to a clock
+    (#2149's own second and third options): this is the one fix that turns
+    the cap back into a promise about *this* channel rather than about
+    whatever else happens to be watched on the same host, at the cost the
+    issue names on purpose -- total disk is now the cap times the number of
+    watched channels, unbounded in channel count rather than in messages.
+
+    `channel` is hashed rather than used as a directory name directly: it is
+    a Slack channel ID today, but nothing here should have to also be the
+    validator for what may appear in a POSIX path component.
+    """
+    key = hashlib.sha256(
+        channel.encode("utf-8", "surrogateescape")).hexdigest()[:24]
+    d = Path(transport.STATE_DIR) / _MESSAGE_STORE_SUBDIR / key
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
     return d
 
@@ -533,7 +555,7 @@ def _write_message_file(channel: str, thread_ts: str | None, message_ts: str,
     exactly when the content is actually read. So it is the file's own
     header, not something a reader has to already know to add.
     """
-    store = _message_store_dir()
+    store = _message_store_dir(channel)
     digest = hashlib.sha256(
         f"{channel}\n{thread_ts or ''}\n{message_ts}".encode()).hexdigest()
     path = store / f"{digest[:24]}.md"
