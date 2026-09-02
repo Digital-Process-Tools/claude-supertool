@@ -49,6 +49,27 @@ def test_the_readme_still_claims_zero_deps_and_the_python_floor() -> None:
     assert "Python 3.9+" in lede, lede
 
 
+def test_the_design_decisions_bullet_matches_supertool_pys_actual_line_count() -> None:
+    # The reviewer spawned on this fix (#2143) found a second, adjacent stale
+    # number in the same file: the "Design decisions" section separately
+    # claimed supertool.py was "~80 lines" -- also wrong, and wrong in the
+    # same direction (undercounting) as the retracted lede this test file
+    # already pins. Rather than hardcode the corrected number and let it
+    # drift again, this reads the actual line count and checks the bullet
+    # against it, so the bullet cannot go stale silently a third time.
+    text = README.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        if line.strip().startswith("- **Two files, one of them a shim.**"):
+            bullet = line
+            break
+    else:
+        raise AssertionError("no 'Two files, one of them a shim' bullet found in README.md")
+    launcher_lines = len((ROOT / "supertool.py").read_text(encoding="utf-8").splitlines())
+    assert f"is {launcher_lines} lines" in bullet, (
+        bullet, f"expected 'is {launcher_lines} lines' (supertool.py's real line count)"
+    )
+
+
 def test_supertool_py_is_a_thin_launcher_not_the_whole_implementation() -> None:
     # Ground truth for the claim above: if supertool.py ever grows back into
     # the whole implementation, "a thin launcher" is the sentence that goes
