@@ -379,23 +379,37 @@ def main() -> None:
         else:
             supertool_bin = "supertool"
 
+    #: How long to wait for the whole `supertool diag:FILE` child before
+    #: giving up on it (#2087). This is the net UNDER the MCP layer's own
+    #: infra reporting -- "no result from get_diagnostics", "MCP server
+    #: unavailable" and friends already answer quickly and are already
+    #: skipped by the `infra` check a few lines down. This wall is what
+    #: catches the child never returning at all: a stuck daemon, a socket
+    #: that never closes. Configurable so a slow warm-up (a large file's
+    #: first, cold analysis) gets more room without a release, and so this
+    #: is testable at well under a second rather than at the real default.
+    diag_timeout = float(os.environ.get("SUPERTOOL_LSP_DIAG_TIMEOUT", "30"))
     try:
         r = subprocess.run(
             [sys.executable, supertool_bin, f"diag:{file}"] if supertool_bin.endswith(".py")
             else [supertool_bin, f"diag:{file}"],
-            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
+            capture_output=True, text=True, timeout=diag_timeout, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:
-        emit({"tool": "lsp-diag", "file": file, "ok": False, "count": 1,
-              "errors": [{"line": None, "col": None, "severity": "error",
-                          "code": "adapter", "msg": "supertool binary not found"}],
-              "duration_ms": int((time.time() - start) * 1000)})
+        emit({"tool": "lsp-diag", "file": file, "duration_ms": int((time.time() - start) * 1000),
+              "skipped": "supertool binary not found"})
         return
     except subprocess.TimeoutExpired:
-        emit({"tool": "lsp-diag", "file": file, "ok": False, "count": 1,
-              "errors": [{"line": None, "col": None, "severity": "error",
-                          "code": "adapter", "msg": "timeout"}],
-              "duration_ms": int((time.time() - start) * 1000)})
+        # A hang, not a finding about the file (#2087): this adapter never
+        # got far enough to look at it. The same reasoning `infra` applies
+        # below to the MCP layer's own "no result"/"unavailable" messages --
+        # a declined answer must not read as `ok: false`, which is a verdict
+        # this adapter never reached and which `rollback_on_fail` and any
+        # human reading the receipt would otherwise trust.
+        emit({"tool": "lsp-diag", "file": file, "duration_ms": int((time.time() - start) * 1000),
+              "skipped": f"timed out waiting {diag_timeout:g}s for a diagnostics "
+                         "answer -- not a finding about this file, the request "
+                         "never came back"})
         return
 
     # Strip supertool's "--- diag:FILE ---" header line

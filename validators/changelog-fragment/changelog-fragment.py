@@ -17,9 +17,11 @@ followed by a red matrix would be #1132 inverted, which is worse than #1132.
 
 **Nothing here is keyed on a hardcoded path.** Scope is the `match` glob in the
 project's `.supertool.json`, and the rules are the project's own script, found
-by walking up from the file (`$SUPERTOOL_CHANGELOG_ASSEMBLER` overrides the
-default location). A project with no such script gets `skipped`, not `ok`:
-supertool runs against repos that have never heard of `changelog.d/`.
+by walking up from the file, trying every entry in `ASSEMBLER_LOCATIONS` in
+order at each parent (`$SUPERTOOL_CHANGELOG_ASSEMBLER` overrides with one
+exact path instead of the list — #2072). A project with no such script gets
+`skipped`, not `ok`: supertool runs against repos that have never heard of
+`changelog.d/`.
 
 Three states. `ok`, a finding, and `skipped` when this cannot answer — no
 assembler above the file, the file is not a fragment at all, or markdown-it-py
@@ -47,7 +49,18 @@ TOOL = "changelog-fragment"
 #: Where the project keeps the script that owns these rules. Overridable so the
 #: adapter is not asserting one repo's layout as a fact about every repo.
 ENV_ASSEMBLER = "SUPERTOOL_CHANGELOG_ASSEMBLER"
-DEFAULT_ASSEMBLER = os.path.join(".github", "scripts", "assemble_changelog.py")
+
+#: Known conventions, tried in order. `.github/scripts/...` is this repo's own
+#: layout and the adapter's original (and only) guess. `.oss/...` and
+#: `scripts/...` are `claude-oss`'s own `ASSEMBLER_LOCATIONS`
+#: (`scripts/oss_rules.py:45`) -- what `/oss:scaffold` actually writes for every
+#: repository that plugin sets up (#2072). A project using a fourth location
+#: still has `SUPERTOOL_CHANGELOG_ASSEMBLER`.
+ASSEMBLER_LOCATIONS = (
+    os.path.join(".github", "scripts", "assemble_changelog.py"),
+    os.path.join(".oss", "assemble_changelog.py"),
+    os.path.join("scripts", "assemble_changelog.py"),
+)
 
 
 def emit(payload: dict) -> None:
@@ -58,18 +71,34 @@ def _ms(start: float) -> int:
     return int((time.time() - start) * 1000)
 
 
+def _locations() -> tuple:
+    """The relative path(s) to try, in order.
+
+    `SUPERTOOL_CHANGELOG_ASSEMBLER` names one path and takes it exactly --
+    an operator who set it meant that location and no other. Absent that,
+    every entry in `ASSEMBLER_LOCATIONS` is tried, because #2072 is what
+    happens when only one guess is made and the project uses a different
+    one of the two conventions `/oss:scaffold` itself writes.
+    """
+    override = os.environ.get(ENV_ASSEMBLER, "").strip()
+    return (override,) if override else ASSEMBLER_LOCATIONS
+
+
 def _find_assembler(target: Path) -> Path | None:
     """The nearest project script at or above `target`, or None.
 
     Walks parents rather than resolving against a repo root: a validator is
     handed one path and may be run from anywhere, including a worktree whose
-    root is not the directory the call was made from.
+    root is not the directory the call was made from. Tries every location in
+    `_locations()` at each parent before moving up, so a nearer wrong-shaped
+    layout does not shadow a correct one further up -- not observed, but the
+    cheaper order to fail in.
     """
-    relative = os.environ.get(ENV_ASSEMBLER, "").strip() or DEFAULT_ASSEMBLER
     for parent in [target.parent, *target.parent.parents]:
-        candidate = parent / relative
-        if candidate.is_file():
-            return candidate
+        for relative in _locations():
+            candidate = parent / relative
+            if candidate.is_file():
+                return candidate
     return None
 
 
@@ -122,11 +151,12 @@ def main() -> None:
 
     script = _find_assembler(path)
     if script is None:
+        tried = ", ".join(_locations())
         emit(skipped(TOOL, target,
-                     "no {0} at or above {1} — this project does not declare "
-                     "changelog fragment rules".format(
-                         os.environ.get(ENV_ASSEMBLER, "").strip() or DEFAULT_ASSEMBLER,
-                         path.parent),
+                     "no assembler found at or above {0} -- tried {1}. That is "
+                     "a claim about where this adapter looked, not about the "
+                     "project: set {2} to point at the real script if it lives "
+                     "somewhere else".format(path.parent, tried, ENV_ASSEMBLER),
                      _ms(start)))
         return
 
