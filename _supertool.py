@@ -12417,12 +12417,27 @@ def op_append(path: str, content: str) -> str:
         except OSError as e:
             return f"ERROR: failed to read {path}: {e}\n"
 
-    block = content if content.endswith("\n") else content + "\n"
+    # The file's own convention, scanned backwards from EOF -- the same
+    # `_local_newline` helper `replace_lines` uses for the terminator it has
+    # to invent (#1073/#1075). Falls back to LF when the file does not exist
+    # or has no terminated line to read a convention off.
+    orig_lines = _split_lines_keepends(orig) if orig else []
+    conv = _local_newline(orig_lines, len(orig_lines) - 1) if orig_lines else "\n"
+
     newline_hint = ""
     if orig and not orig.endswith(("\n", "\r")):
-        # Match the file's own convention rather than imposing LF on a CRLF file.
-        orig += "\r\n" if "\r\n" in orig else "\n"
+        # Match the file's own convention rather than imposing a file-wide
+        # majority guess -- same helper as above, so this and the block's own
+        # invented terminator never disagree.
+        orig += conv
         newline_hint = " [added the missing trailing newline first]"
+
+    # The caller's own text goes in verbatim, endings and all -- rewriting an
+    # explicit choice would be the same silent normalisation pointed the other
+    # way (see `replace_lines`'s identical contract). The one ending this op
+    # *invents* is the trailing one, when content carries none at all; that
+    # takes the file's convention, not a hardcoded LF (#1085).
+    block = content if content.endswith(("\n", "\r")) else content + conv
 
     old_size = len(orig.encode("utf-8", errors="surrogateescape")) if existed else 0
     new_content = orig + block
@@ -12440,6 +12455,13 @@ def op_append(path: str, content: str) -> str:
         f"{verb} {path}: {added} lines at {start_line}-{len(all_lines)} "
         f"({old_size} → {new_size} bytes){newline_hint}\n"
     ]
+    # Computed from the file as written, not as it was found -- the same
+    # post-write basis #1075 fixed `replace_lines` onto, and for the same
+    # reason: the pre-write bytes can never show mixedness this write itself
+    # created (#1085).
+    _nl_note = _newline_note(new_content, _newline_used(block))
+    if _nl_note:
+        out.append(_nl_note)
     if not existed:
         # `append` is the other op that brings a file into existence, so the
         # umask default of #1275 reaches it through the same chokepoint — and
