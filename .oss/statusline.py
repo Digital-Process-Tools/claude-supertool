@@ -205,6 +205,11 @@ _WATCH_NAME_UNSAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
 #: is the positive control: slugs `oss_config` REJECTS, not only ones it accepts.
 _REPO_RE = re.compile(r"\A[^/\s]+/[^/\s]+\Z")
 
+#: `.supertool.json`'s own filename, read but never written -- the same constant
+#: `doctor.py` carries as `WATCH_CONFIG`, duplicated rather than imported for the
+#: same standalone-vendoring reason as every other copy in this section (#754).
+WATCH_CONFIG = ".supertool.json"
+
 
 def _expected_watch_name(repo):
     """The watch channel name THIS repository would derive from its own `repo`.
@@ -221,6 +226,63 @@ def _expected_watch_name(repo):
     if not _REPO_RE.match(repo):
         return None
     return _WATCH_NAME_UNSAFE_RE.sub("-", repo)
+
+
+def _declared_watch_names(root):
+    """The distinct `ops.*.watch_name` values in this repo's own `.supertool.json`
+    (#754).
+
+    A copy of doctor.py's own `_supertool_document`/`_declared_watch_names` read
+    logic, not an import of it -- this module is vendored standalone (see the
+    module docstring) and cannot depend on `doctor.py` being present beside it.
+
+    Returns `(names, problem)`. `problem` is `None` when the file was read and
+    its shape was usable -- which includes the file not being there at all,
+    because absence is a real and common answer and a broken file is not.
+    Otherwise `"unreadable"` (could not be opened, read or parsed as JSON) or
+    `"malformed"` (parsed, and is not the object shape expected). doctor.py
+    keeps those as two answers because its reader is sent to a different
+    remedy for each; this caller only needs to know whether the file could
+    answer the attribution question at all, so both fold to the SAME
+    `declaration-unreadable` channel attribution in `_channel_reading` below --
+    still its own state, and never folded into `not-attributable`, which is
+    the fold #754 was filed against.
+    """
+    path = Path(root) / WATCH_CONFIG
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return set(), None
+    except (OSError, ValueError, UnicodeDecodeError):
+        return set(), "unreadable"
+    if not isinstance(doc, dict):
+        return set(), "malformed"
+    # Absent and malformed are not the same answer, and this asymmetry is the
+    # one both review spawns on #754 caught in #754's own fix. `ops` missing
+    # entirely is a repository that declares nothing -- real, common, and not a
+    # problem. `ops` present and the wrong shape is a file somebody edited and
+    # broke, and folding that into the first renders it as `not-attributable`
+    # one caller down: identical to a channel that genuinely belongs to another
+    # project's fleet, which is precisely the fold #754 exists to end.
+    # doctor.py's own copy has split these since #216; this one had dropped the
+    # branch while its docstring above claimed parity with it.
+    if "ops" not in doc:
+        return set(), None
+    ops = doc.get("ops")
+    if not isinstance(ops, dict):
+        return set(), "malformed"
+    # The empty-string filter is doctor.py's, kept here rather than dropped: a
+    # block declaring `"watch_name": ""` declares no name, and counting it would
+    # push a file that also declares one real name to len(declared) == 2 and so
+    # to `not-attributable` -- a second, quieter way for a broken file to read
+    # as somebody else's fleet.
+    return {
+        block["watch_name"]
+        for block in ops.values()
+        if isinstance(block, dict)
+        and isinstance(block.get("watch_name"), str)
+        and block["watch_name"]
+    }, None
 
 
 def parse_channel_report(text):
@@ -248,11 +310,11 @@ def parse_channel_report(text):
     return None
 
 
-def channel_status(raw_state, attributable, fetched_at, now, interval=CHANNEL_REFRESH_AFTER):
+def channel_status(raw_state, attribution, fetched_at, now, interval=CHANNEL_REFRESH_AFTER):
     """Fold a raw `channel:health` reading, its own age and its attribution into
-    the state `render` actually shows (#613).
+    the state `render` actually shows (#613, widened by #754).
 
-    Three ways this becomes `cannot_determine` before a caller ever sees one of
+    Four ways this becomes `cannot_determine` before a caller ever sees one of
     the five real states, and each is a distinct reason a reader might act on
     differently -- collapsing them into one `?` would be this module's own
     defect class, the same reason `board_from_cache` keeps its counts separate:
@@ -261,11 +323,23 @@ def channel_status(raw_state, attributable, fetched_at, now, interval=CHANNEL_RE
     * ``stale``        -- the reading is older than its own refresh interval
       (#550/#551's lesson, applied a third time: never let an old reading
       render as though it were fresh).
-    * ``not-attributable`` -- the channel name this reading came from was not
-      derived from this repository's own `.oss.json`, so the socket and poller
-      slots may be another project's fleet entirely (the issue's closing
-      bullet). Checked first and unconditionally: an unattributed reading must
-      never reach the real-state branch below, however fresh it is.
+    * ``not-attributable`` -- the channel name this reading came from is
+      neither what this repository's own `.oss.json` would derive NOR what
+      this repository's own tracked `.supertool.json` declares, so the socket
+      and poller slots may be another project's fleet entirely. Checked first
+      and unconditionally: an unattributed reading must never reach the
+      real-state branch below, however fresh it is.
+    * ``declaration-unreadable`` -- neither route settled it, and the reason
+      the declaration route could not is that `.supertool.json` is there and
+      could not be read or parsed (#754). A file this module could not open
+      is not evidence of "somebody else's fleet" -- it is evidence the
+      question could not be asked, and folding the two together is precisely
+      this repository's own defect class landing on the fix for it.
+
+    `attribution` is one of ``"derivation"``, ``"declaration"``,
+    ``"not-attributable"`` or ``"declaration-unreadable"`` -- `_channel_reading`
+    decides which; this function only asks whether it is one of the first two
+    (real attribution) or not.
 
     Deliberately NOT handled here, and this is #551's own gap restated for a
     third instrument: a reading that is fresh BY THIS RULE and simply wrong --
@@ -275,16 +349,18 @@ def channel_status(raw_state, attributable, fetched_at, now, interval=CHANNEL_RE
     invalidate the cache against; #613's own docstring on `CHANNEL_REFRESH_AFTER`
     states that gap rather than papering over it.
 
-    `not-asked` is checked BEFORE `attributable`, and that order is deliberate:
-    a cache holding no reading at all also holds no attribution, so
-    `attributable` defaults falsy there too -- checking it first would report
-    every never-asked repository as "not this repo's fleet" instead of "nobody
-    has looked yet", which is a different and more alarming claim about a
-    question that was never even put.
+    `not-asked` is checked BEFORE attribution, and that order is deliberate: a
+    cache holding no reading at all also holds no attribution, so `attribution`
+    defaults to a not-attributed value there too -- checking it first would
+    report every never-asked repository as "not this repo's fleet" instead of
+    "nobody has looked yet", which is a different and more alarming claim about
+    a question that was never even put.
     """
     if not isinstance(fetched_at, (int, float)):
         return {"state": "cannot_determine", "reason": "not-asked"}
-    if not attributable:
+    if attribution == "declaration-unreadable":
+        return {"state": "cannot_determine", "reason": "declaration-unreadable"}
+    if attribution not in ("derivation", "declaration"):
         return {"state": "cannot_determine", "reason": "not-attributable"}
     if now - fetched_at >= interval:
         return {"state": "cannot_determine", "reason": "stale"}
@@ -1539,24 +1615,59 @@ def _run_channel_health(timeout=30):
 def _channel_reading(root, config):
     """One `channel:health` reading for `refresh()`, or why there is none.
 
-    `(raw_state, attributable)`. `raw_state` is `None` when the `watch` preset
+    `(raw_state, attribution)`. `raw_state` is `None` when the `watch` preset
     is not declared, `.supertool.json` could not be read, the `supertool`
     binary could not be run, or its report carried no recognisable `channel: `
     line -- every one of those folds to `cannot_determine` in `channel_status`,
-    never to a guess. `attributable` is independent of all of that: it asks
-    whether THIS process's own `SUPERTOOL_WATCH_NAME` -- read here, in the
-    detached refresh's own environment, which is the environment the actual
-    `channel:health` call below ran under -- is the name this repository's own
-    `.oss.json` would derive, per the issue's closing bullet: a reading off an
-    inherited name must never be attributed to this repository's fleet, however
-    real the reading itself is.
+    never to a guess. `attribution` is independent of all of that, and answers
+    a SEPARATE question: is the channel name this reading came from actually
+    this repository's own (#754, widening #613's own closing bullet). Two
+    independent routes, checked in this order:
+
+    * ``"derivation"`` -- THIS process's own `SUPERTOOL_WATCH_NAME` -- read
+      here, in the detached refresh's own environment, which is the
+      environment the `channel:health` call below actually ran under -- is
+      the name `_expected_watch_name` would derive from this repository's own
+      `.oss.json`. The original and, before #754, the only route.
+    * ``"declaration"`` -- derivation did not match, and a repository whose
+      derived name exceeds supertool's own 32-character path-component cap
+      MUST declare a shorter one in its own tracked `.supertool.json` to use
+      the channel at all (#754's own filing), which makes derivation
+      permanently unsatisfiable for it. A name THIS repository's own tracked
+      file declares is attributable to this repository by the same evidence
+      `doctor.py` already accepts when it reports "declared in
+      .supertool.json and exported as SUPERTOOL_WATCH_NAME, and they match" --
+      so this route asks the identical question: exactly one
+      `ops.*.watch_name` declared (more than one is `not-attributable`, the
+      same as doctor.py's own `conflict` state), and it equals what is
+      actually exported.
+    * ``"declaration-unreadable"`` -- derivation did not match, and
+      `.supertool.json` exists and could not be read or parsed. Never folded
+      into `not-attributable`: a file this module could not open is evidence
+      the question could not be asked, not evidence of someone else's fleet.
+    * ``"not-attributable"`` -- neither route matched (or nothing is
+      declared, or nothing is exported). The socket and poller slots may be
+      another project's fleet entirely, however real the reading itself is.
+
+    Declaration is checked only when derivation did not already settle the
+    question, so a repository that derives cleanly never pays for reading a
+    second file it does not need.
     """
     expected = _expected_watch_name(config.get("repo"))
     actual = os.environ.get(WATCH_NAME_ENV) or None
-    attributable = bool(expected) and expected == actual
+    if bool(expected) and expected == actual:
+        attribution = "derivation"
+    else:
+        declared, problem = _declared_watch_names(root)
+        if problem:
+            attribution = "declaration-unreadable"
+        elif actual is not None and len(declared) == 1 and next(iter(declared)) == actual:
+            attribution = "declaration"
+        else:
+            attribution = "not-attributable"
     if _watch_preset_declared(root) is not True:
-        return None, attributable
-    return parse_channel_report(_run_channel_health()), attributable
+        return None, attribution
+    return parse_channel_report(_run_channel_health()), attribution
 
 
 def refresh(root, now=None):
@@ -1625,8 +1736,8 @@ def refresh(root, now=None):
             now - previous_channel_stamp >= CHANNEL_REFRESH_AFTER
         )
         if channel_due:
-            raw_state, attributable = _channel_reading(root, config)
-            document["channel"] = {"raw_state": raw_state, "attributable": attributable}
+            raw_state, attribution = _channel_reading(root, config)
+            document["channel"] = {"raw_state": raw_state, "attribution": attribution}
             document["channel_fetched_at"] = now
         else:
             # Carried forward under its OWN old stamp, same shape as `latest`
@@ -1826,9 +1937,19 @@ def gather(payload, root, now=None):
     channel = None
     if config.get("watch_channel") is not False:
         raw_channel = (cache or {}).get("channel") or {}
+        # `attribution` (a 4-valued string, #754) replaced `attributable` (a
+        # bool, #613) in the cache document. A cache written by the older code
+        # carries only the old key, so this `.get` falls to its default and one
+        # refresh interval's worth of readings render `ch?` on the single
+        # upgrade that crosses #754 -- self-healing at the next `refresh()`,
+        # which rewrites the whole entry. Written down rather than migrated:
+        # translating the old bool would mean asserting WHICH route attributed
+        # a reading this code did not take, and `derivation` was only ever true
+        # by inference. Naming a bounded, self-healing window beats inventing a
+        # provenance for a value that no longer has one.
         channel = channel_status(
             raw_channel.get("raw_state"),
-            raw_channel.get("attributable", False),
+            raw_channel.get("attribution", "not-attributable"),
             (cache or {}).get("channel_fetched_at"),
             now,
         )
