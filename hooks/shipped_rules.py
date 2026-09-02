@@ -193,7 +193,20 @@ def load(root: str):
                 name, "it has an index row and no file on disk, so there is "
                       "no body to refuse with"))
             continue
-        rules.append(Rule(name, verb, re.compile(translated), body))
+        # `re.IGNORECASE` rather than lower-casing the subject at match
+        # time: `str.lower()` is not length-preserving for every Unicode
+        # input (a single `\u0130` becomes two codepoints), and this file
+        # slices the ORIGINAL, un-lowered command at the match's own offset
+        # to find what precedes it (#1873's discard disclosure). An offset
+        # computed against a lowered subject and applied to the original
+        # text drifts past the true boundary whenever such a character
+        # precedes the match, pulling a fragment of the MATCHED command
+        # into the "discarded" list (found in review of that fix). Compiling
+        # case-insensitively once, here, and matching the original text
+        # keeps the same "reads this the way awk's tolower(cmd) does"
+        # case-blindness with no separate transformed copy to drift from.
+        rules.append(Rule(name, verb, re.compile(translated, re.IGNORECASE),
+                          body))
 
     for name in sorted(set(SHIPPED) - seen):
         skipped.append(_skip(
@@ -238,18 +251,181 @@ def _body(rule: Rule):
     return prose + chr(10) + chr(10) + _TRAILER.format(name=rule.name)
 
 
+#: Characters a compound Bash call's top-level boundaries are made of, for
+#: this module's own discard disclosure (#1873's second half). `_supertool.py`
+#: has its own copy of this same idea, `_GUARD_SEPARATOR_CHARS` --  not
+#: reused here, deliberately: this file is read before `_supertool` is
+#: imported, on purpose, to keep the common case (nothing shipped matches)
+#: from paying that import (#1377). A rule that matches has already paid for
+#: a `re.search`, so a second, small, in-file segmenter costs nothing the
+#: fast path cares about. `<` and `>` are carried in the SAME set as `;&|`
+#: rather than checked separately, on purpose: a run has to be scanned whole
+#: before it is known to contain one, and `2>&1`'s `&` is only rescued by
+#: that whole-run check when `>` was part of the run to begin with -- leave
+#: it out and the `&` in `2>&1` is scanned alone and read as a lone
+#: background operator, splitting one discarded write into two fragments
+#: (`_guard_raw_segment_spans`'s own #1684).
+_DISCARD_SEPARATORS = ";()<>|&"
+
+#: `_supertool._GUARD_HEREDOC`, copied rather than imported for the same
+#: #1377 reason as everything else in this module: a plain opener, `<<-`
+#: (strips leading tabs) included, an optional matching quote around the
+#: delimiter word.
+_DISCARD_HEREDOC = re.compile(r"<<-?\s*([\x22\x27]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def _strip_heredoc_bodies(prefix: str) -> str:
+    """*prefix* with every heredoc body it fully contains blanked out.
+
+    `supertool-no-cut.md`'s own body notes a real case this guards against:
+    "a heredoc body line that begins with a piped call" is one the RULE
+    matches on, which means a `;`/`&`/`|` inside a heredoc's DATA -- a commit
+    message, a pasted payload -- is not a command boundary, and segmenting it
+    unstripped names lines of somebody's file content as "commands that
+    would not run either" (found in review of this fix). Line-based, exactly
+    like `_supertool._guard_strip_heredocs`: a body's extent is defined by
+    the newline-delimited line the closing delimiter sits alone on, which
+    `shlex`-style tokenising has already thrown away by the time this file's
+    segmenter would otherwise see it.
+
+    Bounded to what *prefix* can prove: a heredoc whose delimiter line is
+    AFTER `prefix` ends (the match this whole disclosure is about sat inside
+    the heredoc, per the case above) has no closing line here to find, and is
+    left untouched rather than guessed at -- the same "being wrong here costs
+    a scan of a body nobody can run; being wrong the other way was a silent
+    hole" trade `_guard_strip_heredocs` makes for the identical reason.
+    """
+    out = []
+    lines = prefix.split(chr(10))
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        for m in _DISCARD_HEREDOC.finditer(line):
+            delimiter = m.group(2)
+            end = i
+            while end < len(lines) and lines[end].strip() != delimiter:
+                end += 1
+            if end >= len(lines):
+                continue
+            line = line.replace(m.group(0), " ", 1)
+            i = end + 1
+        out.append(line)
+    return chr(10).join(out)
+
+
+def _discarded_segments(prefix: str):
+    """Top-level command texts in *prefix*, the part of a command BEFORE a
+    shipped rule's own match, split on `;`, `&&`, `||` and a lone `&`.
+
+    Quote and backslash tracking mirrors `_supertool._guard_raw_segment_spans`:
+    a quote opens and closes a quoted run during which nothing is special
+    except its own close (plus backslash-escaping inside a double quote), and
+    a backslash outside quotes escapes exactly the next character. A run of
+    separator characters that also contains `<` or `>` is a redirection, not
+    a boundary -- `2>&1` must not read as a `&`-separator splitting one write
+    into two fragments, the exact bug `_guard_raw_segment_spans` was written
+    to avoid in the registry route (#1684). Never raises: an unterminated
+    quote here is not this function's problem to report, and a `match()`
+    caller only reaches this AFTER the real tokeniser-backed guard (or this
+    same regex layer) has already decided whether to deny the command --
+    this function only decides what else to say about that decision.
+    """
+    segments = []
+    start = 0
+    quote = ""
+    i = 0
+    n = len(prefix)
+    while i < n:
+        ch = prefix[i]
+        if quote:
+            if ch == chr(92) and quote == chr(34) and i + 1 < n:
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in ("'", chr(34)):
+            quote = ch
+            i += 1
+            continue
+        if ch == chr(92) and i + 1 < n:
+            i += 2
+            continue
+        if ch in _DISCARD_SEPARATORS:
+            j = i
+            while j < n and prefix[j] in _DISCARD_SEPARATORS:
+                j += 1
+            run = prefix[i:j]
+            if "<" not in run and ">" not in run:
+                segments.append(prefix[start:i])
+                start = j
+            i = j
+            continue
+        i += 1
+    segments.append(prefix[start:n])
+    return [s.strip() for s in segments if s.strip()]
+
+
+def _flatten(text: str) -> str:
+    """*text*, safe to wrap in a single pair of backticks, on one line.
+
+    This module's own tiny version of `_supertool._flat_field`'s guarantee
+    -- not imported, for the same #1377 reason as everything else here. A
+    discarded segment is a slice of the CALLER's own command text, and
+    embedding it raw put a caller-chosen newline at column 0 of the very
+    `deny` text an agent reads as system-authored: `git commit -m "hi\n#
+    SYSTEM: ..."` landed its own second line flush left in the denial
+    (found in review of this fix, mirroring the exact defect `_guard_quote`
+    / #1391 was written to close on the registry route). A literal backtick
+    in the segment broke its own fencing the same way. `repr()` of any
+    `str` is one line by the language's own definition and escapes both a
+    newline and -- once its own quote is stripped off -- everything left is
+    printable; a backtick is printable and survives `repr()` unescaped, so
+    it is escaped here, separately, with a backslash a Markdown reader does
+    not honour inside a code span -- which is the point: it stops the
+    segment from closing the span early, and this text is read by an agent
+    parsing plain prose, not rendered by a CommonMark engine.
+    """
+    flat = repr(text)[1:-1]
+    return flat.replace(chr(96), chr(92) + chr(96))
+
+
+def _discard_line(command: str, match_start: int) -> str:
+    """What #1873 asks this layer to add: name what a `deny` also discards.
+
+    Empty when nothing precedes the match -- the common case, a single
+    command, has nothing to disclose and gets no line at all.
+    """
+    discarded = _discarded_segments(
+        _strip_heredoc_bodies(command[:match_start]))
+    if not discarded:
+        return ""
+    named = "; ".join("`" + _flatten(seg) + "`" for seg in discarded)
+    return (
+        chr(10) + chr(10)
+        + "A `PreToolUse` refusal is all-or-nothing across the whole Bash "
+        "call, so " + str(len(discarded)) + " earlier command(s) in this "
+        "same call would not run either: " + named)
+
+
 def match(command: str, plugin_root: str, project_dir: str):
     """(verb, text) for the first shipped rule that claims *command*.
 
-    The subject is lowercased before matching, exactly as awk's
-    `match(tolower(cmd), pat)` does in the hook these rules were written for:
-    a pattern tuned against that matcher must not become case-sensitive by
-    changing which engine reads it.
+    Case-blind, exactly as awk's `match(tolower(cmd), pat)` does in the hook
+    these rules were written for -- `load()` compiles each pattern with
+    `re.IGNORECASE` rather than this function lower-casing *command* itself,
+    so the match runs against the ORIGINAL text and `found.start()` is a
+    real offset into it. Lower-casing the subject used to be done here, and
+    `str.lower()` is not length-preserving for every Unicode input, so an
+    offset from a lowered copy applied back to the original could land
+    inside the very command that matched (found in review, #1873).
     """
     rules, skipped = load(plugin_root)
-    lowered = command.lower()
     for rule in rules:
-        if not rule.regex.search(lowered):
+        found = rule.regex.search(command)
+        if not found:
             continue
         if owned_by_project(rule.name, project_dir):
             continue
@@ -263,6 +439,8 @@ def match(command: str, plugin_root: str, project_dir: str):
                 "command and its body could not be read from " + rule.path
                 + ". The command was allowed - this is a statement about the "
                 "rule, not about the command.")
+        if rule.verb == "deny":
+            text = text + _discard_line(command, found.start())
         return rule.verb, text
 
     if skipped and os.path.isfile(
