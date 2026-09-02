@@ -311,6 +311,36 @@ def test_formatter_render_row_failure_always_shows() -> None:
     assert "phpcbf" in row
 
 
+def test_formatter_render_row_verify_failed_is_not_silent() -> None:
+    """MUST NOT BE SILENT (#2162): `ok=True` + 0/0 metrics is what a genuine
+    no-op looks like -- but a formatter that ran, mutated the file, and then
+    hit an `OSError` re-reading it to compute the diff reports the exact same
+    shape today. Dropping this row (the "silent no-op" branch above) makes a
+    real edit indistinguishable from nothing having happened.
+    """
+    result = {
+        "name": "ruff-format", "ok": True,
+        "duration_ms": 12, "metrics": {"lines_added": 0, "lines_removed": 0},
+        "verify_failed": "[Errno 2] No such file or directory: 'x.py'",
+    }
+    row = supertool._formatter_render_row(result)
+    assert row is not None, (
+        "a re-read failure after a real format run must not render the same "
+        "as a no-op -- the caller cannot tell 'nothing changed' from "
+        "'something changed and we could not measure it'")
+    assert "x.py" in row or "could not verify" in row.lower() or \
+        "verify" in row.lower()
+
+
+def test_formatter_render_row_noop_without_verify_failed_still_silent() -> None:
+    """MUST FIRE: the ordinary no-op path is untouched by the new field."""
+    result = {
+        "name": "ruff-format", "ok": True,
+        "duration_ms": 12, "metrics": {"lines_added": 0, "lines_removed": 0},
+    }
+    assert supertool._formatter_render_row(result) is None
+
+
 # ---------------------------------------------------------------------------
 # Silent-on-noop / block omission integration via _run_with_validators
 # ---------------------------------------------------------------------------

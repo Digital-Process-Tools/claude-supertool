@@ -62,6 +62,7 @@ from _adapter_budget import adapter_budget  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 VALIDATORS = REPO / "validators"
+FORMATTERS = REPO / "formatters"
 
 #: The message the injected exception carries. Asserted on, so a payload that
 #: merely exists is not enough -- it has to be *about* the failure that
@@ -69,17 +70,58 @@ VALIDATORS = REPO / "validators"
 #: absence-read-as-presence defect one layer along.
 MARKER = "supertool-crash-probe-1697"
 
+#: Formatter adapters mutate the file they are pointed at (#2159) -- unlike
+#: every validator this sweep otherwise drives, so pointing one at a real
+#: tracked file (`presets/gitlab.json` below) would rewrite it if the real
+#: binary is on PATH. Each is redirected at a stub that exits 0 without
+#: touching the file, through the same `*_BIN` env var its own test suite
+#: already uses to stub it (see `tests/test_formatters_ruff_format.py`), so
+#: the sweep exercises the adapter's own crash net without depending on the
+#: tool being installed or writing to a file this suite does not own.
+_FORMATTER_BIN_ENV = {
+    "ruff-format": "RUFF_BIN",
+    "php-cs-fixer": "PHPCSFIXER_BIN",
+    "prettier-write": "PRETTIER_BIN",
+    "phpcbf": "PHPCBF_BIN",
+}
+
+_NOOP_STUB_CMD: str | None = None
+
+
+def _formatter_noop_bin() -> str:
+    """A `python <stub>` command line for a binary that exits 0 and never
+    touches its argv file -- built once and reused for every formatter case.
+    """
+    global _NOOP_STUB_CMD
+    if _NOOP_STUB_CMD is None:
+        import shlex
+        import tempfile
+        fd, path = tempfile.mkstemp(suffix=".py",
+                                     prefix="supertool_formatter_noop_1697_")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("import sys" + chr(10) + "sys.exit(0)" + chr(10))
+        _NOOP_STUB_CMD = "{0} {1}".format(
+            shlex.quote(sys.executable), shlex.quote(path))
+    return _NOOP_STUB_CMD
+
 
 def _adapters():
-    """Every adapter under `validators/*/*.py`, `common/` excluded.
+    """Every adapter under `validators/*/*.py` and `formatters/*/*.py`,
+    `common/` excluded.
 
-    `common/` holds shared helpers, not adapters: they have no `main` and no
-    `__main__` block, so there is nothing here to run. The assert is the
-    difference between "36 adapters all pass" and "the glob matched nothing",
-    which render identically without it.
+    `guard_main`'s contract is not "every validator" -- SCHEMA.md's one-JSON-
+    object-on-stdout promise is the adapter contract, and a formatter is an
+    adapter under that contract exactly as a validator is (#2159). Read
+    narrowly as "wherever #1697 happened to be found", the population is
+    `validators/*/*.py` alone, and that is what the previous glob asserted;
+    read from the contract's own reach, it is every directory under either
+    root that emits this JSON, `common/` excluded because it holds shared
+    helpers with no `main` and no `__main__` block.
     """
     found = sorted(p for p in VALIDATORS.glob("*/*.py")
                    if p.parent.name != "common")
+    found += sorted(p for p in FORMATTERS.glob("*/*.py")
+                    if p.parent.name != "common")
     assert len(found) >= 30, (
         "the adapter sweep found {0} files -- a glob that stopped matching "
         "makes every parametrised case below disappear rather than "
@@ -131,7 +173,12 @@ _DRIVER = chr(10).join((
     "import json, os, pathlib, runpy, sys",
     "adapter, target, mode = sys.argv[1], sys.argv[2], sys.argv[3]",
     "sys.argv = [adapter, target]",
-    "_common = str(pathlib.Path(adapter).resolve().parent.parent / 'common')",
+    # `adapter` is either `validators/NAME/NAME.py` or `formatters/NAME/NAME.py`
+    # -- both two directories below the repo root -- and `common/` lives only
+    # under `validators/`, so it is addressed from the repo root rather than
+    # relative to whichever of the two the adapter came from (#2159).
+    "_repo = pathlib.Path(adapter).resolve().parent.parent.parent",
+    "_common = str(_repo / 'validators' / 'common')",
     "sys.path.insert(0, _common)",
     "def _same_dir(a, b):",
     "    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(b)",
@@ -165,6 +212,9 @@ def _drive(adapter: Path, target: Path, mode: str):
     """
     env = dict(os.environ)
     env["SUPERTOOL_MCP_AUTOSPAWN"] = "0"
+    bin_env = _FORMATTER_BIN_ENV.get(adapter.parent.name)
+    if bin_env:
+        env[bin_env] = _formatter_noop_bin()
     return subprocess.run(
         [sys.executable, "-c", _DRIVER, str(adapter), str(target), mode],
         capture_output=True, text=True, timeout=adapter_budget(adapter),

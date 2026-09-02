@@ -14,11 +14,16 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
 import time
 from difflib import unified_diff
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
+                       / "validators" / "common"))
+from refusal import guard_main  # noqa: E402
 
 
 def emit(obj: dict) -> None:
@@ -52,6 +57,7 @@ def main() -> None:
         return
 
     file = sys.argv[1]
+    start = time.time()
     phpcsfixer_bin_cmd_str = os.environ.get("PHPCSFIXER_BIN", "php-cs-fixer")
     # Accept either a single binary path or a shlex-split command line.
     # Cross-platform test stubs pass e.g. "python /path/stub.py" so the
@@ -81,7 +87,7 @@ def main() -> None:
             "tool": "php-cs-fixer", "file": file, "ok": False, "count": 1,
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": f"cannot read file: {e}"}],
-            "duration_ms": 0,
+            "duration_ms": int((time.time() - start) * 1000),
             "metrics": {"lines_added": 0, "lines_removed": 0},
         })
         return
@@ -93,7 +99,6 @@ def main() -> None:
 
     env = os.environ.copy()
 
-    start = time.time()
     try:
         # php-cs-fixer exits 0 when no fixes, 1 when fixes applied, 16+ on error
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env, encoding="utf-8", errors="replace")
@@ -102,7 +107,7 @@ def main() -> None:
             "tool": "php-cs-fixer", "file": file, "ok": False, "count": 1,
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": "timeout after 60s"}],
-            "duration_ms": 60000,
+            "duration_ms": int((time.time() - start) * 1000),
             "metrics": {"lines_added": 0, "lines_removed": 0},
         })
         return
@@ -131,14 +136,21 @@ def main() -> None:
         })
         return
 
+    verify_failed = None
     try:
         after = open(file, encoding="utf-8", errors="replace").read()
-    except OSError:
+    except OSError as e:
+        # php-cs-fixer ran -- exit < 16 -- but the file could not be re-read
+        # to compute what changed. `after = before` would report
+        # `lines_added: 0, lines_removed: 0`: identical to a genuine no-op
+        # (#2162). `verify_failed` says the 0/0 is "could not measure",
+        # never "nothing changed".
         after = before
+        verify_failed = f"could not re-read file to verify changes: {e}"
 
     added, removed = _line_diff(before, after)
 
-    emit({
+    payload = {
         "tool": "php-cs-fixer",
         "file": file,
         "ok": True,
@@ -146,8 +158,11 @@ def main() -> None:
         "errors": [],
         "duration_ms": dur,
         "metrics": {"lines_added": added, "lines_removed": removed},
-    })
+    }
+    if verify_failed:
+        payload["verify_failed"] = verify_failed
+    emit(payload)
 
 
 if __name__ == "__main__":
-    main()
+    guard_main("php-cs-fixer", main)

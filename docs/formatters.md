@@ -175,3 +175,9 @@ edited: src/config.json
 ```
 
 When the formatter succeeds silently (the normal case), no formatter block appears — the output is clean.
+
+## `verify_failed` — a SCHEMA-adapter formatter that could not confirm its own result
+
+The four SCHEMA-adapter formatters (`ruff-format`, `php-cs-fixer`, `prettier-write`, `phpcbf` — see "Bundled formatters" above) compute `metrics.lines_added` / `lines_removed` by re-reading the file after the tool exits. If that re-read hits an `OSError` (the file was deleted or its permissions changed between the format run and the read), falling back to "no changes" would publish `ok: true` with `metrics: {lines_added: 0, lines_removed: 0}` — byte-identical to the receipt for a file the tool genuinely left untouched (#2162).
+
+When that happens, the payload instead carries `verify_failed: "<reason>"` alongside the same `ok: true`, 0/0 metrics. `_formatter_render_row` reads it before the silent-no-op check, so this case always renders a row — `formatted, but could not verify what changed: <reason>` — rather than disappearing into the quiet-clean-run path every genuine no-op takes. Its absence means the metrics are a real measurement; its presence means the 0/0 is "could not tell", not "nothing happened".

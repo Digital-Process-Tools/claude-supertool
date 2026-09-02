@@ -1643,6 +1643,13 @@ budget, which is the only spelling that tells a wall apart from a fault. **A
 crash net is a floor, never a substitute for the decline a code path knows how
 to make.**
 
+The net's reach is the SCHEMA.md contract, not the `validators/` directory: a
+formatter under `formatters/` emits the same one-JSON-object-on-stdout promise
+and crashes the same way, so since
+[#2159](https://github.com/Digital-Process-Tools/claude-supertool/issues/2159)
+every shipped formatter routes its `main` through `guard_main` too, and
+`tests/test_adapter_crash_net_1697.py` sweeps both directories.
+
 Two claims that used to sit on this line and are wrong, kept here because both
 are still repeated: the caller is not "every caller `json.loads()`" — the core
 tests `if not out` before it parses, and has since

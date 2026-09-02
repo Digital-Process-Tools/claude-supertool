@@ -228,3 +228,51 @@ def test_before_after_file_handles_are_explicitly_closed(tmp_path: Path, monkeyp
         "a file handle from open(...).read() was never explicitly closed -- "
         "the adapter is relying on implicit GC/refcounting timing again"
     )
+
+
+def test_reread_oserror_reports_verify_failed_not_a_silent_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#2162: an `OSError` on the post-format re-read used to fall back to
+    `after = before`, publishing `ok: True` with `metrics: {0, 0}` --
+    identical to the receipt for "ruff genuinely made no changes". A caller
+    reading this payload cannot tell the two apart, and the file may well
+    have changed: only the re-read failed, not the format.
+    """
+    f = tmp_path / "x.py"
+    original_text = "x = 1" + chr(10)
+    f.write_text(original_text)
+
+    mod = _load_adapter_module()
+
+    bin_cmd = _python_stub(tmp_path, "stub_exit0",
+                            "import sys" + chr(10) + "sys.exit(0)" + chr(10))
+    monkeypatch.setenv("RUFF_BIN", bin_cmd)
+    monkeypatch.setattr(sys, "argv", ["ruff-format.py", str(f)])
+
+    real_open = open
+    calls = []
+
+    def flaky_open(path, *args, **kwargs):
+        calls.append(path)
+        if len(calls) == 2:
+            raise OSError(2, "No such file or directory", str(path))
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(mod, "open", flaky_open, raising=False)
+
+    captured = []
+    monkeypatch.setattr(mod, "emit", lambda obj: captured.append(obj))
+
+    mod.main()
+
+    assert len(captured) == 1, captured
+    data = captured[0]
+    assert_ok(data)
+    assert data["metrics"]["lines_added"] == 0
+    assert data["metrics"]["lines_removed"] == 0
+    assert "verify_failed" in data, (
+        "an ok=True payload with 0/0 metrics after a re-read failure is "
+        "indistinguishable from a genuine no-op without this field: "
+        + repr(data))
+    assert "No such file" in data["verify_failed"]
