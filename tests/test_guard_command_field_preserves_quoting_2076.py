@@ -90,6 +90,42 @@ def test_guard_match_command_faithful_flag_defaults_true(
     assert match.command_faithful is True
 
 
+def test_matched_command_unfaithful_marker_uses_the_established_dash(
+        tmp_path, guard_config):
+    """#2076's own gap, found in review: `command_faithful=False` must be
+    marked the same way -- byte for byte -- as the established
+    `_guard_discard_line` convention (#2023) it says it mirrors. A
+    matched segment can hit the same word-rejoin fallback `discarded`
+    already covers -- `xargs -I` inside a punctuation-word idiom -- and the
+    render must not present that reconstruction as the caller's own text.
+    """
+    config = {
+        "ops": {
+            "xargs-run": {
+                "safety": "write",
+                "cmd": "true",
+                "syntax": "xargs-run:CMD",
+                "description": "Run CMD once per input line.",
+                "replaces": [
+                    {"argv": "xargs -I", "use": "xargs-run:CMD"},
+                ],
+            },
+        }
+    }
+    guard_config(tmp_path, config)
+    cmd = 'xargs -I {} rm -rf {}'
+    verdict = supertool.guard_command(cmd)
+    assert verdict.state == "blocked", verdict
+    match = verdict.matches[0]
+    assert match.command_faithful is False, match
+    refusal = supertool.guard_refusal(verdict)
+    assert "could not be rendered exactly" in refusal, refusal
+    # Byte-for-byte the same dash/wording `_guard_discard_line` already
+    # uses for the identical fallback (#2023) -- an ASCII "--" here would
+    # silently diverge from that established marker.
+    assert "\u2014 do not re-send as shown" in refusal, refusal
+
+
 def test_discarded_line_tests_still_pass_unaffected(tmp_path, guard_config):
     """Sanity: the sibling `discarded` field's own render is untouched --
     this fix only threads the already-computed origin data to `GuardMatch`,

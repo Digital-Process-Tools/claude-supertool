@@ -21723,7 +21723,7 @@ def guard_refusal(verdict: GuardVerdict) -> str:
                          f"supertool's `{op}` op.")
         else:
             lines.append(f"`{rendered_command}` (could not be rendered "
-                         f"exactly -- do not re-send as shown) is replaced "
+                         f"exactly — do not re-send as shown) is replaced "
                          f"by supertool's `{op}` op.")
         lines.append(f"  Use: supertool '{use}'")
         if route:
