@@ -610,6 +610,25 @@ Events are fire-and-forget and pollers die with the machine, so at session start
 - Preset deep-dive (ops, `radar`, sources, discovery feed, event contract, lifecycle, writing a source): [docs/presets/watch.md](docs/presets/watch.md)
 - MCP server (install, security, event format): [notifiers/claude-channel/README.md](notifiers/claude-channel/README.md)
 
+### Push, then wait for the pipeline (#361)
+
+"Push, wait for CI, triage the failure, re-push" is the core loop, and `watch` is already the blocking/backgrounding half of it — hand-rolling a poll loop around `glab api .../pipelines/<id>` is not needed.
+
+```
+./supertool 'git-push:watch'
+```
+
+`git-push:watch` pushes, then spawns a detached poller against the branch's open MR/PR (`watch:gitlab-mr:<iid>` / `watch:github-pr:<number>`) — that source polls the MR/PR's own head pipeline, so its `pipeline_succeeded` / `pipeline_failed` / `pipeline_canceled` events already are the terminal-state verdict this loop needs, with no separate pipeline id to track. If there is no open MR/PR yet, `git-push:watch` says so rather than pretending to watch nothing, and names `watch:gitlab-mr:<iid>` / `watch:github-pr:<number>` to run once one exists.
+
+With no MR/PR in the picture at all — a pipeline running on a branch nobody has opened one for yet — watch the pipeline or workflow run directly:
+
+```
+./supertool 'watch:gl-pipeline:151111'   # GitLab CI
+./supertool 'watch:gh-run:18234455021'   # GitHub Actions
+```
+
+Either way the poller is terminal on its own (success/failed/canceled/skipped) and needs no timeout tuning. The event itself carries the pipeline's URL and status, not a failed-job list — for that, follow it with the same triage op the dashboard already uses: `gl-pipeline:ID:failed` (job ids + URLs) or `gh-job:N:fail` (the failing legs). Paired with the [claude-channel](notifiers/claude-channel/README.md) MCP server, the event reaches a running session directly and the whole "push, wait, triage, re-push" loop needs no polling of your own at any step.
+
 ---
 
 ## RTK integration
