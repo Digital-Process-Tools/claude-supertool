@@ -301,7 +301,7 @@ def _tier_search_lines(name: str) -> list[str]:
     message this feature is met through.
     """
     resolved = sourcepath.resolve()
-    lines = [f"       looked in:",
+    lines = ["       looked in:",
              f"  {_HERE / 'tiers'}/{name.replace('-', '_')}.py (shipped)",
              f"  the script named by an op '{name}' in {_HERE.parent}/*.json"]
     lines.extend(sourcepath.tier_search_report(resolved))
