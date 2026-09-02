@@ -45,10 +45,28 @@ def _write_payload(tmp_path: Path, body: str, name: str = "p.toml") -> str:
     return "@" + str(p)
 
 
+def _toml_path(target: Path) -> str:
+    r"""A payload `path =` as a basic string, with separators escaped.
+
+    On Windows `tmp_path` is `C:\Users\...`, and an UNESCAPED backslash in
+    a basic TOML string is read as the start of an escape sequence -- `\U`
+    (as in `...runneradmin\AppData...`, wherever a path segment happens to
+    start with a capital U) demands 8 hex digits and the payload never
+    parses. Every prior test file that builds a `path =` field from a real
+    filesystem path already escapes it this way
+    (test_payload_literal_backslashes_per_field_1839.py's own `_toml_path`);
+    this file's own fixture had not, and was red on
+    `pytest (windows-latest, 3.9/3.10)` in CI for exactly that reason -- a
+    payload-escaping test suite defeated by its own payload's escaping, on
+    the only platform whose paths contain backslashes.
+    """
+    return chr(34) + str(target).replace(BS, BS * 2) + chr(34)
+
+
 def _paste(tmp_path: Path, content: str, out_name: str = "out.txt"):
     target = tmp_path / out_name
     body = (
-        "path = " + chr(34) + str(target) + chr(34) + NL
+        "path = " + _toml_path(target) + NL
         + "content = " + content + NL
     )
     out = supertool.dispatch("paste:" + _write_payload(tmp_path, body))
@@ -125,7 +143,7 @@ def test_a_wide_batch_is_capped_not_a_wall(tmp_path: Path) -> None:
         ops.append(
             "[[ops]]" + NL
             + 'op = "paste"' + NL
-            + "path = " + chr(34) + str(target) + chr(34) + NL
+            + "path = " + _toml_path(target) + NL
             + "content = " + Q3 + "x" + DQ_FORM + "y" + Q3 + NL
         )
     body = "".join(ops)
