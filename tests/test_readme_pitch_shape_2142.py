@@ -123,3 +123,58 @@ def test_the_slugger_agrees_with_every_anchor_the_readme_actually_uses() -> None
         assert anchor in _headings_in(ROOT / path), (
             f"{target} -- slugger did not recognise a real anchor; fix _github_slug"
         )
+
+# #2189 -- #2142's cut left the README's only real surface as the ops table.
+# Twelve doc/ files had zero links from the front page: validators, formatters,
+# notifiers, the MCP/LSP daemon docs, and every preset page except git/github.
+# The fix is not a new README section per subsystem (that regrows the file
+# #2142 just cut) -- it is a short "beyond the ops table" block plus links
+# added directly on the existing ops-table rows, so every docs/ file becomes
+# reachable by *some* chain of local links starting at README.md, the same
+# way docs/presets/index.md already makes the preset docs reachable in two
+# hops today.
+_ALLOWLISTED_UNLINKED_DOCS = {
+    # (currently none -- see test below for the reasoning: everything under
+    # docs/ is reachable from README.md by walking local links, including
+    # docs/cursor-witness.md, which resolves through docs/notifiers.md.)
+}
+
+
+def _local_md_links(path):
+    if not path.is_file():
+        return set()
+    text = path.read_text(encoding="utf-8")
+    targets = set()
+    for target in re.findall(r"\]\(([^)]+)\)", text):
+        if target.startswith(("http://", "https://", "#")):
+            continue
+        rel, _, _anchor = target.partition("#")
+        if not rel or not rel.endswith(".md"):
+            continue
+        resolved = (path.parent / rel).resolve()
+        targets.add(resolved)
+    return targets
+
+
+def test_every_docs_file_is_reachable_from_readme_or_explicitly_unlinked() -> None:
+    # BFS over local .md links starting at README.md -- not just a same-file
+    # grep count, so a hub page like docs/presets/index.md legitimately
+    # covers everything one hop past it.
+    seen = {README.resolve()}
+    frontier = [README.resolve()]
+    while frontier:
+        current = frontier.pop()
+        for nxt in _local_md_links(current):
+            if nxt not in seen:
+                seen.add(nxt)
+                frontier.append(nxt)
+
+    all_docs = {p.resolve() for p in (ROOT / "docs").rglob("*.md")}
+    allowlisted = {(ROOT / rel).resolve() for rel in _ALLOWLISTED_UNLINKED_DOCS}
+    unreachable = all_docs - seen - allowlisted
+    assert not unreachable, (
+        "docs/ files unreachable from README.md by any chain of local links, "
+        "and not in _ALLOWLISTED_UNLINKED_DOCS with a reason: "
+        + ", ".join(sorted(str(p.relative_to(ROOT)) for p in unreachable))
+    )
+
