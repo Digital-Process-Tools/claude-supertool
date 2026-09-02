@@ -102,10 +102,11 @@ _HEADING_RE = re.compile(r"^#{1,6}[ \t]+\S")
 
 # Setext underline: a line of only `=` (level 1, one or more) or `-` (level 2,
 # TWO OR MORE), up to three leading spaces, CommonMark-style. Matched only when
-# the line directly above it is itself real title text (#1123) -- see
-# `_heading_paths`, which is where that adjacency is enforced; a bare `---`
-# used as a thematic break, or two underline lines in a row, must not be
-# misread as a title.
+# the consecutive run of non-blank, unconsumed lines directly above it forms
+# real title text (#1123, widened in #2157 to the whole run rather than just
+# the immediate predecessor) -- see `_heading_paths`, which is where that
+# adjacency is enforced; a bare `---` used as a thematic break, a blank line,
+# or two underline lines in a row, must not be misread as (part of) a title.
 #
 # `-{2,}`, not `-+`: a single bare `-` is indistinguishable from an empty list
 # item, and treating it as a heading anyway is worse than missing a genuine
@@ -117,6 +118,18 @@ _HEADING_RE = re.compile(r"^#{1,6}[ \t]+\S")
 # `=` has no such ambiguity (nothing else in Markdown starts a line with it),
 # so it keeps `+`.
 _SETEXT_UNDERLINE_RE = re.compile(r"^[ ]{0,3}(=+|-{2,})[ \t]*\Z")
+
+# Other block-level constructs that end a paragraph without being blank,
+# a heading, or a fence delimiter -- so the setext lookback (below) must stop
+# at one of these too, or a list item or blockquote line sitting directly
+# above a title gets folded into it as bogus title text (#2157: an earlier
+# draft of the lookback did exactly this to a `- bullet` line immediately
+# preceding a genuine one-line setext title, producing a false combined
+# title neither line actually was). A `*`/`_` thematic break is the other
+# CommonMark paragraph-ender that is not already covered by the `=`/`-`
+# setext-underline regex above.
+_BLOCK_INTERRUPT_RE = re.compile(r"^[ ]{0,3}(>|[-*+][ \t]|\d{1,9}[.)][ \t])")
+_THEMATIC_BREAK_STAR_UNDERSCORE_RE = re.compile(r"^[ ]{0,3}([*_])(?:[ \t]*\1){2,}[ \t]*\Z")
 
 
 def _is_markdown_path(path: str) -> bool:
@@ -190,35 +203,41 @@ def _heading_paths(lines: list[tuple[str, bool]]) -> list[tuple[tuple[str, ...],
 
     **Setext.** `_HEADING_RE` alone is blind to a title spelled as text followed by
     an underline line — #1123's own gap, the same shape #911 fixed for ATX one
-    heading style earlier. Detecting it needs one line of lookback: the underline
-    only means "the previous line was a title" when that previous line is real text
-    a heading could be titled with, not itself a heading, an underline, blank, or
-    inside/opening a fence. Getting that adjacency wrong in the permissive direction
-    would read a bare `---` thematic break as a heading with the paragraph two lines
-    above as its title, corrupting every path built from the lines after it — so a
-    candidate underline with an unusable previous line is read as ordinary text,
-    same as a version that could not decide at all. `prev_consumed` names every way
-    the previous line was already spoken for (a heading, a fence delimiter, or
-    itself an underline) so those cases are told apart from a fresh line that
-    genuinely reads as title text.
+    heading style earlier. CommonMark allows that title to span more than one
+    physical line, so detecting it needs a lookback over the whole consecutive run
+    of candidate title lines above the underline, not just the one immediately
+    before it (#2157) — reading only the last line means a genuinely multi-line
+    title and its single-line equivalent elsewhere in the document hash to
+    different keys, so a real duplicate slips past unseen rather than merely
+    a decorative style going unrecognised.
+
+    `buffer` accumulates that run: every line is added to it *unless* it is itself
+    consumed by another construct (a heading, a fence delimiter, an underline that
+    did or did not form a heading) or is blank, either of which clears the buffer,
+    same as it always has for the single-line case. The underline only means "the
+    lines above it were a title" when the buffer is non-empty; getting that
+    adjacency wrong in the permissive direction would read a bare `---` thematic
+    break as a heading with the paragraph above it as its title, corrupting every
+    path built from the lines after it — so a candidate underline with an empty
+    buffer is read as ordinary text, same as a version that could not decide at
+    all.
     """
     paths: list[tuple[tuple[str, ...], bool]] = []
     stack: list[tuple[int, str]] = []
     fence = ""
-    prev_raw = ""
-    prev_tagged = False
-    prev_consumed = True  # nothing above the first line to be anyone's title
+    buffer: list[str] = []
+    buffer_tagged = False
     for raw, tagged in lines:
         s = raw.strip()
         stripped_line = raw.rstrip("\r\n")
         if fence:
             if s.startswith(fence):
                 fence = ""
-            prev_raw, prev_tagged, prev_consumed = stripped_line, tagged, True
+            buffer, buffer_tagged = [], False
             continue
         if s.startswith("```") or s.startswith("~~~"):
             fence = s[:3]
-            prev_raw, prev_tagged, prev_consumed = stripped_line, tagged, True
+            buffer, buffer_tagged = [], False
             continue
         if _HEADING_RE.match(stripped_line):
             level = len(s) - len(s.lstrip("#"))
@@ -226,19 +245,24 @@ def _heading_paths(lines: list[tuple[str, bool]]) -> list[tuple[tuple[str, ...],
                 stack.pop()
             paths.append((tuple(t for _, t in stack) + (s,), tagged))
             stack.append((level, s))
-            prev_raw, prev_tagged, prev_consumed = stripped_line, tagged, True
+            buffer, buffer_tagged = [], False
             continue
         underline = _SETEXT_UNDERLINE_RE.match(stripped_line)
-        if underline and not prev_consumed and prev_raw.strip():
-            title = prev_raw.strip()
-            level = 1 if underline.group(1)[0] == "=" else 2
-            while stack and stack[-1][0] >= level:
-                stack.pop()
-            paths.append((tuple(t for _, t in stack) + (title,), tagged or prev_tagged))
-            stack.append((level, title))
-            prev_raw, prev_tagged, prev_consumed = stripped_line, tagged, True
+        if underline:
+            if buffer:
+                title = " ".join(buffer)
+                level = 1 if underline.group(1)[0] == "=" else 2
+                while stack and stack[-1][0] >= level:
+                    stack.pop()
+                paths.append((tuple(t for _, t in stack) + (title,), tagged or buffer_tagged))
+                stack.append((level, title))
+            buffer, buffer_tagged = [], False
             continue
-        prev_raw, prev_tagged, prev_consumed = stripped_line, tagged, bool(underline)
+        if not s or _BLOCK_INTERRUPT_RE.match(stripped_line) or _THEMATIC_BREAK_STAR_UNDERSCORE_RE.match(stripped_line):
+            buffer, buffer_tagged = [], False
+            continue
+        buffer.append(stripped_line.strip())
+        buffer_tagged = buffer_tagged or tagged
     return paths
 
 
