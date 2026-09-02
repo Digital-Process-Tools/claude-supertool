@@ -225,6 +225,63 @@ def test_diagnose_lock_on_an_already_released_lock(tmp_path: Path) -> None:
     assert "gone" in verdict or "released" in verdict
 
 
+@pytest.mark.skipif(not shutil.which("lsof"), reason="needs a real lsof binary")
+def test_lsof_exit_1_with_stderr_is_cannot_tell_not_stale(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """MUST FIRE (cannot tell) / MUST NOT FIRE (stale). lsof's own exit
+    convention gives the SAME code (1) to "ran fine, matched nothing" and to
+    "an internal lsof error happened" -- verified against real lsof 4.91: a
+    target that vanishes mid-scan exits 1 with an error on stderr, not 0 and
+    not some other code. Reading exit 1 alone as `False` would misreport an
+    lsof failure as a confident negative -- found in review."""
+    mod = _load()
+    target = tmp_path / "index.lock"
+    target.write_text("", encoding="utf-8")
+
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == shutil.which("lsof"):
+            return subprocess.CompletedProcess(
+                cmd, returncode=1, stdout="", stderr="lsof: status error: boom")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    assert mod._lock_fd_holder(str(target)) is None, (
+        "exit 1 with stderr must be cannot-tell, not a confident 'not held'")
+
+    def fake_run_clean(cmd, **kwargs):
+        if cmd[0] == shutil.which("lsof"):
+            return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run_clean)
+    assert mod._lock_fd_holder(str(target)) is False, (
+        "exit 1 with EMPTY stderr is the genuine 'ran fine, matched nothing' case"
+    )
+
+
+def test_lock_wait_budget_ignores_infinity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MUST FIRE. `env_float`'s `minimum=` is a floor, not a ceiling --
+    `float('inf')` clears any floor, so `SUPERTOOL_GIT_LOCK_WAIT=inf` would
+    make the retry loop's deadline infinite and defeat the one property this
+    feature is meant to have (bounded). Found in review."""
+    mod = _load()
+    monkeypatch.setenv("SUPERTOOL_GIT_LOCK_WAIT", "inf")
+    budget = mod._lock_wait_budget()
+    assert budget < float("inf"), f"budget was allowed to be infinite: {budget}"
+    assert budget == mod.LOCK_WAIT_DEFAULT
+
+
+def test_lock_wait_budget_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MUST FIRE. A very large but finite value is capped, not honoured
+    verbatim -- an unbounded-looking knob is still a knob somebody can set
+    to something this feature was never meant to wait out."""
+    mod = _load()
+    monkeypatch.setenv("SUPERTOOL_GIT_LOCK_WAIT", "999999")
+    assert mod._lock_wait_budget() == mod._LOCK_WAIT_CEILING
+
+
 @pytest.mark.skipif(
     sys.platform.startswith("win") or not (shutil.which("lsof") or os.path.isdir("/proc")),
     reason="needs a real fd-holder scan: lsof or /proc")

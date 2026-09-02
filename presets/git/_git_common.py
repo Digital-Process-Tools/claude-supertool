@@ -203,8 +203,20 @@ LOCK_WAIT_DEFAULT = 2.0
 _LOCK_BACKOFF = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
 
 
+#: A ceiling on `SUPERTOOL_GIT_LOCK_WAIT`, not a suggestion. `env_float`'s
+#: `minimum=` is a floor, and `float("inf")` clears any floor -- verified:
+#: `SUPERTOOL_GIT_LOCK_WAIT=inf` reaches `_with_lock_retry` unchanged and its
+#: `deadline = time.monotonic() + budget` becomes infinite, defeating the one
+#: property this whole feature exists to have (bounded). A minute is already
+#: far past any local git call this module has a budget for.
+_LOCK_WAIT_CEILING = 60.0
+
+
 def _lock_wait_budget() -> float:
-    return env_float("SUPERTOOL_GIT_LOCK_WAIT", LOCK_WAIT_DEFAULT, minimum=0.0)
+    value = env_float("SUPERTOOL_GIT_LOCK_WAIT", LOCK_WAIT_DEFAULT, minimum=0.0)
+    if value != value or value == float("inf"):  # NaN, or +inf slipping past `minimum`
+        return LOCK_WAIT_DEFAULT
+    return min(value, _LOCK_WAIT_CEILING)
 
 
 def _lock_fd_holder(lock_path: str, scan_timeout: float = 3.0):
@@ -242,11 +254,19 @@ def _lock_fd_holder(lock_path: str, scan_timeout: float = 3.0):
             return None
         except OSError:
             return None
-        # lsof's own exit convention: 0 = matched something, 1 = ran fine and
-        # matched nothing, anything else = the tool itself did not answer.
+        # lsof's own exit convention: 0 = matched something, 1 = either "ran
+        # fine and matched nothing" OR "an error occurred" -- the SAME code
+        # for both (verified: lsof 4.91, a target that vanished mid-scan
+        # prints "status error on ...: No such file or directory" to stderr
+        # and still exits 1). `-w` suppresses WARNINGS, not errors, so an
+        # error still writes there. Exit 1 with empty stderr is the genuine
+        # "asked, got nothing" case; exit 1 with anything on stderr is lsof
+        # itself failing, and reading that as `False` would be exactly the
+        # absence this codebase keeps re-filing -- a lookup that could not
+        # answer, reported as a clean negative.
         if proc.returncode == 0:
             return bool(proc.stdout.strip())
-        if proc.returncode == 1:
+        if proc.returncode == 1 and not proc.stderr.strip():
             return False
         return None
     if not os.path.isdir("/proc"):
@@ -286,6 +306,20 @@ def _diagnose_lock(lock_path: str) -> str:
     unchanged: deleting a lock the caller believes it orphaned is a
     destructive act taken on an inference, and the default has to be to
     report rather than to act on one.
+
+    `lock_path` is `_LOCK_ERROR_RE`'s capture off git's own stderr, not a
+    path this module built itself -- a child stream, by this file's own
+    taint model, however implausible an attacker-controlled lock path is in
+    practice for a locally-taken `.git/index.lock`. The FILESYSTEM operations
+    below (`os.stat`, `_lock_fd_holder`) use the raw capture, unchanged --
+    flattening a real path before looking it up is how a lookup for a path
+    that IS on disk starts answering for one that is not. Only the copy that
+    goes into the returned message is flattened, with the newline disclosed
+    rather than elided (`_untrusted.flat`'s own doc: eliding it would let two
+    directories read as one, or one real one read as two). That message is
+    appended to `result.stderr` and relayed onward to every caller in
+    `presets/git`, several of which print `.stderr` raw (review finding, low
+    likelihood in practice, cheap to close either way).
     """
     try:
         age = time.time() - os.stat(lock_path).st_mtime
@@ -294,16 +328,17 @@ def _diagnose_lock(lock_path: str) -> str:
                 "held it has released it")
     age_text = f"{age:.1f}s old"
     held = _lock_fd_holder(lock_path)
+    shown = _untrusted.flat(lock_path, disclose_newline=True)
     if held is True:
-        return (f"lock-diagnosis: live -- a process still has {lock_path} "
+        return (f"lock-diagnosis: live -- a process still has {shown} "
                 f"open ({age_text})")
     if held is False:
-        return (f"lock-diagnosis: stale -- {lock_path} is {age_text} and no "
+        return (f"lock-diagnosis: stale -- {shown} is {age_text} and no "
                 "process has it open, so it was most likely left behind by "
                 "a crash rather than held by a slow one. Not removed "
                 "automatically: deleting a lock on an inference is how a "
                 "live write gets corrupted instead of a stale one cleared")
-    return (f"lock-diagnosis: cannot tell -- {lock_path} is {age_text} and "
+    return (f"lock-diagnosis: cannot tell -- {shown} is {age_text} and "
             "whether a process still holds it open could not be established "
             "on this platform (no lsof, no /proc, or the scan did not "
             "answer) -- treat it as live until a human looks")

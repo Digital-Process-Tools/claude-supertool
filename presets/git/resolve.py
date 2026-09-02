@@ -100,12 +100,23 @@ _MD_EXTS = frozenset({".md", ".markdown", ".mdown", ".mkd"})
 
 _HEADING_RE = re.compile(r"^#{1,6}[ \t]+\S")
 
-# Setext underline: a line of only `=` (level 1) or `-` (level 2), up to three
-# leading spaces, CommonMark-style. Matched only when the line directly above it
-# is itself real title text (#1123) -- see `_heading_paths`, which is where that
-# adjacency is enforced; a bare `---` used as a thematic break, or two underline
-# lines in a row, must not be misread as a title.
-_SETEXT_UNDERLINE_RE = re.compile(r"^[ ]{0,3}(=+|-+)[ \t]*\Z")
+# Setext underline: a line of only `=` (level 1, one or more) or `-` (level 2,
+# TWO OR MORE), up to three leading spaces, CommonMark-style. Matched only when
+# the line directly above it is itself real title text (#1123) -- see
+# `_heading_paths`, which is where that adjacency is enforced; a bare `---`
+# used as a thematic break, or two underline lines in a row, must not be
+# misread as a title.
+#
+# `-{2,}`, not `-+`: a single bare `-` is indistinguishable from an empty list
+# item, and treating it as a heading anyway is worse than missing a genuine
+# one-dash title (rare in practice; nobody underlines a heading with one
+# character). A false-positive setext heading pushes a false ancestor onto
+# `_heading_paths`' stack, and popping back off it for the next REAL heading
+# can silently reparent everything after -- which hides a genuine duplicate
+# this guard exists to catch rather than merely missing a decorative rule.
+# `=` has no such ambiguity (nothing else in Markdown starts a line with it),
+# so it keeps `+`.
+_SETEXT_UNDERLINE_RE = re.compile(r"^[ ]{0,3}(=+|-{2,})[ \t]*\Z")
 
 
 def _is_markdown_path(path: str) -> bool:

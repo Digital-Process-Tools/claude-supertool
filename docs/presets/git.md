@@ -819,7 +819,7 @@ Most ops need no project config. `git-investigate` takes two env vars (below); `
 | `SUPERTOOL_WORKTREE_PR` | `1` | `git-worktrees`: set to `0`/`false`/`no`/`off` (or pass `nopr`) to drop the tracker column and make the op fully offline |
 | `SUPERTOOL_BLAME_RECENT` | `5` | Number of blame hotspot lines to surface |
 | `SUPERTOOL_GIT_TIMEOUT` | `10` (`5` for `git-status`) | Seconds each individual git call gets before it is abandoned and disclosed (see **When git does not answer**) |
-| `SUPERTOOL_GIT_LOCK_WAIT` | `2` | Total seconds `_git`/`_git_common` retries a contended `.git/index.lock` (or any of the other `_LOCK_FILES`) before giving up and diagnosing it — see **A contended lock is retried, then diagnosed**. `0` disables the retry (and the diagnosis) entirely |
+| `SUPERTOOL_GIT_LOCK_WAIT` | `2`, ceiling `60` | Total seconds `_git`/`_git_verbatim` retries a lock-contention failure — matched generically against git's own `"Unable to create '...': File exists"`, so it covers `.git/index.lock` and every other lock git takes this way, not a fixed list — before giving up and diagnosing it; see **A contended lock is retried, then diagnosed**. `0` disables the retry (and the diagnosis) entirely |
 
 Set via the op's JSON config if you want project-wide defaults:
 

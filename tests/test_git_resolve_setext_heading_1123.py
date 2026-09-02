@@ -139,3 +139,39 @@ def test_a_setext_heading_used_once_unions_quietly(tmp_path: Path) -> None:
     f = _write(tmp_path, SETEXT_SINGLE_USE)
     dups = resolve._duplicated_headings(str(f))
     assert dups == []
+
+
+# A single bare `-` is indistinguishable from an empty list item, and reading
+# it as a heading anyway pushes a FALSE ancestor onto `_heading_paths`' stack
+# -- which can silently reparent a real duplicate the ATX guard (#911) would
+# already have caught, hiding it instead of merely missing a decorative
+# one-character underline. Found in review before this shipped.
+BARE_DASH_HIDES_A_REAL_DUPLICATE = (
+    "## Unreleased\n"
+    "\n"
+    "<<<<<<< HEAD\n"
+    "### Fixed\n"
+    "\n"
+    "- ours: fixed the marker gate\n"
+    "=======\n"
+    "Something\n"
+    "-\n"
+    "\n"
+    "### Fixed\n"
+    "\n"
+    "- theirs: fixed the digest\n"
+    ">>>>>>> branch\n"
+)
+
+
+def test_a_bare_single_dash_is_never_read_as_a_heading(tmp_path: Path) -> None:
+    """MUST FIRE (on the real duplicate). A lone `-` right after a paragraph
+    line must not be treated as a setext underline: doing so pushes a false
+    'Something' ancestor onto the stack, reparents the second `### Fixed`
+    under it, and the genuine cross-side duplicate `_heading_paths` exists
+    to catch goes unseen -- worse than the bug #1123 was filed to fix, since
+    now an ATX-only duplicate this guard already caught (#911) is missed too."""
+    f = _write(tmp_path, BARE_DASH_HIDES_A_REAL_DUPLICATE)
+    dups = resolve._duplicated_headings(str(f))
+    assert dups, "a bare '-' swallowed 'Something' as a false heading and hid the real duplicate"
+    assert any("Fixed" in d for d in dups)
