@@ -2347,7 +2347,7 @@ def _rtk_run(args: List[str], timeout: int = 30) -> str | None:
     return None
 
 # Built-in op names — custom ops/aliases with these names are ignored
-_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "paste", "append", "vi", "validate", "format", "validate_staged", "format_staged", "workspace", "resolve", "diag", "hover", "rename"}
+_BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "paste", "append", "vi", "validate", "format", "validate_staged", "format_staged", "workspace", "resolve", "diag", "hover", "rename", "payload-lint"}
 
 # Ops the dispatcher handles but that are absent from _BUILTIN_OPS, which is a
 # shadowing blocklist ("custom ops with these names are ignored") and not a
@@ -6142,12 +6142,20 @@ def _grep_zero_limit() -> str:
 
 def op_grep(pattern: str, path: str = ".", limit: int = 0,
             context: int = 0, count_only: bool = False,
-            no_exclude: bool = False, no_auto_read: bool = False) -> str:
-    """grep, prefixed by #1065's disclosure of the pattern that actually ran."""
+            no_exclude: bool = False, no_auto_read: bool = False,
+            via_payload: bool = False) -> str:
+    """grep, prefixed by #1065's disclosure of the pattern that actually ran.
+
+    `via_payload` is set by the @file/@- route (#1825): there, `pattern` is
+    taken verbatim from a `pattern` key, so nothing was split on ':' and the
+    colon-rejoin disclosure would send the caller back to the route they are
+    already on. The positional-CLI route leaves it False and keeps the note.
+    """
     _effective, refusal, note = _pattern_gate(pattern)
     if refusal:
         return refusal
-    return (_pattern_read_as_note(pattern, path, "grep")
+    prefix = "" if via_payload else _pattern_read_as_note(pattern, path, "grep")
+    return (prefix
             + note
             + _op_grep(pattern, path, limit, context, count_only,
                        no_exclude, no_auto_read))
@@ -6550,7 +6558,8 @@ def _around_one_file(regex: "re.Pattern[str]", path: str, n: int) -> str:
     return "".join(out)
 
 
-def op_around(pattern: str, path: str, n: int = 10) -> str:
+def op_around(pattern: str, path: str, n: int = 10,
+               via_payload: bool = False) -> str:
     """around, guarded and disclosed exactly as op_grep is (#1120, #1821).
 
     Split from the body for the same reason op_grep is: the refusal and the
@@ -6565,11 +6574,16 @@ def op_around(pattern: str, path: str, n: int = 10) -> str:
     guessed at. The PATH slot that does NOT resolve was already refused by
     `_colon_split_hint` in dispatch; this is the other branch, where the guess
     succeeds and the answer is the plausible wrong one.
+
+    `via_payload` mirrors `op_grep`'s (#1825): the @file/@- route takes
+    `pattern` verbatim under a `pattern` key, so there is nothing to
+    disclose and the note's own remedy names the route already in use.
     """
     _effective, refusal, note = _pattern_gate(pattern)
     if refusal:
         return refusal
-    return (_pattern_read_as_note(pattern, path, "around")
+    prefix = "" if via_payload else _pattern_read_as_note(pattern, path, "around")
+    return (prefix
             + note
             + _op_around(pattern, path, n))
 
@@ -27721,7 +27735,17 @@ def _take_payload_warnings() -> str:
 
 
 def _load_at_file(ref: str, note: bool = True) -> Any:
-    """Load JSON or TOML from an @file reference.
+    """Load JSON or TOML from an @file reference — thin wrapper over
+    `_load_at_file_raw`, kept for the many callers that need only the
+    parsed value (#1032 is the first caller that also needs the source
+    text, for `payload-lint`)."""
+    parsed, _raw, _source = _load_at_file_raw(ref, note=note)
+    return parsed
+
+
+def _load_at_file_raw(ref: str, note: bool = True) -> "Tuple[Any, str, str]":
+    """Load JSON or TOML from an @file reference, and return the raw source
+    alongside the parsed value (#1032).
 
     Accepts:
       @path/to/file.json   — read from filesystem
@@ -27768,7 +27792,7 @@ def _load_at_file(ref: str, note: bool = True) -> Any:
     fmt = _detect_payload_format(raw)
     if fmt == "json":
         try:
-            return json.loads(raw)
+            return json.loads(raw), raw, source
         except json.JSONDecodeError as _e:
             raise ValueError(f"@file JSON parse error ({source}): {_e}") from _e
     try:
@@ -27806,7 +27830,156 @@ def _load_at_file(ref: str, note: bool = True) -> Any:
         text = _payload_shell_quote_escape_note(raw)
         if text:
             _PAYLOAD_WARNINGS.append(text)
-    return parsed
+    return parsed, raw, source
+
+
+_PAYLOAD_LINT_Q3 = chr(39) * 3   # a triple-single-quote delimiter
+_PAYLOAD_LINT_QQQ = chr(34) * 3  # a triple-double-quote delimiter
+
+
+def _payload_field_provenance(raw: str, key: str) -> str:
+    """Which delimiter *key* was written with, read off the source (#1032).
+
+    A basic (triple-double-quote) block is indistinguishable from a
+    literal (triple-single-quote) one after parsing -- both end up as an
+    ordinary Python str -- so this has to look at the TOML source text
+    rather than the parsed value. Matches the FIRST `key = DELIM` it
+    finds; good enough for a single-op payload, where each key appears
+    once.
+    """
+    delim_pat = (re.escape(_PAYLOAD_LINT_Q3) + "|"
+                 + re.escape(_PAYLOAD_LINT_QQQ) + "|'|\\\"")
+    m = re.search(
+        r"^[ \t]*" + re.escape(key) + r"[ \t]*=[ \t]*(" + delim_pat + ")",
+        raw, re.MULTILINE)
+    if not m:
+        return "could not be determined"
+    delim = m.group(1)
+    if delim == _PAYLOAD_LINT_Q3:
+        return "triple-single-quoted literal block"
+    if delim == _PAYLOAD_LINT_QQQ:
+        return "triple-double-quoted basic block"
+    if delim == "'":
+        return "single-line literal"
+    return "single-line basic"
+
+
+def _payload_lint_field_report(raw: str, key: str, value: Any) -> str:
+    """One line per field for `payload-lint` -- shape and provenance,
+    never a verdict (#1032). This op reports; it does not decide."""
+    if not isinstance(value, str):
+        return f"  {key}: {type(value).__name__} = {value!r} (not text)"
+    n_lines = value.count(chr(10)) + 1 if value else 0
+    prov = _payload_field_provenance(raw, key)
+    flags = []
+    if "\\" in value:
+        flags.append("carries a literal backslash")
+    if "\r" in value:
+        flags.append("carries a stray \\r")
+    if any(ln != ln.rstrip() for ln in value.split(chr(10))):
+        flags.append("has a trailing-whitespace line")
+    line = f"  {key}: {len(value)} chars, {n_lines} line(s), provenance={prov}"
+    if flags:
+        line += " -- " + ", ".join(flags)
+    return line
+
+
+def _payload_lint_anchor_report(parsed: Dict[str, Any]) -> str:
+    """For an edit/replace-shaped payload: does `old` match right now, and
+    how many times -- 0, 1, or N, WITHOUT writing (#1032).
+
+    A snapshot of the target file as it is at lint time, not a lock -- the
+    real apply can still see a different file. Stated as a snapshot rather
+    than hidden, per the issue's own judgment call: "report it, and say it
+    is a snapshot".
+    """
+    old = parsed.get("old")
+    path = parsed.get("path")
+    if not isinstance(old, str) or not isinstance(path, str) or not path:
+        return ""
+    if not os.path.isfile(path):
+        return (f"anchor check: no file at {path!r} yet -- match count "
+                f"could not be determined" + chr(10))
+    try:
+        with open(path, "r", encoding="utf-8", errors="surrogateescape",
+                  newline="") as f:
+            content = f.read()
+    except OSError as e:
+        return f"anchor check: could not read {path!r}: {e}" + chr(10)
+    count = content.count(old)
+    if count == 0:
+        for _nl, cand in _newline_variants(old)[1:]:
+            n = content.count(cand)
+            if n:
+                count = n
+                break
+    return (f"anchor check (snapshot of {path!r} right now): 'old' "
+            f"matches {count} time(s)" + chr(10))
+
+
+def op_payload_lint(ref: str) -> str:
+    """Parse an @file/@- payload and report its shape, run nothing (#1032).
+
+    The gap this closes: a payload is parsed, then acted on, and there was
+    no way to see the parse. A malformed triple-quoted block was only
+    discoverable by applying the payload and reading the target file back
+    -- and for `edit`, a malformed payload does not even refuse, it
+    matches, writes, and reports `edited`.
+
+    Three states throughout, per the issue's own judgment calls: a field
+    whose provenance could not be determined says so rather than guessing,
+    and a target file that does not exist yet says the match count could
+    not be determined rather than reporting a guessed zero. This op never
+    refuses or warns on a suspect payload beyond what loading it already
+    does -- the gate is the gate (#834/#835/#1027); this op only reports.
+    """
+    if not ref.startswith("@"):
+        return ("ERROR: payload-lint takes an @reference (@file or @-), "
+                "e.g. payload-lint:@edits.toml\n")
+    try:
+        parsed, raw, source = _load_at_file_raw(ref, note=False)
+    except ValueError as exc:
+        return f"ERROR: {exc}\n"
+
+    lines = [f"payload-lint: {source}"]
+
+    is_ops_array = isinstance(parsed, list) or (
+        isinstance(parsed, dict) and isinstance(parsed.get("ops"), list))
+    if is_ops_array:
+        ops_list = parsed if isinstance(parsed, list) else parsed["ops"]
+        lines.append(f"shape: ops array, {len(ops_list)} op(s)")
+        for i, item in enumerate(ops_list):
+            if not isinstance(item, dict):
+                lines.append(f"  [{i}] not a table ({type(item).__name__})"
+                             f" -- provenance could not be determined")
+                continue
+            kind = item.get("op", "<missing 'op'>")
+            path = item.get("path")
+            resolved = ""
+            if isinstance(path, str) and path:
+                try:
+                    resolved = os.path.abspath(_resolve_at_path(path))
+                except (OSError, ValueError):
+                    resolved = "<could not resolve>"
+            entry = f"  [{i}] op={kind!r} path={path!r}"
+            if resolved and resolved != path:
+                entry += f" -> {resolved}"
+            lines.append(entry)
+        return chr(10).join(lines) + chr(10)
+
+    if not isinstance(parsed, dict):
+        lines.append(f"shape: {type(parsed).__name__} -- not a table, no "
+                     f"fields to report")
+        return chr(10).join(lines) + chr(10)
+
+    lines.append(f"shape: single-op payload, {len(parsed)} field(s)")
+    for key, value in parsed.items():
+        lines.append(_payload_lint_field_report(raw, key, value))
+    anchor = _payload_lint_anchor_report(parsed)
+    body = chr(10).join(lines) + chr(10)
+    if anchor:
+        body += anchor
+    return body
 
 
 # Dynamic @file field registry — built lazily from op syntax strings.
@@ -28058,12 +28231,14 @@ def _read_op_from_payload(op: str, payload: Any, no_exclude: bool = False) -> st
                     _payload_bool(p, "count"),
                     no_exclude=no_exclude,
                     no_auto_read=_payload_bool(p, "no_auto_read"),
+                    via_payload=True,
                 )
             if op == "grep_around":
                 return op_grep(pattern, path, _payload_grep_limit(p, 10),
                                _payload_int(p, "n", 3), False,
-                               no_exclude=no_exclude)
-            return op_around(pattern, path, _payload_int(p, "n", 10))
+                               no_exclude=no_exclude, via_payload=True)
+            return op_around(pattern, path, _payload_int(p, "n", 10),
+                              via_payload=True)
         if op == "between":
             path = str(p.get("path", "") or "")
             symbol = str(p.get("symbol", "") or "")
@@ -28212,6 +28387,17 @@ def _at_file_payload_hint(op: str) -> str:
         else:
             lines.append(f"    {name} = {quote}...{quote}")
     lines.append("    EOF")
+    if op == "edit":
+        # #1867 — the accepted shape (one edit per payload) is otherwise only
+        # inferable from the unknown-field list on an `edits`/`[[edits]]`
+        # refusal, by which point the payload is already composed. State it
+        # here, where a caller reaching for a batch shape sees it BEFORE
+        # writing one, and name the actual multi-edit route.
+        lines.append(
+            "    One edit per payload — for N edits, send N payloads, or "
+            "batch:@file with one {op = \"edit\", ...} entry per edit in "
+            "[[ops]]."
+        )
     return chr(10) + chr(10).join(lines)
 
 
@@ -28448,6 +28634,33 @@ def _missing_field_create_clause(op: str, name: str,
     )
 
 
+def _edits_array_clause(op: str, unknown: List[str]) -> str:
+    """Say the one-edit-per-payload contract, when the refused key looks
+    like a caller reaching for a batch of edits (#1867).
+
+    `edit:@-` refuses an unknown `edits` field correctly, but names only the
+    fault — the accepted keys are `old`/`new`/`path`/`replace_all`, none of
+    which say "and only one of these tables per payload". The gap is not
+    the refusal, it is that the contract behind it is stated nowhere until
+    this fires: the batch route (`batch:@file`, one `edit` op per `[[ops]]`
+    entry) is the actual answer and was previously left for the caller to
+    find by reading `ops` or asking.
+
+    Scoped to `edit` and to a key that plausibly means "more than one edit"
+    (`edits`, `edit`, `ops`) rather than firing on every unrelated typo —
+    "unknown field(s) foo" already answers a stray key on its own.
+    """
+    if op != "edit":
+        return ""
+    if not any(k in ("edits", "edit", "ops") for k in unknown):
+        return ""
+    return (
+        "\n  edit takes ONE edit per payload — for N edits, send N "
+        "payloads, or batch:@file with one {op = \"edit\", ...} entry per "
+        "edit in [[ops]]."
+    )
+
+
 #: Payload keys that belong to the ROUTE rather than to any op's field list.
 #:
 #: `op` names a batch sub-item's operation. `literal_backslashes` is the
@@ -28555,6 +28768,7 @@ def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
             f"than dropped (#1551): an edit performed without the constraint "
             f"the caller wrote reads, in the receipt, exactly like one "
             f"performed with it" + _clause
+            + _edits_array_clause(op, unknown)
         )
     parts = [op]
     for name, optional, variadic in specs:
@@ -29654,6 +29868,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                                 if _batch_owns_defer:
                                     body += _drain_format_queue()
                                     body += _drain_validator_queue()
+        elif op == "payload-lint":
+            body = op_payload_lint(parts[1] if len(parts) > 1 else "")
         elif op == "validate":
             # verbose flag: literal "verbose" token anywhere after op name.
             # Forms: validate:PATH:verbose  or  validate:PATH:tool1,tool2:verbose

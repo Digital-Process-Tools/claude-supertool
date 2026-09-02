@@ -131,7 +131,7 @@ Measured across the 128 documented ops in the shipped tree:
 | max | 6,578 (`channel`) |
 | top 10 rows | 35,290 = **47% of the corpus, in 8% of the ops** |
 
-The assembled descriptive render, `ops:full`, is ~78.72KB against `_HOOK_OUTPUT_CAP_BYTES` = 7,168. That is why `hooks/session-start.sh` sends `ops:roster` instead: names plus safety class, no descriptions at all. Bare `ops` has been signatures-only since #1774/#1775/#1778 and fits the cap on its own at ~4.4KB without needing a fallback (issue [#1813](https://github.com/Digital-Process-Tools/claude-supertool/issues/1813) is where the earlier version of this paragraph is corrected). It is the *descriptions* — reachable only through `ops:full` and `help:OP` now — that have never fitted, and this section is about what they cost.
+The assembled descriptive render, `ops:full`, is ~79.22KB against `_HOOK_OUTPUT_CAP_BYTES` = 7,168. That is why `hooks/session-start.sh` sends `ops:roster` instead: names plus safety class, no descriptions at all. Bare `ops` has been signatures-only since #1774/#1775/#1778 and fits the cap on its own at ~4.42KB without needing a fallback (issue [#1813](https://github.com/Digital-Process-Tools/claude-supertool/issues/1813) is where the earlier version of this paragraph is corrected). It is the *descriptions* — reachable only through `ops:full` and `help:OP` now — that have never fitted, and this section is about what they cost.
 
 **The line to draw.** A `description` says what the op does, what it will refuse, and what it declines to tell you — the three things a caller cannot get from the `syntax` field and cannot afford to learn from a failed call. What it is *not* is the record of how the op got here. These, from one entry, are all true and none of them belong on a line printed to every reader of the roster:
 
@@ -373,7 +373,7 @@ Two consequences worth knowing before you add one:
   fail-safe, not a new exit channel; a shell that needs the integer has to run
   the preset's script directly.
 
-Any key in an op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`, `restartMcp`, `replaces`, `paths`, `exitStatus`, `form`, `hint`) is passed to the subprocess as a `SUPERTOOL_`-prefixed environment variable. `form` and `hint` are documented as `builtin-ops`-only keys ([#1245](https://github.com/Digital-Process-Tools/claude-supertool/issues/1245)) — a `builtin-ops` entry never spawns, so they were only inert oversights there. Reserved here anyway ([#1675](https://github.com/Digital-Process-Tools/claude-supertool/issues/1675)), because the moment either is copied onto an **`ops`** entry it would otherwise leak as `SUPERTOOL_FORM` / `SUPERTOOL_HINT` — config metadata reaching a subprocess environment as if it were meant for the script:
+Any key in an op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`, `restartMcp`, `replaces`, `paths`, `exitStatus`) is passed to the subprocess as a `SUPERTOOL_`-prefixed environment variable:
 
 ```json
 {
