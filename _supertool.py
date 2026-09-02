@@ -22576,11 +22576,27 @@ def _run_notifiers(op: str, path: str, line: Optional[int] = None,
             pass
 
 
+#: Shared protocol with any `resolve`-class command in this tree (today only
+#: `validators/common/ci_lint_resolve_root.py`, #2177): such a command can
+#: decline to look ("git absent", "git timed out", "not a repo") as
+#: distinctly as it declines because there is genuinely nothing to resolve.
+#: It says so by printing this prefix plus a reason instead of empty stdout,
+#: and `_validator_resolve` below hands the whole line back rather than
+#: folding it into the same "skip, no target" silence as an empty resolve.
+_VALIDATOR_RESOLVE_ERROR_PREFIX = "RESOLVE-ERROR: "
+
+
 def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
     """Run optional `resolve` cmd to map source→target (e.g. source→test).
 
-    Returns the resolved path, original file if no resolve cmd, or None if
-    the resolve cmd succeeded but returned empty (signal: skip this validator).
+    Returns the resolved path, original file if no resolve cmd, None if the
+    resolve cmd succeeded but returned empty (signal: skip this validator),
+    or a string prefixed `_VALIDATOR_RESOLVE_ERROR_PREFIX` when the resolve
+    cmd could not be trusted at all -- either it printed the shared
+    `RESOLVE-ERROR: ` protocol above, or (#2174) it crashed and its
+    `guard_main` net published a JSON receipt on stdout with exit 0, which
+    this caller -- unlike an adapter's own reader -- would otherwise trust as
+    a resolved path verbatim.
     """
     if "resolve" not in spec:
         return file
@@ -22608,9 +22624,43 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=30,
                            env=_run_env, encoding="utf-8", errors="replace")
         resolved = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
-        return resolved if resolved else None
-    except (subprocess.TimeoutExpired, OSError):
+    except subprocess.TimeoutExpired:
+        # #2177, one call frame up from `ci_lint_resolve_root.py`'s own fix:
+        # the resolve COMMAND timing out is a "could not look" case exactly
+        # like the ones that command's own `_repo_root` now distinguishes
+        # from "looked, found nothing" -- and bare `None` here would fold it
+        # back into that same silence one layer higher, undoing the point.
+        return _VALIDATOR_RESOLVE_ERROR_PREFIX + "resolve command timed out"
+    except OSError as exc:
+        # Same reasoning for a resolve command that could not even be spawned
+        # (a `.supertool.json` `resolve` entry naming a binary that is not on
+        # PATH, most commonly) -- `FileNotFoundError` is an `OSError` subclass
+        # and is not distinguished further here because the caller already
+        # gets the exception text.
+        return _VALIDATOR_RESOLVE_ERROR_PREFIX + "resolve command could not be run: {0}".format(exc)
+    if not resolved:
         return None
+    if resolved.startswith(_VALIDATOR_RESOLVE_ERROR_PREFIX):
+        return resolved
+    # #2174: a resolve command need not spell the protocol above to still be
+    # untrustworthy -- one that crashes and routes through `guard_main`
+    # publishes a JSON receipt (`{"tool": ..., "ok": false, "errors": [...]}`)
+    # on stdout with exit 0, and this caller reads only the first stdout
+    # line, never `returncode`. A resolved path is a filesystem path and can
+    # never parse as a dict carrying both "tool" and "ok", so that shape is
+    # enough to recognize the receipt without depending on the returncode
+    # this contract does not distinguish on.
+    try:
+        _parsed = json.loads(resolved)
+    except (ValueError, TypeError):
+        _parsed = None
+    if isinstance(_parsed, dict) and "tool" in _parsed and "ok" in _parsed:
+        _errors = _parsed.get("errors") or []
+        _reason = "resolve command crashed"
+        if _errors and isinstance(_errors[0], dict) and _errors[0].get("msg"):
+            _reason = str(_errors[0]["msg"])
+        return _VALIDATOR_RESOLVE_ERROR_PREFIX + _reason
+    return resolved
 
 
 def _validator_cache_enabled() -> bool:
@@ -23287,6 +23337,14 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     target = _validator_resolve(spec, file)
     if target is None:
         return {"tool": name, "skipped": "no target resolved"}
+    if target.startswith(_VALIDATOR_RESOLVE_ERROR_PREFIX):
+        # #2177: distinct from "no target resolved" above -- this is "the
+        # resolve command could not even look", not "it looked and found
+        # nothing". Both render as a skip (no verdict this run), but the
+        # reason a reader would ask "why" is preserved rather than folded
+        # into the same silence.
+        return {"tool": name, "skipped": "could not resolve target: {0}".format(
+            target[len(_VALIDATOR_RESOLVE_ERROR_PREFIX):])}
     # #345: some targets this validator's warm process cannot judge — declared
     # per validator as `warm_unsafe` regexes. Checked here, before the adapter
     # is spawned at all: the decision is a property of the target, so paying a
