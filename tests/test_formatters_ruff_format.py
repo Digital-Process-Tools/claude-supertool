@@ -276,3 +276,44 @@ def test_reread_oserror_reports_verify_failed_not_a_silent_noop(
         "indistinguishable from a genuine no-op without this field: "
         + repr(data))
     assert "No such file" in data["verify_failed"]
+
+
+def test_ruff_bin_program_files_style_path_is_not_split_at_the_space(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#2176 -- a Windows-Program-Files-shaped RUFF_BIN, actually installed
+    there (a real file with the execute bit set), must be used AS ONE PATH.
+    Before the fix, POSIX-mode `shlex.split` split the unquoted path at the
+    space in "Program Files", and the adapter ran `["<tmp>/Program",
+    "format", ...]` -- a binary that does not exist, reported as RUFF_BIN
+    not found, even though the real one was sitting right there.
+    """
+    bin_dir = tmp_path / "Program Files" / "ruff"
+    bin_dir.mkdir(parents=True)
+    real_ruff = bin_dir / "ruff.exe"
+    real_ruff.write_text("")
+    real_ruff.chmod(0o755)
+
+    f = tmp_path / "x.py"
+    f.write_text("x = 1\n")
+
+    monkeypatch.setenv("RUFF_BIN", real_ruff.as_posix())
+    monkeypatch.setattr(sys, "argv", ["ruff-format.py", str(f)])
+
+    mod = _load_adapter_module()
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        import subprocess as _sp
+        return _sp.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    captured_emit = []
+    monkeypatch.setattr(mod, "emit", lambda obj: captured_emit.append(obj))
+
+    mod.main()
+
+    assert captured["cmd"][0] == real_ruff.as_posix(), captured["cmd"]
+    assert_ok(captured_emit[0])
