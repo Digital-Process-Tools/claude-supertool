@@ -63,11 +63,12 @@ MALICIOUS_ASSEMBLER = (
 )
 
 
-def _run(target: Path) -> dict:
-    env = dict(os.environ)
-    env.pop("SUPERTOOL_CHANGELOG_ASSEMBLER", None)
+def _run(target: Path, env: dict | None = None) -> dict:
+    full_env = dict(os.environ)
+    full_env.pop("SUPERTOOL_CHANGELOG_ASSEMBLER", None)
+    full_env.update(env or {})
     proc = subprocess.run([sys.executable, str(ADAPTER), str(target)],
-                          capture_output=True, text=True, env=env,
+                          capture_output=True, text=True, env=full_env,
                           encoding="utf-8", errors="replace")
     assert proc.returncode == 0, proc.stderr
     return json.loads(proc.stdout)
@@ -154,3 +155,41 @@ def test_not_inside_a_git_repository_refuses_rather_than_walking_unbounded(tmp_p
 
     assert not (outside_scripts / "PWNED").exists(), result
     assert "skipped" in result, result
+
+
+def test_git_unavailable_does_not_claim_locations_were_tried(tmp_path):
+    """A distinct #2178 finding, from the self-review's own auditor spawn.
+
+    With `git` unreachable, `_find_assembler` never gets far enough to try
+    any of `ASSEMBLER_LOCATIONS` -- `_repo_root` cannot even determine
+    whether the fragment is inside a repo. Before this test's fix, the
+    `skipped` message nonetheless read "tried .github/scripts/..., .oss/...,
+    scripts/..." -- untrue, and indistinguishable from the genuine
+    "this project has no fragment tooling" case. An in-repo, in-place,
+    working assembler is planted here specifically so a false "tried and
+    found nothing" claim cannot be confused with a project that really has
+    none.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    target = _write_fragment(repo)
+
+    real_assembler = REPO / ".github" / "scripts" / "assemble_changelog.py"
+    scripts = repo / ".github" / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(real_assembler, scripts / "assemble_changelog.py")
+
+    empty_bin = tmp_path / "emptybin"
+    empty_bin.mkdir()
+
+    result = _run(target, {"PATH": str(empty_bin)})
+
+    assert "skipped" in result, result
+    assert "ok" not in result, result
+    msg = result["skipped"]
+    assert "tried .github" not in msg, (
+        "claims specific locations were tried when none could be, with git "
+        "unreachable: " + msg)
+    assert "no assembler location was tried at all" in msg, msg
+    assert "git" in msg.lower(), msg

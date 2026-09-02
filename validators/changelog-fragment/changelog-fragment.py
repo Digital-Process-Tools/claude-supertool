@@ -85,19 +85,24 @@ def _locations() -> tuple:
     return (override,) if override else ASSEMBLER_LOCATIONS
 
 
-def _repo_root(start: Path) -> Path | None:
-    """The git repo root above `start`, or None if there is none to find.
+def _repo_root(start: Path) -> tuple[Path | None, str | None]:
+    """The git repo root above `start`, and why not when there is none.
 
     Mirrors `validators/common/ci_lint_resolve_root.py`'s `_repo_root` --
     `git -C <dir> rev-parse --show-toplevel` -- the convention this tree
-    already uses for the same question. Every failure mode (`git` absent,
-    `git` timed out, `start` not inside a git repository, or `git` reporting
-    no toplevel) collapses to `None` here: `_find_assembler` treats "could not
-    determine a root" the same as "no root", refusing rather than falling back
-    to an unbounded walk. That is stricter than #2177's own three-state
-    distinction, and deliberately so -- a validator that cannot even bound
-    its own search has no business importing and executing a script it found
-    by an unbounded one (#2178).
+    already uses for the same question, including that helper's own
+    "could not look" vs "looked, found nothing" split (#2177): a caller
+    that folds every failure mode into a bare `None` cannot tell "git is
+    not on PATH" from "this is not a git repository" from "walked the
+    whole repo and there is genuinely no assembler," and the first two are
+    a fact about this run, not about the project (#2178's own finding on
+    this file, from the self-review that caught this).
+
+    `_find_assembler` still refuses the walk on every one of these --
+    "could not bound the search" is not licence to fall back to the old
+    unbounded one -- but `main()` now reads the reason to say which claim
+    it is making, rather than reusing the "tried these locations" sentence
+    for a run that tried none of them.
     """
     try:
         r = subprocess.run(
@@ -105,17 +110,21 @@ def _repo_root(start: Path) -> Path | None:
             capture_output=True, text=True, timeout=10,
             encoding="utf-8", errors="replace",
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    except FileNotFoundError:
+        return None, "git binary not found"
+    except subprocess.TimeoutExpired:
+        return None, "git rev-parse timed out"
+    except OSError as exc:
+        return None, "git could not be run: {0}".format(exc)
     if r.returncode != 0:
-        return None
+        return None, "not inside a git repository"
     top = r.stdout.strip()
-    return Path(top).resolve() if top else None
+    return (Path(top).resolve(), None) if top else (None, "git reported no toplevel")
 
 
-def _find_assembler(target: Path) -> Path | None:
+def _find_assembler(target: Path) -> tuple[Path | None, str | None]:
     """The nearest project script at or above `target`, bounded at the repo
-    root, or None.
+    root; and, when nothing was found, whether the search could even run.
 
     Walks parents the same way it always did, but stops at (and including)
     the git repo root above `target` rather than climbing to filesystem root
@@ -125,24 +134,24 @@ def _find_assembler(target: Path) -> Path | None:
     repo, which is attacker territory the moment this runs against an
     untrusted checkout.
 
-    No repo root above `target` (not inside a git repository, or `git` itself
-    unavailable) refuses outright rather than falling back to the old
-    unbounded walk: there is no boundary to bound the search to, and "no
-    assembler outside a repo" is the same refusal `_repo_root` already reads
-    every failure mode into.
+    No repo root above `target` refuses outright rather than falling back to
+    the old unbounded walk: there is no boundary to bound the search to. The
+    second return value carries `_repo_root`'s reason in that case (`None`
+    once a root is found, whether or not a script turns up under it) so a
+    caller can tell "could not even look" from "looked, found nothing."
     """
-    root = _repo_root(target.parent)
+    root, reason = _repo_root(target.parent)
     if root is None:
-        return None
+        return None, reason
     resolved_start = target.parent.resolve()
     for parent in [resolved_start, *resolved_start.parents]:
         for relative in _locations():
             candidate = parent / relative
             if candidate.is_file():
-                return candidate
+                return candidate, None
         if parent == root:
             break
-    return None
+    return None, None
 
 
 def _load(script: Path):
@@ -192,8 +201,18 @@ def main() -> None:
     path = Path(target)
     name = path.name
 
-    script = _find_assembler(path)
+    script, could_not_look = _find_assembler(path)
     if script is None:
+        if could_not_look is not None:
+            emit(skipped(TOOL, target,
+                         "could not determine the git repo root above {0}, so "
+                         "no assembler location was tried at all ({1}). That is "
+                         "a claim about this run, not about the project -- set "
+                         "{2} to point at the real script if it lives somewhere "
+                         "this cannot look".format(
+                             path.parent, could_not_look, ENV_ASSEMBLER),
+                         _ms(start)))
+            return
         tried = ", ".join(_locations())
         emit(skipped(TOOL, target,
                      "no assembler found at or above {0} -- tried {1}. That is "
