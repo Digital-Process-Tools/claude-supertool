@@ -176,6 +176,14 @@ def _fragment_target(tmp_path: Path) -> Path:
     its own fragment still existed after the tag consumed it. This fixture is
     under `tmp_path` and has nothing to do with the repo's own fragments, and
     binding it in a separate function is the accepted form that guard names.
+
+    `git init`'d (#2178): `_find_assembler`'s walk is now bounded at the git
+    repo root above the fragment, so a throwaway directory with no `.git` at
+    all is no longer a boundary the real validator can search under -- it
+    refuses outright ("could not determine the git repo root") before ever
+    reaching the assembler script planted here, exactly as it must for a
+    fragment genuinely outside any repository. This fixture always meant "a
+    real, if minimal, project", never "no repository at all", so it gets one.
     """
     frag_dir = tmp_path / "changelog.d"
     frag_dir.mkdir(parents=True, exist_ok=True)
@@ -183,6 +191,7 @@ def _fragment_target(tmp_path: Path) -> Path:
     scripts.mkdir(parents=True, exist_ok=True)
     shutil.copy2(REPO / ".github" / "scripts" / "assemble_changelog.py",
                  scripts / "assemble_changelog.py")
+    subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=True)
     return frag_dir / "9999.fixed.md"
 
 
