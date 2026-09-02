@@ -27,7 +27,11 @@ from __future__ import annotations
 import _digits  # (the one ASCII-digit test, shared since #1727)
 
 # `raw` is here too, though its own START/END parsing lives in each preset.
-MODES = ("fail", "errors", "raw", "grep")
+# `artifacts`/`artifact` (#1796): list a job's artifacts, or fetch one file
+# out of them. Shared as a mode name only -- the fetch itself is forge-
+# specific (GitLab has a single-file endpoint, GitHub does not), so each
+# preset implements it separately, the same split `raw`/`grep` already have.
+MODES = ("fail", "errors", "raw", "grep", "artifacts", "artifact")
 
 #: Shared rather than retyped (#1727). `presets/_digits.py` carries the `\Z`
 #: anchor (#1188) and both character classes `str.isdigit()` wrongly admits.
@@ -69,9 +73,10 @@ def refuse_mode(op: str, mode: str) -> str:
         f"Nothing was read. This used to fall through to the default view — "
         f"metadata plus the log tail, exit 0 — which reads as an answer to the "
         f"question you asked rather than as a mode that was never applied.\n"
-        f"Modes: fail (alias errors), raw, grep. Usage: "
+        f"Modes: fail (alias errors), raw, grep, artifacts, artifact. Usage: "
         f"{op}:JOB_ID:fail | {op}:JOB_ID:raw[:-N|:START[:END]] | "
-        f"{op}:JOB_ID:grep:PATTERN"
+        f"{op}:JOB_ID:grep:PATTERN | {op}:JOB_ID:artifacts | "
+        f"{op}:JOB_ID:artifact:PATH"
     )
 
 
@@ -123,5 +128,27 @@ def grep_pattern(op: str, tokens: list[str]) -> tuple[str, str]:
         f"separator, so core delivered it as {len(tokens)} pieces and they were "
         f"rejoined — the pattern was read as /{pattern}/. Nothing follows the "
         f"pattern in this op, so that is the only reading that keeps it whole; "
+        f"check that it says what you meant."
+    )
+
+
+def artifact_path(op: str, tokens: list[str]) -> tuple[str, str]:
+    """`(path, disclosure)` for the argv entries right of `artifact` (#1796).
+
+    Same rejoin `grep_pattern` above already does, for the same reason: core
+    split the op on every `:`, so a path that happens to contain one (rare
+    for a POSIX artifact path, not impossible for one a Windows runner wrote)
+    arrives as several argv entries. Nothing follows PATH in this op, so
+    rejoining with the `:` that separated them is the only reading that keeps
+    the path whole.
+    """
+    path = ":".join(tokens)
+    if len(tokens) < 2:
+        return path, ""
+    return path, (
+        f"Note: this path contains ':', which is also {op}'s own argument "
+        f"separator, so core delivered it as {len(tokens)} pieces and they "
+        f"were rejoined — the path was read as {path!r}. Nothing follows the "
+        f"path in this op, so that is the only reading that keeps it whole; "
         f"check that it says what you meant."
     )

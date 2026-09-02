@@ -12,11 +12,13 @@ Config via SUPERTOOL_ env vars (set from .supertool.json):
 """
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
@@ -877,6 +879,243 @@ def _emit_grep_hits(
         )
 
 
+def _human_size(num_bytes: int) -> str:
+    """`N bytes` rendered as KB/MB, the same rendering `gl-job`'s twin uses."""
+    if num_bytes < 1024 * 1024:
+        return f"{num_bytes / 1024:.1f} KB"
+    return f"{num_bytes / (1024 * 1024):.1f} MB"
+
+
+def _job_run_id(job_id: str) -> tuple[str, str]:
+    """`(run_id, "")` for job `job_id`'s own run; `("", error)` on any failure.
+
+    Shared by `:artifacts` and `:artifact` (#1796): GitHub's artifact listing
+    is keyed by *run*, not by job, so both need this lookup before either can
+    reach the artifacts endpoint.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "api", _api_repo_path(f"actions/jobs/{job_id}")],
+            capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace",
+        )
+    except FileNotFoundError:
+        return "", "ERROR: gh not found — install from https://cli.github.com"
+    except subprocess.TimeoutExpired:
+        return "", f"ERROR: gh timed out fetching job #{job_id}"
+    if result.returncode != 0:
+        return "", _format_error(result.stderr, "Job", job_id)
+    try:
+        meta = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return "", f"ERROR: gh returned unparseable JSON for job #{job_id}"
+    run_id = str(meta.get("run_id") or "")
+    if not run_id:
+        return "", f"ERROR: job #{job_id}'s metadata has no run_id — cannot look up its artifacts"
+    return run_id, ""
+
+
+def _run_artifacts(run_id: str) -> tuple["list[dict] | None", str]:
+    """The artifact list for workflow run `run_id`; `(None, error)` on failure.
+
+    GitHub artifacts are a property of the *run*, not the job — every job in
+    the same run shares one list, unlike GitLab where each job carries its
+    own. `[]` (a genuinely empty list) is not an error, and is returned as
+    such rather than folded into the failure path.
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "api", _api_repo_path(f"actions/runs/{run_id}/artifacts?per_page=100")],
+            capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
+        )
+    except FileNotFoundError:
+        return None, "ERROR: gh not found — install from https://cli.github.com"
+    except subprocess.TimeoutExpired:
+        return None, f"ERROR: gh timed out listing artifacts for run #{run_id}"
+    if result.returncode != 0:
+        return None, _format_error(result.stderr, "Run artifacts", run_id)
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None, f"ERROR: gh returned unparseable JSON for run #{run_id}'s artifacts"
+    artifacts = data.get("artifacts") if isinstance(data, dict) else None
+    if not isinstance(artifacts, list):
+        return None, f"ERROR: gh returned no artifact list for run #{run_id}"
+    return artifacts, ""
+
+
+def print_artifacts(job_id: str) -> int:
+    """`gh-job:ID:artifacts` (#1796) -- what the run produced.
+
+    GitHub's own artifact listing carries name, size and the `expired` flag
+    per artifact -- unlike GitLab, it does NOT name the paths inside each
+    zip either, so the same disclosure applies: fetching a specific path
+    still needs it known some other way (a log's own printed path, usually).
+    """
+    run_id, error = _job_run_id(job_id)
+    if error:
+        print(error)
+        return 1
+    artifacts, error = _run_artifacts(run_id)
+    if error:
+        print(error)
+        return 1
+    print(f"# Job #{job_id} artifacts (run #{run_id})")
+    if not artifacts:
+        print("No artifacts recorded for this run.")
+        return 0
+    for artifact in artifacts:
+        name = _untrusted.flat(str(artifact.get("name") or "?"))
+        size = artifact.get("size_in_bytes")
+        size_str = (_human_size(int(size)) if isinstance(size, (int, float))
+                    else "unknown size")
+        expired = artifact.get("expired")
+        expires_at = artifact.get("expires_at")
+        note = " — EXPIRED" if expired else ""
+        expires_note = f", expires {expires_at}" if expires_at and not expired else ""
+        print(f"- {name} ({size_str}){note}{expires_note}")
+    prefix_note = (
+        "" if len(artifacts) == 1 else
+        " — this run produced more than one, so prefix PATH with the "
+        "artifact's own name: NAME/path-inside-the-zip"
+    )
+    print(
+        f"\nGitHub's API does not list the paths inside a zip -- fetch a "
+        f"known path (e.g. one a log printed) with: "
+        f"gh-job:{job_id}:artifact:PATH{prefix_note}"
+    )
+    return 0
+
+
+def _resolve_artifact_entry(
+    artifacts: list, path: str,
+) -> tuple["dict | None", str, str]:
+    """`(artifact, entry_path, "")` for a PATH the caller typed.
+
+    One artifact: PATH is relative to it in full. More than one: PATH's
+    leading segment must name one by its own `name` (#1796) -- GitHub has no
+    single-file endpoint keyed on run alone, so which zip to open cannot be
+    inferred from the path text otherwise.
+    """
+    if not artifacts:
+        return None, "", "ERROR: this run produced no artifacts"
+    if len(artifacts) == 1:
+        return artifacts[0], path, ""
+    prefix, _, rest = path.partition("/")
+    for artifact in artifacts:
+        if str(artifact.get("name")) == prefix:
+            if not rest:
+                return None, "", (
+                    f"ERROR: {prefix!r} is an artifact's name, not a file "
+                    f"inside it. This run produced more than one artifact, "
+                    f"so PATH must be NAME/path-inside-the-zip."
+                )
+            return artifact, rest, ""
+    names = ", ".join(str(a.get("name")) for a in artifacts)
+    return None, "", (
+        f"ERROR: no artifact named {prefix!r} among this run's artifacts "
+        f"({names}). This run produced more than one, so PATH must start "
+        f"with the artifact's own name: NAME/path-inside-the-zip."
+    )
+
+
+def _fetch_artifact_zip(artifact_id: object) -> tuple["bytes | None", str]:
+    """The raw zip bytes for one artifact id -- GitHub has no single-file
+    endpoint, so the whole archive is downloaded once per call (#1796)."""
+    try:
+        proc = subprocess.run(
+            ["gh", "api", _api_repo_path(f"actions/artifacts/{artifact_id}/zip")],
+            capture_output=True, timeout=60,
+        )
+    except FileNotFoundError:
+        return None, "ERROR: gh not found — install from https://cli.github.com"
+    except subprocess.TimeoutExpired:
+        return None, f"ERROR: gh timed out downloading artifact #{artifact_id}"
+    if proc.returncode != 0:
+        stderr = proc.stderr.decode("utf-8", errors="replace")
+        if _gh_error_kind(stderr) == "notfound":
+            return None, (
+                f"ERROR: artifact #{artifact_id} not found — it may have "
+                f"expired or been deleted."
+            )
+        if _auth_probe.says_not_authenticated(stderr.lower()):
+            return None, (
+                f"ERROR: gh could not download artifact #{artifact_id} (not "
+                f"authenticated for the artifact endpoint): "
+                f"{_untrusted.flat(stderr.strip())}"
+            )
+        return None, _format_error(stderr, "Artifact", str(artifact_id))
+    return proc.stdout, ""
+
+
+def print_artifact(job_id: str, path: str) -> int:
+    """`gh-job:ID:artifact:PATH` (#1796) -- one file out of one artifact's zip."""
+    run_id, error = _job_run_id(job_id)
+    if error:
+        print(error)
+        return 1
+    artifacts, error = _run_artifacts(run_id)
+    if error:
+        print(error)
+        return 1
+    artifact, entry_path, error = _resolve_artifact_entry(artifacts, path)
+    if error:
+        print(error)
+        return 1
+    zip_bytes, error = _fetch_artifact_zip(artifact.get("id"))
+    if error:
+        print(error)
+        return 1
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except zipfile.BadZipFile:
+        print(f"ERROR: gh returned something that is not a zip for artifact "
+              f"#{artifact.get('id')}")
+        return 1
+    try:
+        info = zf.getinfo(entry_path)
+    except KeyError:
+        names = zf.namelist()
+        shown = ", ".join(names[:20])
+        more = "" if len(names) <= 20 else f" (+{len(names) - 20} more)"
+        print(
+            f"ERROR: no file at {entry_path!r} inside artifact "
+            f"{artifact.get('name')!r} — check the path (case-sensitive, "
+            f"relative to the archive root). Contents: {shown}{more}"
+        )
+        return 1
+    # Read at the point of use, not at module load, so it can be raised
+    # between calls in one process -- the same convention every other knob
+    # in this file (`GH_JOB_GREP_MAX_BYTES`) already follows, computed
+    # inline where it is read.
+    cap = env_int("GH_JOB_ARTIFACT_MAX_BYTES", 65536, minimum=1)
+    if info.file_size > cap:
+        print(
+            f"ERROR: {entry_path!r} is {_human_size(info.file_size)}, over "
+            f"this op's {_human_size(cap)} print cap "
+            f"(GH_JOB_ARTIFACT_MAX_BYTES) — refusing rather than flooding "
+            f"context with a file this op was not asked to dump whole."
+        )
+        return 1
+    data = zf.read(entry_path)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        print(
+            f"ERROR: {entry_path!r} ({_human_size(len(data))}) is not UTF-8 "
+            f"text — this op prints text only. Binary artifacts are not "
+            f"readable through this op yet (#1796)."
+        )
+        return 1
+    print(f"# Job #{job_id} artifact: {_untrusted.flat(entry_path, disclose_newline=True)}")
+    print(f"{_human_size(len(data))}")
+    print(_untrusted.banner())
+    print(_untrusted.open_marker())
+    for line in _untrusted.split_lines(text):
+        print(_untrusted.scrub(line))
+    print(_untrusted.close_marker())
+    return 0
+
+
 def main() -> int:
     use_utf8_stdout()
     if len(sys.argv) < 2:
@@ -896,6 +1135,26 @@ def main() -> int:
     if refusal:
         print(refusal)
         return 1
+
+    # `:artifacts`/`:artifact` (#1796) dispatch here, before the metadata +
+    # log fetch below — neither reads the log at all, and `:artifacts` needs
+    # a different lookup (the job's *run*) than the one that follows.
+    if mode == "artifacts":
+        if len(sys.argv) > 3:
+            print("ERROR: gh-job:ID:artifacts takes no argument after "
+                  "'artifacts' — nothing was read. Usage: "
+                  "gh-job:JOB_ID:artifacts")
+            return 1
+        return print_artifacts(job_id)
+    if mode == "artifact":
+        path, note = _job_argv.artifact_path("gh-job", sys.argv[3:])
+        if not path:
+            print("ERROR: usage: gh-job:JOB_ID:artifact:PATH")
+            return 1
+        if note:
+            print(note)
+        return print_artifact(job_id, path)
+
     raw_mode = mode == "raw"
     grep_mode = mode == "grep"
     errors_mode = mode in ("errors", "fail")

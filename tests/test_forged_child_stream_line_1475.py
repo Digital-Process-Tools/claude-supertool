@@ -8,7 +8,7 @@ so a U+2028 survives *inside* a relayed line and everything the reader anchors
 at column 0 becomes the writer's to choose.
 
 **The fix is at the seam, not at the sites.** Seven sites were named and the
-sweep below finds 139 sites in 32 files, which is what a per-site fix earns:
+sweep below finds 144 sites in 31 files, which is what a per-site fix earns:
 the same defect re-filed once per call. So
 
 * `_git_common._first_error_line` flattens what it returns. Every caller —
@@ -205,7 +205,7 @@ def test_a_tab_survives_the_commit_relay() -> None:
 # grows quietly — which is the failure mode of the thing it would be guarding".
 #
 # **So this is not a zero-assertion, and pretending otherwise is what would
-# make it useless.** Measured on this branch: 139 candidate sites in 32 files
+# make it useless.** Measured on this branch: 144 candidate sites in 31 files
 # across `presets/git`, `presets/github` and `presets/gitlab`. Not all are
 # defects — `push._local_head` returns `r.stdout.strip()`, and that is a SHA —
 # and closing them is four lanes of work this PR is not.
@@ -369,7 +369,17 @@ SINK_SHAPES = tuple(SHAPE_PROBES)
 #: argument is a new class of risk; the census (`raw_child_stream_sinks`)
 #: did not move and stays at `presets/git/status.py: 19` — checked before
 #: this number was touched.
-UNRESOLVED = 111
+#:
+#: 111 -> 112, #1796. The one added site is `presets/github/job.py`'s new
+#: `_fetch_artifact_zip`, `_gh_error_kind(stderr)` -- the same unresolved
+#: shape `main()`'s own pre-existing `_gh_error_kind(meta_result.stderr)`
+#: call already has, unaffected by this change. `_gh_error_kind` is not in
+#: `NOT_TEXT`: it classifies stderr into a bucket name and the taint
+#: provably stops there, but adding it would widen `NOT_TEXT` for every
+#: caller in both job presets rather than this one call, which is a wider
+#: change than #1796 needs. The census (`raw_child_stream_sinks`) did not
+#: move on this site — checked before the number was touched.
+UNRESOLVED = 112
 
 #: Calls whose result cannot be a string, so the taint stops there. A type
 #: argument, not an allowlist: `json.loads(r.stdout)` yields a dict, and every
@@ -522,16 +532,33 @@ CENSUS = {
     "presets/github/batch_follow.py": 1,
     "presets/github/batch_star.py": 1,
     "presets/github/branch.py": 3,  # -1, #1606: the _format_error relay
-    # #1606 fixed check.py's seam and this row did not move: a false positive
-    # one line up (`kind = _gh_error_kind(r.stderr)`, reaching a bool
-    # comparison) took the fixed site's place in the count (#1626).
-    "presets/github/check.py": 1,
+    # `presets/github/check.py` was 1 and is gone (#1637): #1606 fixed its
+    # seam and a false positive one line up (`kind = _gh_error_kind(r.stderr)`
+    # reaching `absent=(kind == "notfound")`, a bool) took the fixed site's
+    # place in the count (#1626) — the census's own return-sink model counted
+    # a Compare's tainted operand as though it were the value. `_unmarked`
+    # now treats `ast.Compare` the way it already treats `IfExp.test`: the
+    # comparison's result is a fresh bool, and its operands never reach the
+    # sink through it. Row gone rather than zeroed, same as
+    # `presets/gitlab/issue_create.py` below — the file count drops with it.
     "presets/github/find_starable.py": 0,  # -1, #1648: the `bad JSON` dump
     "presets/github/following.py": 0,  # -1, #1648: the `bad JSON` dump
     "presets/github/issue.py": 1,  # -1, #1648: the invalid-JSON body dump
     "presets/github/issue_create.py": 0,  # -1, #1648: the `url=` fallback arm
     "presets/github/issues.py": 0,  # -2, #1606: the lookup and list relays
-    "presets/github/job.py": 4,  # -1, #1606: the _format_error relay
+    # 4 -> 8, #1796: four new sites in the new `:artifacts`/`:artifact` fetch
+    # helpers. Three -- `_job_run_id`, `_run_artifacts`, `_fetch_artifact_zip`
+    # -- are `return _, _format_error(stderr, ...)`, the same accepted shape
+    # every pre-existing site in this file already has: `_format_error`
+    # flattens the stderr it is handed before it ever reaches a render, so
+    # passing it raw is the convention, not the defect. The fourth,
+    # `_fetch_artifact_zip`'s `return proc.stdout, ""`, is the one genuinely
+    # raw transport -- the bytes ARE the artifact's own zip content, may be
+    # binary, and `print_artifact` (the only caller) decodes and scrubs them
+    # before the eventual print. Flattening here would corrupt those bytes
+    # for no gain, the same argument `_git_verbatim`'s two `decode()` sites
+    # already make for `presets/git/_git_common.py` above.
+    "presets/github/job.py": 8,  # -1, #1606: the _format_error relay
     "presets/github/labels.py": 1,  # -1, #1606: the _format_error relay
     "presets/github/pr.py": 2,  # -4, #1648: both body dumps, both threads relays
     "presets/github/pr_create.py": 2,  # -1, #1648: `_gh_json`'s error selection
@@ -546,7 +573,17 @@ CENSUS = {
     # drops the file count from 34 to 33; `presets/github/issue_create.py`
     # keeps a `: 0` row from #1648 and the asymmetry is only that one file
     # still has a scanned site the model resolves and the other does not.
-    "presets/gitlab/job.py": 1,
+    # 1 -> 3, #1796: two new sites in the new `:artifacts`/`:artifact` fetch
+    # helpers. `_job_row`'s `return None, _format_error(result.stderr, ...)`
+    # is the same accepted `_format_error`-flattens-internally shape every
+    # pre-existing site in this file already has. `_fetch_artifact_bytes`'s
+    # `return proc.stdout, ""` is the one genuinely raw transport: the bytes
+    # ARE the artifact's own content, may be binary, and `print_artifact` --
+    # the only caller -- decodes and scrubs them before the eventual print.
+    # Flattening here would corrupt a binary artifact's bytes for no gain,
+    # the same argument `_git_verbatim`'s two `decode()` sites already make
+    # for `presets/git/_git_common.py` above.
+    "presets/gitlab/job.py": 3,
     "presets/gitlab/mr.py": 3,
     # 4 -> 3, #1918: the noise-count summary at pipeline.py:200 traces through
     # `summary = ", ".join(f"+{n} {status}" for status, n in
@@ -628,6 +665,18 @@ def _unmarked(node: ast.AST, tainted: dict) -> set:
       before it reaches `elt`) while `[l for l in
       _untrusted.split_lines(r.stdout)]` still does not (nothing marks the
       loop variable before it becomes the list's own content).
+    * `ast.Compare` (#1637): `x == "literal"` always produces a fresh
+      `bool`, so its operands are inputs to the comparison and never the
+      value that flows onward — the same relationship `IfExp.test` has to
+      `X if test else Y`, one bullet up. `check.py:155`'s
+      `absent=(kind == "notfound")` scored a raw relay though no byte of
+      `kind` (tainted from `r.stderr` through `_gh_error_kind`) reaches the
+      `GhCall` it builds; only the boolean does. Measured on this branch
+      before the rule was added: dropping every `Compare` node's subtree
+      here moves the census 139 -> 138 sites (`check.py`'s one site, the
+      only one anywhere in `presets/git`, `presets/github` or
+      `presets/gitlab` shaped this way) and leaves `UNRESOLVED` at 111 —
+      checked both ways before this bullet was written.
 
     What this still cannot see, stated rather than silently assumed:
 
@@ -663,6 +712,10 @@ def _unmarked(node: ast.AST, tainted: dict) -> set:
         if isinstance(n, ast.IfExp):
             stack.append(n.body)
             stack.append(n.orelse)
+            continue
+        if isinstance(n, ast.Compare):
+            # #1637: the result is always a fresh bool, never the operands'
+            # text — see the docstring bullet above.
             continue
         if isinstance(n, _COMP_TYPES):
             keys |= _comprehension_keys(n, tainted)
@@ -1019,6 +1072,23 @@ def test_a_site_the_census_already_counts_is_not_also_disclosed(
     assert unresolved_escapes(sample) == 0, (
         "both calls are accounted for: one carries the taint into a tracked "
         "name, the other sits inside a sink the census already counts")
+
+
+def test_a_comparison_result_is_a_bool_not_a_relay(tmp_path: Path) -> None:
+    """#1637: `kind == "notfound"` is a `Compare`, whose result is always a
+    fresh `bool` — the operands feed the comparison, not the return value.
+    `check.py:155`'s `absent=(kind == "notfound")` scored one raw relay
+    though nothing about `r.stderr`'s text reaches the return through it,
+    the exact inverse of the blindness #1626 fixed on the same file."""
+    sample = tmp_path / "compare.py"
+    sample.write_text(
+        "def kind_of(r):" + chr(10)
+        + "    kind = classify(r.stderr)" + chr(10)
+        + "    return kind == 'notfound'" + chr(10),
+        encoding="utf-8",
+    )
+    assert raw_child_stream_sinks(sample) == [], (
+        "the returned bool carries no byte of stderr's text")
 
 
 def test_a_tuple_target_does_not_launder_the_escape(tmp_path: Path) -> None:
