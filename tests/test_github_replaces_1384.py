@@ -169,7 +169,6 @@ def test_an_excluded_shape_of_a_mapped_command_stays_usable(
     ("gh issue edit 1384 --add-label priority-high",
      "no label-writing op; the triager does this raw"),
     ("gh issue close 1384", "no close op"),
-    ("gh issue comment 1384 --body x", "no comment op"),
     ("gh pr checkout 1424", "no checkout op"),
     ("gh pr ready 1424", "no draft-state op"),
     ("gh pr comment 1424 --body x", "no comment op"),
@@ -203,13 +202,14 @@ def test_nothing_added_here_fires_on_an_unrelated_command(
 def test_exactly_these_github_ops_declare_a_mapping():
     """The record of which absences were chosen, next to the ones that were not.
 
-    Ten of twenty-two ops declare nothing. The reasons live in
+    Nine of twenty-two ops declare nothing. The reasons live in
     `tests/test_replaces_census_1384.py`, which partitions every preset op in
     the repository into mapped and deliberately-absent and cannot drift.
     """
     declared = {name for name, definition in _GH_OPS.items()
                 if "replaces" in definition}
-    assert declared == {"gh-issue", "gh-issue-create", "gh-issues", "gh-job",
+    assert declared == {"gh-issue", "gh-issue-create", "gh-issue-comment",
+                        "gh-issues", "gh-job",
                         "gh-labels", "gh-branch", "gh-pr", "gh-pr-create",
                         "gh-pr-edit", "gh-pr-merge", "gh-prs",
                         "gh-run"}, sorted(declared)

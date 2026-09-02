@@ -3547,12 +3547,13 @@ def _dropped_tokens_refusal(
     return chr(10).join(lines) + chr(10)
 
 #: Preset ops that name a path and predate the declaration (#1287). **This set
-#: only ever shrinks.** It is not a policy — it is a debt register: 27 shipped
-#: PRESET ops name a path, 8 declare a boundary, these 19 do not. It opened at
+#: only ever shrinks.** It is not a policy — it is a debt register: 28 shipped
+#: PRESET ops name a path, 9 declare a boundary (#2078 added `gh-issue-comment`
+#: to the declared side), these 19 do not. It opened at
 #: 20 — see the #1351 note below for the one it has lost. Counting this repo's
 #: own `.supertool.json` as well used to add one to each of those first two
 #: numbers, the extra being `oss_train`, deleted in #1472; the two scopes now
-#: agree at 27 and 8. All
+#: agree at 28 and 9. All
 #: four numbers are pinned in
 #: `tests/test_cmd_placeholder_path_detector_1350.py` so this comment cannot
 #: drift again.

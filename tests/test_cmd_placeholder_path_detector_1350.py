@@ -262,24 +262,28 @@ class TestTheShippedRegistryIsFullyDetected:
         # syntax names PATH (`TEXT_OR_file://PATH`) and it declares a
         # boundary of its own inside `check.py::resolve_text` rather than
         # through a `parts` index. Named and declared each moved by one, the
-        # 19-strong undeclared register did not. The register's own header
-        # comment in `_supertool.py` now reads "27 shipped PRESET ops name a
-        # path, 8 declare a boundary, these 19 do not" — these four numbers
-        # are the only thing under it.
-        assert len(named) == 27, sorted(named)
+        # 19-strong undeclared register did not.
+        # #2078 adds `gh-issue-comment`, which DECLARES a boundary
+        # (`"paths": {"args": [2], "root": "cwd"}` over its payload argument,
+        # the same shape `gh-pr-edit` uses). Named and declared each moved by
+        # one again, the 19-strong undeclared register still did not. The
+        # register's own header comment in `_supertool.py` now reads "28
+        # shipped PRESET ops name a path, 9 declare a boundary, these 19 do
+        # not" — these four numbers are the only thing under it.
+        assert len(named) == 28, sorted(named)
         assert sorted(declared) == [
-            "claims", "classify", "gh-pr-edit", "gl-api", "slack_publish",
-            "xml", "xml_attr", "xml_count"], sorted(declared)
+            "claims", "classify", "gh-issue-comment", "gh-pr-edit", "gl-api",
+            "slack_publish", "xml", "xml_attr", "xml_count"], sorted(declared)
         assert len(supertool._UNDECLARED_PATH_OPS) == 19
 
         whole = _registry()
         named_all = [n for n, e in whole.items()
                      if supertool._entry_names_a_path(e) is not None]
         declared_all = [n for n in named_all if "paths" in whole[n]]
-        assert len(named_all) == 27, sorted(named_all)
+        assert len(named_all) == 28, sorted(named_all)
         assert sorted(declared_all) == [
-            "claims", "classify", "gh-pr-edit", "gl-api", "slack_publish",
-            "xml", "xml_attr", "xml_count"], sorted(declared_all)
+            "claims", "classify", "gh-issue-comment", "gh-pr-edit", "gl-api",
+            "slack_publish", "xml", "xml_attr", "xml_count"], sorted(declared_all)
 
     def test_this_repo_ships_no_project_only_path_naming_op(self) -> None:
         """`oss_train` was the one, and #1472 deleted it.

@@ -52,6 +52,8 @@ _MAPPED = {
     "gh-branch", "gh-pr", "gh-pr-create", "gh-pr-merge", "gh-prs", "gh-run",
     # presets/github.json -- #1739
     "gh-pr-edit",
+    # presets/github.json -- #2078
+    "gh-issue-comment",
     # presets/gitlab.json -- #1393
     "gl-issue", "gl-issue-create", "gl-mr", "gl-mrs", "gl-pipeline",
     "gl-job", "gl-api",

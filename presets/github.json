@@ -40,6 +40,21 @@
       ],
       "repo_target": "payload"
     },
+    "gh-issue-comment": {
+      "safety": "acts",
+      "cmd": "{python} {path}github/issue_comment.py {args}",
+      "timeout": 30,
+      "description": "Comment on an issue, and prove what landed (#2078). The one write in this family that had no op -- gh-issue-create opens an issue and gh-pr-edit corrects a published PR body, but a follow-up scoping comment on an issue already filed fell back to raw `gh issue comment --body-file`, which nothing validates and nothing reads back. Payload route because a comment body is free-form prose with newlines and colons that cannot survive :-tokenization. Writes through REST (POST repos/{repo}/issues/{number}/comments), a plain create with no GraphQL field set to go stale under it. The receipt compares the POST response's stored body against what was sent, byte for byte, in the same four states gh-pr-edit uses: EXACT, line endings NORMALISED by the server, MISMATCH naming the first differing line, or UNKNOWN when the response carried no body field at all -- only EXACT and NORMALISED exit 0. No closing-reference gate and no unlink token: a comment does not replace a published body, so there is nothing an update could drop.",
+      "syntax": "gh-issue-comment:NUMBER:@FILE | gh-issue-comment:NUMBER:@-",
+      "example": "gh-issue-comment:2078:@.max/comment.toml",
+      "paths": { "args": [2], "root": "cwd" },
+      "replaces": [
+        { "argv": "gh issue comment", "flag": "--body-file", "unless_flag": ["--web", "-w"], "use": "gh-issue-comment:NUMBER:@-" },
+        { "argv": "gh issue comment", "flag": "--body", "unless_flag": ["--web", "-w"], "use": "gh-issue-comment:NUMBER:@-" },
+        { "argv": "gh issue comment", "flag": "-b", "unless_flag": ["--web", "-w"], "use": "gh-issue-comment:NUMBER:@-" }
+      ],
+      "repo_target": "payload"
+    },
     "gh-pr-create": {
       "safety": "acts",
       "cmd": "{python} {path}github/pr_create.py {arg}",
