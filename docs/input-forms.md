@@ -406,8 +406,9 @@ for a reason specific to it: #834's refusal works because both readings of a
 trailing backslash have another spelling, so refusing strands nothing. This
 idiom has no second spelling to offer — a payload correctly *documenting* the
 idiom writes the exact same bytes a payload that meant a plain apostrophe
-wrote by mistake (this repository's own `CLAUDE.md` is an instance of the
-first case), and the tool cannot tell those two apart from the bytes alone.
+wrote by mistake (`presets/_refname.py`'s own comment on `shlex.quote`'s
+escaping is an instance of the first case), and the tool cannot tell those
+two apart from the bytes alone.
 Refusing would strand the correct write with no way out; the warning names
 the field and quotes the occurrence back, and leaves the decision — and the
 write itself — exactly where it already was.

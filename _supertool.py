@@ -26768,16 +26768,24 @@ def _payload_shell_quote_escape_note(raw: str) -> str:
     backslash have another spelling, so refusing strands nothing. This idiom
     has no such second spelling to offer: a payload correctly documenting it
     writes the exact same bytes a payload that meant a plain apostrophe wrote
-    by mistake -- this repository's own docs are an instance of the first
-    case -- and the tool cannot tell those apart from the bytes alone.
-    Refusing would strand the correct write with no way out; a warning says
-    the same words either way and blocks neither author, which is the
-    "Declining instead of guessing" shape one level down from a refusal:
-    say what was found, and leave the decision where it belongs.
+    by mistake -- `presets/_refname.py`'s own comment on `shlex.quote`'s
+    escaping is an instance of the first case -- and the tool cannot tell
+    those apart from the bytes alone. Refusing would strand the correct write
+    with no way out; a warning says the same words either way and blocks
+    neither author, which is the "Declining instead of guessing" shape one
+    level down from a refusal: say what was found, and leave the decision
+    where it belongs.
 
     Never rewrites, for the same reason `_payload_double_backslash_note`
     does not: collapsing the idiom to a bare apostrophe would guess at intent,
     and a wrong guess is strictly worse than the bug it replaces.
+
+    Capped at `_PAYLOAD_DBS_MAX_FIELDS` located blocks, with the rest NAMED
+    rather than dropped -- the same shape `_payload_double_backslash_refusal`
+    uses and for the same reason (review finding, 2026-09-02): a batch wide
+    enough to carry the idiom in every op would otherwise print one located
+    block per op, the "wall nobody finishes" #1087 already built a cap to
+    avoid, and this note had cloned the scanner without cloning the cap.
     """
     findings = _toml_literal_shell_quote_escape_findings(raw)
     if not findings:
@@ -26792,11 +26800,17 @@ def _payload_shell_quote_escape_note(raw: str) -> str:
         "this is correct and the write is unaffected either way. Nothing is "
         "refused or rewritten; this only says which field to look at." + chr(10)
     ]
-    for _key, label, line, total in findings:
+    for _key, label, line, total in findings[:_PAYLOAD_DBS_MAX_FIELDS]:
         out.append(
             "  " + arrow + " `" + label + "` -- " + str(total)
             + " occurrence" + ("" if total == 1 else "s") + ", e.g. " + chr(96)
             + line + chr(96) + chr(10)
+        )
+    rest = findings[_PAYLOAD_DBS_MAX_FIELDS:]
+    if rest:
+        out.append(
+            "  " + arrow + " and " + str(len(rest)) + " more: "
+            + ", ".join("`" + f[1] + "`" for f in rest) + chr(10)
         )
     return "".join(out)
 

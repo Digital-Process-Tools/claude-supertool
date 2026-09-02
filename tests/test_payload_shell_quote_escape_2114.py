@@ -18,7 +18,8 @@ those literal characters, with the receipt saying nothing about it.
 This is a WARNING, not a refusal, and deliberately so -- unlike #834's
 trailing-backslash case, there is no unambiguous second spelling to offer.
 The same bytes are exactly what a payload correctly documenting the idiom
-would ALSO write (this repository's own CLAUDE.md does), so refusing would
+would ALSO write (this repository's own presets/_refname.py comment on
+shlex.quote's escaping does), so refusing would
 strand a legitimate write with no escape hatch. The two `NOT flagged`
 negative controls below are the point: a warning that also fires on
 ordinary apostrophes or short quote runs is a warning nobody reads.
@@ -102,10 +103,35 @@ def test_a_basic_block_is_not_flagged(tmp_path: Path) -> None:
 
 def test_writing_the_pattern_on_purpose_still_writes_and_still_warns(tmp_path: Path) -> None:
     """The false-positive population named in the issue is real -- this
-    repository's own CLAUDE.md documents the idiom using these exact bytes.
-    The guard cannot tell that case from a mistake, which is why it warns
-    rather than refuses: the write always proceeds either way."""
+    repository's own presets/_refname.py comment on shlex.quote's escaping
+    documents the idiom using these exact bytes. The guard cannot tell that
+    case from a mistake, which is why it warns rather than refuses: the
+    write always proceeds either way."""
     content = Q3 + "the idiom is " + DQ_FORM + Q3
     out, target = _paste(tmp_path, content)
     assert DQ_FORM in target.read_text(encoding="utf-8")
     assert "apostrophe" in out.lower() or "single-quote" in out.lower(), out
+
+
+def test_a_wide_batch_is_capped_not_a_wall(tmp_path: Path) -> None:
+    """A batch of many ops all carrying the idiom must not print one located
+    block per op -- that is the "wall nobody finishes" the sibling doubled-
+    backslash note (`_PAYLOAD_DBS_MAX_FIELDS`) was already built to avoid, and
+    this note mirrors none of that capping without this test (review finding,
+    2026-09-02): a 20-op batch printed all 20 findings verbatim."""
+    ops = []
+    for i in range(6):
+        target = tmp_path / ("out" + str(i) + ".txt")
+        ops.append(
+            "[[ops]]" + NL
+            + 'op = "paste"' + NL
+            + "path = " + chr(34) + str(target) + chr(34) + NL
+            + "content = " + Q3 + "x" + DQ_FORM + "y" + Q3 + NL
+        )
+    body = "".join(ops)
+    out = supertool.dispatch("batch:" + _write_payload(tmp_path, body))
+    located = out.count("occurrence")
+    assert located <= 3, "at most a few located blocks should render: " + out
+    assert "and 3 more" in out, "the remainder is named, not silently dropped: " + out
+    for i in range(6):
+        assert "ops[" + str(i) + "].content" in out, "every field is still named: " + out
