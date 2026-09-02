@@ -250,6 +250,33 @@ def _load_payload(path: str) -> dict:
     return tomllib.loads(raw)
 
 
+def _validate_labels(payload: dict) -> str | None:
+    """`labels`, if present, must be a list of non-empty strings.
+
+    A comma-separated string (`labels = "A,B,C"`) is iterated character by
+    character by `for label in labels: cmd += ["--label", label]`, sending
+    one `--label` flag per *character* to the CLI -- which silently created
+    30 junk labels on a sibling tracker before anyone noticed (#2173). This
+    refuses before any glab/gh call rather than after, since a wrong label
+    write is expensive to unpick.
+    """
+    if "labels" not in payload:
+        return None
+    labels = payload["labels"]
+    if not isinstance(labels, list):
+        return (
+            f"ERROR: labels must be an array of label names, got "
+            f"{type(labels).__name__} {labels!r}"
+        )
+    for label in labels:
+        if not isinstance(label, str) or not label:
+            return (
+                f"ERROR: labels must be an array of label names, got a "
+                f"{type(label).__name__} element {label!r} in labels"
+            )
+    return None
+
+
 def _validate(payload: dict) -> str | None:
     if not payload.get("repo"):
         return "ERROR: payload missing required field: repo"
@@ -331,6 +358,11 @@ def main() -> int:
     err = _validate(payload)
     if err:
         print(err)
+        return 1
+
+    labels_err = _validate_labels(payload)
+    if labels_err:
+        print(labels_err)
         return 1
 
     repo = payload["repo"]
