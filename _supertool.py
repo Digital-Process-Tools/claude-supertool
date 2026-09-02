@@ -18503,8 +18503,15 @@ def _init_platform(host):
     unilaterally in one of the two callers.
     """
     host = host.lower()
+    # Exact only -- see #1212 above. A substring/suffix match here would
+    # match "evilgithub.com" the same way `endswith` once did.
     if host == "github.com":
         return "github"
+    # Deliberately loose, unlike the line above: substring match, same
+    # convention as `origin_slug` (see #1212 above), so a self-hosted
+    # instance like "gitlab.dp.tools" still resolves. Not an oversight --
+    # do not tighten this to match the github branch without re-reading
+    # the docstring above.
     if host == "gitlab.com" or "gitlab" in host:
         return "gitlab"
     return None
