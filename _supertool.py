@@ -18507,11 +18507,12 @@ def _init_platform(host):
     # match "evilgithub.com" the same way `endswith` once did.
     if host == "github.com":
         return "github"
-    # Deliberately loose, unlike the line above: substring match, same
-    # convention as `origin_slug` (see #1212 above), so a self-hosted
-    # instance like "gitlab.dp.tools" still resolves. Not an oversight --
-    # do not tighten this to match the github branch without re-reading
-    # the docstring above.
+    # Deliberately loose, unlike the exact match above: substring match,
+    # same convention as `presets/_remote_default.py`'s `origin_slug`, so a
+    # self-hosted instance like "gitlab.dp.tools" still resolves. Not an
+    # oversight, and #1212 does not justify tightening this line too -- it
+    # only concerns the github branch above. Do not tighten this to match
+    # the github branch without re-reading the docstring above.
     if host == "gitlab.com" or "gitlab" in host:
         return "gitlab"
     return None
