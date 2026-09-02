@@ -228,9 +228,18 @@ def test_an_arity_decline_survives_a_refusal_in_the_same_command(shipped_git):
 
 
 def test_the_refusal_quotes_what_was_typed(shipped_git):
+    """#2076: `match.command` is now the caller's own origin text (the same
+    fidelity guarantee `discarded` already carries via #2010/#2017), not a
+    plain argv-join -- so a trailing redirect on the matched segment itself
+    is part of what was typed and stays in the rendered command rather than
+    being silently dropped. (The missing '2' below is a PRE-EXISTING gap in
+    `_guard_segments_with_origins`'s own IO-number handling, unrelated to
+    this field -- reported separately rather than fixed here, since fixing
+    it touches the shared span builder both `command` and `discarded` read
+    from.)"""
     verdict = supertool.guard_command("git status 2>&1")
     assert verdict.state == "blocked", verdict
-    assert [m.command for m in verdict.matches] == ["git status"]
+    assert [m.command for m in verdict.matches] == ["git status >&1"]
 
 
 def test_a_positional_that_is_really_a_positional_survives(shipped_git):

@@ -19794,6 +19794,13 @@ class GuardMatch(NamedTuple):
     argv: str
     command: str
     project: bool = False
+    #: Whether `command` above is a faithful character slice of the caller's
+    #: original text (#2076) -- the #2010/#2017 fidelity guarantee, threaded
+    #: through to this field the same way it already reaches `discarded`.
+    #: False for the same all-punctuation-word idiom `_guard_raw_segment_spans`
+    #: falls back to a word-rejoin for; `guard_refusal` marks that case rather
+    #: than presenting a reconstruction as though it were the caller's text.
+    command_faithful: bool = True
 
 
 class GuardVerdict(NamedTuple):
@@ -21510,15 +21517,26 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
             if key in seen:
                 continue
             seen.add(key)
+            # `command` used to be a plain argv-join, which silently drops
+            # the caller's original quoting/redirections/pipes (#2076) --
+            # the identical defect #2010/#2017 already fixed for the
+            # sibling `discarded` field, using the same `origin_texts`/
+            # `origin_faithful` pair produced by
+            # `_guard_segments_with_origins`, already in scope here via
+            # `origins[head_index]`.
+            origin_index = origins[head_index]
             matches.append(GuardMatch(
                 op=replacement.op,
                 use=replacement.use,
                 description=replacement.description,
                 argv=" ".join(replacement.argv),
-                command=" ".join(argv),
+                command=origin_texts[origin_index],
                 project=replacement.project,
+                command_faithful=(
+                    origin_faithful[origin_index]
+                    if origin_index < len(origin_faithful) else True),
             ))
-            matched_origins.append(origins[head_index])
+            matched_origins.append(origin_index)
 
     if matches:
         # A positive match is authoritative even when the population is short:
@@ -21693,8 +21711,20 @@ def guard_refusal(verdict: GuardVerdict) -> str:
         spent += len(use) + len(route) + len(description)
         shown += 1
         op = _guard_quote(match.op, _GUARD_USE_CAP)
-        lines.append(f"`{_flat_field(match.command)}` is replaced by "
-                     f"supertool's `{op}` op.")
+        # `match.command` is now the caller's own origin text (#2076), not
+        # an argv-join -- but a raw origin can still carry the operators
+        # `_flat_field` guards against, and the rare word-rejoin fallback
+        # (`command_faithful=False`) is not a slice of anything the caller
+        # typed, so it is marked exactly the way `_guard_discard_line`
+        # marks that same fallback for `discarded` (#2023).
+        rendered_command = _flat_field(match.command)
+        if match.command_faithful:
+            lines.append(f"`{rendered_command}` is replaced by "
+                         f"supertool's `{op}` op.")
+        else:
+            lines.append(f"`{rendered_command}` (could not be rendered "
+                         f"exactly — do not re-send as shown) is replaced "
+                         f"by supertool's `{op}` op.")
         lines.append(f"  Use: supertool '{use}'")
         if route:
             lines.append(route)
