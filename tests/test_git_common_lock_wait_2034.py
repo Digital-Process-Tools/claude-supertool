@@ -83,7 +83,7 @@ def test_retries_and_succeeds_once_the_lock_clears(
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"
-    assert counter.read_text().strip() == "3", "expected exactly two retries"
+    assert counter.read_text(encoding="utf-8").strip() == "3", "expected exactly two retries"
 
 
 def test_a_non_lock_failure_is_never_retried(
@@ -106,7 +106,7 @@ def test_a_non_lock_failure_is_never_retried(
     result = mod._git(["status"])
 
     assert result.returncode == 128
-    assert counter.read_text().strip() == "1", "a non-lock failure was retried"
+    assert counter.read_text(encoding="utf-8").strip() == "1", "a non-lock failure was retried"
 
 
 def test_exhausting_the_budget_appends_a_diagnosis_not_another_retry(
@@ -136,7 +136,7 @@ def test_exhausting_the_budget_appends_a_diagnosis_not_another_retry(
 
     assert result.returncode == 128
     assert "lock-diagnosis: stale" in result.stderr, result.stderr
-    assert int(counter.read_text().strip()) >= 2, "never retried at all"
+    assert int(counter.read_text(encoding="utf-8").strip()) >= 2, "never retried at all"
     assert elapsed < 3, f"took {elapsed}s -- the budget is 0.3s"
 
 
@@ -160,7 +160,7 @@ def test_lock_wait_zero_disables_the_retry_entirely(
     result = mod._git(["commit", "-m", "x"])
 
     assert result.returncode == 128
-    assert counter.read_text().strip() == "1"
+    assert counter.read_text(encoding="utf-8").strip() == "1"
     assert "lock-diagnosis" not in result.stderr
 
 
@@ -186,7 +186,7 @@ def test_git_verbatim_gets_the_same_retry(
     result = mod._git_verbatim(["status"])
 
     assert result.returncode == 0
-    assert counter.read_text().strip() == "2"
+    assert counter.read_text(encoding="utf-8").strip() == "2"
 
 
 # ---------------------------------------------------------------------------
