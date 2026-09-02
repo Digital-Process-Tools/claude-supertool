@@ -1,4 +1,4 @@
-"""#2176 -- an unquoted single binary path containing a space (the default
+r"""#2176 -- an unquoted single binary path containing a space (the default
 Windows install location, e.g. `C:\Program Files\glab\glab.exe`) must
 resolve as ONE path, not get shlex-split at the space into two tokens.
 
@@ -57,7 +57,11 @@ def test_quoted_multi_token_command_line_still_splits(tmp_path):
 
     result = resolve_bin_cmd(quoted, "glab")
 
-    assert result == [sys.executable, stub.as_posix()]
+    # resolve_bin_cmd forward-slashes its input before splitting (#2176),
+    # so a backslash-separated sys.executable (Windows) comes back with
+    # forward slashes -- compare against the SAME normalization, not the
+    # raw value, or this assertion only holds by accident on POSIX.
+    assert result == [sys.executable.replace("\\", "/"), stub.as_posix()]
 
 
 def test_default_used_when_env_var_unset():
