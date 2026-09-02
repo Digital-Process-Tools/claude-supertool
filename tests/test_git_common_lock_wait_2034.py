@@ -32,6 +32,32 @@ import pytest
 
 PRESET = Path(__file__).parent.parent / "presets" / "git" / "_git_common.py"
 
+#: `_shim_dir` below writes a `#!/bin/sh` script to a file named `git` with no
+#: extension. `_git`/`_git_verbatim` invoke it via `subprocess.Popen(["git",
+#: ...], shell=False)` -- no `executable=`, so on Windows the child is found
+#: (or not) by `CreateProcess` with `lpApplicationName=NULL`, which appends
+#: only `.exe` to an extension-less name and never consults `PATHEXT`. That is
+#: the same fact already carried by `tests/test_adapter_tool_vs_file_753.py`,
+#: `tests/test_phplint_tool_vs_file_745.py`, `tests/test_tsc_check.py` and
+#: `tests/test_validators_eslint_667.py` for their own tool shims, and by
+#: `tests/_gitshim.py`'s four consumers (`test_git_timeout_disclosure_650.py`,
+#: `test_status_swallowed_705.py`, `test_git_repo_probe_timeout_1858.py`,
+#: `test_unanswerable_checks_693.py`, `test_git_shim_subcommand_1206.py`) for
+#: this exact shim shape -- all five already skip on `os.name == "nt"` rather
+#: than shipping a `git.bat` that `CreateProcess` would silently never reach.
+#: A `.bat`/`.cmd` shim only intercepts a bare `git` invocation through
+#: `cmd.exe`'s own PATHEXT-aware resolution, which requires `shell=True`;
+#: `_git`/`_git_verbatim` never pass it, so writing one here would be a shim
+#: that never fires while still reading as coverage -- the untested-looking
+#: gap this repo's CLAUDE.md asks to prefer over a green leg that tests
+#: nothing. So: same convention, same wording, on the five tests that build
+#: this shim. The five tests that do not touch PATH (`_lock_wait_budget`,
+#: `_diagnose_lock`, `_lock_fd_holder`) are unaffected and keep running on
+#: Windows. REASONED, not observed -- there is no Windows machine in this
+#: environment to run it on; the CreateProcess/PATHEXT claim matches the
+#: identical, already-merged, already-green-on-Windows-CI precedent above.
+posix_shim = pytest.mark.skipif(os.name == "nt", reason="POSIX /bin/sh shim")
+
 
 def _load():
     spec = importlib.util.spec_from_file_location("git_common_2034", PRESET)
@@ -57,6 +83,7 @@ LOCK_ERR = "fatal: Unable to create '{lock}': File exists."
 # The retry loop
 # ---------------------------------------------------------------------------
 
+@posix_shim
 def test_retries_and_succeeds_once_the_lock_clears(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """MUST FIRE. Contention that clears inside the budget must not be
@@ -86,6 +113,7 @@ def test_retries_and_succeeds_once_the_lock_clears(
     assert counter.read_text(encoding="utf-8").strip() == "3", "expected exactly two retries"
 
 
+@posix_shim
 def test_a_non_lock_failure_is_never_retried(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """MUST NOT FIRE. An ordinary git failure (wrong args, not a repo, a real
@@ -109,6 +137,7 @@ def test_a_non_lock_failure_is_never_retried(
     assert counter.read_text(encoding="utf-8").strip() == "1", "a non-lock failure was retried"
 
 
+@posix_shim
 def test_exhausting_the_budget_appends_a_diagnosis_not_another_retry(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """MUST FIRE. A lock that never clears must stop retrying at the stated
@@ -140,6 +169,7 @@ def test_exhausting_the_budget_appends_a_diagnosis_not_another_retry(
     assert elapsed < 3, f"took {elapsed}s -- the budget is 0.3s"
 
 
+@posix_shim
 def test_lock_wait_zero_disables_the_retry_entirely(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """MUST NOT FIRE. Setting the budget to 0 is an opt-out, not a 1-retry
@@ -164,6 +194,7 @@ def test_lock_wait_zero_disables_the_retry_entirely(
     assert "lock-diagnosis" not in result.stderr
 
 
+@posix_shim
 def test_git_verbatim_gets_the_same_retry(
         tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """MUST FIRE. `_git_verbatim` is the same chokepoint with translation off."""

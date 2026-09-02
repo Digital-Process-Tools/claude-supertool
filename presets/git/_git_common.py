@@ -15,6 +15,7 @@ and "the lookup did not happen".
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shlex
@@ -214,7 +215,7 @@ _LOCK_WAIT_CEILING = 60.0
 
 def _lock_wait_budget() -> float:
     value = env_float("SUPERTOOL_GIT_LOCK_WAIT", LOCK_WAIT_DEFAULT, minimum=0.0)
-    if value != value or value == float("inf"):  # NaN, or +inf slipping past `minimum`
+    if math.isnan(value) or value == float("inf"):  # NaN, or +inf slipping past `minimum`
         return LOCK_WAIT_DEFAULT
     return min(value, _LOCK_WAIT_CEILING)
 
