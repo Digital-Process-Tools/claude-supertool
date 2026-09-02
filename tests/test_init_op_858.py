@@ -89,7 +89,12 @@ def test_init_declines_on_an_unrecognised_host(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(repo)
     out = supertool.op_init("")
     assert "ERROR" in out
-    assert "bitbucket.org" in out
+    # The quoted form, not a bare `"bitbucket.org" in out`: the error prints
+    # the host through `_flat_field(host)!r`, so this asserts the field rather
+    # than an incidental appearance -- and a bare domain literal on the left of
+    # `in` is what CodeQL's py/incomplete-url-substring-sanitization matches on,
+    # which fired here on a test assertion that sanitizes nothing (#2172).
+    assert "'bitbucket.org'" in out
     assert not (repo / ".supertool.json").exists()
 
 
