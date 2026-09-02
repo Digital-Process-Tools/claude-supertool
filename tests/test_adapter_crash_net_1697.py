@@ -105,6 +105,26 @@ def _formatter_noop_bin() -> str:
     return _NOOP_STUB_CMD
 
 
+def _has_main_block(path: Path) -> bool:
+    """Whether `path` has a runnable `if __name__ == "__main__":` block.
+
+    #2174's census gap: the previous exclusion of `common/` was by
+    *directory*, on the stated grounds that it "holds shared helpers with no
+    `main` and no `__main__` block" -- true of every file there except
+    `ci_lint_resolve_root.py`, which has both and calls `guard_main` from its
+    own `__main__` block exactly as a validator or formatter adapter does.
+    Excluding by directory made that one file invisible to this sweep;
+    excluding by the actual property (does this file have something to run
+    as `__main__`?) does not, and does not depend on anyone remembering to
+    special-case a filename the next time `common/` grows a second one.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return re.search(r'(?m)^if __name__ == .__main__.\s*:', text) is not None
+
+
 def _adapters():
     """Every adapter under `validators/*/*.py` and `formatters/*/*.py`,
     `common/` excluded.
@@ -116,7 +136,11 @@ def _adapters():
     `validators/*/*.py` alone, and that is what the previous glob asserted;
     read from the contract's own reach, it is every directory under either
     root that emits this JSON, `common/` excluded because it holds shared
-    helpers with no `main` and no `__main__` block.
+    helpers with no `main` and no `__main__` block -- see `_has_main_block`
+    for the one file under `common/` that does not fit that description and
+    is swept separately, as `RESOLVERS` below, rather than folded in here:
+    it does not share the JSON-verdict (`ok`/`skipped`) contract this file's
+    positive control asserts on an uninjected run, only the crash-net one.
     """
     found = sorted(p for p in VALIDATORS.glob("*/*.py")
                    if p.parent.name != "common")
@@ -129,11 +153,40 @@ def _adapters():
     return found
 
 
+def _common_helpers_with_main():
+    """`common/` files that #2174 says should not be invisible to the
+    crash-net sweep: they have their own `__main__` block and route through
+    `guard_main`, so an exception escaping them is exactly #1697's failure
+    mode. Not merged into `ADAPTERS` -- see `_adapters`'s own docstring for
+    why -- but still driven through the crash-net tests below via
+    `CRASH_NET_TARGETS`.
+    """
+    found = []
+    for base in (VALIDATORS, FORMATTERS):
+        common = base / "common"
+        if not common.is_dir():
+            continue
+        found.extend(p for p in sorted(common.glob("*.py"))
+                     if _has_main_block(p) and "guard_main" in p.read_text(
+                         encoding="utf-8"))
+    return found
+
+
 def _ids(paths):
     return [p.parent.name for p in paths]
 
 
 ADAPTERS = _adapters()
+RESOLVERS = _common_helpers_with_main()
+#: The crash-net tests (#1697's actual subject: does an exception escaping
+#: `main` still publish a verdict) are agnostic to whether the file also
+#: answers the JSON-verdict adapter contract on a normal run -- a resolver
+#: does not, an adapter does -- so they are driven over the union. Only the
+#: positive control that asserts an uninjected run carries `"ok"`/`"skipped"`
+#: stays `ADAPTERS`-only; `ci_lint_resolve_root.py`'s own normal-run contract
+#: (a bare path, or nothing) is pinned by `tests/test_validators_ci_lint_1797.py`
+#: instead.
+CRASH_NET_TARGETS = ADAPTERS + RESOLVERS
 
 
 #: Driver run as `python -c`, with the adapter path passed through argv rather
@@ -279,7 +332,20 @@ def test_a_real_finding_still_reaches_stdout(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("adapter", ADAPTERS, ids=_ids(ADAPTERS))
 def test_an_exception_escaping_main_still_publishes_a_verdict(adapter) -> None:
-    """MUST NOT BE SILENT: an adapter that dies says so on stdout, with why."""
+    """MUST NOT BE SILENT: an adapter that dies says so on stdout, with why.
+
+    `ADAPTERS`, not `CRASH_NET_TARGETS`: `_drive`'s `inject` mode hijacks the
+    adapter's *own* first call to `json.dumps` to synthesize a crash, which
+    depends on the adapter calling it at all on a normal run -- true of every
+    validator and formatter, since SCHEMA.md's contract IS one JSON object on
+    stdout. A `RESOLVERS` file has no such call on its happy path (a bare
+    path, or nothing) so there is no `json.dumps` for this harness to hijack
+    and the driven process would just... resolve normally, proving nothing
+    about its crash net. `test_every_adapter_routes_main_through_the_shared_net`
+    below is where `RESOLVERS` is actually swept, by reading source rather
+    than by injecting a synthetic crash this harness cannot manufacture for
+    a non-JSON-emitting `main`.
+    """
     name = adapter.parent.name
     proc = _drive(adapter, REPO / "presets" / "gitlab.json", "inject")
     payload = _last_json(proc, name + " (crash injected)")
@@ -337,6 +403,11 @@ def test_an_exception_escaping_main_still_publishes_a_verdict(adapter) -> None:
 @pytest.mark.parametrize("adapter", ADAPTERS, ids=_ids(ADAPTERS))
 def test_the_core_reads_a_crashed_adapter_as_not_checked(adapter) -> None:
     """The payload is only worth publishing if the core routes it correctly.
+
+    `ADAPTERS`, not `CRASH_NET_TARGETS` -- same reason as the injection test
+    above: this depends on `_drive`'s `inject` harness producing a genuine
+    crash payload, which it cannot for a `RESOLVERS` file with no normal-path
+    `json.dumps` call to hijack.
 
     `NOT CHECKED`, never a regression, never a rollback -- the promise
     `_validator_measured_count` and `_validator_regressed` make for every
@@ -399,7 +470,7 @@ def test_a_skipped_crash_net_would_be_quieter_than_no_net_at_all() -> None:
 # The durable half: a 37th adapter cannot arrive without a net.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("adapter", ADAPTERS, ids=_ids(ADAPTERS))
+@pytest.mark.parametrize("adapter", CRASH_NET_TARGETS, ids=_ids(CRASH_NET_TARGETS))
 def test_every_adapter_routes_main_through_the_shared_net(adapter) -> None:
     """One spelling, not thirty-six.
 
