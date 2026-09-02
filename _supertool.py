@@ -6601,7 +6601,18 @@ def _op_around(pattern: str, path: str, n: int = 10) -> str:
         # here (the cwd was fine), so name the actual mistake instead —
         # never redirect the call itself, only the advice.
         suggest = None
-        if _is_ascii_int(path):
+        # `pattern` becomes the PATH slot of the suggested `around_line:`
+        # call, and this route reaches an unresolved `pattern` no colon-CLI
+        # caller could: dispatch's own `_PATH_ARG_POSITIONS` gate refuses
+        # `around:/etc/hosts:3` before `op_around` ever runs, but the
+        # `@payload`/`batch` route applies no containment to `pattern` (it
+        # is a regex there, not a declared path). Printing the suggestion
+        # unconditionally advertised a call the colon route itself refuses
+        # for containment (#1146) -- the same shape as the `git-checkout`
+        # hint in #850: never prescribe a command the tool's own sibling
+        # rejects. `_containment_error` mirrors the gate `_swap_suggest`
+        # (#1711) already applies to its own candidate below.
+        if _is_ascii_int(path) and _containment_error([pattern]) is None:
             suggest = (
                 "`around` takes PATTERN:PATH[:N] — "
                 f"'{path}' was read as the path. Did you mean: "
@@ -10445,6 +10456,38 @@ def _write_target(path: str) -> str:
     identity on an object the writer never touched. One expression, two callers.
     """
     return os.path.realpath(path) if os.path.islink(path) else path
+
+
+def _write_target_display(path: str) -> str:
+    """`_write_target(path)`, spelled the way `path` itself is displayed (#1146).
+
+    `_write_target` uses `os.path.realpath`, which canonicalises every
+    symlinked ANCESTOR directory along the way, not only the leaf symlink —
+    macOS routes every `/tmp` path through `/private/tmp`. The receipt lines
+    that quote `path` back (the success line `_receipt_head` retracts, the
+    `[rolled back]`/`[left on disk]` subject) never canonicalise ancestors —
+    they use `os.path.abspath`. So a retraction of a write through a symlink
+    named the SAME directory two different ways: `/private/var/…/target.py`
+    for the resolved target, `/var/…/link.py` for the link the success line
+    named, and a reader had to work out the two prefixes were one place.
+
+    Rewritten to agree with `path`'s own spelling wherever the divergence is
+    ONLY that ancestor-canonicalisation — i.e. the write target and `path`'s
+    directory resolve (via realpath) to the very same directory, and differ
+    only in which of the two equivalent spellings was used for it. A target
+    that genuinely lives elsewhere (chained symlinks pointing well outside
+    `path`'s own directory) is returned exactly as `_write_target` found it —
+    this only removes a cosmetic mismatch, never the disclosure that the
+    write landed somewhere else.
+    """
+    target = _write_target(path)
+    if target == path:
+        return target
+    path_dir = os.path.dirname(os.path.abspath(path))
+    target_dir = os.path.dirname(target)
+    if path_dir != target_dir and os.path.realpath(path_dir) == os.path.realpath(target_dir):
+        return os.path.join(path_dir, os.path.basename(target))
+    return target
 
 
 def _process_umask() -> int:
@@ -24797,7 +24840,15 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     # Every rollback arm reports on the object it acted on, refuse included: a
     # refusal that names the link while the restore beside it names the target
     # would describe two different files as one.
-    _target_cell = _flat_cell(_target)
+    #
+    # Displayed via `_write_target_display`, not `_target` itself (#1146):
+    # `_write_target`'s `os.path.realpath` canonicalises a symlinked ANCESTOR
+    # directory as well as the leaf link, while every OTHER path in this
+    # receipt (`path` itself, via `os.path.abspath`) does not — so the same
+    # directory was spelled two different ways across one sentence. The
+    # functional `_target` below is untouched; only what gets printed changes.
+    _target_display = _write_target_display(path)
+    _target_cell = _flat_cell(_target_display)
     if os.path.abspath(_target) != os.path.abspath(path):
         _target_cell += f" (which the symlink {_flat_cell(path)} resolves to)"
     applicable_fmt = _applicable_formatters(op, path)
@@ -24954,7 +25005,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                             fmt_rows.append(_retraction_line(
                                 result_name, "failed", path, body,
                                 created=fmt_action == "unlink",
-                                target=_target))
+                                target=_target_display))
                         except OSError as e:
                             fmt_rows.append(f"[ROLLBACK FAILED] {result_name}: {e}")
                 else:
@@ -25037,7 +25088,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                 _retract_write(path)
                 diff_out += ("\n" + _retraction_line(
                     name, "regressed", path, body,
-                    created=action == "unlink", target=_target) + "\n")
+                    created=action == "unlink", target=_target_display) + "\n")
             except OSError as e:
                 diff_out += f"\n[ROLLBACK FAILED] {name}: {e}\n"
             already_undone = True
@@ -25062,7 +25113,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
         if refused_by and os.path.exists(_target):
             _note_left_on_disk()
             diff_out += ("\n" + _left_on_disk_line(
-                refused_by, path, body, target=_target) + "\n")
+                refused_by, path, body, target=_target_display) + "\n")
 
     suffix = ""
     if fmt_rows:  # silent when all formatters are no-op
@@ -28656,6 +28707,57 @@ def dispatch_verdict(
     return out, _call_failed()
 
 
+def _depth1_call_footer(op: str, body: str,
+                        attempts_before: int, writes_before: int,
+                        skips_before: int, reapplies_before: int,
+                        rollbacks_before: int, left_on_disk_before: int) -> str:
+    """`[result]`/`[branch: X]` footer for a depth<=1 call (#381, #990).
+
+    Factored out of the tail of `_dispatch_impl` so the `op:@-` payload route
+    can carry it too (#1158): that route used to `return` its body directly,
+    before dispatch ever reached this block, so `validate:@-` silently
+    dropped the summary line `validate:PATH` prints for the identical file
+    and identical config. Same computation either way — the six `*_before`
+    counters are deltas taken at whichever call site snapshotted them, and a
+    read-only route (nothing in `_READ_OP_AT_FIELDS` mutates) can snapshot
+    them immediately before the op runs without losing anything.
+    """
+    if getattr(_DISPATCH_STATE, "depth", 1) > 1:
+        return body
+    # This frame's own rows (#1109), not a slice of the process-global.
+    # `dispatch` installed them before `_dispatch_impl` ran, so the lists
+    # are always present here; `or ()` declines to fall back to the global,
+    # because a footer built from every op's rows is the defect, not a
+    # degraded reading of it.
+    _not_checked_slice = list(
+        getattr(_DISPATCH_STATE, "acc_not_checked", None) or ())
+    _validated_slice = list(
+        getattr(_DISPATCH_STATE, "acc_validated", None) or ())
+    if not (op in _OP_TARGETS or _MUTATION_ATTEMPTS[0] > attempts_before
+            or _not_checked_slice or _validated_slice):
+        return body
+    _result = _result_line(_MUTATION_ATTEMPTS[0] - attempts_before,
+                           _WRITE_COUNT[0] - writes_before,
+                           _SKIP_COUNT[0] - skips_before,
+                           _REAPPLY_COUNT[0] - reapplies_before,
+                           _not_checked_slice,
+                           _ROLLBACK_COUNT[0] - rollbacks_before,
+                           _validated_slice,
+                           _LEFT_ON_DISK_COUNT[0] - left_on_disk_before)
+    # A batch says its count twice, and the leading copy is the load-bearing
+    # one. The footer is separated from the per-op results by a validators
+    # block long enough that `tail` lands on `git-status : ok` and reads as
+    # success -- the exact half of #984 that #1018 marked `Part of` and did
+    # not build. Only `batch`: a single op's receipt is three lines with the
+    # footer already adjacent, and a duplicate there is noise rather than a
+    # signal.
+    if op == "batch":
+        body = _result + body
+    body += _result
+    body += _branch_line()
+    return body
+
+
 def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) -> str:
     """Body of dispatch — separated so the recursion guard stays minimal."""
     # Strip :::no-exclude before splitting so it doesn't interfere with arg parsing
@@ -28753,10 +28855,26 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         # The warnings lead the body, so the verdict is taken from the op's
         # own answer rather than from whatever ends up first on the line.
         _read_warnings = _take_payload_warnings()
+        # Snapshotted immediately before the op runs (#1158): nothing in
+        # `_READ_OP_AT_FIELDS` mutates, so a footer built from a delta against
+        # this point is exact -- and without it, `validate:@-` printed
+        # neither `[result]` nor `[branch: X]`, the two lines `validate:PATH`
+        # ends on, because this branch returned before dispatch ever reached
+        # the footer block.
+        _read_attempts_before = _MUTATION_ATTEMPTS[0]
+        _read_writes_before = _WRITE_COUNT[0]
+        _read_skips_before = _SKIP_COUNT[0]
+        _read_reapplies_before = _REAPPLY_COUNT[0]
+        _read_rollbacks_before = _ROLLBACK_COUNT[0]
+        _read_left_on_disk_before = _LEFT_ON_DISK_COUNT[0]
         _read_body = _read_op_from_payload(
             op, _read_payload, no_exclude=no_exclude)
         if _op_body_failed(_read_body):
             _mark_op_failure()
+        _read_body = _depth1_call_footer(
+            op, _read_body, _read_attempts_before, _read_writes_before,
+            _read_skips_before, _read_reapplies_before,
+            _read_rollbacks_before, _read_left_on_disk_before)
         return header + _read_warnings + _read_body
 
     # @file route — 'op:@path' or 'op:@-' (stdin).
@@ -29670,41 +29788,15 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # must stay the last line (#381's tests assert `endswith`), and a footer
     # that only appears when a branch happens to exist would go missing outside
     # a repo — which is the exact shape #621 is about.
-    if getattr(_DISPATCH_STATE, "depth", 1) <= 1:
-        # A read-only op that ran validators can still carry the one thing the
-        # footer exists to carry: a checker that did not check (#969).
-        # `validate` is not in `_OP_TARGETS` and mutates nothing, so it was
-        # gated out of the summary line entirely.
-        # This frame's own rows (#1109), not a slice of the process-global.
-        # `dispatch` installed them before `_dispatch_impl` ran, so the lists
-        # are always present here; `or ()` declines to fall back to the global,
-        # because a footer built from every op's rows is the defect, not a
-        # degraded reading of it.
-        _not_checked_slice = list(
-            getattr(_DISPATCH_STATE, "acc_not_checked", None) or ())
-        _validated_slice = list(
-            getattr(_DISPATCH_STATE, "acc_validated", None) or ())
-        if (op in _OP_TARGETS or _MUTATION_ATTEMPTS[0] > _attempts_before
-                or _not_checked_slice or _validated_slice):
-            _result = _result_line(_MUTATION_ATTEMPTS[0] - _attempts_before,
-                                   _WRITE_COUNT[0] - _writes_before,
-                                   _SKIP_COUNT[0] - _skips_before,
-                                   _REAPPLY_COUNT[0] - _reapplies_before,
-                                   _not_checked_slice,
-                                   _ROLLBACK_COUNT[0] - _rollbacks_before,
-                                   _validated_slice,
-                                   _LEFT_ON_DISK_COUNT[0] - _left_on_disk_before)
-            # A batch says its count twice, and the leading copy is the load-
-            # bearing one. The footer is separated from the per-op results by a
-            # validators block long enough that `tail` lands on `git-status :
-            # ok` and reads as success -- the exact half of #984 that #1018
-            # marked `Part of` and did not build. Only `batch`: a single op's
-            # receipt is three lines with the footer already adjacent, and a
-            # duplicate there is noise rather than a signal.
-            if op == "batch":
-                body = _result + body
-            body += _result
-            body += _branch_line()
+    # A read-only op that ran validators can still carry the one thing the
+    # footer exists to carry: a checker that did not check (#969). `validate`
+    # is not in `_OP_TARGETS` and mutates nothing, so it was gated out of the
+    # summary line entirely -- `_depth1_call_footer` (factored out for #1158,
+    # so the `validate:@-` payload route could carry the identical footer)
+    # applies the same gate.
+    body = _depth1_call_footer(op, body, _attempts_before, _writes_before,
+                               _skips_before, _reapplies_before,
+                               _rollbacks_before, _left_on_disk_before)
 
     return header + body
 
