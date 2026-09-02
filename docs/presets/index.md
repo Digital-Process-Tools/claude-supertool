@@ -115,3 +115,122 @@ Use a **custom op** (directly in `.supertool.json`) when:
 * You don't need the `{path}` placeholder
 
 Both support the same op schema — presets are just a packaging convention.
+
+Moved from `README.md` by [#2142](https://github.com/Digital-Process-Tools/claude-supertool/issues/2142).
+
+### `unavailable here`, not `unknown` — reaching a preset op from outside the project
+
+Preset ops only exist where a `.supertool.json` enables them, so the same binary answers differently depending on your cwd. Asking for one from somewhere else does **not** report it as a typo:
+
+```
+$ cd ~/some/other/repo
+$ /path/to/supertool 'gl-mr:33323:status'
+ERROR: op 'gl-mr' is unavailable here, not unknown — it is provided by the shipped preset 'gitlab'.
+       No .supertool.json was found from /Users/…/some/other/repo or any parent, so no preset
+       ops and no project ops are loaded — only the built-ins.
+       Fix: run it from a project that enables the 'gitlab' preset, or make this call's first
+       op 'cwd:<project-path>'.
+```
+
+Three states, not two — `available`, `unknown`, and `unavailable here` with the reason ([#614](https://github.com/Digital-Process-Tools/claude-supertool/issues/614)). The wording distinguishes two situations that need different fixes: **no `.supertool.json` anywhere above your cwd** (run from the project, or use `cwd:`) versus **a config that exists but does not list that preset** — which names the file and tells you to add the preset to its `"presets"` list.
+
+A name that is not a shipped preset op still reads as a plain `unknown operation`. A typo is never softened into "maybe you need a project root".
+
+It does carry a `Did you mean:` line when — and only when — a candidate can be shown to be right ([#1222](https://github.com/Digital-Process-Tools/claude-supertool/issues/1222), [#1303](https://github.com/Digital-Process-Tools/claude-supertool/issues/1303)):
+
+```
+$ supertool 'worktrees'
+ERROR: unknown operation: worktrees
+Did you mean: git-worktrees (preset 'git')
+Valid operations: append, around, …
+```
+
+Three rules produce that line, and nothing else does: a hand-maintained synonym for a name whose intended target is documented (`write` → `paste`, from the same mapping the repo's `Write`-blocking hook teaches); a candidate that is exactly `<prefix>-<typed>`, so `worktrees` finds `git-worktrees` and `blame` finds `git-blame`; and one edit — insert, delete, substitute, or an adjacent swap — over names of four characters or more. Under four characters a single edit is noise (`lsx` is one from `ls`), so nothing is offered. The candidates are the ops **loaded in that process**, builtins and presets together, ranked in that order and capped at three; a shipped preset that this cwd does not enable is named only if nothing loaded matches, and is labelled `not loaded here`.
+
+When no rule fires the message is silent about it, which is the point: a suggestion that is wrong costs the reader a round-trip that silence would not have. The roster below the suggestion is never replaced by it.
+
+**In a multi-op call, an unroutable member refuses the whole call before any member runs** ([#2122](https://github.com/Digital-Process-Tools/claude-supertool/issues/2122)). Every positional argument is its own op, so a mistyped flag becomes a batch member of its own — `supertool 'read:big.md' --offset 900 --limit 5` used to run the unbounded `read:` to completion before saying `--offset` was not an op, spending the largest possible cost right before the message that explains it should not have. Every member's op *name* is now checked against the registry up front, and the call refuses with none of its members run if one does not route — a flag-shaped member (`--offset`) is named as one, with a pointer at the positional form of the op it likely followed. This is narrower than "will succeed": a real op given a bad argument still runs in place and fails there, exactly as before — only a name that cannot route at all is knowable ahead of time.
+
+**The escape hatch is `cwd:`** — the first op in a call, which `chdir`s before dispatch so the rest of the call resolves against that project's config:
+
+```bash
+./supertool 'cwd:~/projects/myapp' 'gl-mr:33323:status' 'gl-pipeline:33323'
+```
+
+`cwd:` moves where *repo* paths resolve. It does not move where a `@payload` reference resolves — that stays the directory the call was made from, because the payload is an argument you typed, not repo content ([#672](https://github.com/Digital-Process-Tools/claude-supertool/issues/672)). So the natural shape works without absolute paths:
+
+```bash
+./supertool 'cwd:~/projects/myapp' 'batch:@.max/edits.toml'
+#            └─ `path =` inside the payload resolves here
+#                                        └─ the payload file itself resolves next to the call
+```
+
+There is no second lookup: a payload absent from the invocation directory is an error naming both roots, even if a file of that name exists under the `cwd:` target. Pass an absolute `@path` to read one from inside the target repo.
+
+`ops` carries the same disclosure. From a directory with no config it leads with one line naming the presets that are not loaded and their op count, so the built-in listing is not mistaken for the tool's whole capability; from inside a configured project the same line trails the listing, since a preset that project chose not to enable is not a surprise.
+
+**`registry` answers the other half — where each loaded op's definition came from.** A project entry naming an op a preset already defines is a *partial* override: supertool merges it key-by-key, so `{"git-diff": {"red_flags_extra": […]}}` adds one key and the preset's `cmd`, `syntax` and `timeout` stay in force. Every hand-rolled walk over `presets/*.json` plus `.supertool.json` wrote `ops[name] = entry` instead and replaced the shipped definition with the stub — the op count is unchanged, so nothing looks wrong, but the entry stops matching every filter downstream. [#1350](https://github.com/Digital-Process-Tools/claude-supertool/issues/1350)’s containment audit lost `git-diff` — the path-naming op it was written about — out of its own population and printed a pass. `registry` lists every op with its source, marks the shadowed ones and which keys the project supplied, and `registry:OP` attributes each key of one entry. A listing that could not be fully enumerated says `INCOMPLETE` in the body, naming the preset that failed to load, rather than returning a shorter list ([details](docs/operations/meta.md#registry--which-ops-are-loaded-and-where-each-came-from)).
+
+### `repo:OWNER/NAME` — which repo the call is *about*
+
+`cwd:` says where the call stands. It is not the same question as which repo the call is about, and until [#673](https://github.com/Digital-Process-Tools/claude-supertool/issues/673) there was no way to ask the second one: the `gh-*` read ops took their repo from the cwd's git remote, so a repo you have not cloned — or one whose project root is a *GitLab* repo — was unreachable through the ops. `gh-issue-create` had accepted a `repo` key in its payload since it shipped, so the vocabulary existed in the family and was simply missing on the read side.
+
+```bash
+./supertool 'repo:Digital-Process-Tools/claude-remember' 'gh-pr:265:status'
+```
+
+It composes with `cwd:`, which is what makes a GitLab project root usable as the place you stand while asking about a GitHub repo:
+
+```bash
+./supertool 'cwd:~/projects/my-gitlab-app' 'repo:some-org/some-gh-repo' 'gh-pr:265:status'
+```
+
+**Rules.** First op, or immediately after `cwd:`. One per call. `OWNER/NAME` or it is refused before anything runs — a half-target never reaches `gh`.
+
+**A `repo:` no op in the call can honour is refused, not ignored.** Only ops that declare a repo target accept one (`gh-pr`, `gh-prs`, `gh-issue`, `gh-issues`, `gh-run`, `gh-branch`, `gh-job`, and the payload-mode write ops below); mixing in one that has no repo dimension at all — `read:` — fails the call and names the op. A target that silently applied to half a call is the defect the issue was about, so it is not the fix's behaviour either.
+
+**A payload-mode write op — `gh-issue-create`, `gh-pr-create`, `gh-pr-edit`, `gl-issue-create` — takes a precedence rule instead of a ban ([#1909](https://github.com/Digital-Process-Tools/claude-supertool/issues/1909)).** These ops read their repo target from their own payload field (`repo`, or `project` for `gl-issue-create`), not from `SUPERTOOL_REPO` directly — until #1909 that meant a `repo:` op beside one of them refused the *whole call*, on the theory that "one place the target comes from" meant one route. It now means one *resolved value*:
+
+* `repo:` present, payload silent → the target wins, stated with its source in the receipt (`repo from repo: op`).
+* payload set, no `repo:` op → unchanged, exactly as before.
+* both present and agreeing → proceeds; nothing is ambiguous.
+* **both present and disagreeing → refuses, naming both values and which op each came from.** A silent precedence in either direction would reintroduce the defect the old ban existed to prevent, so the op decides this itself rather than core guessing.
+
+```bash
+./supertool 'repo:Digital-Process-Tools/claude-remember' 'gh-issues' 'gh-issue-create:@issue.toml'
+```
+
+reads a sibling repo's open issues and files on it in the same call — the batching gap #1909 was filed about — without having to inject `repo = "..."` into a payload file you did not write.
+
+**The error moved with the capability.** `cwd is not a GitHub repo` was a complete answer while cwd was the only way to name a repo. It now names the second route as well — and when a target *was* given it is not used at all, because cwd had no part in that lookup:
+
+```
+$ ./supertool 'gh-pr:265:status'                       # from a GitLab project root
+ERROR: cwd is not a GitHub repo and no repo target was given. cd into a GitHub-cloned repo,
+name one with a leading repo: op (./supertool 'repo:OWNER/NAME' 'gh-pr:265:status'), or run
+gh directly with --repo OWNER/REPO.
+
+$ ./supertool 'repo:some-org/typo' 'gh-pr:265:status'
+ERROR: PR #265 not found in some-org/typo. Check the number, or the repo target
+(gh repo view some-org/typo).
+```
+
+**And a third case, because the first two are claims about your machine.** When `gh` does not answer at all — a 503, an expired token, a hang — saying *cwd is not a GitHub repo* asserts something the tool never established, and its *run gh directly* remedy routes a `gh-pr-merge` reader onto raw `gh pr merge`, which the guard refuses and which skips the merge gate's reconciliation and read-back ([#1789](https://github.com/Digital-Process-Tools/claude-supertool/issues/1789)):
+
+```
+$ ./supertool 'gh-pr-merge:1:squash'                   # during a GitHub outage
+ERROR: could not work out which GitHub repo this is — the lookup did not answer
+('GraphQL: Something went wrong while executing your query.'). That is not the
+same as the cwd not being a GitHub repo, and which of the two it is is UNKNOWN
+from here. Retry; if it persists, check gh (gh auth status; gh repo view), or
+name a repo with a leading repo: op (./supertool 'repo:OWNER/NAME'
+'gh-pr-merge:1').
+```
+
+gh's own text is quoted rather than parenthesised, because gh's messages contain brackets of their own (`fatal: not a git repository (or any of the parent directories)`) and a reader has to be able to see where gh stops speaking and the tool resumes.
+
+**`gh-prs` declines its watch column under a target.** Watch pollers write `supertool-watch-github-pr__{number}.pid` — keyed by PR number with no repo — so a live poller for `#12` of one repo cannot be told from `#12` of another. The board prints `?` rather than 👁 or blank (blank asserts *not watched*), and the footer drops its ready-to-run `watch:github-pr:N` rather than offer a command that would poll the wrong repo. Three states, not two.
+
+### Legacy `check:` syntax
+
+The `check:PRESET:PATH` op still works — it reads from the `ops` section first, then falls back to `.supertool-checks.json` for backward compatibility. New projects should use direct ops (`mypy:file`) instead of `check:mypy:file`.
