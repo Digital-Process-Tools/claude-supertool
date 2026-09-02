@@ -526,3 +526,88 @@ Recognised kinds are `vim-cursor`, `vim-undo`, `vi-cursor` and `validators`. Unk
 **The per-kind split is load-bearing, not decoration.** The vim caches hold per-file state whose value decays with the file's last edit, and 99% of the measured population was older than a week. `validators` is keyed by a content hash plus a tool fingerprint — it is invalidated by change, not by time, and was measured with *zero* entries older than 7 days. Giving all four the same window would evict a hot, correctly-sized cache to reclaim nothing. If you set them all to one number, set it to the largest one you are comfortable with, not the smallest.
 
 `SUPERTOOL_GC_DISABLE=1` in the environment disables the automatic sweep for a single invocation, without touching config — that is what the test suite uses so a test run never reaps a developer's real cache. Since [#1656](https://github.com/Digital-Process-Tools/claude-supertool/issues/1656) the suite also points `XDG_CACHE_HOME` at a directory it owns for the whole session, so no cache supertool writes reaches the operator's `~/.cache` in the first place; the switch above stays because turning the sweep off and moving what it would sweep are different claims.
+
+## Plain / ASCII output mode (hooks & CI)
+
+Op output uses `⚠` / `✓` glyphs — nice UX for the model, a liability for anything that parses the output without UTF-8/locale guarantees (git hooks, `grep`, CI on a non-UTF-8 console). Pass `--plain` (or set `SUPERTOOL_PLAIN=1`) to emit ASCII-only output: `[WARN]` / `[OK]` / `[FAIL]` / `[INFO]` in place of the glyphs, with the stable section keys (`Red flags in added lines`, `Forbidden paths`, …) intact for grepping.
+
+```bash
+./supertool --plain 'git-diff:staged'        # flag
+SUPERTOOL_PLAIN=1 ./supertool 'git-diff:staged'   # env (propagates to preset subprocesses)
+```
+
+The flag exports `SUPERTOOL_PLAIN=1` so preset ops (run as subprocesses) inherit it. Stdout/stderr are also reconfigured to UTF-8 at startup as cheap insurance, so a stray glyph in diffed content never crashes the process on a cp1252 console. Default (rich) output is unchanged.
+
+## The wrapper — `./supertool`, and when it is not there
+
+Moved from `README.md` by [#2142](https://github.com/Digital-Process-Tools/claude-supertool/issues/2142).
+
+### A `cd` breaks `./supertool`
+
+`./supertool` is a relative path. It resolves only from the directory holding the symlink, so a shell that has `cd`'d deeper into the repo — a test run in `tests/e2e`, or a `cd` that persists between an agent's tool calls — gets `no such file or directory: ./supertool` and no op runs at all. Nothing inside the tool can fix this: the wrapper has to be *found* before a single op is parsed, so even `cwd:PATH` as the first op of the call cannot help — that op is read by a process that already started.
+
+```bash
+supertool 'read:src/foo.py'                    # on $PATH (see Install in the README) — works from any directory
+python3 /abs/path/to/supertool.py 'read:...'   # absolute path to the script
+./supertool 'cwd:~/repo' 'read:...'            # only when ./supertool itself is reachable
+```
+
+Watch out for filtering the failure away: `./supertool '...' | grep -E 'state:'` from a directory with no wrapper prints **nothing**, which reads like an empty answer rather than a tool that never ran.
+
+### A git worktree starts without one — and inside a supertool checkout it stays that way on purpose
+
+The wrapper is a gitignored symlink that the session-start hook creates in the directory a session *starts* in. `git worktree add` makes a new directory in the middle of a session, so nothing ever creates one there. This is the same layer as the `cd` above and unfixable for the same reason: the wrapper has to be found before a single op is parsed, so no op — and no hook that already ran — can produce it.
+
+The invocation that needs no wrapper at all is the one to reach for. It is what `git-push:watch` already falls back to when it finds no wrapper to spawn:
+
+```bash
+python3 /abs/path/to/claude-supertool/supertool.py 'read:...'   # worktree of any project
+python3 supertool.py 'read:...'                                 # worktree of claude-supertool itself
+```
+
+**Inside a checkout of this repo, a session that does start there gets no wrapper either — deliberately.** Pointing a supertool checkout's wrapper at the plugin install runs **the plugin's core against this tree's config and presets**, and since the mixed-tree check every custom op through it answers `SKIPPED: ... comes from a different supertool tree` and exits 1; before that check, they answered `PASS` for code that never ran. So the session-start hook creates nothing here and says why, naming `python3 supertool.py` instead ([#711](https://github.com/Digital-Process-Tools/claude-supertool/issues/711)). An absent `./supertool` in a supertool checkout is the designed state, not a gap to fill.
+
+That is a refusal, not a judgement about the local file. The hook never reads, verifies or links the `supertool.py` sitting next to it — treating "there is a file with that name here" as "this is a genuine checkout" is how [#688](https://github.com/Digital-Process-Tools/claude-supertool/issues/688) comes back. It decides only that a wrapper created *here* would be a broken one. In any other project the absolute link is correct and is *not* a mix, so nothing changes: the check fires only when the resolved project root holds a `supertool.py` of its own, which an ordinary repo does not.
+
+If you want a wrapper anyway, **the target depends on whether the directory is a checkout of supertool** — and in a checkout only the relative link is correct:
+
+```bash
+ln -s "$CLAUDE_PLUGIN_ROOT/supertool.py" supertool   # worktree of any other project — absolute, outside the worktree
+ln -s supertool.py supertool                         # worktree of claude-supertool — its own file, relative
+```
+
+**Path arguments are a separate question**, and that one is handled inside the tool. They resolve against the process cwd; when a call's paths only make sense from the project root, supertool chdirs there itself and says so (`[cwd auto-resolved to project root: ...]`) — provided an ancestor carries a `.supertool.json` and nothing in the call resolves locally. Where that evidence is ambiguous it does not guess: the `not found` error names the absolute path it tried and, if the file does exist under the project root, the exact `cwd:` prefix that would reach it.
+
+## Windows and macOS/Linux platform notes
+
+**Paths with spaces:** fine. Arguments arrive via `sys.argv` pre-tokenized by the shell, so `supertool "'read:/home/jo bob/file.py'"` works unchanged.
+
+**Windows drive letters:** the tool recognizes `C:\...` and `D:/...` automatically and reassembles them after colon-splitting. So `supertool 'read:C:\Users\file.py'` and `supertool 'grep:needle:C:/src:20'` both parse correctly. If you hit edge cases, forward slashes (`C:/path`) work everywhere on Windows too.
+
+**Temp/log location:** the call log uses `tempfile.gettempdir()` — macOS: `/var/folders/.../T/supertool-calls.log`, Linux: `/tmp/supertool-calls.log`, Windows: `%TEMP%\supertool-calls.log`.
+
+**Windows and the raw-command guard, when there is no bash at all** ([#1378](https://github.com/Digital-Process-Tools/claude-supertool/issues/1378)): the guard is then *inert*, and a session where it never ran looks exactly like one where it ran and found nothing. This used to be read as "nothing for the raw-command guard to gate" on the grounds that Claude Code would have no `Bash` tool there — wrong by this repo's own [#1413](https://github.com/Digital-Process-Tools/claude-supertool/issues/1413): where the PowerShell tool is enabled Claude treats PowerShell as the primary shell and routes shell commands through it, which is why `hooks.json` matches `Bash|PowerShell`. There are commands to gate and no bash to gate them with.
+
+No hook can disclose this — every hook here is a bash script, so a line inside one does not run on the host it would be describing. The check is one you run, and it needs no shell:
+
+```
+py -3 hooks/guard-selftest.py        # Windows
+python3 hooks/guard-selftest.py      # anywhere else
+```
+
+It reports `enforcing`, `could not run` (naming what it tried) or `nothing to test`, and it says plainly that it cannot tell whether Claude Code invokes the hook — only whether this host can run it. Everything stated here about native `cmd.exe`/PowerShell is **reasoned, not observed**: nobody on this project has that host.
+
+**Windows and the session-start hook, when there is no bash at all** ([#1401](https://github.com/Digital-Process-Tools/claude-supertool/issues/1401)): this is the half you notice. The guard's failure above is *silent* — it is asked, it cannot run, and a session where the gate never ran looks like one where it ran and found nothing. `SessionStart` is gated by nothing at all: it fires under any tool configuration, once per session, and its failure costs you something you can see. What you lose is the `./supertool` wrapper and the op roster the session normally opens with, so the model is not told which ops exist.
+
+Nothing needs installing to get both back — call the tool by path, which needs no shell:
+
+```
+py -3 supertool.py 'ops:roster'        # Windows
+python3 supertool.py 'ops:roster'      # anywhere else
+```
+
+Wherever these docs write `./supertool`, use that path instead. `hooks/guard-selftest.py` says all of this too, on the host itself.
+
+**This gap is accepted and disclosed rather than fixed, deliberately.** Every candidate repair is a change to a host nobody here can run, shipped to every plugin user: adding `args` switches the hooks to exec form, where `command` *is* resolved on `PATH` — the `CreateProcess` search that finds System32's WSL launcher under the name `bash`, so the obvious repair introduces the defect. A second PowerShell entry is a non-zero hook on every POSIX session to serve one Windows one. A command string valid under both `sh -c` and PowerShell is a polyglot. And rewriting the hooks in Python does not help, because exec form would still have to name an interpreter: `python`/`python3` are the App Execution Alias stubs that block rather than error, the versioned names are absent on Windows, and `py -3` is absent everywhere else — which is exactly why the interpreter ladder exists, and the ladder is itself a shell script. Graded **reasoned, not observed** throughout; what is observed is only that both `hooks.json` entries name `bash`.
+
+**Windows and the raw-command guard's interpreter:** `hooks/pre-bash-guard.sh` needs a Python it can name. Neither python.org's installer nor GitHub's `hostedtoolcache` creates `python3.9`–`python3.14`, so the guard falls back to `py -3`, the Windows Python launcher, after every versioned name and after an activated virtualenv. With no interpreter at all the guard does not silently pass: it says in the transcript that it could not run, and allows the command.

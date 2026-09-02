@@ -252,10 +252,11 @@ def _r(name: str) -> Callable[[], str]:
 
 
 SITES = (
-    Claim("README.md", "ops:full", _r("ops:full")),
-    Claim("README.md", "ops-compact", _r("ops-compact")),
-    Claim("README.md", "ops:roster", _r("ops:roster")),
-    Claim("README.md", "ops", _r("ops")),
+    # README.md carried these four until #2142 moved the mechanism-heavy
+    # "How to use" section (hook output cap, byte figures) out to docs/ --
+    # the same figures are still graded below via docs/operations/index.md,
+    # docs/contributing.md and hooks/session-start.sh, so nothing here goes
+    # unpinned.
     Claim("docs/operations/index.md", "ops", _r("ops")),
     Claim("docs/operations/index.md", "ops:roster", _r("ops:roster")),
     Claim("docs/operations/index.md", "ops-compact", _r("ops-compact")),
