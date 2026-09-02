@@ -527,9 +527,37 @@ def _message_store_dir(channel: str) -> Path:
     """
     key = hashlib.sha256(
         channel.encode("utf-8", "surrogateescape")).hexdigest()[:24]
-    d = Path(transport.STATE_DIR) / _MESSAGE_STORE_SUBDIR / key
-    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    base = Path(transport.STATE_DIR) / _MESSAGE_STORE_SUBDIR
+    # Two calls, not one `d.mkdir(parents=True, mode=0o700)` (audit finding
+    # on #2149): `Path.mkdir(parents=True, ...)` applies `mode` only to the
+    # leaf it creates. Any *intermediate* directory it has to create along
+    # the way -- `slack-messages/` itself, the first time a fresh STATE_DIR
+    # sees a Slack poller -- is made under the process umask instead,
+    # silently. Under a default 0o022 umask that leaves the set of watched
+    # channels' hash directories world-listable, and nothing narrows it
+    # afterward. `_ensure_private_dir` chmods explicitly so the mode does
+    # not depend on which directories happened to exist already.
+    _ensure_private_dir(base)
+    d = base / key
+    _ensure_private_dir(d)
     return d
+
+
+def _ensure_private_dir(path: Path) -> None:
+    """`mkdir -p` to `path`, then make sure it is 0o700 regardless of umask.
+
+    `mkdir(mode=...)` only ever applies to the directory this call actually
+    creates; on an already-existing directory it is not consulted at all
+    (nor is a later `exist_ok=True` call a chance to fix a mode a previous,
+    umask-affected creation left wrong). The explicit `chmod` is what makes
+    the mode a fact about the directory rather than a fact about which call
+    happened to create it.
+    """
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
 
 
 def _prune_message_store(store: Path) -> None:

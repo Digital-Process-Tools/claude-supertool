@@ -14,8 +14,12 @@ burst on one channel can only ever evict that same channel's own files.
 from __future__ import annotations
 
 import importlib.util
+import os
+import stat
 import sys
 from pathlib import Path
+
+import pytest
 
 WATCH_DIR = Path(__file__).parent.parent / "presets" / "watch"
 
@@ -79,3 +83,28 @@ def test_channel_isolation_survives_a_hash_collision_free_range(
     poller = _load_poller()
     monkeypatch.setattr(poller.transport, "STATE_DIR", str(tmp_path))
     assert poller._message_store_dir("C1") == poller._message_store_dir("C1")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are not meaningful on Windows")
+def test_the_shared_parent_directory_is_private_even_under_a_loose_umask(
+        tmp_path, monkeypatch) -> None:
+    """Audit finding: `Path.mkdir(parents=True, mode=0o700)` applies `mode`
+    only to the leaf it creates. The first time a fresh STATE_DIR sees a
+    Slack poller, `slack-messages/` itself is an *intermediate* directory
+    created along the way to the per-channel leaf -- under a loose umask it
+    would land world-listable and stay that way, since nothing ever narrows
+    it afterward. `0o022` is the must-fire half: without the explicit chmod
+    this creates the parent at `0o755` and this assertion catches it."""
+    poller = _load_poller()
+    monkeypatch.setattr(poller.transport, "STATE_DIR", str(tmp_path))
+    old_umask = os.umask(0o022)
+    try:
+        d = poller._message_store_dir("C1")
+    finally:
+        os.umask(old_umask)
+    parent = d.parent
+    assert parent.name == "slack-messages"
+    parent_mode = stat.S_IMODE(parent.stat().st_mode)
+    leaf_mode = stat.S_IMODE(d.stat().st_mode)
+    assert parent_mode == 0o700, f"parent dir {parent} is not private: {oct(parent_mode)}"
+    assert leaf_mode == 0o700
