@@ -536,6 +536,16 @@ note: contains U+2028 — supertool numbers lines by LF / CRLF / CR only, so a t
 An ordinary file says nothing — the note fires only when the disagreement is
 real. See [edits.md](edits.md#what-counts-as-a-line).
 
+## Anti-patterns the tool catches
+
+Moved from `README.md` by [#2142](https://github.com/Digital-Process-Tools/claude-supertool/issues/2142). The tool **auto-promotes** these wasted patterns silently, but recognise them and batch up front rather than relying on the rescue:
+
+- `glob:concrete/path.xml` followed by `read:concrete/path.xml` — glob on a path with no wildcards is useless; just `read:`. Auto-read handles it.
+- `grep:FOO:single_file.py` followed by `read:single_file.py` — same file, two turns. Auto-read fires if the file is < 20KB with a match.
+- A second call whose ops could have fit in the first.
+
+**Self-check:** if the output contains `[auto-read: ...]`, the tool just salvaged a wasted turn you asked for. Tighten your next prompt to batch up front.
+
 ## See also
 
 - [search.md](search.md) — when you don't know the path yet (`grep`, `between`, `around`)

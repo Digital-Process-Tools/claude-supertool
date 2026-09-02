@@ -611,3 +611,14 @@ Wherever these docs write `./supertool`, use that path instead. `hooks/guard-sel
 **This gap is accepted and disclosed rather than fixed, deliberately.** Every candidate repair is a change to a host nobody here can run, shipped to every plugin user: adding `args` switches the hooks to exec form, where `command` *is* resolved on `PATH` — the `CreateProcess` search that finds System32's WSL launcher under the name `bash`, so the obvious repair introduces the defect. A second PowerShell entry is a non-zero hook on every POSIX session to serve one Windows one. A command string valid under both `sh -c` and PowerShell is a polyglot. And rewriting the hooks in Python does not help, because exec form would still have to name an interpreter: `python`/`python3` are the App Execution Alias stubs that block rather than error, the versioned names are absent on Windows, and `py -3` is absent everywhere else — which is exactly why the interpreter ladder exists, and the ladder is itself a shell script. Graded **reasoned, not observed** throughout; what is observed is only that both `hooks.json` entries name `bash`.
 
 **Windows and the raw-command guard's interpreter:** `hooks/pre-bash-guard.sh` needs a Python it can name. Neither python.org's installer nor GitHub's `hostedtoolcache` creates `python3.9`–`python3.14`, so the guard falls back to `py -3`, the Windows Python launcher, after every versioned name and after an activated virtualenv. With no interpreter at all the guard does not silently pass: it says in the transcript that it could not run, and allows the command.
+
+## RTK integration
+
+Moved from `README.md` by [#2142](https://github.com/Digital-Process-Tools/claude-supertool/issues/2142). When [rtk](https://github.com/reachingforthejack/rtk) is installed, supertool automatically delegates `read`, `grep`, and `wc` to RTK for compressed output. No configuration needed -- detected via `which rtk` at first use.
+
+- With RTK + compact: uses `rtk read --level aggressive` (maximum compression)
+- With RTK, no compact: uses `rtk read` (RTK formatting, no stripping)
+- Without RTK + compact: native regex-based blank/comment stripping
+- Without RTK, no compact: supertool's own output (default)
+
+RTK is optional. Supertool works identically without it -- RTK is just an accelerator.

@@ -2005,3 +2005,39 @@ would sail through it and ship one machine's disk to every clone.
 If you do not want the status line in your own sessions, `statusLine` in
 `.claude/settings.local.json` overrides the tracked one; that is the per-machine
 file, and opting *out* is the direction that genuinely is per-machine.
+
+## Measuring adoption
+
+Moved from `README.md` by [#2142](https://github.com/Digital-Process-Tools/claude-supertool/issues/2142). Every call is logged to `/tmp/supertool-calls.log` with this format:
+
+```
+2026-04-16 21:05:42 | user=alice ppid=74394 entry=cli | ops=3 out=12400b | read:a.py read:b.py grep:X:src/:20
+```
+
+Fields:
+
+- `user=` -- the shell user
+- `ppid=` -- parent process (stable within one Claude Code session, useful for grouping)
+- `entry=` -- how Claude Code was invoked (`cli`, `sdk`, etc.)
+- `ops=N` -- number of ops in this call
+- `out=Nb` -- output bytes emitted to the model
+
+### Single-op rate (adoption signal)
+
+```bash
+awk -F'|' '{ for (i=1;i<=NF;i++) if ($i ~ /ops=/) print $i }' /tmp/supertool-calls.log \
+  | sort | uniq -c | sort -rn
+```
+
+A healthy run has most calls at `ops=3+`. A run dominated by `ops=1` means the model is using the tool but not batching -- tighten the system prompt.
+
+### Estimated savings vs. no-batching baseline
+
+```bash
+awk -F'|' '
+  { for (i=1;i<=NF;i++) if ($i ~ /ops=/) { gsub(/[^0-9]/,"",$i); t+=$i; n++ } }
+  END { printf "%d ops in %d calls -> %d round-trips saved vs all-single\n", t, n, t-n }
+' /tmp/supertool-calls.log
+```
+
+Each saved round-trip avoids one prefix cache re-read. The bigger your prefix, the bigger the saving per trip.
