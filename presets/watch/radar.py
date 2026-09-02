@@ -215,6 +215,21 @@ def _tier_module(name: str):
          the first time a file moves. `gl-runners` joins this way — its report
          needs nothing but its own API helpers.
 
+      3. `<dir>/<name>/tier.py` for any `<dir>` on
+         `SUPERTOOL_WATCH_SOURCES_PATH` (#2165) -- the directory a private
+         watch source already lives in. Routes 1 and 2 both land inside the
+         installed plugin, so a project declaring its op in its own
+         `.supertool.json`, with its script in its own tree, could poll a
+         population it had no way to put a line about on the board. It reads
+         the sources path rather than a second variable of its own because a
+         tier and a source for one population are one concern, and two knobs
+         for it is one to forget.
+
+         **This imports and executes Python from a caller-supplied path**, on
+         the same terms `sourcepath` states for a poller: anyone who can write
+         to a directory on that path, or to the `.supertool.json` naming it,
+         runs code as you. Nothing here is a sandbox.
+
     A name resolves to a directory entry or to an op, never to a table, so
     neither route can fall out of step with the files on disk.
     """
@@ -237,7 +252,60 @@ def _tier_module(name: str):
                 script = presets_dir / token.replace("{path}", "")
                 if script.is_file():
                     return _load(f"radar_tier_{name.replace('-', '_')}", script)
+
+    external, _origin = sourcepath.find_tier(name)
+    if external is not None:
+        return _load(f"radar_tier_{name.replace('-', '_')}", external)
     return None
+
+
+def _ships_tier(name: str) -> bool:
+    """True when radar's own `tiers/` answers to `name`."""
+    return (_HERE / "tiers" / f"{name.replace('-', '_')}.py").is_file()
+
+
+def tier_shadow_lines(names: list[str] | tuple[str, ...]) -> list[str]:
+    """Every registered name whose external `tier.py` a shipped tier hides.
+
+    Named, never silently skipped -- `sourcepath.shadowed` one layer up, with
+    the same argument: an operator who put a `gl-mrs` tier on their own path
+    believes their board is the one rendering, and a resolution that quietly
+    answers with the shipped module is absence-read-as-presence wearing a
+    plugin loader. The shipped one still wins; what changes is that the swap is
+    said out loud.
+
+    Only registered names are checked. Sweeping the search path for every
+    `tier.py` on it would report files nobody asked radar to load, which is a
+    complaint about somebody's directory rather than about this board.
+    """
+    resolved = sourcepath.resolve()
+    out: list[str] = []
+    for name in names:
+        if not _ships_tier(name):
+            continue
+        external, origin = sourcepath.find_tier(name, resolved)
+        if external is None:
+            continue
+        out.append(f"radar: tier '{_untrusted.flat(name, disclose_newline=True)}' in "
+                   f"{origin} was NOT loaded -- radar ships a tier of that name "
+                   f"and shipped tiers always win.")
+    return out
+
+
+def _tier_search_lines(name: str) -> list[str]:
+    """Where a tier of this name was looked for, for the message that says it wasn't there.
+
+    Three routes, and an operator who has just written their first tier can be
+    standing in front of any of them. Naming only the config key -- "check the
+    name" -- is the absence that does not say where it looked, in the one
+    message this feature is met through.
+    """
+    resolved = sourcepath.resolve()
+    lines = ["       looked in:",
+             f"  {_HERE / 'tiers'}/{name.replace('-', '_')}.py (shipped)",
+             f"  the script named by an op '{name}' in {_HERE.parent}/*.json"]
+    lines.extend(sourcepath.tier_search_report(resolved))
+    return [lines[0]] + ["       " + line for line in lines[1:]]
 
 
 def _spawner() -> tuple[Callable[..., str], dict[str, str], list[str]]:
@@ -300,12 +368,31 @@ def tier_reports(arg: str = "") -> tuple[list[str], bool, list[str]]:
     all_ok = True
     failures: list[str] = []
 
+    lines.extend(tier_shadow_lines(list(tiers)))
+
     for name, opts in tiers.items():
-        module = _tier_module(name)
+        try:
+            module = _tier_module(name)
+        except Exception as exc:  # noqa: BLE001 — an external tier is somebody else's code
+            # Route 3 imports Python from a directory the caller named, so
+            # *loading* a tier can now fail the way running one already could.
+            # Caught here rather than left to propagate: one project's broken
+            # tier taking radar down would cost every other tier its board.
+            failures.append(f"radar: WARNING — tier '{name}' could not be loaded: "
+                            f"{exc.__class__.__name__}: {exc}")
+            all_ok = False
+            continue
         report = getattr(module, "radar_report", None) if module else None
         if report is None:
-            failures.append(f"radar: WARNING — tier '{name}' is registered but exposes no "
-                            f"radar_report(); it contributes nothing. Check the name.")
+            # Two different facts, and they used to arrive in one sentence: a
+            # module that loaded and lacks the function, and a name nothing
+            # answered to. The second is the one an operator can act on, and it
+            # is the one #2165 was filed about, so it says where it looked.
+            why = ("could not be resolved" if module is None
+                   else "exposes no radar_report()")
+            failures.append("\n".join(
+                [f"radar: WARNING — tier '{name}' is registered but {why}; it "
+                 f"contributes nothing. Check the name."] + _tier_search_lines(name)))
             all_ok = False
             continue
 
@@ -347,12 +434,25 @@ def tier_states(arg: str = "") -> tuple[list[str], list[str]]:
     """
     tiers, lines = read_tiers()
     failures: list[str] = []
+    lines.extend(tier_shadow_lines(list(tiers)))
     for name, opts in tiers.items():
-        module = _tier_module(name)
+        try:
+            module = _tier_module(name)
+        except Exception as exc:  # noqa: BLE001 — same reason as `tier_reports`
+            failures.append(f"radar: WARNING — tier '{name}' could not be loaded: "
+                            f"{exc.__class__.__name__}: {exc}")
+            lines.append(f"{name}: UNLOADABLE — {exc.__class__.__name__}: {exc}")
+            continue
         if module is None:
-            failures.append(f"radar: WARNING — tier '{name}' is registered but could "
-                            f"not be resolved; it contributes nothing. Check the name.")
+            failures.append("\n".join(
+                [f"radar: WARNING — tier '{name}' is registered but could not be "
+                 f"resolved; it contributes nothing. Check the name."]
+                + _tier_search_lines(name)))
+            # This view is the one an operator opens *because* the board said
+            # nothing, so the directories go in the board half too rather than
+            # only on stderr.
             lines.append(f"{name}: UNRESOLVED — no tier module of that name")
+            lines.extend(_tier_search_lines(name))
             continue
         lines.append(f"{name}:")
         lines.append(f"  module    : {getattr(module, '__file__', '?')}")

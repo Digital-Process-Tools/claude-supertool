@@ -605,7 +605,7 @@ Events are fire-and-forget and pollers die with the machine, so at session start
 { "ops": { "radar": { "radar_tiers": { "gl-mrs": {}, "gl-runners": {} } } } }
 ```
 
-`gl-mrs` is the GitLab MR board — live MRs are authoritative, watchers are respawned for open MRs that lost theirs, and a feed poller keeps discovering MRs opened mid-session. `gl-runners` adds CI runner health. Any op joins by exposing `radar_report(options)`.
+`gl-mrs` is the GitLab MR board — live MRs are authoritative, watchers are respawned for open MRs that lost theirs, and a feed poller keeps discovering MRs opened mid-session. `gl-runners` adds CI runner health. Any op joins by exposing `radar_report(options)`, and a tier of your own joins from outside the plugin as `<dir>/<name>/tier.py` on `SUPERTOOL_WATCH_SOURCES_PATH` — the directory its `poller.py` already lives in ([#2165](https://github.com/Digital-Process-Tools/claude-supertool/issues/2165)). That route imports and runs Python from a path you supplied; the [preset deep-dive](docs/presets/watch.md) says so in the same words.
 
 - Preset deep-dive (ops, `radar`, sources, discovery feed, event contract, lifecycle, writing a source): [docs/presets/watch.md](docs/presets/watch.md)
 - MCP server (install, security, event format): [notifiers/claude-channel/README.md](notifiers/claude-channel/README.md)
