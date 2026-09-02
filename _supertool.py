@@ -2355,7 +2355,7 @@ _BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc
 _DISPATCH_ONLY_OPS = {
     "between", "vim", "batch", "gc", "help", "version",
     "ops", "ops-compact", "introduction", "output-format", "registry",
-    "guard", "doctor",
+    "guard", "doctor", "init",
 }
 
 # Valid from the CLI but never reaching dispatch(): main() honours and strips
@@ -2930,6 +2930,7 @@ _OP_SAFETY_BUILTIN: Dict[str, str] = {
     # writes — changes files in this tree
     "append": "writes", "batch": "writes", "edit": "writes",
     "format": "writes", "format_staged": "writes", "gc": "writes",
+    "init": "writes",
     "paste": "writes", "rename": "writes", "replace": "writes",
     "replace_lines": "writes", "vim": "writes",
 }
@@ -18409,6 +18410,247 @@ def op_doctor(arg: str = "") -> str:
     return "\n".join(lines) + "\n"
 
 
+def _init_run_git(args, cwd):
+    """`git` in ``cwd``, trimmed stdout, or ``None`` on any failure.
+
+    Local rather than reusing `_doctor_tracked_files`'s subprocess pattern:
+    that helper runs from the process cwd and `op_init` needs an explicit
+    ``cwd`` (the repo root, resolved before this is ever called).
+    """
+    try:
+        r = subprocess.run(["git"] + args, capture_output=True, text=True,
+                           timeout=15, cwd=cwd, encoding="utf-8",
+                           errors="replace")
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    return r.stdout.strip() or None
+
+
+def _init_parse_remote(url):
+    """Parse a git remote URL into (host, 'namespace/repo'), or None.
+
+    Mirrors `presets/_remote_default.py`'s `parse_remote`. Duplicated rather
+    than imported: presets are subprocess-invoked scripts with no package
+    boundary into core (`presets/` ships no `__init__.py`), and a sys.path
+    splice for one 20-line helper is more fragile than keeping the two in
+    sync by sharing the same two regexes verbatim.
+    """
+    url = url.strip()
+    if not url:
+        return None
+    scp = re.match(r"^[\w.+-]+@([^:/]+):(.+)$", url)
+    if scp:
+        host, path = scp.group(1), scp.group(2)
+    else:
+        uri = re.match(
+            r"^[a-zA-Z][\w+.-]*://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+)$", url)
+        if not uri:
+            return None
+        host, path = uri.group(1), uri.group(2)
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    path = path.strip("/")
+    if not host or not path:
+        return None
+    return host, path
+
+
+def _init_platform(host):
+    """github, gitlab, or None for a host `init` does not recognise.
+
+    github: exact host only (`github.com`). A substring match here would
+    reopen the exact spoof #1212 fixed for the preset's own host check
+    (`endswith("github.com")` matching `evilgithub.com`) -- `init` generates
+    the same `defaults.github_repo` that check exists to protect, one caller
+    over.
+
+    gitlab: `gitlab.com`, or a self-hosted instance whose host contains
+    "gitlab" -- the same substring convention `presets/_remote_default.py`'s
+    `origin_slug` already uses for self-hosted GitLab (`gitlab.dp.tools`
+    matches `"gitlab"`), kept consistent here rather than tightened
+    unilaterally in one of the two callers.
+    """
+    host = host.lower()
+    if host == "github.com":
+        return "github"
+    if host == "gitlab.com" or "gitlab" in host:
+        return "gitlab"
+    return None
+
+
+# Validator specs `init` may declare, keyed by the tracked-file predicate and
+# the binary each one's adapter actually shells out to (`shutil.which(TOOL)`
+# in the adapter itself -- `validators/ruff/ruff.py:57`,
+# `validators/shellcheck/shellcheck.py:56`). jsonlint is not in this table:
+# its adapter is stdlib `json.load()`, no external binary, so it is always
+# in scope rather than conditional (#858's own "*.json always").
+_INIT_CONDITIONAL_VALIDATORS = (
+    # (validator name, tracked-file suffixes, binary to resolve, match glob, spec)
+    ("ruff", (".py",), "ruff", "*.py", {
+        "cmd": "{python} {supertool_dir}/validators/ruff/ruff.py {file}",
+        "match": "*.py",
+        "hooks_into": ["edit", "replace", "replace_lines", "paste", "append", "vim"],
+        "rollback_on_fail": False,
+        "timeout": 30,
+    }),
+    ("shellcheck", (".sh", ".bash"), "shellcheck", "*.{sh,bash}", {
+        "cmd": "{python} {supertool_dir}/validators/shellcheck/shellcheck.py {file}",
+        "match": "*.{sh,bash}",
+        "hooks_into": ["edit", "replace", "replace_lines", "paste", "append", "vim"],
+        "rollback_on_fail": False,
+        "timeout": 30,
+    }),
+)
+
+_INIT_JSONLINT_SPEC = {
+    "cmd": "{python} {supertool_dir}/validators/jsonlint/jsonlint.py {file}",
+    "match": "*.json",
+    "hooks_into": ["edit", "replace", "replace_lines", "paste", "append", "vim"],
+    "rollback_on_fail": True,
+    "timeout": 10,
+}
+
+
+def op_init(mode: str = "") -> str:
+    """Derive and write a starter .supertool.json for the current repo (#858).
+
+    Without a config, every preset op (`gh-pr`, `gh-issue`, `git-trail`,
+    `gl-mr`, ...) simply does not exist (#614) -- there is no fallback, only
+    silence. This derives what it safely can from the repo itself and
+    refuses, writing nothing, everywhere it cannot:
+
+    - **defaults.github_repo / defaults.gitlab_project** from the `origin`
+      remote. No remote, an unparseable URL, or a host that is neither
+      github.com nor a recognised GitLab host: decline rather than emit a
+      plausible-but-wrong repo slug (a config naming the wrong repo answers
+      confidently about someone else's PRs).
+    - **presets**: the matching platform preset, `git` always, `xml` only if
+      a tracked file has that extension. `mcp`/`watch` stay opt-in -- this
+      op never turns them on, because both need machine-specific setup
+      (an MCP server binary, a watch fleet name) `init` cannot infer.
+    - **validators**: `jsonlint` always (its adapter is stdlib `json.load`,
+      nothing to resolve). `ruff`/`shellcheck` only when BOTH a tracked file
+      matches their extension AND the adapter's own binary
+      (`shutil.which(...)`) actually resolves -- declaring a validator that
+      cannot run is the silent-pass class this repo's own contract forbids
+      (`docs/validators.md` "Declining instead of guessing").
+    - **rtk / allow_outside_cwd / allow_vim_shell**: always `False`. This
+      repo's own `.supertool.json` sets `allow_outside_cwd: true` because it
+      is supertool's own checkout -- a stranger's repo must not inherit a
+      widened capability it never asked for.
+
+    Two more refusals, both about the write itself rather than what to
+    write: an existing `.supertool.json` is never overwritten, hand-written
+    or not (`allow_vim_shell`/`allow_outside_cwd` widen what supertool may
+    do, so a silent rewrite is worse than doing nothing) -- and merging
+    presets into an already-hand-edited config is explicitly out of scope
+    for this op (#858 calls that the harder "auto change it for you" half
+    and leaves it to a follow-up); `init` only ever creates a file that does
+    not exist yet.
+
+    Previews by default -- prints the JSON it would write and does not touch
+    disk. `init:write` (or `:apply`/`:commit`) commits it, through
+    `op_paste` so the write gets the same atomic-write, parent-dir-creation
+    and post-write-validator handling every other mutating op gets (the new
+    file matches jsonlint's own `*.json` scope, so writing it re-validates
+    the JSON it just emitted).
+    """
+    write = mode.strip().lower() in ("write", "apply", "commit")
+
+    cwd = os.path.abspath(os.getcwd())
+    root = _init_run_git(["rev-parse", "--show-toplevel"], cwd)
+    if root is None:
+        return ("ERROR: not inside a git working tree (or the repo is bare) "
+                "-- init needs a real repo root to derive defaults from.\n")
+    root = os.path.abspath(root)
+    if root != cwd:
+        return (f"ERROR: init only writes at the repo root -- run it from "
+                f"{root}, not {cwd}.\n")
+
+    config_path = os.path.join(root, ".supertool.json")
+    if os.path.isfile(config_path):
+        try:
+            with open(config_path, encoding="utf-8") as fh:
+                existing = fh.read(2000)
+        except OSError as exc:
+            existing = f"(could not read it to show you: {exc})"
+        return (f"ERROR: {config_path} already exists -- refusing to "
+                "overwrite it. init never touches a config that is already "
+                "there, hand-written or not (allow_vim_shell/"
+                "allow_outside_cwd both widen what supertool may do, so a "
+                "silent rewrite is worse than doing nothing -- and merging "
+                "new presets into an edited file is a harder, separate "
+                "problem #858 leaves to a follow-up). Existing contents:\n"
+                f"{existing}\n")
+
+    remote_url = _init_run_git(["remote", "get-url", "origin"], root)
+    if remote_url is None:
+        return ("ERROR: no 'origin' remote -- cannot derive "
+                "defaults.github_repo/gitlab_project, and a guessed one "
+                "would answer confidently about the wrong repo. Write "
+                ".supertool.json by hand.\n")
+
+    parsed = _init_parse_remote(remote_url)
+    if parsed is None:
+        return (f"ERROR: could not parse origin remote URL "
+                f"{_flat_field(remote_url)!r} -- unrecognised form. Write "
+                ".supertool.json by hand.\n")
+    host, slug = parsed
+    platform = _init_platform(host)
+    if platform is None:
+        return (f"ERROR: origin remote host {_flat_field(host)!r} is "
+                "neither github.com nor a recognised GitLab host -- init "
+                "does not know which preset family to enable. Write "
+                ".supertool.json by hand.\n")
+
+    files_out = _init_run_git(["ls-files"], root)
+    tracked = files_out.split("\n") if files_out else []
+
+    presets = [platform, "git"]
+    if any(f.endswith(".xml") for f in tracked):
+        presets.append("xml")
+
+    validators = {"jsonlint": dict(_INIT_JSONLINT_SPEC)}
+    skipped_validators = []
+    for name, suffixes, tool, glob, spec in _INIT_CONDITIONAL_VALIDATORS:
+        if not any(f.endswith(suffixes) for f in tracked):
+            continue
+        if shutil.which(tool):
+            validators[name] = dict(spec)
+        else:
+            skipped_validators.append(
+                f"{name} ({glob} tracked, but {tool!r} does not resolve on "
+                "PATH)")
+
+    defaults_key = "github_repo" if platform == "github" else "gitlab_project"
+    doc = {
+        "defaults": {defaults_key: slug},
+        "rtk": False,
+        "allow_outside_cwd": False,
+        "allow_vim_shell": False,
+        "presets": presets,
+        "validators": validators,
+    }
+    content = json.dumps(doc, indent=2) + "\n"
+
+    out = []
+    if write:
+        out.append(op_paste(".supertool.json", content))
+    else:
+        out.append(f"PREVIEW -- nothing written. Run 'init:write' to create "
+                   f"{config_path}.\n")
+        out.append(content)
+    if skipped_validators:
+        out.append("Declined (tool not resolvable on this PATH -- no "
+                   "validator was declared for it; add it by hand once "
+                   "installed):")
+        out.extend(f"  - {s}" for s in skipped_validators)
+    return "\n".join(out) + ("" if out[-1].endswith("\n") else "\n")
+
+
 _SHIPPED_CONFIG: Optional[Dict[str, Any]] = None
 
 #: Which of the three worlds the last `_shipped_config()` call found. `None`
@@ -29134,6 +29376,11 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             # `version`/`registry`.
             header = ""
             body = op_doctor(parts[1] if len(parts) > 1 else "")
+        elif op == "init":
+            # Meta-op, markdown-ish preview/receipt of its own — same treatment
+            # as `doctor`, not the --- op:args --- header every ordinary op gets.
+            header = ""
+            body = op_init(parts[1] if len(parts) > 1 else "")
         elif op == "registry":
             # Meta-op, markdown header — same treatment as `ops`, whose
             # listing this one answers the provenance half of.

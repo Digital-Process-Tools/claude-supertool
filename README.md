@@ -367,6 +367,8 @@ Full reference: [docs/formatters.md](docs/formatters.md) — config shape, bundl
 
 Supertool works with no configuration. The `.supertool.json` is optional — it enables self-documenting ops for LLM onboarding via `./supertool 'introduction' 'ops'`. Create one in your project root; supertool walks up from cwd to find it. A starter template ships as `.supertool.example.json`.
 
+Without one, preset ops (`gh-pr`, `gh-issue`, `git-trail`, `gl-mr`, …) simply do not exist in that repo ([#614](https://github.com/Digital-Process-Tools/claude-supertool/issues/614)) — so `./supertool 'init'` derives a starter one instead of hand-writing it: `defaults.github_repo`/`defaults.gitlab_project` from the `origin` remote, the matching platform preset plus `git`, and a validator only where a matching tracked file exists and its tool actually resolves. It previews by default; `init:write` commits. It never overwrites an existing `.supertool.json` and declines rather than guesses on a missing or unrecognised remote ([#858](https://github.com/Digital-Process-Tools/claude-supertool/issues/858)).
+
 Full reference (sections, `builtin-ops` overrides, custom ops, aliases, dispatch order, placeholders, env vars): [docs/configuration.md](docs/configuration.md).
 
 ---
