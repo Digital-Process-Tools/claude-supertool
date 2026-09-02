@@ -36,6 +36,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -84,21 +85,63 @@ def _locations() -> tuple:
     return (override,) if override else ASSEMBLER_LOCATIONS
 
 
-def _find_assembler(target: Path) -> Path | None:
-    """The nearest project script at or above `target`, or None.
+def _repo_root(start: Path) -> Path | None:
+    """The git repo root above `start`, or None if there is none to find.
 
-    Walks parents rather than resolving against a repo root: a validator is
-    handed one path and may be run from anywhere, including a worktree whose
-    root is not the directory the call was made from. Tries every location in
-    `_locations()` at each parent before moving up, so a nearer wrong-shaped
-    layout does not shadow a correct one further up -- not observed, but the
-    cheaper order to fail in.
+    Mirrors `validators/common/ci_lint_resolve_root.py`'s `_repo_root` --
+    `git -C <dir> rev-parse --show-toplevel` -- the convention this tree
+    already uses for the same question. Every failure mode (`git` absent,
+    `git` timed out, `start` not inside a git repository, or `git` reporting
+    no toplevel) collapses to `None` here: `_find_assembler` treats "could not
+    determine a root" the same as "no root", refusing rather than falling back
+    to an unbounded walk. That is stricter than #2177's own three-state
+    distinction, and deliberately so -- a validator that cannot even bound
+    its own search has no business importing and executing a script it found
+    by an unbounded one (#2178).
     """
-    for parent in [target.parent, *target.parent.parents]:
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=10,
+            encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    top = r.stdout.strip()
+    return Path(top).resolve() if top else None
+
+
+def _find_assembler(target: Path) -> Path | None:
+    """The nearest project script at or above `target`, bounded at the repo
+    root, or None.
+
+    Walks parents the same way it always did, but stops at (and including)
+    the git repo root above `target` rather than climbing to filesystem root
+    with nothing to stop it (#2178): an unbounded walk lets a fragment inside
+    one repo pick up and *execute* -- `_load` imports the script it finds --
+    a same-named script sitting in a sibling directory or anywhere above the
+    repo, which is attacker territory the moment this runs against an
+    untrusted checkout.
+
+    No repo root above `target` (not inside a git repository, or `git` itself
+    unavailable) refuses outright rather than falling back to the old
+    unbounded walk: there is no boundary to bound the search to, and "no
+    assembler outside a repo" is the same refusal `_repo_root` already reads
+    every failure mode into.
+    """
+    root = _repo_root(target.parent)
+    if root is None:
+        return None
+    resolved_start = target.parent.resolve()
+    for parent in [resolved_start, *resolved_start.parents]:
         for relative in _locations():
             candidate = parent / relative
             if candidate.is_file():
                 return candidate
+        if parent == root:
+            break
     return None
 
 

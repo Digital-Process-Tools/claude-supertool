@@ -44,6 +44,14 @@ WELL_FORMED = (
 )
 
 
+def _git_init(project: Path) -> None:
+    """Git-initialize the fixture project (#2178): `_find_assembler` now
+    bounds its walk at the git repo root, so an ungit-initialized fixture
+    would resolve to "not inside a git repository" and every case here would
+    read as `skipped` regardless of where the assembler sits."""
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+
+
 def _run(target: Path) -> dict:
     env = dict(os.environ)
     env.pop("SUPERTOOL_REQUIRE_VALIDATORS", None)
@@ -64,6 +72,7 @@ def _write(project: Path, name: str, body: str) -> Path:
 def test_assembler_at_oss_location_is_found(tmp_path):
     """`.oss/assemble_changelog.py` is what /oss:scaffold actually writes."""
     project = tmp_path
+    _git_init(project)
     (project / "changelog.d").mkdir(parents=True)
     oss = project / ".oss"
     oss.mkdir(parents=True)
@@ -77,6 +86,7 @@ def test_assembler_at_oss_location_is_found(tmp_path):
 def test_assembler_at_scripts_location_is_found(tmp_path):
     """The other location `claude-oss`'s `ASSEMBLER_LOCATIONS` declares."""
     project = tmp_path
+    _git_init(project)
     (project / "changelog.d").mkdir(parents=True)
     scripts = project / "scripts"
     scripts.mkdir(parents=True)
@@ -90,6 +100,7 @@ def test_assembler_at_scripts_location_is_found(tmp_path):
 def test_no_assembler_anywhere_names_every_location_tried(tmp_path):
     """The miss must not read as a fact about the project (#2072)."""
     project = tmp_path
+    _git_init(project)
     (project / "changelog.d").mkdir(parents=True)
 
     result = _run(_write(project, FIXTURE_ISSUE + ".fixed.md", WELL_FORMED))

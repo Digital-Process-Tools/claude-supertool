@@ -140,6 +140,11 @@ def test_self_reference_finding_is_none_when_the_name_does_not_parse() -> None:
 
 
 def _adapter_verdict(tmp_path: Path, name: str, body: str) -> dict:
+    # Git-initialized (#2178): `_find_assembler` bounds its walk at the git
+    # repo root above the fragment, so an ungit-initialized fixture would
+    # resolve to "not inside a git repository" and read as `skipped`
+    # regardless of where the assembler is copied to below.
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     scripts = tmp_path / ".github" / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
     shutil.copy(str(SCRIPT), str(scripts / "assemble_changelog.py"))
