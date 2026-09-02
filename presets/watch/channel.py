@@ -1485,7 +1485,39 @@ def subscription(pid: Any, pid_note: str = "", path: str | None = None,
             continue
         answer, ask_why = _configured(name, min(CLAUDE_TIMEOUT, remaining))
         if answer:
-            if path is not None:
+            # #2182: both gates below answer one question -- will a SECOND
+            # channel-capable server bind this socket? -- and both used to
+            # answer it from the filesystem. `_dual_declaration_objection`
+            # reads a `.mcp.json` found by walking up from `__file__`;
+            # `read_refusal` reads a marker written by whichever process lost
+            # a bind. Neither file says what the HARNESS loaded, and both are
+            # present in the ordinary supported configuration: every installed
+            # copy of this plugin ships a `.mcp.json` declaring
+            # `CONSUMER_SERVER`, and `claude mcp get` -- the call `_configured`
+            # just made -- itself spawns a rival that loses the bind and marks.
+            # Measured 2026-09-02: deleting the marker and running
+            # `channel:health` alone brought it straight back, inside that
+            # run's own 1.26s, so the refusal was self-inflicted and the
+            # verdict self-perpetuating.
+            #
+            # The harness is the authority, and this file already reaches it.
+            # Three answers, and only `False` opens the gates: `True` is a real
+            # standing server and keeps #2051/#2133's findings exactly as they
+            # were, `None` is a lookup that failed and keeps declining -- the
+            # same direction every other decline here takes, because reading an
+            # unanswered census as "no rival" would be this file's own defect
+            # class one call site over.
+            #
+            # Not asked when the tag IS `CONSUMER_SERVER`: subscribing through
+            # the standing server is one declaration, so there is no second one
+            # to look for and the gates keep their old behaviour.
+            standing = None
+            if name != CONSUMER_SERVER:
+                left = deadline - _now()
+                if left > 0:
+                    standing, _ = _configured(CONSUMER_SERVER,
+                                              min(CLAUDE_TIMEOUT, left))
+            if path is not None and standing is not False:
                 dual_why = _dual_declaration_objection(
                     path, name, resolved if resolved is not None else RESOLVED, roots)
                 if dual_why:
@@ -1532,10 +1564,18 @@ def subscription(pid: Any, pid_note: str = "", path: str | None = None,
                          "unreadable marker would be",
                          "the same defect this state exists to remove, one call "
                          "site over"))
+            census = ((f"the harness has no {CONSUMER_SERVER} server "
+                       f"configured, so a `.mcp.json`",
+                       "declaring one was not loaded and any refusal marker "
+                       "beside this socket",
+                       "was left by a short-lived `claude mcp get` probe, not "
+                       "by a session (#2182)")
+                      if standing is False else ())
             return _sub(SUB_SUBSCRIBED,
                         f"subscribed — session pid {ppid} carries "
                         f"{TAG_PREFIX}{_untrusted.flat(name)}, and the",
                         ("harness has a server configured under that name",
+                         *census,
                          "NOT established: that the configured server is the one "
                          "holding this",
                          "socket. Two channel-capable servers would satisfy both "

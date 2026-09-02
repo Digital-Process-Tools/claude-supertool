@@ -99,8 +99,8 @@ def test_the_2051_scenario_end_to_end(tmp_path, monkeypatch):
     declaration that resolves to the same socket. Must not read `subscribed`."""
     _process_table(monkeypatch, TAGGED_OSS)
     _configured(monkeypatch, True)
-    _mcp_json(tmp_path, env={naming.NAME_ENV: "oss-supertool"})
-    resolved = naming.resolve({naming.NAME_ENV: "oss-supertool"})
+    _mcp_json(tmp_path, env={naming.NAME_ENV: "st2051-oss-supertool"})
+    resolved = naming.resolve({naming.NAME_ENV: "st2051-oss-supertool"})
     monkeypatch.setattr(channel, "RESOLVED", resolved)
     sub = channel.subscription(os.getpid(), path=resolved.sock, roots=[tmp_path],
                                resolved=resolved)
@@ -129,7 +129,7 @@ def test_a_claude_channel_pointed_elsewhere_is_not_a_collision(tmp_path, monkeyp
     _process_table(monkeypatch, TAGGED_OSS)
     _configured(monkeypatch, True)
     _mcp_json(tmp_path, env={naming.NAME_ENV: "some-other-project"})
-    resolved = naming.resolve({naming.NAME_ENV: "oss-supertool"})
+    resolved = naming.resolve({naming.NAME_ENV: "st2051-oss-supertool"})
     monkeypatch.setattr(channel, "RESOLVED", resolved)
     sub = channel.subscription(os.getpid(), path=resolved.sock, roots=[tmp_path],
                                resolved=resolved)

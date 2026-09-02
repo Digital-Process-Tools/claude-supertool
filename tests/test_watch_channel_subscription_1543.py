@@ -241,7 +241,13 @@ def test_a_tag_that_could_not_be_looked_up_does_not_bury_a_later_one(
     _process_table(
         monkeypatch,
         "claude --dangerously-load-development-channels server:flaky server:good")
-    answers = {"flaky": (None, "the lookup failed"), "good": (True, "")}
+    # `channel.CONSUMER_SERVER` is asked as well since #2182: a resolved tag
+    # that is not the standing server triggers one further census, to decide
+    # whether a rival channel server could bind this socket. `False` is "no
+    # rival", which leaves this test on the arm it is about -- the traversal of
+    # the tag list -- rather than on the collision gates.
+    answers = {"flaky": (None, "the lookup failed"), "good": (True, ""),
+               channel.CONSUMER_SERVER: (False, "")}
     monkeypatch.setattr(channel, "_configured",
                         lambda name, _budget=None: answers[name])
     rc, report = channel.health(forwarding)
