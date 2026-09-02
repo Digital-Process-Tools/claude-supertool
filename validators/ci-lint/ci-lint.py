@@ -52,6 +52,7 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from refusal import absent, guard_main
+from bin_resolve import resolve_bin_cmd
 
 TOOL = "ci-lint"
 
@@ -97,11 +98,14 @@ def main() -> None:
 
     file = sys.argv[1]
     glab_bin_cmd_str = os.environ.get("GLAB_BIN", "glab")
-    # Accept either a single binary path or a shlex-split command line.
-    # Cross-platform test stubs pass e.g. "python /path/stub.py" so the
-    # stub runs on Windows too (no #!/usr/bin/env bash dependency).
-    import shlex as _shlex
-    bin_cmd = _shlex.split(glab_bin_cmd_str.replace("\\", "/"), posix=True) or ["glab"]
+    # Accept either a single binary path (may contain a space, e.g. the
+    # default Windows install location "C:\\Program Files\\glab\\glab.exe")
+    # or a shlex-quoted command line. Cross-platform test stubs pass e.g.
+    # "python /path/stub.py" (each token shlex.quote'd) so the stub runs on
+    # Windows too (no #!/usr/bin/env bash dependency). resolve_bin_cmd()
+    # tries the whole string as one path first, and only falls back to
+    # shlex.split when that does not resolve to a real executable (#2176).
+    bin_cmd = resolve_bin_cmd(glab_bin_cmd_str, "glab")
     glab_bin = bin_cmd[0]
 
     if not shutil.which(glab_bin) and not (

@@ -266,3 +266,58 @@ def test_count_contract_is_declared_on_every_verdict_bearing_emit(tmp_path: Path
     assert data["count_basis"] == "measured"
     assert data["errors_truncated"] is False
 
+
+
+def _load_ci_lint_module():
+    """Import ci-lint.py in-process (hyphenated filename) so a test can
+    monkeypatch `subprocess.run` and observe the exact argv the adapter
+    builds, without needing a real executable at a fabricated path -- a
+    real cross-platform binary at a spaced path is not something a test can
+    portably fabricate (#2176).
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ci_lint_adapter_2176", ADAPTER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_glab_bin_program_files_style_path_is_not_split_at_the_space(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """#2176 -- a Windows-Program-Files-shaped GLAB_BIN, actually installed
+    there (a real file with the execute bit set), must be used AS ONE PATH.
+    Before the fix, POSIX-mode `shlex.split` split the unquoted path at the
+    space in "Program Files", and the adapter ran `["<tmp>/Program", "ci",
+    "lint", ...]` -- a binary that does not exist, reported as GLAB_BIN not
+    found, even though the real one was sitting right there.
+    """
+    bin_dir = tmp_path / "Program Files" / "glab"
+    bin_dir.mkdir(parents=True)
+    real_glab = bin_dir / "glab.exe"
+    real_glab.write_text("")
+    real_glab.chmod(0o755)
+
+    f = tmp_path / ".gitlab-ci.yml"
+    f.write_text("stages:\n  - build\n")
+
+    monkeypatch.setenv("GLAB_BIN", real_glab.as_posix())
+    monkeypatch.setattr(sys, "argv", ["ci-lint.py", str(f)])
+
+    mod = _load_ci_lint_module()
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        import subprocess as _sp
+        return _sp.CompletedProcess(cmd, 0, stdout="CI/CD YAML is valid!\n", stderr="")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    captured_emit = []
+    monkeypatch.setattr(mod, "emit", lambda obj: captured_emit.append(obj))
+
+    mod.main()
+
+    assert captured["cmd"][0] == real_glab.as_posix(), captured["cmd"]
+    assert captured_emit[0]["ok"] is True, captured_emit[0]
