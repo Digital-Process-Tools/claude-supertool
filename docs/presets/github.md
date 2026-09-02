@@ -1760,6 +1760,15 @@ never exist is what cost a PR its first life.
 `gh-pr` uses, so a malformed `Closes` line is caught here rather than discovered
 after the merge.
 
+### A doubled escape is named, not published
+
+`gh-pr-create` refuses before it publishes a body carrying a literal
+backslash-quote -- a JSON payload that doubled its own escaping decodes to
+`\"` instead of `"`, and that mangled body used to reach GitHub unremarked
+([#1967](https://github.com/Digital-Process-Tools/claude-supertool/issues/1967)).
+The way out is `literal_backslashes = true` at the top level, for the one
+payload that genuinely means a real backslash rather than a doubled quote.
+
 ## Correcting a published body
 
 `gh-pr-create` writes a body once. Nothing updated one until
@@ -2182,6 +2191,28 @@ Resolution order (most specific wins): explicit `repo` in the payload → `defau
 **A missing `@FILE` is declined, not crashed on.** `gh-issue-create` invoked with no payload argument at all — `./supertool gh-issue-create` — used to hit `Path("").read_text()`, which resolves to the current directory, and leak a five-frame `IsADirectoryError` traceback ([#620](https://github.com/Digital-Process-Tools/claude-supertool/issues/620)). It now prints `ERROR: gh-issue-create needs a payload — gh-issue-create:@FILE, or gh-issue-create:@- to read it from stdin (JSON or TOML with title/body).` and exits 1. An `@FILE` that names an actual directory reports `ERROR: payload path is a directory, not a file: PATH` instead of the same traceback, and a payload that fails to parse names the expected shape rather than only echoing the parser's own message.
 
 **`body_file` gets the same treatment as the payload itself** ([#630](https://github.com/Digital-Process-Tools/claude-supertool/issues/630)). A missing, directory, or unreadable `body_file` used to leak a raw traceback — the payload load had a guard, the second read ten lines later did not. It now reports `ERROR: body_file not found: PATH`, `ERROR: body_file is a directory, not a file: PATH`, or `ERROR: permission denied reading body_file: PATH — ...`, naming the field so it's never confused with a payload-file error.
+
+### A GraphQL outage falls back to REST, and the receipt names which transport wrote it
+
+`gh issue create` mutates over GraphQL, and that transport can 503 while REST
+stays healthy — observed 2026-08-17, six identical outages in ten minutes on
+`.../graphql` while a raw `gh api -X POST repos/OWNER/REPO/issues` worked every
+time ([#1790](https://github.com/Digital-Process-Tools/claude-supertool/issues/1790)).
+On a transport-shaped failure (narrowly matched, so an ordinary refusal — bad
+milestone, no write access — never triggers this) `gh-issue-create` falls back
+to that same REST POST, and the receipt says so: `transport=graphql` or
+`transport=rest (fallback ...)`.
+
+A 503 does not prove the mutation never landed, so before writing anything the
+op looks for an open issue with the exact title it is about to create and
+reuses that issue rather than filing a duplicate. That lookup **pages through
+every open issue rather than reading a single 100-issue page**
+([#2021](https://github.com/Digital-Process-Tools/claude-supertool/issues/2021)):
+a page that comes back exactly 100 long is not proof the title is not on the
+next one, since GitHub's REST default ordering is newest-first and the entries
+pushed off the first page are exactly the long-lived titles a stalled
+maintainer loop is most likely to be re-filing. Past 5,000 open issues (50
+pages) it refuses to write rather than paging forever.
 
 ### An unrecognised payload key is refused, before anything is created
 

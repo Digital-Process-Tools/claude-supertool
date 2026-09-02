@@ -42,7 +42,7 @@ Claude Code's default toolbelt is 1995 unix: `cat` one file, `grep` one pattern,
 - **`gh-job` / `gh-run` / `gh-branch`** — a job's failure detail from either GitHub id namespace, a run's job table under a header that sums it, and *is this branch green* answered for the ref that has no PR after a squash merge. [Details](docs/presets/github.md#two-id-namespaces-actions-jobs-and-check-runs).
 - **`gh-prs` / `gh-issues` / `gl-mrs`** — triage boards that rank the queue instead of listing it, and say plainly which population is on screen. [Details](docs/presets/github.md#gh-prs-says-whose-board-it-is).
 - **`gh-pr-create` / `gh-pr-merge` / `gh-pr-edit`** — open, merge and correct a pull request with a receipt that proves it landed, not just an exit code. [Details](docs/presets/github.md#gh-pr-merge-refuses-more-than-it-merges).
-- **`gh-issue-create` / `gh-issue-comment`** — file and comment with the same published-body read-back, falling back to REST on a GraphQL outage rather than silently duplicating a filing.
+- **`gh-issue-create` / `gh-issue-comment`** — file and comment with the same published-body read-back, falling back to REST on a GraphQL outage rather than silently duplicating a filing. [Details](docs/presets/github.md#a-graphql-outage-falls-back-to-rest-and-the-receipt-names-which-transport-wrote-it).
 - **`claims:PATH`** — does a doc's own references — op names, paths, line numbers, cited issues — still hold? [Details](docs/presets/claims.md).
 - **`plugin-marketplace`** — did a release actually reach anyone installed through the catalogue, or is the pinned commit stale? [Details](docs/presets/plugin-marketplace.md).
 - **`classify:TEXT`** — is this untrusted text trying to steer an agent? [Details](docs/presets/classify.md).
