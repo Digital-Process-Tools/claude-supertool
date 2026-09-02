@@ -354,6 +354,36 @@ class TestGitlabIssueCreate:
         assert rc != 0
         assert "description" in out
 
+    def test_labels_string_instead_of_list_refused(self, monkeypatch, capsys, tmp_path):
+        # A comma-separated string used to be iterated character by
+        # character, sending one --label per character to glab (#2173).
+        payload = {**GL_MINIMAL, "labels": "AGY_GENERAL,Bugfix,Refactor"}
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        called = []
+        monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: called.append(args) or _ok(GL_URL))
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert not called, "glab must not be invoked when labels is the wrong type"
+        assert "labels" in out
+        assert "str" in out
+        assert "AGY_GENERAL" in out
+
+    def test_labels_list_of_non_strings_refused(self, monkeypatch, capsys, tmp_path):
+        payload = {**GL_MINIMAL, "labels": [1, 2]}
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        called = []
+        monkeypatch.setattr(gl, "_glab", lambda args, timeout=20: called.append(args) or _ok(GL_URL))
+
+        rc = gl.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert not called
+        assert "labels" in out
+
     def test_estimate_invalid_format_rejected(self, monkeypatch, capsys, tmp_path):
         for i, bad in enumerate(["abc", "4h; /spend 8h", "4h\n/spend", "4 h"]):
             sub = tmp_path / f"bad_{i}"
@@ -893,6 +923,40 @@ class TestGithubIssueCreate:
 # ===========================================================================
 # #1790 — a GraphQL-mutation-path outage falls back to REST, named as such
 # ===========================================================================
+
+    def test_labels_string_instead_of_list_refused(self, monkeypatch, capsys, tmp_path):
+        # Same root cause as #2173's GitLab twin (a string treated as an
+        # iterable of characters), even though the resulting garbage is
+        # shaped differently on this backend: `",".join(labels)` joins the
+        # string's own characters into one garbled --label value here,
+        # rather than gitlab's one-flag-per-character.
+        payload = {**GH_MINIMAL, "labels": "AGY_GENERAL,Bugfix,Refactor"}
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        called = []
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: called.append(args) or _ok(GH_URL))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert not called, "gh must not be invoked when labels is the wrong type"
+        assert "labels" in out
+        assert "str" in out
+        assert "AGY_GENERAL" in out
+
+    def test_labels_list_of_non_strings_refused(self, monkeypatch, capsys, tmp_path):
+        payload = {**GH_MINIMAL, "labels": [1, 2]}
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+        called = []
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: called.append(args) or _ok(GH_URL))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert not called
+        assert "labels" in out
+
 
 class TestGithubIssueCreateTransportFallback:
     """`gh issue create` goes through GraphQL. Observed 2026-08-17: that path
