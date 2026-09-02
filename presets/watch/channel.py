@@ -643,8 +643,11 @@ def record_received(path: str, count: int) -> tuple[int, str]:
         UNSETTLED (3) -- no window could be diffed at all: `forwarded` is not
                   readable right now, there is no prior receipt for this
                   socket (the first call, with nothing yet to diff against),
-                  or the prior receipt itself does not hold a readable pair
-                  to diff from. Must never render as AGREE.
+                  the prior receipt itself does not hold a readable pair to
+                  diff from, or `forwarded` went backwards since the prior
+                  receipt (the consumer restarted, so the window this call
+                  would diff spans a boundary nothing forwarded across
+                  survives). Must never render as AGREE.
 
     Every call persists a fresh receipt (best-effort) so the *next* call has
     a baseline, regardless of which of the three states this one reports —
@@ -683,8 +686,21 @@ def record_received(path: str, count: int) -> tuple[int, str]:
         lines.append("  UNSETTLED -- the prior receipt recorded no readable "
                       "forwarded baseline, so no window can be diffed")
         return 3, "\n".join(lines)
-    delta_received = count - prior_received
     delta_forwarded = now_forwarded - prior_forwarded
+    if delta_forwarded < 0:
+        # `forwarded` only ever counts up in a live consumer's own process
+        # (see `channel.ts`'s heartbeat). A smaller value than the prior
+        # receipt means the consumer that wrote it is gone and a new one has
+        # taken the socket -- the window this call would diff spans a
+        # restart, and nothing forwarded on the old process's watch survives
+        # to be compared against. Reporting AGREE or DISAGREE off a window
+        # that never happened would be worse than declining it.
+        lines.append(f"  UNSETTLED -- forwarded went backwards ({prior_forwarded} -> "
+                      f"{now_forwarded}), which means the consumer restarted between "
+                      f"reports; nothing forwarded across that boundary can be "
+                      f"compared. This report is the new baseline.")
+        return 3, "\n".join(lines)
+    delta_received = count - prior_received
     lines.append(f"  {delta_received} received since the last report, "
                  f"{delta_forwarded} forwarded over the same window")
     if delta_received == delta_forwarded:

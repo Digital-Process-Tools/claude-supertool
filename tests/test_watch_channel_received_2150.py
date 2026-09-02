@@ -84,6 +84,40 @@ def test_counts_that_disagree_over_a_window_report_disagree_with_the_size(tmp_pa
     assert "DISAGREE by 3" in report
 
 
+def test_forwarded_going_backwards_is_unsettled_never_agree(tmp_path) -> None:
+    """A restarted consumer's `forwarded` starts back at (near) zero. The
+    window this call would diff spans the restart, and nothing forwarded on
+    the old process's watch survives to compare -- must decline, not guess."""
+    sock = str(tmp_path / "test.sock")
+    _write_received(sock, received=50, forwarded_at_report=500)
+    _write_health(sock, forwarded=3)  # the consumer restarted
+    code, report = channel.record_received(sock, 53)
+    assert code == 3
+    assert "UNSETTLED" in report
+    assert "AGREE" not in report
+    assert "restarted" in report
+
+
+def test_a_corrupt_prior_received_count_is_unsettled_never_agree(tmp_path) -> None:
+    sock = str(tmp_path / "test.sock")
+    _write_received(sock, received="not-a-number", forwarded_at_report=100)
+    _write_health(sock, forwarded=110)
+    code, report = channel.record_received(sock, 10)
+    assert code == 3
+    assert "UNSETTLED" in report
+    assert "AGREE" not in report
+
+
+def test_a_corrupt_prior_forwarded_baseline_is_unsettled_never_agree(tmp_path) -> None:
+    sock = str(tmp_path / "test.sock")
+    _write_received(sock, received=10, forwarded_at_report=None)
+    _write_health(sock, forwarded=110)
+    code, report = channel.record_received(sock, 20)
+    assert code == 3
+    assert "UNSETTLED" in report
+    assert "AGREE" not in report
+
+
 def test_unreadable_forwarded_is_unsettled_never_agree(tmp_path) -> None:
     """No health file at all: `forwarded` cannot be read, so nothing can be
     compared -- must not read as a match with a self-report of 0."""
