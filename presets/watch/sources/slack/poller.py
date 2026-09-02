@@ -546,13 +546,20 @@ def _write_message_file(channel: str, thread_ts: str | None, message_ts: str,
         f"content_kind: {content_kind}\n"
         "---\n"
     )
-    # `newline=""` disables `write_text`'s default newline translation
-    # (`os.linesep` on write -- two bytes on Windows). Without it, a
-    # multi-line message would write to two-byte line endings while
-    # `sha256` above is hashed over the original, untranslated `raw_text` --
-    # matching bytes on POSIX, a mismatch on Windows only, defeating the one
-    # thing `sha256` exists for (#2044's own "a path is still a claim").
-    path.write_text(header + text, encoding="utf-8", newline="")
+    # `write_bytes`, not `write_text` -- `Path.write_text(newline="")` is
+    # Python 3.10+ only (this repo's own matrix runs 3.9 too, and 3.9 raised
+    # `TypeError: write_text() got an unexpected keyword argument 'newline'`
+    # on every platform, not just the one the flag was chasing: PR #2147,
+    # 26 tests red on macOS 3.9, none on Linux or Windows since neither runs
+    # 3.9 in this matrix). Encoding by hand and writing the exact bytes
+    # makes "the file's bytes are what `sha256` hashed" structural rather
+    # than a flag a future refactor could drop: `write_text`'s *default*
+    # newline translation (`os.linesep` on write -- two bytes on Windows)
+    # would otherwise still apply, and `sha256` below is hashed over the
+    # original, untranslated `raw_text` -- matching bytes on POSIX, a
+    # mismatch on Windows only, defeating the one thing `sha256` exists for
+    # (#2044's own "a path is still a claim").
+    path.write_bytes((header + text).encode("utf-8"))
     try:
         os.chmod(path, 0o600)
     except OSError:
