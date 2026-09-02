@@ -39,7 +39,9 @@ def _load_poller():
     return mod
 
 
-def _event_for_msg(poller, msg: dict) -> dict:
+def _event_for_msg(poller, msg: dict, *, tmp_path=None, monkeypatch=None) -> dict:
+    if tmp_path is not None:
+        monkeypatch.setattr(poller.transport, "STATE_DIR", str(tmp_path))
     msg = dict(msg)
     msg.setdefault("ts", "1.0")
     msg.setdefault("user", BOT_UID)
@@ -49,12 +51,19 @@ def _event_for_msg(poller, msg: dict) -> dict:
     return events[0]["payload"]
 
 
-def test_ordinary_text_message_is_unaffected() -> None:
+def test_ordinary_text_message_is_unaffected(tmp_path, monkeypatch) -> None:
     """Must-not-fire pair: a normal message with real `text` must not start
-    naming a fallback it never used."""
+    naming a fallback it never used.
+
+    Since #2044, `content_kind == "text"` no longer puts the words in
+    `title` at all -- they move to a file (`payload_path`), and the state
+    dir is redirected into `tmp_path` so this does not write into the real,
+    process-wide watch state directory every other test shares."""
     poller = _load_poller()
-    payload = _event_for_msg(poller, {"text": "hello team"})
-    assert payload["title"] == "hello team"
+    payload = _event_for_msg(poller, {"text": "hello team"},
+                             tmp_path=tmp_path, monkeypatch=monkeypatch)
+    assert payload["title"] == ""
+    assert payload["payload_path"], payload
     assert payload["content_kind"] == "text"
 
 

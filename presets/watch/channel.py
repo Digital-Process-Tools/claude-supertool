@@ -1305,7 +1305,88 @@ def _looks_like_a_session(argv: str) -> bool:
     return first == CLAUDE_BIN or first.endswith("/" + CLAUDE_BIN)
 
 
-def subscription(pid: Any, pid_note: str = "", path: str | None = None) -> Subscription:
+def _dual_declaration_objection(path: str, tag_name: str,
+                                resolved: naming.Resolved,
+                                roots: list[Path] | None = None) -> str | None:
+    """Is a *different*, standing `.mcp.json` server also going to bind `path`?
+
+    #2133/#2136 catch the collision reactively, off a marker the losing
+    process writes beside the socket it lost — and that marker exists only
+    between the loss and the winner's next (re)bind, which clears it. #2051's
+    own 2026-09-01 comment measured a session past that window: the collision
+    had already happened, the harness's MCP connections were both
+    `CONNECTION_CLOSED`, and no marker was left beside this socket by the
+    time anyone looked, so `subscription()` still read `subscribed`.
+
+    This check needs no marker and nothing has to happen first. This
+    repository's own `.mcp.json` declares `claude-channel` unconditionally
+    (#1541); absent an explicit `env` block redirecting it, that server
+    inherits the session's environment — the same one a
+    `--dangerously-load-development-channels server:NAME` tag's consumer
+    inherits. Two channel-capable servers resolving one socket by
+    construction is a fact about two config files, readable before either
+    process ever binds or refuses anything.
+
+    `None` when the matched tag *is* `CONSUMER_SERVER` — subscribing through
+    the standing server is one declaration, not two — when no `.mcp.json` in
+    the checked roots declares it at all, or when it declares it pointed at
+    a different socket (an explicit `env` redirect is a deliberate second
+    channel, #2044's shape, not a collision).
+
+    **What this does NOT check (reviewer finding on #2051's own fix): whether
+    `tag_name`'s own configured server resolves to `path`.** Only the standing
+    `CONSUMER_SERVER` side is compared against `path` here — `tag_name`'s
+    server could be declared anywhere `_configured` cannot see into (a
+    `--mcp-config` file, a different `.mcp.json` root), so there is no
+    general way to ask what socket it targets. A session running two
+    genuinely isolated channel servers can therefore still read
+    `CANNOT DETERMINE` from this check. That is the same direction as every
+    other decline `subscription()` makes — never a false `SUB_SUBSCRIBED` —
+    so it costs precision, not correctness in the sense this file cares
+    about, but it is a real limitation and not a rounding error.
+    """
+    if tag_name == CONSUMER_SERVER:
+        return None
+    for root in (_mcp_roots() if roots is None else roots):
+        mcp_path = Path(root) / MCP_FILENAME
+        env, why = _declared_env(mcp_path)
+        if env is None:
+            # `_declared_env` collapses several different reasons into one
+            # `(None, why)` shape (#2051 reviewer finding). Two of them are
+            # genuinely "nothing declared here" and safe to keep looking
+            # past: no `.mcp.json` at this root at all, or one that parsed
+            # fine and simply names no `CONSUMER_SERVER` entry. The rest --
+            # unreadable (a permission error, a symlink), not valid JSON, or
+            # an `env` block that is not an object -- mean the file exists
+            # and *could* declare the standing server, and this call cannot
+            # tell. Reading that as "no collision" would be exactly the
+            # absence-read-as-presence defect this file's neighbours
+            # (`consumer_lines`, and the `read_refusal` branch a few lines
+            # below this one) already guard against, one call site over.
+            if why == f"no {MCP_FILENAME} at {mcp_path}" or (
+                    why == f"{mcp_path} declares no {CONSUMER_SERVER} server"):
+                continue
+            return (f"{mcp_path} could not be checked for a "
+                    f"{CONSUMER_SERVER} declaration ({_untrusted.flat(why)}), "
+                    f"so whether it collides with {TAG_PREFIX}{tag_name} on "
+                    f"this socket cannot be ruled out")
+        theirs_sock = (naming.resolve(env).sock
+                       if any(var in env for var in CHANNEL_VARS)
+                       else resolved.sock)
+        if theirs_sock == path:
+            return (f"{mcp_path} declares {CONSUMER_SERVER} on this same "
+                    f"socket, unconditionally (#1541) — a session carrying "
+                    f"both that standing server and {TAG_PREFIX}{tag_name} "
+                    f"spawns two channel-capable servers over one socket. "
+                    f"One binds; the harness's connection to the other "
+                    f"closes (#2133), and there is no marker requirement "
+                    f"here for that to be true")
+    return None
+
+
+def subscription(pid: Any, pid_note: str = "", path: str | None = None,
+                 resolved: naming.Resolved = None,  # type: ignore[assignment]
+                 roots: list[Path] | None = None) -> Subscription:
     """Is any session subscribed to the channel this consumer serves? (#1543)
 
     The chain, and every link of it is read rather than assumed: the consumer
@@ -1405,6 +1486,14 @@ def subscription(pid: Any, pid_note: str = "", path: str | None = None) -> Subsc
         answer, ask_why = _configured(name, min(CLAUDE_TIMEOUT, remaining))
         if answer:
             if path is not None:
+                dual_why = _dual_declaration_objection(
+                    path, name, resolved if resolved is not None else RESOLVED, roots)
+                if dual_why:
+                    return _sub(
+                        SUB_UNKNOWN,
+                        f"NOT established — {TAG_PREFIX}{_untrusted.flat(name)} is "
+                        f"configured, but",
+                        (_untrusted.flat(dual_why),))
                 collision, collision_why = read_refusal(path)
                 if collision is not None:
                     reason = collision.get("reason")
