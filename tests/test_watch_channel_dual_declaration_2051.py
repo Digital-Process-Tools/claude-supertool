@@ -145,6 +145,32 @@ def test_no_mcp_json_at_all_is_not_a_collision(tmp_path, monkeypatch):
     assert sub.state == channel.SUB_SUBSCRIBED, (sub.state, "".join(sub.lines))
 
 
+def test_an_unreadable_mcp_json_is_cannot_determine_not_no_collision(
+        tmp_path, monkeypatch):
+    """Reviewer finding on #2051's own fix: `_declared_env` collapses 'no
+    `.mcp.json` here' and 'a `.mcp.json` exists but could not be read/parsed'
+    into the same `(None, why)` shape. `_dual_declaration_objection` must not
+    read both as 'nothing declared, no collision' -- that is the exact
+    absence-read-as-presence defect this file's neighbours (`consumer_lines`,
+    and `subscription`'s own `read_refusal` branch six lines below) already
+    guard against. An unreadable `.mcp.json` must land in CANNOT DETERMINE,
+    not SUBSCRIBED."""
+    _process_table(monkeypatch, TAGGED_OSS)
+    _configured(monkeypatch, True)
+    mcp_path = tmp_path / ".mcp.json"
+    mcp_path.write_text("{not valid json", encoding="utf-8")
+    resolved = naming.resolve({})
+    monkeypatch.setattr(channel, "RESOLVED", resolved)
+    # `PATH`, not `resolved.sock`: the default socket path is a real,
+    # process-wide path that can carry a genuine #2133 refusal marker left
+    # over from something else on this machine, which would make this test
+    # pass off the *old* collision-marker mechanism rather than the one
+    # under test.
+    sub = channel.subscription(os.getpid(), path=PATH, roots=[tmp_path],
+                               resolved=resolved)
+    assert sub.state == channel.SUB_UNKNOWN, (sub.state, sub.lines)
+
+
 def test_no_path_given_preserves_old_behaviour(tmp_path, monkeypatch):
     """Callers with no socket to check (the pre-#2133 call shape) get exactly
     the old behaviour -- this check, like the refusal-marker one, is gated on

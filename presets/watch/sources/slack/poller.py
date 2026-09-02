@@ -546,7 +546,13 @@ def _write_message_file(channel: str, thread_ts: str | None, message_ts: str,
         f"content_kind: {content_kind}\n"
         "---\n"
     )
-    path.write_text(header + text, encoding="utf-8")
+    # `newline=""` disables `write_text`'s default newline translation
+    # (`os.linesep` on write -- two bytes on Windows). Without it, a
+    # multi-line message would write to two-byte line endings while
+    # `sha256` above is hashed over the original, untranslated `raw_text` --
+    # matching bytes on POSIX, a mismatch on Windows only, defeating the one
+    # thing `sha256` exists for (#2044's own "a path is still a claim").
+    path.write_text(header + text, encoding="utf-8", newline="")
     try:
         os.chmod(path, 0o600)
     except OSError:

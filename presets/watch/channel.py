@@ -1332,14 +1332,44 @@ def _dual_declaration_objection(path: str, tag_name: str,
     the checked roots declares it at all, or when it declares it pointed at
     a different socket (an explicit `env` redirect is a deliberate second
     channel, #2044's shape, not a collision).
+
+    **What this does NOT check (reviewer finding on #2051's own fix): whether
+    `tag_name`'s own configured server resolves to `path`.** Only the standing
+    `CONSUMER_SERVER` side is compared against `path` here — `tag_name`'s
+    server could be declared anywhere `_configured` cannot see into (a
+    `--mcp-config` file, a different `.mcp.json` root), so there is no
+    general way to ask what socket it targets. A session running two
+    genuinely isolated channel servers can therefore still read
+    `CANNOT DETERMINE` from this check. That is the same direction as every
+    other decline `subscription()` makes — never a false `SUB_SUBSCRIBED` —
+    so it costs precision, not correctness in the sense this file cares
+    about, but it is a real limitation and not a rounding error.
     """
     if tag_name == CONSUMER_SERVER:
         return None
     for root in (_mcp_roots() if roots is None else roots):
         mcp_path = Path(root) / MCP_FILENAME
-        env, _why = _declared_env(mcp_path)
+        env, why = _declared_env(mcp_path)
         if env is None:
-            continue
+            # `_declared_env` collapses several different reasons into one
+            # `(None, why)` shape (#2051 reviewer finding). Two of them are
+            # genuinely "nothing declared here" and safe to keep looking
+            # past: no `.mcp.json` at this root at all, or one that parsed
+            # fine and simply names no `CONSUMER_SERVER` entry. The rest --
+            # unreadable (a permission error, a symlink), not valid JSON, or
+            # an `env` block that is not an object -- mean the file exists
+            # and *could* declare the standing server, and this call cannot
+            # tell. Reading that as "no collision" would be exactly the
+            # absence-read-as-presence defect this file's neighbours
+            # (`consumer_lines`, and the `read_refusal` branch a few lines
+            # below this one) already guard against, one call site over.
+            if why == f"no {MCP_FILENAME} at {mcp_path}" or (
+                    why == f"{mcp_path} declares no {CONSUMER_SERVER} server"):
+                continue
+            return (f"{mcp_path} could not be checked for a "
+                    f"{CONSUMER_SERVER} declaration ({_untrusted.flat(why)}), "
+                    f"so whether it collides with {TAG_PREFIX}{tag_name} on "
+                    f"this socket cannot be ruled out")
         theirs_sock = (naming.resolve(env).sock
                        if any(var in env for var in CHANNEL_VARS)
                        else resolved.sock)

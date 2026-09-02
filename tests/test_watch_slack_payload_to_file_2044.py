@@ -129,6 +129,28 @@ def test_routing_metadata_stays_inline_exactly_as_before(tmp_path, monkeypatch) 
     assert payload["thread_ts"] == "", payload
 
 
+def test_sha256_matches_the_files_own_bytes_not_just_the_source_text(
+        tmp_path, monkeypatch) -> None:
+    """Reviewer finding: `Path.write_text`'s default `newline` argument
+    translates every embedded newline to the platform line separator on
+    write (`os.linesep`, which is a two-byte sequence on Windows), while
+    `sha256` is hashed over `raw_text` before the write, against its
+    original, untranslated bytes. A multi-line Slack message (an ordinary
+    shape for free-form prose -- a bulleted list, a shift-enter message)
+    would then hash to a value that does not match the file's own bytes on
+    Windows only, defeating the one thing `sha256` exists for (#2044's own
+    "a path is still a claim" -- letting a consumer confirm the file it
+    opened is the message this event named)."""
+    poller = _load_poller()
+    multiline = "\n".join(["first line", "second line", "third line"])
+    payload = _event_for_msg(poller, tmp_path, monkeypatch, {"text": multiline})
+    on_disk = Path(payload["payload_path"]).read_bytes()
+    marker = "---\n".encode("utf-8")
+    body = on_disk[on_disk.index(marker) + len(marker):]
+    assert (hashlib.sha256(body).hexdigest() == payload["sha256"]), (
+        "the advertised sha256 must match the file's own bytes")
+
+
 def test_two_different_messages_get_two_different_files(tmp_path, monkeypatch) -> None:
     poller = _load_poller()
     monkeypatch.setattr(poller.transport, "STATE_DIR", str(tmp_path))
@@ -151,6 +173,29 @@ def test_a_file_upload_fallback_stays_inline_not_moved_to_a_file(
     })
     assert payload["payload_path"] == "", payload
     assert "diagram.png" in payload["title"], payload
+
+
+def test_retention_evicts_the_oldest_file_first(tmp_path, monkeypatch) -> None:
+    """Auditor finding: `_prune_message_store`/`_MESSAGE_RETENTION_MAX` had
+    no positive control anywhere in the suite -- the logic read correctly by
+    inspection, but nothing would go red if the eviction order were reversed,
+    the slice were off by one, or the function were never called at all.
+    Lowers the cap directly rather than writing 500 files."""
+    poller = _load_poller()
+    monkeypatch.setattr(poller, "_MESSAGE_RETENTION_MAX", 2)
+    monkeypatch.setattr(poller.transport, "STATE_DIR", str(tmp_path))
+    import time as _time
+    first = poller._write_message_file("C1", None, "1.0", "false", "text", "oldest")
+    _time.sleep(0.01)
+    second = poller._write_message_file("C1", None, "2.0", "false", "text", "middle")
+    _time.sleep(0.01)
+    third = poller._write_message_file("C1", None, "3.0", "false", "text", "newest")
+    store = tmp_path / "slack-messages"
+    remaining = {p.name for p in store.iterdir()}
+    assert Path(first).name not in remaining, "the oldest file must be evicted first"
+    assert Path(second).name in remaining, remaining
+    assert Path(third).name in remaining, remaining
+    assert len(remaining) == 2, remaining
 
 
 def test_a_genuinely_empty_message_writes_no_file(tmp_path, monkeypatch) -> None:

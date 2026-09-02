@@ -1890,6 +1890,7 @@ the consumer).
 | The socket-holder has been reparented to pid 1, so its session has exited | `BOUND, NOT SUBSCRIBED` |
 | The tag names a configured server | `FORWARDING` |
 | The tag names a configured server, but a rival channel server was refused this exact socket during this run | `CANNOT DETERMINE`, naming the collision ([#2133](https://github.com/Digital-Process-Tools/claude-supertool/issues/2133)) |
+| The tag names a configured server, but a `.mcp.json` in the checked roots also declares `claude-channel` (unconditionally, [#1541](https://github.com/Digital-Process-Tools/claude-supertool/issues/1541)) resolving to this same socket | `CANNOT DETERMINE`, naming both declared servers ([#2051](https://github.com/Digital-Process-Tools/claude-supertool/issues/2051)) — needs no marker and no collision to have happened yet |
 | No `ps`, no `claude` on PATH, an argv that does not tokenise, a spawner not recognisable as a session, a tag list whose values could be one name with a space | `CANNOT DETERMINE`, **with the reason** |
 | A tag that cannot be a server name — empty, a leading `-`, a control character | `CANNOT DETERMINE`, **with the reason** ([#1559](https://github.com/Digital-Process-Tools/claude-supertool/issues/1559)) |
 | A tag the lookup budget ran out before reaching | `CANNOT DETERMINE`, named as unasked ([#1558](https://github.com/Digital-Process-Tools/claude-supertool/issues/1558)) |
@@ -1920,6 +1921,26 @@ run has first-hand evidence a rival lost the exact same socket, which a
 not close the gap in general — a session that never collided still cannot be
 told apart from one whose second server departed cleanly before this consumer
 ever looked — it closes the one instance for which this run holds a witness.
+
+**A second, disjoint case is closed by a static check instead of a witness
+([#2051](https://github.com/Digital-Process-Tools/claude-supertool/issues/2051)).**
+The 2133 fix above needs a collision to have already happened and left a
+readable marker beside the socket — and that marker exists only in the window
+between the loss and the winning process's next (re)bind, which clears it. A
+2026-09-01 session sat past that window: both of the harness's MCP connections
+were `CONNECTION_CLOSED`, no marker was left, and `subscription()` still read
+`subscribed`. What settles that case needs no witness at all: this
+repository's own `.mcp.json` declares `claude-channel` unconditionally, so any
+session also carrying a `--dangerously-load-development-channels server:NAME`
+tag under a *different* name is **guaranteed**, by the two config files alone,
+to spawn two channel-capable servers over one socket — knowable before either
+process ever binds or refuses anything. `subscription()` now checks the two
+files directly for exactly that shape. What #2051 does *not* close is the
+mirror case #1543's own table already understates: nothing here checks whether
+`tag_name`'s own configured server resolves to this socket, only whether the
+standing `claude-channel` entry does, so a session running two genuinely
+isolated channel servers can still read `CANNOT DETERMINE` — the same
+direction as every other decline in this table, never a false `FORWARDING`.
 
 **The tag is somebody else's text and reaches an argv this tool builds, so it is
 shape-checked and passed after `--`**
