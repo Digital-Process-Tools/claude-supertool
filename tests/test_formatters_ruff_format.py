@@ -1,6 +1,7 @@
 """Smoke tests for formatters/ruff-format/ruff-format.py (#2085)."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import shutil
@@ -13,6 +14,17 @@ import pytest
 from _adapter_verdict import assert_declined, assert_ok
 
 ADAPTER = Path(__file__).parent.parent / "formatters" / "ruff-format" / "ruff-format.py"
+
+
+def _load_adapter_module():
+    """Import ruff-format.py in-process (its filename has hyphens, so it
+    cannot be a normal `import` target) so a test can patch `open` at the
+    module level and observe how the adapter uses the handle it gets back.
+    """
+    spec = importlib.util.spec_from_file_location("ruff_format_adapter_2160", ADAPTER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _python_stub(tmp_path: Path, name: str, body: str) -> str:
@@ -153,3 +165,66 @@ def test_syntax_error_file_reports_failure_not_ok(tmp_path: Path) -> None:
     assert_declined(data)
     assert data["count"] == 1
     assert "failed to parse" in data["errors"][0]["msg"]
+
+
+def test_before_after_file_handles_are_explicitly_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for #2160: both reads (`before` at line 85, `after` at
+    line 138) used to be a bare `open(...).read()` chain with no context
+    manager, so nothing in the adapter ever called `.close()` on the handle
+    -- it relied entirely on CPython dropping the last reference and the
+    object's own `__del__` doing the closing, timing this codebase does not
+    control (not guaranteed at all on e.g. PyPy, and not immediate through
+    an exception's traceback holding a frame alive).
+
+    A black-box before/after-content assertion cannot tell the buggy version
+    from the fixed one -- the observable diff output is identical either
+    way. So this patches `open` at the module level with a fake handle that
+    only ever gets `.close()` invoked through `__exit__`, never implicitly,
+    and asserts that call happened. That is red on a bare
+    `open(...).read()` chain (close_called stays False -- nothing in the
+    adapter ever calls it) and green once both sites use `with open(...) as
+    f: ... = f.read()`.
+    """
+    f = tmp_path / "x.py"
+    original_text = "x = 1" + chr(10)
+    f.write_text(original_text)
+
+    mod = _load_adapter_module()
+
+    bin_cmd = _python_stub(tmp_path, "stub_exit0", "import sys" + chr(10) + "sys.exit(0)" + chr(10))
+    monkeypatch.setenv("RUFF_BIN", bin_cmd)
+    monkeypatch.setattr(sys, "argv", ["ruff-format.py", str(f)])
+
+    handles = []
+
+    class FakeHandle:
+        def __init__(self) -> None:
+            self.close_called = False
+
+        def read(self) -> str:
+            return original_text
+
+        def close(self) -> None:
+            self.close_called = True
+
+        def __enter__(self) -> "FakeHandle":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            self.close()
+            return False
+
+    def fake_open(path, *args, **kwargs):
+        handle = FakeHandle()
+        handles.append(handle)
+        return handle
+
+    monkeypatch.setattr(mod, "open", fake_open, raising=False)
+
+    mod.main()
+
+    assert len(handles) == 2, "expected exactly two open() calls (before + after reads)"
+    assert all(h.close_called for h in handles), (
+        "a file handle from open(...).read() was never explicitly closed -- "
+        "the adapter is relying on implicit GC/refcounting timing again"
+    )
