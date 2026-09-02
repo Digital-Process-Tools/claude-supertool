@@ -57,11 +57,41 @@ TESTS_DIR = Path(__file__).resolve().parent
 _TMP_PATH_REF = re.compile(r"\btmp_path\b")
 
 # An expression already escaped, by a helper this suite already uses
-# (`_toml_path`, `_toml_str`) or by hand (`str(x).replace(...)`), or built
-# through `json.dumps` (which escapes backslashes the same way TOML basic
-# strings expect). Any of these makes the interpolation safe regardless of
-# whether it names tmp_path.
-_SAFE_MARKERS = ("_toml_path(", "_toml_str(", "json.dumps(", ".replace(")
+# (`_toml_path`, `_toml_str`), or built through `json.dumps` (which escapes
+# backslashes the same way TOML basic strings expect). Any of these makes
+# the interpolation safe regardless of whether it names tmp_path.
+_SAFE_MARKERS = ("_toml_path(", "_toml_str(", "json.dumps(")
+
+# A forward-slash rendering of a path carries no backslash to be misread as
+# a TOML escape, on any platform -- safe in a basic string for the same
+# reason a literal string is, just via a different route. Found while
+# reviewing this file: an interpolation reading `tmp_path.as_posix()` was
+# flagged even though it cannot reproduce #2152's failure.
+_SAFE_WHOLE_CALL_MARKERS = (".as_posix(",)
+
+# `.replace(` used to sit in `_SAFE_MARKERS` unconditionally, on the theory
+# that a test author who reaches for it is escaping the backslash the way
+# `_toml_path`/`_toml_str` do by hand. That is true only when the thing
+# being replaced actually is a backslash: `str(tmp_path).replace(".", "_")`
+# also contains the substring `.replace(` and touches no backslash at all,
+# so it is functionally identical to the unescaped #2152 shape and was
+# passing this scan clean (found while reviewing this file, via the
+# `oss:auditor` review of this same commit). A `.replace(` call now counts
+# as safe only when its own unparsed source names a backslash: two
+# consecutive backslash characters (what `ast.unparse` renders a one-
+# backslash string literal back as), a `chr(92)` call, or `os.sep` on an
+# expression already known to be Windows-only.
+_BACKSLASH_REPLACE_TARGET = re.compile("\\\\\\\\|chr\\(92\\)|os\\.sep")
+
+
+def _is_safe(expr: str) -> bool:
+    if any(marker in expr for marker in _SAFE_MARKERS):
+        return True
+    if any(marker in expr for marker in _SAFE_WHOLE_CALL_MARKERS):
+        return True
+    if ".replace(" in expr and _BACKSLASH_REPLACE_TARGET.search(expr):
+        return True
+    return False
 
 #: A TOML key = "..." assignment (basic string, single line) whose body
 #: interpolates a bare expression containing tmp_path. Applied to the
@@ -110,7 +140,7 @@ def toml_basic_string_tmp_path_violations(path: Path) -> list:
             for expr in placeholders:
                 if not _TMP_PATH_REF.search(expr):
                     continue
-                if any(marker in expr for marker in _SAFE_MARKERS):
+                if _is_safe(expr):
                     continue
                 found.append((node.lineno, expr.strip()))
     return found
@@ -193,4 +223,37 @@ def test_the_scan_catches_the_naive_interpolation_and_spares_the_safe_forms(
     assert 10 in linenos, f"missed the naive content= interpolation: {found}"
     assert len(found) == 2, (
         f"expected exactly the two naive interpolations, got: {found}"
+    )
+
+
+def test_a_replace_call_that_does_not_target_a_backslash_is_still_flagged(
+    tmp_path: Path,
+) -> None:
+    """`oss:auditor`'s finding against this exact file: `.replace(` used to
+    sit in `_SAFE_MARKERS` unconditionally, so `str(tmp_path).replace(".",
+    "_")` -- which touches a dot, not a backslash, and carries every raw
+    backslash from a Windows tmp_path straight through -- passed this scan
+    clean. It must not: `.replace(` is safe only when its own source names
+    a backslash."""
+    fixture = tmp_path / "test_fake_replace_2152.py"
+    fixture.write_text(
+        "def test_dot_replace_is_not_an_escape(tmp_path):\n"
+        '    payload = f\'path = "{str(tmp_path).replace(".", "_")}"\\n\'\n'
+        "\n"
+        "def test_backslash_replace_via_chr_is_safe(tmp_path):\n"
+        "    payload = f'path = \"{str(tmp_path).replace(chr(92), chr(92) * 2)}\"\\n'\n"
+        "\n"
+        "def test_as_posix_is_safe(tmp_path):\n"
+        "    payload = f'path = \"{tmp_path.as_posix()}\"\\n'\n",
+        encoding="utf-8",
+    )
+    found = toml_basic_string_tmp_path_violations(fixture)
+    linenos = {lineno for lineno, _ in found}
+    assert 2 in linenos, (
+        f"a .replace() call that targets a dot, not a backslash, was not "
+        f"flagged even though it lets every raw backslash through: {found}"
+    )
+    assert len(found) == 1, (
+        f"expected only the dot-replace line flagged, chr(92) and "
+        f".as_posix() are genuinely safe: {found}"
     )

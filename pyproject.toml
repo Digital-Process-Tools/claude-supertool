@@ -68,14 +68,25 @@ addopts = "-n auto --cov=supertool --cov=_supertool --cov=presets --cov-report=t
 # this turns it on repo-wide via the one ini option that does that.
 #
 # 300s, not tight: `--durations=25` on the main pytest job (see
-# .github/workflows/tests.yml) has never shown a real test above ~9s, and
-# the child-spawning tests with their own internal subprocess timeouts
-# (test_core_timeout_skip_floor_1523.py, timeout=300) bound a *subprocess*
-# they kill well before that ceiling, not the pytest test item itself --
-# this is 30x+ the slowest test seen and comfortably under every job's
-# `timeout-minutes` (20-30 minutes = 1200-1800s), so a dump here means a
-# single test genuinely did not return, not a busy runner (the same
-# hang-guard-vs-benchmark trade the `benchmark` marker above documents).
+# .github/workflows/tests.yml) has never shown a real test above ~9s -- but
+# that job excludes `slow`, and this ini option is repo-wide, so it also
+# governs `slow-tests.yml` (`-m slow`) and the `coverage` job (`-m 'not
+# benchmark'`, which INCLUDES slow). Checked separately rather than assumed
+# to inherit the non-slow figure (`oss:auditor` review of this same commit,
+# below): grepping every `slow`-marked test file for `time.sleep(`/
+# `timeout=` finds a maximum of 60s, and every 60s hit is a `subprocess.run`
+# bound on a *child process* the test kills well before that ceiling
+# (test_classify_live_2046.py, test_git_push_hazards_640_642_647.py) --
+# not the pytest test item's own runtime, the same distinction
+# `test_core_timeout_skip_floor_1523.py`'s `timeout=300` already draws two
+# paragraphs up. 300s is still 5x that observed maximum and comfortably
+# under every job's `timeout-minutes` (20-30 minutes = 1200-1800s), so a
+# dump here means a single test genuinely did not return, not a busy runner
+# (the same hang-guard-vs-benchmark trade the `benchmark` marker above
+# documents). This is an observed ceiling over the tree as measured, not a
+# proof about a test added tomorrow -- the same caveat every ceiling in
+# this file (FINDINGS_CEILING in test_markdownlint_noise_2012.py, the
+# coverage floors) carries and states explicitly.
 # Deliberately not paired with `faulthandler_exit_on_timeout` -- that also
 # calls `os._exit()`, which would skip pytest-cov's exit-time data write and
 # turn a diagnosable hang into an undiagnosable coverage-combine failure on
