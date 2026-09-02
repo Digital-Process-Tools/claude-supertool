@@ -82,7 +82,8 @@ def main() -> None:
         return
 
     try:
-        before = open(file, encoding="utf-8", errors="replace").read()
+        with open(file, encoding="utf-8", errors="replace") as f:
+            before = f.read()
     except OSError as e:
         emit({
             "tool": "ruff-format", "file": file, "ok": False, "count": 1,
@@ -135,7 +136,8 @@ def main() -> None:
         return
 
     try:
-        after = open(file, encoding="utf-8", errors="replace").read()
+        with open(file, encoding="utf-8", errors="replace") as f:
+            after = f.read()
     except OSError:
         after = before
 
