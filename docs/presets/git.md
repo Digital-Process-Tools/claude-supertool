@@ -819,6 +819,7 @@ Most ops need no project config. `git-investigate` takes two env vars (below); `
 | `SUPERTOOL_WORKTREE_PR` | `1` | `git-worktrees`: set to `0`/`false`/`no`/`off` (or pass `nopr`) to drop the tracker column and make the op fully offline |
 | `SUPERTOOL_BLAME_RECENT` | `5` | Number of blame hotspot lines to surface |
 | `SUPERTOOL_GIT_TIMEOUT` | `10` (`5` for `git-status`) | Seconds each individual git call gets before it is abandoned and disclosed (see **When git does not answer**) |
+| `SUPERTOOL_GIT_LOCK_WAIT` | `2` | Total seconds `_git`/`_git_common` retries a contended `.git/index.lock` (or any of the other `_LOCK_FILES`) before giving up and diagnosing it — see **A contended lock is retried, then diagnosed**. `0` disables the retry (and the diagnosis) entirely |
 
 Set via the op's JSON config if you want project-wide defaults:
 
@@ -898,6 +899,22 @@ An abandoned call is never rendered as a git that succeeded and printed nothing.
 ```
 
 The footer stays as well, deliberately. The marker is where the eye is; the footer is the line that survives a `| tail` and the one a script greps. Neither is printed on a run where every call answered, so the common case gains nothing to skim past.
+
+### A contended lock is retried, then diagnosed ([#2034](https://github.com/Digital-Process-Tools/claude-supertool/issues/2034))
+
+git does not queue for its own lock files — it fails immediately with `fatal: Unable to create '.../index.lock': File exists` and leaves the caller to retry. This repository runs several git-touching things against one worktree at once by design (every mutating op's own `git-status` validator, the `read` receipt's path-meta suffix, `radar`/`git-worktrees` polling, several agents sharing one worktree root), so that failure used to surface immediately as whatever the calling op does with a non-zero git — no wait, no retry, no way to tell a genuinely wedged repository from two ordinary local commands finishing a fraction of a second apart.
+
+`_git`/`_git_verbatim` — the one chokepoint most of `presets/git` reaches git through — now retry a lock-contention failure with a short backoff, within `SUPERTOOL_GIT_LOCK_WAIT` seconds total (default 2). Any other failure — wrong arguments, no such repository, a real conflict — is returned on the first attempt, unchanged; retrying those would just be a slower way to fail.
+
+On exhausting the budget, the lock itself is diagnosed rather than left as a bare `File exists`:
+
+```
+lock-diagnosis: stale -- /path/.git/index.lock is 47.2s old and no process has it open, so it was most likely left behind by a crash rather than held by a slow one. Not removed automatically: deleting a lock on an inference is how a live write gets corrupted instead of a stale one cleared
+```
+
+The read is direct rather than inferred: does any process currently hold that exact file open (`lsof <path>`, or an `/proc/*/fd` walk when `lsof` is not installed) — not "is some process chdir'd into this worktree", which is the weaker signal `git-worktrees`' own occupancy check is built on for a different question (is anyone using this *tree* at all). Three states, same discipline as everywhere else on this page: `live` (a process holds it open), `stale` (nothing does, likely a crash), and `cannot tell` when the scan itself could not run (no `lsof`, no `/proc`). Nothing here ever removes a lock or suggests a removal command — deleting one on an inference is exactly the destructive act `git-worktrees` already warns against for the same reason.
+
+`SUPERTOOL_GIT_LOCK_WAIT=0` disables the whole feature: the first contention failure returns immediately, undiagnosed, as it always did.
 
 ### A copied worktree writes into the repository it was copied from
 

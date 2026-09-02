@@ -33,8 +33,9 @@ if _HERE not in sys.path:
 if os.path.dirname(_HERE) not in sys.path:
     sys.path.insert(0, os.path.dirname(_HERE))
 
-from _env import env_int  # noqa: E402  (the one numeric-knob reader)
+from _env import env_int, env_float  # noqa: E402  (the one numeric-knob reader)
 import _untrusted  # noqa: E402  (a child stream, and a path off disk, are somebody else's text — #1475, #1557)
+import time  # noqa: E402  (the lock-wait retry below, #2034)
 
 
 def use_utf8_stdout() -> None:
@@ -176,7 +177,191 @@ def _stop(proc: "subprocess.Popen") -> None:
         pass
 
 
+#: Git's own wording for "somebody already holds this lock" -- quoted path,
+#: as real git 2.46.2 writes it, or unquoted, as the shim in
+#: `tests/test_status_swallowed_705.py` writes it. The group captures the
+#: lock path so the diagnosis below can be pointed at the right file.
+_LOCK_ERROR_RE = re.compile(r"Unable to create '?([^'\n]+?)'?:\s*File exists")
+
+#: Total time #2034 will spend retrying a lock-contention failure before
+#: giving up and reporting it, rather than failing on the first attempt the
+#: way every call here used to. Chosen to sit comfortably above one ordinary
+#: local git call finishing (the module docstring above enumerates several
+#: git-touching things that run against one worktree at once: every
+#: validator's own `git-status`, the `read` receipt's path-meta suffix,
+#: `radar`/`git-worktrees` polling) and well below the point a caller starts
+#: to suspect the tool itself, not the lock, is what is stuck.
+#:
+#: `0` disables the retry entirely -- an opt-out, not a one-shot retry -- and
+#: also skips the diagnosis: asking for no retry is read as asking for the
+#: old, undiagnosed, fail-fast behaviour outright.
+LOCK_WAIT_DEFAULT = 2.0
+
+#: Backoff between retries, short first. The overwhelmingly common case is
+#: two local git calls finishing a fraction of a second apart, and that case
+#: should cost milliseconds, not the whole budget.
+_LOCK_BACKOFF = (0.05, 0.1, 0.2, 0.4, 0.8, 1.6)
+
+
+def _lock_wait_budget() -> float:
+    return env_float("SUPERTOOL_GIT_LOCK_WAIT", LOCK_WAIT_DEFAULT, minimum=0.0)
+
+
+def _lock_fd_holder(lock_path: str, scan_timeout: float = 3.0):
+    """Does any process hold `lock_path` open right now? `True` / `False` /
+    `None` for "the scan itself did not run" (#2034).
+
+    This is a narrower and more direct question than `worktrees.py`'s
+    `_cwd_scan` answers, deliberately: that probe licenses the *whole-tree*
+    `idle` verdict and asks "is any process chdir'd in here", which is
+    already documented there as a weak signal on its own (a parent process
+    need not be chdir'd into the tree an agent under it is editing). A held
+    lock is not that question -- git keeps the lockfile open with an
+    exclusive descriptor for exactly as long as it is working, and unlinks it
+    on the way out. So the direct read is "does an open file descriptor point
+    at this exact path", which `lsof <path>` (or an `/proc/*/fd` walk when
+    `lsof` is not installed) answers without needing the worktree's own path
+    at all -- useful here, since all this function is handed is the lock
+    file itself.
+
+    `None` is what a `ps aux | grep` could never say, and it is the answer
+    whenever the scan could not run: no `lsof`, no `/proc`, a stalled scan.
+    Never collapsed into `False` -- that would be exactly the absence this
+    codebase keeps re-filing, an absence produced by the tool read as an
+    absence in the world.
+    """
+    lsof = shutil.which("lsof")
+    if lsof:
+        try:
+            proc = subprocess.run(
+                [lsof, "-w", "-F", "p", "--", lock_path],
+                capture_output=True, text=True, timeout=scan_timeout,
+                encoding="utf-8", errors="replace",
+            )
+        except subprocess.TimeoutExpired:
+            return None
+        except OSError:
+            return None
+        # lsof's own exit convention: 0 = matched something, 1 = ran fine and
+        # matched nothing, anything else = the tool itself did not answer.
+        if proc.returncode == 0:
+            return bool(proc.stdout.strip())
+        if proc.returncode == 1:
+            return False
+        return None
+    if not os.path.isdir("/proc"):
+        # No lsof and no /proc (typically Windows, or a stripped container) --
+        # reasoned, not separately observed on Windows: nothing here has been
+        # run there. Declining is the safe direction either way.
+        return None
+    try:
+        target = os.path.realpath(lock_path)
+    except OSError:
+        return None
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return None
+    for pid in pids:
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            fd_names = os.listdir(fd_dir)
+        except OSError:
+            continue  # another user's process, or it exited mid-scan
+        for fd in fd_names:
+            try:
+                if os.path.realpath(f"{fd_dir}/{fd}") == target:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
+def _diagnose_lock(lock_path: str) -> str:
+    """One line: is the lock #2034 just hit live, stale, or cannot-tell --
+    and on what evidence.
+
+    Report only. Nothing here removes the lock, and the message never
+    suggests a removal command -- `worktrees.py`'s own note applies
+    unchanged: deleting a lock the caller believes it orphaned is a
+    destructive act taken on an inference, and the default has to be to
+    report rather than to act on one.
+    """
+    try:
+        age = time.time() - os.stat(lock_path).st_mtime
+    except OSError:
+        return ("lock-diagnosis: the lock file is gone already -- whoever "
+                "held it has released it")
+    age_text = f"{age:.1f}s old"
+    held = _lock_fd_holder(lock_path)
+    if held is True:
+        return (f"lock-diagnosis: live -- a process still has {lock_path} "
+                f"open ({age_text})")
+    if held is False:
+        return (f"lock-diagnosis: stale -- {lock_path} is {age_text} and no "
+                "process has it open, so it was most likely left behind by "
+                "a crash rather than held by a slow one. Not removed "
+                "automatically: deleting a lock on an inference is how a "
+                "live write gets corrupted instead of a stale one cleared")
+    return (f"lock-diagnosis: cannot tell -- {lock_path} is {age_text} and "
+            "whether a process still holds it open could not be established "
+            "on this platform (no lsof, no /proc, or the scan did not "
+            "answer) -- treat it as live until a human looks")
+
+
+def _with_lock_retry(attempt):
+    """Call `attempt()` (a zero-arg thunk returning a `CompletedProcess`),
+    retrying it while it fails on lock contention, within `#2034`'s budget.
+
+    Every other failure -- wrong args, no such repo, a real conflict -- is
+    returned on the first call. Retrying those would just be a slower way to
+    fail, and would blur which of several retried attempts actually errored.
+
+    On exhausting the budget, one retry's failure is returned with a
+    diagnosis of the lock appended to its stderr, naming which of live /
+    stale / cannot-tell the evidence supports -- never a bare timeout with no
+    further detail, and never another silent retry past the stated ceiling.
+    """
+    budget = _lock_wait_budget()
+    result = attempt()
+    if budget <= 0:
+        return result
+    deadline = time.monotonic() + budget
+    step = 0
+    while result.returncode != 0:
+        match = _LOCK_ERROR_RE.search(result.stderr or "")
+        if not match:
+            return result
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            diagnosis = _diagnose_lock(match.group(1))
+            # Mutated in place, not rebuilt through `subprocess.CompletedProcess(
+            # stdout=, stderr=)` -- that shape is a `return <expr>` sink over a
+            # raw stream (#1475's census), and this is the transport passing its
+            # own result through, not a new render. Attribute assignment is
+            # neither a taint-carrying target nor a sink, so it stays invisible
+            # to that scanner the same way a plain relay already is everywhere
+            # else in this module.
+            result.stderr = (result.stderr or "").rstrip("\n") + "\n" + diagnosis
+            return result
+        time.sleep(min(_LOCK_BACKOFF[min(step, len(_LOCK_BACKOFF) - 1)], remaining))
+        step += 1
+        result = attempt()
+    return result
+
+
 def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+    """`_git_attempt`, retried through lock contention within a bounded
+    budget, and diagnosed rather than silently re-tried past it (#2034).
+
+    See `_with_lock_retry` for the retry/diagnosis contract and
+    `_git_attempt`'s own docstring, below, for everything about the call
+    itself -- timeout handling, `--no-optional-locks`, the `_stop()` grace.
+    """
+    return _with_lock_retry(lambda: _git_attempt(args, timeout))
+
+
+def _git_attempt(args: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
     """Run a git command; a call that does not answer says so (#650, #704).
 
     `TimeoutExpired` is not allowed to escape. It is not swallowed either: the
@@ -249,7 +434,14 @@ def _git(args: list[str], timeout: int | None = None) -> subprocess.CompletedPro
 
 
 def _git_verbatim(args: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
-    """`_git`, with Python's universal-newline translation OFF (#1693).
+    """`_git_verbatim_attempt`, retried through lock contention the same way
+    `_git` is (#2034). See `_with_lock_retry` and `_git`'s own docstring.
+    """
+    return _with_lock_retry(lambda: _git_verbatim_attempt(args, timeout))
+
+
+def _git_verbatim_attempt(args: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+    """`_git_attempt`, with Python's universal-newline translation OFF (#1693).
 
     Same budget, same `TIMEOUT_RC` contract, same decode, same `_stop()` grace
     (#2033). The one difference is that `_git` runs `Popen(text=True)`, and

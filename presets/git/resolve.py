@@ -98,10 +98,14 @@ def _is_source_path(path: str) -> bool:
 # structurally implausible and hands the decision back.
 _MD_EXTS = frozenset({".md", ".markdown", ".mdown", ".mkd"})
 
-# ATX headings only. Setext underlines (`---` under a title) are not matched: a bare
-# rule is legitimate decoration, and the false positives would land on exactly the
-# files this guard must stay quiet about.
 _HEADING_RE = re.compile(r"^#{1,6}[ \t]+\S")
+
+# Setext underline: a line of only `=` (level 1) or `-` (level 2), up to three
+# leading spaces, CommonMark-style. Matched only when the line directly above it
+# is itself real title text (#1123) -- see `_heading_paths`, which is where that
+# adjacency is enforced; a bare `---` used as a thematic break, or two underline
+# lines in a row, must not be misread as a title.
+_SETEXT_UNDERLINE_RE = re.compile(r"^[ ]{0,3}(=+|-+)[ \t]*\Z")
 
 
 def _is_markdown_path(path: str) -> bool:
@@ -161,7 +165,8 @@ def _union_lines(text: str, selected: Optional[set[int]] = None) -> list[tuple[s
 
 
 def _heading_paths(lines: list[tuple[str, bool]]) -> list[tuple[tuple[str, ...], bool]]:
-    """Every ATX heading in LINES as its ancestor path, in file order, tag carried.
+    """Every heading in LINES — ATX (`## Title`) or setext (`Title` underlined
+    with `===`/`---`) — as its ancestor path, in file order, tag carried (#1123).
 
     The path — enclosing headings of lower level, then the heading itself — is what
     makes `### Fixed` under `## [Unreleased]` a different thing from `### Fixed`
@@ -171,26 +176,58 @@ def _heading_paths(lines: list[tuple[str, bool]]) -> list[tuple[tuple[str, ...],
     Fenced blocks are skipped. This repo's changelog quotes shell constantly and a
     `# run it` comment inside a fence is not structure; reading it as one would
     refuse ordinary entries, and a guard that fires on those trains the override.
+
+    **Setext.** `_HEADING_RE` alone is blind to a title spelled as text followed by
+    an underline line — #1123's own gap, the same shape #911 fixed for ATX one
+    heading style earlier. Detecting it needs one line of lookback: the underline
+    only means "the previous line was a title" when that previous line is real text
+    a heading could be titled with, not itself a heading, an underline, blank, or
+    inside/opening a fence. Getting that adjacency wrong in the permissive direction
+    would read a bare `---` thematic break as a heading with the paragraph two lines
+    above as its title, corrupting every path built from the lines after it — so a
+    candidate underline with an unusable previous line is read as ordinary text,
+    same as a version that could not decide at all. `prev_consumed` names every way
+    the previous line was already spoken for (a heading, a fence delimiter, or
+    itself an underline) so those cases are told apart from a fresh line that
+    genuinely reads as title text.
     """
     paths: list[tuple[tuple[str, ...], bool]] = []
     stack: list[tuple[int, str]] = []
     fence = ""
+    prev_raw = ""
+    prev_tagged = False
+    prev_consumed = True  # nothing above the first line to be anyone's title
     for raw, tagged in lines:
         s = raw.strip()
+        stripped_line = raw.rstrip("\r\n")
         if fence:
             if s.startswith(fence):
                 fence = ""
+            prev_raw, prev_tagged, prev_consumed = stripped_line, tagged, True
             continue
         if s.startswith("```") or s.startswith("~~~"):
             fence = s[:3]
+            prev_raw, prev_tagged, prev_consumed = stripped_line, tagged, True
             continue
-        if not _HEADING_RE.match(raw.rstrip("\r\n")):
+        if _HEADING_RE.match(stripped_line):
+            level = len(s) - len(s.lstrip("#"))
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            paths.append((tuple(t for _, t in stack) + (s,), tagged))
+            stack.append((level, s))
+            prev_raw, prev_tagged, prev_consumed = stripped_line, tagged, True
             continue
-        level = len(s) - len(s.lstrip("#"))
-        while stack and stack[-1][0] >= level:
-            stack.pop()
-        paths.append((tuple(t for _, t in stack) + (s,), tagged))
-        stack.append((level, s))
+        underline = _SETEXT_UNDERLINE_RE.match(stripped_line)
+        if underline and not prev_consumed and prev_raw.strip():
+            title = prev_raw.strip()
+            level = 1 if underline.group(1)[0] == "=" else 2
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            paths.append((tuple(t for _, t in stack) + (title,), tagged or prev_tagged))
+            stack.append((level, title))
+            prev_raw, prev_tagged, prev_consumed = stripped_line, tagged, True
+            continue
+        prev_raw, prev_tagged, prev_consumed = stripped_line, tagged, bool(underline)
     return paths
 
 
