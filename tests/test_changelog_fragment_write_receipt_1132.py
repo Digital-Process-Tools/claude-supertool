@@ -54,7 +54,14 @@ WELL_FORMED = "- " + BARE_PARAGRAPH
 
 
 def _project(tmp_path: Path, *, with_assembler: bool = True) -> Path:
-    """A minimal project that declares the fragment rules the way this repo does."""
+    """A minimal project that declares the fragment rules the way this repo does.
+
+    Git-initialized (#2178): `_find_assembler` bounds its walk at the git
+    repo root above the fragment, so a project fixture with no `.git` at all
+    resolves to "not inside a git repository" and every case here would read
+    as `skipped` regardless of where the assembler sits.
+    """
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "changelog.d").mkdir(parents=True, exist_ok=True)
     if with_assembler:
         scripts = tmp_path / ".github" / "scripts"
