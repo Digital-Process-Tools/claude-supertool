@@ -95,10 +95,10 @@ One call answers branch, ahead/behind, recent history and every dirty path — w
 |----|--------------|
 | `read` / `grep` / `glob` / `tree` / `map` | Read, search and symbol-map files — batched, with auto-read on a single matching file |
 | `edit` / `replace` / `replace_lines` / `paste` / `append` / `vim` / `batch` | Mutating ops, each validated and rolled back on a syntax failure |
-| `validate` / `format` / `validate_staged` / `format_staged` | Run the registered validators/formatters for a path, standalone or on the staged diff |
+| `validate` / `format` / `validate_staged` / `format_staged` | Run the registered validators/formatters for a path, standalone or on the staged diff — three-state (`ok` / finding / `skipped`), and a mutating op rolls back on a validator failure. [Details](docs/validators.md), [docs/formatters.md](docs/formatters.md) |
 | `cwd` / `repo` | Set the directory a call resolves against, or name the repo it is *about* |
 | `ops` / `ops:roster` / `help:OP` / `registry` / `guard` / `doctor` / `init` / `gc` | Discover, inspect and maintain the tool itself |
-| `workspace` / `resolve` / `diag` / `hover` / `rename` | LSP-backed ops via the warm MCP daemon |
+| `workspace` / `resolve` / `diag` / `hover` / `rename` | LSP-backed ops via the warm MCP daemon. [Details](docs/presets/lsp.md), [docs/mcp-integration.md](docs/mcp-integration.md) |
 | `git-status` | Branch, ahead/behind, dirty files, open PR/MR, suggested next step |
 | `git-worktrees` | Occupancy, tracker and merge state for every worktree, none of it guessed |
 | `git-commit` / `git-push` / `git-diff` / `git-blame` / `git-conflicts` / `git-resolve` | Commit with a receipt, push with a watcher, diff/blame/resolve without raw `git` |
@@ -108,10 +108,19 @@ One call answers branch, ahead/behind, recent history and every dirty path — w
 | `gh-job` / `gh-run` / `gh-branch` / `gh-check` | Job/run/branch/check-run detail across both GitHub id namespaces |
 | `gh-labels` | The repo's label vocabulary and open-issue counts per label |
 | `gl-mr` / `gl-mrs` / `gl-pipeline` / `gl-job` / `gl-api` | GitLab's equivalents |
-| `watch` / `radar` / `channel` | Background event pollers, tier reconciliation, and the MCP bridge that wakes a session |
+| `watch` / `radar` / `channel` | Background event pollers, tier reconciliation, and the MCP bridge that wakes a session. [Details](docs/presets/watch.md) |
 | `claims` | Does a doc's own references — ops, paths, line numbers, cited issues — still hold |
 | `classify` | Is this untrusted text trying to steer an agent |
 | `plugin-marketplace` | Did a release reach anyone installed through the catalogue |
+
+## Beyond the ops table
+
+Four subsystems the table above only gestures at, each with its own doc:
+
+- **Validators & formatters** — every mutating op runs your project's registered linters/formatters first, three-state (`ok` / finding / `skipped`), and rolls a write back on a validator failure. [docs/validators.md](docs/validators.md), [docs/formatters.md](docs/formatters.md).
+- **Notifiers** — fire-and-forget observers that tap the op stream for side effects: an editor diff view, Slack, a desktop notification. [docs/notifiers.md](docs/notifiers.md).
+- **`watch` / `radar` / `channel`** — background pollers and async wake for PRs, MRs and pipelines, reconciled into one tier. [docs/presets/watch.md](docs/presets/watch.md).
+- **LSP ops via warm MCP daemons** — `workspace`/`resolve`/`diag`/`hover`/`rename` reach a language server through a process that stays hot across calls. [docs/mcp-integration.md](docs/mcp-integration.md), [docs/mcp-warm-process-servers.md](docs/mcp-warm-process-servers.md).
 
 ## Security — cwd containment
 
