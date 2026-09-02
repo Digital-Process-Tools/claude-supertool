@@ -47,7 +47,9 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | Python (SCHEMA adapter)                  | `ruff-format`   | `ruff` (already a dependency of most Python CI)  | `formatters/ruff-format/ruff-format.py` — metrics + structured errors, unlike the raw-`cmd` rows above (#2085) |
 | Go                                       | `gofmt`         | Go toolchain                                     | Ships with Go — no extra install              |
 | Rust                                     | `rustfmt`       | Rust toolchain                                   | Ships with `rustup` — `rustup component add rustfmt` |
-| PHP (PSR-12)                             | `phpcbf`        | PHP_CodeSniffer via Composer                     | `composer global require squizlabs/php_codesniffer` |
+| PHP (PSR-12, SCHEMA adapter)             | `phpcbf`        | PHP_CodeSniffer via Composer                     | `formatters/phpcbf/phpcbf.py` — metrics + structured errors, unlike the raw-`cmd` rows above; `composer global require squizlabs/php_codesniffer` |
+| PHP (SCHEMA adapter)                     | `php-cs-fixer`  | `php-cs-fixer` (PHP-CS-Fixer)                    | `formatters/php-cs-fixer/php-cs-fixer.py` — metrics + structured errors; `composer global require friendsofphp/php-cs-fixer` |
+| JS, TS, CSS, JSON, YAML, Markdown (SCHEMA adapter) | `prettier-write` | `prettier` npm package                  | `formatters/prettier-write/prettier-write.py` — metrics + structured errors, an alternative to the raw-`cmd` `prettier` row above |
 | Bash / shell                             | `shfmt`         | `shfmt` binary                                   | `brew install shfmt` / `go install mvdan.cc/sh/v3/cmd/shfmt@latest` |
 | Terraform / HCL                          | `terraform-fmt` | Terraform CLI                                    | Ships with Terraform — `brew install terraform` |
 | Ruby                                     | `rubocop`       | RuboCop gem                                      | `gem install rubocop`; `-a` = auto-fix only   |

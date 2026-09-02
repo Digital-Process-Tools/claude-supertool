@@ -24037,7 +24037,11 @@ def _formatter_render_row(result: Dict[str, Any]) -> Optional[str]:
 
     Returns None (silent) when the formatter was a no-op:
     ok=True and metrics.lines_added == 0 and metrics.lines_removed == 0.
-    Failures always produce a row.
+    Failures always produce a row. So does a `verify_failed` payload (#2162):
+    it carries the same ok=True, 0/0-metrics shape as a genuine no-op, and
+    without this exception it would go silent for the wrong reason -- the
+    tool ran and may have changed the file, only the post-run re-read that
+    would have proven it failed.
     """
     # Every adapter-supplied field on this row goes through `_flat_cell`, for
     # the reason in its docstring: the validator twin has routed `tool`,
