@@ -22624,8 +22624,20 @@ def _validator_resolve(spec: Dict[str, Any], file: str) -> Optional[str]:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=30,
                            env=_run_env, encoding="utf-8", errors="replace")
         resolved = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
-    except (subprocess.TimeoutExpired, OSError):
-        return None
+    except subprocess.TimeoutExpired:
+        # #2177, one call frame up from `ci_lint_resolve_root.py`'s own fix:
+        # the resolve COMMAND timing out is a "could not look" case exactly
+        # like the ones that command's own `_repo_root` now distinguishes
+        # from "looked, found nothing" -- and bare `None` here would fold it
+        # back into that same silence one layer higher, undoing the point.
+        return _VALIDATOR_RESOLVE_ERROR_PREFIX + "resolve command timed out"
+    except OSError as exc:
+        # Same reasoning for a resolve command that could not even be spawned
+        # (a `.supertool.json` `resolve` entry naming a binary that is not on
+        # PATH, most commonly) -- `FileNotFoundError` is an `OSError` subclass
+        # and is not distinguished further here because the caller already
+        # gets the exception text.
+        return _VALIDATOR_RESOLVE_ERROR_PREFIX + "resolve command could not be run: {0}".format(exc)
     if not resolved:
         return None
     if resolved.startswith(_VALIDATOR_RESOLVE_ERROR_PREFIX):

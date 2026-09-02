@@ -158,3 +158,45 @@ def test_genuine_no_root_config_still_reads_as_nothing_to_check(tmp_path: Path) 
     assert resolved is None, (
         "a repo with genuinely no root .gitlab-ci.yml must still resolve to "
         "None (the existing skip path), not an error: " + repr((out, resolved)))
+
+
+# ---------------------------------------------------------------------------
+# The through-path: `_validator_resolve`'s RESOLVE-ERROR sentinel must
+# actually reach `_validator_run_one`'s final skip dict, not just its own
+# return value -- MUST FIRE, because nothing above this drives that far.
+# ---------------------------------------------------------------------------
+
+def test_a_resolve_error_reaches_the_final_skip_dict_with_its_reason(tmp_path: Path) -> None:
+    repo = tmp_path / "not-a-repo"
+    repo.mkdir()
+    f = repo / "README.md"
+    f.write_text("hi\n")
+    spec = {"resolve": "{python} " + str(RESOLVER) + " {file}"}
+    result = supertool._validator_run_one("ci-lint", spec, str(f))
+    assert result is not None
+    assert result.get("tool") == "ci-lint"
+    assert "skipped" in result, (
+        "a RESOLVE-ERROR sentinel must still render as a skip, not silently "
+        "vanish or be read as `ok`: " + repr(result))
+    assert "not inside a git repository" in result["skipped"], (
+        "the reason from `_repo_root` must survive all the way to the "
+        "validator's own skip message, not just `_validator_resolve`'s "
+        "return value: " + repr(result))
+    assert result["skipped"] != "no target resolved", (
+        "a could-not-look reason must not collapse back into the same "
+        "sentence as a genuine no-target-to-check: " + repr(result))
+
+
+def test_a_resolve_command_that_cannot_be_spawned_is_not_read_as_a_quiet_none(
+        tmp_path: Path) -> None:
+    """The launch-failure gap: `_validator_resolve`'s own subprocess.run can
+    fail to even start the resolve command (nonexistent binary in the spec),
+    and that must not fold into the same bare-`None` silence #2177 closed one
+    call frame down, inside `ci_lint_resolve_root.py` itself."""
+    spec = {"resolve": "supertool-nonexistent-binary-2177-xyz {file}"}
+    resolved = supertool._validator_resolve(spec, str(tmp_path / "f.txt"))
+    assert resolved is not None, (
+        "a resolve command that could not even be spawned must not resolve "
+        "to bare None -- indistinguishable from 'looked, found nothing'")
+    assert resolved.startswith("RESOLVE-ERROR: "), (
+        "expected the shared RESOLVE-ERROR protocol: " + repr(resolved))

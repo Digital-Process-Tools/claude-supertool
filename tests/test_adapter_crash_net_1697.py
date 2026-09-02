@@ -155,20 +155,28 @@ def _adapters():
 
 def _common_helpers_with_main():
     """`common/` files that #2174 says should not be invisible to the
-    crash-net sweep: they have their own `__main__` block and route through
-    `guard_main`, so an exception escaping them is exactly #1697's failure
-    mode. Not merged into `ADAPTERS` -- see `_adapters`'s own docstring for
-    why -- but still driven through the crash-net tests below via
-    `CRASH_NET_TARGETS`.
+    crash-net sweep: they have their own `__main__` block, so an exception
+    escaping it is exactly #1697's failure mode whether or not the file
+    currently routes through `guard_main`. Not merged into `ADAPTERS` -- see
+    `_adapters`'s own docstring for why -- but still driven through the
+    crash-net tests below via `CRASH_NET_TARGETS`.
+
+    Deliberately NOT filtered on `"guard_main" in text` the way an earlier
+    version of this helper was: `test_every_adapter_routes_main_through_the_shared_net`
+    is the test that asserts `guard_main` is actually used, and a membership
+    filter that already required the string present would have made that
+    assertion vacuous for every file reachable through this list -- the next
+    `common/` file with its own `__main__` block that forgets to call
+    `guard_main` would be silently excluded from the population the test
+    checks, rather than caught by it. The whole point of a census is that
+    membership does not depend on already having the property being tested.
     """
     found = []
     for base in (VALIDATORS, FORMATTERS):
         common = base / "common"
         if not common.is_dir():
             continue
-        found.extend(p for p in sorted(common.glob("*.py"))
-                     if _has_main_block(p) and "guard_main" in p.read_text(
-                         encoding="utf-8"))
+        found.extend(p for p in sorted(common.glob("*.py")) if _has_main_block(p))
     return found
 
 

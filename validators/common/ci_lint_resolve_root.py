@@ -7,7 +7,7 @@ as broken, because the stages are declared in the root config that includes
 it. Trap 1 in #1797: the fix is to always lint the root, which is what pulls
 in every include and produces the merged config `glab` actually checks.
 
-This helper is the `resolve` command in the ci-lint validator own
+This helper is the `resolve` command in the `ci-lint` validator’s own
 `.supertool.json` spec (see `_validator_resolve`) -- it runs first, and its
 stdout becomes the `{file}` the `ci-lint.py` adapter is actually invoked
 against. Both the root file itself (`.gitlab-ci.yml`) and any include under
@@ -16,7 +16,7 @@ against. Both the root file itself (`.gitlab-ci.yml`) and any include under
 Usage: resolve_root.py <file>
 
 Three outcomes on stdout, and they are deliberately not the same line (#2177,
-this repo own named defect class -- an absence produced by the tool, read
+this repo’s own named defect class -- an absence produced by the tool, read
 as an absence in the world):
 
 - the resolved root config path, when one exists;
