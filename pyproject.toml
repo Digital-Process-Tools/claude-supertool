@@ -57,6 +57,30 @@ testpaths = ["tests"]
 # what it measured *and what it did not*. One number, one owner. Run it locally
 # with `python3 .github/scripts/coverage_gate.py`.
 addopts = "-n auto --cov=supertool --cov=_supertool --cov=presets --cov-report=term-missing -m 'not slow and not benchmark'"
+# #1889: there was no supported way to get a stack out of a stuck run, in a
+# suite this repo's own notes call slow and non-hermetic -- a hang anywhere
+# in the twelve-leg matrix or the `coverage`/`slow` jobs previously ran
+# silent until `timeout-minutes` killed the job outright, and GitHub Actions
+# does not hand back a traceback for that, only "cancelled". `faulthandler`
+# is stdlib and pytest's own faulthandler plugin (built in since pytest 5,
+# no new dependency) already wraps every test item in
+# `faulthandler.dump_traceback_later()` / `cancel_dump_traceback_later()`;
+# this turns it on repo-wide via the one ini option that does that.
+#
+# 300s, not tight: `--durations=25` on the main pytest job (see
+# .github/workflows/tests.yml) has never shown a real test above ~9s, and
+# the child-spawning tests with their own internal subprocess timeouts
+# (test_core_timeout_skip_floor_1523.py, timeout=300) bound a *subprocess*
+# they kill well before that ceiling, not the pytest test item itself --
+# this is 30x+ the slowest test seen and comfortably under every job's
+# `timeout-minutes` (20-30 minutes = 1200-1800s), so a dump here means a
+# single test genuinely did not return, not a busy runner (the same
+# hang-guard-vs-benchmark trade the `benchmark` marker above documents).
+# Deliberately not paired with `faulthandler_exit_on_timeout` -- that also
+# calls `os._exit()`, which would skip pytest-cov's exit-time data write and
+# turn a diagnosable hang into an undiagnosable coverage-combine failure on
+# the one job that most needs the run to finish cleanly.
+faulthandler_timeout = 300
 markers = [
     "slow: opt-in heavy tests (>5s). Run with `pytest -m slow` or `pytest -m ''` to include.",
     # `benchmark` is not a synonym for `slow`. A slow test is heavy and still
