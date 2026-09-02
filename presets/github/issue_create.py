@@ -253,12 +253,19 @@ def _load_payload(path: str) -> dict:
 def _validate_labels(payload: dict) -> str | None:
     """`labels`, if present, must be a list of non-empty strings.
 
-    A comma-separated string (`labels = "A,B,C"`) is iterated character by
-    character by `for label in labels: cmd += ["--label", label]`, sending
-    one `--label` flag per *character* to the CLI -- which silently created
-    30 junk labels on a sibling tracker before anyone noticed (#2173). This
-    refuses before any glab/gh call rather than after, since a wrong label
-    write is expensive to unpick.
+    A comma-separated string (`labels = "A,B,C"`) is not caught by
+    `if labels:`, so it reaches whichever backend is chosen below: the
+    GraphQL path does `",".join(labels)`, which joins the string's own
+    *characters* with commas into one garbled `--label` value, and the REST
+    fallback sets the JSON `labels` field to the raw string itself. Neither
+    is the exact per-character `--label` shape `gl-issue-create` has (its
+    `for label in labels: cmd += ["--label", label]` sends one flag per
+    character, and silently created 30 junk labels on a sibling tracker
+    before anyone noticed -- #2173) -- but both are the same root cause, a
+    string treated as an iterable of characters rather than a single value,
+    and both are wrong the caller cannot see. This refuses before any
+    glab/gh call rather than after, since a wrong label write is expensive
+    to unpick.
     """
     if "labels" not in payload:
         return None

@@ -925,8 +925,11 @@ class TestGithubIssueCreate:
 # ===========================================================================
 
     def test_labels_string_instead_of_list_refused(self, monkeypatch, capsys, tmp_path):
-        # Same shape as #2173's GitLab twin -- a comma-separated string
-        # iterated character by character into individual --label flags.
+        # Same root cause as #2173's GitLab twin (a string treated as an
+        # iterable of characters), even though the resulting garbage is
+        # shaped differently on this backend: `",".join(labels)` joins the
+        # string's own characters into one garbled --label value here,
+        # rather than gitlab's one-flag-per-character.
         payload = {**GH_MINIMAL, "labels": "AGY_GENERAL,Bugfix,Refactor"}
         payload_file = _write_payload(tmp_path, payload)
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
