@@ -13,7 +13,7 @@
 [![License](https://img.shields.io/badge/license-Community-brightgreen)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.53.0-orange)](.claude-plugin/plugin.json)
 
-Saves tokens. Saves money. Saves turns. Works the same in interactive sessions and autonomous runs — humans pair-programming with Claude Code use it every day, not just Kevin-style headless agents. One Python file, zero deps, Python 3.9+.
+Saves tokens. Saves money. Saves turns. Works the same in interactive sessions and autonomous runs — humans pair-programming with Claude Code use it every day, not just Kevin-style headless agents. Stdlib only, zero deps, Python 3.9+ — a thin launcher (`supertool.py`) delegating to one core module (`_supertool.py`) plus the presets, validators, formatters and notifiers you enable per repo.
 
 [Why](#why) • [Why I built this](#why-i-built-this) • [Four pillars](#four-pillars) • [Receipt](#receipt--the-bulldozer-math) • [Batching](#batch-multiple-ops-in-one-call) • [Parallel](docs/configuration.md#parallel-execution) • [Input forms](#input-forms) • [Validators](#validators--squiggle-on-save-for-the-llm) • [Expand it](#supertooljson--project-configuration) • [Install](#install)
 
