@@ -544,7 +544,18 @@ def _subprocess_call_sites(paths: List[Path]) -> int:
     return seen
 
 
-def test_no_test_subprocess_decodes_by_locale() -> None:
+@pytest.fixture(scope="module")
+def _test_file_encoding_scan():
+    """``{path: (violations, undecidable)}`` over every test file, computed once.
+
+    The two tests below both call ``subprocess_encoding_violations`` over the
+    same ~940-file tree for a different half of the same result -- an
+    ``ast.parse`` sweep run twice for the price of one. Cached here instead.
+    """
+    return {path: subprocess_encoding_violations(path) for path in _test_files()}
+
+
+def test_no_test_subprocess_decodes_by_locale(_test_file_encoding_scan) -> None:
     """The same rule inside ``tests/``. #862, generalising #856.
 
     Every behavioural assertion in these files passes on a UTF-8 platform
@@ -560,15 +571,14 @@ def test_no_test_subprocess_decodes_by_locale() -> None:
     cp1252 has no mapping for ``0x90``; and a squash message is built from the
     PR title and body, so the PR documenting the fix reintroduced it.
     """
-    paths = _test_files()
+    paths = list(_test_file_encoding_scan)
     seen = _subprocess_call_sites(paths)
     assert seen > 50, (
         f"the scan looked at {seen} subprocess calls in tests/ — it has drifted "
         "into matching nothing, and its green would mean nothing"
     )
     offenders = []
-    for path in paths:
-        violations, _ = subprocess_encoding_violations(path)
+    for path, (violations, _) in _test_file_encoding_scan.items():
         for lineno, call, missing in violations:
             offenders.append(
                 f"{path.relative_to(ROOT)}:{lineno}: subprocess {call}() decodes "
@@ -583,7 +593,7 @@ def test_no_test_subprocess_decodes_by_locale() -> None:
     )
 
 
-def test_no_test_subprocess_call_is_unreadable_to_the_scan() -> None:
+def test_no_test_subprocess_call_is_unreadable_to_the_scan(_test_file_encoding_scan) -> None:
     """The honesty half, applied to ``tests/`` as well as to shipped code.
 
     A forwarded ``**kwargs`` hides the one property the rule exists to read,
@@ -591,8 +601,7 @@ def test_no_test_subprocess_call_is_unreadable_to_the_scan() -> None:
     judging it. Listed here rather than silently counted as clean.
     """
     unreadable = []
-    for path in _test_files():
-        _, undecidable = subprocess_encoding_violations(path)
+    for path, (_, undecidable) in _test_file_encoding_scan.items():
         for lineno, call, why in undecidable:
             unreadable.append(f"{path.relative_to(ROOT)}:{lineno}: {call}() — {why}")
     assert not unreadable, (

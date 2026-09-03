@@ -184,6 +184,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e .[dev]
+      # Defender's real-time scanner walks every file this job touches on the runner's
+      # own disk -- and the suites create many small temp files per assertion (each
+      # `mktemp` fixture, each rewritten .claude/jit-context/ under test). This is a
+      # documented GitHub Actions cost specific to windows-latest: macOS and Linux
+      # runners carry no equivalent always-on scanner. Excluding the checkout and the
+      # runner temp directory removes that tax without touching what any suite tests --
+      # it changes nothing about correctness, only how fast the disk answers.
+      - name: Exclude the checkout and temp dir from Windows Defender scanning
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}"
+          Add-MpPreference -ExclusionPath "$env:RUNNER_TEMP"
       - name: Run tests (excludes slow and benchmark — see #891)
         # Override pyproject addopts default. Until #891 this ran the `slow`
         # marker on all twelve legs, on every push — marking a test `slow`

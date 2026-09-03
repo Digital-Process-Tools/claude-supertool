@@ -53,7 +53,7 @@ NL = chr(10)
 #:
 #: Both current entries were read and cleared by hand on 2026-08-09:
 #:
-#:  * `test_encoding_seam.py:650` -- the spawn is inside a nested `_run_parent`
+#:  * `test_encoding_seam.py:659` -- the spawn is inside a nested `_run_parent`
 #:    closing over an `env` bound in the enclosing test body. Resolving it would
 #:    mean reading an outer scope from an inner one, which is exactly the
 #:    cross-scope resolution that false-positived #692 and got the first scanner
@@ -71,7 +71,7 @@ NL = chr(10)
 #:    same dict is passed to every `git` spawn in the file; only the
 #:    `sys.executable` one reaches this guard.
 DECLARED_UNRESOLVED = [
-    "test_encoding_seam.py:650 [unresolved] "
+    "test_encoding_seam.py:659 [unresolved] "
     "env= expression could not be evaluated by this scanner",
     "test_git_worktrees_unpushed_1496.py:107 [unresolved] "
     "env= expression could not be evaluated by this scanner",
@@ -84,9 +84,17 @@ DECLARED_UNRESOLVED = [
 # The repo sweep -- what the guard is actually for
 # ---------------------------------------------------------------------------
 
-def test_no_test_hand_rolls_a_path_stripping_env_for_a_python_child() -> None:
-    findings = scan.scan_tree(TESTS)
-    violations = [f for f in findings if f.kind == "violation"]
+@pytest.fixture(scope="module")
+def _tree_findings():
+    """`scan.scan_tree(TESTS)` is a pure AST walk over every test file (#1151)
+    -- shared across both assertions below instead of run twice, since the two
+    were the whole cost of this module's slowest legs (17.28s of it was this
+    walk, measured once, run twice)."""
+    return scan.scan_tree(TESTS)
+
+
+def test_no_test_hand_rolls_a_path_stripping_env_for_a_python_child(_tree_findings) -> None:
+    violations = [f for f in _tree_findings if f.kind == "violation"]
     assert violations == [], (
         "a `sys.executable` spawn is handed a PATH-only env dict instead of "
         "`_winenv.empty_path_env()`. On Windows the child cannot start, writes "
@@ -95,10 +103,9 @@ def test_no_test_hand_rolls_a_path_stripping_env_for_a_python_child() -> None:
         + NL.join("  " + f.describe() for f in violations))
 
 
-def test_an_env_the_scanner_cannot_read_is_declared_rather_than_assumed_clean() -> None:
+def test_an_env_the_scanner_cannot_read_is_declared_rather_than_assumed_clean(_tree_findings) -> None:
     """`I did not look` and `there is nothing there` are opposite facts."""
-    findings = scan.scan_tree(TESTS)
-    unresolved = sorted(f.describe() for f in findings if f.kind == "unresolved")
+    unresolved = sorted(f.describe() for f in _tree_findings if f.kind == "unresolved")
     assert unresolved == sorted(DECLARED_UNRESOLVED), (
         "the scanner reached a `sys.executable` spawn whose `env=` it cannot "
         "evaluate. That is not a pass. Either make the expression readable, or "
