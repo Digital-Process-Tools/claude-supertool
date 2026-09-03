@@ -7,7 +7,7 @@ match: ".github/workflows/"
 
 | File | Trigger | What it does |
 |---|---|---|
-| `tests.yml` | `push: [master]`, `pull_request` | `pytest` matrix (12 legs), `coverage`, `notifiers` |
+| `tests.yml` | `push: [master]`, `pull_request` | `pytest` matrix (12 legs), `coverage`, `lint-new`, `notifiers` (2 legs) |
 | `slow-tests.yml` | `schedule: 0 6 * * *`, `workflow_dispatch` | `pytest -m slow`, ubuntu/3.12 only |
 | `changelog.yml` | `pull_request: [opened, synchronize, reopened, labeled, unlabeled]` | fragment/`CHANGELOG.md` policy check |
 
