@@ -101,6 +101,7 @@ import calendar
 import errno
 import json
 import os
+import re
 import shlex
 import socket
 import struct
@@ -246,9 +247,10 @@ TAG_PREFIX = "server:"
 #: `claude mcp get NAME` is the harness's own answer to "is NAME configured" —
 #: the same question `bin/oss-workspace` asks before registering the
 #: consumer, so this op and the launcher cannot disagree about it. It is read
-#: for its EXIT CODE; the only prose consulted is the refusal that distinguishes
-#: "no such server" from "the lookup failed", and anything else is the third
-#: state.
+#: for its EXIT CODE; the prose consulted is the refusal that distinguishes
+#: "no such server" from "the lookup failed", and the rejection on a successful
+#: lookup's own `Status:` line (#2208, `CLAUDE_REJECTED_STATUS_RE`). Anything
+#: else is the third state.
 #:
 #: **The health-check it performs as a side effect is deliberately discarded,
 #: and #1558 asked for the opposite.** The lookup spawns a second instance of
@@ -263,6 +265,24 @@ TAG_PREFIX = "server:"
 #: it at startup (#1543) — and nothing here claims more than that.
 CLAUDE_BIN = "claude"
 CLAUDE_UNKNOWN_SERVER = "No MCP server named"
+
+#: A `Status:` line saying the harness did not LOAD this server (#2208).
+#:
+#: The paragraph above is right about connection status and this does not touch
+#: it: `Status: X Failed to connect` stays a positive answer, because for our
+#: own consumer that is what healthy looks like. This is a different claim on
+#: the same line. `claude mcp get` exits **0** for a server declared in
+#: `.mcp.json` that `disabledMcpjsonServers` has switched off, printing
+#: `Status: X Rejected (see disabledMcpjsonServers in settings)` -- so the exit
+#: code alone reads a server the harness threw away as one it has, which is the
+#: exact opposite of the question `subscription()`'s `standing` gate asks.
+#:
+#: Anchored on the `Status:` line rather than searched for as a substring: the
+#: rest of that output is somebody else's config -- a server name, a command
+#: path -- and a bare `Rejected` anywhere in it would answer this question out
+#: of text its own author chose.
+CLAUDE_REJECTED_STATUS_RE = re.compile(
+    r"^[ \t]*Status:.*\bRejected\b", re.MULTILINE)
 
 #: Per lookup, and further capped by what is left of `MCP_LOOKUP_BUDGET`. A
 #: healthy lookup measured ~1s on 2026-08-13; 15s was the old value and could
@@ -1338,6 +1358,13 @@ def _configured(name: str, timeout: float | None = None) -> tuple[bool | None, s
     plainly. A non-zero exit whose text this reader does not recognise is not a
     missing server: it is a lookup that failed.
 
+    **Exit 0 is two answers, not one** (#2208). A server the harness rejected --
+    declared in `.mcp.json`, switched off by `disabledMcpjsonServers` -- exits 0
+    and says so on its `Status:` line, and it is a `False` here: the harness
+    never loaded it, so it is not a second declaration in play. That is the one
+    piece of prose read out of a successful lookup, and it is a claim about a
+    load rather than about a connection -- see `CLAUDE_REJECTED_STATUS_RE`.
+
     **This is the construction site for an argv built out of ambient process
     state, so the shape check lives here rather than in the parser** (#1559).
     `_safe_path` and the `paths` declarations gate arguments the *caller*
@@ -1359,9 +1386,16 @@ def _configured(name: str, timeout: float | None = None) -> tuple[bool | None, s
             timeout=CLAUDE_TIMEOUT if timeout is None else timeout)
     except (OSError, subprocess.SubprocessError) as err:
         return None, f"`{CLAUDE_BIN} mcp get` could not be run ({type(err).__name__})"
-    if done.returncode == 0:
-        return True, ""
     out = done.stdout.decode("utf-8", "replace")
+    if done.returncode == 0:
+        # #2208: exit 0 covers two answers, not one. A server switched off by
+        # `disabledMcpjsonServers` still exits 0 and says so on its own status
+        # line, and the harness not having loaded it is a `False` here -- the
+        # same answer an absent name gets, because the question every caller
+        # asks is whether a SECOND channel-capable server is in play.
+        if CLAUDE_REJECTED_STATUS_RE.search(out):
+            return False, ""
+        return True, ""
     if CLAUDE_UNKNOWN_SERVER in out:
         return False, ""
     return None, (f"`{CLAUDE_BIN} mcp get` exited {done.returncode} without saying "
