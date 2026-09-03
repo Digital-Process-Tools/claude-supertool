@@ -29,6 +29,7 @@ import _auth_probe  # noqa: E402  (does this stderr *state* that the credential 
 import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
 import _job_argv  # noqa: E402  (the argv shape both job presets share — #1145)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
+from _st_hint import st_hint  # noqa: E402  (a runnable remedy, not a guessed one — #905)
 
 
 def _api_repo_path(suffix: str) -> str:
@@ -920,7 +921,7 @@ def _job_run_id(job_id: str) -> tuple[str, str]:
                 return "", (
                     f"ERROR: #{job_id} is not an Actions job — it is a "
                     f"check run ({name}), which has no artifacts of its "
-                    f"own. Read it with: ./supertool 'gh-check:{job_id}'"
+                    f"own. Read it with: " + st_hint(f"gh-check:{job_id}")
                 )
             if probe[0] == "unknown":
                 return "", (
@@ -928,7 +929,7 @@ def _job_run_id(job_id: str) -> tuple[str, str]:
                     f"and whether it is a check run instead is UNKNOWN — "
                     f"the checks API did not answer: {probe[2]}. Retry, or "
                     f"read the other namespace directly with: "
-                    f"./supertool 'gh-check:{job_id}'"
+                    + st_hint(f"gh-check:{job_id}")
                 )
         return "", _format_error(result.stderr, "Job", job_id)
     try:
