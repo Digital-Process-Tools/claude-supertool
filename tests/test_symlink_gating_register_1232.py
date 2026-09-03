@@ -263,6 +263,7 @@ REGISTER = {
     'tests/test_path_meta_bulk_1126.py::test_a_symlink_is_never_answered_from_another_repo': B,
     'tests/test_read.py::test_path_meta_suffix_broken_symlink': B,
     'tests/test_read.py::test_read_meta_symlink': P,
+    'tests/test_retraction_realpath_abspath_1146.py::test_retraction_subject_matches_the_quoted_success_lines_own_spelling': B,
     'tests/test_review_regressions_395.py::test_gate_follows_symlinks_to_the_real_repo': B,
     'tests/test_security_claude_log.py::TestSymlinkInProjectsDir.test_symlink_in_projects_dir_itself': B,
     'tests/test_security_claude_log.py::TestSymlinkInProjectsDir.test_symlink_to_external_jsonl_is_followed': B,
