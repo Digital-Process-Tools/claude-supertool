@@ -91,6 +91,33 @@ class TestSingleOpPayload:
 
 
 class TestOpsArrayPayload:
+    def test_a_backslash_in_a_path_is_shown_as_the_payload_carries_it(
+        self, tmp_path: Path
+    ) -> None:
+        """`!r` escapes a backslash as two, so every Windows path this line
+        printed came back with its separators doubled -- four legs red on
+        #2200, and unreadable besides. What #672 asks the line to show is the
+        string the payload actually carries, so a reader can copy it back out;
+        a path with doubled separators is a different string.
+
+        The separators are built with chr(92) rather than written: an even run
+        of backslashes in a payload field is refused at write time (#1839), and
+        a test about backslash handling should not be the one file that argues
+        with that. A literal backslash reproduces the Windows failure on every
+        platform, so this needs no Windows runner to stay honest."""
+        bs = chr(92)
+        target = "C:" + bs + "Users" + bs + "x" + bs + "a.py"
+        payload = {"ops": [{"op": "edit", "path": target,
+                            "old": "x", "new": "y"}]}
+        spec = tmp_path / "batch.json"
+        spec.write_text(json.dumps(payload), encoding="utf-8")
+        out = supertool.dispatch(f"payload-lint:@{spec}")
+        assert target in out, (
+            "the path must appear exactly as the payload carries it: " + out)
+        assert "C:" + bs * 2 + "Users" not in out, (
+            "the separators were doubled by repr(); a reader copying this "
+            "path back out gets a different string: " + out)
+
     def test_reports_op_count_kinds_and_paths(self, tmp_path: Path) -> None:
         target_a = tmp_path / "a.py"
         target_b = tmp_path / "b.py"
@@ -143,7 +170,12 @@ class TestContainment:
     ) -> None:
         spec = outside.parent / "box" / "e.toml"
         spec.write_text(
-            f'path = "{outside}"\n'
+            # A TOML *literal* string, so the interpolated path arrives
+            # verbatim. On Windows it carries backslashes, and in a basic
+            # string `C:\Users` is the invalid escape `\U` -- all three of
+            # these sites failed to parse before the op ever saw them, and
+            # each reported as its own assertion instead (#2200, 4 legs).
+            f"path = '{outside}'\n"
             f"old = {Q3}alpha{Q3}\n"
             f"new = {Q3}beta{Q3}\n"
         )
@@ -171,7 +203,9 @@ class TestAnchorDryRun:
         before = target.read_text(encoding="utf-8")
         spec = tmp_path / "e.toml"
         spec.write_text(
-            f'path = "{target}"\n'
+            # TOML literal string -- see the note in
+            # TestContainment.test_anchor_check_refuses_a_path_outside_cwd.
+            f"path = '{target}'\n"
             f"old = {Q3}alpha{Q3}\n"
             f"new = {Q3}gamma{Q3}\n"
         )
@@ -188,7 +222,9 @@ class TestAnchorDryRun:
         missing = tmp_path / "nope.py"
         spec = tmp_path / "e.toml"
         spec.write_text(
-            f'path = "{missing}"\n'
+            # TOML literal string -- see the note in
+            # TestContainment.test_anchor_check_refuses_a_path_outside_cwd.
+            f"path = '{missing}'\n"
             f"old = {Q3}alpha{Q3}\n"
             f"new = {Q3}gamma{Q3}\n"
         )

@@ -28003,6 +28003,26 @@ def op_payload_lint(ref: str) -> str:
 
     lines = [f"payload-lint: {source}"]
 
+    def _payload_lint_show_path(value: object) -> str:
+        """Render an ops-array entry's `path` so it can be copied back out.
+
+        `!r` doubles every backslash, so a Windows path printed here arrived
+        with its separators doubled -- a different string from the one the
+        payload carries, which is the one thing #672 asks this line to show.
+        Four windows legs on #2200 failed on exactly that.
+
+        `!r` is kept for the values where a bare rendering would be worse than
+        unreadable: a path carrying a quote, a newline or a tab hides its own
+        delimiters or breaks the line it is printed on, and a payload's path
+        is untrusted input. Those are shown escaped, and a reader can tell the
+        two apart because the escaped form still starts with a quote.
+        """
+        if not isinstance(value, str):
+            return repr(value)
+        if any(ch in value for ch in ("'", chr(34), chr(10), chr(13), chr(9))):
+            return repr(value)
+        return "'" + value + "'"
+
     is_ops_array = isinstance(parsed, list) or (
         isinstance(parsed, dict) and isinstance(parsed.get("ops"), list))
     if is_ops_array:
@@ -28021,7 +28041,7 @@ def op_payload_lint(ref: str) -> str:
                     resolved = os.path.abspath(_resolve_at_path(path))
                 except (OSError, ValueError):
                     resolved = "<could not resolve>"
-            entry = f"  [{i}] op={kind!r} path={path!r}"
+            entry = f"  [{i}] op={kind!r} path={_payload_lint_show_path(path)}"
             if resolved and resolved != path:
                 entry += f" -> {resolved}"
             lines.append(entry)
