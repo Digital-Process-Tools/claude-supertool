@@ -1102,6 +1102,48 @@ def _channel_field(channel, symbols, color=False):
     return shade + text + RESET
 
 
+#: `gh-branch`'s own four states, folded onto `_symbols`' four render glyphs (#856).
+#: `"bad"` gets its own glyph -- a leg has actually failed, the one state that is a
+#: finding rather than "not settled yet". `"running"` and `"no-run"` share `run` on
+#: purpose: both mean "nothing to act on, look again later", and collapsing them is
+#: the deliberate call the issue asked for rather than an oversight -- see
+#: `_gh_default_branch_state`'s own docstring for why they are still told apart
+#: before they reach this table, so `"no-run"` never silently becomes `"running"`.
+_DEFAULT_BRANCH_GLYPH_KEY = {
+    "green": "ok",
+    "bad": "bad",
+    "running": "run",
+    "no-run": "run",
+}
+
+
+def _default_branch_marker(state, symbols, color=False):
+    """One glyph, glued onto the repository name, for whether the default branch's
+    head commit is green right now (#856) -- the reading nothing on this line said
+    anything about, including the moment right after this loop's own merge, when
+    the branch has a fresh commit and no concluded run yet.
+
+    `None` -- rendering nothing, never `?` -- when `state` is `None`: either the
+    config declares no default branch to compare against (a deliberate absence of
+    the question, the channel field's own convention, #613), or `gather()` has
+    already folded a stale reading into `"unknown"` before this function ever
+    sees it, in which case `state == "unknown"` reaches here and DOES render --
+    the `unk` glyph -- because a stale reading is a real answer ("we cannot
+    currently say"), not the same absence as never having asked at all.
+
+    Colour reinforces the glyph and is never its only carrier (#549/#550): every
+    state below is a distinct shape in `_symbols`, monochrome or not.
+    """
+    if state is None:
+        return None
+    key = _DEFAULT_BRANCH_GLYPH_KEY.get(state, "unk")
+    text = symbols[key]
+    if not color:
+        return text
+    shade = {"ok": GREEN, "bad": RED, "run": YELLOW}.get(key, DIM)
+    return shade + text + RESET
+
+
 def render(facts, ascii_only=False, color=False):
     """The whole line, from facts already gathered. No I/O, so it is testable.
 
@@ -1123,6 +1165,14 @@ def render(facts, ascii_only=False, color=False):
 
     repo_name = facts.get("repo_name")
     repo_name = _one_line(str(repo_name)) if repo_name else "?"
+    # Glued onto the repo name with no separator, beside it rather than its own block
+    # (#856) -- the identity block is already `name branch vversion`, one glance, and
+    # this is one more glyph about the same subject rather than a fourth fact needing
+    # its own width. `None` here means nothing rendered at all: see
+    # `_default_branch_marker`'s own docstring for the two different reasons it can be.
+    branch_marker = _default_branch_marker(facts.get("default_branch_state"), symbols, color)
+    if branch_marker is not None:
+        repo_name = repo_name + branch_marker
     # The branch only when it is not the declared default (#509): in the clone that field
     # said `main` on every render, and this loop works in worktrees, so it cost width in
     # the one place it carried nothing and was identical in the place it carries news.
@@ -1515,6 +1565,77 @@ def _gh_rollups(repo):
     return rows if isinstance(rows, list) else None
 
 
+def _gh_default_branch_state(repo, branch):
+    """Is the default branch's head commit green? One of the four states `gh-branch`
+    itself answers, read off a cheaper call (#856).
+
+    `gh-branch` (supertool) enumerates every workflow run on the head SHA and
+    collapses re-runs and multi-run workflows to answer conjunctively -- machinery
+    this render does not need, because it produces one glyph, not a table. GitHub's
+    own combined-status endpoint (`repos/{repo}/commits/{ref}/status`) already
+    rolls every check-run and legacy status context on a commit into one summary,
+    which is the same question at the width this line has to spend.
+
+    Returns ``"green"``, ``"bad"``, ``"running"``, ``"no-run"``, or ``None`` when
+    the branch or repo is not configured, or the call did not answer.
+
+    **`total_count == 0` is read separately from `state`, and this is the whole
+    point of the function.** The combined-status endpoint answers `state:
+    "pending"` for BOTH "checks are running" and "nothing has reported on this
+    commit at all" -- and the second of those is exactly #856's own motivating
+    case, the instant after this loop's own merge, when the branch has a fresh
+    commit and no concluded run yet. Folding them together would render the one
+    case this issue was filed for identically to legs actively in flight, which is
+    a different and less urgent claim. `total == 0` means nothing has reported,
+    regardless of what `state` says about an empty rollup.
+
+    `error` is read the same as `failure`. GitHub's own docs give the COMBINED
+    summary's top-level `state` a three-value enum -- `failure`/`pending`/`success`
+    -- so this is a defensive extra rather than a documented fourth value: `error`
+    is the spelling an INDIVIDUAL entry in the legacy `statuses[]` array can carry,
+    one level below what this function's own `--jq` filter reads. Kept anyway,
+    because a top-level `state` outside its documented enum is exactly the shape
+    an undocumented API change would take, and reading it as `"bad"` -- rather
+    than falling through to the `None` below, which this module's own callers
+    read as "no answer" and would then fold into the very "not settled yet"
+    `unk`/`run` glyphs this branch exists to tell apart from an actual failure --
+    is the conservative direction to guess wrong in.
+    """
+    if not repo or not branch:
+        return None
+    out = _run(
+        [
+            "gh",
+            "api",
+            "repos/{}/commits/{}/status".format(repo, branch),
+            "--jq",
+            "{state: .state, total: .total_count}",
+        ],
+        timeout=25,
+    )
+    if not out:
+        return None
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    total = data.get("total")
+    if not isinstance(total, int):
+        return None
+    if total == 0:
+        return "no-run"
+    state = data.get("state")
+    if state == "success":
+        return "green"
+    if state in ("failure", "error"):
+        return "bad"
+    if state == "pending":
+        return "running"
+    return None
+
+
 def _latest_release(repo):
     """The version a plugin's own manifest declares on its default branch.
 
@@ -1695,6 +1816,21 @@ def refresh(root, now=None):
         document["issues"] = _gh_count(repo, "issue")
         document["issues_external"] = _gh_external_issue_count(repo, document["issues"])
         document["pr_checks"] = check_rollup_counts(_gh_rollups(repo), document["prs"])
+        # Same call group, same `fetched_at`, same `stale_after` (#856): the default
+        # branch's own CI state is exactly as time-sensitive as the pull-request board
+        # it sits beside, and it shares the moment (a merge or an issue close in this
+        # session) that already invalidates the rest of the board (#516). A second,
+        # independent clock for one more field would be the interval this repository's
+        # own history already argues against (#515's own reasoning, one field over).
+        # `None` (no default branch configured, or the call did not answer) is a real
+        # value here, not skipped -- `gather()` reads it back and a missing key would
+        # be indistinguishable from a cache written before this field existed, which
+        # is exactly the ambiguity `pr_checks`' own `isinstance` guard exists to avoid.
+        # `_gh_default_branch_state` itself already answers `None` for an unconfigured
+        # `default_branch`, so no separate `if` is needed here.
+        document["default_branch_state"] = _gh_default_branch_state(
+            repo, config.get("default_branch")
+        )
     carried = previous.get("latest")
     carried = dict(carried) if isinstance(carried, dict) else {}
     carried_stamp = previous.get("latest_fetched_at")
@@ -1920,8 +2056,25 @@ def gather(payload, root, now=None):
     config = repo_config(root)
     cache = read_cache(cache_path(config.get("repo")))
     board = board_from_cache(cache, now=now)
-    if board_is_due(cache, now):
+    board_stale = board_is_due(cache, now)
+    if board_stale:
         _fork_refresh(root, config.get("repo"))
+    # Same fold `plugin_facts`/`version_status` already do for `latest` (#550), on
+    # the same board clock `board_is_due` already computes above -- `default_branch`
+    # itself present-but-unconfigured stays `None` (never asked, #613's own
+    # convention), and a configured one whose reading has outlived `board_is_due`'s
+    # own interval (or was marked stale by this session's own merge/close, #516)
+    # folds to `"unknown"` rather than rendering whatever it last said. This is the
+    # one field on this line where a stale `ok` is actively dangerous: #856's own
+    # motivating case is the moment right after a merge, when the previous reading
+    # is confidently green about a commit that no longer exists.
+    default_branch_state = None
+    if config.get("default_branch"):
+        raw_branch_state = (cache or {}).get("default_branch_state")
+        if board_stale or raw_branch_state not in ("green", "bad", "running", "no-run"):
+            default_branch_state = "unknown"
+        else:
+            default_branch_state = raw_branch_state
     latest = (cache or {}).get("latest") or {}
     # `latest_fetched_at` used to be read here and dropped, so `plugin_facts` decided
     # `current`/`behind`/`ahead` with no knowledge of the reading's own age -- the
@@ -1976,6 +2129,7 @@ def gather(payload, root, now=None):
         "last": _render_stamp(now),
         "plugins": plugin_facts(loop_name, installed_plugins(root), latest, stale=stale_latest),
         "channel": channel,
+        "default_branch_state": default_branch_state,
     }
 
 
