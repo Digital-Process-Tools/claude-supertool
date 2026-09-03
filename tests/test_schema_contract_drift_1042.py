@@ -270,11 +270,14 @@ def test_the_two_tables_do_not_overlap() -> None:
 # ---------------------------------------------------------------------------
 
 def test_the_1036_tests_transcription_of_the_table_still_matches_it() -> None:
-    """`test_adapter_cannot_forge_core_keys_1036.py:53` hardcodes the adapter
-    field list, and `test_every_core_only_key_read_by_a_decision_is_stripped`
-    uses it as the *exemption list* for its class check. So a field added to
-    SCHEMA.md and not to that frozenset does not merely go stale — it narrows
-    a live guard, which then reports a key as unowned that the doc allows.
+    """`test_adapter_cannot_forge_core_keys_1036.py:63` hardcodes the adapter
+    field list as `SCHEMA_ADAPTER_KEYS`. Until #1277 that frozenset doubled
+    as the exemption list for `test_every_core_only_key_read_by_a_decision_
+    is_stripped`'s class check, so a field added to SCHEMA.md and not to it
+    would have narrowed a live guard. Since #1277 that check reads the
+    separately-held, narrower `DECISION_READABLE_KEYS` instead, so
+    `SCHEMA_ADAPTER_KEYS` is now purely this doc transcription, and this test
+    is what keeps it honest (#1304).
 
     Checked here rather than repaired there: the count of what has drifted is
     the argument for this guard existing, and that file belongs to #1036.

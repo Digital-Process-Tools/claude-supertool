@@ -363,6 +363,20 @@
       "rollback_on_fail": false,
       "timeout": 30
     },
+    "new-file-lint": {
+      "cmd": "{python} {supertool_dir}/validators/new-file-lint/new-file-lint.py {file}",
+      "match": "*.py",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "append",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 30
+    },
     "jsonlint": {
       "cmd": "{python} {supertool_dir}/validators/jsonlint/jsonlint.py {file}",
       "match": "*.json",

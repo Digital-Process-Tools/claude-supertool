@@ -257,6 +257,7 @@ REGISTER = {
     'tests/test_mcp_runtime_dir_nofollow_583.py::TestASymlinkedRuntimeDirStillWorks.test_a_symlink_to_a_missing_dir_is_refused_with_a_sentence': P,
     'tests/test_mcp_runtime_dir_nofollow_583.py::linked': B,
     'tests/test_mixed_tree_guard_678.py::test_same_checkout_is_not_a_mix': B,
+    'tests/test_new_file_lint_validator_2155.py::test_a_committed_file_reached_through_a_symlinked_ancestor_is_not_new': B,
     'tests/test_paste_backup_mode_1685.py::test_a_symlinked_store_is_declined_rather_than_followed': B,
     'tests/test_path_meta_bulk_1126.py::test_a_relative_symlink_is_still_answered_about_its_own_repo': B,
     'tests/test_path_meta_bulk_1126.py::test_a_symlink_gets_the_same_marker_from_either_route': B,

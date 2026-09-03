@@ -326,10 +326,16 @@ def test_a_conforming_capping_adapter_still_rolls_an_edit_back(
 #: `len(errors)` never diverge, so there is no pre-subtraction and no cap for
 #: `count_basis`/`errors_truncated` to describe. A declaration with nothing
 #: to say would be decoration, not a guarantee.
+#: `new-file-lint` (#2155, #2196) joins here rather than declaring: always
+#: `count: len(errors), errors: errors` verbatim off ruff's own JSON output
+#: -- no pre-subtraction of `adapter` rows, no cap. Same reasoning as the
+#: `formatters/*` block above: a declaration with nothing to say would be
+#: decoration, not a guarantee.
 _GRANDFATHERED = frozenset({
     "bash-check", "changelog-fragment", "eslint", "git-status", "gitleaks",
     "go-vet", "gofmt-check", "hadolint", "html-check", "inilint", "jit-index",
-    "jsonlint", "lsp-diag", "markdownlint", "node-check", "phplint", "phpmd",
+    "jsonlint", "lsp-diag", "markdownlint", "new-file-lint", "node-check",
+    "phplint", "phpmd",
     "phpmd-mcp", "phpstan-mcp", "phpunit-mcp", "prettier-check", "psr",
     "py-compile", "pyright", "rector-mcp", "ruby-check", "ruff", "shellcheck",
     "stylelint", "terraform-check", "tomllint", "tsc-check", "xmllint",

@@ -19,10 +19,12 @@ reads as an inventory and is not one. Only `ast.Call` nodes are sites here,
 which is also why the synthetic sources further down are invisible to the
 sweep: a call written inside a string literal is an `ast.Constant`, not a call.
 
-**The population, re-derived at #1683.** 32 directory-removal sites across 30
-files: 27 `shutil.rmtree`, 2 `subprocess.run(["rm", "-rf", ...])`, 2 `git
-worktree remove`, 1 `TemporaryDirectory.cleanup()`, and zero `os.rmdir` /
-`os.removedirs` / `Path.rmdir`. Only two are outside `tests/` --
+**The population, re-derived at #1635's own canary (below).** 37
+directory-removal sites across 32 files, up from 32 across 30 at #1683: four
+new `Path.rmdir()` calls, all against a `tmp_path` this file's own tests
+build and tear down to prove the canary fires -- the first `os.rmdir` /
+`os.removedirs` / `Path.rmdir` sites this register has ever carried. Only two
+are outside `tests/` --
 `validators/gitleaks/gitleaks.py`, which removes the private directory it made
 for one scan, and `presets/github/pr_merge.py`, the only site in the tree whose
 path the caller never composed. Any total written in prose is a measurement of
@@ -506,6 +508,14 @@ REGISTER = {
     'tests/test_git_push_remote_resolution_656.py::_Box.close': OWNED,
     'tests/test_git_push_set_upstream_879.py::InheritedUpstreamTest.tearDown': OWNED,
     'tests/test_git_push_set_upstream_879.py::MatchingUpstreamTest.tearDown': OWNED,
+    # #1635's own canary, exercising itself: every rmdir() here is against
+    # pytest's own tmp_path, never the real repo -- the check that watches
+    # for the destructive event is not itself an instance of it.
+    'tests/test_full_suite_canary_1635.py::test_verdict_names_a_marker_that_vanished': OWNED,
+    'tests/test_full_suite_canary_1635.py::test_verdict_names_every_marker_that_vanished_not_just_one': OWNED,
+    'tests/test_full_suite_canary_1635.py::test_a_marker_changing_kind_counts_as_vanished_not_as_unchanged': OWNED,
+    'tests/test_full_suite_canary_1635.py::test_sessionfinish_forces_the_exit_status_when_a_marker_vanished': OWNED,
+
     'tests/test_git_worktrees_unpushed_1496.py::_Sandbox.close': OWNED,
     'tests/test_git_worktrees_upstream_remote_1525.py::_Sandbox.close': OWNED,
     'tests/test_kevin_2026_05_17.py::test_paste_op_creates_missing_file_and_parent': OWNED,
