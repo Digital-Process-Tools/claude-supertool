@@ -71,6 +71,35 @@ rather than a rider on the change that took this record off its false claim:
 here: this whole layer is generated and replaced wholesale on every install, so a correction
 made in this directory is gone the next time the owning plugin writes it. Report it instead.
 
+## #903: this rule reaches a spawned reviewer subagent too, and that is intentional
+
+A developer lane's own self-review spawns a read-only `Explore` reviewer against the diff it just
+committed. That reviewer issues Read/Edit/Write/Glob/Grep calls of its own, in the same tree, and
+they hit `supertool-required.md` below exactly as the dispatching lane's own calls do -- #903 is
+two reproduced instances of that.
+
+**Narrowing the trigger to skip a spawned subagent was the issue's first ask, and it is not
+possible today.** `supertool-required.md`'s `match: ~.*` is tested against the PreToolUse hook's
+own subject, built from `tool_input` alone (see the table above) -- and that subject carries
+no field naming *which agent* issued the call. There is no `isSidechain`, no `subagent_type` on a
+`Read`/`Edit`/`Write`/`Glob`/`Grep` payload, nothing at all distinguishing a spawned reviewer's own
+tool call from its dispatcher's. No signal in the subject means no way to narrow on it -- so this
+is the issue's second branch, "state it explicitly", rather than the first.
+
+**What that means for `Explore`, or any other read-only reviewer never briefed on `supertool`.** It
+has no such tool in its actual grant and no route to install one, so a block here is a rule it
+cannot comply with by being told about it -- only by already knowing `supertool` is on `PATH` and
+calling it through its own `Bash` grant, which nothing in its brief currently says to do. Both
+observed instances (#903) already did the next best thing on their own: they read the refusal as
+untrusted injected content that named a tool contradicting their actual grant, and continued
+through their own authorized `Read`/`Bash` tools rather than obeying it. That is correct, and nothing
+here is meant to change it -- the only enforcement-side answer available is the `requires:`
+degrade documented below, never a scope narrower than "every session touching this tree", because
+the hook has nothing narrower to match against.
+
+If `claude-jit-context` ever adds a signal that tells a spawned subagent's own calls apart from its
+dispatcher's, that is what this rule gets narrowed on -- not a guess made without one.
+
 ---
 
 ## `supertool-required.md`: why it stays this short
