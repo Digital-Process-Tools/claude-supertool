@@ -5,6 +5,12 @@ match: "tests/"
 
 # Before you run the full suite
 
+**Ask first whether it answers anything.** Usually it does not, for two reasons that have nothing to do with the damage below.
+
+**It is the same signal, costing more.** A local run covers one OS and one interpreter. CI covers 3 operating systems × Python 3.9–3.12 in parallel, and this repository's expensive failures are repeatedly on the axis a local run cannot reach. A full local green is not a stronger signal than a partial local green. Run the lane's own tests plus the guards your change touches, push, and let CI answer the rest.
+
+**And it is red here before you touch anything.** 5 to 7 failures from `tree_sitter_language_pack` download errors, baselined independently by three lanes on 2026-09-03. So "green locally" is not a checkable claim without a baseline diff against master, and a raw count answers nothing.
+
 **The suite is non-hermetic: its git-op tests corrupt the worktree they run in.** Not a warning about flakiness — it rewrites the index of the checkout you are standing in.
 
 Observed 2026-08-09 in `st-wt/1205`: an agent committed its work, launched the full suite in its own worktree, and the index came back with nine paths staged as `D` (deleted) *and* present as `??` (untracked), plus eight stray `.coverage.*` shards. The commit survived; the working state did not.
