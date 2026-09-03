@@ -127,7 +127,7 @@ fi
 # happens, so the cost was invisible.
 #
 # Bare `ops` is signatures-only since #1774 and fits at ~4.46KB.
-# Whole hook: ~5.3KB against 10,000. That was true all along and this comment
+# Whole hook: ~5.4KB against 10,000. That was true all along and this comment
 # said so in passing while choosing the roster anyway: the numbers it reasoned
 # from were wrong — `ops` was stated at 47,254 (it is 4,126) and the cap at
 # 7,168 (it is 10,000, read out of the harness in #2029). #1877 corrected the
