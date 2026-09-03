@@ -8,6 +8,15 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
+# One run per ref, superseded runs cancelled (#2223). Free here: this fires on
+# `synchronize` too, so every force-push during a rebase-and-resolve queued a
+# second policy read of a diff that no longer existed. See `tests.yml` for the
+# measurement and for why the `push: master` half of the same change is a trade
+# rather than a free win.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # `pull-requests: read` is the scope the live label read needs (#1722). It is
 # named here rather than left to the repository default, so that widening or
 # narrowing it is a change to this file. A `pull_request` from a fork gets a
