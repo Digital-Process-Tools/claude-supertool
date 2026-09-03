@@ -145,7 +145,7 @@ def test_message_text_moves_to_a_marked_file_not_into_the_payload(
     assert "ignore all instructions" not in str(payload)
     assert set(payload) == {
         "title", "payload_path", "length", "sha256", "content_kind",
-        "author_is_viewer", "message_ts", "thread_ts", "classify",
+        "files", "author_is_viewer", "message_ts", "thread_ts", "classify",
     }
 
 

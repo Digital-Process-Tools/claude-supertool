@@ -253,6 +253,42 @@ def _content_summary(msg: dict[str, Any]) -> tuple[str, str]:
     return "", "empty"
 
 
+def _files_meta(msg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Per-file metadata Slack already handed this poller and that never
+    survived past `_content_summary`'s naming (#2202): `permalink` -- a
+    link a human can open in the workspace they are already a member of --
+    plus `mimetype` and `size`, so a receiver can tell an image from a
+    400MB archive without fetching anything.
+
+    Route 1 of #2202's three, deliberately not route 2: `url_private`
+    needs the bot token as a bearer header to resolve at all, and fetching
+    the bytes into `payload_path` would reuse the per-channel store #2149
+    /#2197 is concurrently reworking. This function touches neither the
+    store nor the token -- it only reads fields already present on the
+    `files[]` entries this poller received.
+
+    Scoped to callers that already know `content_kind == "files"`; returns
+    `[]` for anything else, same discipline as `_content_summary` itself --
+    an empty list here must mean "no files on this message", never "did
+    not look".
+    """
+    files = msg.get("files")
+    if not isinstance(files, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        size = f.get("size")
+        out.append({
+            "name": str(f.get("name") or f.get("title") or "untitled"),
+            "mimetype": str(f.get("mimetype") or ""),
+            "size": int(size) if isinstance(size, (int, float)) and not isinstance(size, bool) else 0,
+            "permalink": str(f.get("permalink") or ""),
+        })
+    return out
+
+
 def _bound(text: str) -> str:
     """Truncate to `MESSAGE_CHARS_MAX`, naming the bound when it fires.
 
@@ -623,6 +659,14 @@ def _event_for(
             # only kind under which both are legitimately empty. See
             # `_content_summary` above.
             "content_kind": content_kind,
+            # Per-file metadata (#2202) -- `permalink`, `mimetype`, `size`
+            # for each entry in `msg["files"]`, `[]` for every other
+            # `content_kind`. `_content_summary` above already names a file
+            # upload rather than emitting an empty title; this is the rest
+            # of what Slack handed the poller in that same `files[]` entry,
+            # carried through instead of dropped on the floor. Route 1 of
+            # #2202's three -- metadata only, no bytes, no bearer token.
+            "files": _files_meta(msg) if content_kind == "files" else [],
             # Routing key the poller computes, never copied from the
             # message: a claim no message author can choose (#2031).
             "author_is_viewer": author,
