@@ -7,20 +7,22 @@ match: ".github/workflows/"
 
 | File | Trigger | What it does |
 |---|---|---|
-| `tests.yml` | `push: [master]`, `pull_request` | `pytest` matrix (12 legs), `coverage`, `lint-new`, `notifiers` (2 legs) |
+| `tests.yml` | `push: [master]`, `pull_request` | four jobs: `pytest` matrix (12 legs), `coverage`, `lint-new`, `notifiers` |
 | `slow-tests.yml` | `schedule: 0 6 * * *`, `workflow_dispatch` | `pytest -m slow`, ubuntu/3.12 only |
 | `changelog.yml` | `pull_request: [opened, synchronize, reopened, labeled, unlabeled]` | fragment/`CHANGELOG.md` policy check |
 
 A workflow not in this list, or a job whose trigger doesn't match the event you're looking at, is **UNKNOWN — not a pass**. `slow` tests never run on a normal push; don't read their absence from a PR's checks as green.
 
-# `pytest` job (`tests.yml:17-129`)
+# `tests.yml` jobs
 
-- Matrix: `{ubuntu,macos,windows}-latest × py{3.9,3.10,3.11,3.12}` = 12 legs. `notifiers` job: ubuntu+macos only (no windows — AF_UNIX socket).
-- Command: `pytest -m 'not slow and not benchmark' --tb=no --no-cov --durations=25 --junit-xml=junit.xml -q` (line 117).
-- **`--tb=no` means no traceback ever reaches the raw pytest log.** Read the failure via the next step instead.
-- Next step (always runs): `python .github/scripts/junit_summary.py junit.xml` — parses `junit.xml`, prints the full failing assertion. **This is the log to read, not the pytest step above.**
-- `coverage` job: separate, ubuntu-only, one leg — not per-OS. Gate: `.github/scripts/coverage_gate.py`.
-- Job timeouts are deliberate hang-guards (30min pytest, 20min coverage, 10min notifiers), sized ~3x the worst observed run — a timeout firing means a hang, not just "slow runner."
+Cited by job and step name, never by line number — `tests.yml:117` was the pytest command until it became line 239, and a stale citation reads exactly like a live one (#2216).
+
+- `pytest` — matrix `{ubuntu,macos,windows}-latest × py{3.9,3.10,3.11,3.12}` = 12 legs, 30min timeout. Command: `pytest -m 'not slow and not benchmark' --tb=no --no-cov --durations=25 --junit-xml=junit.xml -q`. **`--tb=no` means no traceback ever reaches the raw pytest log.** The next step, `Show failing tests with full messages (always runs)`, runs `python .github/scripts/junit_summary.py junit.xml` and prints the full failing assertion. **That is the log to read, not the pytest step above.**
+- `coverage` — ubuntu-only, one leg, 20min. Gate: `.github/scripts/coverage_gate.py`.
+- `lint-new`, named `lint (files this PR adds, renames or modifies)` — ubuntu-only, 10min. ruff over the **diff**: a path this PR adds or renames has no history and is checked whole; a modified path is checked only against its own merge-base, so the 263 findings the tree-wide ignore holds back stay held back. It exists because the `pytest` job deliberately runs no `ruff check .` and the supertool `ruff` validator reports only what an edit *introduces* — PR #1473 merged 22/22 green with three unreachable imports in a file it created (#1481, widened to modified paths in #1849). **A red here has no `junit.xml`**; the ruff output is in the job log itself.
+- `notifiers` — ubuntu+macos only, 10min, no windows (AF_UNIX socket). The matrix above runs pytest and nothing else (#557).
+
+Timeouts are deliberate hang-guards sized ~3x the worst observed run — one firing means a hang, not just a slow runner.
 
 # Reading a red leg
 
