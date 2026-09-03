@@ -364,7 +364,7 @@
       "timeout": 30
     },
     "new-file-lint": {
-      "cmd": "{python} .github/scripts/new_file_ruff_gate.py {file}",
+      "cmd": "{python} {supertool_dir}/validators/new-file-lint/new-file-lint.py {file}",
       "match": "*.py",
       "hooks_into": [
         "edit",
