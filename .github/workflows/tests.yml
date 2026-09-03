@@ -5,6 +5,28 @@ on:
     branches: [master]
   pull_request:
 
+# One run per ref, and a new one cancels the run it supersedes (#2223).
+#
+# A maintainer tick merges the ready board one pull request at a time, so eight
+# squashes in twenty minutes is a normal tick and not a bad day. Without this,
+# each squash queued its own sixteen-leg matrix: six were queued at once on
+# 2026-09-03, and the run for the head anyone wanted an answer about had started
+# no leg seventeen minutes after its merge, sitting behind five runs about
+# commits nobody will ever read.
+#
+# On `pull_request` this costs nothing -- a force-push makes the older run
+# worthless by construction. On `push: master` it is a real trade: a squashed
+# commit can end with no run of its own, which loses the ability to bisect a red
+# to the merge that caused it. Taken deliberately, because nothing here reads a
+# per-commit historical green (`gh-branch` asks whether master is green *now*)
+# and #1257 already says a tally predating later merges is not trustworthy.
+#
+# The group keys on `github.ref`, so master cancels only master and a pull
+# request never kills master's run. `tests/test_ci_concurrency_2223.py` pins it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Read-only: nothing in this workflow publishes, comments, or uses a secret —
 # the jobs check out, install, and run tests. Declared rather than inherited,
 # because what is inherited is the repository default, and a settings change
