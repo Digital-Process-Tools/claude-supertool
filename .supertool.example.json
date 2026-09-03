@@ -477,6 +477,14 @@
       "rollback_on_fail": false,
       "timeout": 30
     },
+    "new-file-lint": {
+      "cmd": "{python} {supertool_dir}/validators/new-file-lint/new-file-lint.py {file}",
+      "match": "*.py",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "append", "vim"],
+      "rollback_on_fail": false,
+      "timeout": 30,
+      "_comment": "States no rules of its own -- finds the project's own lint_new_files.py-shaped script (default .github/scripts/lint_new_files.py, override SUPERTOOL_NEW_FILE_LINT_SCRIPT) and re-enables its EXTRA_RULES for a Python file with no git blob at HEAD. skipped, not ok, on a project that has not adopted the convention."
+    },
     "pyright": {
       "cmd": "{python} {supertool_dir}/validators/pyright/pyright.py {file}",
       "match": "*.py",
