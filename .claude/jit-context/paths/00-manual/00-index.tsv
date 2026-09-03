@@ -2,6 +2,7 @@ changelog.d/	changelog-d.md
 docs/	docs-index.md
 .github/workflows/	github-workflows.md
 .claude/jit-context/	jit-context.md
+\.claude/jit-context/(paths|tools|vocabulary)/01-oss/	oss-owned-jit-layer.md
 presets/git/	presets-git.md
 presets/github/	presets-github.md
 presets/gitlab/	presets-gitlab.md
