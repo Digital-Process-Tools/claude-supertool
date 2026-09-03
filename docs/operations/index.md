@@ -1,6 +1,6 @@
 # Operations Reference
 
-46 ops across seven categories. Use this page for a quick "all ops at a glance" lookup, then follow the per-category links for patterns and recipes.
+47 ops across seven categories. Use this page for a quick "all ops at a glance" lookup, then follow the per-category links for patterns and recipes.
 
 Both listings below are hand-written prose over a machine-readable fact, so `tests/test_ops_index_complete_1371.py` holds them to it: every name the dispatcher accepts must appear in the Categories table *and* in the full op table, and the count above must be the real one. `registry` shipped in #1363 and reached neither list; enumerating from the product rather than from the bug report found six more in the same state.
 
@@ -25,7 +25,7 @@ Both say `path escapes cwd` and carry the same opt-out as every other refusal. *
 | **Search** | `grep`, `grep_around`, `around`, `around_line`, `between` | [search.md](search.md) |
 | **Symbol map** | `map`, `workspace`, `resolve` | [map.md](map.md) |
 | **Edits** | `edit`, `replace`, `replace_dry`, `replace_lines`, `paste`, `append`, `vim`, `batch` | [edits.md](edits.md) |
-| **Validate / Format** | `validate`, `format`, `validate_staged`, `format_staged`, `check` | — |
+| **Validate / Format** | `validate`, `format`, `validate_staged`, `format_staged`, `check`, `payload-lint` | — |
 | **LSP-backed** | `diag`, `hover`, `rename` | [mcp-integration.md](../mcp-integration.md) |
 | **Meta** | `cwd`, `repo`, `introduction`, `output-format`, `ops`, `ops:roster`, `ops-compact`, `registry`, `guard`, `help`, `version`, `doctor`, `init`, `gc` | [meta.md](meta.md) |
 
@@ -72,6 +72,7 @@ Both say `path escapes cwd` and carry the same opt-out as every other refusal. *
 | `replace` / `replace_dry` | `replace:::OLD:::NEW:::PATH` | Recursive find/replace across PATH (`replace_dry` = preview). Use `:::` separator when content has `:`. |
 | `batch` | `batch:@FILE` or `batch:@-` | Run N ops from one payload — a TOML `[[ops]]` array or a JSON array of `{"op": …}` objects, each entry taking that op's own `@payload` fields. The only way to put several mutations in one call, since a call carries just one `@-` (#341). Reads and greps mix in freely. A nested `batch` entry takes its inner payload as `path` = `"@inner.toml"` — the `@` is required there too, and any other key is refused by name. Per-op validators, per-op rollback; **not** atomic by default — see [edits.md](edits.md#batchfile--mixed-ops-in-one-round-trip). |
 | `validate` | `validate:PATH[:tool1,tool2][:verbose]` | Run registered validators matching PATH (by file extension). Optional `tool_filter` limits to named validators. Append `verbose` for uncapped errors + source context + raw stdout/stderr. Same validators that fire after every mutating op. |
+| `payload-lint` | `payload-lint:@FILE` | Parse an `@file`/`@-` payload and report its shape -- fields, provenance (triple-single-quoted literal / triple-double-quoted basic / single-line), length, line count, backslash/CR/trailing-whitespace flags -- and run NOTHING. For an ops array: op count, kinds, resolved target paths. For an edit/replace-shaped payload: whether `old` matches the target right now, as a snapshot, without writing. Answers what a payload parsed to before a real write is attempted. |
 | `format` | `format:PATH[:tool1,tool2][:verbose]` | Run registered formatters matching PATH (writes file in place). Optional `tool_filter`. Append `verbose` for full per-file details. |
 | `validate_staged` | `validate_staged[::tool1,tool2][:verbose]` | Run validators on all files in `git diff --cached --name-only`. Optional `tool_filter`. Append `verbose` for full per-file details. Useful as a pre-commit check. |
 | `format_staged` | `format_staged[::tool1,tool2][:verbose]` | Run formatters on all staged files. Optional `tool_filter`. Append `verbose` for full per-file details. Pair with `validate_staged` for a full normalize-then-check pass. |

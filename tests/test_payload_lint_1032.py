@@ -167,8 +167,8 @@ class TestContainment:
 class TestAnchorDryRun:
     def test_reports_match_count_without_writing(self, tmp_path: Path) -> None:
         target = tmp_path / "f.py"
-        target.write_text("alpha\nalpha\nbeta\n")
-        before = target.read_text()
+        target.write_text("alpha\nalpha\nbeta\n", encoding="utf-8")
+        before = target.read_text(encoding="utf-8")
         spec = tmp_path / "e.toml"
         spec.write_text(
             f'path = "{target}"\n'
@@ -179,7 +179,7 @@ class TestAnchorDryRun:
         assert "matches 2 time" in out, (
             "the anchor 'alpha' occurs twice in the target right now; "
             "this must be counted WITHOUT writing: " + out)
-        assert target.read_text() == before, (
+        assert target.read_text(encoding="utf-8") == before, (
             "payload-lint must never write to the target file")
 
     def test_missing_target_says_so_rather_than_guessing(

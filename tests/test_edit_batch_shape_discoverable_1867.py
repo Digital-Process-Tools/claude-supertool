@@ -30,12 +30,11 @@ def test_edits_array_refusal_names_the_one_edit_contract(tmp_path: Path) -> None
     payload = {"path": str(f), "edits": [{"old": "line1", "new": "X"}]}
     try:
         supertool._at_file_to_parts("edit", payload)
-        raised = False
-        msg = ""
     except ValueError as exc:
-        raised = True
         msg = str(exc)
-    assert raised, "an edits array must still be refused, not silently accepted"
+    else:
+        raise AssertionError(
+            "an edits array must still be refused, not silently accepted")
     assert "unknown field(s)" in msg and "edits" in msg
     assert "one edit per payload" in msg.lower(), (
         "the refusal names the unknown field but never states the contract "
