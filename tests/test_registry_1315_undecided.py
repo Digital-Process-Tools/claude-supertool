@@ -38,7 +38,6 @@ outside this lane's own claimed files. So this also pins current behaviour.
 from __future__ import annotations
 
 import importlib.util
-import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
