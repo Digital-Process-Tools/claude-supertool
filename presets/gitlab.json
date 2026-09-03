@@ -101,7 +101,8 @@
       ],
       "lines": 80,
       "error_patterns": "ERROR,FAILURES!,Fatal,Failed asserting,PHP Warning,PHP Notice,PHP Deprecated",
-      "error_context": 5
+      "error_context": 5,
+      "paths": {"args": []}
     }
   }
 }

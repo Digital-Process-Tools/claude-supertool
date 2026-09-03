@@ -379,7 +379,12 @@ SINK_SHAPES = tuple(SHAPE_PROBES)
 #: caller in both job presets rather than this one call, which is a wider
 #: change than #1796 needs. The census (`raw_child_stream_sinks`) did not
 #: move on this site — checked before the number was touched.
-UNRESOLVED = 112
+#:
+#: 112 -> 113, #1796 self-review. `_job_run_id` grew a second
+#: `_gh_error_kind(result.stderr)` call (the check-run-namespace disclosure
+#: on a 404) -- the identical shape one bullet up, one call site over. The
+#: census did not move on this site either.
+UNRESOLVED = 113
 
 #: Calls whose result cannot be a string, so the taint stops there. A type
 #: argument, not an allowlist: `json.loads(r.stdout)` yields a dict, and every

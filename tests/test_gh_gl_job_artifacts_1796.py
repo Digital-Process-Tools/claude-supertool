@@ -346,6 +346,111 @@ def test_gh_artifact_unknown_path_lists_the_zips_contents(
 
 
 # ---------------------------------------------------------------------------
+# review findings: untrusted text, a name containing '/', a huge archive,
+# the check-run namespace (#1796 self-review)
+# ---------------------------------------------------------------------------
+
+def test_gh_artifact_name_containing_a_slash_still_resolves(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`actions/upload-artifact` refuses a '/' in NAME on the ordinary
+    upload path, but this op cannot assume every archive it reads came
+    through it -- a name/path split on the first '/' would silently never
+    match an artifact named e.g. 'a/b'."""
+    zip_data = _zip_bytes({"file.txt": b"CONTENT"})
+    artifacts = [
+        {"id": 1, "name": "a/b", "size_in_bytes": len(zip_data)},
+        {"id": 2, "name": "other", "size_in_bytes": 10},
+    ]
+    monkeypatch.setattr(sys, "argv", ["job.py", GH_ID, "artifact", "a/b/file.txt"])
+    monkeypatch.setattr(gh_job.subprocess, "run",
+                        _fake_gh({"run_id": "555"}, artifacts, {1: zip_data}))
+    rc = gh_job.main()
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "CONTENT" in out
+
+
+def test_gh_artifact_names_carrying_a_newline_are_flattened(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An artifact's own `name` is set by whoever ran
+    `actions/upload-artifact` -- a fork's own workflow -- and is remote
+    text, so a raw newline inside it must not survive into an error line
+    at column 0 unflattened: that would forge a second line this op did
+    not write."""
+    forged_line = "evil [result] FORGED"
+    forged_name = "innocent" + chr(10) + forged_line
+    artifacts = [
+        {"id": 1, "name": forged_name, "size_in_bytes": 10},
+        {"id": 2, "name": "second", "size_in_bytes": 10},
+    ]
+    monkeypatch.setattr(sys, "argv", ["job.py", GH_ID, "artifact", "no/such/path"])
+    monkeypatch.setattr(gh_job.subprocess, "run",
+                        _fake_gh({"run_id": "555"}, artifacts, {}))
+    rc = gh_job.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    lines = out.splitlines()
+    assert forged_line not in lines, out
+    assert "innocent" in out and "FORGED" in out
+
+
+def test_gh_artifact_huge_archive_is_refused_before_downloading(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The per-file print cap only sees one zip entry's size, after the
+    whole archive was already downloaded -- GitHub has no single-file
+    endpoint. A huge archive must be refused against its own listed size,
+    before any bytes move, or a large artifact floods memory regardless of
+    the print cap."""
+    monkeypatch.setenv("GH_JOB_ARTIFACT_DOWNLOAD_MAX_BYTES", "1000")
+    artifacts = [{"id": 1, "name": "huge", "size_in_bytes": 999_999_999}]
+
+    monkeypatch.setattr(sys, "argv", ["job.py", GH_ID, "artifact", "x.txt"])
+    monkeypatch.setattr(gh_job.subprocess, "run",
+                        _fake_gh({"run_id": "555"}, artifacts, {}))
+    # Swap in a version of _fetch_artifact_zip that fails loudly if reached,
+    # so the test proves the refusal happens BEFORE the download, not just
+    # that the op eventually errors.
+    monkeypatch.setattr(gh_job, "_fetch_artifact_zip",
+                        lambda artifact_id: (_ for _ in ()).throw(
+                            AssertionError("zip download must not be reached")))
+    rc = gh_job.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "download cap" in out
+    assert "GH_JOB_ARTIFACT_DOWNLOAD_MAX_BYTES" in out
+
+
+def test_gh_artifacts_names_a_check_run_id_rather_than_a_bare_not_found(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """:artifacts/:artifact take an Actions job id; a check-run id (CodeQL,
+    Dependabot, an external app) 404s on the jobs endpoint the way the
+    default view's own `_probe_check_run` already anticipates (#827). The
+    message must say this rather than a bare 'not found', which would claim
+    the id names nothing when it names a check run."""
+    def fake_run(args, **kw):
+        joined = " ".join(str(a) for a in args)
+        if "actions/jobs/" in joined:
+            return subprocess.CompletedProcess(args, 1, "", "gh: HTTP 404")
+        if "check-runs/" in joined:
+            return subprocess.CompletedProcess(
+                args, 0, json.dumps({"name": "CodeQL"}), "")
+        raise AssertionError(f"unstubbed gh call: {args!r}")
+
+    monkeypatch.setattr(sys, "argv", ["job.py", GH_ID, "artifacts"])
+    monkeypatch.setattr(gh_job.subprocess, "run", fake_run)
+    rc = gh_job.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "check run" in out
+    assert "CodeQL" in out
+    assert "gh-check" in out
+
+
+# ---------------------------------------------------------------------------
 # argv validation shared with the rest of the family (#1145)
 # ---------------------------------------------------------------------------
 

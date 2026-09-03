@@ -903,6 +903,33 @@ def _job_run_id(job_id: str) -> tuple[str, str]:
     except subprocess.TimeoutExpired:
         return "", f"ERROR: gh timed out fetching job #{job_id}"
     if result.returncode != 0:
+        if _gh_error_kind(result.stderr) == "notfound":
+            # `gh-job`'s default view answers either id namespace (#827) --
+            # a check-run id (CodeQL, Dependabot, an external app) renders
+            # the check run instead of a 404. Artifacts have no equivalent
+            # on that namespace (a check run does not produce Actions
+            # artifacts), so this never routes there the way the default
+            # view does -- but silently reusing the generic "not found"
+            # message would say the id names nothing, which is a stronger
+            # and possibly false claim than this op can support. One probe,
+            # same cost model #723 already uses: only paid on the 404 path,
+            # never on a working call.
+            probe = _probe_check_run(job_id)
+            if probe[0] == "found":
+                name = _untrusted.flat(probe[1])
+                return "", (
+                    f"ERROR: #{job_id} is not an Actions job — it is a "
+                    f"check run ({name}), which has no artifacts of its "
+                    f"own. Read it with: ./supertool 'gh-check:{job_id}'"
+                )
+            if probe[0] == "unknown":
+                return "", (
+                    f"ERROR: Job #{job_id} has no artifacts endpoint (404), "
+                    f"and whether it is a check run instead is UNKNOWN — "
+                    f"the checks API did not answer: {probe[2]}. Retry, or "
+                    f"read the other namespace directly with: "
+                    f"./supertool 'gh-check:{job_id}'"
+                )
         return "", _format_error(result.stderr, "Job", job_id)
     try:
         meta = json.loads(result.stdout)
@@ -1000,21 +1027,36 @@ def _resolve_artifact_entry(
         return None, "", "ERROR: this run produced no artifacts"
     if len(artifacts) == 1:
         return artifacts[0], path, ""
-    prefix, _, rest = path.partition("/")
-    for artifact in artifacts:
-        if str(artifact.get("name")) == prefix:
-            if not rest:
-                return None, "", (
-                    f"ERROR: {prefix!r} is an artifact's name, not a file "
-                    f"inside it. This run produced more than one artifact, "
-                    f"so PATH must be NAME/path-inside-the-zip."
-                )
-            return artifact, rest, ""
-    names = ", ".join(str(a.get("name")) for a in artifacts)
+    # A prefix match against every artifact's own name, not a partition on
+    # the first `/` -- `actions/upload-artifact` refuses a `/` in NAME on
+    # the ordinary upload path, but nothing here can assume every archive
+    # was produced through it, and `path.partition("/")` would silently
+    # never match a name that contains one. Longest-name-first so a name
+    # that is itself a prefix of a longer one (`a` and `a-b`) resolves to
+    # the more specific artifact when PATH could name either.
+    candidates = sorted(artifacts, key=lambda a: -len(str(a.get("name") or "")))
+    exact_name_match = None
+    for artifact in candidates:
+        name = str(artifact.get("name") or "")
+        if path == name:
+            exact_name_match = artifact
+        if path.startswith(name + "/"):
+            return artifact, path[len(name) + 1:], ""
+    if exact_name_match is not None:
+        return None, "", (
+            f"ERROR: {path!r} is an artifact's name, not a file inside it. "
+            f"This run produced more than one artifact, so PATH must be "
+            f"NAME/path-inside-the-zip."
+        )
+    # An artifact's `name` is set by whoever ran `actions/upload-artifact` —
+    # a fork's own workflow, on a PR this repo did not write — so it is
+    # remote text and is flattened before it reaches this receipt, the same
+    # convention `print_artifacts` above already applies to the same field.
+    names = ", ".join(_untrusted.flat(str(a.get("name"))) for a in artifacts)
     return None, "", (
-        f"ERROR: no artifact named {prefix!r} among this run's artifacts "
-        f"({names}). This run produced more than one, so PATH must start "
-        f"with the artifact's own name: NAME/path-inside-the-zip."
+        f"ERROR: {path!r} does not start with any artifact's own name "
+        f"among this run's artifacts ({names}). This run produced more "
+        f"than one, so PATH must be NAME/path-inside-the-zip."
     )
 
 
@@ -1061,6 +1103,27 @@ def print_artifact(job_id: str, path: str) -> int:
     if error:
         print(error)
         return 1
+    # `_fetch_artifact_zip` buffers the WHOLE archive into memory -- GitHub
+    # has no single-file endpoint, unlike GitLab -- so the per-file print
+    # cap below cannot protect against a large archive: it only sees one
+    # entry's size, after the whole zip already downloaded. The listing
+    # already carries the archive's own size, so it is checked here, before
+    # any bytes move, against a separate and much larger cap (#1796).
+    archive_size = artifact.get("size_in_bytes")
+    download_cap = env_int("GH_JOB_ARTIFACT_DOWNLOAD_MAX_BYTES", 200 * 1024 * 1024,
+                           minimum=1)
+    if isinstance(archive_size, (int, float)) and archive_size > download_cap:
+        print(
+            f"ERROR: artifact {_untrusted.flat(str(artifact.get('name')))!r} "
+            f"is {_human_size(int(archive_size))}, over this op's "
+            f"{_human_size(download_cap)} download cap "
+            f"(GH_JOB_ARTIFACT_DOWNLOAD_MAX_BYTES) — GitHub has no single-file "
+            f"artifact endpoint, so reading one entry means downloading the "
+            f"whole archive first, and this one is refused before that "
+            f"download rather than after. Raise the cap, or fetch the "
+            f"archive another way."
+        )
+        return 1
     zip_bytes, error = _fetch_artifact_zip(artifact.get("id"))
     if error:
         print(error)
@@ -1074,13 +1137,18 @@ def print_artifact(job_id: str, path: str) -> int:
     try:
         info = zf.getinfo(entry_path)
     except KeyError:
-        names = zf.namelist()
+        # Both the artifact's own name and every entry inside its zip are
+        # remote text — written by whoever's workflow produced the archive —
+        # and flattened before they reach this receipt, the same convention
+        # `_resolve_artifact_entry` applies to the artifact-name listing.
+        names = [_untrusted.flat(n) for n in zf.namelist()]
         shown = ", ".join(names[:20])
         more = "" if len(names) <= 20 else f" (+{len(names) - 20} more)"
         print(
             f"ERROR: no file at {entry_path!r} inside artifact "
-            f"{artifact.get('name')!r} — check the path (case-sensitive, "
-            f"relative to the archive root). Contents: {shown}{more}"
+            f"{_untrusted.flat(str(artifact.get('name')))!r} — check the "
+            f"path (case-sensitive, relative to the archive root). "
+            f"Contents: {shown}{more}"
         )
         return 1
     # Read at the point of use, not at module load, so it can be raised
