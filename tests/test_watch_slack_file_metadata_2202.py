@@ -12,6 +12,17 @@ This is issue #2202's own route 1 -- carry the metadata, not the bytes.
 Fetching bytes (route 2) needs a bearer token and a sizing policy against
 the per-channel eviction pool #2149/#2197 is concurrently reworking; this
 stays out of that file entirely.
+
+**A flat string, not a list of dicts.** A reviewer finding on the first cut
+of this fix caught that `notifiers/claude-channel/channel.ts`'s `asAttr`
+refuses any array- or object-valued payload key outright -- a nested
+`payload["files"] = [dict, ...]` would never reach a real session; it would
+render as a "payload key refused" note instead of the metadata this exists
+to deliver, invisible from a test suite that only asserts on the Python
+return value (exactly what happened here before the fix below). So the
+payload carries one `" | "`-joined string instead, the same shape
+`sources/gitlab-mr/poller.py`'s `_failed_jobs_fields` already uses for the
+identical constraint.
 """
 from __future__ import annotations
 
@@ -60,7 +71,9 @@ def _event_for_msg(poller, msg: dict, *, tmp_path=None, monkeypatch=None) -> dic
 
 def test_an_image_upload_carries_permalink_mimetype_and_size() -> None:
     """The exact gap the issue names: naming the file is not enough --
-    the receiver must be able to reach it or at least know what it is."""
+    the receiver must be able to reach it or at least know what it is.
+    All three land in the one flat string, since a session only ever sees
+    what actually crosses the channel bridge -- a dict here would not."""
     poller = _load_poller()
     payload = _event_for_msg(poller, {
         "text": "",
@@ -73,15 +86,14 @@ def test_an_image_upload_carries_permalink_mimetype_and_size() -> None:
         }],
     })
     assert payload["content_kind"] == "files"
-    assert len(payload["files"]) == 1
-    meta = payload["files"][0]
-    assert meta["name"] == "screenshot.png"
-    assert meta["mimetype"] == "image/png"
-    assert meta["size"] == 48213
-    assert meta["permalink"] == "https://example.slack.com/files/U1/F1/screenshot.png"
+    assert isinstance(payload["files"], str)
+    assert "screenshot.png" in payload["files"]
+    assert "image/png" in payload["files"]
+    assert "48213" in payload["files"]
+    assert "https://example.slack.com/files/U1/F1/screenshot.png" in payload["files"]
     # Route 1, not route 2 -- the bearer-token-gated download URL never
     # rides in the emitted event, only the permalink a human can open.
-    assert "url_private" not in meta
+    assert "files-pri" not in payload["files"]
 
 
 def test_multiple_files_each_carry_their_own_metadata() -> None:
@@ -95,9 +107,12 @@ def test_multiple_files_each_carry_their_own_metadata() -> None:
              "permalink": "https://x/b"},
         ],
     })
-    assert [f["name"] for f in payload["files"]] == ["a.png", "b.pdf"]
-    assert [f["mimetype"] for f in payload["files"]] == ["image/png", "application/pdf"]
-    assert [f["size"] for f in payload["files"]] == [10, 20]
+    files = payload["files"]
+    assert "a.png" in files and "b.pdf" in files
+    assert "image/png" in files and "application/pdf" in files
+    assert "https://x/a" in files and "https://x/b" in files
+    # Both files are named, not just the last one written.
+    assert files.index("a.png") < files.index("b.pdf")
 
 
 def test_a_file_entry_missing_metadata_fields_defaults_rather_than_raises() -> None:
@@ -110,23 +125,19 @@ def test_a_file_entry_missing_metadata_fields_defaults_rather_than_raises() -> N
         "text": "",
         "files": [{"name": "mystery"}],
     })
-    assert len(payload["files"]) == 1
-    meta = payload["files"][0]
-    assert meta["name"] == "mystery"
-    assert meta["mimetype"] == ""
-    assert meta["size"] == 0
-    assert meta["permalink"] == ""
+    assert "mystery" in payload["files"]
+    assert "0B" in payload["files"]
 
 
 def test_must_not_fire_a_text_message_carries_no_file_metadata() -> None:
     """Positive control: an ordinary text message must not start growing a
-    `files` list it never had -- this is #2068's `content_kind == "text"`
+    `files` string it never had -- this is #2068's `content_kind == "text"`
     path, unrelated to this fix."""
     poller = _load_poller()
     payload = _event_for_msg(poller, {"text": "hello team"},
                              tmp_path=None, monkeypatch=None)
     assert payload["content_kind"] == "text"
-    assert payload["files"] == []
+    assert payload["files"] == ""
 
 
 def test_a_genuinely_empty_message_also_carries_no_file_metadata() -> None:
@@ -135,7 +146,7 @@ def test_a_genuinely_empty_message_also_carries_no_file_metadata() -> None:
     poller = _load_poller()
     payload = _event_for_msg(poller, {"text": ""})
     assert payload["content_kind"] == "empty"
-    assert payload["files"] == []
+    assert payload["files"] == ""
 
 
 def test_blocks_and_attachments_kinds_also_carry_no_file_metadata() -> None:
@@ -147,10 +158,51 @@ def test_blocks_and_attachments_kinds_also_carry_no_file_metadata() -> None:
         "text": "", "blocks": [{"type": "section"}],
     })
     assert blocks_payload["content_kind"] == "blocks"
-    assert blocks_payload["files"] == []
+    assert blocks_payload["files"] == ""
 
     attach_payload = _event_for_msg(poller, {
         "text": "", "attachments": [{"fallback": "x"}],
     })
     assert attach_payload["content_kind"] == "attachments"
-    assert attach_payload["files"] == []
+    assert attach_payload["files"] == ""
+
+
+def test_a_nondict_entry_in_files_is_skipped_not_raised() -> None:
+    """Slack is not the only writer of this list in principle -- a
+    malformed entry must not crash the poller. Matches the same
+    `isinstance(f, dict)` filter `_content_summary` already applies when
+    building `title` for this content_kind."""
+    poller = _load_poller()
+    payload = _event_for_msg(poller, {
+        "text": "",
+        "files": ["not-a-dict", {"name": "real.png"}],
+    })
+    assert payload["content_kind"] == "files"
+    assert "real.png" in payload["files"]
+
+
+def test_a_negative_size_is_floored_to_zero_not_carried_through() -> None:
+    """A corrupt or adversarial `size` must not read as a real negative
+    byte count -- same discipline as the missing-field default."""
+    poller = _load_poller()
+    payload = _event_for_msg(poller, {
+        "text": "",
+        "files": [{"name": "odd.bin", "size": -5}],
+    })
+    assert "-5" not in payload["files"]
+    assert "0B" in payload["files"]
+
+
+def test_the_channel_bridge_never_refuses_the_files_key() -> None:
+    """Reproduces the exact failure a reviewer caught on the first cut of
+    this fix: `notifiers/claude-channel/channel.ts`'s `asAttr` refuses any
+    array- or object-valued payload key outright, so `payload["files"]`
+    must be something `asAttr` actually accepts (string, boolean, or
+    finite number) -- never a list or a dict, or the metadata this issue
+    exists to deliver would silently never reach a session."""
+    poller = _load_poller()
+    payload = _event_for_msg(poller, {
+        "text": "", "files": [{"name": "x.png", "size": 1}],
+    })
+    assert isinstance(payload["files"], (str, bool, int, float))
+    assert not isinstance(payload["files"], (list, dict))

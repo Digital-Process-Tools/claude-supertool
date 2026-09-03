@@ -253,12 +253,33 @@ def _content_summary(msg: dict[str, Any]) -> tuple[str, str]:
     return "", "empty"
 
 
-def _files_meta(msg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Per-file metadata Slack already handed this poller and that never
-    survived past `_content_summary`'s naming (#2202): `permalink` -- a
-    link a human can open in the workspace they are already a member of --
-    plus `mimetype` and `size`, so a receiver can tell an image from a
-    400MB archive without fetching anything.
+def _files_meta(msg: dict[str, Any]) -> str:
+    """One flat string naming each file's metadata Slack already handed
+    this poller and that never survived past `_content_summary`'s naming
+    (#2202): `permalink` -- a link a human already in the workspace can
+    open -- plus `mimetype` and `size`, so a receiver can tell an image
+    from a 400MB archive without fetching anything.
+
+    **A flat string, never a nested list or dict.** `_event_for`'s payload
+    reaches a session through `notifiers/claude-channel/channel.ts`, whose
+    `asAttr` refuses any array- or object-valued payload key outright --
+    the key is dropped and the session sees a "payload key refused" note
+    instead of the metadata this function exists to deliver (verified
+    against that file directly: `shapeOf` names "array" before `asAttr`'s
+    final `return null`, so the refusal is not hypothetical). An earlier
+    version of this function returned `list[dict]` and every one of its
+    tests passed while still shipping nothing to a real session, because
+    the tests asserted on the Python return value and never crossed the
+    transport boundary. `sources/gitlab-mr/poller.py`'s own
+    `_failed_jobs_fields` already works around the identical constraint by
+    joining into one string rather than emitting a list; this follows the
+    same shape, one line per file, `" | "`-joined.
+
+    Bounded by `_bound` against the channel's own attribute cap the same
+    way the message body is (#2059) -- a per-attribute-value bound, not a
+    per-file-count one like `FAILED_JOBS_MAX`, because what a multi-file,
+    URL-heavy message needs bounded is the joined string's length, not how
+    many files it names.
 
     Route 1 of #2202's three, deliberately not route 2: `url_private`
     needs the bot token as a bearer header to resolve at all, and fetching
@@ -268,25 +289,32 @@ def _files_meta(msg: dict[str, Any]) -> list[dict[str, Any]]:
     `files[]` entries this poller received.
 
     Scoped to callers that already know `content_kind == "files"`; returns
-    `[]` for anything else, same discipline as `_content_summary` itself --
-    an empty list here must mean "no files on this message", never "did
+    `""` for anything else, same discipline as `_content_summary` itself --
+    an empty string here must mean "no files on this message", never "did
     not look".
     """
     files = msg.get("files")
     if not isinstance(files, list):
-        return []
-    out: list[dict[str, Any]] = []
+        return ""
+    lines: list[str] = []
     for f in files:
         if not isinstance(f, dict):
             continue
+        name = str(f.get("name") or f.get("title") or "untitled")
+        mimetype = str(f.get("mimetype") or "unknown")
         size = f.get("size")
-        out.append({
-            "name": str(f.get("name") or f.get("title") or "untitled"),
-            "mimetype": str(f.get("mimetype") or ""),
-            "size": int(size) if isinstance(size, (int, float)) and not isinstance(size, bool) else 0,
-            "permalink": str(f.get("permalink") or ""),
-        })
-    return out
+        if isinstance(size, (int, float)) and not isinstance(size, bool) and size > 0:
+            size = int(size)
+        else:
+            size = 0
+        permalink = str(f.get("permalink") or "")
+        line = f"{name} ({mimetype}, {size}B)"
+        if permalink:
+            line = f"{line} {permalink}"
+        lines.append(line)
+    if not lines:
+        return ""
+    return _bound(" | ".join(lines))
 
 
 def _bound(text: str) -> str:
@@ -659,14 +687,19 @@ def _event_for(
             # only kind under which both are legitimately empty. See
             # `_content_summary` above.
             "content_kind": content_kind,
-            # Per-file metadata (#2202) -- `permalink`, `mimetype`, `size`
-            # for each entry in `msg["files"]`, `[]` for every other
-            # `content_kind`. `_content_summary` above already names a file
-            # upload rather than emitting an empty title; this is the rest
-            # of what Slack handed the poller in that same `files[]` entry,
-            # carried through instead of dropped on the floor. Route 1 of
-            # #2202's three -- metadata only, no bytes, no bearer token.
-            "files": _files_meta(msg) if content_kind == "files" else [],
+            # Per-file metadata (#2202) -- one `" | "`-joined flat string
+            # naming `permalink`, `mimetype`, `size` for each entry in
+            # `msg["files"]`, `""` for every other `content_kind`.
+            # `_content_summary` above already names a file upload rather
+            # than emitting an empty title; this is the rest of what Slack
+            # handed the poller in that same `files[]` entry, carried
+            # through instead of dropped on the floor. Route 1 of #2202's
+            # three -- metadata only, no bytes, no bearer token. A flat
+            # string, not a list: `notifiers/claude-channel/channel.ts`'s
+            # `asAttr` refuses any array-valued payload key outright, so a
+            # nested structure here would never reach a session at all --
+            # see `_files_meta`'s own docstring.
+            "files": _files_meta(msg) if content_kind == "files" else "",
             # Routing key the poller computes, never copied from the
             # message: a claim no message author can choose (#2031).
             "author_is_viewer": author,
