@@ -373,7 +373,7 @@ Two consequences worth knowing before you add one:
   fail-safe, not a new exit channel; a shell that needs the integer has to run
   the preset's script directly.
 
-Any key in an op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`, `restartMcp`, `replaces`, `paths`, `exitStatus`) is passed to the subprocess as a `SUPERTOOL_`-prefixed environment variable:
+Any key in an op config that isn't a reserved key (`cmd`, `timeout`, `description`, `syntax`, `example`, `status`, `restartMcp`, `replaces`, `paths`, `exitStatus`, `form`, `hint`) is passed to the subprocess as a `SUPERTOOL_`-prefixed environment variable. `form` and `hint` are documented as `builtin-ops`-only keys ([#1245](https://github.com/Digital-Process-Tools/claude-supertool/issues/1245)) — a `builtin-ops` entry never spawns, so they were only inert oversights there. Reserved here anyway ([#1675](https://github.com/Digital-Process-Tools/claude-supertool/issues/1675)), because the moment either is copied onto an **`ops`** entry it would otherwise leak as `SUPERTOOL_FORM` / `SUPERTOOL_HINT` — config metadata reaching a subprocess environment as if it were meant for the script:
 
 ```json
 {
