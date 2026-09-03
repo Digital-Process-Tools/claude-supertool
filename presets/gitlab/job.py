@@ -21,6 +21,8 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
@@ -651,6 +653,180 @@ def _human_size(num_bytes: int) -> str:
     return f"{num_bytes / (1024 * 1024):.1f} MB"
 
 
+#: GitLab's own timestamp field never claims size or expiry on its own — a
+#: job with no artifacts at all answers 200 with `artifacts: []`, which is the
+#: honest zero, not a fetch failure.
+def _job_row(job_id: str) -> tuple[dict | None, str]:
+    """`(meta, "")` for job `job_id`'s own row; `(None, error)` on any failure.
+
+    Shared by `:artifacts` and `:artifact` (#1796) — the archive's own
+    filename, size and expiry live on this row (`artifacts_file`,
+    `artifacts_expire_at`), the same one `_fetch_trace_and_meta` already
+    reads for the header, so one call answers both without a second read.
+    """
+    try:
+        result = subprocess.run(
+            ["glab", "api", _repo_target.gl_api_path(f"projects/:id/jobs/{job_id}")],
+            capture_output=True, text=True, timeout=15, encoding="utf-8", errors="replace",
+        )
+    except FileNotFoundError:
+        return None, "ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli"
+    except subprocess.TimeoutExpired:
+        return None, f"ERROR: glab timed out fetching job #{job_id}"
+    if result.returncode != 0:
+        return None, _format_error(result.stderr, "Job", job_id)
+    try:
+        return json.loads(result.stdout), ""
+    except json.JSONDecodeError:
+        return None, f"ERROR: glab returned unparseable JSON for job #{job_id}"
+
+
+def _is_past(iso_ts: str) -> "bool | None":
+    """Is `iso_ts` (GitLab's own ISO-8601 timestamp) behind now?
+
+    `None` — not `False` — when it could not be parsed: the third state, the
+    same one `_summary_counts` owes a trace with no recognisable line. A
+    guessed side would be wrong exactly on the malformed input a caller
+    cannot otherwise see.
+    """
+    try:
+        dt = datetime.fromisoformat(iso_ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt < datetime.now(timezone.utc)
+
+
+def print_artifacts(job_id: str) -> int:
+    """`gl-job:ID:artifacts` (#1796) — what the job produced, never what is
+    inside it: GitLab's job-detail row names the kinds present (`archive`,
+    `metadata`, `trace`) and the archive's own filename, size and expiry, but
+    there is no GitLab endpoint that lists the paths *inside* the archive.
+    Said here rather than left unstated — "could not tell" is not "empty",
+    and a caller who wants a specific path already has to know it (from a
+    trace's own printed path, typically) before `:artifact:PATH` can fetch it.
+    """
+    meta, error = _job_row(job_id)
+    if error:
+        print(error)
+        return 1
+    print(f"# Job #{job_id} artifacts")
+    kinds = meta.get("artifacts")
+    if not kinds:
+        print("No artifacts recorded for this job.")
+        return 0
+    print(f"Kinds: {', '.join(str(k) for k in kinds)}")
+    archive = meta.get("artifacts_file")
+    if isinstance(archive, dict) and archive:
+        name = _untrusted.flat(str(archive.get("filename") or "?"))
+        size = archive.get("size")
+        size_str = _human_size(int(size)) if isinstance(size, (int, float)) else "unknown size"
+        print(f"Archive: {name} ({size_str})")
+    expire_at = meta.get("artifacts_expire_at")
+    if expire_at:
+        expired = _is_past(str(expire_at))
+        if expired is None:
+            note = " (could not tell whether this has expired)"
+        elif expired:
+            note = " — EXPIRED"
+        else:
+            note = ""
+        print(f"Expires: {expire_at}{note}")
+    print(
+        f"\nGitLab's job API does not list the paths inside the archive — "
+        f"fetch a known path (e.g. one a trace printed) with: "
+        f"gl-job:{job_id}:artifact:PATH"
+    )
+    return 0
+
+
+def _fetch_artifact_bytes(job_id: str, path: str) -> tuple["bytes | None", str]:
+    """Raw bytes of one file inside job `job_id`'s artifact archive.
+
+    GitLab's single-file endpoint (`.../artifacts/*artifact_path`) means the
+    whole zip never has to be downloaded for one file (#1796) — the ask this
+    issue exists for: a 42 MB archive whose one relevant file is a few kB.
+    """
+    encoded = "/".join(urllib.parse.quote(seg, safe="") for seg in path.split("/"))
+    url = _repo_target.gl_api_path(f"projects/:id/jobs/{job_id}/artifacts/{encoded}")
+    try:
+        proc = subprocess.run(["glab", "api", url], capture_output=True, timeout=30)
+    except FileNotFoundError:
+        return None, "ERROR: glab not found — install from https://gitlab.com/gitlab-org/cli"
+    except subprocess.TimeoutExpired:
+        return None, f"ERROR: glab timed out fetching artifact {path!r} for job #{job_id}"
+    if proc.returncode != 0:
+        stderr = proc.stderr.decode("utf-8", errors="replace")
+        flat_err = _untrusted.flat(stderr.strip())
+        if _auth_probe.says_not_authenticated(stderr, _auth_probe.GITLAB_MARKERS):
+            # #1796's own motivating case: the token that reads this job's
+            # metadata fine can still be refused on the artifact-download
+            # endpoint — a separate scope GitLab checks separately. Naming
+            # that here is the whole reason this branch exists rather than
+            # falling through to `_format_error`'s generic wording.
+            # `GITLAB_MARKERS`, the same extra `_format_error` already passes
+            # below: "unauthenticated" is glab's own vocabulary, not in the
+            # shared default set.
+            return None, (
+                f"ERROR: GitLab refused to serve job #{job_id}'s artifacts "
+                f"(not authenticated for the artifact endpoint, exit "
+                f"{proc.returncode}): {flat_err}\n"
+                f"This is a separate scope from the one that reads job "
+                f"metadata — the same token that lists this job can still be "
+                f"refused here. Check the token's scopes, or fetch the "
+                f"archive through the GitLab UI instead."
+            )
+        if _status_probe.says_not_found(stderr):
+            return None, (
+                f"ERROR: no artifact at {path!r} in job #{job_id}'s archive "
+                f"(exit {proc.returncode}): {flat_err}\n"
+                f"Check the path — it is relative to the archive root and "
+                f"case-sensitive. List what this job produced with "
+                f"gl-job:{job_id}:artifacts."
+            )
+        return None, _format_error(flat_err, "Artifact", job_id)
+    return proc.stdout, ""
+
+
+def print_artifact(job_id: str, path: str) -> int:
+    """`gl-job:ID:artifact:PATH` (#1796) — one file out of the archive."""
+    data, error = _fetch_artifact_bytes(job_id, path)
+    if error:
+        print(error)
+        return 1
+    # Read at the point of use, not at module load, so it can be raised
+    # between calls in one process -- the same convention every other knob
+    # in this file (`GL_JOB_GREP_MAX_BYTES`, `GL_JOB_RAW_MAX_LINES`) already
+    # follows, computed inline where it is read.
+    cap = env_int("GL_JOB_ARTIFACT_MAX_BYTES", 65536, minimum=1)
+    if len(data) > cap:
+        print(
+            f"ERROR: {path!r} is {_human_size(len(data))}, over this op's "
+            f"{_human_size(cap)} print cap "
+            f"(GL_JOB_ARTIFACT_MAX_BYTES) — refusing rather than flooding "
+            f"context with a file this op was not asked to dump whole."
+        )
+        return 1
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        print(
+            f"ERROR: {path!r} ({_human_size(len(data))}) is not UTF-8 text — "
+            f"this op prints text only. Binary artifacts are not readable "
+            f"through this op yet (#1796)."
+        )
+        return 1
+    print(f"# Job #{job_id} artifact: {_untrusted.flat(path, disclose_newline=True)}")
+    print(f"{_human_size(len(data))}")
+    print(_untrusted.banner())
+    print(_untrusted.open_marker())
+    for line in _untrusted.split_lines(text):
+        print(_untrusted.scrub(line))
+    print(_untrusted.close_marker())
+    return 0
+
+
 def _fetch_trace_and_meta(job_id: str) -> tuple[str, dict, str]:
     """`(log, meta, "")` for one job id — `(_, _, error)` when the trace itself
     could not be fetched.
@@ -971,6 +1147,26 @@ def main() -> int:
     if refusal:
         print(refusal)
         return 1
+
+    # `:artifacts`/`:artifact` (#1796) dispatch here, before the trace fetch
+    # below — neither reads the log at all, so paying for it first would be
+    # the same wasted round trip `:trace` was already special-cased to avoid.
+    if mode == "artifacts":
+        if len(sys.argv) > 3:
+            print("ERROR: gl-job:ID:artifacts takes no argument after "
+                  "'artifacts' — nothing was read. Usage: "
+                  "gl-job:JOB_ID:artifacts")
+            return 1
+        return print_artifacts(job_id)
+    if mode == "artifact":
+        path, note = _job_argv.artifact_path("gl-job", sys.argv[3:])
+        if not path:
+            print("ERROR: usage: gl-job:JOB_ID:artifact:PATH")
+            return 1
+        if note:
+            print(note)
+        return print_artifact(job_id, path)
+
     raw_mode = mode == "raw"
     errors_mode = mode in ("errors", "fail")
     grep_mode = mode == "grep"
