@@ -557,6 +557,15 @@ def _ensure_private_dir(path: Path) -> None:
     try:
         os.chmod(path, 0o700)
     except OSError:
+        # Best-effort, not swallowed silently: POSIX mode bits are not
+        # meaningful on Windows (no-op there, not a failure to report), and
+        # a chmod that fails for a real reason -- a read-only filesystem, a
+        # permission this process does not hold -- leaves the directory at
+        # whatever mode `mkdir` above already gave it, which is the same
+        # state this function existed to correct in the first place. There
+        # is nothing narrower to fall back to and no caller that can act on
+        # the refusal, so raising here would turn a private-directory best
+        # effort into a hard dependency the eviction pool does not need.
         pass
 
 

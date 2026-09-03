@@ -126,7 +126,7 @@ fi
 # cannot interpret is a capability never reached for. Nothing fails when that
 # happens, so the cost was invisible.
 #
-# Bare `ops` is signatures-only since #1774 and fits at ~4.3KB.
+# Bare `ops` is signatures-only since #1774 and fits at ~4.4KB.
 # Whole hook: ~5.3KB against 10,000. That was true all along and this comment
 # said so in passing while choosing the roster anyway: the numbers it reasoned
 # from were wrong — `ops` was stated at 47,254 (it is 4,126) and the cap at

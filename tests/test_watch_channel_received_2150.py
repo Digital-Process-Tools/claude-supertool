@@ -28,7 +28,6 @@ for _dir in (WATCH_DIR, PRESETS_DIR):
         sys.path.insert(0, _dir)
 
 import channel  # noqa: E402
-import transport  # noqa: E402
 
 
 def _write_health(sock: str, **fields) -> None:
