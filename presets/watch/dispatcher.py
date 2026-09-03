@@ -627,6 +627,15 @@ def cmd_list() -> int:
         r["_delivery_state"] = transport.delivery_of(
             r.get("last_emit"), r.get("state_refusal") or "")
         r["_delivery"] = transport.DELIVERY_LABELS[r["_delivery_state"]]
+        # #2179: does this poller's own recorded fork-time source match what
+        # is on disk right now. Computed per row rather than once for the
+        # whole table because a dead row's `state_refusal` (or a pre-#2179
+        # row's absent fingerprint) has to reach `VERSION_UNKNOWN` the same
+        # way `_delivery_state` does above — a row this board could not read
+        # must not borrow another row's verdict.
+        r["_version_state"], r["_version_why"] = transport.version_state_of(
+            r.get("forked_fingerprint"), r.get("forked_fingerprint_error"))
+        r["_version"] = transport.VERSION_LABELS[r["_version_state"]]
     noted = any(r["_note"] for r in rows)
     widths = {
         "source": max(6, max(len(r["_source"]) for r in rows)),
@@ -635,6 +644,7 @@ def cmd_list() -> int:
         "started": 20,
         "last_event": max(10, max(len(r["_last_event"]) for r in rows)),
         "delivery": max(8, max(len(r["_delivery"]) for r in rows)),
+        "version": max(7, max(len(r["_version"]) for r in rows)),
     }
     header = (
         f"{'SOURCE':<{widths['source']}}  "
@@ -642,7 +652,8 @@ def cmd_list() -> int:
         f"{'PID':<{widths['pid']}}  "
         f"{'STARTED':<{widths['started']}}  "
         f"{'LAST_EVENT':<{widths['last_event']}}  "
-        f"{'DELIVERY':<{widths['delivery']}}"
+        f"{'DELIVERY':<{widths['delivery']}}  "
+        f"{'VERSION':<{widths['version']}}"
     )
     if noted:
         header += "  NOTE"
@@ -663,7 +674,8 @@ def cmd_list() -> int:
             f"{r['_pid']:<{widths['pid']}}  "
             f"{r['_started']:<{widths['started']}}  "
             f"{r['_last_event']:<{widths['last_event']}}  "
-            f"{r['_delivery']:<{widths['delivery']}}"
+            f"{r['_delivery']:<{widths['delivery']}}  "
+            f"{r['_version']:<{widths['version']}}"
         )
         if noted:
             line += f"  {r['_note']}"
@@ -703,6 +715,30 @@ def cmd_list() -> int:
               f"last emit settled nothing either way — this platform has no AF_UNIX "
               f"socket, or the write failed for a reason that decides nothing, or "
               f"the state file itself could not be read. It is not a pass.")
+    # #2179: a poller running old code is not an error, it is old correct
+    # behaviour, so it produces well-formed events that are simply wrong and
+    # nothing else on this board can notice. Named here rather than left to
+    # the VERSION column alone, because a column is easy to skim past and
+    # this is exactly the render #2179 was filed against.
+    stale = [r for r in rows if r["_version_state"] == transport.VERSION_STALE]
+    if stale:
+        print()
+        print(f"{len(stale)} row(s) above are marked STALE in VERSION: this "
+              f"poller forked before the source under presets/watch/ last "
+              f"changed, so it is running code a later fix may have replaced. "
+              f"Restart it with `unwatch:SOURCE:ID` then `watch:SOURCE:ID` to "
+              f"pick up the current source; nothing here restarts it "
+              f"automatically.")
+        for r in stale:
+            print(f"  {r['_source']}:{r['_id']} — {r['_version_why']}")
+    version_unknown = [r for r in rows if r["_version_state"] == transport.VERSION_UNKNOWN]
+    if version_unknown:
+        print()
+        print(f"{len(version_unknown)} row(s) above are marked `unknown` in "
+              f"VERSION: whether this poller's code is current was not "
+              f"established — it predates #2179, its fingerprint could not be "
+              f"read, or this render could not read its own source. This is "
+              f"not the same claim as `current`.")
     lost = [r for r in rows if r.get("dead")]
     if lost:
         print()
@@ -1057,6 +1093,15 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
     # in a place where guessing wrong means a transition nobody reports.
     published = transport.read_state(source, watcher_id)
     published["only"] = list(only)
+    # A long-lived poller runs the code it was forked with, and nothing said
+    # which version that was (#2179): the fix landed in `8e9ac260`, five days
+    # before a still-running poller's fork, was released, and that poller
+    # never ran it. Recorded once, here, next to `only` — this is the one
+    # moment a poller's own source is *this* source rather than whatever a
+    # future `watches` render happens to find on disk.
+    fingerprint, fp_why = transport.source_fingerprint()
+    published["forked_fingerprint"] = fingerprint
+    published["forked_fingerprint_error"] = fp_why
     transport.write_state(source, watcher_id, published)
 
     # Read once per process, not once per poll (#1952): the cwd's own remote

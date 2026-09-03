@@ -58,7 +58,7 @@ MAX_DESCRIPTION = 2000
 # An op that drops under MAX_DESCRIPTION comes **out** of this ledger — that is
 # how the burn-down stays visible rather than sitting here at a stale number.
 _OVER_BUDGET = {
-    "channel": 6578,
+    "channel": 6492,
     "gh-prs": 4512,
     "git-push": 3991,
     "gh-pr-merge": 3589,

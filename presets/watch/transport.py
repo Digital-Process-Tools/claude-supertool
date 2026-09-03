@@ -188,6 +188,21 @@ DELIVERY_LABELS = {
     DELIVERY_NO_EMIT: "no emit",
 }
 
+# A long-lived poller runs the code it was forked with, and nothing said
+# which version that was (#2179). Three answers, for the same reason
+# `DELIVERY_LABELS` has four: a poller nobody can prove is stale is not the
+# same claim as one proven current, and collapsing that gap is exactly the
+# defect this repo keeps filing under a new name.
+VERSION_CURRENT = "current"
+VERSION_STALE = "stale"
+VERSION_UNKNOWN = "unknown"
+
+VERSION_LABELS = {
+    VERSION_CURRENT: "current",
+    VERSION_STALE: "STALE",
+    VERSION_UNKNOWN: "unknown",
+}
+
 
 class Emit(NamedTuple):
     """One `emit_socket` outcome: the state, and why it was reached.
@@ -1304,6 +1319,11 @@ def list_active_pids() -> list[dict[str, Any]]:
             # would otherwise read as a quiet watcher instead of as a state
             # file somebody tampered with.
             "state_refusal": refusal,
+            # #2179: what this poller's own source looked like when it forked,
+            # so the render can compare it to what is on disk now rather than
+            # trusting `started` to mean anything about the code running.
+            "forked_fingerprint": state.get("forked_fingerprint"),
+            "forked_fingerprint_error": state.get("forked_fingerprint_error"),
         })
     return rows
 
@@ -1856,6 +1876,82 @@ def delivery_of(last_emit: Any, refusal: str = "") -> str:
     if state in (EMIT_ACCEPTED, EMIT_NO_LISTENER, EMIT_UNKNOWN):
         return str(state)
     return EMIT_UNKNOWN
+
+
+def source_fingerprint() -> tuple[str | None, str]:
+    """A fingerprint for this preset's own source, or None and why not (#2179).
+
+    The newest mtime across every `.py` file under `presets/watch/`
+    (`__pycache__` excluded), as a fixed-point string. Not a hash: a hash
+    would need to read every file's bytes on every render, where a
+    fingerprint taken once per poll and compared by equality only needs a
+    `stat()`.
+
+    Deliberately coarse — one fingerprint for the whole preset, not one per
+    source file. A source plugin shares `dispatcher.py`, `transport.py` and
+    `naming.py` with every other one, so scoping the comparison any narrower
+    would have to reconstruct which shared files a given source actually
+    imports, and getting that wrong either hides a real staleness (a change
+    to a shared file the poller does not know it depends on) or reports one
+    that is not there. The cost of the coarse version: touching any one
+    source's `poller.py` reads every other source as freshly stale too, until
+    they are restarted. That is the safe direction — a false STALE costs a
+    look, a false CURRENT costs nothing at all, which is why `!=` rather than
+    `>` decides it below.
+
+    `None` when nothing could be measured — an unreadable directory, or one
+    with no `.py` files in it, which should not happen but must not be read
+    as "everything is current" if it somehow does.
+    """
+    root = Path(__file__).resolve().parent
+    newest: float | None = None
+    try:
+        entries = list(root.rglob("*.py"))
+    except OSError as err:
+        return None, f"could not walk {root} ({type(err).__name__})"
+    for entry in entries:
+        if "__pycache__" in entry.parts:
+            continue
+        try:
+            mtime = entry.stat().st_mtime
+        except OSError:
+            continue
+        if newest is None or mtime > newest:
+            newest = mtime
+    if newest is None:
+        return None, f"no .py files found under {root}"
+    return f"{newest:.6f}", ""
+
+
+def version_state_of(forked_fingerprint: Any, forked_fingerprint_error: Any) -> tuple[str, str]:
+    """Compare a poller's fork-time fingerprint against the source on disk now.
+
+    Three states (#2179), and `VERSION_UNKNOWN` is load-bearing: it must never
+    render as `VERSION_CURRENT`, because "nobody can tell" and "proven
+    current" send an operator to opposite conclusions about a poller that has
+    been running for days.
+
+    `VERSION_UNKNOWN` covers every way the comparison could not be made: this
+    process could not read its own source (`source_fingerprint` failed — a
+    fact about *this* render, not about the poller), the poller recorded an
+    error taking its own fingerprint at fork, or the poller predates #2179 and
+    never recorded one at all. All three are the same answer to an operator:
+    staleness was not established either way.
+    """
+    current, why = source_fingerprint()
+    if current is None:
+        return VERSION_UNKNOWN, f"this render could not read its own source ({why})"
+    if forked_fingerprint_error:
+        return VERSION_UNKNOWN, str(forked_fingerprint_error)
+    if not forked_fingerprint:
+        return (VERSION_UNKNOWN,
+                "no fork-time fingerprint recorded — this poller predates #2179, "
+                "or was never labelled")
+    if forked_fingerprint == current:
+        return VERSION_CURRENT, ""
+    return (VERSION_STALE,
+            f"forked with fingerprint {forked_fingerprint}, source is now {current} — "
+            f"a file under presets/watch/ changed since this poller started")
 
 
 def _state_file_slots() -> list[tuple[str, str]]:

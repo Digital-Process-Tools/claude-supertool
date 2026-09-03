@@ -178,6 +178,13 @@ REFUSAL_SUFFIX = ".refused.json"
 #: surface, by making the evidence unreadable rather than absent.
 _REFUSAL_ABSENT = "no rival consumer has recorded losing this socket"
 
+#: Where a session's own self-report of `channel:received:N` lives, beside
+#: the socket like every other sidecar here (#2150). #2051's remedy 1: every
+#: number this subsystem publishes today is the forwarder describing its own
+#: outbox -- `forwarded`, `dropped`, `lines_read` -- and none of them can see
+#: the inbox. This is the one file written from the receiving side.
+RECEIVED_SUFFIX = ".received.json"
+
 #: How long a consumer's counters may go unrefreshed before they stop counting
 #: as evidence. `channel.ts` rewrites the file on a heartbeat every 10s whether
 #: or not events are flowing, precisely so that "idle" and "wedged" are
@@ -598,6 +605,109 @@ def read_refusal(path: str) -> tuple[dict | None, str]:
     run — not a stale leftover from a collision that has since gone away.
     """
     return _read_json_sidecar(path + REFUSAL_SUFFIX, absent=_REFUSAL_ABSENT)
+
+
+#: `read_received_receipt`'s `absent` when nobody has ever reported a count
+#: from the receiving side for this socket. Named so a caller elsewhere can
+#: recognise "no receipt at all" without re-deriving the sentence, the same
+#: reason `_REFUSAL_ABSENT` has its own name.
+_RECEIVED_ABSENT = "no receipt has been recorded for this socket yet"
+
+
+def read_received_receipt(path: str) -> tuple[dict | None, str]:
+    """This socket's last `channel:received` self-report, or None and why not.
+
+    Same guarded read as `read_health`/`read_refusal`: this sidecar sits in
+    the same world-writable directory, under a name derived from the socket
+    path the same way, so it carries the same same-uid symlink risk (#148).
+    """
+    return _read_json_sidecar(path + RECEIVED_SUFFIX, absent=_RECEIVED_ABSENT)
+
+
+def record_received(path: str, count: int) -> tuple[int, str]:
+    """A session's own receipt: `count` channel events it has received so far.
+
+    #2150 -- #2051's remedy 1. Every counter this subsystem publishes today
+    is the forwarder describing its own outbox; none of them can see the
+    inbox, so `forwarded` and `delivered` are one word wherever it matters.
+    This is the receiving side's own report, compared against `forwarded`'s
+    advance over the same window.
+
+    Three states, and the third is load-bearing more than usual here: a
+    session that never calls this and a session whose counts genuinely agree
+    must not read alike.
+
+        AGREE     (0) -- the delta this call reports since the prior receipt
+                  equals `forwarded`'s delta over the same window.
+        DISAGREE  (1) -- the two deltas differ; named with sign and size.
+        UNSETTLED (3) -- no window could be diffed at all: `forwarded` is not
+                  readable right now, there is no prior receipt for this
+                  socket (the first call, with nothing yet to diff against),
+                  the prior receipt itself does not hold a readable pair to
+                  diff from, or `forwarded` went backwards since the prior
+                  receipt (the consumer restarted, so the window this call
+                  would diff spans a boundary nothing forwarded across
+                  survives). Must never render as AGREE.
+
+    Every call persists a fresh receipt (best-effort) so the *next* call has
+    a baseline, regardless of which of the three states this one reports —
+    the same reason `channel.ts` rewrites its heartbeat whether or not
+    traffic is flowing.
+    """
+    prior, _prior_refusal = read_received_receipt(path)
+    record, health_refusal = read_health(path)
+    now_forwarded = _counter(record, "forwarded") if record else None
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    write_err = transport.write_json_contained(
+        path + RECEIVED_SUFFIX,
+        {"received": count, "forwarded_at_report": now_forwarded, "ts": stamp})
+    lines = [f"channel: received report for {path}",
+             f"  this session reports {count} received so far"]
+    if write_err:
+        lines.append(f"  WARNING -- could not persist this report ({write_err}); "
+                      f"the next call will have no baseline from it")
+    if now_forwarded is None:
+        reason = health_refusal or "its health file publishes no readable `forwarded` count"
+        lines.append(f"  UNSETTLED -- forwarded is not readable right now ({reason}); "
+                      f"nothing to compare this report against")
+        return 3, "\n".join(lines)
+    if prior is None:
+        lines.append(f"  UNSETTLED -- no prior receipt for this socket, so this is "
+                      f"the first report; forwarded stands at {now_forwarded}. Call "
+                      f"again later to compare drift over a window.")
+        return 3, "\n".join(lines)
+    prior_received = prior.get("received")
+    prior_forwarded = prior.get("forwarded_at_report")
+    if isinstance(prior_received, bool) or not isinstance(prior_received, int):
+        lines.append("  UNSETTLED -- the prior receipt's `received` count is not "
+                      "readable, so no window can be diffed")
+        return 3, "\n".join(lines)
+    if isinstance(prior_forwarded, bool) or not isinstance(prior_forwarded, int):
+        lines.append("  UNSETTLED -- the prior receipt recorded no readable "
+                      "forwarded baseline, so no window can be diffed")
+        return 3, "\n".join(lines)
+    delta_forwarded = now_forwarded - prior_forwarded
+    if delta_forwarded < 0:
+        # `forwarded` only ever counts up in a live consumer's own process
+        # (see `channel.ts`'s heartbeat). A smaller value than the prior
+        # receipt means the consumer that wrote it is gone and a new one has
+        # taken the socket -- the window this call would diff spans a
+        # restart, and nothing forwarded on the old process's watch survives
+        # to be compared against. Reporting AGREE or DISAGREE off a window
+        # that never happened would be worse than declining it.
+        lines.append(f"  UNSETTLED -- forwarded went backwards ({prior_forwarded} -> "
+                      f"{now_forwarded}), which means the consumer restarted between "
+                      f"reports; nothing forwarded across that boundary can be "
+                      f"compared. This report is the new baseline.")
+        return 3, "\n".join(lines)
+    delta_received = count - prior_received
+    lines.append(f"  {delta_received} received since the last report, "
+                 f"{delta_forwarded} forwarded over the same window")
+    if delta_received == delta_forwarded:
+        lines.append("  AGREE")
+        return 0, "\n".join(lines)
+    lines.append(f"  DISAGREE by {delta_forwarded - delta_received}")
+    return 1, "\n".join(lines)
 
 
 def _health_objection(record: dict, *, allow_stale: bool = False) -> str:
@@ -2005,14 +2115,34 @@ def main(argv: list[str]) -> int:
         code, report = health(SOCK_PATH)
     elif sub == "probe":
         code, report = probe(SOCK_PATH)
+    elif sub == "received":
+        if len(argv) < 3:
+            sys.stderr.write(
+                "channel: `received` needs a count -- channel:received:N is "
+                "this session's own report of how many channel events it has "
+                "received so far (#2150)\n"
+            )
+            return 2
+        try:
+            count = int(argv[2])
+        except ValueError:
+            sys.stderr.write(f"channel: {argv[2]!r} is not an integer count\n")
+            return 2
+        if count < 0:
+            sys.stderr.write("channel: a received count must not be negative\n")
+            return 2
+        code, report = record_received(SOCK_PATH, count)
     else:
-        # Naming both is the point. This message used to say "the only one is
-        # `channel:health`", and left unchanged it would send a caller asking
-        # "does this work right now" back to the op that cannot answer that.
+        # Naming all three is the point. This message used to name only two,
+        # and left unchanged it would send a caller asking "how many of these
+        # did I actually get" back to ops that cannot answer that -- both
+        # describe the forwarder's own outbox, and neither can see the inbox.
         sys.stderr.write(
-            f"channel: unknown sub-op {sub!r} — the two are `channel:health` "
-            "(read the consumer's published counters) and `channel:probe` "
-            "(write one synthetic event and report which counter moved)\n"
+            f"channel: unknown sub-op {sub!r} — the three are `channel:health` "
+            "(read the consumer's published counters), `channel:probe` "
+            "(write one synthetic event and report which counter moved), and "
+            "`channel:received:N` (this session's own report of how many it "
+            "received, compared against `forwarded`'s advance)\n"
         )
         return 2
     print(report)

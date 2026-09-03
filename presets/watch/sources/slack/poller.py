@@ -504,10 +504,69 @@ _MESSAGE_STORE_SUBDIR = "slack-messages"
 _MESSAGE_RETENTION_MAX = 500
 
 
-def _message_store_dir() -> Path:
-    d = Path(transport.STATE_DIR) / _MESSAGE_STORE_SUBDIR
-    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+def _message_store_dir(channel: str) -> Path:
+    """This channel's own message-body pool, never a shared one (#2149).
+
+    Every Slack poller on a host used to write into one `slack-messages`
+    directory under a shared 500-file cap, keyed by nothing at all. A busy
+    channel's burst evicted a quiet channel's older files before any agent
+    had opened them, and #2044 is exactly what made that matter: the event
+    carries `payload_path` and nothing else, so an evicted file is a lost
+    message body with no way to tell "evicted" from "never written".
+
+    Scoped per channel rather than raising the cap or switching to a clock
+    (#2149's own second and third options): this is the one fix that turns
+    the cap back into a promise about *this* channel rather than about
+    whatever else happens to be watched on the same host, at the cost the
+    issue names on purpose -- total disk is now the cap times the number of
+    watched channels, unbounded in channel count rather than in messages.
+
+    `channel` is hashed rather than used as a directory name directly: it is
+    a Slack channel ID today, but nothing here should have to also be the
+    validator for what may appear in a POSIX path component.
+    """
+    key = hashlib.sha256(
+        channel.encode("utf-8", "surrogateescape")).hexdigest()[:24]
+    base = Path(transport.STATE_DIR) / _MESSAGE_STORE_SUBDIR
+    # Two calls, not one `d.mkdir(parents=True, mode=0o700)` (audit finding
+    # on #2149): `Path.mkdir(parents=True, ...)` applies `mode` only to the
+    # leaf it creates. Any *intermediate* directory it has to create along
+    # the way -- `slack-messages/` itself, the first time a fresh STATE_DIR
+    # sees a Slack poller -- is made under the process umask instead,
+    # silently. Under a default 0o022 umask that leaves the set of watched
+    # channels' hash directories world-listable, and nothing narrows it
+    # afterward. `_ensure_private_dir` chmods explicitly so the mode does
+    # not depend on which directories happened to exist already.
+    _ensure_private_dir(base)
+    d = base / key
+    _ensure_private_dir(d)
     return d
+
+
+def _ensure_private_dir(path: Path) -> None:
+    """`mkdir -p` to `path`, then make sure it is 0o700 regardless of umask.
+
+    `mkdir(mode=...)` only ever applies to the directory this call actually
+    creates; on an already-existing directory it is not consulted at all
+    (nor is a later `exist_ok=True` call a chance to fix a mode a previous,
+    umask-affected creation left wrong). The explicit `chmod` is what makes
+    the mode a fact about the directory rather than a fact about which call
+    happened to create it.
+    """
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        # Best-effort, not swallowed silently: POSIX mode bits are not
+        # meaningful on Windows (no-op there, not a failure to report), and
+        # a chmod that fails for a real reason -- a read-only filesystem, a
+        # permission this process does not hold -- leaves the directory at
+        # whatever mode `mkdir` above already gave it, which is the same
+        # state this function existed to correct in the first place. There
+        # is nothing narrower to fall back to and no caller that can act on
+        # the refusal, so raising here would turn a private-directory best
+        # effort into a hard dependency the eviction pool does not need.
+        pass
 
 
 def _prune_message_store(store: Path) -> None:
@@ -533,7 +592,7 @@ def _write_message_file(channel: str, thread_ts: str | None, message_ts: str,
     exactly when the content is actually read. So it is the file's own
     header, not something a reader has to already know to add.
     """
-    store = _message_store_dir()
+    store = _message_store_dir(channel)
     digest = hashlib.sha256(
         f"{channel}\n{thread_ts or ''}\n{message_ts}".encode()).hexdigest()
     path = store / f"{digest[:24]}.md"
