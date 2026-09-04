@@ -52,7 +52,15 @@ an unrelated docs edit is worse than the stale number it replaces.
 So membership is explicit. `SITES` below is the list of graded claims; a record
 is simply absent from it. `test_no_ungraded_figure_in_a_registered_file` then
 closes the half a walker was wanted for -- a *new* figure written into a file
-already in the registry -- without ever opening a file that is not.
+already in the registry -- without ever opening a file that is not, with one
+exception carved out deliberately by #2058: every file `_render_doc_files`
+discovers under `docs/operations/` is opened too, `SITES` membership or not,
+because that directory is where every render-size claim in this tree has
+ever lived bar `README.md` and `docs/contributing.md`, both registered by
+hand already. `docs/operations/meta.md` was the file this cost -- four
+separate incidents on #2058's own thread, all the same claim going stale
+outside `REGISTERED_FILES` where nothing could see it. See `SWEPT_FILES` and
+`_render_doc_files` below for the mechanism.
 
 **The checkout path is normalised away before grading, not tolerated.** Every one of
 these renders carries `_preset_disclosure()`, which names the *absolute path*
@@ -281,9 +289,15 @@ SITES = (
     # `ops:full` used to be (~80.09KB, a different render's figure) and once
     # in a dated aside ("does fit, at ~4.2KB") that #2058's own docstring
     # calls out as the "past-tense sentence" shape a blind sweep cannot
-    # separate from a live claim. The generic pattern is safe for the other
-    # three: each render name is followed by a KB figure exactly once in
-    # this file.
+    # separate from a live claim. `ops:full` and `ops-compact` are safe with
+    # the generic pattern: each is followed by a KB figure exactly once.
+    # `ops:roster` is NOT -- it appears twice (the table cell and a later
+    # prose sentence) -- but both currently round to the same ~2.0KB, so
+    # `_grade`'s own duplicate-value check (`len(values) == 1`) sees one
+    # figure and passes. That is a real gap, not a false safety: if the two
+    # ever diverge, this row goes red with "two figures for one render"
+    # rather than silently grading one of them, which is the correct
+    # failure and not the one this comment used to imply could not happen.
     Claim(
         "docs/operations/meta.md",
         "ops",
