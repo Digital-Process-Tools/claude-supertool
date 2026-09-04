@@ -441,6 +441,7 @@ def test_no_committed_duration_baseline_file_exists_yet():
     result = subprocess.run(
         ["git", "ls-files", ".github/"],
         cwd=REPO, capture_output=True, text=True, check=True,
+        encoding="utf-8", errors="replace",
     )
     tracked = result.stdout.splitlines()
     assert "duration-baseline.json" not in {Path(f).name for f in tracked}
