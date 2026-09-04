@@ -3,15 +3,32 @@ guard, unlike its twin `--all`.
 
 `_ALL_TOKEN` refuses when git already knows a real, tracked file spelled
 `--all` (#1137): the token means two things at once and the op declines to
-guess. `_NO_VERIFY_TOKEN` (#2205) copied the extraction shape -- pulled out
-of `paths` before anything downstream reads the list -- but not the guard.
+guess -- but ONLY when `--all` is the sole path argument; paired with a
+named path it is refused earlier, for a different reason
+(`_all_with_paths_refusal`). `_NO_VERIFY_TOKEN` (#2205) copied the
+extraction shape -- pulled out of `paths` before anything downstream reads
+the list -- but not the guard, nor its scope.
+
 A tracked file literally named `--no-verify` would be silently dropped from
 `paths`, and if that leaves `paths` empty the op falls through to the
-whole-index warning: the #1228 incident shape, one sentinel over.
+whole-index warning: the #1228 incident shape, one sentinel over. The guard
+added here is deliberately scoped to exactly that case -- `--no-verify` as
+the SOLE path argument -- because unlike `--all`, combining `--no-verify`
+with a real named path is the documented, routine shape
+(`git-commit:::MSG:::A:::--no-verify`). An unscoped guard was tried first
+and dropped in self-review: it refused that ordinary combined call forever,
+in any repo merely containing an unrelated file spelled `--no-verify`
+anywhere on disk, named or not -- see
+`test_no_verify_alongside_a_named_path_is_not_blocked_by_an_unrelated_file`.
 
-Two paired tests: the collision must refuse (`test_...`), and an ordinary
-`--no-verify` call with no such file present must still work exactly as
-before (`test_no_verify_still_works_when_no_such_file_exists`).
+Tests: the collision must refuse when the sentinel is the only path given
+(`test_no_verify_is_refused_...`), the payload route reaches the same
+guard (`test_no_verify_collision_via_payload_route_also_refuses`), an
+ordinary `--no-verify` call with no such file present must still work
+exactly as before (`test_no_verify_still_works_when_no_such_file_exists`),
+and a `--no-verify` paired with a named path must not be blocked by an
+unrelated, unnamed file elsewhere merely sharing the sentinel's spelling
+(`test_no_verify_alongside_a_named_path_is_not_blocked_by_an_unrelated_file`).
 """
 from __future__ import annotations
 
@@ -20,13 +37,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 REPO = Path(__file__).parent.parent
 SUPERTOOL = REPO / "supertool.py"
 COAUTHOR = "Test Bot <bot@example.invalid>"
-
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="POSIX shebang pre-commit hook not needed here, kept for parity with 2205 suite")
 
 
 def _repo(tmp_path: Path) -> Path:
@@ -100,6 +113,27 @@ def test_no_verify_collision_via_payload_route_also_refuses(tmp_path: Path) -> N
 
 def test_no_verify_still_works_when_no_such_file_exists(tmp_path: Path) -> None:
     work = _repo(tmp_path)
+    (work / "a.txt").write_text("2\n", encoding="utf-8")
+    before = _head_sha(work)
+
+    code, out = _run(["git-commit:::a message:::a.txt:::--no-verify"], cwd=work)
+
+    assert code == 0, out
+    assert _head_sha(work) != before, out
+    assert "HOOKS SKIPPED" in out, out
+
+
+def test_no_verify_alongside_a_named_path_is_not_blocked_by_an_unrelated_file(
+    tmp_path: Path,
+) -> None:
+    """`--no-verify` paired with a real named path is the documented, routine
+    shape. An unrelated, untracked file that merely happens to be spelled
+    `--no-verify` -- never staged, never named in this call -- must not turn
+    every future combined call into a permanent refusal: after stripping the
+    sentinel, `paths` still holds `a.txt`, so nothing here would fall through
+    to the #1228 whole-index shape the guard exists to prevent."""
+    work = _repo(tmp_path)
+    (work / "--no-verify").write_text("unrelated\n", encoding="utf-8")
     (work / "a.txt").write_text("2\n", encoding="utf-8")
     before = _head_sha(work)
 
