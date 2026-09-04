@@ -20,6 +20,16 @@ Special MSG values:
 PATHS are separated by ':::', not by commas and not by spaces. Both input
 routes stage: `git-commit:::MSG:::A:::B` and a payload with `paths = [...]`.
 
+Flags:
+  --no-verify   Skip pre-commit/commit-msg hooks (`git commit --no-verify`),
+                refused unless spelled out explicitly (#2205). Same posture
+                as `git-push:no-verify`. On the colon route it is a token
+                among PATHS: `git-commit:::MSG:::--no-verify` or
+                `git-commit:::MSG:::A:::--no-verify`. On the payload route
+                it is its own field: `no_verify = true`. The receipt's
+                header prints `HOOKS SKIPPED` when it fired, so a skipped
+                commit never reads like a checked one.
+
 A message containing ':' must arrive via `git-commit:::MSG` or the @payload
 route: the single-colon CLI tokenizes on ':', so `git-commit:fix: thing`
 reaches this script as MSG='fix' plus a PATH of ' thing'. That shape is
@@ -124,6 +134,14 @@ _PROSE_CHARS = (" ", "\t", "\n", "\r", '"', "'")
 # Built rather than typed so this file stays editable through supertool's own
 # TOML payload route, where a literal triple quote would close the block.
 _TRIPLE = "'" * 3
+
+
+# The colon-route sentinel for `--no-verify` (#2205). Lives in the PATHS
+# position, exactly like `_ALL_TOKEN` — commit.py's argv has no separate
+# flag channel, so an explicit opt-in token is the shape both routes already
+# use for this. Extracted from `paths` before anything downstream (spilled-
+# message detection, `--all` expansion, staging) ever sees it.
+_NO_VERIFY_TOKEN = "--no-verify"
 
 
 def _looks_like_pathspec(tok: str) -> bool:
@@ -1029,6 +1047,14 @@ def main() -> int:
     paths = sys.argv[2:]
     no_edit = msg.strip() == "--no-edit"
 
+    # #2205 — extracted before anything else reads `paths`, exactly where
+    # `_ALL_TOKEN` is resolved further down: neither sentinel is a pathspec
+    # and both must be gone before spilled-message detection, `--all`
+    # expansion or staging ever see the list.
+    no_verify = _NO_VERIFY_TOKEN in paths
+    if no_verify:
+        paths = [p for p in paths if p != _NO_VERIFY_TOKEN]
+
     if not no_edit and not msg.strip():
         print("ERROR: commit message is empty.")
         return 1
@@ -1078,6 +1104,13 @@ def main() -> int:
     # commit lands, is refused by a hook, or finds nothing staged (#692).
     print(f"Repo: {repo_label()}")
     print(f"HEAD before: {head_before}")
+    # #2205 — printed in the header, unconditionally when it fired, so a
+    # hook-skipped commit can never be mistaken for a checked one further
+    # down the receipt. Absent entirely on an ordinary commit: the shape of
+    # that receipt must not change.
+    if no_verify:
+        print("HOOKS SKIPPED — --no-verify was passed; "
+              "pre-commit/commit-msg hooks did not run.")
 
     # #962, under #692's contract: every refusal path stamps repo and branch
     # first. This one sends the reader to a raw `git commit --amend`, so which
@@ -1214,10 +1247,13 @@ def main() -> int:
     # no PATHS is the spelling that means "commit what I staged by hand", and
     # it still does. What changes is that naming paths now means what the
     # signature always said it meant.
+    verify_flag = ["--no-verify"] if no_verify else []
     if no_edit:
-        result = _git(["commit", "--no-edit"], timeout=_COMMIT_TIMEOUT)
+        result = _git(["commit"] + verify_flag + ["--no-edit"],
+                      timeout=_COMMIT_TIMEOUT)
     else:
-        result = _git(["commit", "-m", _with_coauthor(msg)] + scope,
+        result = _git(["commit"] + verify_flag
+                      + ["-m", _with_coauthor(msg)] + scope,
                       timeout=_COMMIT_TIMEOUT)
     head_after = _head_sha()
 
@@ -1301,8 +1337,12 @@ def _failure_receipt(result, head_before: str, head_after: str) -> list:
     lines.append("")
     lines.extend(relayed_block(combined))
     lines.append("")
-    lines.append("Bypass hooks (only if intentional): "
-                 "git commit --no-verify -m '...'")
+    # #2205 — this used to send the reader to `git commit --no-verify`,
+    # which the raw-command guard refuses on sight; there was no route
+    # through supertool to the bypass this line was itself recommending.
+    lines.append("Bypass hooks (only if intentional): add --no-verify, e.g. "
+                 + st_hint("git-commit:::MESSAGE:::--no-verify")
+                 + " (or no_verify = true on the @payload route)")
     return lines
 
 
