@@ -273,11 +273,78 @@ SITES = (
         _hook_payload,
         pattern=r"Whole hook: ~([\d.]+)KB",
     ),
+    # docs/operations/meta.md -- #2058 instances 2, 4, 5 and 7. This file sat
+    # outside REGISTERED_FILES entirely, so every claim in it (not just the
+    # one CI happened to catch) was invisible to this suite. `ops` needs a
+    # pattern anchored to its own table cell rather than the generic one:
+    # the file also uses the bare word "`ops`" once to describe what
+    # `ops:full` used to be (~80.09KB, a different render's figure) and once
+    # in a dated aside ("does fit, at ~4.2KB") that #2058's own docstring
+    # calls out as the "past-tense sentence" shape a blind sweep cannot
+    # separate from a live claim. The generic pattern is safe for the other
+    # three: each render name is followed by a KB figure exactly once in
+    # this file.
+    Claim(
+        "docs/operations/meta.md",
+        "ops",
+        _r("ops"),
+        pattern=r"no descriptions and no examples \(~([\d.]+)KB here\)",
+    ),
+    Claim("docs/operations/meta.md", "ops:full", _r("ops:full")),
+    Claim("docs/operations/meta.md", "ops-compact", _r("ops-compact")),
+    Claim("docs/operations/meta.md", "ops:roster", _r("ops:roster")),
 )
 
 #: Files this registry grades. Anything absent is never opened, which is how a
 #: record stays a record -- see the module docstring.
 REGISTERED_FILES = tuple(dict.fromkeys(c.path for c in SITES))
+
+
+def _render_doc_files(root: Path) -> tuple:
+    """Every markdown file directly under *root*/docs/operations/.
+
+    Discovered by listing the directory, not by anyone adding a row to
+    `SITES` -- the fix for #2058, whose instances 2, 4, 5 and 7 were all the
+    same file, `docs/operations/meta.md`, sitting outside `REGISTERED_FILES`
+    with a live claim nothing was grading. A file dropped into this
+    directory tomorrow is swept from the day it exists rather than the day
+    someone notices it.
+
+    Scoped to one directory rather than the whole tree: the module
+    docstring's objection to a full walk -- reddening on a docs edit that
+    has nothing to do with any render -- is a real cost, and every render
+    size claim this tree has ever carried outside `README.md` and
+    `docs/contributing.md` (both already registered by hand) has lived under
+    `docs/operations/`. `docs/operations/search.md` states byte caps in the
+    same `~N.NKB` shape (`around`/`grep_around`'s output cap) and is
+    harmless to open: `RENDERS` only names `ops`, `ops:full`, `ops-compact`
+    and `ops:roster`, so a cap on an unrelated op is never a candidate match.
+
+    Takes *root* as a parameter rather than reading `REPO_ROOT` directly, so
+    a caller can point it at a throwaway tree and prove the discovery
+    without touching the real one -- see
+    `test_the_sweep_discovers_a_file_nobody_registered`.
+    """
+    ops_dir = root / "docs" / "operations"
+    if not ops_dir.is_dir():
+        return ()
+    # `.as_posix()`, not `str(...)`: every path elsewhere in this file --
+    # every `c.path` literal in SITES -- is forward-slash, and `relative_to`
+    # on Windows renders with backslashes. `str(...)` here would mint a
+    # second, backslash-separated key for a file SITES already grades with
+    # a forward-slash one, so `graded` would miss it and this same file's
+    # already-covered figures would show up as freshly ungraded -- on
+    # Windows CI only, since POSIX renders the two identically.
+    return tuple(sorted(
+        p.relative_to(root).as_posix() for p in ops_dir.glob("*.md")))
+
+
+#: Every file this suite is willing to open looking for a stray claim: the
+#: files graded by hand in `SITES`, plus every file discovered under
+#: `docs/operations/` -- so a *new* claim in an *already-covered* directory
+#: is a red rather than a silence (#2058), without opening a file the module
+#: docstring's own argument says should stay unopened.
+SWEPT_FILES = tuple(dict.fromkeys(REGISTERED_FILES + _render_doc_files(REPO_ROOT)))
 
 #: Figures the harvester reaches that are not a render's size, named one by one
 #: with the reason. `render_pattern` takes the nearest figure after a render
@@ -522,18 +589,27 @@ def test_grading_without_a_config_path_refuses_rather_than_answering(
 
 
 def test_no_ungraded_figure_in_a_registered_file(shipped_config) -> None:
-    """The achievable half of the walker the issue asked for.
+    """The achievable half of the walker the issue asked for, widened by #2058.
 
-    Tree-wide discovery is what the module docstring rejects. This is the other
-    direction, and it cannot false-fire: for the files already in the registry,
-    every render name carrying a KB figure must be graded by a row above. An
-    eleventh instance written into README.md is a red test naming it; a figure
-    written into CHANGELOG.md is invisible here, because CHANGELOG.md is never
-    opened.
+    Tree-wide discovery is still what the module docstring rejects. This is
+    the middle position #2058's own last comment names: walk the files
+    already in the registry, **plus** every file `_render_doc_files`
+    discovers under `docs/operations/` -- `SWEPT_FILES`, not
+    `REGISTERED_FILES` alone -- and require every KB figure that sweep finds
+    to be graded by a row above or named in `NOT_A_RENDER_SIZE`. Before this
+    widening, `docs/operations/meta.md` was outside `REGISTERED_FILES`
+    entirely and this test could not see it at all; that is instances 2, 4,
+    5 and 7 of #2058, all four the same file. It still cannot false-fire on
+    a file with nothing to do with any render: `docs/operations/search.md`
+    is swept too, and states no `~N.NKB` figure for any name in `RENDERS`,
+    so it contributes nothing here. An eleventh instance written into
+    README.md is a red test naming it; a figure written into CHANGELOG.md is
+    invisible here, because CHANGELOG.md is not under `docs/operations/` and
+    is not in `REGISTERED_FILES` either.
     """
     graded = set((c.path, c.subject) for c in SITES)
     ungraded = []
-    for path in REGISTERED_FILES:
+    for path in SWEPT_FILES:
         text = _read(path)
         for name in RENDERS:
             if (path, name) in graded:
@@ -547,3 +623,93 @@ def test_no_ungraded_figure_in_a_registered_file(shipped_config) -> None:
         + "\n  ".join(ungraded)
         + "\nAdd a Claim row for it, or move the sentence into a file this "
           "registry does not open, if it is a record rather than a claim.")
+
+
+def test_the_sweep_discovers_a_file_nobody_registered(tmp_path) -> None:
+    """#2058's own fix, proven on a throwaway tree rather than this one.
+
+    `docs/operations/meta.md` is registered now (the SITES rows above), so a
+    test run only against the real tree can no longer show what it looked
+    like *before* that -- a claim sitting in a file nobody had added to
+    `REGISTERED_FILES`, silently ungraded. Reproduce the shape on a tree of
+    one file instead: nothing here adds `stray.md` to `SITES`, and
+    `_render_doc_files` still finds it, because discovery is by directory
+    listing rather than by anyone's edit.
+    """
+    ops_dir = tmp_path / "docs" / "operations"
+    ops_dir.mkdir(parents=True)
+    (ops_dir / "stray.md").write_text(
+        "The `ops-compact` render is ~999.9KB here.\n", encoding="utf-8")
+    found = _render_doc_files(tmp_path)
+    assert found == ("docs/operations/stray.md",), found
+
+
+def test_the_sweep_finds_nothing_in_a_directory_with_no_render_claim(
+        tmp_path) -> None:
+    """Positive control for the test above -- an empty directory is not a hit.
+
+    Without this, `_render_doc_files` returning an empty tuple for a
+    directory that plainly exists and plainly has no render claim in it
+    would look identical to `_render_doc_files` being broken and finding
+    nothing anywhere. Pair every "must not fire" case with a "must fire"
+    one in the same fixture.
+    """
+    ops_dir = tmp_path / "docs" / "operations"
+    ops_dir.mkdir(parents=True)
+    (ops_dir / "unrelated.md").write_text(
+        "Nothing here mentions a render's size.\n", encoding="utf-8")
+    found = _render_doc_files(tmp_path)
+    assert found == ("docs/operations/unrelated.md",), found
+    # And the claim-shaped figure it does NOT carry is genuinely absent from
+    # what the sweep would flag, not just absent from this assertion:
+    text = (ops_dir / "unrelated.md").read_text(encoding="utf-8")
+    for name in RENDERS:
+        assert found_values(text, name) == []
+
+
+def test_a_directory_with_no_docs_operations_folder_finds_nothing(
+        tmp_path) -> None:
+    """Third state: a tree with no `docs/operations/` at all is not an error
+    and is not treated as one file discovered -- it is zero, cleanly."""
+    assert _render_doc_files(tmp_path) == ()
+
+
+def test_meta_md_ops_and_ops_full_and_ops_compact_are_now_graded() -> None:
+    """Regression for #2058 instances 2, 4, 5 and 7, pinned by name.
+
+    Each of these three was, at some point in the issue thread, a live claim
+    in `docs/operations/meta.md` that no row in `SITES` covered. If any of
+    them is ever removed from `SITES` again, this fails immediately rather
+    than waiting for the next audit to notice by eye.
+    """
+    graded = set((c.path, c.subject) for c in SITES)
+    for name in ("ops", "ops:full", "ops-compact", "ops:roster"):
+        assert ("docs/operations/meta.md", name) in graded, (
+            "docs/operations/meta.md's `%s` claim is ungraded again" % name)
+
+
+def test_the_ops_pattern_for_meta_md_does_not_catch_the_dated_or_borrowed_figures(
+) -> None:
+    """The hazard the custom pattern above exists to avoid, pinned directly.
+
+    `docs/operations/meta.md` uses the bare name "`ops`" three times with a
+    KB figure nearby: the live table cell (this row's true claim), a
+    borrowed mention describing what `ops:full` used to be, and a dated
+    aside from before #1774. The generic `render_pattern("ops")` cannot tell
+    these apart -- feeding it the file's own text finds all three, which is
+    exactly why the SITES row above overrides `pattern` instead of using it.
+    This test pins that the generic pattern really would collide (so the
+    override is not dead weight) and that the override sees exactly one.
+    """
+    text = _read("docs/operations/meta.md")
+    generic = found_values(text, "ops")
+    assert len(set(generic)) > 1, (
+        "the generic `ops` pattern no longer collides in meta.md -- if a "
+        "rewrite removed the ambiguity, the custom pattern override on the "
+        "SITES row for docs/operations/meta.md can be simplified away")
+    claim = next(c for c in SITES
+                 if c.path == "docs/operations/meta.md" and c.subject == "ops")
+    narrow = claim.stated(text)
+    assert len(set(narrow)) == 1, (
+        "the anchored pattern for meta.md's `ops` claim now finds more than "
+        "one figure: %r" % narrow)
