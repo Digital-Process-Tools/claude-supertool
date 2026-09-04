@@ -100,7 +100,16 @@ def test_every_route_classified_as_patched_actually_refuses(name, call) -> None:
 @pytest.mark.parametrize("call", [
     lambda: socket.getaddrinfo("127.0.0.1", 0),
     lambda: socket.gethostbyname("localhost"),
-    lambda: socket.getnameinfo(("127.0.0.1", 80), 0),
+    # `flags=0` here used to mean a full reverse lookup for "127.0.0.1", and
+    # that lookup is what this parameter actually pays for, not what it
+    # asserts (#2227): on a GitHub runner it costs 35s to give up before the
+    # `except OSError: pass` below ever runs, because the guard's own refusal
+    # decision (below, keyed on the HOST) is made before the real resolver is
+    # ever reached -- the flags never influence it. `NI_NUMERICHOST` skips the
+    # reverse lookup and returns the address literally, still through the
+    # patched `getnameinfo`, still proving loopback is not refused, with no
+    # resolver round trip to wait on at all.
+    lambda: socket.getnameinfo(("127.0.0.1", 80), socket.NI_NUMERICHOST),
 ])
 def test_loopback_is_still_open_on_the_widened_routes(call) -> None:
     """Widening the block must not close the hermetic servers the suite binds.
@@ -112,7 +121,10 @@ def test_loopback_is_still_open_on_the_widened_routes(call) -> None:
     Only `OutboundBlocked` is a failure here. A runner whose reverse lookup for
     `127.0.0.1` fails raises `gaierror`, which is that runner's resolver and not
     this guard -- asserting "did not raise at all" would turn a host
-    configuration into a finding about the diff.
+    configuration into a finding about the diff. `NI_NUMERICHOST` on the third
+    parameter mostly forecloses that path already (#2227), and the `except
+    OSError: pass` below stays regardless, since `getaddrinfo`/`gethostbyname`
+    still make a real -- if local and fast -- resolver call.
     """
     try:
         call()
