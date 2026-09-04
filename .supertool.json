@@ -368,6 +368,20 @@
       "rollback_on_fail": false,
       "timeout": 30
     },
+    "encoding-seam": {
+      "cmd": "{python} {supertool_dir}/validators/encoding-seam/encoding-seam.py {file}",
+      "match": "*.py",
+      "hooks_into": [
+        "edit",
+        "replace",
+        "replace_lines",
+        "paste",
+        "append",
+        "vim"
+      ],
+      "rollback_on_fail": false,
+      "timeout": 15
+    },
     "new-file-lint": {
       "cmd": "{python} {supertool_dir}/validators/new-file-lint/new-file-lint.py {file}",
       "match": "*.py",

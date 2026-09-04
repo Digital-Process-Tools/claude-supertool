@@ -485,6 +485,14 @@
       "timeout": 30,
       "_comment": "States no rules of its own -- finds the project's own lint_new_files.py-shaped script (default .github/scripts/lint_new_files.py, override SUPERTOOL_NEW_FILE_LINT_SCRIPT) and re-enables its EXTRA_RULES for a Python file with no git blob at HEAD. skipped, not ok, on a project that has not adopted the convention."
     },
+    "encoding-seam": {
+      "cmd": "{python} {supertool_dir}/validators/encoding-seam/encoding-seam.py {file}",
+      "match": "*.py",
+      "hooks_into": ["edit", "replace", "replace_lines", "paste", "append", "vim"],
+      "rollback_on_fail": false,
+      "timeout": 15,
+      "_comment": "States no rules of its own -- finds the project's own tests/test_encoding_seam.py (override SUPERTOOL_ENCODING_SEAM_TEST_MODULE) and imports its encoding_violations/subprocess_encoding_violations functions to check the single file being written. skipped, not ok, on a project that has not adopted that test file's convention. #2287."
+    },
     "pyright": {
       "cmd": "{python} {supertool_dir}/validators/pyright/pyright.py {file}",
       "match": "*.py",

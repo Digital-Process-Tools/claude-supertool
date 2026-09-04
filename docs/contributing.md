@@ -872,6 +872,13 @@ env:
 
 The always-run failure summary (`.github/scripts/junit_summary.py`) reconfigures its own stdout in-process for the same reason, and reads the messages out of `junit.xml` rather than off the terminal: pytest writes that file as UTF-8 whatever the console can encode, and it carries the **untruncated** message. `--tb=no` means the one-line summary is all a reader gets, and pytest elides the middle of a long one to fit the terminal width — on one real Windows failure the elided part held the word `timeout`, which was the diagnosis. `errors="backslashreplace"`, never `"replace"`: on a diagnostic the handler must disclose, and `replace` is what produced the U+FFFD in the first place.
 
+**Catching rules 1 and 2 before you push** ([#2287](https://github.com/Digital-Process-Tools/claude-supertool/issues/2287)). `tests/test_encoding_seam.py` only runs inside the full pytest suite, so a violation is normally caught only after a lane has already pushed and burned a full CI leg — measured at 6 firings across 6 lanes in one tick, every time on the lane's own brand-new test file, each costing a ~9-10 min Windows leg. Two artifacts, both importing (never re-implementing) `test_encoding_seam.py`'s own `encoding_violations` / `subprocess_encoding_violations`:
+
+- the `encoding-seam` supertool validator (`validators/encoding-seam/encoding-seam.py`, wired in `.supertool.json`) runs on every `edit`/`paste`/`replace`/`append`/`vim` of a `*.py` file — no push required, since every lane already writes through supertool;
+- `.github/scripts/check_encoding_seam.py` runs the identical check against `git diff --name-only` (or explicit files on argv), for a manual or scripted pre-push pass.
+
+[#2263](https://github.com/Digital-Process-Tools/claude-supertool/issues/2263) tracks the broader "run every tree-wide guard on a diff" design; this is deliberately narrower — just this one guard, just the files a lane touched — because a slow or false-positive local check teaches lanes to route around it, which defeats the point.
+
 ---
 
 ## Anchored regexes
