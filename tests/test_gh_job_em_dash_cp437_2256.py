@@ -5,10 +5,11 @@ survive a real cp437 console stream when the job is reached through main().
 codec this test has to use.** The issue names cp1252 as the crashing
 codepage. It is not: `'\u2014'.encode('cp1252')` succeeds (byte 0x97 -- cp1252
 has an em dash at that byte) and this repo's own `tests/test_encoding_seam.py`
-already documents the split -- "cp1252 encodes -, ..., -bullet- and middle
-dot, so only arrow/star/hook raise there[;] cp437/cp850, the actual default
-of a US Windows console, encode none of the em dashes, so all [non-ASCII
-print sites] raise". Reproduced directly here:
+already documents the split, in substance rather than word for word here --
+cp1252 raises only on the arrow/star/hook glyphs it names, while cp437/cp850
+(that file's own words: "the actual default of a US Windows console") have
+no em-dash mapping at all and raise on every one of the 27 non-ASCII print
+sites it counted. Reproduced directly here:
 encoding an em dash as cp1252 succeeds (byte 0x97); encoding it as cp437 raises UnicodeEncodeError. So a test built on
 cp1252 cannot exercise this crash at all -- it was tried first, in an earlier
 revision of this file, and it passed for the wrong reason (nothing ever
