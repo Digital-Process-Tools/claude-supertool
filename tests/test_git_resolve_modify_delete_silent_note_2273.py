@@ -67,6 +67,7 @@ def test_modify_delete_conflict_is_listed_and_carries_no_markers(tmp_path):
     names = subprocess.run(
         ["git", *_ID, "diff", "--name-only", "--diff-filter=U", "-z"],
         cwd=repo, capture_output=True, text=True, encoding="utf-8",
+        errors="replace",
     ).stdout.split("\0")
     assert "f.txt" in names
     text = (repo / "f.txt").read_text(encoding="utf-8")
