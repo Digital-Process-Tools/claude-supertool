@@ -1119,18 +1119,34 @@ def print_artifact(job_id: str, path: str) -> int:
     archive_size = artifact.get("size_in_bytes")
     download_cap = env_int("GH_JOB_ARTIFACT_DOWNLOAD_MAX_BYTES", 200 * 1024 * 1024,
                            minimum=1)
-    if isinstance(archive_size, (int, float)) and archive_size > download_cap:
+    if isinstance(archive_size, (int, float)):
+        if archive_size > download_cap:
+            print(
+                f"ERROR: artifact {_untrusted.flat(str(artifact.get('name')))!r} "
+                f"is {_human_size(int(archive_size))}, over this op's "
+                f"{_human_size(download_cap)} download cap "
+                f"(GH_JOB_ARTIFACT_DOWNLOAD_MAX_BYTES) — GitHub has no single-file "
+                f"artifact endpoint, so reading one entry means downloading the "
+                f"whole archive first, and this one is refused before that "
+                f"download rather than after. Raise the cap, or fetch the "
+                f"archive another way."
+            )
+            return 1
+    else:
+        # `size_in_bytes` missing or non-numeric: the third state, same
+        # convention as `_is_past` / `_summary_counts` in the GitLab
+        # sibling (#2248) -- "could not be checked" must never render like
+        # a clean pass under the cap. Disclosed rather than refused: GitHub
+        # reliably supplies this field on every artifact this op has
+        # actually seen, so refusing outright would punish every ordinary
+        # call for a shape nobody has observed.
         print(
-            f"ERROR: artifact {_untrusted.flat(str(artifact.get('name')))!r} "
-            f"is {_human_size(int(archive_size))}, over this op's "
+            f"NOTE: artifact {_untrusted.flat(str(artifact.get('name')))!r} has "
+            f"no usable size_in_bytes from GitHub — this op's "
             f"{_human_size(download_cap)} download cap "
-            f"(GH_JOB_ARTIFACT_DOWNLOAD_MAX_BYTES) — GitHub has no single-file "
-            f"artifact endpoint, so reading one entry means downloading the "
-            f"whole archive first, and this one is refused before that "
-            f"download rather than after. Raise the cap, or fetch the "
-            f"archive another way."
+            f"(GH_JOB_ARTIFACT_DOWNLOAD_MAX_BYTES) could not be checked before "
+            f"the whole archive downloads."
         )
-        return 1
     zip_bytes, error = _fetch_artifact_zip(artifact.get("id"))
     if error:
         print(error)
