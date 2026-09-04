@@ -215,17 +215,21 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | PHP — refactor, warm | `rector-mcp` | `mcp-rector-warm` on PATH (`MCP_RECTOR_BIN` to override) | Rector suggestions through a long-lived daemon. See [README](../validators/rector-mcp/README.md) |
 | jit-context index | `jit-index` | stdlib only; `awk` for the second half | Keyed on a path glob, not a language. Refuses a `**/00-manual/00-index.tsv` rule whose regex column the hook's awk cannot honour. Two checks: a **structural** one that needs no awk and gives the same verdict everywhere, and a **compile** one against the installed awk. `skipped` when the file is not a jit-context index, or when awk is absent *and* the structural half was clean — a half-run check is not a pass. See below |
 | New-file lint | `new-file-lint` | the **project's own** `.github/scripts/lint_new_files.py` and `ruff` | Keyed on a path glob, not a language. States no rules of its own — it finds the project's script declaring `EXTRA_RULES` for a path with no git history and runs `ruff --extend-select` with them. `skipped` when no such script sits above the file, when the file already has a commit at `HEAD`, or when the found script's project is not the one whose `.supertool.json` wired this validator (see "Trust boundary on the convention-based location", below). `$SUPERTOOL_NEW_FILE_LINT_SCRIPT` overrides where it looks (default `.github/scripts/lint_new_files.py`) |
+| Encoding seam | `encoding-seam` | the **project's own** `tests/test_encoding_seam.py` | Keyed on a path glob, not a language. States no rules of its own — it finds the project's `test_encoding_seam.py` and imports (never re-implements) its `encoding_violations` / `subprocess_encoding_violations` functions, running them against the one file being written so a bare `open()`/`subprocess.run(text=True)` is caught at write time instead of only inside the full CI suite. `skipped` when no such test file sits above the edited file. `$SUPERTOOL_ENCODING_SEAM_TEST_MODULE` overrides where it looks (default `tests/test_encoding_seam.py`). See [docs/contributing.md](contributing.md#text-encoding). ([#2287](https://github.com/Digital-Process-Tools/claude-supertool/issues/2287)) |
 | Changelog fragment | `changelog-fragment` | the **project's own** `assemble_changelog.py` (plus its `markdown-it-py`) | Keyed on a path glob, not a language. States no rules of its own — it calls the release script's `parse_fragment_name` / `scan_fragment_body` and republishes their messages verbatim, so the write-time verdict and the CI verdict cannot drift. `skipped` when no such script sits above the file, so it is inert in projects with no `changelog.d/` convention, or when the found script's project is not the one whose `.supertool.json` wired this validator (see "Trust boundary on the convention-based location", below). `$SUPERTOOL_CHANGELOG_ASSEMBLER` overrides where it looks (default `.github/scripts/assemble_changelog.py`) |
 
 ### Trust boundary on the convention-based location (#2228)
 
-`new-file-lint` and `changelog-fragment` both state no rules of their own —
-each finds the PROJECT's own script (`.github/scripts/lint_new_files.py`,
-`assemble_changelog.py` at one of a short list of conventional locations)
-by walking up from the edited file to that file's own git root, and
-**imports** it, which executes its top-level code. Both walks are bounded
-at the repo root (#2178): a script sitting above the repo, in a sibling
-directory or anywhere further up, is never reached.
+`new-file-lint`, `changelog-fragment` and `encoding-seam` all state no rules
+of their own — each finds the PROJECT's own script or test file
+(`.github/scripts/lint_new_files.py`, `assemble_changelog.py`, or
+`tests/test_encoding_seam.py`, at one of a short list of conventional
+locations) by walking up from the edited file to that file's own git root
+(`encoding-seam` does not walk — it checks the one canonical location
+directly — but is bound by the same repo root), and **imports** it, which
+executes its top-level code. All three walks/lookups are bounded at the
+repo root (#2178): a script sitting above the repo, in a sibling directory
+or anywhere further up, is never reached.
 
 That bound stops an escape ABOVE the repo. It says nothing about whether
 the repo itself should be trusted. A maintainer whose own `.supertool.json`
