@@ -227,6 +227,29 @@ def test_gl_artifact_path_with_a_colon_is_rejoined(
     assert "dir:10-30-00.log" in out
 
 
+def test_gl_artifact_dot_dot_segment_is_rejected_not_forwarded(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`urllib.parse.quote` never escapes '.', so a `..` segment in the
+    artifact path used to survive verbatim into the `glab api` URL (#2230).
+    `glab` is never invoked at all: this is a refusal, not a rewrite -- the
+    same reasoning `path_refusal` uses elsewhere in this preset."""
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], **kw: Any):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, b"should not be reached")
+
+    monkeypatch.setattr(sys, "argv",
+                        ["job.py", GL_ID, "artifact", "../secret_group_config"])
+    monkeypatch.setattr(gl_job.subprocess, "run", fake_run)
+    rc = gl_job.main()
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert not calls, f"glab was invoked with an unnormalized path: {calls!r}"
+    assert ".." in out
+
+
 # ---------------------------------------------------------------------------
 # gh-job:ID:artifacts / gh-job:ID:artifact:PATH
 # ---------------------------------------------------------------------------
