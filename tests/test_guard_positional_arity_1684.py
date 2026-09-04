@@ -232,14 +232,15 @@ def test_the_refusal_quotes_what_was_typed(shipped_git):
     fidelity guarantee `discarded` already carries via #2010/#2017), not a
     plain argv-join -- so a trailing redirect on the matched segment itself
     is part of what was typed and stays in the rendered command rather than
-    being silently dropped. (The missing '2' below is a PRE-EXISTING gap in
-    `_guard_segments_with_origins`'s own IO-number handling, unrelated to
-    this field -- reported separately rather than fixed here, since fixing
-    it touches the shared span builder both `command` and `discarded` read
-    from.)"""
+    being silently dropped. The '2' survives too, since #2195: it used to be
+    dropped here even though `command_faithful` claimed a faithful render --
+    `_guard_segments_with_origins` now renders the UNDROPPED slice for this
+    field (and for `discarded`), keeping the digit `_guard_drop_io_numbers`
+    still strips for MATCHING purposes only (#1684)."""
     verdict = supertool.guard_command("git status 2>&1")
     assert verdict.state == "blocked", verdict
-    assert [m.command for m in verdict.matches] == ["git status >&1"]
+    assert [m.command for m in verdict.matches] == ["git status 2>&1"]
+    assert all(m.command_faithful for m in verdict.matches), verdict.matches
 
 
 def test_a_positional_that_is_really_a_positional_survives(shipped_git):
