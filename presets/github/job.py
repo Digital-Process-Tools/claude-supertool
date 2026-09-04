@@ -1115,7 +1115,9 @@ def print_artifact(job_id: str, path: str) -> int:
     # cap below cannot protect against a large archive: it only sees one
     # entry's size, after the whole zip already downloaded. The listing
     # already carries the archive's own size, so it is checked here, before
-    # any bytes move, against a separate and much larger cap (#1796).
+    # any bytes move, against a separate and much larger cap (#1796) --
+    # unless GitHub omitted or forged that size, in which case the check
+    # cannot run at all and says so instead of silently skipping (#2248).
     archive_size = artifact.get("size_in_bytes")
     download_cap = env_int("GH_JOB_ARTIFACT_DOWNLOAD_MAX_BYTES", 200 * 1024 * 1024,
                            minimum=1)
