@@ -20,7 +20,8 @@ _ID = ["-c", "user.email=fixture@example.invalid", "-c", "user.name=fixture"]
 
 
 def _run(args, cwd):
-    res = subprocess.run(["git", *_ID, *args], cwd=cwd, capture_output=True, text=True)
+    res = subprocess.run(["git", *_ID, *args], cwd=cwd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
     assert res.returncode == 0, f"git {args} failed: {res.stderr}"
     return res
 
@@ -71,7 +72,8 @@ def _build_repo_with_unrelated_change(tmp_path: Path) -> Path:
 
     _run(["checkout", "master"], repo)
     merge = subprocess.run(["git", *_ID, "merge", "theirs-branch"], cwd=repo,
-                            capture_output=True, text=True)
+                            capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
     assert merge.returncode != 0, "expected a merge conflict"
     return repo
 
@@ -99,7 +101,8 @@ def _build_repo_conflict_only(tmp_path: Path) -> Path:
 
     _run(["checkout", "master"], repo)
     merge = subprocess.run(["git", *_ID, "merge", "theirs-branch"], cwd=repo,
-                            capture_output=True, text=True)
+                            capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
     assert merge.returncode != 0, "expected a merge conflict"
     return repo
 
@@ -123,7 +126,7 @@ def test_checkout_theirs_reports_the_hunk_it_moved_outside_the_conflict(monkeypa
     assert "1 outside any conflict" in out
     # The unrelated paragraph really was reverted -- prove the mechanism, not
     # just the words in the receipt.
-    assert (repo / "doc.md").read_text() == _base_text(conflict="theirs", other="v0")
+    assert (repo / "doc.md").read_text(encoding="utf-8") == _base_text(conflict="theirs", other="v0")
 
 
 def test_checkout_theirs_says_nothing_extra_when_only_the_conflict_moved(monkeypatch, capsys, tmp_path):

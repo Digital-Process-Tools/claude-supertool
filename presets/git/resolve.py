@@ -559,8 +559,19 @@ def _hunk_note(pre_text: Optional[str], post_text: Optional[str]) -> str:
     """
     if pre_text is None or post_text is None:
         return "outside-conflict check: not available (could not read the pre/post-resolution snapshot)"
-    pre_lines = pre_text.splitlines()
-    post_lines = post_text.splitlines()
+    # Not str.splitlines(): PRE/POST are file bytes read directly (no
+    # subprocess, no text=True universal-newline translation), and the
+    # comparison must line up with `_block_ranges`' own conflict-marker
+    # spans and with git's own line reckoning -- LF/CR/CRLF only. A file
+    # containing a Unicode line-break character that str.splitlines()
+    # treats as a boundary (NEL, U+2028, ...) but git does not would
+    # otherwise be split into more "lines" than git or `_block_ranges`
+    # recognize,
+    # misaligning every downstream hunk/block index (#1622's shape; see the
+    # `_untrusted.split_lines` docstring: "Use this for anything being
+    # parsed as a line-oriented protocol").
+    pre_lines = _untrusted.split_lines(pre_text)
+    post_lines = _untrusted.split_lines(post_text)
     blocks = _block_ranges(pre_lines)
     if not blocks:
         return ""
