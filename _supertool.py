@@ -28799,6 +28799,16 @@ _BATCH_WRAPPER_KEYS = frozenset(
 #: is an op field of `edit` and an unknown key everywhere else.
 _PAYLOAD_REPLACE_ALL_OPS = ("edit",)
 
+#: `no_verify` (#2205) is read at exactly one place — `_at_file_to_parts`
+#: below, where `true` appends `git-commit`'s own colon-route sentinel
+#: (`--no-verify`) to the positional parts it builds. commit.py's argv has
+#: no separate flag channel, so the payload route reaches the same sentinel
+#: the colon route already uses rather than inventing a second mechanism.
+#: On any other op the key is inert, so it is a field of `git-commit` and an
+#: unknown key everywhere else — same shape as `replace_all` above.
+_PAYLOAD_NO_VERIFY_OPS = ("git-commit",)
+_GIT_COMMIT_NO_VERIFY_TOKEN = "--no-verify"
+
 
 def _payload_accepted_fields(
         op: str, specs: List[Tuple[str, bool, bool]]) -> List[str]:
@@ -28806,6 +28816,8 @@ def _payload_accepted_fields(
     names = [name for name, _optional, _variadic in specs]
     if op in _PAYLOAD_REPLACE_ALL_OPS:
         names.append("replace_all")
+    if op in _PAYLOAD_NO_VERIFY_OPS:
+        names.append("no_verify")
     return names
 
 
@@ -28907,6 +28919,11 @@ def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
         else:
             parts.append(str(value))
     replace_all = bool(lower_payload.get("replace_all", False))
+    # #2205 — `no_verify = true` reaches the same sentinel the colon route
+    # already parses out of `paths` (`_NO_VERIFY_TOKEN` in commit.py), so
+    # commit.py has exactly one place that reads it regardless of route.
+    if op in _PAYLOAD_NO_VERIFY_OPS and bool(lower_payload.get("no_verify", False)):
+        parts.append(_GIT_COMMIT_NO_VERIFY_TOKEN)
     return parts, replace_all
 
 
