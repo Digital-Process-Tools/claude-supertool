@@ -43,8 +43,7 @@ SUPERTOOL = REPO / "supertool.py"
 #: SUPERTOOL_CHANGELOG_ASSEMBLER pin or the validator reads `skipped`, not
 #: a finding -- so these calls carry it too, or `[left on disk]` never
 #: appears.
-FRAGMENT_ASSEMBLER_ENV = dict(os.environ)
-FRAGMENT_ASSEMBLER_ENV["SUPERTOOL_CHANGELOG_ASSEMBLER"] = os.path.join(
+FRAGMENT_ASSEMBLER_KEY = os.path.join(
     ".github", "scripts", "assemble_changelog.py")
 
 BAD = "BAD" + NL
@@ -217,7 +216,7 @@ def test_a_paste_of_a_bad_fragment_says_the_file_is_still_there(tmp_path):
     proc = subprocess.run([sys.executable, str(SUPERTOOL), "paste:@-"],
                           input=payload, capture_output=True, text=True,
                           encoding="utf-8", errors="replace", cwd=str(REPO),
-                          env=FRAGMENT_ASSEMBLER_ENV)
+                          env={**os.environ, "SUPERTOOL_CHANGELOG_ASSEMBLER": FRAGMENT_ASSEMBLER_KEY})
     receipt = proc.stdout + proc.stderr
     assert "changelog-fragment" in receipt, receipt
     assert target.exists(), receipt
@@ -245,7 +244,7 @@ def test_the_disclosure_does_not_move_the_exit_code(tmp_path):
         input=("path = " + json.dumps(str(target)) + NL
                + "content = " + Q3 + "## heading not a bullet" + NL + Q3 + NL),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        cwd=str(REPO), env=FRAGMENT_ASSEMBLER_ENV)
+        cwd=str(REPO), env={**os.environ, "SUPERTOOL_CHANGELOG_ASSEMBLER": FRAGMENT_ASSEMBLER_KEY})
     assert "[left on disk]" in advisory.stdout + advisory.stderr, advisory.stdout
     assert advisory.returncode == 0, advisory.stdout + advisory.stderr
 
