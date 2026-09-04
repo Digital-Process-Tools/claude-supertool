@@ -241,12 +241,32 @@ The fix is provenance: supertool's runner now sets `SUPERTOOL_CONFIG_DIR`
 every validator AND formatter adapter's environment (the same shape
 `SUPERTOOL_MCP_AUTOSPAWN` already uses, #475; both call sites are patched,
 since nothing stops a config wiring either adapter's `cmd` under
-`"formatters"` instead of `"validators"`). Both adapters refuse the
-convention-based location only when that directory sits STRICTLY ABOVE the
-edited file's own git repo root — the directory-of-clones shape.
-`SUPERTOOL_NEW_FILE_LINT_SCRIPT` / `SUPERTOOL_CHANGELOG_ASSEMBLER` still
-work regardless of that boundary: an operator naming one exact path is
-explicit trust, not an inherited one.
+`"formatters"` instead of `"validators"`). `SUPERTOOL_NEW_FILE_LINT_SCRIPT`
+/ `SUPERTOOL_CHANGELOG_ASSEMBLER` work regardless of either gate below: an
+operator naming one exact path is explicit trust, not an inherited one.
+
+`root` below is the edited file's own git repo root; `config_dir` is
+`SUPERTOOL_CONFIG_DIR`. Both adapters run two separate gates against that
+pair, each answering a different question:
+
+| Gate | Function | Question it answers | Refuses when |
+| --- | --- | --- | --- |
+| Substitution (#2228) | `_config_dir_is_untrusted_ancestor` | Is `config_dir` a strict ancestor of `root` — the directory-of-clones shape? | `config_dir` sits STRICTLY ABOVE `root`. Equal, disjoint, sibling and nested-inside relationships all return `False` here — this gate alone never refuses any of those. |
+| Execution (#2236) | `_config_dir_may_authorize_execution` | Does `config_dir` own `root` — is it `root` itself, or a directory `root` is nested inside? | Everything except `config_dir == root` or `config_dir` containing `root`. That includes the #2228 shape (`config_dir` strictly above `root`) **and** a disjoint or sibling `config_dir` with no ancestry to `root` at all. |
+
+The substitution gate is unchanged since #2228: it still only refuses the
+directory-of-clones shape, and a disjoint or sibling `config_dir` still
+passes it. But passing the substitution gate no longer decides whether the
+script runs — the execution gate runs after it and is stricter. A gate-3
+audit (#2236) found that a disjoint or sibling `config_dir`
+(`config=/Users/x/src/mine`, `root=/Users/x/src/evil`, no ancestry either
+direction) sailed through the substitution gate and had `evil`'s own
+conventionally-named script imported and executed anyway — the same
+outcome as `config_dir == root`. #2241 added the execution gate to close
+exactly that: **a disjoint or sibling `config_dir` is refused now**, not
+permitted. Only `config_dir == root`, or `config_dir` containing `root`
+(a monorepo `.supertool.json` in a subdirectory of the project being
+edited), authorizes the automatic import.
 
 **Self-review finding.** The first cut of this fix refused every
 `SUPERTOOL_CONFIG_DIR` that was not the edited file's own repo root or an
