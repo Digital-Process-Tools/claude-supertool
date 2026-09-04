@@ -91,6 +91,79 @@ def test_source_fingerprint_declines_rather_than_guessing_on_an_empty_root(
     assert why
 
 
+def test_source_fingerprint_poisons_when_one_files_stat_fails_after_a_successful_walk(
+        monkeypatch, tmp_path) -> None:
+    """The `rglob` walk a few lines up already poisons the fingerprint on
+    failure; a per-file `stat()` failure must do the same instead of dropping
+    the file and continuing as if it had never existed (#2237). Silently
+    dropping the newest file can make the fingerprint equal a poller's
+    fork-time value and report VERSION_CURRENT for a poller that is actually
+    stale -- the exact false positive #2179 exists to prevent."""
+    good = tmp_path / "good.py"
+    good.write_text("# ok", encoding="utf-8")
+    bad = tmp_path / "bad.py"
+    bad.write_text("# bad", encoding="utf-8")
+
+    class _Root:
+        def resolve(self):
+            return self
+
+        @property
+        def parent(self):
+            return self
+
+        def rglob(self, pattern):
+            return [good, bad]
+
+        def __str__(self):
+            return str(tmp_path)
+
+    monkeypatch.setattr(transport, "Path", lambda *a, **k: _Root())
+
+    real_stat = Path.stat
+
+    def _stat(self, *a, **k):
+        if self == bad:
+            raise OSError("simulated per-file stat failure")
+        return real_stat(self, *a, **k)
+
+    monkeypatch.setattr(Path, "stat", _stat)
+
+    value, why = transport.source_fingerprint()
+    assert value is None, (
+        "a per-file stat() failure must poison the fingerprint to None, not "
+        "silently drop the file and return a fingerprint missing it"
+    )
+    assert why
+
+
+def test_source_fingerprint_returns_a_value_when_every_file_stats(
+        monkeypatch, tmp_path) -> None:
+    """Positive control: a walk where every file stats successfully must
+    still return a real, non-None fingerprint."""
+    good1 = tmp_path / "one.py"
+    good1.write_text("# one", encoding="utf-8")
+    good2 = tmp_path / "two.py"
+    good2.write_text("# two", encoding="utf-8")
+
+    class _Root:
+        def resolve(self):
+            return self
+
+        @property
+        def parent(self):
+            return self
+
+        def rglob(self, pattern):
+            return [good1, good2]
+
+    monkeypatch.setattr(transport, "Path", lambda *a, **k: _Root())
+
+    value, why = transport.source_fingerprint()
+    assert why == ""
+    assert value is not None
+
+
 def test_matching_fingerprint_is_current() -> None:
     current, _why = transport.source_fingerprint()
     state, why = transport.version_state_of(current, "")

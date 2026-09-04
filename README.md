@@ -119,7 +119,7 @@ Five subsystems the table above only gestures at, each with its own doc:
 
 - **Validators & formatters** — every mutating op runs your project's registered linters/formatters first, three-state (`ok` / finding / `skipped`), and rolls a write back on a validator failure. [docs/validators.md](docs/validators.md), [docs/formatters.md](docs/formatters.md).
 - **Notifiers** — fire-and-forget observers that tap the op stream for side effects: an editor diff view, Slack, a desktop notification. [docs/notifiers.md](docs/notifiers.md).
-- **`watch` / `radar` / `channel`** — background pollers and async wake for PRs, MRs and pipelines, reconciled into one tier. [docs/presets/watch.md](docs/presets/watch.md).
+- **`watch` / `radar` / `channel`** — background pollers and async wake for PRs, MRs and pipelines, reconciled into one tier. [docs/presets/watch.md](docs/presets/watch.md). This checkout's own `.claude/settings.json` disables the tracked `.mcp.json` server (`disabledMcpjsonServers`) so it does not race `oss-workspace`'s local-scope one for the same socket — see the doc's "collision" section if `channel:health` reports `CANNOT DETERMINE`.
 - **LSP ops via a warm MCP daemon** — `workspace`/`resolve`/`diag`/`hover`/`rename` reach a language server through a process that stays hot across calls. [docs/presets/lsp.md](docs/presets/lsp.md), [docs/mcp-integration.md](docs/mcp-integration.md).
 - **Warm-process MCP servers for heavy tools** — the same warm-daemon pattern, applied to PHP toolchains (Rector, PHPUnit) as validator adapters that stay bootstrapped across calls. [docs/mcp-warm-process-servers.md](docs/mcp-warm-process-servers.md).
 

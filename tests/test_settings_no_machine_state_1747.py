@@ -76,7 +76,22 @@ LOCAL_SETTINGS_PATH = ".claude/settings.local.json"
 # `$CLAUDE_PROJECT_DIR` spelling is load-bearing, and
 # `tests/test_statusline_wiring_documented_1964.py` is what pins it: an absolute
 # path here would pass this allowlist and ship one machine's disk to every clone.
-ALLOWED_TOP_LEVEL_KEYS = frozenset({"hooks", "statusLine"})
+# `disabledMcpjsonServers` travels for the same reason `statusLine` does: it
+# names no path and no machine, just a server name declared in this
+# checkout's own tracked `.mcp.json` (#2221). The harness ALSO writes this
+# same key into `.claude/settings.local.json` on its own initiative -- an
+# operator disabling some other server from inside a session -- so a value
+# added there is machine state exactly as #1747 describes; nothing here can
+# tell that apart from the one entry this repository means to ship, which is
+# why the *value* tracked here needs its own guard rather than trusting the
+# key's presence. Without a disable, a fresh clone gets `.mcp.json`'s
+# `claude-channel` declaration racing `bin/oss-workspace`'s `oss-channel` for
+# one socket, and only the tracked file reaches every clone rather than only
+# the maintainer's own machine. `tests/test_mcp_channel_disabled_by_default_
+# 2221.py` is the interior guard this file's own closing paragraph says a new
+# allowed key owes -- it pins the array to contain `claude-channel`, not
+# merely to exist.
+ALLOWED_TOP_LEVEL_KEYS = frozenset({"hooks", "statusLine", "disabledMcpjsonServers"})
 
 # Keys the harness has actually been observed writing into a tracked settings
 # file. Used only to make a failure message more useful; the *guard* is the
