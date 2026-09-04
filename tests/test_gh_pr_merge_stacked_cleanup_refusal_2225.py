@@ -37,6 +37,7 @@ def _sibling(filename: str, name: str):
 _containment = _sibling(
     "test_gh_pr_merge_cleanup_containment_1280_1281_1282.py",
     "gh_pr_merge_containment_for_2225")
+_main = _sibling("test_gh_pr_merge_main_950.py", "gh_pr_merge_main_for_2225")
 
 
 def _install(monkeypatch, s) -> None:
@@ -126,3 +127,69 @@ def test_omitting_stack_state_refuses_rather_than_silently_deleting(
 def test_a_changelog_fragment_exists() -> None:
     from _changelog_findable import assert_change_is_findable
     assert_change_is_findable(2225)
+
+
+# ---------------------------------------------------------------------------
+# the printed (non-`|cleanup`) arm of main() -- the same hazard, unguarded
+# ---------------------------------------------------------------------------
+#
+# `run_cleanup` is not the only place that hands over a remote delete: without
+# `|cleanup`, main() prints a ready-to-paste `gh api -X DELETE` command for the
+# reader instead of running it, and #1281/#1292 already made that arm mirror
+# every other `run_cleanup` gate (`cross_repo`, `default_branch`) so the two
+# could never disagree about when a delete is safe. `stack_state` was not
+# mirrored into it, so the printed arm kept handing over a command that closes
+# a stacked pull request exactly as irreversibly as the gated `|cleanup` path
+# used to -- the reader has seen the `## Stacked follow-up` warning immediately
+# above it, but a warning read is not a refusal, and every sibling gate here
+# earns its own explicit refusal rather than relying on the reader noticing
+# a paragraph above.
+
+
+def _install_main(monkeypatch, h, *, argv):
+    """`_main._install`, but against **this file's own** `m` -- exactly the
+    reason `_install` above exists for `_containment`: the sibling module
+    loads `pr_merge.py` a second time under its own module name, and patching
+    that copy leaves this file's `m.main` talking to the real `gh`."""
+    monkeypatch.setattr(m, "_gh", h.gh)
+    monkeypatch.setattr(m, "_gh_json", h.gh_json)
+    monkeypatch.setattr(m, "_load_pr_module", h.pr_module)
+    monkeypatch.setattr(m.subprocess, "run", h.subprocess_run)
+    monkeypatch.setattr(_main.sys, "argv", ["pr_merge.py"] + argv)
+    monkeypatch.setenv("SUPERTOOL_NO_PUBLISH_CONFIRM", "1")
+
+
+def test_a_stacked_pull_request_gets_no_printed_delete_command_either(
+        monkeypatch, capsys) -> None:
+    h = _main._Harness(_main._pr(), stack_prs=[
+        {"number": 961, "title": "follow-up", "url": "https://x/961"}])
+    _install_main(monkeypatch, h, argv=["944"])
+    m.main()
+    out = capsys.readouterr().out
+    assert "gh api -X DELETE" not in out
+    assert "Stacked follow-up" in out
+    assert "stacked" in out.lower() or "stack" in out.lower()
+
+
+def test_an_unread_stack_search_also_gets_no_printed_delete_command(
+        monkeypatch, capsys) -> None:
+    h = _main._Harness(_main._pr(), fail_json={"stack"})
+    _install_main(monkeypatch, h, argv=["944"])
+    m.main()
+    out = capsys.readouterr().out
+    assert "gh api -X DELETE" not in out
+
+
+def test_no_stacked_pull_request_still_prints_the_delete_command(
+        monkeypatch, capsys) -> None:
+    """The paired must-fire case: an empty board leaves the printed arm
+    exactly as it was -- this is the same behaviour
+    `test_an_ordinary_same_repo_head_still_gets_its_commands` in
+    `test_gh_pr_merge_main_950.py` already pins; restated here so the pair
+    lives beside the two refusal cases above rather than only in another
+    file."""
+    h = _main._Harness(_main._pr())
+    _install_main(monkeypatch, h, argv=["944"])
+    m.main()
+    out = capsys.readouterr().out
+    assert "gh api -X DELETE" in out

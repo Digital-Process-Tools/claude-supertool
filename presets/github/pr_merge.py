@@ -91,8 +91,12 @@ MERGED = "merged"
 UNVERIFIED = "unverified"
 
 # What is left unwatched after this merge (#1851), moved up from beside
-# `stacked_followups()` because `run_cleanup` (#2225) needs the constants at
-# a definition point earlier in the file than the function they describe.
+# `stacked_followups()` so a reader of `run_cleanup` (#2225) finds these two
+# defined before the function that consumes them, matching every other
+# module constant this file reads near its own top — not because Python
+# needs the earlier position: module-level names resolve at call time, and
+# `run_cleanup` already referenced later-defined names such as
+# `CLEAN_REFUSED` without issue before this move.
 STACK_FOUND = "found"
 STACK_NONE = "none"
 
@@ -1686,6 +1690,29 @@ def main() -> int:
         print(f"  No delete command is printed for it: {why}, and `|cleanup` "
               f"refuses it on the same ground. Delete the branch from the PR "
               f"page, which knows which repository it is in.")
+    elif stack_state != STACK_NONE:
+        # #2225: the same fact that refuses the remote item inside
+        # `run_cleanup` refuses the printed command too. A reader who has
+        # already scrolled past `## Stacked follow-up` above has *seen* the
+        # warning, not agreed to it — every other ground this arm refuses on
+        # (name, cross-repo, default branch) gets its own explicit sentence
+        # here rather than relying on a paragraph above being remembered, and
+        # this ground is not different. Local items are still safe to
+        # mention: GitHub only reacts to the remote delete.
+        safe_head = _refname.shell_ref(head)
+        why = ("an open pull request has been found based on this branch"
+               if stack_state == STACK_FOUND else
+               "whether an open pull request is now based on this branch "
+               "was not established")
+        print(f"  Head branch `{safe_head}` still exists.")
+        print(f"  No remote delete command is printed for it: {why} — see "
+              f"the `## Stacked follow-up` section above. Deleting the "
+              f"remote branch closes that pull request and there is no "
+              f"clean way back; retarget or close it first, then delete the "
+              f"branch by hand. `|cleanup` refuses the remote branch item "
+              f"on the same ground.")
+        print(f"  Local worktree, if any, is still safe to remove: "
+              f"git worktree remove <path> && git branch -d {safe_head}")
     else:
         safe_head = _refname.shell_ref(head)
         # `api_path_for_display`, not `api_path`: this string is pasted by a
