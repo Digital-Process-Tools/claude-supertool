@@ -308,6 +308,30 @@ jobs:
         if: always()
         shell: bash
         run: python .github/scripts/junit_summary.py junit.xml
+      - name: Suite duration report (#2206 — report only, never a gate)
+        # `--durations=25` above has printed on every leg since #891 and
+        # nothing read it, which is how a test can quietly grow to a large
+        # share of a run and the only detector is a person reading a log
+        # tail by chance (see the module docstring in duration_report.py for
+        # the claude-oss case this issue was filed from). This step reads
+        # the same junit.xml the step above does and prints the top
+        # durations plus the slowest test's share of the run's real
+        # wall-clock, against a committed baseline
+        # (.github/duration-baseline.json) that is updated by hand when a
+        # shift is judged real.
+        #
+        # `if: always()`, same reasoning as the step above it: junit.xml can
+        # exist with partial data after a failing run, and a report that
+        # only ran on green would silently stop answering exactly when
+        # something is already wrong.
+        #
+        # Deliberately no wall-clock threshold that can fail this step or
+        # the job — the issue that added this is explicit that a shared
+        # runner's load is not in anybody's diff, and a gate here would
+        # teach people to re-run until green rather than read the number.
+        if: always()
+        shell: bash
+        run: python .github/scripts/duration_report.py junit.xml --baseline .github/duration-baseline.json
   coverage:
     # #861: the 86% floor lived in `addopts` as `--cov=supertool`, so it
     # measured one file and every op under `presets/` — ~14k statements, the
