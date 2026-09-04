@@ -213,9 +213,20 @@ jobs:
       # runners carry no equivalent always-on scanner. Excluding the checkout and the
       # runner temp directory removes that tax without touching what any suite tests --
       # it changes nothing about correctness, only how fast the disk answers.
+      #
+      # continue-on-error, deliberately (#2259): Add-MpPreference has been
+      # observed to fail hard (0x800106ba) when the Defender service is
+      # unavailable/disabled on a given runner instance -- infrastructure this
+      # workflow does not control. This step is pure disk-cost optimisation
+      # and is not correctness-bearing, so failing open (slower green) is the
+      # right default. Do not remove continue-on-error here without reading
+      # #2259 first: without it, a Defender hiccup on the runner takes the
+      # whole pytest job down before a single test runs, and the resulting
+      # red reads exactly like a real regression.
       - name: Exclude the checkout and temp dir from Windows Defender scanning
         if: runner.os == 'Windows'
         shell: pwsh
+        continue-on-error: true
         run: |
           Add-MpPreference -ExclusionPath "${{ github.workspace }}"
           Add-MpPreference -ExclusionPath "$env:RUNNER_TEMP"
