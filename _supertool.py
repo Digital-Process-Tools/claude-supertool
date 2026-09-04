@@ -20520,19 +20520,23 @@ def _guard_segments_with_origins(
     # two span lists carry the same length in the same order, entry for
     # entry, since a digit alone is never `_GUARD_SEPARATOR_CHARS` and
     # dropping one cannot introduce a new boundary out of nothing. What it
-    # CAN do -- found in review, not by this fix, and left as `spans_aligned`
-    # below rather than papered over -- is FUSE two boundaries that used to
-    # be separate: an operator run with no space before the digit (`|2>&1`,
-    # `;2>&1`, `&2>&1`) loses only the digit, so the `|`/`;`/`&` and the
-    # `>&` it used to be separated from by that digit become one adjacent
-    # run, which then reads as a single redirect rather than two operators
-    # either side of a boundary -- collapsing what should be two top-level
-    # segments into one and losing the boundary between them entirely. That
-    # is a guard-bypass class in `_guard_raw_segment_spans`/
-    # `_guard_tokenize_prepared` themselves, pre-existing on `master` and
-    # unrelated to what this function's own origin/faithful pair renders --
-    # reported for filing rather than fixed here, the same call #2076 made
-    # about the digit-drop this function inherited from.
+    # USED TO be able to do -- found in review, not by this fix, and left as
+    # `spans_aligned` below rather than papered over -- was FUSE two
+    # boundaries that used to be separate: an operator run with no space
+    # before the digit (`|2>&1`, `;2>&1`, `&2>&1`) lost only the digit, so
+    # the `|`/`;`/`&` and the `>&` it used to be separated from by that
+    # digit became one adjacent run, which then read as a single redirect
+    # rather than two operators either side of a boundary -- collapsing
+    # what should be two top-level segments into one and losing the
+    # boundary between them entirely, a guard-bypass class in
+    # `_guard_raw_segment_spans`/`_guard_tokenize_prepared` themselves.
+    # FIXED by #2267: `_guard_drop_io_numbers` now inserts a single space
+    # between a preceding top-level separator and a redirect operator it is
+    # about to fuse with by dropping the digit between them, so `prepared`
+    # never re-fuses what `undropped` still separates and the two span
+    # lists stay the same length for this class. What follows still
+    # defends `spans_aligned` rather than assuming it, because nothing
+    # guarantees a *different* mismatch cause can never arise here.
     undropped_spans = _guard_raw_segment_spans(undropped)
     segments = _guard_tokenize_prepared(prepared)  # ValueError on a bad quote
     # `_guard_raw_segment_spans` splits on the same operators as the
@@ -20574,15 +20578,16 @@ def _guard_segments_with_origins(
     # so.
     origin_faithful: List[bool] = []
     #: Defends the invariant the comment on `undropped_spans` above argues
-    #: for, rather than trusting it silently (#2195) -- a mismatch here means
-    #: this command hit the fusion case documented there, and falling back
-    #: to `prepared`'s own (digit-dropped) slice is the pre-existing
-    #: behaviour, not a new failure mode: `origin_faithful` can still read
-    #: `True` for a fallback entry that lost its fd digit, same as before
-    #: this fix, because the fusion has already merged what should have
-    #: been two segments into the one this loop now sees -- a second,
-    #: entangled half of the same reported-for-filing class, not something
-    #: a local check here could repair without first un-fusing the spans.
+    #: for, rather than trusting it silently (#2195) -- a mismatch here used
+    #: to mean this command hit the fusion case documented there (FIXED by
+    #: #2267 for the separator-adjacent shape), and falling back to
+    #: `prepared`'s own (digit-dropped) slice was the pre-existing
+    #: behaviour, not a new failure mode: `origin_faithful` could still read
+    #: `True` for a fallback entry that lost its fd digit, because the
+    #: fusion had already merged what should have been two segments into
+    #: the one this loop sees. That specific cause is closed now, but the
+    #: check itself stays -- a mismatch here from any OTHER cause still
+    #: falls back the same defensive way rather than assuming alignment.
     spans_aligned = len(segment_spans) == len(undropped_spans)
     consumed = 0
     for span_index, (lo, hi) in enumerate(segment_spans):

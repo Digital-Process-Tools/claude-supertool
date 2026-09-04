@@ -148,6 +148,35 @@ def test_argument_digit_is_still_kept_when_immediately_after_a_separator(tmp_pat
     assert origin_texts == ["true", "2 echo hi"], origin_texts
 
 
+@pytest.mark.parametrize("sep", ["(", ")"])
+def test_fused_parenthesis_separator_still_splits(tmp_path, guard_config, sep):
+    """Found in self-review (auditor, #2267): `_GUARD_SEPARATOR_CHARS`
+    includes `(`/`)` alongside the four idioms the issue names, and the
+    fix's condition is keyed off that same set -- confirm the parenthesis
+    shape is covered too, not just the four literal separators, so a
+    future narrowing of the character set has a test to break."""
+    guard_config(tmp_path, _PR_OP)
+    cmd = f"true{sep}2>&1 gh pr view 1"
+    heads, _unread, _origins, _origin_texts, _origin_faithful = (
+        supertool._guard_segments_with_origins(cmd))
+    assert heads == [["true"], ["gh", "pr", "view", "1"]], (cmd, heads)
+
+
+def test_chained_numbered_fd_redirects_with_no_space_stay_one_segment(tmp_path):
+    """Found in self-review (reviewer, #2267): `_GUARD_SEPARATOR_CHARS` also
+    contains `<`/`>` themselves, so the fix's space-insertion condition
+    also fires when a digit about to be dropped is immediately preceded by
+    a redirect operator LEFT BEHIND by an earlier digit-drop in the same
+    string -- back-to-back numbered fd redirects with no space
+    (`1>2>&1`). This must still tokenize as ONE segment (a redirect
+    chain, not a separator), same as before the fix -- the extra space the
+    fix inserts here changes what the intermediate text looks like but
+    must never turn a redirect chain into a phantom command boundary."""
+    heads, _unread, _origins, _origin_texts, _origin_faithful = (
+        supertool._guard_segments_with_origins("git status 1>2>&1"))
+    assert heads == [["git", "status"]], heads
+
+
 def test_spans_aligned_no_longer_falls_back_for_the_fused_case(tmp_path):
     """The entangled #2266 finding: once the fusion is fixed, the fidelity
     machinery's `spans_aligned` check should find the two span lists the
