@@ -1101,22 +1101,40 @@ _RELATIVE_SEARCH_PATH_KEYS = {"watch_sources_path"}
 
 def _anchor_relative_search_path(raw: str, config_path: str) -> str:
     """Resolve each relative entry of a pathsep-joined search path `raw`
-    against `os.path.dirname(config_path)`.
+    against the REAL directory of `config_path`.
 
-    An already-absolute entry is left exactly as declared -- this only adds
-    information, never removes it, so a value that was already fully usable
-    is byte-for-byte what it was before #2164. An entry that is empty (an
-    operator's stray separator) is left alone too, for the same reason
-    `sourcepath.resolve()` treats it as nothing declared rather than a
+    An already-absolute entry is left exactly as declared, minus surrounding
+    whitespace -- this only adds information, never removes it, so a value
+    that was already fully usable is what it was before #2164. An entry that
+    is empty (an operator's stray separator) is left alone too, for the same
+    reason `sourcepath.resolve()` treats it as nothing declared rather than a
     refusal: there is nothing here to anchor.
+
+    Each entry is stripped before its `isabs()` check, matching
+    `sourcepath.resolve()`'s own `raw_entry.strip()` -- checking the
+    UNSTRIPPED text would call a whitespace-padded absolute entry relative
+    and join the anchor directory onto it, producing a path that exists
+    nowhere and silently dropping the operator's real directory (review
+    finding on #2164's own PR).
+
+    The anchor is `os.path.dirname(os.path.realpath(config_path))`, not a
+    plain `os.path.dirname` -- the same normalisation the three other sites
+    in this file that derive "the directory containing the declaring config"
+    already apply (`_mixed_tree_pair`, and two more; all key off
+    `os.path.realpath(_CONFIG_PATH)`). `_CONFIG_PATH` is built from
+    `os.path.abspath(os.getcwd())`, not `os.path.realpath`, so a symlink
+    component in the path a future caller sets it from would otherwise let
+    this function's anchor diverge from every other reader of the same
+    config path in this file (review finding on #2164's own PR).
     """
-    anchor = os.path.dirname(config_path)
+    anchor = os.path.dirname(os.path.realpath(config_path))
     parts = raw.split(os.pathsep)
-    resolved = [
-        os.path.normpath(os.path.join(anchor, part)) if part and not os.path.isabs(part)
-        else part
-        for part in parts
-    ]
+    resolved = []
+    for part in parts:
+        entry = part.strip()
+        if entry and not os.path.isabs(entry):
+            entry = os.path.normpath(os.path.join(anchor, entry))
+        resolved.append(entry)
     return os.pathsep.join(resolved)
 
 

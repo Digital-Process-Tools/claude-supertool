@@ -35,12 +35,25 @@ the same defect one layer down -- the operator believes their source is loaded
 and it is not -- so `shadowed()` reports every collision and every rendering
 surface prints it.
 
-**Absolute paths only.** A relative entry is refused and named. A poller is
-detached, re-execs itself (`dispatcher._exec_labelled`) and then runs for days;
-`radar` re-derives the same path from a possibly different directory. A relative
-entry resolved against whatever the working directory happened to be is a source
-that loads once and cannot be found again, which is exactly the failure the
-refusal makes visible.
+**Absolute paths only, from THIS module's own point of view.** `resolve()`
+below refuses any entry that fails `os.path.isabs()` and names it -- a poller
+is detached, re-execs itself (`dispatcher._exec_labelled`) and then runs for
+days; `radar` re-derives the same path from a possibly different directory. A
+relative entry resolved against whatever the working directory happened to be
+is a source that loads once and cannot be found again, which is exactly the
+failure the refusal makes visible. This module is deliberately kept pure for
+that reason: it never reads a config file, so there is no directory here to
+anchor a relative entry against, and it must not guess one from the CWD.
+
+**A relative entry declared in `.supertool.json` is a different question,
+answered upstream, not here** ([#2164](https://github.com/Digital-Process-Tools/claude-supertool/issues/2164)).
+`_supertool.py::_anchor_relative_search_path` resolves it against the
+declaring config file's own directory -- which does not move, unlike the CWD
+-- at the one moment the key turns into `SUPERTOOL_WATCH_SOURCES_PATH`,
+before the value is exported. So by the time `resolve()` reads it from
+`os.environ`, it is already absolute; only an entry that arrived straight
+through the raw environment, with no `.supertool.json` to anchor it to,
+still reaches this module's own refusal above.
 
 **Nothing here is derived, so nothing here needs pinning across the exec.**
 `transport.poller_env` pins the state directory and the socket because those are

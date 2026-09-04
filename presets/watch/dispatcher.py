@@ -811,8 +811,10 @@ def cmd_list() -> int:
         print(f"{len(stale)} row(s) above are marked STALE in VERSION: this "
               f"poller forked before the source under presets/watch/ last "
               f"changed, so it is running code a later fix may have replaced. "
-              f"Restart it with `unwatch:SOURCE:ID` then `watch:SOURCE:ID` to "
-              f"pick up the current source; nothing here restarts it "
+              f"`watch:SOURCE:ID:reload` picks it up in place, state intact "
+              f"(#2212); `unwatch:SOURCE:ID` then `watch:SOURCE:ID` also works "
+              f"but forks a fresh poller with an empty state, re-announcing "
+              f"everything as new on its first tick. Nothing here restarts it "
               f"automatically.")
         for r in stale:
             print(f"  {r['_source']}:{r['_id']} — {r['_version_why']}")

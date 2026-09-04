@@ -271,6 +271,7 @@ def machine(monkeypatch) -> _Machine:
     return _Machine().install(monkeypatch)
 
 
+@pytest.mark.skipif(dispatcher.RELOAD_SIGNAL is None, reason="requires SIGHUP")
 def test_reload_signals_the_tracked_pid_and_never_spawns(machine, monkeypatch) -> None:
     machine.add_poller(4242, SOURCE, WATCHER)
     transport.record_pid(SOURCE, WATCHER, 4242)
@@ -292,6 +293,7 @@ def test_reload_with_nothing_running_reports_and_does_not_spawn(machine, monkeyp
     assert spawned == []
 
 
+@pytest.mark.skipif(dispatcher.RELOAD_SIGNAL is None, reason="requires SIGHUP")
 def test_reload_signals_every_live_poller_on_the_slot(machine, monkeypatch) -> None:
     """A slot can hold more than one poller (#511's own shape) -- reload
     reaches all of them, the same breadth `unwatch` already commits to."""
@@ -308,6 +310,7 @@ def test_reload_signals_every_live_poller_on_the_slot(machine, monkeypatch) -> N
     assert {pid for pid, _sig in machine.signalled} == {101, 102}
 
 
+@pytest.mark.skipif(dispatcher.RELOAD_SIGNAL is None, reason="requires SIGHUP")
 def test_reload_uses_sighup_not_sigterm(machine, monkeypatch) -> None:
     """The signal must not be one that already means something else to the
     loop -- SIGTERM/SIGINT both mean stop."""

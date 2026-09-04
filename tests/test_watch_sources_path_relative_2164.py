@@ -114,6 +114,37 @@ def test_an_already_absolute_entry_is_unchanged(tmp_path):
     assert absolute in result
 
 
+def test_a_padded_absolute_entry_is_stripped_not_double_anchored(tmp_path):
+    """`sourcepath.resolve()` strips each entry (`raw_entry.strip()`) before
+    its own `isabs()` check -- so an entry an operator padded with whitespace
+    (a hand-edited multi-entry value, a stray trailing space) is absolute to
+    `resolve()` today. The anchoring step has to agree: checking `isabs()` on
+    the UNSTRIPPED text would call this entry relative and join it onto the
+    config directory, producing `<config_dir>/ /padded/path` -- a path that
+    exists nowhere and silently drops the operator's real directory, worse
+    than before #2164 rather than merely no better (review finding).
+
+    Tested against `_anchor_relative_search_path` directly, not through the
+    `echo $VAR` round-trip the other tests use: `_expand_env` substitutes the
+    value straight into a `shlex.split` command line, which eats leading and
+    trailing whitespace on its own and would make this pass whether or not
+    the export step itself stripped anything."""
+    absolute = str(tmp_path / "padded")
+    config_path = str(tmp_path / ".supertool.json")
+    result = supertool._anchor_relative_search_path(" " + absolute + " ", config_path)
+    assert result == absolute, (
+        f"a padded absolute entry must come out exactly as declared, got {result!r}")
+
+
+def test_a_padded_relative_entry_is_stripped_before_anchoring(tmp_path):
+    """The other half of the same fix -- a padded RELATIVE entry must anchor
+    to the plain, stripped name, not to a name that still carries the space
+    that made `os.path.isabs` see it as relative in the first place."""
+    config_path = str(tmp_path / ".supertool.json")
+    result = supertool._anchor_relative_search_path(" watch-sources ", config_path)
+    assert result == os.path.normpath(str(tmp_path / "watch-sources")), result
+
+
 def test_an_unrelated_config_key_is_never_anchored(tmp_path):
     """Only `watch_sources_path` is anchored -- an arbitrary other extra key
     stays exactly the literal string the config declared, relative or not."""
