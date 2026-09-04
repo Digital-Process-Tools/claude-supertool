@@ -114,6 +114,12 @@ def _cleanup(head, **kw):
     kw.setdefault("cross_repo", False)
     kw.setdefault("default_branch", "master")
     kw.setdefault("head_oid", HEAD_OID)
+    # #2225: `stack_state` defaults to `UNKNOWN` in the op, which refuses the
+    # remote delete just like every other unestablished keyword here. This
+    # file is about the other three; establishing an empty board keeps it
+    # there. The refusal itself is pinned in
+    # `test_gh_pr_merge_stacked_cleanup_refusal_2225.py`.
+    kw.setdefault("stack_state", m.STACK_NONE)
     return m.run_cleanup(head, **kw)
 
 

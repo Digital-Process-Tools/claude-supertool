@@ -2152,6 +2152,7 @@ Each constraint is load-bearing:
 - **Local items skip entirely under a `repo:OWNER/NAME` target**, because the checkout is then not that PR's repository and a local branch of the same name is a different branch.
 - **The worktree goes before the branch**, since `git branch -d` cannot delete a branch that is checked out somewhere.
 - **The exit code stays a statement about the merge.** A refused cleanup is not a failed merge.
+- **The remote branch item refuses when an open pull request is now stacked on it** ([#2225](https://github.com/Digital-Process-Tools/claude-supertool/issues/2225)). GitHub closes a stacked pull request the instant the branch it targets is deleted, and there is no clean way back from that: reopening a closed PR needs its base branch to exist, retargeting it needs the PR to be open, and those two conditions refuse each other in a cycle. `run_cleanup` now takes the same `stack_state` `stacked_followups()` already computes for the `## Stacked follow-up` section above, and treats it the way every other unestablished fact here is treated — `found` and `unknown` both refuse, only an actually-empty board (`none`) clears the delete. Only the remote branch item is gated: the local worktree and local branch are never what GitHub reacts to, so refusing them too would just leave local remnants behind for no protective reason.
 
 Branch deletion is recoverable — GitHub keeps `refs/pull/N/head`, and this repo has recovered a branch that way. Worktree removal is not, which is why it is the item carrying two gates rather than one.
 

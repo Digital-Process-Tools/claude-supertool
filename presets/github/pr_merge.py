@@ -90,6 +90,12 @@ NONE_DECLARED = "none declared"
 MERGED = "merged"
 UNVERIFIED = "unverified"
 
+# What is left unwatched after this merge (#1851), moved up from beside
+# `stacked_followups()` because `run_cleanup` (#2225) needs the constants at
+# a definition point earlier in the file than the function they describe.
+STACK_FOUND = "found"
+STACK_NONE = "none"
+
 # Merge-state values that are not a go. GitHub's `mergeStateStatus` is
 # advisory rather than authoritative — `UNSTABLE` in particular means "mergeable
 # but a check is red", which the check gate catches anyway — but each of these
@@ -985,18 +991,30 @@ def _cleanup_remote_branch(head: str, head_oid: str) -> tuple[str, str, str]:
 
 def run_cleanup(head: str, *, merged: bool, cross_repo: bool | None = None,
                 default_branch: str = "",
-                head_oid: str = "") -> List[tuple[str, str, str]]:
+                head_oid: str = "",
+                stack_state: str = UNKNOWN) -> List[tuple[str, str, str]]:
     """`(item, state, detail)` per item — done, refused, or skipped, never two.
 
     Four things have to be established before anything here is deleted, and
-    before #1281 only the first was: that the merge happened, that the head
-    branch lives in **this** repository, that it is not the default branch, and
-    that the ref about to go is the one the PR names.
+    before #1281 only the first three were: that the merge happened, that the
+    head branch lives in **this** repository, that it is not the default
+    branch, and that the ref about to go is the one the PR names.
 
-    The three added keywords default to their *unestablished* values on
+    The four keywords after `merged` default to their *unestablished* values on
     purpose. `cross_repo=None` means the field did not come back, and that is a
     refusal rather than an assumption — a caller who forgets to answer gets a
-    refusal it can read instead of a delete it cannot undo.
+    refusal it can read instead of a delete it cannot undo. `stack_state`
+    (#2225) is the same posture applied to a fifth fact: whether an open pull
+    request is now based on this branch, so that deleting the *remote* half of
+    it — the one GitHub reacts to by closing that pull request, permanently
+    and with no clean way back (#2225's own issue body has the recovery
+    steps) — refuses unless the caller has established `STACK_NONE`. Its
+    default is `UNKNOWN` rather than `STACK_NONE`, matching every other
+    keyword here: a caller that never asks does not get a delete it cannot
+    undo. Only the remote branch item is gated on it — the local worktree and
+    local branch are never what GitHub reacts to, and refusing them too would
+    just leave a merged branch's local remnants behind for no protective
+    reason.
 
     Gated on the merge that was **read back off the remote**, which is the gate
     the 2026 incident lacked: there, a delete chained with `&&` ran after a
@@ -1055,7 +1073,28 @@ def run_cleanup(head: str, *, merged: bool, cross_repo: bool | None = None,
         # refuses for a reason that is this op's own doing.
         rows.append(_cleanup_worktree(head))
         rows.append(_cleanup_local_branch(head))
-    rows.append(_cleanup_remote_branch(head, head_oid))
+
+    if stack_state != STACK_NONE:
+        # #2225: the remote delete is the one GitHub reacts to, and deleting
+        # it while another open pull request targets this branch closes that
+        # pull request — irreversibly, since reopening it needs the base
+        # branch to exist and retargeting it needs it to be open, and those
+        # two refuse each other in a cycle. `STACK_FOUND` says a follow-up is
+        # named; `UNKNOWN` says the search itself never ran or never came
+        # back — treated the same, because an unasked question is not a
+        # "no". Only `STACK_NONE`, established by `stacked_followups()`
+        # actually returning an empty board, clears this.
+        why = ("an open pull request has been found based on this branch"
+               if stack_state == STACK_FOUND else
+               "whether an open pull request is now based on this branch "
+               "was not established")
+        rows.append(("remote branch", CLEAN_REFUSED,
+                     f"{why} — see the `## Stacked follow-up` section above. "
+                     f"Deleting the remote branch closes that pull request "
+                     f"and there is no clean way back; retarget or close it "
+                     f"first, then delete the branch by hand"))
+    else:
+        rows.append(_cleanup_remote_branch(head, head_oid))
     return rows
 
 
@@ -1290,10 +1329,6 @@ def base_distance_lines(base: str, head_oid: str, behind: int | None,
 # ---------------------------------------------------------------------------
 # what is left unwatched after this merge (#1851)
 # ---------------------------------------------------------------------------
-
-STACK_FOUND = "found"
-STACK_NONE = "none"
-
 
 def stacked_followups(head: str) -> tuple[str, List[str]]:
     """`(state, lines)` — is any open pull request now based on `head`?
@@ -1581,7 +1616,8 @@ def main() -> int:
                 run_cleanup(head, merged=(m_state == MERGED and bool(head)),
                             cross_repo=x_repo,
                             default_branch=default_branch,
-                            head_oid=str(pr.get("headRefOid") or ""))):
+                            head_oid=str(pr.get("headRefOid") or ""),
+                            stack_state=stack_state)):
             print(line)
         print()
         print(result_line(m_state, issue_overall, branch_state, stack_state))
