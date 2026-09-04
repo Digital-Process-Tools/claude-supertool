@@ -6,6 +6,7 @@ Background pollers for external sources that emit events on state-change. The fr
 
 ```
 watch:SOURCE:ID[:only=event1,event2]   spawn poller (fire-and-forget)
+watch:SOURCE:ID:reload                 signal a running poller to pick up an edited poller.py, baseline intact
 unwatch:SOURCE:ID                      kill the poller, remove PID file
 watches                                list active pollers, and any slot that lost one
 channel:health                         is the bridge to the session actually delivering?
@@ -22,6 +23,7 @@ Example:
 ./supertool 'watch:gitlab-mr:21803:only=pipeline_failed,merged'
 ./supertool 'watches'
 ./supertool 'unwatch:github-pr:179'
+./supertool 'watch:gitlab-mr:21803:reload'                # pick up a merged poller.py fix in place
 ```
 
 Composable in one batched call:
@@ -657,7 +659,8 @@ What *is* checked, and each is refused out loud rather than skipped:
 | Entry | Answer |
 |---|---|
 | a shipped name (`gitlab-mr`, `slack`, …) | **shipped wins.** The external one is never loaded, and every surface names it: `source gitlab-mr in /opt/... is shadowed by the shipped source of the same name and was NOT loaded`. Silently skipping it is the same defect one layer down — the operator believes their source is loaded and it is not |
-| a relative path | not searched, and named. A poller detaches, re-execs and runs for days, and `radar` re-derives the path from wherever it is invoked, so the directory a relative entry resolves against is not the one you typed it in |
+| a relative path declared in `.supertool.json` | anchored to that file's own directory ([#2164](https://github.com/Digital-Process-Tools/claude-supertool/issues/2164)), once, before the value is exported — never against the CWD a poller happens to detach and re-exec from, and not re-derived on every re-exec. The config file does not move, so what a poller inherits after any number of re-execs is already an absolute path |
+| a relative path with no declaring config file (set straight in the environment) | not searched, and named. There is no file to anchor it to, and the CWD argument still applies: `radar` re-derives the path from wherever it is invoked, so the directory a relative entry resolves against is not the one you typed it in |
 | a path that is not a directory, or cannot be reached | not searched, and named with the `OSError` type. "Missing" and "could not look" are different facts and both are printed |
 | a reserved name (`channel-probe`) | never loaded, and named. [#1593](https://github.com/Digital-Process-Tools/claude-supertool/issues/1593) reserved it so a synthetic probe event can never be confused with a watcher's, and enforced that by enumerating the shipped directory — a search path is a space no test can enumerate, so the refusal is made at load time instead |
 | the shipped directory named again | redundant, and said as redundant rather than as unusable. It is always searched first |
@@ -1825,8 +1828,22 @@ Three values, and the third is load-bearing:
 current" send an operator to opposite conclusions about a poller that has
 been running for days. **Report-only, the same requirement `DELIVERY` carries
 above and for the same reason**: nothing here restarts a stale poller
-automatically. `unwatch:SOURCE:ID` then `watch:SOURCE:ID` picks up the
-current source.
+automatically.
+
+Two ways to pick up the current source, and they cost different things
+([#2212](https://github.com/Digital-Process-Tools/claude-supertool/issues/2212)):
+`unwatch:SOURCE:ID` then `watch:SOURCE:ID` works, but it forks a fresh poller
+with an empty `state`, so its first tick re-announces everything the old
+process already knew about as new — costly for a fleet with many watched
+entities, and not merely slow: nothing on the box actually changed.
+`watch:SOURCE:ID:reload` signals the running poller instead, which re-imports
+its own `poller.py` in place: `state` lives in that process's own memory and
+is never touched, only which module its poll loop calls. A reload the poller
+cannot pick up — a broken edit, or a source that no longer resolves — leaves
+it running its OLD, working code rather than ending the watcher, and reports
+which happened as `watcher_reloaded` / `watcher_reload_failed`. It needs
+`SIGHUP`, so it has no effect on a platform without one; the fork/setsid
+poller model this whole preset relies on does not exist there either.
 
 The fingerprint is coarse deliberately — one value for the whole
 `presets/watch/` tree rather than one per source file, since every source
@@ -2074,6 +2091,20 @@ declined: that file also ships with the plugin, and is the *only* registration
 path for someone who never runs `oss-workspace`, so removing it would drop
 channel support for them entirely rather than resolving a collision specific
 to this checkout's own development workflow.
+
+**Every `consumer config` line now names whose file it read
+([#2184](https://github.com/Digital-Process-Tools/claude-supertool/issues/2184)).**
+`_mcp_roots()` checks two locations for a `.mcp.json` declaring the consumer:
+the plugin root and the current directory. Before this, both rendered through
+the identical `consumer config <path>` shape, and the plugin root -- reached
+because `_mcp_roots()`'s first entry always resolves to whichever copy of
+supertool is executing, never a file the harness loaded for the caller's own
+session -- read as an answer about the caller's own configuration. That
+misattribution is what made #2182 above take three release cycles to
+diagnose: a maintainer read the line, edited the wrong file, saw no change,
+learned nothing. Every rendered line now carries `(this plugin's own copy)`
+or `(the caller's project)`, decided by identity against the plugin's own
+root rather than by which position in the search order it came from.
 
 **The tag is somebody else's text and reaches an argv this tool builds, so it is
 shape-checked and passed after `--`**

@@ -38,6 +38,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _untrusted
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
+import _st_hint  # noqa: E402  (a runnable invocation, not a relative path that may not exist -- #905)
 import _untrusted  # noqa: E402  (the state files are somebody else's text, #1197)
 import naming  # noqa: E402  (which knob put the state directory where it is, #1477)
 import sourcepath  # noqa: E402  (a source may live outside the plugin, #2135)
@@ -116,6 +117,14 @@ def cmd_watch(parts: list[str]) -> int:
     except ValueError as e:
         print(f"ERROR: {e}")
         return 1
+    # `watch:SOURCE:ID:reload` (#2212) -- a third form beside `only=`, on the
+    # SAME op rather than a new one, because it is asking for a poller that
+    # already exists to pick up a change, not to be started. Checked before
+    # any of the spawn machinery below runs: reload never spawns, and the
+    # `sourcepath.resolve()` call just under this would otherwise search and
+    # report on a start that is not happening.
+    if "reload" in parts[2:]:
+        return cmd_reload(source, watcher_id)
     resolved = sourcepath.resolve()
     # The same resolution the refusal below reports on. Resolving twice would
     # stat every entry twice and, worse, let what was loaded and what is
@@ -177,6 +186,83 @@ def cmd_watch(parts: list[str]) -> int:
         print(f"Filter: {','.join(only)}")
     print(f"State: {transport.state_path(source, watcher_id)}")
     return 0
+
+
+def cmd_reload(source: str, watcher_id: str) -> int:
+    """`watch:SOURCE:ID:reload` -- signal a running poller to re-import its
+    own `poller.py` in place, keeping its baseline (#2212).
+
+    `unwatch` + `watch` is the alternative and it works, but it forks a fresh
+    process with an empty `state`: the first tick after that re-announces
+    everything the old process already knew about as new. For a fleet with
+    many watched entities that is minutes of baseline noise to deploy a
+    one-line fix, and the announcements are not merely slow, they are wrong
+    -- nothing actually changed on the box.
+
+    A multi-signal, on the same evidence `cmd_unwatch` requires before it
+    multi-kills: every PID here comes from a process whose own argv names
+    this exact source and id **and this channel** (`transport.watcher_pids`).
+    An untracked survivor on this slot is signalled too, for the same reason
+    `unwatch` stops one -- a poller this channel cannot see is one it cannot
+    tell has picked up the fix either.
+    """
+    for line in sourcepath.op_lines("watch"):
+        print(f"watch: {line}")
+    if RELOAD_SIGNAL is None:
+        print("ERROR: this platform has no SIGHUP, so a poller cannot be "
+              "signalled to reload in place. "
+              f"{_st_hint.st_hint(f'unwatch:{source}:{watcher_id}')} then "
+              f"{_st_hint.st_hint(f'watch:{source}:{watcher_id}')} is the only "
+              f"path here, and it loses the baseline -- the whole reason this "
+              f"op exists.")
+        return 1
+    census = transport.poller_census()
+    info = transport.watcher_pids(
+        source, watcher_id, scan=(census["mine"], census["scan_ok"]))
+    pids = [pid for pid in info["pids"] if pid > 1 and pid != os.getpid()]
+    if not pids:
+        if info.get("tracked_refusal"):
+            print(f"No readable PID file for {source}:{watcher_id} -- "
+                  f"{info['tracked_refusal']}. Nothing was signalled, and "
+                  f"whether a poller holds this slot is not known from here.")
+        elif info["tracked"] and not info["tracked_alive"]:
+            print(f"Tracked PID {info['tracked']} for {source}:{watcher_id} "
+                  f"is not running -- there is nothing here to reload.")
+        elif not info["scan_ok"]:
+            print(f"No PID file for {source}:{watcher_id}, and the process "
+                  f"scan was unavailable -- an untracked poller could not be "
+                  f"ruled out. Nothing was signalled.")
+        else:
+            print(f"No active watcher for {source}:{watcher_id} -- "
+                  f"nothing to reload.")
+        print(f"Use {_st_hint.st_hint(f'watch:{source}:{watcher_id}')} to start one.")
+        return 1
+    print(f"Reloading {len(pids)} poller(s) for {source}:{watcher_id}: "
+          + ", ".join(
+              f"{pid} ({'tracked' if pid == info['tracked'] else 'untracked'})"
+              for pid in pids))
+    failures = 0
+    for pid in pids:
+        try:
+            os.kill(pid, RELOAD_SIGNAL)
+        except ProcessLookupError:
+            failures += 1
+            print(f"ERROR: PID {pid} is gone -- it exited between the scan "
+                  f"above and this signal.")
+        except OSError as e:
+            failures += 1
+            print(f"ERROR: could not signal PID {pid}: {e}")
+        else:
+            print(f"Signalled PID {pid}. Its own next tick re-imports "
+                  f"{source}'s poller.py -- state stays intact, and it keeps "
+                  f"polling on today's code until then. A `{RELOAD_FAILED_EVENT}` "
+                  f"event means the import failed and it is still on today's "
+                  f"code; a `{RELOAD_EVENT}` event confirms the swap.")
+    if not info["scan_ok"]:
+        print("Process scan unavailable -- only the tracked PID was "
+              "considered, so an untracked poller for this id would not "
+              "have been signalled.")
+    return 1 if failures else 0
 
 
 def _stop_pid(pid: int) -> str:
@@ -726,8 +812,10 @@ def cmd_list() -> int:
         print(f"{len(stale)} row(s) above are marked STALE in VERSION: this "
               f"poller forked before the source under presets/watch/ last "
               f"changed, so it is running code a later fix may have replaced. "
-              f"Restart it with `unwatch:SOURCE:ID` then `watch:SOURCE:ID` to "
-              f"pick up the current source; nothing here restarts it "
+              f"`watch:SOURCE:ID:reload` picks it up in place, state intact "
+              f"(#2212); `unwatch:SOURCE:ID` then `watch:SOURCE:ID` also works "
+              f"but forks a fresh poller with an empty state, re-announcing "
+              f"everything as new on its first tick. Nothing here restarts it "
               f"automatically.")
         for r in stale:
             print(f"  {r['_source']}:{r['_id']} — {r['_version_why']}")
@@ -1018,6 +1106,73 @@ MAX_CONSECUTIVE_POLL_FAILURES = 120
 #: further in.
 GAVE_UP_EVENT = "watcher_gave_up"
 
+#: `unwatch` + `watch` picks up a merged `poller.py` change, but it forks a
+#: fresh process with empty `state` -- `seen` is false again, so the very
+#: first tick re-announces everything the old process already knew about as
+#: new (#2212). A signal reloads the SAME process's module in place instead,
+#: so `state`, which lives in that process's own memory and nowhere this
+#: dispatcher can reach or touch, is never replaced.
+#:
+#: `None` on a platform with no SIGHUP (there is no fork/setsid poller model
+#: on such a platform either, so this never needs a second story). Not an
+#: env-configurable choice: this is a signal number, not a preset knob, and
+#: `getattr(signal, "SIGKILL", signal.SIGTERM)` just above is the same
+#: platform-optional idiom.
+RELOAD_SIGNAL = getattr(signal, "SIGHUP", None)
+
+#: Set from the SIGHUP handler below; consulted once per tick by
+#: `_run_poll_loop`, never from inside a signal handler itself beyond the
+#: single flag write (#2212's whole reason: the loop's own `state`, kept
+#: outside this dict entirely, must never be touched from a handler that can
+#: interrupt an arbitrary line of Python).
+_RELOAD_FLAG: dict[str, bool] = {"reload": False}
+
+
+def _handle_reload_signal(*_a: object) -> None:
+    _RELOAD_FLAG["reload"] = True
+
+
+#: The dispatcher's own events, in no source's `events.json` and bypassing
+#: `only` for the same reason `GAVE_UP_EVENT` does above: a reload that
+#: silently kept running old code, or one that quietly picked up nothing to
+#: change, would both look like nothing at all -- and #2212 names exactly
+#: that silence as the automatic-reload alternative's own hazard. This
+#: signal-driven shape is explicit rather than automatic, but a broken edit
+#: is exactly as broken either way, so it inherits the same duty: report,
+#: never crash the watcher that was trying to pick up a fix.
+RELOAD_EVENT = "watcher_reloaded"
+RELOAD_FAILED_EVENT = "watcher_reload_failed"
+
+
+def _reload_poller(source: str, watcher_id: str, current: Any) -> Any:
+    """Re-import SOURCE's poller.py in place. Returns the new module, or
+    `current` UNCHANGED on any failure.
+
+    Two failure shapes, one outcome: an import that raises (a genuinely
+    broken edit -- `_load_source` does not catch `exec_module`'s own
+    exceptions) and a source that no longer resolves at all (`_load_source`
+    returning None, e.g. the search path changed under it). Either way the
+    watcher keeps polling with the code it already had rather than dying on
+    its next tick, and exactly one event says which happened -- silence here
+    is indistinguishable from a reload that had nothing to pick up, which is
+    the same absence-read-as-presence shape this whole preset exists to
+    remove.
+    """
+    try:
+        reloaded = _load_source(source)
+    except Exception as e:  # noqa: BLE001 — a broken edit must not end the watcher
+        transport.emit_event(source, watcher_id, RELOAD_FAILED_EVENT,
+                             {"error": f"{type(e).__name__}: {e}"})
+        return current
+    if reloaded is None:
+        transport.emit_event(source, watcher_id, RELOAD_FAILED_EVENT,
+                             {"error": f"source {source!r} no longer resolves -- "
+                                       f"see `watch:{source}:{watcher_id}` for "
+                                       f"where this searched"})
+        return current
+    transport.emit_event(source, watcher_id, RELOAD_EVENT, {})
+    return reloaded
+
 
 def _wait_interruptible(seconds: int, stop_flag: dict[str, bool]) -> None:
     """Wait `seconds`, in one-second steps, giving up early on a stop.
@@ -1135,9 +1290,25 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
 
     signal.signal(signal.SIGTERM, _handle_sigterm)
     signal.signal(signal.SIGINT, _handle_sigterm)
+    # `_RELOAD_FLAG` is module-level and this process may be a fork that
+    # inherited a set flag from before it existed as this watcher (#2212) --
+    # cleared here, at the one moment this loop starts owning it, same as
+    # `stop_flag` starting False every time.
+    _RELOAD_FLAG["reload"] = False
+    if RELOAD_SIGNAL is not None:
+        signal.signal(RELOAD_SIGNAL, _handle_reload_signal)
 
     try:
         while not stop_flag["stop"]:
+            if _RELOAD_FLAG["reload"]:
+                _RELOAD_FLAG["reload"] = False
+                # `state` is untouched — it is not a parameter of this call,
+                # on purpose (#2212): only which module object `poller` names
+                # changes here, never what the loop already knows.
+                poller = _reload_poller(source, watcher_id, poller)
+                interval = int(getattr(poller, "INTERVAL", 30))
+                max_failures = int(getattr(poller, "MAX_CONSECUTIVE_FAILURES",
+                                           MAX_CONSECUTIVE_POLL_FAILURES))
             try:
                 events, new_state = poller.poll(state, ctx)
             except Exception as e:  # noqa: BLE001 — never crash, log to state
@@ -1214,6 +1385,18 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
 
 def main(argv: list[str]) -> int:
     use_utf8_stdout()
+    # `_RELOAD_FLAG` is module-level and this process may be a fork that
+    # inherited a set flag from before it existed as this watcher (#2212).
+    # `_run_poll_loop` clears it again, unconditionally, at the one moment it
+    # starts owning the flag -- the reset here is a second one, ahead of the
+    # `sub == transport.POLL_SUBOP` branch below, so it also holds for a
+    # harness that imports this module once and calls main() repeatedly
+    # (#686's own reason for this pattern). Neither reset can stand in for the
+    # other: this one never runs on the direct `_run_poll_loop` call
+    # `_spawn_poller` makes on a failed exec (never through main() at all),
+    # and that one never runs for the `watch`/`unwatch`/`list` sub-ops this
+    # function also dispatches to.
+    _RELOAD_FLAG["reload"] = False
     if len(argv) < 2:
         print("ERROR: usage: dispatcher.py {watch|unwatch|list|poll} [ARG]")
         return 1

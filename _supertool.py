@@ -1084,6 +1084,59 @@ _OP_CONFIG_RESERVED_KEYS = {
     "restartMcp", "replaces", "paths", "exitStatus", "form", "hint",
 }
 
+#: Extra config keys whose value is a search path -- one or more directories
+#: joined by `os.pathsep` -- resolved against the directory of the
+#: `.supertool.json` that declared them, rather than exported verbatim (#2164).
+#:
+#: `presets/watch/sourcepath.CONFIG_KEY` is the one entry today. Anchoring
+#: happens HERE, once, before the value is exported as an env var -- never
+#: inside the preset that reads it back, which may be a detached, re-exec'd
+#: poller with no reliable notion of "the directory this was typed in" (the
+#: CWD argument `sourcepath.resolve()`'s own docstring makes, and still makes,
+#: about a relative entry resolved late). The config file does not move, so
+#: resolving once here and exporting an absolute path is what the poller
+#: inherits and re-derives after any number of re-execs, unchanged.
+_RELATIVE_SEARCH_PATH_KEYS = {"watch_sources_path"}
+
+
+def _anchor_relative_search_path(raw: str, config_path: str) -> str:
+    """Resolve each relative entry of a pathsep-joined search path `raw`
+    against the REAL directory of `config_path`.
+
+    An already-absolute entry is left exactly as declared, minus surrounding
+    whitespace -- this only adds information, never removes it, so a value
+    that was already fully usable is what it was before #2164. An entry that
+    is empty (an operator's stray separator) is left alone too, for the same
+    reason `sourcepath.resolve()` treats it as nothing declared rather than a
+    refusal: there is nothing here to anchor.
+
+    Each entry is stripped before its `isabs()` check, matching
+    `sourcepath.resolve()`'s own `raw_entry.strip()` -- checking the
+    UNSTRIPPED text would call a whitespace-padded absolute entry relative
+    and join the anchor directory onto it, producing a path that exists
+    nowhere and silently dropping the operator's real directory (review
+    finding on #2164's own PR).
+
+    The anchor is `os.path.dirname(os.path.realpath(config_path))`, not a
+    plain `os.path.dirname` -- the same normalisation the three other sites
+    in this file that derive "the directory containing the declaring config"
+    already apply (`_mixed_tree_pair`, and two more; all key off
+    `os.path.realpath(_CONFIG_PATH)`). `_CONFIG_PATH` is built from
+    `os.path.abspath(os.getcwd())`, not `os.path.realpath`, so a symlink
+    component in the path a future caller sets it from would otherwise let
+    this function's anchor diverge from every other reader of the same
+    config path in this file (review finding on #2164's own PR).
+    """
+    anchor = os.path.dirname(os.path.realpath(config_path))
+    parts = raw.split(os.pathsep)
+    resolved = []
+    for part in parts:
+        entry = part.strip()
+        if entry and not os.path.isabs(entry):
+            entry = os.path.normpath(os.path.join(anchor, entry))
+        resolved.append(entry)
+    return os.pathsep.join(resolved)
+
 
 def _op_config_key_collisions(project_ops: Dict[str, Any]
                               ) -> Dict[str, List[str]]:
@@ -4041,10 +4094,59 @@ def _expand_env(s: str, env: Dict[str, str]) -> str:
     commit object. A sixth call site that skips the shield reintroduces that
     silently, because the substitution is invisible unless the variable
     happens to be defined on the machine that runs it.
+
+    **Every substituted value is `shlex.quote`d (#2164 CI, four Windows-only
+    failures on `tests/test_watch_sources_path_relative_2164.py`).** Every
+    call site below builds its command by concatenating this function's
+    output onto a template string, then feeds the WHOLE result to
+    `shlex.split()` before spawning the child argv-form. A value inserted
+    here unquoted is not "no shell" the way the docstring above promised —
+    it is untrusted text handed to `shlex.split`'s own POSIX-mode escape
+    grammar, where a bare backslash escapes (and drops) the next character.
+    An anchored Windows path such as
+    ``C:\\\\Users\\\\runneradmin\\\\...\\\\watch-sources``, exported as
+    `SUPERTOOL_WATCH_SOURCES_PATH` and referenced as `$SUPERTOOL_WATCH_SOURCES_PATH`
+    in a `cmd` template, came back with every single backslash removed —
+    `C:UsersrunneradminAppDataLocalTemp...` — not doubled, not converted to
+    `/`, consumed outright, because none of the characters that followed each
+    backslash formed a real escape pair. `shlex.quote` wraps the value in
+    single quotes -- an embedded single quote is closed out and re-opened
+    (`'` becomes the four bytes `'"'"'`), never backslash-escaped, but that
+    detail does not matter here: what matters is that POSIX `shlex.split`
+    treats a backslash inside a single-quoted segment as a literal
+    character, not an escape introducer -- matching the treatment
+    `{file}`/`{dir}`/`{arg}` already get via `shlex.quote` at every one of
+    this function's call sites, and the same reasoning #1734 applied to
+    those placeholders one layer up. A defined variable whose value has no
+    shell-special characters (the common case — plain words, existing
+    shipped `cmd` templates) round-trips through `shlex.quote` unchanged, so
+    this narrows nothing that worked before; a caller relying on a `$VAR`
+    value being split into SEVERAL argv tokens by `shlex.split` gets it as
+    one token instead, which is the same one-token guarantee `{file}` etc.
+    already make and is what makes this expansion "no shell" in fact rather
+    than only in the docstring.
+
+    **Known remaining gap (self-review finding, not fixed here):** this
+    quoting is blind to the template's OWN quoting. A template that already
+    wraps a `$VAR` reference in its own single quotes -- the shipped example
+    at `docs/notifiers.md`'s `bash -c '...$SLACK_WEBHOOK'` pattern -- gets a
+    SECOND, nested pair of quotes spliced in when that variable's value
+    contains a space or other shell-special character, and `shlex.split` has
+    no notion of nested quoting (POSIX shell does not either), so the value
+    is split back apart at the space. Before this fix such a value survived
+    inside the template's own quotes untouched; after it, only a value with
+    no shell-special characters is safe in that position -- which is every
+    template shipped in this tree today, so nothing here regresses in
+    practice, but a project-authored template following the same documented
+    pattern with a differently-shaped value would now break where it did
+    not before. Fixing this needs the substitution to be aware of the
+    template's own quote state at the match position, which is a different,
+    larger change than the one this docstring documents.
     """
     return re.sub(
         r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)',
-        lambda m: env.get(m.group(1) or m.group(2), m.group(0)),
+        lambda m: (shlex.quote(env[m.group(1) or m.group(2)])
+                   if (m.group(1) or m.group(2)) in env else m.group(0)),
         s,
     )
 
@@ -4491,6 +4593,18 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     if isinstance(entry, dict):
         for k, v in entry.items():
             if k not in _RESERVED_KEYS:
+                # A relative entry in a search-path key (`watch_sources_path`)
+                # is anchored to the declaring config file's directory before
+                # export, so what the subprocess inherits — and what a poller
+                # re-derives after any number of re-execs — is already an
+                # absolute path (#2164). Only fires with a config file to
+                # anchor against; a value with none (arrived through the raw
+                # environment with no `.supertool.json` at all — `_CONFIG_PATH`
+                # is unset) is untouched and keeps the absolute-only rule
+                # `sourcepath.resolve()` itself still enforces.
+                if (k in _RELATIVE_SEARCH_PATH_KEYS and isinstance(v, str)
+                        and _CONFIG_PATH):
+                    v = _anchor_relative_search_path(v, _CONFIG_PATH)
                 # Strings pass through verbatim (e.g. CSV "error_patterns").
                 # Non-scalars (lists/dicts, e.g. "job_patterns") are JSON-encoded
                 # so the receiving preset can json.loads them back — str() would

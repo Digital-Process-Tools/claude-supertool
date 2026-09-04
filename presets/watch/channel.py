@@ -1020,16 +1020,65 @@ def _render_stranded(path: str) -> list[str]:
     return lines
 
 
+#: This file is `<root>/presets/watch/channel.py`, so `parents[2]` is the root
+#: of whichever copy of supertool is executing -- a development clone, or the
+#: marketplace cache directory for an installed plugin. Computed once, here,
+#: so `_mcp_roots` and `_root_label` (#2184) read the same identity rather
+#: than each deriving it and drifting.
+_PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+
+
 def _mcp_roots() -> list[Path]:
     """Where a `.mcp.json` declaring the consumer could be.
 
     Two, and both are checked rather than one being guessed at: the plugin root
-    (this file is `<root>/presets/watch/channel.py`), which is what
-    `${CLAUDE_PLUGIN_ROOT}` resolves to for an installed plugin, and the current
-    directory, which is where a project-level `.mcp.json` lives. Reading one and
-    reporting on it would be an answer about a file the harness may not be using.
+    (`_PLUGIN_ROOT`, above), which is what `${CLAUDE_PLUGIN_ROOT}` resolves to
+    for an installed plugin, and the current directory, which is where a
+    project-level `.mcp.json` lives. Reading one and reporting on it would be
+    an answer about a file the harness may not be using.
+
+    Neither is the caller's own session config -- `consumer_lines` says which
+    of the two each rendered line is about (#2184); this function only says
+    where to look.
     """
-    return [Path(__file__).resolve().parents[2], Path.cwd()]
+    return [_PLUGIN_ROOT, Path.cwd()]
+
+
+#: What `consumer_lines` calls each root, in the rendered line itself. Two
+#: words, not a boolean, because a third caller (a test standing in for
+#: neither) must render as the caller's-project label rather than as an
+#: unmarked default that reads like the plugin's own (#2184's whole defect,
+#: one call site over).
+_ROOT_LABEL_PLUGIN = "this plugin's own copy"
+_ROOT_LABEL_CALLER = "the caller's project"
+
+
+def _root_label(root: Path) -> str:
+    """Which of the two `_mcp_roots()` entries `root` is, by identity (#2184).
+
+    A `channel:health` line used to name `_PLUGIN_ROOT/.mcp.json` with no
+    marker distinguishing it from the caller's own project config -- reached
+    because `_mcp_roots()`'s first entry always resolves to supertool's own
+    source tree, never a file the harness loaded for the caller's session and
+    never one the caller can edit. A reader who read that line as an answer
+    about their own configuration edited the wrong file, saw no change, and
+    learned nothing (#2182's own incident, which this residual issue was
+    filed to prevent from happening again for a different reason).
+
+    Compared by resolved path, not by list position: `roots=` is a public
+    test seam (`consumer_lines(resolved, roots=[...])`) and a directory a
+    test stands in for "wherever this looks" is correctly the caller's-project
+    label even at index 0 -- only genuine identity with `_PLUGIN_ROOT` earns
+    the other one.
+    """
+    try:
+        is_plugin = Path(root).resolve() == _PLUGIN_ROOT
+    except OSError:
+        # A root that cannot even be resolved is certainly not a match --
+        # falling through to the caller's-project label is the direction
+        # that never claims the stronger, more surprising fact.
+        is_plugin = False
+    return _ROOT_LABEL_PLUGIN if is_plugin else _ROOT_LABEL_CALLER
 
 
 def _declared_env(mcp_path: Path) -> tuple[dict[str, str] | None, str]:
@@ -1106,6 +1155,16 @@ def consumer_lines(resolved: naming.Resolved,
     non-default socket). On a default channel with no `.mcp.json` anywhere there
     is nothing to warn about, and a warning printed every time is one nobody
     reads.
+
+    **Every rendered line names which of the two `_mcp_roots()` entries it is
+    about** (#2184): `(this plugin's own copy)` or `(the caller's project)`,
+    via `_root_label`. Before this, both lines used the same unlabelled
+    `consumer config <path>` shape, and the plugin's own root -- reached
+    because `_mcp_roots()`'s first entry always resolves to whichever copy of
+    supertool is executing, never a file the harness loaded for the caller's
+    session -- read as an answer about the caller's own configuration. #2182's
+    own diagnosis took three release cycles partly because of this: a
+    maintainer read that line, edited the wrong file, and observed no change.
     """
     roots = _mcp_roots() if roots is None else roots
     agreed: list[str] = []
@@ -1119,9 +1178,10 @@ def consumer_lines(resolved: naming.Resolved,
         if key in seen:
             continue
         seen.add(key)
+        label = _root_label(root)
         env, why = _declared_env(mcp_path)
         if env is None:
-            unread.append(why)
+            unread.append((label, why))
             continue
         if not any(var in env for var in CHANNEL_VARS):
             # The shipped `.mcp.json` declares no channel at all, and since #1541
@@ -1136,8 +1196,8 @@ def consumer_lines(resolved: naming.Resolved,
             # environment nobody here has seen, printed two lines under a
             # FORWARDING verdict that contradicts it.
             inherits.append(
-                f"consumer config {key} names no channel variable, so the "
-                f"consumer inherits it from the session that spawned it")
+                f"consumer config {key} ({label}) names no channel variable, so "
+                f"the consumer inherits it from the session that spawned it")
             inherits.append(
                 f"that environment is not readable from here: "
                 f"`bin/oss-workspace` exports {naming.NAME_ENV}, and a "
@@ -1147,19 +1207,22 @@ def consumer_lines(resolved: naming.Resolved,
             continue
         theirs = naming.resolve(env)
         if theirs.sock == resolved.sock:
-            agreed.append(f"consumer config {key} agrees: {_declaration(env)}")
+            agreed.append(
+                f"consumer config {key} ({label}) agrees: {_declaration(env)}")
         else:
             differed.append(
-                f"consumer config {key} declares {_declaration(env)}, which binds "
-                f"{naming.flat_path(theirs.sock)} — this process reads "
-                f"{naming.flat_path(resolved.sock)}. The consumer is on another "
-                f"channel, so nothing a poller emits here reaches it")
+                f"consumer config {key} ({label}) declares {_declaration(env)}, "
+                f"which binds {naming.flat_path(theirs.sock)} — this process "
+                f"reads {naming.flat_path(resolved.sock)}. The consumer is on "
+                f"another channel, so nothing a poller emits here reaches it")
     if differed:
         return differed + agreed
     if agreed:
         return agreed if resolved.name else []
     if resolved.name or resolved.sock != naming.DEFAULT_SOCK:
-        return inherits + [f"consumer config NOT checked — {why}" for why in unread]
+        return inherits + [
+            f"consumer config NOT checked ({label}) — {why}"
+            for label, why in unread]
     return []
 
 
