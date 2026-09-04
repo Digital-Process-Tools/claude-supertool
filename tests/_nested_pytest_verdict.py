@@ -15,6 +15,7 @@ death as a product failure until this module was shared between the two.
 from __future__ import annotations
 
 import subprocess
+from typing import Callable, List, Tuple
 
 import pytest
 
@@ -49,3 +50,64 @@ def assert_child_pytest_ran_and_passed(
         f"the child pytest never produced a verdict -- exit {rc} "
         f"({meaning}), not a product failure:\n{detail}"
     )
+
+
+def is_harness_death(result: subprocess.CompletedProcess) -> bool:
+    """True when the child never produced a verdict about the product under
+    test -- #2235.
+
+    Exit 0 and exit 1 are real answers (pass, and a genuine product
+    disagreement); everything else (2: a collection-time crash, 3/4/5:
+    pytest's own internal/usage/no-tests states) means the child died before
+    it could even try. This is the exact line `assert_child_pytest_ran_and_
+    passed` above already draws between "ran and disagreed" and "never
+    produced a verdict" -- pulled out here because `run_with_harness_retry`
+    needs to ask the same question before the final assertion does.
+    """
+    return result.returncode not in (0, 1)
+
+
+def run_with_harness_retry(
+    spawn: Callable[[int], subprocess.CompletedProcess],
+    max_attempts: int = 2,
+) -> Tuple[subprocess.CompletedProcess, List[str]]:
+    """Call `spawn(attempt)` (1-indexed) up to `max_attempts` times, retrying
+    only a harness death -- #2235.
+
+    #2235 is the seventh recorded occurrence of a nested pytest child dying
+    at collection with a temp-directory `FileNotFoundError`, on Windows, with
+    the private TMP/TEMP/TMPDIR redirect from #2015 already in place (that
+    redirect narrows what THIS process touches; it cannot stop an unrelated
+    program on the same runner -- antivirus, the Go toolchain, OS temp
+    housekeeping -- from racing the shared system temp root while the child
+    is starting up, which is outside this process's control). A rerun with
+    nothing else changed passed clean, which is the profile of a harness
+    hiccup, not a product regression.
+
+    Retrying is safe here specifically because `is_harness_death` already
+    tells `spawn`'s exit 1 (a real product disagreement) apart from every
+    other exit code (the child never got far enough to answer at all): a
+    retry can only ever recover from, or reconfirm, a run that never tested
+    anything -- it can never paper over a result that was actually produced.
+    Exit 1 is therefore never retried, bounded at `max_attempts` so a
+    persistently broken child still fails loud rather than retrying forever.
+
+    Returns the LAST result and one note per retried attempt, so the final
+    assertion can show what happened on every attempt, not just the last.
+    """
+    notes: List[str] = []
+    result = spawn(1)
+    attempt = 1
+    while is_harness_death(result) and attempt < max_attempts:
+        notes.append(
+            f"attempt {attempt}/{max_attempts}: harness death, exit "
+            f"{result.returncode} -- retrying"
+        )
+        attempt += 1
+        result = spawn(attempt)
+    if is_harness_death(result) and notes:
+        notes.append(
+            f"attempt {attempt}/{max_attempts}: harness death, exit "
+            f"{result.returncode} -- attempts exhausted"
+        )
+    return result, notes
