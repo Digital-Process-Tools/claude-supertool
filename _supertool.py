@@ -23597,6 +23597,13 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     # invalidation of its own. The adapter declines rather than guessing.
     if doc_maybe_stale:
         run_env["SUPERTOOL_LSP_DOC_MAYBE_STALE"] = "1"
+    # #2228: always set, never conditionally -- an adapter that reads this to
+    # bound what it will import and execute must be able to tell "no config
+    # loaded" (empty string) from "not told at all" (var absent, meaning this
+    # adapter was invoked outside supertool's own wiring entirely).
+    run_env[_VALIDATOR_CONFIG_DIR_ENV] = (
+        os.path.dirname(os.path.realpath(_CONFIG_PATH)) if _CONFIG_PATH else ""
+    )
 
     import time
     _t0 = time.monotonic()
@@ -24529,7 +24536,17 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     _merged_env = {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}}
     cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
     timeout = int(spec.get("timeout", 30))
-    run_env = _merged_env if _spec_env_dict else None
+    # #2228, self-review (reviewer finding): a `.supertool.json` "formatters"
+    # block can name the exact same `cmd` as a "validators" one -- nothing
+    # stops it, and `new-file-lint.py` / `changelog-fragment.py` read
+    # `SUPERTOOL_CONFIG_DIR` regardless of which block wired them. Stamped
+    # unconditionally here too, the same as `_validator_run_one`, so the
+    # trust boundary is not something a validator-vs-formatter choice could
+    # bypass.
+    run_env = dict(_merged_env)
+    run_env[_VALIDATOR_CONFIG_DIR_ENV] = (
+        os.path.dirname(os.path.realpath(_CONFIG_PATH)) if _CONFIG_PATH else ""
+    )
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
                            env=run_env, encoding="utf-8", errors="replace")
@@ -30405,6 +30422,18 @@ _MCP_STOP_SCRIPT = os.path.join(os.path.dirname(_MCP_DAEMON_SCRIPT), "stop.py")
 # still connected to, which is the whole point of running the validator.
 _MCP_AUTOSPAWN_ENV = "SUPERTOOL_MCP_AUTOSPAWN"
 _MCP_AUTOSPAWN_FALSEY = frozenset({"0", "false", "no", "off"})
+
+# #2228: the directory holding the `.supertool.json` this run actually loaded
+# (empty when none did), passed to every validator adapter's environment. An
+# adapter that imports and executes a script it finds by walking up from the
+# edited file (new-file-lint.py, changelog-fragment.py) needs this to tell
+# "the project that wired me" from "whatever repo happens to be edited" --
+# without it, a maintainer whose own .supertool.json sits above a directory
+# of clones has each clone's own conventionally-named CI helper imported (and
+# executing an import is executing its top-level code) with the maintainer's
+# privileges the moment any .py file inside that clone is edited, well before
+# either adapter's own new-file-only check ever runs.
+_VALIDATOR_CONFIG_DIR_ENV = "SUPERTOOL_CONFIG_DIR"
 
 
 def _mcp_autospawn_allowed() -> bool:

@@ -85,6 +85,63 @@ def _locations() -> tuple:
     return (override,) if override else ASSEMBLER_LOCATIONS
 
 
+#: Set by supertool's own validator runner (`_supertool.py`'s
+#: `_validator_run_one`) to the directory holding the `.supertool.json`
+#: that wired THIS validator run -- never set by this adapter itself.
+#:
+#: Closes #2228 -- `new-file-lint.py`'s identical primitive, fixed there
+#: first; see that file's own comment on `CONFIG_DIR_ENV` for the full
+#: shape. `_find_assembler`'s walk was already bounded at the fragment's
+#: own git root (#2178), which stops an escape ABOVE that repo, but it
+#: trusted whatever conventionally-named script sat inside that repo
+#: unconditionally -- including a repo that is not the one whose
+#: `.supertool.json` wired this validator at all.
+CONFIG_DIR_ENV = "SUPERTOOL_CONFIG_DIR"
+
+
+def _config_dir() -> tuple[Path | None, bool, str]:
+    """`(config_dir, scope_known, reason)` -- see `new-file-lint.py`'s
+    identical function for the full rationale; mirrored here rather than
+    imported so each adapter stays a standalone, independently-readable
+    contract (the shape this whole file already follows for `_repo_root`
+    and `_load`).
+    """
+    if CONFIG_DIR_ENV not in os.environ:
+        return None, False, ""
+    raw = os.environ[CONFIG_DIR_ENV].strip()
+    if not raw:
+        return None, True, "{0} was set but empty".format(CONFIG_DIR_ENV)
+    try:
+        return Path(raw).resolve(), True, ""
+    except (OSError, ValueError) as exc:
+        # ValueError, not just OSError: a malformed value (e.g. an embedded
+        # NUL byte) raises ValueError out of Path.resolve() on some
+        # platforms, not OSError -- self-review (#2228, auditor finding).
+        return None, True, "{0}={1!r} could not be resolved: {2}".format(
+            CONFIG_DIR_ENV, raw, exc)
+
+
+def _config_dir_is_untrusted_ancestor(root: Path, config_dir: Path) -> bool:
+    """True exactly when `config_dir` sits STRICTLY ABOVE `root` -- see
+    `new-file-lint.py`'s identical function for the full rationale,
+    including the self-review finding (#2228) this polarity fixes: refusing
+    every relationship OTHER than "config_dir at or below root" also
+    refused a disjoint, unrelated tree named by an explicit `path=`
+    argument -- ordinary usage this file's own pre-existing #1132 write-time
+    test exercises end to end -- and that shape was never the
+    vulnerability. Only walking DOWN from a shared parent (the
+    directory-of-clones shape) is."""
+    root_s = os.path.normcase(str(root))
+    config_s = os.path.normcase(str(config_dir))
+    if config_s == root_s:
+        return False
+    try:
+        common = os.path.commonpath([root_s, config_s])
+    except ValueError:  # e.g. different drives on Windows -- no ancestry
+        return False
+    return common == config_s
+
+
 def _repo_root(start: Path) -> tuple[Path | None, str | None]:
     """The git repo root above `start`, and why not when there is none.
 
@@ -122,9 +179,18 @@ def _repo_root(start: Path) -> tuple[Path | None, str | None]:
     return (Path(top).resolve(), None) if top else (None, "git reported no toplevel")
 
 
-def _find_assembler(target: Path) -> tuple[Path | None, str | None]:
+#: Prefix on `_find_assembler`'s second return value distinguishing "the
+#: repo root itself could not be determined" (`_repo_root`'s own reason,
+#: unprefixed) from "the repo root is known, but the .supertool.json that
+#: wired this validator does not live inside it" (#2228) -- two different
+#: claims that must not be folded into one sentence in `main()`.
+SCOPE_REFUSED_PREFIX = "SCOPE-REFUSED: "
+
+
+def _find_assembler(target: Path) -> tuple[Path | None, Path | None, str | None]:
     """The nearest project script at or above `target`, bounded at the repo
-    root; and, when nothing was found, whether the search could even run.
+    root; the repo root itself; and, when nothing was found, whether the
+    search could even run or was refused.
 
     Walks parents the same way it always did, but stops at (and including)
     the git repo root above `target` rather than climbing to filesystem root
@@ -136,22 +202,46 @@ def _find_assembler(target: Path) -> tuple[Path | None, str | None]:
 
     No repo root above `target` refuses outright rather than falling back to
     the old unbounded walk: there is no boundary to bound the search to. The
-    second return value carries `_repo_root`'s reason in that case (`None`
+    third return value carries `_repo_root`'s reason in that case (`None`
     once a root is found, whether or not a script turns up under it) so a
     caller can tell "could not even look" from "looked, found nothing."
+
+    Bounding at the repo root closes an escape ABOVE the repo, but says
+    nothing about whether the repo ITSELF should be trusted (#2228): unless
+    `SUPERTOOL_CHANGELOG_ASSEMBLER` pins an exact path (an operator's own
+    explicit trust), the convention-based locations are refused when
+    `SUPERTOOL_CONFIG_DIR` -- the directory holding the `.supertool.json`
+    that wired this run, set by supertool's own validator runner -- sits
+    STRICTLY ABOVE `root`. A directory of clones, configured from a
+    `.supertool.json` that sits above every one of them, fails that check
+    and the third return value carries `SCOPE_REFUSED_PREFIX` plus why. A
+    config directory unrelated to `root` entirely -- an explicit `path=`
+    naming a file outside the config-owning project, ordinary usage this
+    file's own #1132 write-time test exercises end to end -- is NOT refused
+    (self-review finding): only walking down from a shared parent is.
     """
     root, reason = _repo_root(target.parent)
     if root is None:
-        return None, reason
+        return None, None, reason
+    override_set = bool(os.environ.get(ENV_ASSEMBLER, "").strip())
+    if not override_set:
+        config_dir, scope_known, scope_reason = _config_dir()
+        if scope_known and config_dir is None:
+            return None, root, SCOPE_REFUSED_PREFIX + scope_reason
+        if (scope_known and config_dir is not None
+                and _config_dir_is_untrusted_ancestor(root, config_dir)):
+            return None, root, SCOPE_REFUSED_PREFIX + (
+                "the .supertool.json that wired this run lives ABOVE this "
+                "project, at {0}".format(config_dir))
     resolved_start = target.parent.resolve()
     for parent in [resolved_start, *resolved_start.parents]:
         for relative in _locations():
             candidate = parent / relative
             if candidate.is_file():
-                return candidate, None
+                return candidate, root, None
         if parent == root:
             break
-    return None, None
+    return None, root, None
 
 
 def _load(script: Path):
@@ -201,8 +291,22 @@ def main() -> None:
     path = Path(target)
     name = path.name
 
-    script, could_not_look = _find_assembler(path)
+    script, root, could_not_look = _find_assembler(path)
     if script is None:
+        if could_not_look is not None and could_not_look.startswith(SCOPE_REFUSED_PREFIX):
+            detail = could_not_look[len(SCOPE_REFUSED_PREFIX):]
+            emit(skipped(TOOL, target,
+                         "an assembler may exist at the default location(s) "
+                         "inside {0}, but {1} -- the convention-based "
+                         "location is not trusted across that boundary "
+                         "(#2228), because a checkout is not made "
+                         "trustworthy just by sitting under a directory "
+                         "that also holds a .supertool.json above it. Set "
+                         "{2} to an exact path if this project's assembler "
+                         "is meant to be trusted here.".format(
+                             root, detail, ENV_ASSEMBLER),
+                         _ms(start)))
+            return
         if could_not_look is not None:
             emit(skipped(TOOL, target,
                          "could not determine the git repo root above {0}, so "

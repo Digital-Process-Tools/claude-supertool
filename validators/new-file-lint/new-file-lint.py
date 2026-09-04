@@ -101,6 +101,86 @@ def _locations() -> tuple:
     return (override,) if override else LINT_SCRIPT_LOCATIONS
 
 
+#: Set by supertool's own validator runner (`_supertool.py`'s
+#: `_validator_run_one`) to the directory holding the `.supertool.json`
+#: that wired THIS validator run -- never set by this adapter itself.
+#:
+#: Closes #2228: `_find_lint_script`'s walk was bounded at the edited
+#: file's own git root, which stops an escape ABOVE that repo (the shape
+#: `changelog-fragment.py` closed for itself in #2178) but trusted
+#: whatever CONVENTIONALLY-NAMED script sits inside that repo unconditionally
+#: -- including a repo that is not the one whose `.supertool.json` wired
+#: this validator at all. A maintainer whose own `.supertool.json` sits
+#: above a directory of clones, editing a `.py` file inside one of them,
+#: had that clone's own `.github/scripts/lint_new_files.py` imported (and
+#: `_load` executes what it imports) with the maintainer's privileges.
+CONFIG_DIR_ENV = "SUPERTOOL_CONFIG_DIR"
+
+
+def _config_dir() -> "tuple[Path | None, bool, str]":
+    """`(config_dir, scope_known, reason)`.
+
+    `scope_known` is False only when `CONFIG_DIR_ENV` is absent entirely --
+    this adapter was invoked directly, outside supertool's own validator
+    wiring (a test harness, an operator running the script by hand). No
+    scope claim is being made either way in that case, so the pre-#2228
+    repo-bound walk applies unchanged: running this script directly is
+    exactly as safe as it always was, and nothing here narrows that.
+
+    `scope_known` is True whenever supertool's real validator runner set
+    the variable -- empty or unresolvable counts as "no directory to
+    trust", never as "trust everything", because reaching this adapter at
+    all through that runner implies a `.supertool.json` WAS found (this
+    validator's own wiring lives inside one).
+    """
+    if CONFIG_DIR_ENV not in os.environ:
+        return None, False, ""
+    raw = os.environ[CONFIG_DIR_ENV].strip()
+    if not raw:
+        return None, True, "{0} was set but empty".format(CONFIG_DIR_ENV)
+    try:
+        return Path(raw).resolve(), True, ""
+    except (OSError, ValueError) as exc:
+        # ValueError, not just OSError: a malformed value (e.g. an embedded
+        # NUL byte) raises ValueError out of Path.resolve() on some
+        # platforms, not OSError -- self-review (#2228, auditor finding).
+        return None, True, "{0}={1!r} could not be resolved: {2}".format(
+            CONFIG_DIR_ENV, raw, exc)
+
+
+def _config_dir_is_untrusted_ancestor(root: Path, config_dir: Path) -> bool:
+    """True exactly when `config_dir` (where `.supertool.json` lives) sits
+    STRICTLY ABOVE `root` -- the directory-of-clones shape #2228 was filed
+    for: a maintainer's own config, above a directory holding several
+    clones, silently wiring this validator against whichever clone the
+    edited file happens to be inside. That is the one relationship this
+    adapter cannot tell apart from "the project that configured supertool
+    IS the project whose script is about to run" without asking.
+
+    False for every other relationship, deliberately -- including two
+    disjoint trees with no ancestry between them at all. Self-review
+    (#2228, reviewer finding): an explicit `path=` argument naming a file
+    outside the config-owning project entirely is ordinary supertool usage
+    -- `test_changelog_fragment_write_receipt_1132.py`'s own end-to-end
+    case pastes into a fragment under a *sibling* tmp_path project while
+    cwd sits in this repo's own `.supertool.json` scope -- and that shape
+    was never the vulnerability: nothing about it lets one clone's script
+    execute in place of another's the way walking DOWN from a shared
+    parent does. Refusing it too would be broader than #2228 asked for and
+    breaks that pre-existing, unmodified guarantee (#1132) for no
+    additional safety.
+    """
+    root_s = os.path.normcase(str(root))
+    config_s = os.path.normcase(str(config_dir))
+    if config_s == root_s:
+        return False
+    try:
+        common = os.path.commonpath([root_s, config_s])
+    except ValueError:  # e.g. different drives on Windows -- no ancestry
+        return False
+    return common == config_s
+
+
 def _repo_root(start: Path) -> "tuple[Path | None, str | None]":
     """The git repo root above `start`, and why not when there is none.
 
@@ -221,6 +301,42 @@ def main() -> None:
                      "project.".format(path.parent, could_not_look),
                      int((time.time() - start) * 1000)))
         return
+
+    override_set = bool(os.environ.get(ENV_LINT_SCRIPT, "").strip())
+    if not override_set:
+        config_dir, scope_known, scope_reason = _config_dir()
+        # `scope_reason` is only ever non-empty when `config_dir` is None
+        # (the env var was set but unreadable/empty) -- a config_dir that
+        # resolved fine never sets it, so `None` here always means "no
+        # directory to compare against" rather than "compared and it
+        # happened to be untrusted".
+        if scope_known and config_dir is None:
+            emit(skipped(TOOL, file,
+                         "a new-file-lint script may exist at the default "
+                         "location(s) inside {0}, but this run's "
+                         "SUPERTOOL_CONFIG_DIR could not be used ({1}), so "
+                         "the convention-based location cannot be checked "
+                         "against a project boundary (#2228). Set {2} to an "
+                         "exact path if this project's script is meant to "
+                         "be trusted here.".format(
+                             root, scope_reason, ENV_LINT_SCRIPT),
+                         int((time.time() - start) * 1000)))
+            return
+        if (scope_known and config_dir is not None
+                and _config_dir_is_untrusted_ancestor(root, config_dir)):
+            emit(skipped(TOOL, file,
+                         "a new-file-lint script may exist at the default "
+                         "location(s) inside {0}, but the .supertool.json "
+                         "that wired this run lives ABOVE that project, at "
+                         "{1} -- the convention-based location is not "
+                         "trusted across that boundary (#2228), because a "
+                         "checkout is not made trustworthy just by sitting "
+                         "under a directory that also holds this config. "
+                         "Set {2} to an exact path if this project's script "
+                         "is meant to be trusted here.".format(
+                             root, config_dir, ENV_LINT_SCRIPT),
+                         int((time.time() - start) * 1000)))
+            return
 
     script = _find_lint_script(path, root)
     if script is None:

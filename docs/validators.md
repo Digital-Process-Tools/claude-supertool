@@ -214,7 +214,58 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | PHP — tests, warm | `phpunit-mcp` | `mcp-phpunit-warm` on PATH (`MCP_PHPUNIT_BIN` to override) | Runs the file's tests through a prewarmed bootstrap. `warm_unsafe` declares tests the warm runner cannot answer for. See [README](../validators/phpunit-mcp/README.md) |
 | PHP — refactor, warm | `rector-mcp` | `mcp-rector-warm` on PATH (`MCP_RECTOR_BIN` to override) | Rector suggestions through a long-lived daemon. See [README](../validators/rector-mcp/README.md) |
 | jit-context index | `jit-index` | stdlib only; `awk` for the second half | Keyed on a path glob, not a language. Refuses a `**/00-manual/00-index.tsv` rule whose regex column the hook's awk cannot honour. Two checks: a **structural** one that needs no awk and gives the same verdict everywhere, and a **compile** one against the installed awk. `skipped` when the file is not a jit-context index, or when awk is absent *and* the structural half was clean — a half-run check is not a pass. See below |
-| Changelog fragment | `changelog-fragment` | the **project's own** `assemble_changelog.py` (plus its `markdown-it-py`) | Keyed on a path glob, not a language. States no rules of its own — it calls the release script's `parse_fragment_name` / `scan_fragment_body` and republishes their messages verbatim, so the write-time verdict and the CI verdict cannot drift. `skipped` when no such script sits above the file, so it is inert in projects with no `changelog.d/` convention. `$SUPERTOOL_CHANGELOG_ASSEMBLER` overrides where it looks (default `.github/scripts/assemble_changelog.py`) |
+| New-file lint | `new-file-lint` | the **project's own** `.github/scripts/lint_new_files.py` and `ruff` | Keyed on a path glob, not a language. States no rules of its own — it finds the project's script declaring `EXTRA_RULES` for a path with no git history and runs `ruff --extend-select` with them. `skipped` when no such script sits above the file, when the file already has a commit at `HEAD`, or when the found script's project is not the one whose `.supertool.json` wired this validator (see "Trust boundary on the convention-based location", below). `$SUPERTOOL_NEW_FILE_LINT_SCRIPT` overrides where it looks (default `.github/scripts/lint_new_files.py`) |
+| Changelog fragment | `changelog-fragment` | the **project's own** `assemble_changelog.py` (plus its `markdown-it-py`) | Keyed on a path glob, not a language. States no rules of its own — it calls the release script's `parse_fragment_name` / `scan_fragment_body` and republishes their messages verbatim, so the write-time verdict and the CI verdict cannot drift. `skipped` when no such script sits above the file, so it is inert in projects with no `changelog.d/` convention, or when the found script's project is not the one whose `.supertool.json` wired this validator (see "Trust boundary on the convention-based location", below). `$SUPERTOOL_CHANGELOG_ASSEMBLER` overrides where it looks (default `.github/scripts/assemble_changelog.py`) |
+
+### Trust boundary on the convention-based location (#2228)
+
+`new-file-lint` and `changelog-fragment` both state no rules of their own —
+each finds the PROJECT's own script (`.github/scripts/lint_new_files.py`,
+`assemble_changelog.py` at one of a short list of conventional locations)
+by walking up from the edited file to that file's own git root, and
+**imports** it, which executes its top-level code. Both walks are bounded
+at the repo root (#2178): a script sitting above the repo, in a sibling
+directory or anywhere further up, is never reached.
+
+That bound stops an escape ABOVE the repo. It says nothing about whether
+the repo itself should be trusted. A maintainer whose own `.supertool.json`
+sits above a directory of clones — reviewing several checkouts from one
+place, a common shape — and edits any `.py` file inside one of them
+previously had that clone's own conventionally-named CI helper imported and
+executed with the maintainer's own privileges, before either adapter's
+new-file-only check even ran. An innocuous, conventionally-named file was
+enough; no `.supertool.json` of the untrusted repo's own was required.
+
+The fix is provenance: supertool's runner now sets `SUPERTOOL_CONFIG_DIR`
+— the directory holding the `.supertool.json` that wired this run — in
+every validator AND formatter adapter's environment (the same shape
+`SUPERTOOL_MCP_AUTOSPAWN` already uses, #475; both call sites are patched,
+since nothing stops a config wiring either adapter's `cmd` under
+`"formatters"` instead of `"validators"`). Both adapters refuse the
+convention-based location only when that directory sits STRICTLY ABOVE the
+edited file's own git repo root — the directory-of-clones shape.
+`SUPERTOOL_NEW_FILE_LINT_SCRIPT` / `SUPERTOOL_CHANGELOG_ASSEMBLER` still
+work regardless of that boundary: an operator naming one exact path is
+explicit trust, not an inherited one.
+
+**Self-review finding.** The first cut of this fix refused every
+`SUPERTOOL_CONFIG_DIR` that was not the edited file's own repo root or an
+ancestor of it — which also refused a config directory sharing no ancestry
+with that repo AT ALL, the ordinary shape of an explicit `path=` argument
+naming a file outside the config-owning project (`paste`, `edit`, etc. all
+take one). That regressed a pre-existing, unrelated guarantee (#1132: a
+malformed `changelog.d/` fragment refused at write time) for every such
+call, caught by that guarantee's own unmodified end-to-end test. Only
+walking DOWN from a shared parent — a config directory that is a strict
+ancestor of the repo, never a disjoint or unrelated one — is the shape this
+issue was filed for.
+
+Running either adapter directly — outside supertool's own wiring, as every
+pre-#2228 test in this repo's suite does — leaves `SUPERTOOL_CONFIG_DIR`
+unset entirely, which is read as "no scope claim is being made" rather
+than "nothing is trusted": the pre-#2228 repo-bound behaviour applies
+unchanged. Only a real supertool run, where the variable is always set
+(empty string when no config loaded at all), enforces the boundary.
 
 ### `jit-index` — a rule that reads as enforced and never fires (#1254)
 
