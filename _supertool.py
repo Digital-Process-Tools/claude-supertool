@@ -11140,13 +11140,22 @@ def _edit_miss_diagnostic(old: str, content: str, new: str = "",
     """
     hints: List[str] = []
 
-    # 0. The replacement is ALREADY in the file — a re-run of a payload that
-    #    landed. #701 covers the case where `new` contains `old` (the anchor
-    #    survives and the edit applies a second time); this is the other half,
-    #    where it does not, and the second run reports a bare no-match that is
-    #    character-for-character what a genuinely wrong anchor prints (#984).
-    #    The two have opposite remedies — one is done, the other needs a new
-    #    anchor — and the reader could not recover which from the message.
+    # 0. The replacement is ALREADY in the file — consistent with (but not
+    #    proof of) a re-run of a payload that already landed. #701 covers the
+    #    case where `new` contains `old` (the anchor survives and the edit
+    #    applies a second time); this is the other half, where it does not,
+    #    and the second run reports a bare no-match that is character-for-
+    #    character what a genuinely wrong anchor prints (#984).
+    #
+    #    A substring search cannot tell a genuine re-run (the whole
+    #    replacement sitting where the edit targeted) from a coincidental
+    #    match elsewhere in the file — one relayed report found a line that
+    #    merely resembled the replacement, reported it as "this looks like a
+    #    re-run", and the reader concluded there was nothing to do when the
+    #    anchor was in fact simply missing (#2118). The two explanations have
+    #    opposite remedies — one is done, the other needs a new anchor — and
+    #    stating one as settled collapses the case where the tool genuinely
+    #    cannot tell.
     #
     #    A located fact, not a verdict: the ERROR stands, the exit code stands,
     #    the op is still counted as skipped. Downgrading a failure to a note
@@ -11155,8 +11164,9 @@ def _edit_miss_diagnostic(old: str, content: str, new: str = "",
         at = content.count("\n", 0, content.index(new)) + 1
         hints.append(
             f"the replacement text is ALREADY present at line {at} — this "
-            f"looks like a re-run of an edit that already applied, not a "
-            f"broken anchor"
+            f"may be a re-run of an edit that already applied, but it could "
+            f"also be a coincidental match; if line {at} is not where you "
+            f"meant to edit, the anchor is likely just missing"
         )
 
     # 1. Doubled backslashes, in EITHER direction. TOML literal strings

@@ -416,3 +416,28 @@ def test_already_applied_hint_survives_a_crlf_checkout(tmp_path: Path, monkeypat
 
     assert block.startswith("ERROR: old string not found"), (eol, block)
     assert "already" in block.lower(), (eol, block)
+
+
+def test_the_already_present_hint_does_not_rule_out_a_missing_anchor(
+        tmp_path: Path, monkeypatch) -> None:
+    """#2118: the old wording asserted 'this looks like a re-run ... not a
+    broken anchor' as a settled cause -- but a substring search cannot tell a
+    genuine re-run (the whole replacement, at the position the edit targeted)
+    from a coincidental match elsewhere in the file. A relayed report from
+    another lane hit exactly this: the anchor genuinely did not exist, a
+    coincidentally similar line sat at the reported position, and the message
+    told the reader there was nothing to do. The hint must not rule the
+    missing-anchor explanation out."""
+    _no_branch(monkeypatch)
+    supertool._CONFIG = {"validators": {}}
+    supertool._CONFIG_CHECKED = True
+    f = tmp_path / "a.py"
+    f.write_text("A = 1\nB = 2\nC = 3\nD = 4\n", encoding="utf-8")
+
+    supertool.dispatch(f"edit:::C = 3:::C = 999:::{f}")
+    block = _error_block(supertool.dispatch(f"edit:::C = 3:::C = 999:::{f}"))
+
+    assert "already" in block.lower(), block
+    assert "not a broken anchor" not in block, block
+    assert ("may" in block.lower() or "coincidence" in block.lower()
+            or "could" in block.lower()), block

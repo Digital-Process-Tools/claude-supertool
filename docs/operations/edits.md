@@ -66,10 +66,10 @@ The first of those is the other half of the re-run problem (#984). `re-applied` 
 
 ```
 ERROR: old string not found in a.py
-  ↳ the replacement text is ALREADY present at line 12 — this looks like a re-run of an edit that already applied, not a broken anchor
+  ↳ the replacement text is ALREADY present at line 12 — this may be a re-run of an edit that already applied, but it could also be a coincidental match; if line 12 is not where you meant to edit, the anchor is likely just missing
 ```
 
-A located fact, not a verdict. The `ERROR` stands, the op is still counted in `K skipped`, and the call still exits non-zero — downgrading a failure because it is probably benign is how a loud bug becomes a quiet one.
+A located fact, not a verdict, and deliberately not a settled cause: `new in content` proves the whole replacement sits somewhere in the file, not that it sits *where the edit targeted* — a substring search cannot tell those apart, and one relayed report found a line that merely resembled the replacement, was told "this looks like a re-run", and concluded there was nothing to do when the anchor was in fact simply missing (#2118). The `ERROR` stands, the op is still counted in `K skipped`, and the call still exits non-zero — downgrading a failure because it is probably benign is how a loud bug becomes a quiet one.
 
 ## The nearest match, and when it declines to name one
 
