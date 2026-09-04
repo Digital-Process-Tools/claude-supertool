@@ -38,6 +38,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _untrusted
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
+import _st_hint  # noqa: E402  (a runnable invocation, not a relative path that may not exist -- #905)
 import _untrusted  # noqa: E402  (the state files are somebody else's text, #1197)
 import naming  # noqa: E402  (which knob put the state directory where it is, #1477)
 import sourcepath  # noqa: E402  (a source may live outside the plugin, #2135)
@@ -210,10 +211,10 @@ def cmd_reload(source: str, watcher_id: str) -> int:
     if RELOAD_SIGNAL is None:
         print("ERROR: this platform has no SIGHUP, so a poller cannot be "
               "signalled to reload in place. "
-              f"./supertool 'unwatch:{source}:{watcher_id}' then "
-              f"./supertool 'watch:{source}:{watcher_id}' is the only path "
-              f"here, and it loses the baseline -- the whole reason this op "
-              f"exists.")
+              f"{_st_hint.st_hint(f'unwatch:{source}:{watcher_id}')} then "
+              f"{_st_hint.st_hint(f'watch:{source}:{watcher_id}')} is the only "
+              f"path here, and it loses the baseline -- the whole reason this "
+              f"op exists.")
         return 1
     census = transport.poller_census()
     info = transport.watcher_pids(
@@ -234,7 +235,7 @@ def cmd_reload(source: str, watcher_id: str) -> int:
         else:
             print(f"No active watcher for {source}:{watcher_id} -- "
                   f"nothing to reload.")
-        print(f"Use ./supertool 'watch:{source}:{watcher_id}' to start one.")
+        print(f"Use {_st_hint.st_hint(f'watch:{source}:{watcher_id}')} to start one.")
         return 1
     print(f"Reloading {len(pids)} poller(s) for {source}:{watcher_id}: "
           + ", ".join(
@@ -1384,6 +1385,18 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
 
 def main(argv: list[str]) -> int:
     use_utf8_stdout()
+    # `_RELOAD_FLAG` is module-level and this process may be a fork that
+    # inherited a set flag from before it existed as this watcher (#2212).
+    # `_run_poll_loop` clears it again, unconditionally, at the one moment it
+    # starts owning the flag -- the reset here is a second one, ahead of the
+    # `sub == transport.POLL_SUBOP` branch below, so it also holds for a
+    # harness that imports this module once and calls main() repeatedly
+    # (#686's own reason for this pattern). Neither reset can stand in for the
+    # other: this one never runs on the direct `_run_poll_loop` call
+    # `_spawn_poller` makes on a failed exec (never through main() at all),
+    # and that one never runs for the `watch`/`unwatch`/`list` sub-ops this
+    # function also dispatches to.
+    _RELOAD_FLAG["reload"] = False
     if len(argv) < 2:
         print("ERROR: usage: dispatcher.py {watch|unwatch|list|poll} [ARG]")
         return 1

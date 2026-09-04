@@ -1394,6 +1394,11 @@ RESET_EXEMPT_GLOBALS = (
     "_PARALLEL_SAFE_OPS",
     "_PLAIN_MARKERS",
     "_READ_OP_TARGETS",
+    # The one search-path config key anchored against its declaring config
+    # file's directory before export (#2164). A constant lookup set, same
+    # lifetime as _BUILTIN_OPS: written once at import, only ever read via
+    # `k in _RELATIVE_SEARCH_PATH_KEYS` -- never mutated.
+    "_RELATIVE_SEARCH_PATH_KEYS",
     "_REGEX_PATTERNS",
     "_TOML_ESCAPES",
     "_TS_DEF_NODES",
@@ -1439,6 +1444,7 @@ PRESET_SELF_CLEARING_GLOBALS: dict[str, tuple[str, ...]] = {
     "presets/git/push.py": ("_RUN", "_BUDGET"),
     "presets/git/status.py": ("_UNANSWERED",),
     "presets/mcp/stop.py": ("_RUNTIME_HINT",),
+    "presets/watch/dispatcher.py": ("_RELOAD_FLAG",),
 }
 
 #: Neither reset nor self-clearing, and deliberately so. Empty, and that is the
