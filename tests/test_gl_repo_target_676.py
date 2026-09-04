@@ -35,7 +35,9 @@ from _child_temp_diagnostics import describe, snapshot_temp_state
 from _isolated_child_tmp import child_env_with_private_tmp
 from _nested_pytest_verdict import (
     assert_child_pytest_ran_and_passed as _assert_child_pytest_ran_and_passed,
+    run_with_harness_retry as _run_with_harness_retry,
 )
+import _nested_pytest_verdict
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TARGET = "group/subgroup/project"
@@ -172,33 +174,111 @@ def test_the_env_var_main_sets_does_not_survive_into_the_next_test(tmp_path) -> 
     directory and is never inside `REPO_ROOT`
     (`test_repo_walk_probe_location_1981.py` pins that), so no walk rooted at
     `REPO_ROOT` can ever enumerate it, no matter how the two races.
+
+    #2235 (reasoned, not observed -- traced from a Windows CI log, never
+    reproduced locally): a seventh occurrence of the same external
+    temp-directory race `_isolated_child_tmp.py`'s docstring already
+    describes, this time as `FileNotFoundError: [WinError 2]` naming a bare
+    `tmpXXXXXXXX` directory that is neither `child_tmp` nor anything this
+    repo's own code creates -- with #2015's private TMP/TEMP/TMPDIR redirect
+    already in place and evidently not sufficient, because whatever touches
+    that directory is an unrelated program on the same runner, not this
+    process. `run_with_harness_retry` retries only a harness death (the
+    child never produced a verdict at all) and never a real product
+    disagreement (exit 1), so it cannot mask a genuine regression -- see
+    `_nested_pytest_verdict.run_with_harness_retry`'s own docstring.
     """
-    probe = tmp_path / "_gl_repo_env_leak_probe_1780.py"
-    probe.write_text(
-        "import os\n\n\n"
-        "def test_probe():\n"
-        "    assert 'SUPERTOOL_REPO' not in os.environ, os.environ.get('SUPERTOOL_REPO')\n",
-        encoding="utf-8",
-    )
-    child_tmp = tmp_path / "_nested_child_tmp_2015"
-    child_tmp.mkdir()
-    before = snapshot_temp_state()
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pytest",
-             f"{__file__}::test_subgroup_path_is_accepted_for_a_gitlab_call",
-             str(probe), "-q", "--no-cov", "-n0"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            cwd=REPO_ROOT, timeout=60,
-            env=child_env_with_private_tmp(os.environ, child_tmp),
+    diag: list[str] = []
+
+    def _spawn(attempt: int) -> subprocess.CompletedProcess:
+        probe = tmp_path / f"_gl_repo_env_leak_probe_1780_{attempt}.py"
+        probe.write_text(
+            "import os\n\n\n"
+            "def test_probe():\n"
+            "    assert 'SUPERTOOL_REPO' not in os.environ, os.environ.get('SUPERTOOL_REPO')\n",
+            encoding="utf-8",
         )
-    finally:
-        probe.unlink(missing_ok=True)
-    after = snapshot_temp_state()
+        child_tmp = tmp_path / f"_nested_child_tmp_2015_{attempt}"
+        child_tmp.mkdir()
+        before = snapshot_temp_state()
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pytest",
+                 f"{__file__}::test_subgroup_path_is_accepted_for_a_gitlab_call",
+                 str(probe), "-q", "--no-cov", "-n0"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                cwd=REPO_ROOT, timeout=60,
+                env=child_env_with_private_tmp(os.environ, child_tmp),
+            )
+        finally:
+            probe.unlink(missing_ok=True)
+        after = snapshot_temp_state()
+        diag.append(
+            f"-- attempt {attempt} --\n"
+            + describe("before", before) + "\n" + describe("after", after)
+        )
+        return result
+
+    result, retry_notes = _run_with_harness_retry(_spawn, max_attempts=2)
     _assert_child_pytest_ran_and_passed(
         result,
-        extra_detail=describe("before", before) + "\n" + describe("after", after),
+        extra_detail="\n\n".join(retry_notes + diag),
     )
+
+
+def test_a_harness_death_is_retried_and_a_later_pass_wins() -> None:
+    """#2235: the retry exists precisely for this shape -- a child that dies
+    without producing a verdict, followed by a clean run."""
+    calls: list[int] = []
+
+    def spawn(attempt: int) -> subprocess.CompletedProcess:
+        calls.append(attempt)
+        if attempt == 1:
+            return subprocess.CompletedProcess(
+                args=[], returncode=2, stdout="",
+                stderr="Interrupted: 1 error during collection",
+            )
+        return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    result, notes = _nested_pytest_verdict.run_with_harness_retry(spawn, max_attempts=2)
+
+    assert calls == [1, 2]
+    assert result.returncode == 0
+    assert len(notes) == 1
+    assert "retrying" in notes[0]
+
+
+def test_a_real_product_failure_is_never_retried() -> None:
+    """#2235: exit 1 is a verdict, not a harness death -- retrying it could
+    paper over a genuine regression, so it must run exactly once."""
+    calls: list[int] = []
+
+    def spawn(attempt: int) -> subprocess.CompletedProcess:
+        calls.append(attempt)
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout="1 failed", stderr="")
+
+    result, notes = _nested_pytest_verdict.run_with_harness_retry(spawn, max_attempts=2)
+
+    assert calls == [1]
+    assert result.returncode == 1
+    assert notes == []
+
+
+def test_a_persistent_harness_death_exhausts_attempts_and_still_fails() -> None:
+    """#2235: a real, non-transient breakage must still fail loud, capped
+    rather than retried forever."""
+    calls: list[int] = []
+
+    def spawn(attempt: int) -> subprocess.CompletedProcess:
+        calls.append(attempt)
+        return subprocess.CompletedProcess(args=[], returncode=2, stdout="", stderr="boom")
+
+    result, notes = _nested_pytest_verdict.run_with_harness_retry(spawn, max_attempts=2)
+
+    assert calls == [1, 2]
+    assert result.returncode == 2
+    assert len(notes) == 2
+    assert "exhausted" in notes[-1]
 
 
 def test_two_segment_path_is_accepted_for_a_gitlab_call(no_dispatch) -> None:
