@@ -228,3 +228,107 @@ def test_main_exits_zero_even_when_junit_is_absent(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "could-not-measure" in out
+
+
+# --- review findings (#2206 self-review): each is a regression test for a
+# mechanism a reviewer or the auditor reproduced against an earlier version
+# of this module, not a hypothetical. --------------------------------------
+
+def test_parse_junit_reads_every_testsuite_not_just_the_first(tmp_path):
+    """A `<testsuites>` root can carry more than one `<testsuite>` sibling.
+
+    `Element.find()` returns only the first match -- reading just it would
+    silently drop a whole suite's total and testcases rather than raising
+    `could-not-measure`, which is a confidently wrong report, not an absent
+    one (the reviewer's finding #1)."""
+    root = ET.Element("testsuites")
+    for name, total, cases in (
+        ("gw0", 5.0, [("t.a", 4.9)]),
+        ("gw1", 50.0, [("t.b", 49.9)]),
+    ):
+        suite = ET.SubElement(root, "testsuite", {"name": name, "time": str(total)})
+        for ident, t in cases:
+            classname, _, cname = ident.rpartition(".")
+            ET.SubElement(suite, "testcase", {
+                "classname": classname, "name": cname or ident, "time": str(t)})
+    path = tmp_path / "junit.xml"
+    ET.ElementTree(root).write(str(path), encoding="unicode")
+
+    total, cases = dr.parse_junit(path)
+    assert total == 55.0
+    assert ("t.b", 49.9) in cases
+    assert ("t.a", 4.9) in cases
+
+
+def test_parse_junit_rejects_a_zero_total_rather_than_reporting_a_zero_share(tmp_path):
+    """A degenerate `<testsuite time="0.0">` must not render identically to a
+
+    genuinely negligible share -- `share()` returning 0.0 for both is the
+    exact absence-as-clean-result shape this module exists to avoid (the
+    auditor's Class A finding)."""
+    root = ET.Element("testsuites")
+    suite = ET.SubElement(root, "testsuite", {"name": "pytest", "time": "0.0"})
+    ET.SubElement(suite, "testcase", {"classname": "t", "name": "a", "time": "3.0"})
+    path = tmp_path / "junit.xml"
+    ET.ElementTree(root).write(str(path), encoding="unicode")
+
+    try:
+        dr.parse_junit(path)
+        raise AssertionError("expected DurationsUnavailable")
+    except dr.DurationsUnavailable as exc:
+        assert "zero" in str(exc).lower() or "negative" in str(exc).lower()
+
+
+def test_parse_junit_converts_an_os_error_to_durations_unavailable(tmp_path, monkeypatch):
+    """A `junit.xml` that exists but cannot be read (permission denied, or
+
+    it vanished between the `exists()` check and the read) must render as
+    `could-not-measure`, not crash `main()` -- the auditor's Class B
+    finding, reproduced there with `chmod 000`. Reproduced here by
+    monkeypatching `ET.parse` so the test does not depend on this platform's
+    permission model (`chmod 000` is not enforced against root, and Windows
+    has no equivalent bit)."""
+    path = _junit(tmp_path, 10.0, [("t.a", 5.0)])
+
+    def _raise_permission_denied(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(dr.ET, "parse", _raise_permission_denied)
+    try:
+        dr.parse_junit(path)
+        raise AssertionError("expected DurationsUnavailable")
+    except dr.DurationsUnavailable as exc:
+        assert "could not be read" in str(exc)
+
+
+def test_render_reports_could_not_measure_for_an_unreadable_junit_not_a_crash(tmp_path, monkeypatch):
+    path = _junit(tmp_path, 10.0, [("t.a", 5.0)])
+    monkeypatch.setattr(dr.ET, "parse", lambda *_a, **_k: (_ for _ in ()).throw(
+        PermissionError(13, "Permission denied", str(path))))
+    lines = dr.render(path, tmp_path / "no-baseline.json")
+    text = "\n".join(lines)
+    assert "state: could-not-measure" in text
+
+
+def test_main_reports_rather_than_crashes_on_a_malformed_top_value(tmp_path, capsys):
+    """`--top abc` used to raise an uncaught `ValueError` out of `main()`,
+
+    contradicting the module's own "always returns 0" guarantee (the
+    reviewer's finding #2)."""
+    junit = _junit(tmp_path, 10.0, [("t.a", 5.0)])
+    rc = dr.main(["duration_report.py", str(junit), "--top", "abc"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "could-not-measure" in out
+    assert "--top" in out
+
+
+def test_main_reports_rather_than_misparses_a_dangling_flag(tmp_path, capsys):
+    """`--top` as the last token with no value used to be silently treated
+
+    as the junit-xml path instead of being reported as an error."""
+    rc = dr.main(["duration_report.py", "--top"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "could-not-measure" in out
+    assert "no value" in out

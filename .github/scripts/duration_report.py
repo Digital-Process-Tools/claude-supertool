@@ -116,7 +116,19 @@ class DurationsUnavailable(Exception):
 
 
 def parse_junit(path: Path) -> tuple[float, list[tuple[str, float]]]:
-    """`(total suite seconds, [(test id, seconds), ...])`, or raise."""
+    """`(total suite seconds, [(test id, seconds), ...])`, or raise.
+
+    Handles every sibling `<testsuite>` under a `<testsuites>` root, not just
+    the first -- `Element.find()` returns one match, and a report that reads
+    only the first suite while a second sits unread is not `could-not-measure`,
+    it is confidently wrong, which is worse (a review finding on this module,
+    #2206). Reads all of them and sums their `time=` totals, and collects
+    testcases from all of them too. A `<testsuite time="0.0">` or a negative
+    one is also refused rather than accepted as a valid zero: `share()` would
+    otherwise render "0.00% of total" for an invalid denominator exactly as it
+    would for a genuinely negligible one, which is this module's own defect
+    class reappearing inside itself (a second review finding).
+    """
     if not path.exists():
         raise DurationsUnavailable(
             f"no {path} was written -- pytest did not reach the end of its "
@@ -127,27 +139,44 @@ def parse_junit(path: Path) -> tuple[float, list[tuple[str, float]]]:
     except ET.ParseError as exc:
         raise DurationsUnavailable(
             f"{path} exists but is not parseable XML: {exc}") from exc
-    suite = root if root.tag == "testsuite" else root.find("testsuite")
-    if suite is None:
+    except OSError as exc:
+        # e.g. permission denied, or the file vanished between the exists()
+        # check above and this read -- a third review finding: the narrower
+        # `except ET.ParseError` alone let this propagate out of main() and
+        # crash the CI step the module docstring promises can never fail.
+        raise DurationsUnavailable(
+            f"{path} exists but could not be read: {exc}") from exc
+    suites = [root] if root.tag == "testsuite" else root.findall(".//testsuite")
+    if not suites:
         raise DurationsUnavailable(
             f"{path} has no <testsuite> element -- not a pytest junit report")
-    try:
-        total = float(suite.attrib.get("time"))
-    except (TypeError, ValueError) as exc:
-        raise DurationsUnavailable(
-            f"{path}'s <testsuite time=...> is missing or not a number "
-            f"({suite.attrib.get('time')!r})") from exc
+    total = 0.0
+    any_total_parsed = False
     cases: list[tuple[str, float]] = []
-    for case in suite.iter("testcase"):
-        raw_time = case.attrib.get("time")
+    for suite in suites:
         try:
-            t = float(raw_time)
+            total += float(suite.attrib.get("time"))
+            any_total_parsed = True
         except (TypeError, ValueError):
-            continue  # one testcase missing a time does not sink the report
-        classname = case.attrib.get("classname", "")
-        name = case.attrib.get("name", "")
-        ident = f"{classname}.{name}" if classname else name
-        cases.append((ident, t))
+            continue  # this suite's own total is unusable; its testcases below are not
+        for case in suite.iter("testcase"):
+            raw_time = case.attrib.get("time")
+            try:
+                t = float(raw_time)
+            except (TypeError, ValueError):
+                continue  # one testcase missing a time does not sink the report
+            classname = case.attrib.get("classname", "")
+            name = case.attrib.get("name", "")
+            ident = f"{classname}.{name}" if classname else name
+            cases.append((ident, t))
+    if not any_total_parsed:
+        raise DurationsUnavailable(
+            f"{path}'s <testsuite time=...> is missing or not a number on "
+            f"every <testsuite> found")
+    if total <= 0:
+        raise DurationsUnavailable(
+            f"{path}'s <testsuite time=...> totals {total!r} -- a share "
+            f"cannot be computed against a zero or negative denominator")
     if not cases:
         raise DurationsUnavailable(
             f"{path} has a <testsuite> but no <testcase> carries a "
@@ -228,24 +257,49 @@ def render(
 
 
 def main(argv: list[str]) -> int:
+    """Parse argv and print the report. Always returns 0 -- see the module
+
+    docstring: this never gates. That includes a malformed CLI argument --
+    a review finding on an earlier version of this function was that a bare
+    `int(args[i + 1])` / `float(args[i + 1])` propagated a `ValueError`
+    straight out of `main()`, so `--top abc` crashed the CI step the module
+    promises can never fail. A flag with no following value used to fall
+    through silently and be treated as the junit-xml path instead -- also
+    fixed here, by reporting it rather than misparsing it.
+    """
     junit_path = DEFAULT_JUNIT
     baseline_path = DEFAULT_BASELINE
     top = DEFAULT_TOP
     threshold = DEFAULT_THRESHOLD_PCT
+    value_flags = {"--baseline", "--top", "--threshold"}
 
     positional: list[str] = []
     args = list(argv[1:])
     i = 0
     while i < len(args):
         arg = args[i]
-        if arg == "--baseline" and i + 1 < len(args):
-            baseline_path = Path(args[i + 1])
-            i += 2
-        elif arg == "--top" and i + 1 < len(args):
-            top = int(args[i + 1])
-            i += 2
-        elif arg == "--threshold" and i + 1 < len(args):
-            threshold = float(args[i + 1])
+        if arg in value_flags:
+            if i + 1 >= len(args):
+                print("duration-report state: could-not-measure")
+                print(f"  ({arg} was given with no value)")
+                return 0
+            value = args[i + 1]
+            if arg == "--baseline":
+                baseline_path = Path(value)
+            elif arg == "--top":
+                try:
+                    top = int(value)
+                except ValueError:
+                    print("duration-report state: could-not-measure")
+                    print(f"  (--top expects an integer, got {value!r})")
+                    return 0
+            else:  # --threshold
+                try:
+                    threshold = float(value)
+                except ValueError:
+                    print("duration-report state: could-not-measure")
+                    print(f"  (--threshold expects a number, got {value!r})")
+                    return 0
             i += 2
         else:
             positional.append(arg)
