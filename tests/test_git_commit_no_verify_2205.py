@@ -68,7 +68,7 @@ def _run(args: list, cwd: Path, stdin: str = "") -> tuple:
 def _head_sha(work: Path) -> str:
     return subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"], cwd=work,
-        capture_output=True, text=True, check=True, encoding="utf-8",
+        capture_output=True, text=True, check=True, encoding="utf-8", errors="replace",
     ).stdout.strip()
 
 

@@ -56,6 +56,6 @@ def test_a_guessed_files_key_is_refused_naming_the_accepted_keys(tmp_path: Path)
     # And nothing was committed under the guessed key.
     head = subprocess.run(
         ["git", "log", "-1", "--pretty=format:%s"], cwd=work,
-        capture_output=True, text=True, check=True, encoding="utf-8",
+        capture_output=True, text=True, check=True, encoding="utf-8", errors="replace",
     ).stdout
     assert head == "seed"
