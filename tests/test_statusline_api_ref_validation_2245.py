@@ -1,15 +1,21 @@
-"""2245 -- `repo`/`branch` are validated before either new gh-api reading
-function interpolates them into a GitHub API path.
+"""2245 -- `repo`/`branch` reach `_reading_from_check_runs` and
+`_reading_from_combined_status` with no validation, and that is now a
+recorded, accepted gap rather than a bug this file guards against.
 
-`_reading_from_check_runs` and `_reading_from_combined_status` build
-``"repos/{}/commits/{}/...".format(repo, branch)`` directly from `.oss.json`'s
-`repo`/`default_branch`, which reach `gather()` (and these two functions) with
-no upstream validation. This file's own module docstring already carries a
-validator for the `repo` shape -- `_REPO_RE`, applied by `_expected_watch_name`
--- but neither new function routed through it before this fix. Assertions are
-that a malformed value is refused BEFORE `_run` (the `gh` subprocess call) is
-even invoked -- mocked to raise if reached, so a call that still slips through
-fails loudly rather than silently succeeding against a real `gh` binary.
+This file previously asserted the opposite: that `_malformed_repo` and
+`_malformed_api_ref` refused a malformed value before either function
+interpolated it into `"repos/{}/commits/{}/...".format(repo, branch)`. Those
+two guards do not exist in this repository's copy of `.oss/statusline.py`
+any more -- `/oss:scaffold --apply` replaced this oss-owned file wholesale
+with the plugin's own copy (#2298), which does not ship them. The guards are
+filed upstream instead, as claude-oss#1035, rather than re-forked locally --
+re-adding them here would recreate the exact fork that PR existed to end.
+
+So this file is repointed at the state the PR's own body documents and
+accepts: both `repo` and `branch`, malformed or not, reach `_run` unchanged.
+`repo`/`branch` come from a tracked `.oss.json`, reachable only by a
+contributor editing that config and not by anything remote -- the risk
+`_malformed_repo`/`_malformed_api_ref` used to close.
 """
 from __future__ import annotations
 
@@ -26,9 +32,9 @@ statusline = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(statusline)
 
 
-#: Each pair is malformed in exactly one of `repo`/`branch` -- a `..` segment,
-#: a `?` that would open a query string early, embedded whitespace, or a
-#: `repo` that is not the plain `owner/name` shape `_REPO_RE` already pins.
+#: Same malformed shapes the guard used to refuse -- a `..` segment, a `?`
+#: that would open a query string early, embedded whitespace, or a `repo`
+#: that is not the plain `owner/name` shape.
 MALFORMED_REPO_OR_BRANCH = [
     ("owner/name", "main/../../../etc"),
     ("owner/name", "main?x=1"),
@@ -41,18 +47,28 @@ MALFORMED_REPO_OR_BRANCH = [
 
 
 @pytest.mark.parametrize("repo,branch", MALFORMED_REPO_OR_BRANCH)
-def test_malformed_repo_or_branch_is_refused_before_the_api_call(repo, branch):
-    with mock.patch.object(statusline, "_run",
-                            side_effect=AssertionError("gh must not be called")):
+def test_malformed_repo_or_branch_still_reaches_the_api_call(repo, branch):
+    """Documents the accepted gap: no `_run` call is refused. Mocked to
+    capture the call args rather than raise, so this fails loudly (not
+    silently) the day a guard is reintroduced and starts short-circuiting
+    these before `_run`.
+    """
+    calls = []
+
+    def fake_run(cmd, timeout=None):
+        calls.append(cmd)
+        return None
+
+    with mock.patch.object(statusline, "_run", side_effect=fake_run):
         assert statusline._reading_from_check_runs(repo, branch) is None
         assert statusline._reading_from_combined_status(repo, branch) is None
+    assert len(calls) == 2
 
 
 def test_a_normal_repo_and_branch_still_reach_the_api_path():
-    """Must-not-fire control: a well-formed pair is not swept up by the guard,
-    including a branch name carrying a slash -- legitimate (`feature/x`) and
-    the reason the check does not simply forbid `/` the way `_REPO_RE` does
-    for `repo`.
+    """Must-not-fire control: a well-formed pair is not treated any
+    differently, including a branch name carrying a slash -- legitimate
+    (`feature/x`).
     """
     calls = []
 
