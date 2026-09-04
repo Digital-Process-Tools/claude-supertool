@@ -145,34 +145,27 @@ def test_numbered_fd_redirect_on_an_earlier_discarded_segment_and_a_later_one(
     assert match.command_faithful is True, match
 
 
-def test_no_space_before_a_numbered_fd_redirect_is_a_KNOWN_pre_existing_gap(
+def test_no_space_before_a_numbered_fd_redirect_is_now_fixed(
         tmp_path, guard_config):
-    """NOT fixed by this change -- pinned so the gap stays visible rather
-    than silently regressing further, and reported for filing separately
-    (see the `undropped_spans`/`spans_aligned` comments in
-    `_guard_segments_with_origins`).
-
-    `_guard_drop_io_numbers` strips the digit and NOTHING ELSE -- if that
-    digit sat directly against a preceding `|`/`;`/`&` with no space
-    (`true|2>&1 …`, a normal no-space-around-pipe shell idiom), removing it
-    FUSES what used to be two adjacent operator runs into one, and
-    `_guard_raw_segment_spans` reads the fused run as a single redirect
-    rather than a boundary -- collapsing two top-level segments into one and
-    losing the split between them. This pre-dates this fix (confirmed
-    against `master`, unrelated to what this file's own change touches:
-    `_guard_raw_segment_spans`/`_guard_tokenize_prepared`/
-    `_guard_drop_io_numbers` are byte-identical before and after it) and is
-    NOT something `spans_aligned`'s fallback can repair on its own -- by the
-    time this loop sees it, the fusion has already happened.
+    """Was a KNOWN pre-existing gap, pinned as `clean` (a bypass) in the
+    previous version of this test rather than silently regressing further
+    while unfixed. Fixed by #2267: see
+    `tests/test_guard_fused_separator_redirect_2267.py` for the full
+    reproduction and the chosen fix (a space inserted by
+    `_guard_drop_io_numbers` between a separator it is about to fuse with a
+    redirect operator). Kept here, updated rather than deleted, because this
+    is the exact scenario #2195's own fidelity fix could not repair on its
+    own -- `spans_aligned` now finds the two span lists the same length
+    again for this class, so the fidelity machinery this file exercises
+    renders normally instead of hitting the word-rejoin fallback.
     """
     guard_config(tmp_path, _PR_OP)
     cmd = "true|2>&1 gh pr view 1"
     verdict = supertool.guard_command(cmd)
-    # What SHOULD happen: `blocked`, with `gh-pr` matching `gh pr view 1`
-    # and `true` discarded. What ACTUALLY happens, both before and after
-    # this fix: the fused segment matches no op at all, and the guard
-    # reads a command that runs `gh pr view 1` as `clean`.
-    assert verdict.state == "clean", verdict
+    assert verdict.state == "blocked", verdict
+    assert verdict.discarded == ("true",), verdict.discarded
+    match = verdict.matches[0]
+    assert match.command_faithful is True, match
     heads, _unread, _origins, _origin_texts, _origin_faithful = (
         supertool._guard_segments_with_origins(cmd))
-    assert heads == [["true", "gh", "pr", "view", "1"]], heads
+    assert heads == [["true"], ["gh", "pr", "view", "1"]], heads

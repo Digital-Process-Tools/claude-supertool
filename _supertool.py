@@ -20290,6 +20290,23 @@ def _guard_drop_io_numbers(text: str) -> str:
             while j < n and text[j] in "0123456789":
                 j += 1
             if j < n and text[j] in "<>":
+                # #2267: the digit run about to be dropped is, in a
+                # no-space idiom (`|2>&1`, `;2>&1`, `&2>&1`, `&&2>&1`), the
+                # ONLY thing standing between a preceding top-level
+                # separator (`_GUARD_SEPARATOR_CHARS`) and this redirect's
+                # own operator. Drop it with nothing left in its place and
+                # the two operator runs become adjacent -- `|2>&1` becomes
+                # `|>&1` -- which `_guard_raw_segment_spans` then reads as
+                # ONE redirect run rather than a separator followed by one,
+                # collapsing two top-level segments into one and losing the
+                # boundary between them (a guard bypass: a blocked command
+                # after the fused separator reads as clean). A single space
+                # keeps the two operators apart exactly the way real
+                # whitespace already does for the unaffected spaced idiom
+                # (`| 2>&1`) -- this never fires there, since `out[-1]` is
+                # already a space in that case, not a separator character.
+                if out and out[-1] in _GUARD_SEPARATOR_CHARS:
+                    out.append(" ")
                 i = j
                 continue
         out.append(ch)
