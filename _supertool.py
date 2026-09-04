@@ -22741,6 +22741,15 @@ def _run_notifiers(op: str, path: str, line: Optional[int] = None,
 #: It says so by printing this prefix plus a reason instead of empty stdout,
 #: and `_validator_resolve` below hands the whole line back rather than
 #: folding it into the same "skip, no target" silence as an empty resolve.
+#:
+#: A second, independently-typed literal rather than an import of the
+#: producer's own `RESOLVE_ERROR_PREFIX` -- the core cannot reach into
+#: `validators/common`, same trade as `_validator_required`'s duplication of
+#: `refusal.required()` (`tests/test_require_validators_core_975.py`).
+#: `#2229`: `tests/test_resolve_error_prefix_pinned_2229.py` pins this
+#: literal equal to the producer's and drives the real subprocess end to
+#: end, so a spelling drift here goes red there rather than silently
+#: turning every resolve error into a bogus resolved path downstream.
 _VALIDATOR_RESOLVE_ERROR_PREFIX = "RESOLVE-ERROR: "
 
 

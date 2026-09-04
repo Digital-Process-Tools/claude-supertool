@@ -45,6 +45,16 @@ TOOL = "ci-lint-resolve"
 #: reason, instead of the empty stdout it would print for "looked, found
 #: nothing". A resolved path is a filesystem path and never starts with this,
 #: so the two cannot collide.
+#:
+#: This module cannot import `_supertool.py` -- it runs as a subprocess with
+#: only `validators/common` on `sys.path`, same reasoning as
+#: `validators/common/linebreaks.py`'s `_LINE_BREAK_PATTERN` restatement --
+#: so `_supertool.py`'s copy is a second, independently-typed literal rather
+#: than a reference to this one. `#2229`:
+#: `tests/test_resolve_error_prefix_pinned_2229.py` pins the two equal and
+#: drives the real subprocess end to end, so a spelling drift here goes red
+#: there instead of silently turning every resolve error into a bogus
+#: resolved path downstream.
 RESOLVE_ERROR_PREFIX = "RESOLVE-ERROR: "
 
 
