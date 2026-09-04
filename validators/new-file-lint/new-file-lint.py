@@ -101,6 +101,69 @@ def _locations() -> tuple:
     return (override,) if override else LINT_SCRIPT_LOCATIONS
 
 
+#: Set by supertool's own validator runner (`_supertool.py`'s
+#: `_validator_run_one`) to the directory holding the `.supertool.json`
+#: that wired THIS validator run -- never set by this adapter itself.
+#:
+#: Closes #2228: `_find_lint_script`'s walk was bounded at the edited
+#: file's own git root, which stops an escape ABOVE that repo (the shape
+#: `changelog-fragment.py` closed for itself in #2178) but trusted
+#: whatever CONVENTIONALLY-NAMED script sits inside that repo unconditionally
+#: -- including a repo that is not the one whose `.supertool.json` wired
+#: this validator at all. A maintainer whose own `.supertool.json` sits
+#: above a directory of clones, editing a `.py` file inside one of them,
+#: had that clone's own `.github/scripts/lint_new_files.py` imported (and
+#: `_load` executes what it imports) with the maintainer's privileges.
+CONFIG_DIR_ENV = "SUPERTOOL_CONFIG_DIR"
+
+
+def _config_dir() -> "tuple[Path | None, bool, str]":
+    """`(config_dir, scope_known, reason)`.
+
+    `scope_known` is False only when `CONFIG_DIR_ENV` is absent entirely --
+    this adapter was invoked directly, outside supertool's own validator
+    wiring (a test harness, an operator running the script by hand). No
+    scope claim is being made either way in that case, so the pre-#2228
+    repo-bound walk applies unchanged: running this script directly is
+    exactly as safe as it always was, and nothing here narrows that.
+
+    `scope_known` is True whenever supertool's real validator runner set
+    the variable -- empty or unresolvable counts as "no directory to
+    trust", never as "trust everything", because reaching this adapter at
+    all through that runner implies a `.supertool.json` WAS found (this
+    validator's own wiring lives inside one).
+    """
+    if CONFIG_DIR_ENV not in os.environ:
+        return None, False, ""
+    raw = os.environ[CONFIG_DIR_ENV].strip()
+    if not raw:
+        return None, True, "{0} was set but empty".format(CONFIG_DIR_ENV)
+    try:
+        return Path(raw).resolve(), True, ""
+    except OSError as exc:
+        return None, True, "{0}={1!r} could not be resolved: {2}".format(
+            CONFIG_DIR_ENV, raw, exc)
+
+
+def _root_is_inside_config_scope(root: Path, config_dir: Path) -> bool:
+    """True when `config_dir` (where `.supertool.json` lives) is `root`
+    itself or somewhere inside it -- the project that wired this validator
+    IS the project whose script is about to be imported and executed.
+
+    False when `config_dir` sits above `root`: the directory-of-clones
+    shape #2228 was filed for, where the script this adapter would find
+    and run belongs to whichever clone is currently being edited, not to
+    the project that configured supertool.
+    """
+    root_s = os.path.normcase(str(root))
+    config_s = os.path.normcase(str(config_dir))
+    try:
+        common = os.path.commonpath([root_s, config_s])
+    except ValueError:  # e.g. different drives on Windows
+        return False
+    return common == root_s
+
+
 def _repo_root(start: Path) -> "tuple[Path | None, str | None]":
     """The git repo root above `start`, and why not when there is none.
 
@@ -221,6 +284,27 @@ def main() -> None:
                      "project.".format(path.parent, could_not_look),
                      int((time.time() - start) * 1000)))
         return
+
+    override_set = bool(os.environ.get(ENV_LINT_SCRIPT, "").strip())
+    if not override_set:
+        config_dir, scope_known, scope_reason = _config_dir()
+        if scope_known and (config_dir is None
+                             or not _root_is_inside_config_scope(root, config_dir)):
+            emit(skipped(TOOL, file,
+                         "a new-file-lint script may exist at the default "
+                         "location(s) inside {0}, but the .supertool.json "
+                         "that wired this run does not live inside that "
+                         "project ({1}) -- the convention-based location is "
+                         "not trusted across that boundary (#2228), because "
+                         "a checkout is not made trustworthy just by being "
+                         "edited under a directory that also holds this "
+                         "config. Set {2} to an exact path if this "
+                         "project's script is meant to be trusted "
+                         "here.".format(
+                             root, scope_reason or "config_dir={0}".format(config_dir),
+                             ENV_LINT_SCRIPT),
+                         int((time.time() - start) * 1000)))
+            return
 
     script = _find_lint_script(path, root)
     if script is None:

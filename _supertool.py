@@ -23588,6 +23588,13 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     # invalidation of its own. The adapter declines rather than guessing.
     if doc_maybe_stale:
         run_env["SUPERTOOL_LSP_DOC_MAYBE_STALE"] = "1"
+    # #2228: always set, never conditionally -- an adapter that reads this to
+    # bound what it will import and execute must be able to tell "no config
+    # loaded" (empty string) from "not told at all" (var absent, meaning this
+    # adapter was invoked outside supertool's own wiring entirely).
+    run_env[_VALIDATOR_CONFIG_DIR_ENV] = (
+        os.path.dirname(os.path.realpath(_CONFIG_PATH)) if _CONFIG_PATH else ""
+    )
 
     import time
     _t0 = time.monotonic()
@@ -30396,6 +30403,18 @@ _MCP_STOP_SCRIPT = os.path.join(os.path.dirname(_MCP_DAEMON_SCRIPT), "stop.py")
 # still connected to, which is the whole point of running the validator.
 _MCP_AUTOSPAWN_ENV = "SUPERTOOL_MCP_AUTOSPAWN"
 _MCP_AUTOSPAWN_FALSEY = frozenset({"0", "false", "no", "off"})
+
+# #2228: the directory holding the `.supertool.json` this run actually loaded
+# (empty when none did), passed to every validator adapter's environment. An
+# adapter that imports and executes a script it finds by walking up from the
+# edited file (new-file-lint.py, changelog-fragment.py) needs this to tell
+# "the project that wired me" from "whatever repo happens to be edited" --
+# without it, a maintainer whose own .supertool.json sits above a directory
+# of clones has each clone's own conventionally-named CI helper imported (and
+# executing an import is executing its top-level code) with the maintainer's
+# privileges the moment any .py file inside that clone is edited, well before
+# either adapter's own new-file-only check ever runs.
+_VALIDATOR_CONFIG_DIR_ENV = "SUPERTOOL_CONFIG_DIR"
 
 
 def _mcp_autospawn_allowed() -> bool:
