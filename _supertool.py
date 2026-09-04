@@ -20411,6 +20411,76 @@ def _guard_segments(command: str) -> Tuple[List[List[str]], List[str]]:
 _GUARD_SEPARATOR_CHARS = "();<>|&"
 
 
+def _guard_classify_separator_run(run: str) -> List[Tuple[int, int, bool]]:
+    """Split a maximal run of `_GUARD_SEPARATOR_CHARS` into `(start, end,
+    is_separator)` sub-tokens, relative to `run`.
+
+    #2267 closed the case where dropping a numbered fd's digit fused a
+    preceding separator directly against a redirect operator (`|2>&1` ->
+    `|>&1`). #2275 is the same fusion with no digit involved at all --
+    `;>out`, `|>out`, `&&>out`, `&>out`, `;>>out`, `;<in` -- because the
+    caller that decided a run was "one redirect, don't split" (below,
+    pre-#2275) asked only "does `<` or `>` appear anywhere in this run",
+    never where. A run mixing a real separator with a redirect operator is
+    not one token; it is two, adjacent because the caller wrote no space,
+    and treating the whole run as an uninterrupted redirect throws away the
+    boundary between them -- the same class of bypass #2267 fixed for the
+    digit-fusion sub-case, general now rather than keyed to a digit.
+
+    Every character in `_GUARD_SEPARATOR_CHARS` (`();<>|&`) is classified
+    on its own, left to right, with one piece of one-character lookback:
+
+    - `;`, `|`, `(`, `)` are always a separator -- there is no redirect
+      operator built out of any of them.
+    - `<` and `>` are always part of a redirect -- there is no separator
+      built out of either.
+    - `&` is the only ambiguous character. Immediately after `<` or `>`
+      (forming `<&`, `>&`, the fd-duplication operators #1684/#2195 already
+      depend on staying fused -- `2>&1`, `1>&2`) it is read as part of the
+      redirect, never a boundary. Anywhere else -- bare `&`, `&&`, or `&`
+      immediately BEFORE a redirect char (`&>`) -- it is read as the
+      separator (background / AND), never as the first half of bash's own
+      `&>`/`&>>` combined-redirect extension. That reading is deliberately
+      the more conservative of the two real ones: POSIX `sh` has no `&>`
+      operator at all, so on that shell `cmd&>out next` is unambiguously
+      `cmd &` backgrounded, then `>out next` as a second, foreground
+      command -- the exact bypass shape this function exists to close. A
+      guard that instead trusted bash's reading would pass a command clean
+      that a `sh`-backed `shell=True` call executes as two.
+
+    Adjacent characters of the same classification merge into one
+    sub-token, so an unaffected run (`&&`, `>>`, `>&`, `<&`) still comes
+    back as a single entry spanning the whole run -- callers that never see
+    a mixed run see no change in shape from before this function existed.
+    """
+    tokens: List[Tuple[int, int, bool]] = []
+    tok_start = 0
+    cur_is_sep: Optional[bool] = None
+    prev_was_redirect_char = False
+    n = len(run)
+    for i, ch in enumerate(run):
+        if ch in "<>":
+            is_sep = False
+            this_is_redirect_char = True
+        elif ch == "&":
+            is_sep = not prev_was_redirect_char
+            this_is_redirect_char = False
+        else:  # ';', '|', '(', ')'
+            is_sep = True
+            this_is_redirect_char = False
+        if cur_is_sep is None:
+            cur_is_sep = is_sep
+            tok_start = i
+        elif is_sep != cur_is_sep:
+            tokens.append((tok_start, i, cur_is_sep))
+            tok_start = i
+            cur_is_sep = is_sep
+        prev_was_redirect_char = this_is_redirect_char
+    if cur_is_sep is not None:
+        tokens.append((tok_start, n, cur_is_sep))
+    return tokens
+
+
 def _guard_raw_segment_spans(text: str) -> List[Tuple[int, int]]:
     """Character `(start, end)` of every top-level shell segment in `text`.
 
@@ -20419,9 +20489,14 @@ def _guard_raw_segment_spans(text: str) -> List[Tuple[int, int]]:
     already dequoted and a redirect-drop loop has already thinned. Splits on
     the same operators `_guard_segments_with_origins`'s tokeniser treats as
     separators -- `;` `&` `|` and their doubled/mixed runs -- and, like that
-    tokeniser (#1684), does NOT split on a run containing `<` or `>`: a
-    redirection sits inside the segment it belongs to, target and all, not
-    at a boundary between two segments.
+    tokeniser (#1684), does NOT split inside a redirect operator itself
+    (`>>`, `>&`, `<&`...): a redirection sits inside the segment it belongs
+    to, target and all, not at a boundary between two segments. A run that
+    MIXES a separator with a redirect operator and no space between them
+    (`;>`, `|>`, `&&>`, `&>`) is not one of those and does split -- at the
+    boundary `_guard_classify_separator_run` finds inside the run, not at
+    its ends only (#2275; #2267 fixed the same class where a digit, not a
+    space, was the only thing keeping the two apart).
 
     Quote and backslash tracking mirrors `_guard_drop_io_numbers`: a quote
     character opens and closes a quoted run during which nothing is special
@@ -20458,9 +20533,10 @@ def _guard_raw_segment_spans(text: str) -> List[Tuple[int, int]]:
             while j < n and text[j] in _GUARD_SEPARATOR_CHARS:
                 j += 1
             run = text[i:j]
-            if "<" not in run and ">" not in run:
-                spans.append((start, i))
-                start = j
+            for rel_start, rel_end, is_sep in _guard_classify_separator_run(run):
+                if is_sep:
+                    spans.append((start, i + rel_start))
+                    start = i + rel_end
             i = j
             continue
         i += 1
@@ -20501,6 +20577,31 @@ def _guard_tokenize_prepared(prepared: str) -> List[List[str]]:
     drop_next = False
     for token in tokens:
         if token and all(ch in _GUARD_PUNCTUATION for ch in token):
+            if (("<" in token or ">" in token)
+                    and all(ch in _GUARD_SEPARATOR_CHARS for ch in token)):
+                # A pure `_GUARD_SEPARATOR_CHARS` token that contains a
+                # redirect char is not necessarily ONE redirect operator --
+                # `shlex` glues an entire run of punctuation into one token
+                # regardless of what it means (`;>`, `&&>`, `&>` come back
+                # exactly like `>>` or `>&` do), so `<`/`>` appearing
+                # anywhere in it is not evidence the whole token is a
+                # redirect (#2275; the digit-fusion sub-case of this was
+                # #2267). `_guard_classify_separator_run` reads the same
+                # token character by character and says which parts are a
+                # real separator and which are the redirect -- a separator
+                # sub-part still ends the current segment exactly as the
+                # plain-separator branch below does; drop_next at the end
+                # is keyed to whichever sub-part the token ends ON, so a
+                # token ending in a redirect (`;>`) still consumes the next
+                # word as that redirect's target, and one ending in a
+                # separator (the rare reverse fusion, `>;`) does not.
+                sub_tokens = _guard_classify_separator_run(token)
+                for _rel_start, _rel_end, is_sep in sub_tokens:
+                    if is_sep:
+                        segments.append(current)
+                        current = []
+                drop_next = not sub_tokens[-1][2]
+                continue
             if "<" in token or ">" in token:
                 # A redirection is NOT a command separator, and treating it as
                 # one put its target where a command word is read: `2>&1` left
