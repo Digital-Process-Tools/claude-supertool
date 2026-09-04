@@ -31,7 +31,7 @@ from difflib import unified_diff
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "validators" / "common"))
 from refusal import guard_main  # noqa: E402
-from bin_resolve import resolve_bin_cmd  # noqa: E402
+from bin_resolve import describe_unresolved, resolve_bin_cmd  # noqa: E402
 
 
 def emit(obj: dict) -> None:
@@ -85,7 +85,7 @@ def main() -> None:
             "tool": "ruff-format", "file": file, "ok": False, "count": 1,
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter",
-                        "msg": f"RUFF_BIN not found: {ruff_bin}"}],
+                        "msg": f"RUFF_BIN not found: {describe_unresolved(ruff_bin_cmd_str, ruff_bin)}"}],
             "duration_ms": 0,
             "metrics": {"lines_added": 0, "lines_removed": 0},
         })

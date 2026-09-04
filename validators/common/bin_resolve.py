@@ -80,4 +80,8 @@ def describe_unresolved(raw: str, resolved: str) -> str:
     """
     if not raw or resolved == raw:
         return resolved
-    return f"{resolved} (configured: {raw!r})"
+    # Not repr(): repr() escapes backslashes, which would make the
+    # disclosed text differ from the actual configured value on Windows
+    # paths -- the exact thing this function exists to avoid hiding.
+    return f'{resolved} (configured: "{raw}")'
+
