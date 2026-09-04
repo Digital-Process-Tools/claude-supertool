@@ -213,65 +213,6 @@ _REPO_RE = re.compile(r"\A[^/\\\s]+/[^/\\\s]+\Z")
 #: same standalone-vendoring reason as every other copy in this section (#754).
 WATCH_CONFIG = ".supertool.json"
 
-#: Characters that would let a `branch` value placed inside an API path
-#: template address something other than the ref named -- interpolated
-#: directly by `_reading_from_check_runs` and `_reading_from_combined_status`
-#: (#2245). A slash is deliberately NOT included: unlike `repo` (checked with
-#: `_REPO_RE` above, which pins the whole value to exactly `owner/name`), a
-#: branch name is legitimately slash-bearing (`feature/x`) and sits as the
-#: LAST path segment before the endpoint's own literal suffix, so a slash it
-#: carries cannot address a different resource -- only whitespace (which would
-#: split `gh api`'s own argument) or `?` (which would open a query string
-#: inside what `gh api` reads as one positional path) can. `..` is checked
-#: separately below rather than folded into this pattern: it is two literal
-#: characters, not a class, and git's own ref-name rules already forbid two
-#: consecutive dots in a real ref, so refusing it costs no legitimate branch.
-_BRANCH_UNSAFE_RE = re.compile(r"[\s?]")
-
-
-def _malformed_repo(repo):
-    """The `repo`-only half of `_malformed_api_ref`, or ``""`` (#2278).
-
-    Split out of `_malformed_api_ref` so a call site that interpolates `repo`
-    alone -- `_gh_count`, `_gh_external_issue_count` and `_latest_release`
-    build a `gh api` path or query string from `repo`/`slug` with no `branch`
-    argument at all -- can route through the same `_REPO_RE` check
-    `_malformed_api_ref` applies, rather than either duplicating the pattern
-    or being forced to invent a `branch` value that does not exist in that
-    call's own scope. No line numbers cited here (#2278's own review): the
-    three call sites already name themselves in their own docstrings, next
-    to the interpolation each protects, which cannot drift the way a number
-    copied into a fourth place can.
-    """
-    if not isinstance(repo, str) or not _REPO_RE.match(repo):
-        return f"repo {repo!r} is not a plain owner/name value"
-    return ""
-
-
-def _malformed_api_ref(repo, branch):
-    """Why `repo`/`branch` must not be interpolated into a GitHub API path, or
-    ``""`` (#2245).
-
-    `repo` and `branch` come from `.oss.json` via `gather()`
-    (`config.get("repo")`, `config.get("default_branch")`) with no upstream
-    validation before `_reading_from_check_runs` and
-    `_reading_from_combined_status` build
-    ``"repos/{}/commits/{}/...".format(repo, branch)`` directly. `repo` reuses
-    `_malformed_repo` -- the same `owner/name` check `_expected_watch_name`
-    above already applies to the identical config value -- and `branch` is
-    refused on whitespace, `?`, or a `..` segment. A malformed value would
-    otherwise make the call address a different endpoint than the one
-    configured, and the reading returned would report that other endpoint's
-    state as though it were the configured default branch's.
-    """
-    problem = _malformed_repo(repo)
-    if problem:
-        return problem
-    if (not isinstance(branch, str) or not branch
-            or ".." in branch or _BRANCH_UNSAFE_RE.search(branch)):
-        return f"branch {branch!r} is not a safe ref to interpolate"
-    return ""
-
 
 def _expected_watch_name(repo):
     """The watch channel name THIS repository would derive from its own `repo`.
@@ -1482,14 +1423,7 @@ def _gh_count(repo, kind):
     runs its filter once per page and prints one number per page with no total, so
     whoever reads the first line gets a number smaller than the truth, correctly
     formatted, at exit 0. One call and one field cannot fail that way.
-
-    `repo` reaches here the same way it reaches `_malformed_api_ref`'s two call
-    sites (#2245) -- `config.get("repo")`, no upstream validation -- and is
-    interpolated straight into the search query below, so it is checked the
-    same way before `_run` is ever invoked (#2278).
     """
-    if _malformed_repo(repo):
-        return None
     query = "repo:{} is:{} is:open".format(repo, kind)
     out = _run(
         [
@@ -1562,14 +1496,8 @@ def _gh_external_issue_count(repo, total):
     smaller than the truth -- the same convention `_gh_count`'s own docstring names.
     A `null` line (jq's raw-mode spelling of a missing/`None` field) is treated the
     same as a missing row: one unreadable association and the whole count is untaken.
-
-    `repo` reaches here the same unvalidated way `_malformed_api_ref`'s two call
-    sites (#2245) receive it, interpolated straight into the path below, so it
-    is checked the same way before `_run` is ever invoked (#2278).
     """
     if not isinstance(total, int):
-        return None
-    if _malformed_repo(repo):
         return None
     out = _run(
         [
@@ -1668,13 +1596,7 @@ def _reading_from_check_runs(repo, branch):
     Returns ``None`` when the call did not answer or produced something this
     function cannot parse -- never confused with a reading that genuinely came
     back empty, which is a dict with ``total == 0`` and every flag ``False``.
-    Also ``None`` when `repo`/`branch` fail `_malformed_api_ref` (#2245) --
-    the same "could not look" answer every other early-return in this function
-    already gives, not a distinct refusal shape a caller would need to tell
-    apart from an unanswered `gh` call.
     """
-    if _malformed_api_ref(repo, branch):
-        return None
     out = _run(
         [
             "gh",
@@ -1751,14 +1673,7 @@ def _reading_from_combined_status(repo, branch):
     an undocumented API change would take, and reading it as bad -- rather than
     falling through to `None`, which the merge below reads as "this source did
     not answer" -- is the conservative direction to guess wrong in.
-
-    ``None`` too when `repo`/`branch` fail `_malformed_api_ref` (#2245) -- the
-    same reason `_reading_from_check_runs` above checks it before the call it
-    guards, and for the same reason: this function's own read of "did not
-    answer" already covers it.
     """
-    if _malformed_api_ref(repo, branch):
-        return None
     out = _run(
         [
             "gh",
@@ -1854,15 +1769,8 @@ def _latest_release(repo):
     `doctor.published_versions` already asks this exact question this exact way. Two
     sources for one question is how a status line and a diagnostic come to disagree in
     front of the same person, which is worse than either being wrong alone.
-
-    `repo` here is `slug` from `refresh()`'s own loop -- `repo_from_url(record.get
-    ("repository"))`, a plugin manifest's own repository URL rather than
-    `config.get("repo")` -- but it is the identical `owner/name`-shaped value
-    interpolated straight into the path below with no upstream validation, so
-    it is checked the same way `_malformed_api_ref`'s call sites (#2245) check
-    `config.get("repo")` before `_run` is ever invoked (#2278).
     """
-    if not repo or _malformed_repo(repo):
+    if not repo:
         return None
     encoded = _run(
         [
@@ -2384,10 +2292,19 @@ def main(argv=None):
             pass
         return 0
 
-    try:
-        payload = json.load(sys.stdin)
-    except (ValueError, OSError):
+    # #846: `sys.stdin` is `None` when the harness hands this process a closed
+    # or unopenable standard input -- `json.load(None)` then raises
+    # `AttributeError`, which neither `ValueError` nor `OSError` below
+    # catches. The rest of `main()` already treats an empty/unreadable
+    # payload as the ordinary "no session context" case, so the same
+    # fallback applies here rather than crashing before it can.
+    if sys.stdin is None:
         payload = {}
+    else:
+        try:
+            payload = json.load(sys.stdin)
+        except (ValueError, OSError):
+            payload = {}
     start = (payload.get("workspace") or {}).get("current_dir") or os.getcwd()
     root = repo_root(start)
     if root is None:
