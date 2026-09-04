@@ -2052,6 +2052,29 @@ standing `claude-channel` entry does, so a session running two genuinely
 isolated channel servers can still read `CANNOT DETERMINE` — the same
 direction as every other decline in this table, never a false `FORWARDING`.
 
+**The collision the two checks above detect and report honestly is now also
+resolved, for this checkout, rather than only witnessed
+([#2221](https://github.com/Digital-Process-Tools/claude-supertool/issues/2221)).**
+`.mcp.json` declaring `claude-channel` unconditionally is deliberate (#1541) --
+it is the only registration path for a plugin user who never runs
+`oss-workspace` -- but it means every session opened *in this repository's own
+checkout* also carries it, and `oss-workspace` registers a second server
+(`oss-channel`) resolving to the identical `notifiers/claude-channel/channel.ts`
+at local scope. Both configured is the guaranteed-collision shape #2051 checks
+for, and `channel:health` can only ever answer `CANNOT DETERMINE` for it -- the
+instrument was already correct; what was missing was anything that stopped the
+collision from being the default state a fresh clone starts in. What resolved
+it on the maintainer's own machine was `disabledMcpjsonServers:
+["claude-channel"]` in `.claude/settings.local.json` -- gitignored, so it never
+reached a fresh clone. `.claude/settings.json` now carries the same disable,
+tracked, so every developer working on this repository gets a single
+registered channel server instead of re-deriving the untracked workaround by
+hand. Deleting `claude-channel` from `.mcp.json` outright was considered and
+declined: that file also ships with the plugin, and is the *only* registration
+path for someone who never runs `oss-workspace`, so removing it would drop
+channel support for them entirely rather than resolving a collision specific
+to this checkout's own development workflow.
+
 **The tag is somebody else's text and reaches an argv this tool builds, so it is
 shape-checked and passed after `--`**
 ([#1559](https://github.com/Digital-Process-Tools/claude-supertool/issues/1559)).

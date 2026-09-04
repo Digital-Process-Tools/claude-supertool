@@ -1914,8 +1914,16 @@ def source_fingerprint() -> tuple[str | None, str]:
             continue
         try:
             mtime = entry.stat().st_mtime
-        except OSError:
-            continue
+        except OSError as err:
+            # Matches the `rglob` failure above, not the loop's own
+            # `__pycache__` skip: dropping this one entry and continuing
+            # would let the walk succeed on every *other* file while quietly
+            # missing this one -- and if it happened to be the newest, the
+            # resulting fingerprint could equal a poller's fork-time value
+            # and read as VERSION_CURRENT for a poller that is actually
+            # stale (#2237). A single unreadable file poisons the whole
+            # fingerprint, same as an unreadable directory does.
+            return None, f"could not stat {entry} ({type(err).__name__})"
         if newest is None or mtime > newest:
             newest = mtime
     if newest is None:
