@@ -1084,6 +1084,41 @@ _OP_CONFIG_RESERVED_KEYS = {
     "restartMcp", "replaces", "paths", "exitStatus", "form", "hint",
 }
 
+#: Extra config keys whose value is a search path -- one or more directories
+#: joined by `os.pathsep` -- resolved against the directory of the
+#: `.supertool.json` that declared them, rather than exported verbatim (#2164).
+#:
+#: `presets/watch/sourcepath.CONFIG_KEY` is the one entry today. Anchoring
+#: happens HERE, once, before the value is exported as an env var -- never
+#: inside the preset that reads it back, which may be a detached, re-exec'd
+#: poller with no reliable notion of "the directory this was typed in" (the
+#: CWD argument `sourcepath.resolve()`'s own docstring makes, and still makes,
+#: about a relative entry resolved late). The config file does not move, so
+#: resolving once here and exporting an absolute path is what the poller
+#: inherits and re-derives after any number of re-execs, unchanged.
+_RELATIVE_SEARCH_PATH_KEYS = {"watch_sources_path"}
+
+
+def _anchor_relative_search_path(raw: str, config_path: str) -> str:
+    """Resolve each relative entry of a pathsep-joined search path `raw`
+    against `os.path.dirname(config_path)`.
+
+    An already-absolute entry is left exactly as declared -- this only adds
+    information, never removes it, so a value that was already fully usable
+    is byte-for-byte what it was before #2164. An entry that is empty (an
+    operator's stray separator) is left alone too, for the same reason
+    `sourcepath.resolve()` treats it as nothing declared rather than a
+    refusal: there is nothing here to anchor.
+    """
+    anchor = os.path.dirname(config_path)
+    parts = raw.split(os.pathsep)
+    resolved = [
+        os.path.normpath(os.path.join(anchor, part)) if part and not os.path.isabs(part)
+        else part
+        for part in parts
+    ]
+    return os.pathsep.join(resolved)
+
 
 def _op_config_key_collisions(project_ops: Dict[str, Any]
                               ) -> Dict[str, List[str]]:
@@ -4491,6 +4526,18 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     if isinstance(entry, dict):
         for k, v in entry.items():
             if k not in _RESERVED_KEYS:
+                # A relative entry in a search-path key (`watch_sources_path`)
+                # is anchored to the declaring config file's directory before
+                # export, so what the subprocess inherits — and what a poller
+                # re-derives after any number of re-execs — is already an
+                # absolute path (#2164). Only fires with a config file to
+                # anchor against; a value with none (arrived through the raw
+                # environment with no `.supertool.json` at all — `_CONFIG_PATH`
+                # is unset) is untouched and keeps the absolute-only rule
+                # `sourcepath.resolve()` itself still enforces.
+                if (k in _RELATIVE_SEARCH_PATH_KEYS and isinstance(v, str)
+                        and _CONFIG_PATH):
+                    v = _anchor_relative_search_path(v, _CONFIG_PATH)
                 # Strings pass through verbatim (e.g. CSV "error_patterns").
                 # Non-scalars (lists/dicts, e.g. "job_patterns") are JSON-encoded
                 # so the receiving preset can json.loads them back — str() would
