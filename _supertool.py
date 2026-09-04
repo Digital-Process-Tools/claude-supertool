@@ -5685,11 +5685,88 @@ def op_read(path: str, offset: int = 0, limit: int = 0,
     return skip_note + filter_note + body + _read_edit_hint(path, body)
 
 
+def _modify_hint_install_dir() -> str:
+    """Directory holding `supertool` / `supertool.py`, for `_modify_hint`.
+
+    Named and exposed on its own -- rather than inlined -- so a test can
+    monkeypatch it the way `presets/_st_hint.py`'s own `install_dir` already
+    is, and so this file's `__file__` (this module's own real path, not the
+    entry point beside it) is resolved in exactly one place.
+    """
+    return os.path.dirname(os.path.realpath(__file__))
+
+
+def _modify_hint_wrapper_is_runnable(path: str) -> bool:
+    """Best-effort probe: is `path` runnable the way `./supertool` prints it?
+
+    Mirrors `presets/_st_hint.py`'s `_wrapper_is_runnable` (#905/#1919):
+    POSIX reads the execute bit directly; Windows has none, so the fallback
+    there is a `#!` shebang -- every wrapper this project's own install
+    instructions produce (README.md) is a symlink to `supertool.py`, itself
+    `#!/usr/bin/env python3`.
+    """
+    if os.name == "nt":
+        try:
+            with open(path, "rb") as fh:
+                return fh.read(2) == b"#!"
+        except OSError:
+            return False
+    return os.access(path, os.X_OK)
+
+
+def _modify_hint_quoted_interpreter() -> str:
+    """`sys.executable`, quoted for the shell that will receive it if it must be.
+
+    Mirrors `presets/_st_hint.py`'s `_quoted_interpreter` (#1017): an
+    interpreter path with a space -- the ordinary Windows install, or any
+    POSIX box whose user has one in `$HOME` -- must be quoted or the printed
+    remedy asks the shell to run a program named `C:\\Program`.
+    """
+    exe = sys.executable
+    if " " not in exe:
+        return exe
+    return chr(34) + exe + chr(34) if os.name == "nt" else shlex.quote(exe)
+
+
+def _modify_hint(op: str) -> str:
+    """A runnable supertool invocation for `op`, for `_read_edit_hint`'s footer.
+
+    Duplicates `presets/_st_hint.py`'s `st_hint` (#905/#1012) rather than
+    importing it: `presets/` ships no `__init__.py` and is a tree of
+    subprocess-invoked scripts, not a package core can reach into, so this
+    core module keeps its own copy of the small check the way it already
+    does for `parse_remote` elsewhere in this file, rather than splicing
+    `presets/` onto its own `sys.path` for one helper.
+
+    Three states, exactly as `st_hint` has (#2120): `./supertool` only when
+    a runnable wrapper genuinely sits on disk beside this file -- a
+    gitignored symlink present in a clone, absent in a `git worktree`
+    because git does not carry a symlink into one, which is exactly where a
+    dispatched agent normally stands. `sys.executable supertool.py` when
+    only the entry point is there -- the worktree case, and what this
+    repo's own CLAUDE.md already tells a worktree caller to run. And an
+    explicit "no runnable supertool found" when neither is, rather than
+    printing either literal on a guess: a wrong prefix's failure
+    (`No such file or directory`) reads as "the tool is not installed", not
+    "one character of the suggestion was wrong", which spends the reader's
+    trust before it spends their time.
+    """
+    root = _modify_hint_install_dir()
+    quoted = chr(39) + op + chr(39)
+    wrapper = os.path.join(root, "supertool")
+    if (os.path.isfile(wrapper)
+            and _modify_hint_wrapper_is_runnable(wrapper)):
+        return "./supertool " + quoted
+    if os.path.isfile(os.path.join(root, "supertool.py")):
+        return _modify_hint_quoted_interpreter() + " supertool.py " + quoted
+    return "(no runnable supertool found in " + root + " -- the op is " + quoted + ")"
+
+
 def _read_edit_hint(path: str, body: str) -> str:
     """One-line nudge appended to a single-file read receipt: supertool's edit
     op bypasses the harness must-Read-first gate, so the file can be modified
     without a harness Read tool call (#309). Scoped to successful single-file
-    reads only — render_file errors get no hint, and grep/glob multi-file
+    reads only -- render_file errors get no hint, and grep/glob multi-file
     branches don't route through op_read."""
     if body.startswith("ERROR:"):
         return ""
@@ -5701,9 +5778,8 @@ def _read_edit_hint(path: str, body: str) -> str:
     # inside what reads as a command to run. The name is disclosed rather than
     # censored: the hint is unrunnable either way for such a file, and one
     # naming a path that is not the one read would be worse than a broken one.
-    return (f"{mark('↳')} to modify: "
-            f"./supertool 'edit:::OLD:::NEW:::"
-            f"{_flat_field(path, disclose_newline=True)}'"
+    op = f"edit:::OLD:::NEW:::{_flat_field(path, disclose_newline=True)}"
+    return (f"{mark(chr(0x21B3))} to modify: {_modify_hint(op)}"
             f"  (or edit:@- ; no harness Read needed)\n")
 
 
