@@ -551,11 +551,17 @@ def _hunk_note(pre_text: Optional[str], post_text: Optional[str]) -> str:
     conflating them for exactly the failure mode this whole change exists to
     stop being silent about).
 
-    Returns ``""`` only when PRE held no conflict block to compare against —
-    unreachable on `git-resolve`'s own call path, where PRE is always read
-    from a file `git` itself just listed as conflicted, but reachable calling
-    this function directly (as the unit tests do); there is nothing to have
-    "not checked", so nothing is said.
+    Returns a **stated** line — never a silent ``""`` — when PRE held no
+    conflict block to compare against too. This used to be documented as
+    unreachable on `git-resolve`'s own call path, on the premise that PRE is
+    always read from a file `git` itself just listed as conflicted
+    (`_list_conflicts`, `git diff --name-only --diff-filter=U`). That premise
+    does not hold for a **modify/delete conflict** (#2273): `git` lists the
+    path as conflicted, but leaves the surviving side's content in the
+    working tree with no `<<<<<<<` markers at all — there was never a block
+    for a whole-file `checkout --ours`/`--theirs` to have moved content out
+    of, so PRE legitimately holds none, and that fact must be said rather
+    than rendered as the same blank line a genuinely-clean resolution prints.
     """
     if pre_text is None or post_text is None:
         return "outside-conflict check: not available (could not read the pre/post-resolution snapshot)"
@@ -574,7 +580,10 @@ def _hunk_note(pre_text: Optional[str], post_text: Optional[str]) -> str:
     post_lines = _untrusted.split_lines(post_text)
     blocks = _block_ranges(pre_lines)
     if not blocks:
-        return ""
+        return ("outside-conflict check: not available (the pre-checkout "
+                 "snapshot carried no conflict markers to compare against — "
+                 "e.g. a modify/delete conflict, where the surviving side's "
+                 "content is already what git left in the working tree)")
 
     matcher = difflib.SequenceMatcher(None, pre_lines, post_lines, autojunk=False)
     ops = [op for op in matcher.get_opcodes() if op[0] != "equal"]
