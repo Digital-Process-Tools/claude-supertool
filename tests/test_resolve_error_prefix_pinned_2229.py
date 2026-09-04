@@ -11,9 +11,13 @@ import the producer: adapters run as a subprocess with only
 the core either -- reaching across that boundary is exactly the "gate stops
 working whenever a sys.path resolution does" trade `_validator_required`
 (`_supertool.py`, `tests/test_require_validators_core_975.py`) and
-`_LINE_BREAK_PATTERN` (`tests/test_validators_splitlines_1486.py`,
-`tests/test_tsc_check.py::test_ansi_re_matches_the_core`) already declined for
-the same reason. So the fix here is the same shape as those two: keep the two
+`_LINE_BREAK_PATTERN`
+(`tests/test_validators_splitlines_1486.py::test_split_lines_matches_the_core_conservative_definition`)
+already declined for the same reason -- and `_ANSI_ESCAPE_RE`/`ANSI_RE`
+(`tests/test_tsc_check.py::test_the_adapter_and_the_core_strip_the_same_escapes`)
+is the same trade again, a third time, for a third pair of literals.
+
+So the fix here is the same shape as those: keep the two
 literals, and pin them equal with a test that loads both real modules rather
 than trusting the two authors to keep retyping the same nine characters
 correctly forever.
@@ -51,6 +55,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import supertool  # noqa: E402
+from _adapter_budget import adapter_budget  # noqa: E402
 from _adapter_verdict import skip_if_core_timed_out  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
@@ -94,7 +99,7 @@ def test_the_real_resolver_emitting_it_is_recognised_end_to_end(tmp_path: Path) 
 
     r = subprocess.run(
         [sys.executable, str(RESOLVER), str(target)],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True, text=True, timeout=adapter_budget(RESOLVER),
         encoding="utf-8", errors="replace",
     )
     assert r.returncode == 0, r.stderr
