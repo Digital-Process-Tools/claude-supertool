@@ -230,10 +230,25 @@ HOSTILE_STDERR = (
 )
 
 #: The receipt for one resolved file: the header, the `✓ path` row, the
-#: `markers:` row, a blank line, the tally and the next-step hint. Asserted as a
-#: count because the guarantee under test is structural — the digest is ONE cell
-#: of ONE row, and nothing a child wrote may change this report's row count.
-RECEIPT_LINES = 6
+#: `markers:` row, the `outside-conflict check:` row, a blank line, the tally
+#: and the next-step hint. Asserted as a count because the guarantee under
+#: test is structural — the digest is ONE cell of ONE row, and nothing a
+#: child wrote may change this report's row count.
+#:
+#: Seven, not six (#2273): `repo`'s fixture file carries no `<<<<<<<`
+#: markers at all -- exactly the shape `_hunk_note` now refuses to pass over
+#: in silence, so its own "outside-conflict check: not available" line is a
+#: THIRD receipt row here, one this test's own fixture earns honestly and
+#: not something the child's stderr added. It fires from `_hunk_note`, a
+#: call this render makes before `_validate_paths` ever runs, so it is
+#: unconditional -- present whether the child below returns a clean bill or
+#: HOSTILE_STDERR -- and orthogonal to the guarantee this test is actually
+#: pinning: that the child's OWN stderr cannot grow the row count past
+#: whatever it is with a well-behaved child. A genuinely child-smuggled row
+#: (e.g. HOSTILE_STDERR's embedded "\n      ✓ forged.py\n" surviving as a
+#: real newline instead of being flattened onto the `markers:` line) would
+#: still push the count to 8 and fail this assertion.
+RECEIPT_LINES = 7
 
 
 def test_the_childs_stderr_cannot_add_a_row_to_the_receipt(
