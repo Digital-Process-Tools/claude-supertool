@@ -164,6 +164,7 @@ def test_around_line_extra_token_is_refused(tmp_path: Path) -> None:
     "tree:{d}:1:zzz",
     "diff:{p}:{p}:zzz",
     "glob:{d}/*.py:zzz",
+    "payload-lint:@{payload}:zzz",
 ])
 def test_fixed_slot_ops_refuse_an_extra_token(
         tmp_path: Path, call: str) -> None:
@@ -172,9 +173,21 @@ def test_fixed_slot_ops_refuse_an_extra_token(
     Measured before the fix on 2c8eaf9 — twelve probed, twelve silent. The
     table is the whole population of fixed-slot builtins, so this is the class
     rather than the instance the issue happened to name.
+
+    #2238: `payload-lint` was added to the dispatcher (`op_payload_lint`
+    reads only `parts[1]`, the `@file`/`@-` reference) but never to
+    `_MAX_COLON_SLOTS`, so `payload-lint:@somefile:extra:more` silently
+    dropped `extra`/`more` -- same defect, thirteenth instance. `{p}` (a
+    plain-text file `head`/`tail`/`wc`/... read as lines) is not a valid
+    payload -- a bad-TOML parse error would mask the dropped-tokens
+    refusal being tested here -- so this case gets its own well-formed
+    `{payload}` file instead.
     """
     f = _lines(tmp_path, "code.py", 30)
-    out = supertool.dispatch(call.format(p=f, d=tmp_path))
+    payload = tmp_path / "payload.toml"
+    payload.write_text(
+        'op = "edit"\npath = "x.txt"\nold = "a"\nnew = "b"\n', encoding="utf-8")
+    out = supertool.dispatch(call.format(p=f, d=tmp_path, payload=payload))
     assert "ERROR:" in out, repr(out)
     assert "zzz" in out, repr(out)
 

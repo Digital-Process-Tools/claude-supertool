@@ -142,6 +142,36 @@ def _config_dir_is_untrusted_ancestor(root: Path, config_dir: Path) -> bool:
     return common == config_s
 
 
+def _config_dir_may_authorize_execution(root: Path, config_dir: Path) -> bool:
+    """True only when `config_dir` is `root` itself, or nested inside it --
+    see `new-file-lint.py`'s identical function for the full rationale,
+    mirrored here rather than imported for the same reason the rest of this
+    file mirrors it (a standalone, independently-readable contract).
+
+    #2236: `_config_dir_is_untrusted_ancestor` above answers "is config_dir
+    a strict ancestor of root" and stays unchanged -- an explicit `path=`
+    naming a file outside the config-owning project is ordinary usage, and
+    `_containment_error` elsewhere already gates whether the path can be
+    touched at all. This function answers a different, stricter question:
+    `_load` imports and EXECUTES whatever script it finds, so a sibling or
+    fully-disjoint config_dir -- no ancestry with root either direction --
+    left the target repo's own script trusted for that execution, which is
+    the repo under inspection running its own code with the operator's
+    privileges. Only root==config_dir or config_dir nested inside root
+    authorizes that automatically; everything else needs
+    `SUPERTOOL_CHANGELOG_ASSEMBLER` naming an exact path instead.
+    """
+    root_s = os.path.normcase(str(root))
+    config_s = os.path.normcase(str(config_dir))
+    if config_s == root_s:
+        return True
+    try:
+        common = os.path.commonpath([root_s, config_s])
+    except ValueError:  # e.g. different drives on Windows -- no ancestry
+        return False
+    return common == root_s
+
+
 def _repo_root(start: Path) -> tuple[Path | None, str | None]:
     """The git repo root above `start`, and why not when there is none.
 
@@ -233,6 +263,22 @@ def _find_assembler(target: Path) -> tuple[Path | None, Path | None, str | None]
             return None, root, SCOPE_REFUSED_PREFIX + (
                 "the .supertool.json that wired this run lives ABOVE this "
                 "project, at {0}".format(config_dir))
+        # #2236: the ancestor check above only catches config_dir sitting
+        # STRICTLY ABOVE root. A sibling or fully-disjoint config_dir --
+        # sharing no ancestry with root at all -- passed it, and `_load`
+        # imports and EXECUTES whatever it finds, so the target repo's own
+        # script ran regardless of whether the operator's own config has
+        # anything to do with that repo. Only root==config_dir or
+        # config_dir nested inside root means the project that configured
+        # supertool IS the project whose script is about to run.
+        if (scope_known and config_dir is not None
+                and not _config_dir_may_authorize_execution(root, config_dir)):
+            return None, root, SCOPE_REFUSED_PREFIX + (
+                "the .supertool.json that wired this run lives at {0}, "
+                "which shares no ownership relationship with this project "
+                "-- importing and running a script THIS project supplies "
+                "is not authorized just because supertool was pointed at "
+                "one of its files (#2236)".format(config_dir))
     resolved_start = target.parent.resolve()
     for parent in [resolved_start, *resolved_start.parents]:
         for relative in _locations():

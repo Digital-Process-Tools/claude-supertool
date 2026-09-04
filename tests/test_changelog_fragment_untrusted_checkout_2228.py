@@ -134,18 +134,54 @@ def test_config_dir_env_absent_preserves_existing_direct_invocation_behavior(
     assert result["ok"] is True, result
 
 
-def test_a_disjoint_unrelated_project_is_still_trusted(tmp_path):
-    """Self-review finding (#2228): the fix's first cut refused ANY
-    SUPERTOOL_CONFIG_DIR that was not `root` itself or an ancestor of it --
-    which also refused a config directory that shares no ancestry with
-    `root` AT ALL, an entirely ordinary shape when supertool is invoked
-    with an explicit `path=` argument naming a file outside the
-    config-owning project (`tests/test_changelog_fragment_write_receipt_1132.py`'s
-    own end-to-end CLI test does exactly this: cwd inside THIS repo, target
-    inside a sibling tmp_path project). That regressed #1132's pre-existing
-    write-time guarantee for every such call. Only a config directory
-    sitting STRICTLY ABOVE `root` -- the directory-of-clones shape -- may
-    be refused; a disjoint sibling tree must still be trusted."""
+def test_a_disjoint_config_dir_may_still_name_the_target_path(tmp_path):
+    """Self-review finding (#2228, revisited by #2236): the original fix's
+    first cut refused ANY SUPERTOOL_CONFIG_DIR that was not `root` itself
+    or an ancestor of it -- which also refused a config directory sharing
+    no ancestry with `root` at all, an entirely ordinary shape when
+    supertool is invoked with an explicit `path=` argument naming a file
+    outside the config-owning project. That SUBSTITUTION question --
+    "may this adapter even be pointed at a file in a project my own
+    .supertool.json does not own" -- is real and #2228 was right to keep
+    it unrefused: `_config_dir_is_untrusted_ancestor` still returns False
+    here (unmodified).
+
+    What #2236 found is a SEPARATE question this same shape used to answer
+    the same way by accident: whether the disjoint project's own
+    conventionally-named assembler may be imported and EXECUTED
+    automatically. It may not -- see
+    `test_a_disjoint_unrelated_project_needs_explicit_opt_in` below, which
+    pins the corrected behaviour and is the test this one was replaced by.
+    """
+    unrelated_config_owner = tmp_path / "some-other-project-entirely"
+    unrelated_config_owner.mkdir()
+    repo = tmp_path / "sibling-repo"
+    repo.mkdir()
+
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_cf_2236", ADAPTER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    assert mod._config_dir_is_untrusted_ancestor(
+        repo.resolve(), unrelated_config_owner.resolve()) is False
+
+
+def test_a_disjoint_unrelated_project_needs_explicit_opt_in(tmp_path):
+    """#2236: a SUPERTOOL_CONFIG_DIR sharing no ancestry with `root` at all
+    -- the "fully disjoint trees" and "sibling clones" rows a gate-3 audit
+    found still TRUSTED -- must not have `root`'s own conventionally-named
+    assembler imported and executed automatically. `_load` executes what
+    it imports, so the previous behaviour ran a script THAT project
+    supplied, with the operator's privileges, just because supertool
+    happened to be pointed at one of its files -- the same danger #2228
+    closed for the directory-of-clones shape, reached from the opposite
+    direction. `test_changelog_fragment_write_receipt_1132.py`'s own
+    end-to-end CLI test exercised exactly this geometry (cwd inside this
+    repo, target in a disjoint tmp_path project) and is updated separately
+    to pin `SUPERTOOL_CHANGELOG_ASSEMBLER` -- the explicit opt-in this file
+    already had for the ancestor case -- rather than relying on this now-
+    refused convention-based auto-execution."""
     unrelated_config_owner = tmp_path / "some-other-project-entirely"
     unrelated_config_owner.mkdir()
 
@@ -156,9 +192,41 @@ def test_a_disjoint_unrelated_project_is_still_trusted(tmp_path):
 
     scripts = repo / ".github" / "scripts"
     scripts.mkdir(parents=True)
-    shutil.copy2(REAL_ASSEMBLER, scripts / "assemble_changelog.py")
+    (scripts / "assemble_changelog.py").write_text(MALICIOUS_ASSEMBLER,
+                                                    encoding="utf-8")
 
     result = _run(target, {"SUPERTOOL_CONFIG_DIR": str(unrelated_config_owner)})
+
+    assert not (scripts / "PWNED").exists(), (
+        "the disjoint, unrelated project's own assembler ran -- a "
+        "SUPERTOOL_CONFIG_DIR sharing no ancestry with root at all was "
+        "still enough to trust root's own convention-based script: "
+        + json.dumps(result))
+    assert "skipped" in result, result
+    assert "ok" not in result, result
+
+
+def test_explicit_opt_in_still_works_for_a_disjoint_config_dir(tmp_path):
+    """Positive control for the refusal above: SUPERTOOL_CHANGELOG_ASSEMBLER
+    naming one exact path is the operator's own explicit trust, not an
+    inherited one, and must still be honoured even when SUPERTOOL_CONFIG_DIR
+    shares no ancestry with root at all."""
+    unrelated_config_owner = tmp_path / "some-other-project-entirely"
+    unrelated_config_owner.mkdir()
+
+    repo = tmp_path / "sibling-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    target = _write_fragment(repo)
+
+    pinned = repo / "tools" / "my_assembler.py"
+    pinned.parent.mkdir(parents=True)
+    shutil.copy2(REAL_ASSEMBLER, pinned)
+
+    result = _run(target, {
+        "SUPERTOOL_CONFIG_DIR": str(unrelated_config_owner),
+        "SUPERTOOL_CHANGELOG_ASSEMBLER": str(Path("tools") / "my_assembler.py"),
+    })
 
     assert "skipped" not in result, result
     assert result["ok"] is True, result

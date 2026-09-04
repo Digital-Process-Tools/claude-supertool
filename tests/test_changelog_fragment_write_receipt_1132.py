@@ -238,14 +238,32 @@ def test_the_match_glob_survives_windows_separators():
 
 
 def test_a_paste_of_a_bad_fragment_no_longer_returns_a_green_receipt(tmp_path):
-    """End to end, through the CLI, which is where #1132 was observed."""
-    target = _project(tmp_path) / "changelog.d" / "1109.fixed.md"
+    """End to end, through the CLI, which is where #1132 was observed.
+
+    cwd is THIS repo -- so the .supertool.json that wires this run lives
+    here -- while `target` is a disjoint project under `tmp_path`. Before
+    #2236, the convention-based location alone was enough for `target`'s
+    own `.github/scripts/assemble_changelog.py` to be imported and
+    executed automatically; #2236 requires an explicit
+    SUPERTOOL_CHANGELOG_ASSEMBLER pin for that disjoint-tree shape, the
+    same escape hatch this file's `test_explicit_override_bypasses_the_scope_check`
+    already relies on for the ancestor case. Without the pin this call now
+    reads `skipped`, not a finding -- proven separately by
+    `test_changelog_fragment_untrusted_checkout_2228.py::test_a_disjoint_unrelated_project_needs_explicit_opt_in`
+    -- so this end-to-end test supplies it to keep exercising the write-time
+    refusal #1132 is actually about."""
+    project = _project(tmp_path)
+    target = project / "changelog.d" / "1109.fixed.md"
     quote = chr(39) * 3
     payload = "path = {0}\ncontent = {1}{2}{1}\n".format(
         json.dumps(str(target)), quote, BARE_PARAGRAPH)
+    env = dict(os.environ)
+    env["SUPERTOOL_CHANGELOG_ASSEMBLER"] = os.path.join(
+        ".github", "scripts", "assemble_changelog.py")
     proc = subprocess.run([sys.executable, str(SUPERTOOL), "paste:@-"],
                           input=payload, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", cwd=str(REPO))
+                          encoding="utf-8", errors="replace", cwd=str(REPO),
+                          env=env)
     receipt = proc.stdout + proc.stderr
     assert "changelog-fragment" in receipt, receipt
     assert "not a single `- ` bullet list" in receipt, receipt

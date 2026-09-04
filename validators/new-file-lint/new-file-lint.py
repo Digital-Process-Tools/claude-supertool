@@ -181,6 +181,49 @@ def _config_dir_is_untrusted_ancestor(root: Path, config_dir: Path) -> bool:
     return common == config_s
 
 
+def _config_dir_may_authorize_execution(root: Path, config_dir: Path) -> bool:
+    """True only when `config_dir` is `root` itself, or nested inside it
+    (a monorepo `.supertool.json` living in a subdirectory of the project
+    whose file is being edited) -- the two relationships that mean "the
+    project that configured supertool IS the project whose script is about
+    to run" without asking.
+
+    #2236: `_config_dir_is_untrusted_ancestor` answers a narrower question
+    -- "is `config_dir` a strict ancestor of `root`" -- and stays exactly
+    as it was: an explicit `path=` argument naming a file in a project the
+    operator's own config does not own is ordinary supertool usage, and
+    nothing about that alone should be refused -- `_containment_error`
+    elsewhere already gates whether the path can be touched at all. But
+    `_load` does not merely resolve a path -- it imports and executes
+    whatever conventionally-named script it finds, which is the checkout
+    under inspection running ITS OWN code with the operator's privileges.
+    That is a second, stricter question this function answers on its own:
+    not "may this path be substituted for the target" (already settled),
+    but "may a script found under `root` be imported and run
+    automatically, with no explicit operator pin."
+
+    A gate-3 audit (#2236) found `_config_dir_is_untrusted_ancestor` alone
+    left sibling and fully-disjoint checkouts TRUSTED for exactly that
+    execution -- config=/Users/x/src/mine, root=/Users/x/src/evil (no
+    ancestry either direction) ran `evil`'s own script the same as
+    config==root would. This function closes that: only `root` itself, or
+    a `root` that CONTAINS `config_dir`, authorizes automatic execution;
+    every other relationship -- config strictly above root (the original
+    #2228 shape) AND disjoint/sibling trees with no ancestry at all -- does
+    not, and falls back to `ENV_LINT_SCRIPT` naming an exact path as the
+    operator's own explicit trust.
+    """
+    root_s = os.path.normcase(str(root))
+    config_s = os.path.normcase(str(config_dir))
+    if config_s == root_s:
+        return True
+    try:
+        common = os.path.commonpath([root_s, config_s])
+    except ValueError:  # e.g. different drives on Windows -- no ancestry
+        return False
+    return common == root_s
+
+
 def _repo_root(start: Path) -> "tuple[Path | None, str | None]":
     """The git repo root above `start`, and why not when there is none.
 
@@ -334,6 +377,32 @@ def main() -> None:
                          "under a directory that also holds this config. "
                          "Set {2} to an exact path if this project's script "
                          "is meant to be trusted here.".format(
+                             root, config_dir, ENV_LINT_SCRIPT),
+                         int((time.time() - start) * 1000)))
+            return
+        # #2236: the ancestor check above answers "is config_dir strictly
+        # above root" -- it does NOT cover a sibling or fully-disjoint
+        # config_dir, which shares no ancestry with root at all. `_load`
+        # imports and EXECUTES whatever it finds, so that gap let any
+        # checkout the operator happened to point supertool at (via an
+        # explicit path=, reachable once SUPERTOOL_ALLOW_OUTSIDE_CWD is
+        # set) have its own conventionally-named script run automatically,
+        # whether or not the operator's own .supertool.json has anything to
+        # do with that checkout. Only root==config_dir or config_dir nested
+        # inside root means "the project that configured supertool IS the
+        # project whose script is about to run."
+        if (scope_known and config_dir is not None
+                and not _config_dir_may_authorize_execution(root, config_dir)):
+            emit(skipped(TOOL, file,
+                         "a new-file-lint script may exist at the default "
+                         "location(s) inside {0}, but the .supertool.json "
+                         "that wired this run lives at {1}, which shares no "
+                         "ownership relationship with that project -- "
+                         "importing and running a script THAT project "
+                         "supplies is not authorized just because supertool "
+                         "was pointed at one of its files (#2236). Set {2} "
+                         "to an exact path if this project's script is "
+                         "meant to be trusted here.".format(
                              root, config_dir, ENV_LINT_SCRIPT),
                          int((time.time() - start) * 1000)))
             return
