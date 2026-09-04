@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "validators" / "common"))
 
+import bin_resolve  # noqa: E402
 from bin_resolve import resolve_bin_cmd  # noqa: E402
 
 
@@ -34,7 +35,7 @@ def test_program_files_style_path_with_space_is_not_split_at_the_space(tmp_path)
     assert result == [fake_bin.as_posix()]
 
 
-def test_windows_style_backslashes_in_a_spaced_path_still_resolve(tmp_path):
+def test_windows_style_backslashes_in_a_spaced_path_still_resolve(tmp_path, monkeypatch):
     bin_dir = tmp_path / "Program Files" / "glab"
     bin_dir.mkdir(parents=True)
     fake_bin = bin_dir / "glab.exe"
@@ -43,6 +44,14 @@ def test_windows_style_backslashes_in_a_spaced_path_still_resolve(tmp_path):
     # Simulate the literal env-var value an operator would set on Windows:
     # the same path, but with backslash separators instead of forward ones.
     windows_style = str(fake_bin).replace(os.sep, "\\") if os.sep != "\\" else str(fake_bin)
+
+    # The backslash-to-forward-slash rewrite is now gated on os.name == "nt"
+    # (#2249): a literal backslash is an ordinary POSIX filename character,
+    # not a Windows path separator, so it must not be rewritten when this
+    # suite happens to run on a POSIX host. Force the Windows branch here
+    # to keep this fixture exercising it regardless of the runner's own
+    # platform.
+    monkeypatch.setattr(bin_resolve.os, "name", "nt")
 
     result = resolve_bin_cmd(windows_style, "glab")
 

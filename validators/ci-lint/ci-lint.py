@@ -52,7 +52,7 @@ import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "common"))
 from refusal import absent, guard_main
-from bin_resolve import resolve_bin_cmd
+from bin_resolve import describe_unresolved, resolve_bin_cmd
 
 TOOL = "ci-lint"
 
@@ -111,7 +111,7 @@ def main() -> None:
     if not shutil.which(glab_bin) and not (
         os.path.isfile(glab_bin) and os.access(glab_bin, os.X_OK)
     ):
-        emit(absent(TOOL, file, f"GLAB_BIN not found: {glab_bin}", 0))
+        emit(absent(TOOL, file, f"GLAB_BIN not found: {describe_unresolved(glab_bin_cmd_str, glab_bin)}", 0))
         return
 
     if not os.path.isfile(file):
