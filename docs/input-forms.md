@@ -388,30 +388,36 @@ entirely. `literal_backslashes` applies to `message` the same way it applies
 to any other write-bound field; there is no `old`-shaped anchor reading for a
 commit message, so there is no note-only case to preserve for it.
 
-### The shell single-quote escape idiom lands verbatim, and is warned
+### The shell single-quote escape idiom is refused
 
-([#2114](https://github.com/Digital-Process-Tools/claude-supertool/issues/2114))
+([#2114](https://github.com/Digital-Process-Tools/claude-supertool/issues/2114),
+[#2243](https://github.com/Digital-Process-Tools/claude-supertool/issues/2243))
 A write-bound literal field (`new`, `content`, `message`) carrying the shell
 idiom for embedding an apostrophe inside a single-quoted string — close the
 quote, emit a literal quote another way, reopen — writes those literal
 characters, not the apostrophe it usually stands for: `'"'"'` (double-quote
 form) or `'\''` (backslash form). A shell's own quoting resolves either to
 one apostrophe; a TOML literal block resolves neither, because it processes no
-escapes at all, so the whole sequence lands on disk, the write reports
-success, and every validator agrees — the sequence is legal text in nearly
-every language this repo edits.
+escapes at all, so the whole sequence would land on disk verbatim, the write
+would report success, and every validator would agree — the sequence is legal
+text in nearly every language this repo edits.
 
-This is a **warning, not a refusal**, unlike the backslash guards above, and
-for a reason specific to it: #834's refusal works because both readings of a
-trailing backslash have another spelling, so refusing strands nothing. This
-idiom has no second spelling to offer — a payload correctly *documenting* the
-idiom writes the exact same bytes a payload that meant a plain apostrophe
-wrote by mistake (`presets/_refname.py`'s own comment on `shlex.quote`'s
-escaping is an instance of the first case), and the tool cannot tell those
-two apart from the bytes alone.
-Refusing would strand the correct write with no way out; the warning names
-the field and quotes the occurrence back, and leaves the decision — and the
-write itself — exactly where it already was.
+This started as a **warning, not a refusal** ([#2114](https://github.com/Digital-Process-Tools/claude-supertool/issues/2114)),
+for a reason specific to it at the time: #834's refusal works because both
+readings of a trailing backslash have another spelling, so refusing strands
+nothing, and this idiom had no second spelling to offer — a payload correctly
+*documenting* the idiom writes the exact same bytes a payload that meant a
+plain apostrophe wrote by mistake (`presets/_refname.py`'s own comment on
+`shlex.quote`'s escaping is an instance of the first case), and the tool
+cannot tell those two apart from the bytes alone. That reasoning held only
+until `literal_backslashes` ([#1096](https://github.com/Digital-Process-Tools/claude-supertool/issues/1096))
+became a general escape hatch rather than a claim about backslashes
+specifically: it is "this field's odd-looking punctuation is intentional, do
+not second-guess it", exactly as true of this idiom as of a doubled
+backslash. [#2243](https://github.com/Digital-Process-Tools/claude-supertool/issues/2243)
+escalated it to match — same `literal_backslashes` key, same
+per-occurrence payload-line-number reporting the backslash refusal already
+has, no second flag added.
 
 A lone embedded apostrophe, and the same bytes inside a `"""` basic block
 (where they are ordinary content the block's own escaping already governs,
