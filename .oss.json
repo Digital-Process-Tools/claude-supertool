@@ -3,6 +3,7 @@
   "default_branch": "master",
   "branch_pattern": "fix/{issue}",
   "test_command": "pytest",
+  "test_measurement_configured": true,
   "version_sites": [
     ".claude-plugin/plugin.json",
     "_supertool.py",
@@ -21,6 +22,7 @@
       "priority-medium",
       "priority-low"
     ],
+    "filed_by_loop": "filed-by-loop",
     "lanes": [
       "lane-watch",
       "lane-tracker-ops",
