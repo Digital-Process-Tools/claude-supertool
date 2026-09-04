@@ -28,7 +28,10 @@ Flags:
                 `git-commit:::MSG:::A:::--no-verify`. On the payload route
                 it is its own field: `no_verify = true`. The receipt's
                 header prints `HOOKS SKIPPED` when it fired, so a skipped
-                commit never reads like a checked one.
+                commit never reads like a checked one. Refused, not silently
+                dropped, when git already knows a real tracked file spelled
+                exactly `--no-verify` (#2276) — same collision guard as
+                `--all` below.
 
 A message containing ':' must arrive via `git-commit:::MSG` or the @payload
 route: the single-colon CLI tokenizes on ':', so `git-commit:fix: thing`
@@ -142,6 +145,29 @@ _TRIPLE = "'" * 3
 # use for this. Extracted from `paths` before anything downstream (spilled-
 # message detection, `--all` expansion, staging) ever sees it.
 _NO_VERIFY_TOKEN = "--no-verify"
+
+
+def _no_verify_ambiguous_refusal():
+    """git knows a path literally called `--no-verify`, so the token means
+    two things (#2276).
+
+    Mirrors `_all_ambiguous_refusal`: the payload route is no escape hatch
+    either -- the payload's own `no_verify = true` field is folded into this
+    same sentinel before commit.py ever sees `paths` (see `_supertool.py`'s
+    `_PAYLOAD_NO_VERIFY_OPS` handling) -- so the remedy is a spelling git
+    resolves as a path and this op does not read as a sentinel.
+    """
+    return [
+        "ERROR: %r is both this op's hook-skip opt-in and a path git "
+        "knows — nothing staged, nothing committed." % (_NO_VERIFY_TOKEN,),
+        ("  Nothing in the argument says which was meant, and both routes "
+         + "spell it the same way."),
+        "  To commit the FILE, write it so git reads it as a path:",
+        "    " + st_hint("git-commit:::MESSAGE:::./" + _NO_VERIFY_TOKEN),
+        "  To skip hooks too, name it explicitly alongside the sentinel:",
+        "    " + st_hint("git-commit:::MESSAGE:::./" + _NO_VERIFY_TOKEN
+                          + ":::" + _NO_VERIFY_TOKEN),
+    ]
 
 
 def _looks_like_pathspec(tok: str) -> bool:
@@ -1051,7 +1077,24 @@ def main() -> int:
     # `_ALL_TOKEN` is resolved further down: neither sentinel is a pathspec
     # and both must be gone before spilled-message detection, `--all`
     # expansion or staging ever see the list.
+    #
+    # #2276 — `no_verify_would_empty` is captured in the same breath, before
+    # stripping: it is true only when EVERY entry in `paths` is the sentinel,
+    # i.e. stripping it empties the list. That is the collision guard's own
+    # scope, matched to `_ALL_TOKEN`'s: `_ALL_TOKEN`'s guard is reached only
+    # when `--all` is the SOLE path argument (`_all_with_paths_refusal`
+    # refuses first, for a different reason, whenever another path is named
+    # alongside it), never when it is paired with real named paths. Scoping
+    # `--no-verify` the same way matters more here, not less: unlike `--all`,
+    # combining it with a real named path is the documented, routine shape
+    # (`git-commit:::MSG:::A:::--no-verify`, per this file's own docstring)
+    # — so an unscoped guard would refuse that ordinary call forever, in any
+    # repo that merely happens to contain an unrelated file spelled
+    # `--no-verify` somewhere, named or not (found in review of this diff).
     no_verify = _NO_VERIFY_TOKEN in paths
+    no_verify_would_empty = no_verify and all(
+        p == _NO_VERIFY_TOKEN for p in paths
+    )
     if no_verify:
         paths = [p for p in paths if p != _NO_VERIFY_TOKEN]
 
@@ -1104,6 +1147,38 @@ def main() -> int:
     # commit lands, is refused by a hook, or finds nothing staged (#692).
     print(f"Repo: {repo_label()}")
     print(f"HEAD before: {head_before}")
+
+    # #2276 — checked before the `HOOKS SKIPPED` line prints, not after:
+    # printing "hooks were skipped" and then refusing with "nothing staged,
+    # nothing committed" a few lines later read as a contradiction (found in
+    # review of this diff). Scoped by `no_verify_would_empty` (see its own
+    # comment above) — only the shape #1228 and #2276 actually warn about:
+    # the sentinel was the ONLY thing in `paths`, so stripping it would leave
+    # nothing and the op would fall through to committing the whole staged
+    # index under a name nobody typed.
+    if no_verify_would_empty:
+        gone = _git(["diff", "--cached", "--diff-filter=D", "--name-only",
+                     "--no-renames", "-z"])
+        if gone.returncode != 0:
+            # Same shape as `_expand_all`'s identical check just below: an
+            # unreadable index must not silently read as "no collision" —
+            # that is exactly the absence-as-answer defect this codebase
+            # keeps having (found in review of this diff).
+            said = _untrusted.flat(
+                " ".join((gone.stderr or "").split())[:120])
+            print("ERROR: %s could not be resolved — the index could not be "
+                  "read (%s). Nothing staged, nothing committed."
+                  % (_NO_VERIFY_TOKEN, said or "exit %d" % gone.returncode))
+            print("  Whether a file named %r is a staged deletion is exactly "
+                  "what decides the ambiguity below, and it is now unknown."
+                  % (_NO_VERIFY_TOKEN,))
+            return 1
+        gone_set = set(_z_paths(gone.stdout))
+        if _known_to_git(_NO_VERIFY_TOKEN, gone_set):
+            for line in _no_verify_ambiguous_refusal():
+                print(line)
+            return 1
+
     # #2205 — printed in the header, unconditionally when it fired, so a
     # hook-skipped commit can never be mistaken for a checked one further
     # down the receipt. Absent entirely on an ordinary commit: the shape of
@@ -1140,6 +1215,21 @@ def main() -> int:
         # committed under a sentinel reading of its own name (#324's shape).
         gone = _git(["diff", "--cached", "--diff-filter=D", "--name-only",
                      "--no-renames", "-z"])
+        if gone.returncode != 0:
+            # #2276 — found alongside the identical, newly-added
+            # `_NO_VERIFY_TOKEN` check: an unread index must not silently
+            # read as "no staged deletions", which is what an unchecked
+            # `gone.stdout` would answer. Same shape `_expand_all`'s own
+            # `idx.returncode` check a few lines below already guards.
+            said = _untrusted.flat(
+                " ".join((gone.stderr or "").split())[:120])
+            print("ERROR: %s could not be resolved — the index could not be "
+                  "read (%s). Nothing staged, nothing committed."
+                  % (_ALL_TOKEN, said or "exit %d" % gone.returncode))
+            print("  Whether a file named %r is a staged deletion is exactly "
+                  "what decides the ambiguity below, and it is now unknown."
+                  % (_ALL_TOKEN,))
+            return 1
         gone_set = set(_z_paths(gone.stdout))
         if _known_to_git(_ALL_TOKEN, gone_set):
             mod, untr, unk = _worktree_changes()

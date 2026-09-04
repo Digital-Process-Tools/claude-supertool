@@ -384,7 +384,18 @@ SINK_SHAPES = tuple(SHAPE_PROBES)
 #: `_gh_error_kind(result.stderr)` call (the check-run-namespace disclosure
 #: on a 404) -- the identical shape one bullet up, one call site over. The
 #: census did not move on this site either.
-UNRESOLVED = 113
+#:
+#: 113 -> 112, #2276. Not a new unresolved site -- the opposite: `NOT_TEXT`
+#: gained `_known_to_git` (see its own note below), which resolves TWO
+#: `_known_to_git(...)` call sites at once -- the pre-existing `_ALL_TOKEN`
+#: collision guard (already counted in the 113) and the new, identical
+#: `_NO_VERIFY_TOKEN` collision guard #2276 adds (which would otherwise have
+#: raised this to 114). Net: -1 for the site that dropped out of the count,
+#: +0 for the new one, because it is modelled the same way. Measured before
+#: the entry was written: 113 with `_known_to_git` absent from `NOT_TEXT`
+#: and the new call site present (114 without this fix), 112 with the entry
+#: added.
+UNRESOLVED = 112
 
 #: Calls whose result cannot be a string, so the taint stops there. A type
 #: argument, not an allowlist: `json.loads(r.stdout)` yields a dict, and every
@@ -430,10 +441,22 @@ UNRESOLVED = 113
 #: this scan cannot see. Measured both ways before this entry was written:
 #: with it, the count is 111 again and the census
 #: (`raw_child_stream_sinks`) did not move.
+#: `_known_to_git` is the sixth, `presets/git/commit.py` (#2276)'s own path
+#: discriminator: `os.path.exists(path) or path in staged_deletions` then,
+#: failing both, `r.stdout.strip()` fed to `bool()` -- the taint provably
+#: stops at the return, same as `mentions_gitlab_token` above. It had ONE
+#: call site before #2276 (`_ALL_TOKEN`'s collision guard, `gone_set` as the
+#: second argument) already counted in `UNRESOLVED`'s 113; #2276 added a
+#: second, identical in shape (`_NO_VERIFY_TOKEN`'s new collision guard),
+#: which would have raised `UNRESOLVED` 113 -> 114 for two sites where the
+#: taint provably stops. Modelled here instead: with the entry, both sites
+#: drop out and the count is 111 -- 113 minus the one already-counted site,
+#: plus zero for the new one. The census (`raw_child_stream_sinks`) did not
+#: move on either site -- checked before the number was touched.
 NOT_TEXT = frozenset({"loads", "int", "float", "len", "bool",
                       "mentions_gitlab_token", "says_not_authenticated",
                       "says_not_found", "says_forbidden",
-                      "_is_graphql_transport_failure"})
+                      "_is_graphql_transport_failure", "_known_to_git"})
 
 _SCANNED = ("presets/github", "presets/gitlab", "presets/git")
 
