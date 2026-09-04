@@ -27465,9 +27465,15 @@ _SHELL_QUOTE_ESCAPE_FORMS = (
 
 
 def _toml_literal_shell_quote_escape_findings(
-        raw: str) -> List[Tuple[str, str, str, int]]:
-    """`(key, label, first line, count)` per literal block whose write-bound
-    field carries the shell single-quote escape idiom (#2114).
+        raw: str) -> List[Tuple[str, str, str, int, int]]:
+    """`(key, label, first line, count, first payload line number)` per literal
+    block whose write-bound field carries the shell single-quote escape idiom
+    (#2114).
+
+    The fifth element is the position `#2243` asked for -- the sibling
+    doubled-backslash refusal already had one (`_dbs_occurrences`, #1808,
+    #1814, #1819), and a count alone ("2 occurrences") sends the reader back
+    to re-read the whole field by eye to find either one.
 
     Scoped to write-bound fields only, the same set `_payload_double_backslash_
     refusal` uses and for the same reason: `old` is an anchor and never lands
@@ -27478,7 +27484,7 @@ def _toml_literal_shell_quote_escape_findings(
     payload author reaching for a shell habit inside a block that has no
     escapes to reach for.
     """
-    findings: List[Tuple[str, str, str, int]] = []
+    findings: List[Tuple[str, str, str, int, int]] = []
     opener = chr(39) * 3
     i = raw.find(opener)
     while i >= 0:
@@ -27499,41 +27505,59 @@ def _toml_literal_shell_quote_escape_findings(
                 line = content[start:] if stop < 0 else content[start:stop]
                 seen = len(_TOML_OPS_HEADER.findall(raw[:i]))
                 label = key if seen == 0 else "ops[" + str(seen - 1) + "]." + key
+                # Measured on the SUBMITTED PAYLOAD (`raw`), not on `content` --
+                # the same coordinate #1808 settled on for the sibling refusal,
+                # because it is the one the author can act on without re-deriving
+                # an offset into their own value.
+                at_abs = (i + 3) + hit_at
+                line_no = raw.count(chr(10), 0, at_abs) + 1
                 findings.append(
                     (key, label, _flat_field(line.strip())[:_TOML_LITERAL_TAIL_CHARS],
-                     total))
+                     total, line_no))
         i = raw.find(opener, nxt)
     return findings
 
 
-def _payload_shell_quote_escape_note(raw: str) -> str:
-    """Warn -- never refuse, never rewrite -- when a write-bound literal field
-    carries the shell single-quote escape idiom verbatim (#2114).
+def _payload_shell_quote_escape_refusal(parsed: Any, raw: str) -> str:
+    """Refuse a payload that would WRITE the shell single-quote escape idiom
+    verbatim, unless `literal_backslashes` exempts the field (#2243).
 
-    #834's trailing-backslash refusal works because BOTH readings of that
-    backslash have another spelling, so refusing strands nothing. This idiom
-    has no such second spelling to offer: a payload correctly documenting it
-    writes the exact same bytes a payload that meant a plain apostrophe wrote
-    by mistake -- `presets/_refname.py`'s own comment on `shlex.quote`'s
-    escaping is an instance of the first case -- and the tool cannot tell
-    those apart from the bytes alone. Refusing would strand the correct write
-    with no way out; a warning says the same words either way and blocks
-    neither author, which is the "Declining instead of guessing" shape one
-    level down from a refusal: say what was found, and leave the decision
-    where it belongs.
+    #2114 made this a WARNING, on a real reason at the time: #834's trailing-
+    backslash case works as a refusal because BOTH readings have another
+    spelling, so refusing strands nothing, and this idiom had no such second
+    spelling to offer -- a payload correctly documenting it (`presets/
+    _refname.py`'s own comment on `shlex.quote`'s escaping) writes the exact
+    same bytes as a payload that meant a plain apostrophe by mistake, and the
+    tool cannot tell those apart from the bytes alone. That reasoning was
+    right about the ONLY escape hatch that existed at the time: none. It
+    stopped holding the moment `_payload_double_backslash_refusal` (#1087,
+    #1096) got one -- `literal_backslashes` is not a claim about backslashes
+    specifically, it is "this field's odd-looking punctuation is intentional,
+    do not second-guess it", and that sentence is exactly as true of this
+    idiom. Reusing the one key rather than adding a second means a payload
+    that already declared its intent for the backslash case does not have to
+    declare it twice for this one.
 
-    Never rewrites, for the same reason `_payload_double_backslash_note`
-    does not: collapsing the idiom to a bare apostrophe would guess at intent,
-    and a wrong guess is strictly worse than the bug it replaces.
+    Scoped to the fields whose bytes land -- `_PAYLOAD_DBS_WRITE_KEYS`, the
+    same set and the same reason `_payload_double_backslash_refusal` uses:
+    `old` is an anchor, a doubled idiom there cannot match, and the runner
+    reports the skip, so refusing it would cost a round-trip on a call that
+    was already safe.
 
-    Capped at `_PAYLOAD_DBS_MAX_FIELDS` located blocks, with the rest NAMED
-    rather than dropped -- the same shape `_payload_double_backslash_refusal`
-    uses and for the same reason (review finding, 2026-09-02): a batch wide
-    enough to carry the idiom in every op would otherwise print one located
-    block per op, the "wall nobody finishes" #1087 already built a cap to
-    avoid, and this note had cloned the scanner without cloning the cap.
+    Never rewrites, for the same reason `_payload_double_backslash_note` does
+    not: collapsing the idiom to a bare apostrophe would guess at intent, and
+    a wrong guess is strictly worse than the bug it replaces -- the caller
+    loses even the ability to read back what they asked for.
+
+    Fires at parse time, before any op runs, the same guarantee #1087 gives
+    the doubled-backslash case: nothing has to be rolled back, because nothing
+    was written.
     """
-    findings = _toml_literal_shell_quote_escape_findings(raw)
+    scope = _payload_literal_backslashes_scope(parsed)
+    if scope is True:
+        return ""
+    findings = [f for f in _toml_literal_shell_quote_escape_findings(raw)
+                if f[0].lower() not in scope]
     if not findings:
         return ""
     arrow = mark(chr(8627))
@@ -27543,13 +27567,14 @@ def _payload_shell_quote_escape_note(raw: str) -> str:
         "field that is WRITTEN to the file. A literal block processes NO "
         "escapes, so if this was meant as one apostrophe it lands as the "
         "whole sequence instead -- and if it is documentation OF the idiom, "
-        "this is correct and the write is unaffected either way. Nothing is "
-        "refused or rewritten; this only says which field to look at." + chr(10)
+        "this refusal is what stops the ambiguous bytes from landing "
+        "unrecorded. Each occurrence below names where it was found." + chr(10)
     ]
-    for _key, label, line, total in findings[:_PAYLOAD_DBS_MAX_FIELDS]:
+    for _key, label, line, total, line_no in findings[:_PAYLOAD_DBS_MAX_FIELDS]:
         out.append(
             "  " + arrow + " `" + label + "` -- " + str(total)
-            + " occurrence" + ("" if total == 1 else "s") + ", e.g. " + chr(96)
+            + " occurrence" + ("" if total == 1 else "s")
+            + ", first at payload line " + str(line_no) + ": " + chr(96)
             + line + chr(96) + chr(10)
         )
     rest = findings[_PAYLOAD_DBS_MAX_FIELDS:]
@@ -27558,6 +27583,22 @@ def _payload_shell_quote_escape_note(raw: str) -> str:
             "  " + arrow + " and " + str(len(rest)) + " more: "
             + ", ".join("`" + f[1] + "`" for f in rest) + chr(10)
         )
+    field_example = _literal_bs_field_list_example(
+        [(f[0], f[1], f[2], f[3], []) for f in findings], scope)
+    out.append(
+        "  " + arrow + " TWO OPPOSITE fixes, and nothing here can tell which "
+        "you meant -- decide per occurrence, then send the payload once:" + chr(10)
+        + "      meant ONE apostrophe (an escape reflex carried over from "
+        "shell quoting -- a literal block eats nothing, so the sequence "
+        "stays whole): replace it with a single `'`." + chr(10)
+        + "      meant the idiom AS WRITTEN (documentation of the shell "
+        "trick itself): add `" + _PAYLOAD_LITERAL_BS_KEY + " = true` at the "
+        "top level of the payload to exempt EVERY field, or name only the "
+        "field(s) above -- `" + _PAYLOAD_LITERAL_BS_KEY + " = " + field_example
+        + "` -- to leave any other field's own occurrences refused. Either "
+        "way, this refusal becomes a decision you recorded." + chr(10)
+        + "  (#2114, #1087, #1096, #1839, #2243)"
+    )
     return "".join(out)
 
 
@@ -27863,9 +27904,9 @@ def _load_at_file_raw(ref: str, note: bool = True) -> "Tuple[Any, str, str]":
         text = _payload_double_backslash_note(raw)
         if text:
             _PAYLOAD_WARNINGS.append(text)
-        text = _payload_shell_quote_escape_note(raw)
-        if text:
-            _PAYLOAD_WARNINGS.append(text)
+        refusal = _payload_shell_quote_escape_refusal(parsed, raw)
+        if refusal:
+            raise ValueError(f"@file payload refused ({source}): {refusal}")
     return parsed, raw, source
 
 
