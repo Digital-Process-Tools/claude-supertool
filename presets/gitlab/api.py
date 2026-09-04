@@ -271,8 +271,9 @@ def path_refusal(path: str) -> str:
     # One decode, not a fixed point, and deliberately so: the two passes are
     # the two depths this value is ever read at. `decoded_host_naming_reason`
     # carries the argument, and #1194 is where it was settled.
+    decoded_path = urllib.parse.unquote(path)
     reason = (host_naming_reason(path)
-              or decoded_host_naming_reason(urllib.parse.unquote(path)))
+              or decoded_host_naming_reason(decoded_path))
     if reason:
         return (
             f"ERROR: gl-api takes a GitLab API path, not a URL — {path!r} is "
@@ -283,7 +284,14 @@ def path_refusal(path: str) -> str:
             f"the path alone — gl-api:projects/:id/members/all. To reach "
             f"another host, call glab yourself with credentials scoped to it."
         )
-    dot_reason = dot_segment_reason(path)
+    # Same decoded value the host check above just used (#2244) — not a second,
+    # independent decode. `_PATH_CHARS` allows `%` through unmodified, so a
+    # dot-segment check on the raw `path` never saw `%2e%2e`/`%2E%2E` as the
+    # `..` it decodes to, while the literal spelling was always caught. One
+    # decode, reused, closes that gap without adding a second depth of its own
+    # — `decoded_path` is exactly the value `decoded_host_naming_reason` above
+    # already read with authority semantics.
+    dot_reason = dot_segment_reason(decoded_path)
     if dot_reason:
         return (
             f"ERROR: gl-api takes a GitLab API path and {dot_reason}: "
