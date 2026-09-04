@@ -215,6 +215,24 @@ def decoded_host_naming_reason(candidate: str) -> str:
     return _authority_reason(folded.split("?", 1)[0])
 
 
+def dot_segment_reason(path: str) -> str:
+    """Why this path contains a bare ``.`` or ``..`` segment, or ``""`` (#2230).
+
+    `quote(seg, safe="")` never escapes ``.`` — it is in the RFC 3986
+    unreserved set — so a ``..`` segment a caller passed through reaches this
+    unchanged whether it arrived raw or already percent-encoded. Refused
+    rather than collapsed, for the same reason `path_refusal` refuses instead
+    of stripping everywhere else in this file: a caller handed the answer to
+    a *normalized* path would read it as the answer to the one they named,
+    and this op does not get to decide that substitution on their behalf.
+    """
+    segments = path.split("?", 1)[0].split("/")
+    if "." in segments or ".." in segments:
+        return ("a bare '.' or '..' path segment is not something this op "
+                "will send unmodified")
+    return ""
+
+
 def path_refusal(path: str) -> str:
     """Why this path is not something the op will send, or ``""``.
 
@@ -264,6 +282,15 @@ def path_refusal(path: str) -> str:
             f"not ask for, and its answer would read as the one you did. Pass "
             f"the path alone — gl-api:projects/:id/members/all. To reach "
             f"another host, call glab yourself with credentials scoped to it."
+        )
+    dot_reason = dot_segment_reason(path)
+    if dot_reason:
+        return (
+            f"ERROR: gl-api takes a GitLab API path and {dot_reason}: "
+            f"{path!r}. A normalized version would ask for a different "
+            f"endpoint than the one you named, and this op does not silently "
+            f"rewrite what it sends. Pass the literal path you mean, or call "
+            f"glab directly if a dot segment is genuinely part of a filename."
         )
     head, _, query = path.partition("?")
     for label, part, allowed in (("path", head, _PATH_CHARS),

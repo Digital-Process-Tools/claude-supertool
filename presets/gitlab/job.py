@@ -24,8 +24,10 @@ import sys
 import urllib.parse
 from datetime import datetime, timezone
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # for api.path_refusal (#2230)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
+from api import path_refusal  # noqa: E402  (the one dot-segment/host guard, reused here -- #2230)
 from _env import env_int  # noqa: E402  (the one numeric-knob reader)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 import _untrusted  # noqa: E402  (an MR's branch, title and author are the opener's text — #965)
@@ -747,9 +749,21 @@ def _fetch_artifact_bytes(job_id: str, path: str) -> tuple["bytes | None", str]:
     GitLab's single-file endpoint (`.../artifacts/*artifact_path`) means the
     whole zip never has to be downloaded for one file (#1796) — the ask this
     issue exists for: a 42 MB archive whose one relevant file is a few kB.
+
+    `urllib.parse.quote` never escapes `.` — a `..` segment in `path` reaches
+    `encoded` unchanged, and this call built `url` and handed it straight to
+    `glab` with no check at all (#2230). `api.path_refusal` is the one guard
+    this preset already has for exactly this question — reused here rather
+    than a second hand-rolled check, and applied to the built `url` (already
+    percent-encoded, so every character it can hold is one `path_refusal`
+    already knows how to read) instead of the raw `path`, which may contain
+    characters `path_refusal`'s allowlist was never meant to judge.
     """
     encoded = "/".join(urllib.parse.quote(seg, safe="") for seg in path.split("/"))
     url = _repo_target.gl_api_path(f"projects/:id/jobs/{job_id}/artifacts/{encoded}")
+    refusal = path_refusal(url)
+    if refusal:
+        return None, refusal
     try:
         proc = subprocess.run(["glab", "api", url], capture_output=True, timeout=30)
     except FileNotFoundError:
