@@ -234,11 +234,14 @@ def _malformed_repo(repo):
 
     Split out of `_malformed_api_ref` so a call site that interpolates `repo`
     alone -- `_gh_count`, `_gh_external_issue_count` and `_latest_release`
-    (:1466, :1548, :1831 as of #2278) build a `gh api` path or query string
-    from `repo`/`slug` with no `branch` argument at all -- can route through
-    the same `_REPO_RE` check `_malformed_api_ref` applies, rather than either
-    duplicating the pattern or being forced to invent a `branch` value that
-    does not exist in that call's own scope.
+    build a `gh api` path or query string from `repo`/`slug` with no `branch`
+    argument at all -- can route through the same `_REPO_RE` check
+    `_malformed_api_ref` applies, rather than either duplicating the pattern
+    or being forced to invent a `branch` value that does not exist in that
+    call's own scope. No line numbers cited here (#2278's own review): the
+    three call sites already name themselves in their own docstrings, next
+    to the interpolation each protects, which cannot drift the way a number
+    copied into a fourth place can.
     """
     if not isinstance(repo, str) or not _REPO_RE.match(repo):
         return f"repo {repo!r} is not a plain owner/name value"
