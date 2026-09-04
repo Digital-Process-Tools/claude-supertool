@@ -116,6 +116,15 @@ def main() -> None:
         return
 
     kinds = scope_kinds(relpath, getattr(module, "SHIPPED", ()))
+    if kinds is None:
+        emit(skipped(TOOL, file, "{0} is outside both scopes the tree-wide "
+                     "guard checks (tests/, or a SHIPPED directory) -- "
+                     "neither half of the rule applies here, the same as "
+                     "tests/test_encoding_seam.py's own tree-wide "
+                     "enumeration".format(relpath),
+                     int((time.time() - start) * 1000)))
+        return
+
     records = scan_one(module, path, kinds)
     dur = int((time.time() - start) * 1000)
     errors = [{"line": r["line"], "col": None, "severity": r["severity"],

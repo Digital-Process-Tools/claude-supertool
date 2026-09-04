@@ -220,13 +220,16 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 
 ### Trust boundary on the convention-based location (#2228)
 
-`new-file-lint` and `changelog-fragment` both state no rules of their own —
-each finds the PROJECT's own script (`.github/scripts/lint_new_files.py`,
-`assemble_changelog.py` at one of a short list of conventional locations)
-by walking up from the edited file to that file's own git root, and
-**imports** it, which executes its top-level code. Both walks are bounded
-at the repo root (#2178): a script sitting above the repo, in a sibling
-directory or anywhere further up, is never reached.
+`new-file-lint`, `changelog-fragment` and `encoding-seam` all state no rules
+of their own — each finds the PROJECT's own script or test file
+(`.github/scripts/lint_new_files.py`, `assemble_changelog.py`, or
+`tests/test_encoding_seam.py`, at one of a short list of conventional
+locations) by walking up from the edited file to that file's own git root
+(`encoding-seam` does not walk — it checks the one canonical location
+directly — but is bound by the same repo root), and **imports** it, which
+executes its top-level code. All three walks/lookups are bounded at the
+repo root (#2178): a script sitting above the repo, in a sibling directory
+or anywhere further up, is never reached.
 
 That bound stops an escape ABOVE the repo. It says nothing about whether
 the repo itself should be trusted. A maintainer whose own `.supertool.json`

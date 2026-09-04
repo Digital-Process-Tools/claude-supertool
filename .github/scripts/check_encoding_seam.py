@@ -39,6 +39,16 @@ from encoding_seam import (  # noqa: E402
 DEFAULT_BRANCH_FALLBACK = "master"
 TIMEOUT_S = 30
 
+# Three states on the exit code, not two (#2287 review): "ran, clean" must
+# be distinguishable from "did not run at all" -- not a git repo, no
+# tests/test_encoding_seam.py, no merge-base -- so a caller gating on exit
+# status alone (a pre-push wrapper, a CI step) cannot read "nothing to
+# check" as "checked and clean". Only RC_OK is a claim that files were
+# actually scanned.
+RC_OK = 0
+RC_VIOLATIONS = 1
+RC_COULD_NOT_CHECK = 2
+
 
 def _default_branch(root: Path) -> str:
     cfg = root / ".oss.json"
@@ -72,13 +82,27 @@ def _changed_files(root: Path, base: str) -> "list[str] | None":
     Diffed against `HEAD`, not the working tree: an untracked or unstaged
     file never leaves this machine on a push, so it is not this script's
     business, and folding it in would flag files nobody is about to send.
+
+    `-z` rather than plain `--name-only` (#2287 review): git's default
+    `core.quotePath=true` C-quotes and octal-escapes a path holding a
+    non-ASCII byte -- `"test_\303\251.py"` on stdout for an on-disk
+    `test_e-acute.py` -- and `.splitlines()` over that would hand the
+    *quoted* string to `(root / f).is_file()`, which is never true, so the
+    file is silently dropped from the scan. `-z` NUL-terminates the raw
+    bytes unquoted regardless of `core.quotePath`, including for a rename
+    under `--diff-filter=ACMR` (`--name-only` never emits the two-path
+    rename pair that bare `--name-status -z` does -- verified empirically,
+    one path per changed file either way). The child's stdout is decoded
+    here explicitly rather than via `text=True`, for the same reason rule 2
+    of this repo's own encoding-seam guard exists: `errors="replace"` on a
+    filename would silently corrupt the very bytes this scan is scoping
+    itself by.
     """
     try:
         r = subprocess.run(
-            ["git", "-C", str(root), "diff", "--name-only",
+            ["git", "-C", str(root), "diff", "--name-only", "-z",
              "--diff-filter=ACMR", base, "HEAD"],
             capture_output=True, timeout=TIMEOUT_S,
-            encoding="utf-8", errors="replace",
         )
     except (OSError, subprocess.SubprocessError) as exc:
         print("check-encoding-seam: could not run git diff against {0}: "
@@ -86,9 +110,11 @@ def _changed_files(root: Path, base: str) -> "list[str] | None":
         return None
     if r.returncode != 0:
         print("check-encoding-seam: git diff against {0} failed: {1}".format(
-            base, (r.stderr or "").strip()), file=sys.stderr)
+            base, (r.stderr or b"").decode("utf-8", "replace").strip()),
+              file=sys.stderr)
         return None
-    return [line for line in (r.stdout or "").splitlines() if line]
+    return [chunk.decode("utf-8", "surrogateescape")
+            for chunk in (r.stdout or b"").split(b"\x00") if chunk]
 
 
 def main(argv=None) -> int:
@@ -104,14 +130,14 @@ def main(argv=None) -> int:
     if root is None:
         print("check-encoding-seam: not inside a git repository, nothing to "
               "check", file=sys.stderr)
-        return 0
+        return RC_COULD_NOT_CHECK
 
     module_path = find_test_module(root)
     if module_path is None:
         print("check-encoding-seam: no tests/test_encoding_seam.py found at "
               "{0} -- this project has not adopted the encoding-seam guard, "
               "nothing to run scoped".format(root), file=sys.stderr)
-        return 0
+        return RC_COULD_NOT_CHECK
 
     try:
         module = load_scan_module(module_path)
@@ -119,10 +145,27 @@ def main(argv=None) -> int:
         print("check-encoding-seam: {0} could not be imported, so nothing "
               "was checked: {1}: {2}".format(
                   module_path, type(exc).__name__, exc), file=sys.stderr)
-        return 0
+        return RC_COULD_NOT_CHECK
 
     if args.files:
-        candidates = args.files
+        # Explicit paths are resolved against the CALLER's cwd, not `root`
+        # (#2287 review): `main()` is invoked from wherever the operator
+        # is standing, and a path typed relative to a subdirectory (`cd
+        # tests && ../.github/scripts/check_encoding_seam.py test_foo.py`)
+        # is valid there, not against `root`. Joining it onto `root`
+        # instead silently produced a nonexistent path and dropped the
+        # file from the scan with no error -- indistinguishable from
+        # "checked, clean".
+        candidates = []
+        for raw in args.files:
+            resolved = Path(raw).resolve()
+            try:
+                candidates.append(resolved.relative_to(root).as_posix())
+            except ValueError:
+                print("check-encoding-seam: {0} resolves to {1}, which is "
+                      "outside the repo root {2} -- not checked".format(
+                          raw, resolved, root), file=sys.stderr)
+                return RC_COULD_NOT_CHECK
     else:
         base = args.base
         if base is None:
@@ -132,10 +175,10 @@ def main(argv=None) -> int:
                 print("check-encoding-seam: could not find a merge-base with "
                       "origin/{0}, nothing to diff against".format(branch),
                       file=sys.stderr)
-                return 0
+                return RC_COULD_NOT_CHECK
         candidates = _changed_files(root, base)
         if candidates is None:
-            return 0
+            return RC_COULD_NOT_CHECK
 
     py_files = [f for f in candidates
                 if f.endswith(".py") and (root / f).is_file()]
@@ -149,7 +192,7 @@ def main(argv=None) -> int:
     if not all_records:
         print("check-encoding-seam: {0} changed .py file(s) checked, "
               "clean".format(len(py_files)))
-        return 0
+        return RC_OK
 
     errors = [(p, r) for p, r in all_records if r["severity"] == "error"]
     warnings = [(p, r) for p, r in all_records if r["severity"] != "error"]
@@ -164,7 +207,7 @@ def main(argv=None) -> int:
               "encoding=/errors= literally, or justify in review:")
         for relpath, r in warnings:
             print("  {0}:{1}: {2}".format(relpath, r["line"], r["msg"]))
-    return 1
+    return RC_VIOLATIONS
 
 
 if __name__ == "__main__":

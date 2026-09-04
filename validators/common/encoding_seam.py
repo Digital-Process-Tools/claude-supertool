@@ -154,23 +154,31 @@ def scope_kinds(relpath: str, shipped: "Tuple[str, ...]") -> Optional[Tuple[str,
 def scan_one(module, path: Path, kinds: "Optional[Tuple[str, ...]]") -> "List[dict]":
     """Every encoding-seam finding for one file, as structured records.
 
-    `kinds=None` skips the read/write half (the file is outside both scopes
-    `scope_kinds` recognises) but still runs the subprocess half, which
-    `tests/test_encoding_seam.py` applies tree-wide with no directory
-    exemption since #862.
+    `kinds=None` means `path` is outside BOTH scopes `scope_kinds`
+    recognises -- neither `tests/` nor a `SHIPPED` directory -- and this
+    now skips the subprocess half too (#2287 review), not just the
+    read/write half. `tests/test_encoding_seam.py`'s own tree-wide guard
+    never enumerates subprocess calls outside those same two scopes either
+    (`test_no_shipped_subprocess_decodes_by_locale` walks `_shipped_files()`,
+    `test_no_test_subprocess_decodes_by_locale` walks `tests/`, and nothing
+    else calls `subprocess_encoding_violations` tree-wide) -- so scanning a
+    file like `.github/scripts/*.py` here for a violation CI would never
+    itself catch was a false positive relative to the guard this local
+    check claims to mirror, not merely a broader net.
 
     Each record: `{"line": int, "severity": "error"|"warning", "code": str,
     "msg": str}`. `severity` is `"warning"` only for the subprocess scan's
     own undecidable state (`**kwargs`, a non-literal `text=`) -- a call the
     rule could not judge, not one it judged clean.
     """
+    if kinds is None:
+        return []
     records: List[dict] = []
-    if kinds is not None:
-        for lineno, call in module.encoding_violations(path, kinds=kinds):
-            records.append({
-                "line": lineno, "severity": "error", "code": "encoding-seam",
-                "msg": "{0}() without encoding=".format(call),
-            })
+    for lineno, call in module.encoding_violations(path, kinds=kinds):
+        records.append({
+            "line": lineno, "severity": "error", "code": "encoding-seam",
+            "msg": "{0}() without encoding=".format(call),
+        })
     violations, undecidable = module.subprocess_encoding_violations(path)
     for lineno, call, missing in violations:
         records.append({

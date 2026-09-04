@@ -244,3 +244,89 @@ def test_script_narrows_to_explicit_files_with_no_git_diff_at_all(
 
     assert r.returncode == 1, (r.stdout, r.stderr)
     assert "test_explicit_2287.py" in r.stdout
+
+
+def test_script_distinguishes_could_not_check_from_clean(
+    tmp_path: Path,
+) -> None:
+    """#2287 review, auditor finding: a script that never runs (no
+    `tests/test_encoding_seam.py` here) must not return the same exit code
+    as a run that scanned files and found nothing -- a caller gating on
+    exit status alone cannot otherwise tell "clean" from "did not check".
+    """
+    no_guard_root = tmp_path / "no_guard_repo"
+    no_guard_root.mkdir()
+    _git(no_guard_root, "init", "-q")
+    _git(no_guard_root, "config", "user.email", "encoding-seam@example.com")
+    _git(no_guard_root, "config", "user.name", "encoding-seam test")
+    (no_guard_root / "x.py").write_text("X = 1\n", encoding="utf-8")
+    _git(no_guard_root, "add", "-A")
+    _git(no_guard_root, "commit", "-q", "-m", "base")
+
+    r = _run_script(no_guard_root, "x.py")
+
+    assert r.returncode == 2, (r.stdout, r.stderr)
+
+
+def test_script_catches_a_non_ascii_filename_git_quotes_by_default(
+    synthetic_repo: "tuple[Path, str]",
+) -> None:
+    """#2287 review finding: `git diff --name-only` (no `-z`) C-quotes and
+    octal-escapes a path holding a non-ASCII byte under the default
+    `core.quotePath=true`, so `.splitlines()` over that hands the quoted
+    literal string to `(root / f).is_file()`, which is never true -- the
+    file is silently dropped from the scan. The fix reads `-z` output
+    instead, which is never quoted.
+    """
+    root, base_sha = synthetic_repo
+    non_ascii_name = "test_" + chr(0xE9) + "_2287.py"  # e-acute
+    (root / "tests" / non_ascii_name).write_text(BAD_CALL, encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "add non-ascii filename")
+
+    r = _run_script(root, "--base", base_sha)
+
+    assert r.returncode == 1, (r.stdout, r.stderr)
+    assert non_ascii_name in r.stdout
+
+
+def test_script_resolves_explicit_files_against_cwd_not_repo_root(
+    synthetic_repo: "tuple[Path, str]",
+) -> None:
+    """#2287 review finding: an explicit file argument is typed relative to
+    wherever the operator is standing, not necessarily to the repo root --
+    `cd tests && ../.github/scripts/check_encoding_seam.py test_foo.py`
+    must resolve the same file the equivalent root-relative call does.
+    """
+    root, _base_sha = synthetic_repo
+    target = root / "tests" / "test_explicit_cwd_2287.py"
+    target.write_text(BAD_CALL, encoding="utf-8")
+
+    r = subprocess.run(
+        [sys.executable, str(SCRIPT), "test_explicit_cwd_2287.py"],
+        cwd=str(root / "tests"),
+        capture_output=True, timeout=30, encoding="utf-8", errors="replace",
+    )
+
+    assert r.returncode == 1, (r.stdout, r.stderr)
+    assert "test_explicit_cwd_2287.py" in r.stdout
+
+
+def test_scan_one_skips_subprocess_half_outside_both_scopes(tmp_path: Path) -> None:
+    """#2287 review finding: `tests/test_encoding_seam.py`'s own tree-wide
+    guard never enumerates subprocess calls outside `tests/`/`SHIPPED`
+    either, so `scan_one(..., kinds=None)` scanning them anyway was a false
+    positive relative to the guard this local check claims to mirror, not
+    just a broader net. A file with a genuine unguarded `subprocess.run`,
+    classified `kinds=None` (out of both scopes), must come back with no
+    findings at all -- not just no read/write findings.
+    """
+    real_module = _load("_st_encoding_seam_real_2287",
+                         REPO / "tests" / "test_encoding_seam.py")
+    out_of_scope = tmp_path / "outside.py"
+    out_of_scope.write_text(BAD_CALL, encoding="utf-8")
+
+    assert shared.scan_one(real_module, out_of_scope, None) == []
+    # Sanity: the SAME file, in scope, DOES report the violation --
+    # otherwise an empty result here would prove nothing about scoping.
+    assert shared.scan_one(real_module, out_of_scope, ("read",)) != []
