@@ -43,7 +43,7 @@
     "merge_method": "squash",
     "commit_subject": null,
     "triggers": {
-      "merged_prs": 10,
+      "merged_prs": 20,
       "soak_hours": 48
     }
   }
