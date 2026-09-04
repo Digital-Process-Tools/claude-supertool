@@ -34,6 +34,9 @@ from pathlib import Path
 
 import pytest
 
+sys.path.insert(0, str(Path(__file__).parent))
+import _adapter_budget as budget  # noqa: E402
+
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / ".github" / "scripts" / "check_encoding_seam.py"
 ADAPTER = REPO / "validators" / "encoding-seam" / "encoding-seam.py"
@@ -97,7 +100,8 @@ def _git(repo: Path, *args: str) -> str:
 def _run_adapter(file_path: Path) -> dict:
     r = subprocess.run(
         [sys.executable, str(ADAPTER), str(file_path)],
-        capture_output=True, timeout=30, encoding="utf-8", errors="replace",
+        capture_output=True, timeout=budget.adapter_budget(ADAPTER),
+        encoding="utf-8", errors="replace",
     )
     assert r.returncode == 0, (r.stdout, r.stderr)
     return json.loads(r.stdout)
@@ -154,7 +158,8 @@ def test_adapter_declines_when_config_dir_sits_above_a_directory_of_clones(
 
     r = subprocess.run(
         [sys.executable, str(ADAPTER), str(target)],
-        capture_output=True, timeout=30, encoding="utf-8", errors="replace",
+        capture_output=True, timeout=budget.adapter_budget(ADAPTER),
+        encoding="utf-8", errors="replace",
         env={**os.environ, "SUPERTOOL_CONFIG_DIR": str(clones_dir)},
     )
     assert r.returncode == 0, (r.stdout, r.stderr)

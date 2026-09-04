@@ -129,8 +129,12 @@ def main() -> None:
     dur = int((time.time() - start) * 1000)
     errors = [{"line": r["line"], "col": None, "severity": r["severity"],
                "code": r["code"], "msg": r["msg"]} for r in records]
+    # count_basis/errors_truncated (#1728, validators/SCHEMA.md): count is
+    # always len(errors) above, and errors is never capped -- same shape as
+    # cargo-check's declaration, the 'total'/not-truncated worked example.
     emit({"tool": TOOL, "file": file, "ok": not errors, "count": len(errors),
-          "errors": errors, "duration_ms": dur})
+          "errors": errors, "duration_ms": dur,
+          "count_basis": "total", "errors_truncated": False})
 
 
 if __name__ == "__main__":

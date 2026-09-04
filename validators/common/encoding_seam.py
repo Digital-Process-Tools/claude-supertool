@@ -35,14 +35,20 @@ def repo_root(start: Path) -> Optional[Path]:
     """The git repo root above `start`, or `None` when it cannot be found.
 
     Mirrors `new-file-lint.py`'s own `_repo_root` -- the convention this tree
-    already uses for the same question.
+    already uses for the same question, including the explicit
+    `except subprocess.TimeoutExpired` arm (#1604): folding it into a bare
+    `except (OSError, subprocess.SubprocessError)` still catches it (the
+    former is a subclass of the latter), but leaves nothing an adapter-wall
+    sweep can tell apart from any other spawn failure.
     """
     try:
         r = subprocess.run(
             ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
             capture_output=True, timeout=15, encoding="utf-8", errors="replace",
         )
-    except (OSError, subprocess.SubprocessError):
+    except subprocess.TimeoutExpired:
+        return None
+    except OSError:
         return None
     if r.returncode != 0:
         return None
