@@ -9403,6 +9403,12 @@ def _split_arg(arg: str) -> List[str]:
 _MAX_COLON_SLOTS: Dict[str, int] = {
     "head": 2, "tail": 2, "tree": 2, "diff": 2, "glob": 2,
     "wc": 1, "ls": 1, "stat": 1, "map": 1,
+    # #2238: dispatched via `body = op_payload_lint(parts[1] if len(parts) > 1
+    # else "")` -- only parts[1] (the @file/@- reference) is ever read, same
+    # single-slot shape as wc/ls/stat/map. Missing from this table meant
+    # `payload-lint:@somefile:extra:more` silently dropped `extra`/`more`
+    # instead of refusing, exactly what #1582 named for every other op.
+    "payload-lint": 1,
     "around_line": 3,
     "grep_around": 4,
 }

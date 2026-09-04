@@ -175,17 +175,57 @@ def test_config_dir_env_absent_preserves_existing_direct_invocation_behavior(
     assert any(e["code"] == "F401" for e in result["errors"]), result
 
 
-def test_a_disjoint_unrelated_project_is_still_trusted(tmp_path):
-    """Self-review finding (#2228): the fix's first cut refused ANY
-    SUPERTOOL_CONFIG_DIR that was not `root` itself or an ancestor of it --
-    which also refused a config directory sharing no ancestry with `root`
-    AT ALL, an entirely ordinary shape when supertool is invoked with an
-    explicit `path=` argument naming a file outside the config-owning
-    project (see `tests/test_changelog_fragment_write_receipt_1132.py`'s
-    own end-to-end CLI test for the sibling adapter's identical case).
-    Only a config directory sitting STRICTLY ABOVE `root` -- the
-    directory-of-clones shape -- may be refused; a disjoint sibling tree
-    must still be trusted."""
+def test_a_disjoint_config_dir_may_still_name_the_target_path(tmp_path):
+    """Self-review finding (#2228, revisited by #2236): the original fix's
+    first cut refused ANY SUPERTOOL_CONFIG_DIR that was not `root` itself
+    or an ancestor of it -- which also refused a config directory sharing
+    no ancestry with `root` at all, an entirely ordinary shape when
+    supertool is invoked with an explicit `path=` argument naming a file
+    outside the config-owning project. That SUBSTITUTION question --
+    "may this adapter even be pointed at a file in a project my own
+    .supertool.json does not own" -- is real and #2228 was right to keep
+    it unrefused: `_config_dir_is_untrusted_ancestor` still returns False
+    here (unmodified), and nothing about resolving this path is refused --
+    `_containment_error` elsewhere is the gate for whether the path can be
+    touched at all, and it is not exercised by this adapter directly.
+
+    What #2236 found is a SEPARATE question this same shape used to answer
+    the same way by accident: whether the disjoint project's own
+    conventionally-named script may be imported and EXECUTED automatically.
+    It may not -- see `test_a_disjoint_unrelated_project_needs_explicit_opt_in`
+    below, which pins the corrected behaviour and is the test this one was
+    replaced by. This adapter never resolves a path on its own (it only
+    decides whether to run a script), so there is no separate "substitution
+    succeeds" assertion to make beyond the unmodified `False` returned by
+    `_config_dir_is_untrusted_ancestor` -- proven directly here rather than
+    through an adapter run."""
+    unrelated_config_owner = tmp_path / "some-other-project-entirely"
+    unrelated_config_owner.mkdir()
+    repo = tmp_path / "sibling-repo"
+    repo.mkdir()
+
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_nfl_2236", ADAPTER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    assert mod._config_dir_is_untrusted_ancestor(
+        repo.resolve(), unrelated_config_owner.resolve()) is False
+
+
+def test_a_disjoint_unrelated_project_needs_explicit_opt_in(tmp_path):
+    """#2236: a SUPERTOOL_CONFIG_DIR sharing no ancestry with `root` at all
+    -- the "fully disjoint trees" and "sibling clones" rows a gate-3 audit
+    found still TRUSTED -- must not have `root`'s own conventionally-named
+    script imported and executed automatically. `_load` executes what it
+    imports, so the previous behaviour ran a script THAT project supplied,
+    with the operator's privileges, just because supertool happened to be
+    pointed at one of its files -- the same danger #2228 closed for the
+    directory-of-clones shape, reached from the opposite direction.
+
+    This is the disjoint-tree counterpart to
+    `test_a_directory_of_clones_scope_is_not_trusted` above: same
+    assertion shape (no marker file, no `ok` key), different geometry."""
     _require_ruff()
     unrelated_config_owner = tmp_path / "some-other-project-entirely"
     unrelated_config_owner.mkdir()
@@ -194,12 +234,43 @@ def test_a_disjoint_unrelated_project_is_still_trusted(tmp_path):
     _init_repo(repo)
     scripts = repo / ".github" / "scripts"
     scripts.mkdir(parents=True)
-    (scripts / "lint_new_files.py").write_text(REAL_LINT_SCRIPT_BODY,
+    (scripts / "lint_new_files.py").write_text(MALICIOUS_LINT_SCRIPT,
                                                 encoding="utf-8")
     new_file = repo / "brand_new.py"
     new_file.write_text(DEAD_IMPORT, encoding="utf-8")
 
     result = _run(new_file, {"SUPERTOOL_CONFIG_DIR": str(unrelated_config_owner)})
+
+    assert not (scripts / "PWNED").exists(), (
+        "the disjoint, unrelated project's own script ran -- a "
+        "SUPERTOOL_CONFIG_DIR sharing no ancestry with root at all was "
+        "still enough to trust root's own convention-based script: "
+        + json.dumps(result))
+    assert "skipped" in result, result
+    assert "ok" not in result, result
+
+
+def test_explicit_opt_in_still_works_for_a_disjoint_config_dir(tmp_path):
+    """Positive control for the refusal above: SUPERTOOL_NEW_FILE_LINT_SCRIPT
+    naming one exact path is the operator's own explicit trust, not an
+    inherited one, and must still be honoured even when SUPERTOOL_CONFIG_DIR
+    shares no ancestry with root at all."""
+    _require_ruff()
+    unrelated_config_owner = tmp_path / "some-other-project-entirely"
+    unrelated_config_owner.mkdir()
+
+    repo = tmp_path / "sibling-repo"
+    _init_repo(repo)
+    pinned = repo / "tools" / "my_lint_policy.py"
+    pinned.parent.mkdir(parents=True)
+    pinned.write_text(REAL_LINT_SCRIPT_BODY, encoding="utf-8")
+    new_file = repo / "brand_new.py"
+    new_file.write_text(DEAD_IMPORT, encoding="utf-8")
+
+    result = _run(new_file, {
+        "SUPERTOOL_CONFIG_DIR": str(unrelated_config_owner),
+        "SUPERTOOL_NEW_FILE_LINT_SCRIPT": str(Path("tools") / "my_lint_policy.py"),
+    })
 
     assert result["ok"] is False, result
     assert any(e["code"] == "F401" for e in result["errors"]), result

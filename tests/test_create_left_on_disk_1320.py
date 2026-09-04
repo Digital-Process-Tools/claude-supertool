@@ -23,6 +23,7 @@ skip, an overwrite, and a create a rollback already removed).
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,16 @@ NL = chr(10)
 Q3 = chr(39) * 3
 REPO = Path(__file__).resolve().parents[1]
 SUPERTOOL = REPO / "supertool.py"
+
+#: cwd for these subprocess calls is THIS repo, while the fragment target
+#: `_fragment_target` builds is a disjoint project under `tmp_path` -- the
+#: same geometry `test_changelog_fragment_write_receipt_1132.py` pins for.
+#: Since #2236, that geometry needs an explicit
+#: SUPERTOOL_CHANGELOG_ASSEMBLER pin or the validator reads `skipped`, not
+#: a finding -- so these calls carry it too, or `[left on disk]` never
+#: appears.
+FRAGMENT_ASSEMBLER_KEY = os.path.join(
+    ".github", "scripts", "assemble_changelog.py")
 
 BAD = "BAD" + NL
 GOOD = "fine" + NL
@@ -204,7 +215,8 @@ def test_a_paste_of_a_bad_fragment_says_the_file_is_still_there(tmp_path):
                + "content = " + Q3 + "## heading not a bullet" + NL + Q3 + NL)
     proc = subprocess.run([sys.executable, str(SUPERTOOL), "paste:@-"],
                           input=payload, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", cwd=str(REPO))
+                          encoding="utf-8", errors="replace", cwd=str(REPO),
+                          env={**os.environ, "SUPERTOOL_CHANGELOG_ASSEMBLER": FRAGMENT_ASSEMBLER_KEY})
     receipt = proc.stdout + proc.stderr
     assert "changelog-fragment" in receipt, receipt
     assert target.exists(), receipt
@@ -232,7 +244,7 @@ def test_the_disclosure_does_not_move_the_exit_code(tmp_path):
         input=("path = " + json.dumps(str(target)) + NL
                + "content = " + Q3 + "## heading not a bullet" + NL + Q3 + NL),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        cwd=str(REPO))
+        cwd=str(REPO), env={**os.environ, "SUPERTOOL_CHANGELOG_ASSEMBLER": FRAGMENT_ASSEMBLER_KEY})
     assert "[left on disk]" in advisory.stdout + advisory.stderr, advisory.stdout
     assert advisory.returncode == 0, advisory.stdout + advisory.stderr
 
