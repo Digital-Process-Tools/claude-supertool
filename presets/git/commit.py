@@ -28,7 +28,10 @@ Flags:
                 `git-commit:::MSG:::A:::--no-verify`. On the payload route
                 it is its own field: `no_verify = true`. The receipt's
                 header prints `HOOKS SKIPPED` when it fired, so a skipped
-                commit never reads like a checked one.
+                commit never reads like a checked one. Refused, not silently
+                dropped, when git already knows a real tracked file spelled
+                exactly `--no-verify` (#2276) — same collision guard as
+                `--all` below.
 
 A message containing ':' must arrive via `git-commit:::MSG` or the @payload
 route: the single-colon CLI tokenizes on ':', so `git-commit:fix: thing`
@@ -142,6 +145,31 @@ _TRIPLE = "'" * 3
 # use for this. Extracted from `paths` before anything downstream (spilled-
 # message detection, `--all` expansion, staging) ever sees it.
 _NO_VERIFY_TOKEN = "--no-verify"
+
+
+def _no_verify_ambiguous_refusal():
+    """git knows a path literally called `--no-verify`, so the token means
+    two things (#2276).
+
+    Mirrors `_all_ambiguous_refusal`: the payload route is no escape hatch
+    either -- the payload's own `no_verify = true` field is folded into this
+    same sentinel before commit.py ever sees `paths` (see `_supertool.py`'s
+    `_PAYLOAD_NO_VERIFY_OPS` handling) -- so the remedy is a spelling git
+    resolves as a path and this op does not read as a sentinel.
+    """
+    return [
+        "ERROR: %r is both this op's hook-skip opt-in and a path git "
+        "knows — nothing staged, nothing committed." % (_NO_VERIFY_TOKEN,),
+        ("  Nothing in the argument says which was meant, and both routes "
+         + "spell it the same way."),
+        "  To commit the FILE, write it so git reads it as a path:",
+        "    ./supertool " + _sh_quote(
+            "git-commit:::MESSAGE:::./" + _NO_VERIFY_TOKEN),
+        "  To skip hooks too, name it explicitly alongside the sentinel:",
+        "    ./supertool " + _sh_quote(
+            "git-commit:::MESSAGE:::./" + _NO_VERIFY_TOKEN
+            + ":::" + _NO_VERIFY_TOKEN),
+    ]
 
 
 def _looks_like_pathspec(tok: str) -> bool:
@@ -1121,6 +1149,21 @@ def main() -> int:
         for line in _amend_refusal(msg):
             print(line)
         return 1
+
+    # #2276 — mirrors the `_ALL_TOKEN` collision guard just below:
+    # `_NO_VERIFY_TOKEN` was stripped out of `paths` near the top of main()
+    # with no check that git already knows a real, tracked file spelled
+    # exactly `--no-verify`. Left unguarded, that file is silently dropped
+    # from `paths` — and if that empties `paths`, the op falls through to
+    # the whole-index warning, the #1228 incident shape one sentinel over.
+    if no_verify:
+        gone = _git(["diff", "--cached", "--diff-filter=D", "--name-only",
+                     "--no-renames", "-z"])
+        gone_set = set(_z_paths(gone.stdout))
+        if _known_to_git(_NO_VERIFY_TOKEN, gone_set):
+            for line in _no_verify_ambiguous_refusal():
+                print(line)
+            return 1
 
     # #1137 — resolve the opt-in before anything else reads PATHS, so the
     # sentinel never reaches `git add` as a pathspec (which is how it failed
