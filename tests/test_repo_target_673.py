@@ -36,7 +36,10 @@ import pytest
 import supertool
 from _child_temp_diagnostics import describe, snapshot_temp_state
 from _isolated_child_tmp import child_env_with_private_tmp
-from _nested_pytest_verdict import assert_child_pytest_ran_and_passed
+from _nested_pytest_verdict import (
+    assert_child_pytest_ran_and_passed,
+    run_with_harness_retry,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -141,32 +144,56 @@ def test_the_env_var_main_sets_does_not_survive_into_the_next_test(tmp_path) -> 
     class guard now covers this file too, installed for the whole session
     from `conftest.py`; this write goes to `tmp_path`, exactly like #1981's
     fix, so it is outside the walk root regardless.
+
+    #2015 (this file's own gap, not reasoned from elsewhere -- observed): a
+    sixth occurrence of the external temp-directory race
+    `_isolated_child_tmp.py`'s docstring describes landed here, on
+    2026-09-04, naming `firefox` -- a directory neither this process nor its
+    toolchain creates -- inside the child's `%TEMP%`. #2235 had already
+    given `test_gl_repo_target_676.py`'s copy of this exact probe a
+    harness-death retry for the identical race, scoped by its own title to
+    "the #676 test" alone; this file, running the same technique, kept
+    asserting on a single spawn attempt and was the one that broke.
+    `run_with_harness_retry` retries only a harness death (the child never
+    produced a verdict about the product at all) and never a real product
+    disagreement (exit 1), so it cannot mask a genuine regression -- see
+    `_nested_pytest_verdict.run_with_harness_retry`'s own docstring.
     """
-    probe = tmp_path / "_gh_repo_env_leak_probe_1962.py"
-    probe.write_text(
-        "import os\n\n\n"
-        "def test_probe():\n"
-        "    assert 'SUPERTOOL_REPO' not in os.environ, os.environ.get('SUPERTOOL_REPO')\n",
-        encoding="utf-8",
-    )
-    child_tmp = tmp_path / "_nested_child_tmp_2015"
-    child_tmp.mkdir()
-    before = snapshot_temp_state()
-    try:
-        result = subprocess.run(
-            [sys.executable, "-m", "pytest",
-             f"{__file__}::test_repo_op_is_stripped_and_exported_before_dispatch",
-             str(probe), "-q", "--no-cov", "-n0"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            cwd=REPO_ROOT, timeout=60,
-            env=child_env_with_private_tmp(os.environ, child_tmp),
+    diag: list[str] = []
+
+    def _spawn(attempt: int) -> subprocess.CompletedProcess:
+        probe = tmp_path / f"_gh_repo_env_leak_probe_1962_{attempt}.py"
+        probe.write_text(
+            "import os\n\n\n"
+            "def test_probe():\n"
+            "    assert 'SUPERTOOL_REPO' not in os.environ, os.environ.get('SUPERTOOL_REPO')\n",
+            encoding="utf-8",
         )
-    finally:
-        probe.unlink(missing_ok=True)
-    after = snapshot_temp_state()
+        child_tmp = tmp_path / f"_nested_child_tmp_2015_{attempt}"
+        child_tmp.mkdir()
+        before = snapshot_temp_state()
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "pytest",
+                 f"{__file__}::test_repo_op_is_stripped_and_exported_before_dispatch",
+                 str(probe), "-q", "--no-cov", "-n0"],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                cwd=REPO_ROOT, timeout=60,
+                env=child_env_with_private_tmp(os.environ, child_tmp),
+            )
+        finally:
+            probe.unlink(missing_ok=True)
+        after = snapshot_temp_state()
+        diag.append(
+            f"-- attempt {attempt} --\n"
+            + describe("before", before) + "\n" + describe("after", after)
+        )
+        return result
+
+    result, retry_notes = run_with_harness_retry(_spawn, max_attempts=2)
     assert_child_pytest_ran_and_passed(
         result,
-        extra_detail=describe("before", before) + "\n" + describe("after", after),
+        extra_detail="\n\n".join(retry_notes + diag),
     )
 
 
