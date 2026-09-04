@@ -521,23 +521,44 @@ def _hunk_note(pre_text: Optional[str], post_text: Optional[str]) -> str:
     Diffs PRE (the working-tree content immediately before the checkout,
     markers intact) against POST (immediately after) and reports the number of
     contiguous changed regions ("hunks") against the number of conflict blocks
-    PRE held. A hunk that does not overlap any conflict block's own line span
-    is content the checkout moved outside the conflict it was asked to
-    resolve.
+    PRE held. For each hunk, the portion of its PRE-side span that does NOT
+    fall inside any conflict block's own line span is content the checkout
+    moved outside the conflict it was asked to resolve.
 
-    **Excludes the conflict block's own span before counting** — a naive
-    line-diff would flag the block's own replaced lines as "outside" the
+    **Subtracts the conflict blocks' coverage from each hunk before deciding
+    what is "outside" — a per-hunk yes/no overlap test is not sound.** A
+    single difflib hunk can span *across* a block boundary (its PRE range
+    starts inside a block and ends past it, or the reverse) when the matcher
+    merges the block's own tail with adjacent content that also happens to
+    differ pre/post — a real, if narrow, false negative caught in review
+    (#2226): a hunk that merely *touches* a block was being counted as wholly
+    inside it, silently swallowing the genuinely-outside remainder. Line-exact
+    subtraction has no such blind spot: any PRE line index not covered by a
+    block IS outside a conflict, independent of how difflib chose to group
+    the surrounding changes into hunks.
+
+    **Excludes the conflict blocks' own span before counting** — a naive
+    line-diff would flag a block's own replaced lines as "outside" the
     conflict, since every one of them differs by construction, and every
     ordinary resolution would then read as a false alarm.
 
-    Returns ``""`` when either snapshot could not be read/decoded, or when PRE
-    held no conflict block to compare against — a check that could not run
-    must say nothing rather than report a reassuring "0 outside", which would
-    read as "checked, found nothing" instead of "did not check" (#1858's
-    three-state rule).
+    Returns a **stated** "could not check" line — never a silent "" — when
+    either snapshot could not be read/decoded: silence here would render
+    identically to the genuinely-clean case (agreeing hunk/block counts also
+    omits the "outside" clause but still prints a line), and a caller cannot
+    tell "verified, nothing moved" from "never verified" unless the second one
+    says so (#1858's three-state rule; caught in review as the receipt still
+    conflating them for exactly the failure mode this whole change exists to
+    stop being silent about).
+
+    Returns ``""`` only when PRE held no conflict block to compare against —
+    unreachable on `git-resolve`'s own call path, where PRE is always read
+    from a file `git` itself just listed as conflicted, but reachable calling
+    this function directly (as the unit tests do); there is nothing to have
+    "not checked", so nothing is said.
     """
     if pre_text is None or post_text is None:
-        return ""
+        return "outside-conflict check: not available (could not read the pre/post-resolution snapshot)"
     pre_lines = pre_text.splitlines()
     post_lines = post_text.splitlines()
     blocks = _block_ranges(pre_lines)
@@ -557,26 +578,52 @@ def _hunk_note(pre_text: Optional[str], post_text: Optional[str]) -> str:
         else:
             hunks.append((a1, a2))
 
-    def _overlaps_a_block(a1: int, a2: int) -> bool:
-        for bstart, bend in blocks:
-            if a2 > a1:
-                # Half-open [a1, a2) hunk vs inclusive [bstart, bend] block.
-                if a1 <= bend and a2 > bstart:
-                    return True
-            # Pure insert (a1 == a2): the insertion POINT counts as inside a
-            # block it lands within or immediately after — e.g. a block whose
-            # replacement content is longer than the marker lines it drops.
-            elif bstart <= a1 <= bend + 1:
-                return True
-        return False
+    def _outside_spans(a1: int, a2: int) -> list[tuple[int, int]]:
+        """The sub-span(s) of half-open PRE range [a1, a2) NOT covered by any
+        conflict block. Exact, not a whole-hunk yes/no: a hunk that starts
+        before a block and/or ends after it keeps the outside part(s).
+        """
+        if a2 <= a1:
+            # Pure insert: the insertion POINT is "inside" a block it lands
+            # within or immediately after (its replacement content can be
+            # longer than the marker lines it drops) — else it is its own,
+            # zero-width, outside span.
+            for bstart, bend in blocks:
+                if bstart <= a1 <= bend + 1:
+                    return []
+            return [(a1, a1)]
+        covered = sorted(
+            (max(a1, bstart), min(a2, bend + 1))
+            for bstart, bend in blocks
+            if max(a1, bstart) < min(a2, bend + 1)
+        )
+        merged: list[tuple[int, int]] = []
+        for s, e in covered:
+            if merged and s <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+            else:
+                merged.append((s, e))
+        spans: list[tuple[int, int]] = []
+        cur = a1
+        for s, e in merged:
+            if cur < s:
+                spans.append((cur, s))
+            cur = max(cur, e)
+        if cur < a2:
+            spans.append((cur, a2))
+        return spans
 
-    outside = [(a1, a2) for a1, a2 in hunks if not _overlaps_a_block(a1, a2)]
+    outside: list[tuple[int, int]] = []
+    for a1, a2 in hunks:
+        outside.extend(_outside_spans(a1, a2))
     base = f"{len(blocks)} conflict block(s), {len(hunks)} hunk(s) changed"
     if not outside:
         return base
 
     def _fmt(a1: int, a2: int) -> str:
-        return f"after line {a1}" if a2 <= a1 else f"lines {a1 + 1}-{a2}"
+        if a2 > a1:
+            return f"lines {a1 + 1}-{a2}"
+        return "before line 1" if a1 == 0 else f"after line {a1}"
 
     shown = ", ".join(_fmt(a1, a2) for a1, a2 in outside[:5])
     more = f" (+{len(outside) - 5} more)" if len(outside) > 5 else ""
@@ -1283,9 +1330,11 @@ def main() -> int:
         print(line)
         # #2226: `checkout --ours`/`--theirs` is whole-file, so a resolution
         # that touched more hunks than it had conflict blocks moved something
-        # OUTSIDE the conflict it was asked to resolve. Silent for 'both'
-        # (union rewrites markers in place and cannot do this) and for a file
-        # whose before/after snapshot could not be read.
+        # OUTSIDE the conflict it was asked to resolve. Silent only for 'both'
+        # (union rewrites markers in place and cannot do this — not
+        # applicable, so nothing is printed); a file whose before/after
+        # snapshot could not be read still gets a line, saying so, rather
+        # than omitting one indistinguishably from the genuinely-clean case.
         hunk_note = hunk_notes.get(path)
         if hunk_note:
             print(f"      {hunk_note}")

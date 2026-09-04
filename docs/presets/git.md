@@ -218,13 +218,20 @@ after the checkout:
 Resolved: 1 | Failed: 0 | Remaining: 0
 ```
 
-A hunk count equal to the conflict-block count says the checkout moved
-nothing else; anything more names what else moved and where, by line range in
-the pre-resolution file, so the caller can go look before staging it. The line
-is silent (omitted) when the two counts agree, when the before/after snapshot
-could not be read, or for `both` — union resolution rewrites conflict markers
-in place, line by line, and structurally cannot touch anything outside a
-block, so there is nothing this check would ever find there.
+**The `... — N outside any conflict (lines ...)` clause is the signal, not the
+raw hunk count** — difflib's own hunk count can differ from the block count
+even in a genuinely clean resolution (matching text elsewhere in the file
+sometimes splits one block's replacement into more than one changed region),
+so "hunks equal to blocks" is not a claim this line makes or relies on.
+Absence of the "outside" clause means the whole diff between the pre- and
+post-checkout file is accounted for by the conflict blocks it had, checked
+per line, not merely per hunk-versus-block arithmetic. The line prints
+`outside-conflict check: not available (...)` instead of falling silent when
+the before/after snapshot could not be read — silence there would read
+exactly like the clean case. It is silent (omitted) only for `both` — union
+resolution rewrites conflict markers in place, line by line, and structurally
+cannot touch anything outside a block, so there is nothing this check would
+ever find there.
 
 **The `PATH` in those rows is git's own, never yours** ([#1693](https://github.com/Digital-Process-Tools/claude-supertool/issues/1693)). A comma-separated `PATH` argument is a filter over the conflicted set, not a second source: anything not already conflicted is refused before a single row is printed.
 

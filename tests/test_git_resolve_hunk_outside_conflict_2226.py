@@ -162,9 +162,39 @@ def test_hunk_note_excludes_the_conflict_block_lines_themselves(monkeypatch):
     assert "1 conflict block(s)" in note
 
 
-def test_hunk_note_says_nothing_when_it_cannot_read_either_snapshot():
+def test_hunk_note_states_it_could_not_check_rather_than_falling_silent():
     """Three states, not two (#1858 pattern): a check that could not run must
-    not render as a clean "0 outside" result.
+    say so -- not fall silent, which would render identically to the
+    genuinely-clean case (agreeing counts also print no "outside" clause, but
+    they still print A line). Caught in review as the original version of
+    this fix returning "" here.
     """
-    assert resolve._hunk_note(None, "post\n") == ""
-    assert resolve._hunk_note("pre\n", None) == ""
+    for note in (resolve._hunk_note(None, "post\n"), resolve._hunk_note("pre\n", None)):
+        assert note, "a could-not-check snapshot must not render as silence"
+        assert "not available" in note
+
+
+def test_hunk_note_finds_outside_content_even_when_its_hunk_touches_the_block(monkeypatch):
+    """Caught in review (#2226): a per-hunk "does it overlap a block at all"
+    test is unsound. difflib can hand back ONE merged hunk whose PRE range
+    starts inside a conflict block and runs past it into real, unmarked
+    content that also changed -- e.g. the block's closing marker line and an
+    adjacent, genuinely-outside line collapse into a single opcode because
+    nothing separates them from the matcher's point of view. A whole-hunk
+    overlap test would count the entire thing as "inside" and silently drop
+    the outside portion; the fix has to subtract the block's own coverage
+    from the hunk before deciding what is outside.
+    """
+    pre = (
+        "keep before\n"
+        "<<<<<<< HEAD\n"
+        "ours\n"
+        "=======\n"
+        "theirs\n"
+        ">>>>>>> branch\n"
+        "unrelated: v1\n"
+    )
+    post = "keep before\ntheirs\nunrelated: v0\n"
+    note = resolve._hunk_note(pre, post)
+    assert "1 outside any conflict" in note
+    assert "lines 7-7" in note
