@@ -39,13 +39,13 @@ A percentage over a raw second count for the same reason the issue gives:
 an absolute duration says more about the runner than about the test, and a
 percentage travels between machines.
 
-## The three states
+## The three states, and a fourth disclosure
 
 - **could-not-measure** -- `junit.xml` is absent, not parseable XML, has no
-  `<testsuite>`, the `<testsuite>` has no numeric `time=`, or none of its
-  testcases carry a parseable time. Never rendered as an empty top-N list,
-  which would read exactly like "no hot test" -- the defect class the issue
-  is itself named after, reappearing inside its own detector.
+  `<testsuite>`, none of its `<testsuite>` elements has a numeric `time=`, or
+  none of its testcases carry a parseable time. Never rendered as an empty
+  top-N list, which would read exactly like "no hot test" -- the defect class
+  the issue is itself named after, reappearing inside its own detector.
 - **no-baseline** -- durations were measured, but
   `.github/duration-baseline.json` is absent, or present and unreadable
   (malformed JSON, or missing the one key this reads). The number is
@@ -54,11 +54,33 @@ percentage travels between machines.
 - **measured** -- durations were measured and a valid baseline was found, so
   the slowest share is printed next to what the baseline says it used to be.
 
+A `<testsuites>` root can hold more than one `<testsuite>`, and a single
+suite's own `time=` can be missing or unparseable while its siblings are
+fine. When that happens (#2274), that one suite -- and every testcase inside
+it, since a share computed against a total that dropped one suite's seconds
+but kept the same suite's testcases would render each of those testcases'
+percentages against the wrong denominator -- is dropped from the parse
+rather than sinking the whole report to `could-not-measure`. That is a
+**fourth, disclosed state**, orthogonal to the three above: `partial-parse`
+prints its own line naming which suite(s) were dropped, because the
+`(NN.NN% of total)` line below it is still printed against a *partial*
+total, and printing that percentage with nothing saying the denominator is
+incomplete is exactly the "empty top-N list" defect one level up -- a
+partial answer rendered as a complete one.
+
 ## Where the baseline lives
 
-A committed file, `.github/duration-baseline.json`, holding one number:
-`slowest_share_pct`, the plain percentage this script itself would have
-printed on a run somebody decided was normal. Simplest option and the one
+The design: a committed file, `.github/duration-baseline.json`, holding one
+number, `slowest_share_pct` -- the plain percentage this script itself would
+have printed on a run somebody decided was normal. **No such file is
+committed today** (`git ls-files .github/` does not list it -- #2277), so
+every run of this report is currently in its `no-baseline` state, comparing
+to nothing rather than to a real number; that is disclosed loudly in the
+output (see "The three states" above) rather than silently, but it means
+the comparison half of this feature has not shipped yet, only the
+absence-handling for it. Whether a real baseline lands in a follow-up or
+this repo simply carries `no-baseline` indefinitely is an open call, not
+one this module makes. Simplest option and the one
 that is auditable in a diff -- a change to "what's normal" is a visible pull
 request, same as any other repo constant, rather than a workflow artifact
 compared run-to-run, which would need a second retention/rotation policy
@@ -115,8 +137,10 @@ class DurationsUnavailable(Exception):
     """
 
 
-def parse_junit(path: Path) -> tuple[float, list[tuple[str, float]]]:
-    """`(total suite seconds, [(test id, seconds), ...])`, or raise.
+def parse_junit(
+    path: Path,
+) -> tuple[float, list[tuple[str, float]], list[str]]:
+    """`(total suite seconds, [(test id, seconds), ...], [dropped suite name, ...])`, or raise.
 
     Handles every sibling `<testsuite>` under a `<testsuites>` root, not just
     the first -- `Element.find()` returns one match, and a report that reads
@@ -128,6 +152,11 @@ def parse_junit(path: Path) -> tuple[float, list[tuple[str, float]]]:
     otherwise render "0.00% of total" for an invalid denominator exactly as it
     would for a genuinely negligible one, which is this module's own defect
     class reappearing inside itself (a second review finding).
+
+    A single `<testsuite>` whose own `time=` is missing or unparseable does
+    not sink the whole parse -- it is dropped, by name, into the third list
+    returned, and the caller discloses that rather than staying silent about
+    a total that is now short one suite's seconds (#2274).
     """
     if not path.exists():
         raise DurationsUnavailable(
@@ -153,12 +182,22 @@ def parse_junit(path: Path) -> tuple[float, list[tuple[str, float]]]:
     total = 0.0
     any_total_parsed = False
     cases: list[tuple[str, float]] = []
+    dropped: list[str] = []
     for suite in suites:
         try:
             total += float(suite.attrib.get("time"))
             any_total_parsed = True
         except (TypeError, ValueError):
-            continue  # this suite's own total is unusable; its testcases below are not
+            # This `continue` advances the *suite* loop, not the testcase
+            # one below -- it skips this suite's testcases entirely rather
+            # than folding them into a total that never counted this
+            # suite's own seconds. Recorded by name so the caller can
+            # disclose which suite(s) were dropped instead of silently
+            # reporting every remaining percentage against a partial
+            # denominator (#2274; an earlier version of this comment
+            # claimed the opposite of what this loop does).
+            dropped.append(suite.attrib.get("name") or "<unnamed testsuite>")
+            continue
         for case in suite.iter("testcase"):
             raw_time = case.attrib.get("time")
             try:
@@ -181,7 +220,7 @@ def parse_junit(path: Path) -> tuple[float, list[tuple[str, float]]]:
         raise DurationsUnavailable(
             f"{path} has a <testsuite> but no <testcase> carries a "
             f"parseable time -- nothing to report")
-    return total, cases
+    return total, cases, dropped
 
 
 def top_n(cases: list[tuple[str, float]], n: int) -> list[tuple[str, float]]:
@@ -215,7 +254,7 @@ def render(
 ) -> list[str]:
     """The lines to print for one run. Never raises -- this is a report."""
     try:
-        total, cases = parse_junit(junit_path)
+        total, cases, dropped = parse_junit(junit_path)
     except DurationsUnavailable as exc:
         return [
             "duration-report state: could-not-measure",
@@ -227,6 +266,18 @@ def render(
     hottest = top_n(cases, top)
 
     lines = [f"suite duration report -- total {total:.2f}s across {len(cases)} tests"]
+    if dropped:
+        # A fourth, disclosed state alongside could-not-measure/no-baseline/
+        # measured below: some suites parsed and some did not, so every
+        # percentage from here on is computed against a total that is
+        # missing the dropped suite(s)' own seconds. Never silently folded
+        # into "measured" -- that would be this module's own "empty top-N
+        # list read as no hot test" defect one level up (#2274).
+        lines.append(
+            f"duration-report state: partial-parse -- {len(dropped)} "
+            f"testsuite(s) dropped from this total ({', '.join(dropped)}) "
+            f"-- percentages below are of an incomplete total, not the "
+            f"whole run")
     lines.append(f"top {min(top, len(hottest))} durations:")
     for ident, t in hottest:
         marker = f"  {HOT_MARKER}" if share(t, total) >= threshold else ""

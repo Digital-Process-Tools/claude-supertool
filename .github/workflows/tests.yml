@@ -316,9 +316,12 @@ jobs:
         # the claude-oss case this issue was filed from). This step reads
         # the same junit.xml the step above does and prints the top
         # durations plus the slowest test's share of the run's real
-        # wall-clock, against a committed baseline
-        # (.github/duration-baseline.json) that is updated by hand when a
-        # shift is judged real.
+        # wall-clock, against a baseline this repo does not commit today
+        # (.github/duration-baseline.json is not in `git ls-files` -- #2277).
+        # Until one lands, this comparison prints its own `no-baseline`
+        # state on every run rather than a delta; the path is still passed
+        # so the step starts comparing the moment a baseline is committed,
+        # with no workflow edit needed.
         #
         # `if: always()`, same reasoning as the step above it: junit.xml can
         # exist with partial data after a failing run, and a report that

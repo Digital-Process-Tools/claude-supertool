@@ -88,8 +88,9 @@ def test_parse_junit_reads_total_time_and_per_test_times(tmp_path):
     path = _junit(tmp_path, 100.0, [("tests.test_a.test_x", 44.0),
                                      ("tests.test_b.test_y", 6.5),
                                      ("tests.test_c.test_z", 1.0)])
-    total, cases = dr.parse_junit(path)
+    total, cases, dropped = dr.parse_junit(path)
     assert total == 100.0
+    assert dropped == []
     assert ("tests.test_a.test_x", 44.0) in cases
     assert len(cases) == 3
 
@@ -254,8 +255,9 @@ def test_parse_junit_reads_every_testsuite_not_just_the_first(tmp_path):
     path = tmp_path / "junit.xml"
     ET.ElementTree(root).write(str(path), encoding="unicode")
 
-    total, cases = dr.parse_junit(path)
+    total, cases, dropped = dr.parse_junit(path)
     assert total == 55.0
+    assert dropped == []
     assert ("t.b", 49.9) in cases
     assert ("t.a", 4.9) in cases
 
@@ -332,3 +334,120 @@ def test_main_reports_rather_than_misparses_a_dangling_flag(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "could-not-measure" in out
     assert "no value" in out
+
+
+# --- #2274: partial parse disclosure -----------------------------------------
+#
+# `parse_junit`'s per-suite `except (TypeError, ValueError): continue` sits
+# inside `for suite in suites:`, so it advances the *suite* loop -- the
+# nested `for case in suite.iter("testcase")` never runs for that suite. An
+# earlier comment on that line claimed the opposite ("its testcases below
+# are not [unusable]"). These tests pin the actual behaviour: a suite with
+# an unparseable `time=` is dropped, by name, and disclosed in the report
+# rather than silently reflected in an unqualified `(NN.NN% of total)`.
+
+def _junit_multi(tmp_path: Path, suites: list[tuple[str, object, list[tuple[str, float]]]]) -> Path:
+    """Write a `<testsuites>` root with one `<testsuite>` per entry.
+
+    `time` may be a string coercible to float, `None` (attribute omitted),
+    or a non-numeric string -- whatever the caller wants to put on the
+    element, to exercise `TypeError` vs `ValueError` in `parse_junit`.
+    """
+    root = ET.Element("testsuites")
+    for name, time_value, cases in suites:
+        attrib = {"name": name, "tests": str(len(cases))}
+        if time_value is not None:
+            attrib["time"] = str(time_value)
+        suite = ET.SubElement(root, "testsuite", attrib)
+        for ident, t in cases:
+            classname, _, cname = ident.rpartition(".")
+            ET.SubElement(suite, "testcase", {
+                "classname": classname, "name": cname or ident, "time": str(t)})
+    path = tmp_path / "junit.xml"
+    ET.ElementTree(root).write(str(path), encoding="unicode")
+    return path
+
+
+def test_parse_junit_drops_a_suite_with_unparseable_time_and_names_it(tmp_path):
+    """The malformed suite's own testcases must not appear in `cases` --
+
+    the loop that skips its total also skips its testcases, and this pins
+    that as the return value rather than as report text."""
+    junit = _junit_multi(tmp_path, [
+        ("good", 50.0, [("t.a", 44.0)]),
+        ("bad", "not-a-number", [("t.b", 999.0)]),
+    ])
+    total, cases, dropped = dr.parse_junit(junit)
+    assert total == 50.0
+    assert dropped == ["bad"]
+    assert ("t.a", 44.0) in cases
+    assert not any(ident == "t.b" for ident, _ in cases)
+
+
+def test_parse_junit_drops_a_suite_with_missing_time_attribute(tmp_path):
+    """`TypeError` path -- `time=` attribute entirely absent, not just malformed."""
+    junit = _junit_multi(tmp_path, [
+        ("good", 50.0, [("t.a", 44.0)]),
+        ("no-time-attr", None, [("t.b", 1.0)]),
+    ])
+    total, cases, dropped = dr.parse_junit(junit)
+    assert total == 50.0
+    assert dropped == ["no-time-attr"]
+
+
+def test_render_discloses_partial_parse_when_one_suite_of_several_is_dropped(tmp_path):
+    junit = _junit_multi(tmp_path, [
+        ("good", 50.0, [("t.a", 44.0), ("t.c", 6.0)]),
+        ("bad", "garbage", [("t.b", 999.0)]),
+    ])
+    lines = dr.render(junit, tmp_path / "no-such-baseline.json")
+    text = "\n".join(lines)
+    assert "state: partial-parse" in text
+    assert "bad" in text
+    assert "1" in text  # one suite dropped
+    # the other three states are still reachable independently of this one
+    assert "state: no-baseline" in text
+
+
+def test_render_does_not_disclose_partial_parse_when_every_suite_parses_cleanly(tmp_path):
+    """Must-not-fire pair for the test above: an all-clean junit.xml with
+
+    multiple suites produces no drop disclosure at all."""
+    junit = _junit_multi(tmp_path, [
+        ("good-1", 50.0, [("t.a", 44.0)]),
+        ("good-2", 10.0, [("t.b", 9.0)]),
+    ])
+    lines = dr.render(junit, tmp_path / "no-such-baseline.json")
+    text = "\n".join(lines)
+    assert "partial-parse" not in text
+    assert "dropped" not in text
+
+
+# --- #2277: the source comments must not claim a committed file that does
+# not exist -----------------------------------------------------------------
+
+def test_no_committed_duration_baseline_file_exists_yet():
+    """Pins the fact the two corrected comments (this module's docstring and
+
+    `.github/workflows/tests.yml`'s "Suite duration report" step) now state
+    accurately: `.github/duration-baseline.json` is not tracked. If this
+    ever goes red, a baseline landed and the comments (and this test) need
+    a matching update -- not a silent stale claim re-appearing (#2277)."""
+    import subprocess
+    result = subprocess.run(
+        ["git", "ls-files", ".github/"],
+        cwd=REPO, capture_output=True, text=True, check=True,
+    )
+    tracked = result.stdout.splitlines()
+    assert "duration-baseline.json" not in {Path(f).name for f in tracked}
+
+
+def test_load_baseline_absent_state_is_unchanged_by_the_2277_comment_fix(tmp_path):
+    """`load_baseline` behaviour is untouched by #2277 -- that issue is a
+
+    comment-accuracy fix, not a functional one. Pinned here so a future
+    change to this function trips a test that names the issue it would be
+    breaking a promise from."""
+    state, pct = dr.load_baseline(tmp_path / "does-not-exist.json")
+    assert state == "absent"
+    assert pct is None
