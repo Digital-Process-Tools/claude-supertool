@@ -656,10 +656,14 @@ class TestEnvBinaryOverride:
 
         #475 made the child env explicit so supertool can stamp
         SUPERTOOL_MCP_AUTOSPAWN (a validator may use a warm MCP daemon but not
-        create one). The security property this test guards is unchanged and is
+        create one). #2228 added a second supertool-owned key, SUPERTOOL_CONFIG_DIR
+        (the directory holding .supertool.json), stamped unconditionally so
+        new-file-lint.py and changelog-fragment.py can read the config that
+        governs them regardless of which block (validators or formatters) wired
+        them in. The security property this test guards is unchanged and is
         now asserted directly rather than via `env is None`: the delta against
-        the ambient environment is exactly the one supertool-owned key, so a
-        validator spec still cannot smuggle anything into its own child.
+        the ambient environment is exactly the two supertool-owned keys, so a
+        validator spec still cannot smuggle anything else into its own child.
         """
         real_file = tmp_path / "test.php"
         real_file.write_text("<?php\n")
@@ -688,11 +692,17 @@ class TestEnvBinaryOverride:
             k: v for k, v in child_env.items()
             if os.environ.get(k) != v
         }
-        assert set(delta) == {"SUPERTOOL_MCP_AUTOSPAWN"}, (
+        assert set(delta) == {"SUPERTOOL_MCP_AUTOSPAWN", "SUPERTOOL_CONFIG_DIR"}, (
             f"a spec without 'env' must add nothing beyond supertool's own "
-            f"provenance flag — got {sorted(delta)}"
+            f"provenance flags — got {sorted(delta)}"
         )
         assert delta["SUPERTOOL_MCP_AUTOSPAWN"] == "0"
+        # _inject_config (#475's helper, used above) stubs `_CONFIG` directly
+        # and never sets `_CONFIG_PATH`, so this test never went through the
+        # real config-file-discovery path. `_validator_run_one` stamps
+        # SUPERTOOL_CONFIG_DIR from `_CONFIG_PATH` when set, empty string
+        # otherwise (#2228) -- so here it is the empty string, not absent.
+        assert delta["SUPERTOOL_CONFIG_DIR"] == ""
         assert not (set(os.environ) - set(child_env)), (
             "child must still inherit the whole ambient environment"
         )
