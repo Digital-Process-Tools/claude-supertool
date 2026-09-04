@@ -20470,8 +20470,21 @@ def _guard_segments_with_origins(
     fourth element does not special-case, where it falls back to the same
     word-rejoin the first element already carries.
     """
+    heredocless = _guard_strip_heredocs(command)
     prepared, unread = _guard_open_substitutions(
-        _guard_drop_io_numbers(_guard_strip_heredocs(command)))
+        _guard_drop_io_numbers(heredocless))
+    # #2195: the digit dropped by `_guard_drop_io_numbers` (`2>&1` becomes
+    # `>&1`) is needed downstream so `2` never lands in an argv as a stray
+    # word (#1684) -- but that is a fact about MATCHING, not about what the
+    # caller typed, and `origin_texts`/`origin_faithful` exist to answer the
+    # second question. `undropped` is the same pipeline with the digit-drop
+    # left out, purely so a numbered-fd redirect can be rendered byte for
+    # byte instead of quietly losing its digit while the fidelity flag
+    # claims otherwise. Its own `unread` is discarded: nothing the digit-drop
+    # step does can change what a substitution scan could or could not
+    # balance, so re-deriving it from `unread` above would only duplicate
+    # work, not correct it.
+    undropped, _unread_undropped = _guard_open_substitutions(heredocless)
     # `segment_spans` gives each top-level segment's raw character SLICE of
     # `prepared` (#2010) -- not a re-join of tokens `shlex` has already
     # dequoted. `_guard_raw_segment_spans` walks `prepared` itself, splitting
@@ -20486,6 +20499,14 @@ def _guard_segments_with_origins(
     # itself is built below, once `segments` is known, because a span can
     # cover more than one of `segments`' entries (see the comment there).
     segment_spans = _guard_raw_segment_spans(prepared)
+    # `undropped_spans` is the same walk over `undropped` -- the digit-drop
+    # only ever removes digits, none of which are among
+    # `_GUARD_SEPARATOR_CHARS`, so it can neither create nor remove a
+    # top-level boundary. The two span lists therefore always carry the same
+    # length in the same order, entry for entry, even though each
+    # `undropped` span is one or more characters longer than its `prepared`
+    # counterpart whenever that segment carried a numbered fd redirect.
+    undropped_spans = _guard_raw_segment_spans(undropped)
     segments = _guard_tokenize_prepared(prepared)  # ValueError on a bad quote
     # `_guard_raw_segment_spans` splits on the same operators as the
     # tokeniser above, so ordinarily it produces exactly one span per entry
@@ -20525,9 +20546,25 @@ def _guard_segments_with_origins(
     # was never actually written that way; #2023 exists because nothing said
     # so.
     origin_faithful: List[bool] = []
+    #: Defends the invariant the comment on `undropped_spans` above argues
+    #: for, rather than trusting it silently (#2195) -- a mismatch here means
+    #: some construct this scanner did not anticipate really did shift the
+    #: span count, and falling back to `prepared`'s own (digit-dropped) slice
+    #: is the pre-existing behaviour, not a new failure mode.
+    spans_aligned = len(segment_spans) == len(undropped_spans)
     consumed = 0
-    for lo, hi in segment_spans:
+    for span_index, (lo, hi) in enumerate(segment_spans):
         raw_text = prepared[lo:hi].strip()
+        if spans_aligned:
+            # #2195: prefer the UNDROPPED slice for the entry a caller may
+            # see rendered back at them -- `_guard_drop_io_numbers` exists so
+            # `2` in `2>&1` never lands in an argv as a stray word (#1684),
+            # a fact about matching, not about what was typed. Slicing
+            # `undropped` instead keeps a numbered fd redirect byte for byte
+            # rather than quietly losing its digit while `origin_faithful`
+            # claims a faithful slice.
+            ulo, uhi = undropped_spans[span_index]
+            raw_text = undropped[ulo:uhi].strip()
         count = len(_guard_tokenize_prepared(prepared[lo:hi]))
         if count <= 1:
             origin_texts.append(raw_text)
