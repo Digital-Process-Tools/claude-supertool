@@ -193,3 +193,63 @@ def test_no_stacked_pull_request_still_prints_the_delete_command(
     m.main()
     out = capsys.readouterr().out
     assert "gh api -X DELETE" in out
+
+
+# ---------------------------------------------------------------------------
+# `|cleanup` end to end -- not just `run_cleanup` called by hand
+# ---------------------------------------------------------------------------
+#
+# The self-review's auditor spawn found that every test exercising the
+# `stack_state` refusal called `run_cleanup(...)` directly with the keyword
+# passed in by hand -- a real positive control for the function itself, but
+# no test drove `main()`'s own `stack_state=stack_state` wiring (the line
+# threading `stacked_followups()`'s answer into `run_cleanup`) through the
+# `|cleanup` invocation and read the rendered `## Cleanup` section back. A
+# silent revert of that one keyword argument -- to a hardcoded `STACK_NONE`,
+# say -- would have gone unnoticed by every existing test.
+
+
+def test_a_stacked_pull_request_reaches_the_run_cleanup_refusal_through_main(
+        monkeypatch, capsys) -> None:
+    h = _main._Harness(_main._pr(), stack_prs=[
+        {"number": 961, "title": "follow-up", "url": "https://x/961"}])
+    _install_main(monkeypatch, h, argv=["944", "cleanup"])
+    m.main()
+    out = capsys.readouterr().out
+    cleanup = out.split("## Cleanup")[1]
+    assert "remote branch" in cleanup and m.CLEAN_REFUSED in cleanup
+    assert "Stacked follow-up" in cleanup
+    assert "gh api -X DELETE" not in cleanup
+
+
+def test_no_stacked_pull_request_still_deletes_through_main(
+        monkeypatch, capsys) -> None:
+    """The paired must-fire case for the `|cleanup` path itself.
+
+    `_Harness` here (borrowed from `test_gh_pr_merge_main_950.py`) never
+    stubs the `git`/`gh api` calls the real delete makes -- no test in that
+    file exercises `|cleanup` at all, which is the gap this section exists
+    to close. Rather than growing the harness to fake a whole delete, the
+    three item-level helpers are replaced with spies: this isolates the one
+    claim under test -- that an empty stacked-PR board reaches `run_cleanup`
+    as `STACK_NONE` and takes the delete branch, not the refusal one -- from
+    the unrelated question of whether a delete, once reached, succeeds.
+    """
+    calls: list = []
+    monkeypatch.setattr(m, "_cleanup_remote_branch",
+                        lambda head, oid: (calls.append(head) or
+                                           ("remote branch", m.CLEAN_DONE,
+                                            "stubbed")))
+    monkeypatch.setattr(m, "_cleanup_worktree",
+                        lambda head: ("local worktree", m.CLEAN_DONE,
+                                     "stubbed"))
+    monkeypatch.setattr(m, "_cleanup_local_branch",
+                        lambda head: ("local branch", m.CLEAN_DONE,
+                                     "stubbed"))
+    h = _main._Harness(_main._pr())
+    _install_main(monkeypatch, h, argv=["944", "cleanup"])
+    m.main()
+    out = capsys.readouterr().out
+    cleanup = out.split("## Cleanup")[1]
+    assert calls == ["fix/924"], "the delete branch must be the one taken"
+    assert "remote branch" in cleanup and m.CLEAN_DONE in cleanup
