@@ -213,6 +213,45 @@ _REPO_RE = re.compile(r"\A[^/\\\s]+/[^/\\\s]+\Z")
 #: same standalone-vendoring reason as every other copy in this section (#754).
 WATCH_CONFIG = ".supertool.json"
 
+#: Characters that would let a `branch` value placed inside an API path
+#: template address something other than the ref named -- interpolated
+#: directly by `_reading_from_check_runs` and `_reading_from_combined_status`
+#: (#2245). A slash is deliberately NOT included: unlike `repo` (checked with
+#: `_REPO_RE` above, which pins the whole value to exactly `owner/name`), a
+#: branch name is legitimately slash-bearing (`feature/x`) and sits as the
+#: LAST path segment before the endpoint's own literal suffix, so a slash it
+#: carries cannot address a different resource -- only whitespace (which would
+#: split `gh api`'s own argument) or `?` (which would open a query string
+#: inside what `gh api` reads as one positional path) can. `..` is checked
+#: separately below rather than folded into this pattern: it is two literal
+#: characters, not a class, and git's own ref-name rules already forbid two
+#: consecutive dots in a real ref, so refusing it costs no legitimate branch.
+_BRANCH_UNSAFE_RE = re.compile(r"[\s?]")
+
+
+def _malformed_api_ref(repo, branch):
+    """Why `repo`/`branch` must not be interpolated into a GitHub API path, or
+    ``""`` (#2245).
+
+    `repo` and `branch` come from `.oss.json` via `gather()`
+    (`config.get("repo")`, `config.get("default_branch")`) with no upstream
+    validation before `_reading_from_check_runs` and
+    `_reading_from_combined_status` build
+    ``"repos/{}/commits/{}/...".format(repo, branch)`` directly. `repo` reuses
+    `_REPO_RE` -- the same `owner/name` check `_expected_watch_name` above
+    already applies to the identical config value -- and `branch` is refused
+    on whitespace, `?`, or a `..` segment. A malformed value would otherwise
+    make the call address a different endpoint than the one configured, and
+    the reading returned would report that other endpoint's state as though
+    it were the configured default branch's.
+    """
+    if not isinstance(repo, str) or not _REPO_RE.match(repo):
+        return f"repo {repo!r} is not a plain owner/name value"
+    if (not isinstance(branch, str) or not branch
+            or ".." in branch or _BRANCH_UNSAFE_RE.search(branch)):
+        return f"branch {branch!r} is not a safe ref to interpolate"
+    return ""
+
 
 def _expected_watch_name(repo):
     """The watch channel name THIS repository would derive from its own `repo`.
@@ -1596,7 +1635,13 @@ def _reading_from_check_runs(repo, branch):
     Returns ``None`` when the call did not answer or produced something this
     function cannot parse -- never confused with a reading that genuinely came
     back empty, which is a dict with ``total == 0`` and every flag ``False``.
+    Also ``None`` when `repo`/`branch` fail `_malformed_api_ref` (#2245) --
+    the same "could not look" answer every other early-return in this function
+    already gives, not a distinct refusal shape a caller would need to tell
+    apart from an unanswered `gh` call.
     """
+    if _malformed_api_ref(repo, branch):
+        return None
     out = _run(
         [
             "gh",
@@ -1673,7 +1718,14 @@ def _reading_from_combined_status(repo, branch):
     an undocumented API change would take, and reading it as bad -- rather than
     falling through to `None`, which the merge below reads as "this source did
     not answer" -- is the conservative direction to guess wrong in.
+
+    ``None`` too when `repo`/`branch` fail `_malformed_api_ref` (#2245) -- the
+    same reason `_reading_from_check_runs` above checks it before the call it
+    guards, and for the same reason: this function's own read of "did not
+    answer" already covers it.
     """
+    if _malformed_api_ref(repo, branch):
+        return None
     out = _run(
         [
             "gh",

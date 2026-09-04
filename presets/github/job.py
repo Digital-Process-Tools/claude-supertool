@@ -999,7 +999,13 @@ def print_artifacts(job_id: str) -> int:
         expired = artifact.get("expired")
         expires_at = artifact.get("expires_at")
         note = " — EXPIRED" if expired else ""
-        expires_note = f", expires {expires_at}" if expires_at and not expired else ""
+        # Flattened like `name` above (#2246) -- GitHub's own datetime field,
+        # but not a reason to leave the one remote-sourced string in this
+        # function that skipped it.
+        expires_note = (
+            f", expires {_untrusted.flat(str(expires_at))}"
+            if expires_at and not expired else ""
+        )
         print(f"- {name} ({size_str}){note}{expires_note}")
     prefix_note = (
         "" if len(artifacts) == 1 else

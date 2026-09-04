@@ -734,7 +734,10 @@ def print_artifacts(job_id: str) -> int:
             note = " — EXPIRED"
         else:
             note = ""
-        print(f"Expires: {expire_at}{note}")
+        # Flattened like `name` above (#2246) -- GitLab's own datetime field,
+        # but not a reason to leave the one remote-sourced string in this
+        # function that skipped it.
+        print(f"Expires: {_untrusted.flat(str(expire_at))}{note}")
     print(
         f"\nGitLab's job API does not list the paths inside the archive — "
         f"fetch a known path (e.g. one a trace printed) with: "
