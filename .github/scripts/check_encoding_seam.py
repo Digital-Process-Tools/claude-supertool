@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import subprocess
 import sys
@@ -38,6 +39,46 @@ from encoding_seam import (  # noqa: E402
 
 DEFAULT_BRANCH_FALLBACK = "master"
 TIMEOUT_S = 30
+
+#: `backslashreplace`, the same choice `junit_summary.py` makes and for the
+#: same reason: the only input that can reach the handler once this stream
+#: is pinned to UTF-8 is a lone surrogate from a `surrogateescape` decode
+#: upstream (`_changed_files`, below) -- a filename git could not itself
+#: decode as UTF-8. `replace` would destroy that byte a second time, one
+#: layer closer to a human than the guard this script exists to enforce.
+_STDOUT_ERRORS = "backslashreplace"
+
+
+def _use_utf8_stdout() -> None:
+    """Pin this process's own stdout/stderr to UTF-8, whatever the runner's
+    console codepage is (#2288 review, second CI red).
+
+    Measured, not assumed: on `windows-latest` this script's un-reconfigured
+    stdout encoded a real, valid, on-disk filename (`test_\xe9_2287.py`) in
+    the console's own codepage instead of UTF-8 -- a single byte the test's
+    own capture (`encoding="utf-8"`) then could not decode, rendering as
+    U+FFFD by the time it reached an assertion. The filename was never
+    corrupted on disk or by `_changed_files`' own explicit
+    `errors="surrogateescape"` decode of git's `-z` output; the corruption
+    was this script's own stdout encode, one step it had not yet pinned --
+    exactly the class of mistake `tests/test_encoding_seam.py` exists to
+    catch elsewhere in this tree, reproduced in the script built to run
+    that guard early. Same fix as `junit_summary.py`'s own
+    `use_utf8_stdout`: in-process, not `PYTHONIOENCODING` in the workflow
+    `env:`, so it does not also silently change every subprocess this job
+    spawns afterward.
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors=_STDOUT_ERRORS)
+            continue
+        buffer = getattr(stream, "buffer", None)
+        if buffer is not None:  # pragma: no cover - 3.7+ always has reconfigure
+            setattr(sys, name, io.TextIOWrapper(
+                buffer, encoding="utf-8", errors=_STDOUT_ERRORS,
+                line_buffering=True))
 
 # Three states on the exit code, not two (#2287 review): "ran, clean" must
 # be distinguishable from "did not run at all" -- not a git repo, no
@@ -118,6 +159,7 @@ def _changed_files(root: Path, base: str) -> "list[str] | None":
 
 
 def main(argv=None) -> int:
+    _use_utf8_stdout()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("files", nargs="*",
                          help="explicit files to check (skips git diff entirely)")
