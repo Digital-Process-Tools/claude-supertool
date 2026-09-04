@@ -404,7 +404,11 @@ def test_render_discloses_partial_parse_when_one_suite_of_several_is_dropped(tmp
     text = "\n".join(lines)
     assert "state: partial-parse" in text
     assert "bad" in text
-    assert "1" in text  # one suite dropped
+    # the count itself, not a bare "1" -- tmp_path's own generated segment
+    # names always carry digits (e.g. .../test_render_..._0/...), so a bare
+    # "1" in text is satisfied by the fixture path regardless of whether the
+    # drop count is right (self-review finding on #2274).
+    assert "1 testsuite(s) dropped" in text
     # the other three states are still reachable independently of this one
     assert "state: no-baseline" in text
 
