@@ -335,3 +335,191 @@ def test_scan_one_skips_subprocess_half_outside_both_scopes(tmp_path: Path) -> N
     # Sanity: the SAME file, in scope, DOES report the violation --
     # otherwise an empty result here would prove nothing about scoping.
     assert shared.scan_one(real_module, out_of_scope, ("read",)) != []
+
+
+# ---------------------------------------------------------------------------
+# Coverage gate (#991) reds this file's own bucket at 90.98%/92% (#2288
+# round 4) -- the branches below were exercised by no test: `_default_branch`,
+# `_merge_base`, `_changed_files`'s two error arms, and `main()`'s
+# not-a-repo / broken-guard-module / explicit-file-outside-root /
+# no-merge-base / warnings-only paths. Unit-level where a function's own
+# contract is the question (no need to go through a CLI subprocess to ask
+# whether `_default_branch` reads `.oss.json` correctly); CLI-level where
+# the question is what `main()` itself prints and exits with.
+# ---------------------------------------------------------------------------
+
+script = _load("_st_check_encoding_seam_2287", SCRIPT)
+
+WARN_ONLY_CALL = """import subprocess
+
+
+def f(cmd, **opts):
+    return subprocess.run(cmd, **opts)
+"""
+
+
+def test_default_branch_falls_back_with_no_oss_json(tmp_path: Path) -> None:
+    assert script._default_branch(tmp_path) == script.DEFAULT_BRANCH_FALLBACK
+
+
+def test_default_branch_reads_the_declared_value(tmp_path: Path) -> None:
+    (tmp_path / ".oss.json").write_text(
+        json.dumps({"default_branch": "trunk"}), encoding="utf-8")
+    assert script._default_branch(tmp_path) == "trunk"
+
+
+def test_default_branch_falls_back_on_unparseable_oss_json(tmp_path: Path) -> None:
+    (tmp_path / ".oss.json").write_text("{not json", encoding="utf-8")
+    assert script._default_branch(tmp_path) == script.DEFAULT_BRANCH_FALLBACK
+
+
+def test_default_branch_falls_back_when_the_declared_value_is_not_a_string(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".oss.json").write_text(
+        json.dumps({"default_branch": 7}), encoding="utf-8")
+    assert script._default_branch(tmp_path) == script.DEFAULT_BRANCH_FALLBACK
+
+
+def test_merge_base_reads_the_real_ref(synthetic_repo: "tuple[Path, str]") -> None:
+    root, base_sha = synthetic_repo
+    # No real remote is needed -- `merge-base` only needs the REF to resolve,
+    # and a local ref under refs/remotes/origin/ resolves the same way a
+    # fetched one would.
+    _git(root, "update-ref", "refs/remotes/origin/master", base_sha)
+    assert script._merge_base(root, "master") == base_sha
+
+
+def test_merge_base_is_none_when_the_ref_does_not_exist(
+    synthetic_repo: "tuple[Path, str]",
+) -> None:
+    root, _base_sha = synthetic_repo
+    assert script._merge_base(root, "master") is None
+
+
+def test_merge_base_is_none_when_git_itself_cannot_be_run(
+    synthetic_repo: "tuple[Path, str]", monkeypatch,
+) -> None:
+    root, _base_sha = synthetic_repo
+
+    def _raise(*a, **k):
+        raise OSError("git not found")
+
+    monkeypatch.setattr(script.subprocess, "run", _raise)
+    assert script._merge_base(root, "master") is None
+
+
+def test_changed_files_is_none_when_git_itself_cannot_be_run(
+    synthetic_repo: "tuple[Path, str]", monkeypatch, capsys,
+) -> None:
+    root, base_sha = synthetic_repo
+
+    def _raise(*a, **k):
+        raise OSError("git not found")
+
+    monkeypatch.setattr(script.subprocess, "run", _raise)
+    assert script._changed_files(root, base_sha) is None
+    assert "could not run git diff" in capsys.readouterr().err
+
+
+def test_changed_files_is_none_when_the_base_does_not_resolve(
+    synthetic_repo: "tuple[Path, str]", capsys,
+) -> None:
+    root, _base_sha = synthetic_repo
+    assert script._changed_files(root, "not-a-real-ref") is None
+    assert "git diff against not-a-real-ref failed" in capsys.readouterr().err
+
+
+def test_script_declines_when_run_outside_a_git_repository(tmp_path: Path) -> None:
+    r = subprocess.run(
+        [sys.executable, str(SCRIPT)], cwd=str(tmp_path),
+        capture_output=True, timeout=30, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 2, (r.stdout, r.stderr)
+    assert "not inside a git repository" in r.stderr
+
+
+def test_script_declines_when_the_guard_module_cannot_be_imported(
+    synthetic_repo: "tuple[Path, str]",
+) -> None:
+    root, base_sha = synthetic_repo
+    (root / "tests" / "test_encoding_seam.py").write_text(
+        "def broken(:\n", encoding="utf-8")  # a syntax error, not a scan target
+
+    r = _run_script(root, "--base", base_sha)
+
+    assert r.returncode == 2, (r.stdout, r.stderr)
+    assert "could not be imported" in r.stderr
+
+
+def test_script_declines_an_explicit_file_outside_the_repo_root(
+    synthetic_repo: "tuple[Path, str]", tmp_path: Path,
+) -> None:
+    root, _base_sha = synthetic_repo
+    outside = tmp_path / "elsewhere.py"
+    outside.write_text(BAD_CALL, encoding="utf-8")
+
+    r = subprocess.run(
+        [sys.executable, str(SCRIPT), str(outside)], cwd=str(root),
+        capture_output=True, timeout=30, encoding="utf-8", errors="replace",
+    )
+
+    assert r.returncode == 2, (r.stdout, r.stderr)
+    assert "outside the repo root" in r.stderr
+
+
+def test_script_declines_with_no_base_and_no_resolvable_merge_base(
+    synthetic_repo: "tuple[Path, str]",
+) -> None:
+    """No `--base`, no explicit files, and no `origin/<branch>` ref for
+    `_default_branch`'s fallback to resolve -- the everyday shape of running
+    this script in a fresh clone with no remote configured yet.
+    """
+    root, _base_sha = synthetic_repo
+
+    r = _run_script(root)
+
+    assert r.returncode == 2, (r.stdout, r.stderr)
+    assert "could not find a merge-base" in r.stderr
+
+
+def test_script_reports_an_undecidable_call_as_a_warning_not_an_error(
+    synthetic_repo: "tuple[Path, str]",
+) -> None:
+    """A `**kwargs`-forwarding subprocess call is exactly the scan's own
+    undecidable case (`tests/test_encoding_seam.py`'s
+    `subprocess_encoding_violations`) -- the scan cannot tell whether the
+    caller pins `encoding=`/`errors=` inside the forwarded dict, so it must
+    print as `warnings`, never as an `errors` violation, and the exit code
+    stays `RC_VIOLATIONS` either way (#2287's own three-state contract has
+    nothing to say about severity).
+    """
+    root, base_sha = synthetic_repo
+    (root / "tests" / "test_warn_only_2287.py").write_text(
+        WARN_ONLY_CALL, encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "add undecidable-only call")
+
+    r = _run_script(root, "--base", base_sha)
+
+    assert r.returncode == 1, (r.stdout, r.stderr)
+    assert "calls the scan cannot judge" in r.stdout
+    assert "test_warn_only_2287.py" in r.stdout
+    assert "encoding-seam violations in changed files" not in r.stdout
+
+
+def test_script_declines_when_the_given_base_does_not_resolve(
+    synthetic_repo: "tuple[Path, str]",
+) -> None:
+    """CLI-level twin of `test_changed_files_is_none_when_the_base_does_not_
+    resolve`: `main()`'s own `if candidates is None: return
+    RC_COULD_NOT_CHECK` (reached only once `--base` is explicit, so
+    `_merge_base` is never called) is a separate line from the function
+    that produces `None` -- covered by that unit test, not by this one.
+    """
+    root, _base_sha = synthetic_repo
+
+    r = _run_script(root, "--base", "not-a-real-ref")
+
+    assert r.returncode == 2, (r.stdout, r.stderr)
+    assert "git diff against not-a-real-ref failed" in r.stderr
