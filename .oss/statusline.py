@@ -229,6 +229,25 @@ WATCH_CONFIG = ".supertool.json"
 _BRANCH_UNSAFE_RE = re.compile(r"[\s?]")
 
 
+def _malformed_repo(repo):
+    """The `repo`-only half of `_malformed_api_ref`, or ``""`` (#2278).
+
+    Split out of `_malformed_api_ref` so a call site that interpolates `repo`
+    alone -- `_gh_count`, `_gh_external_issue_count` and `_latest_release`
+    build a `gh api` path or query string from `repo`/`slug` with no `branch`
+    argument at all -- can route through the same `_REPO_RE` check
+    `_malformed_api_ref` applies, rather than either duplicating the pattern
+    or being forced to invent a `branch` value that does not exist in that
+    call's own scope. No line numbers cited here (#2278's own review): the
+    three call sites already name themselves in their own docstrings, next
+    to the interpolation each protects, which cannot drift the way a number
+    copied into a fourth place can.
+    """
+    if not isinstance(repo, str) or not _REPO_RE.match(repo):
+        return f"repo {repo!r} is not a plain owner/name value"
+    return ""
+
+
 def _malformed_api_ref(repo, branch):
     """Why `repo`/`branch` must not be interpolated into a GitHub API path, or
     ``""`` (#2245).
@@ -238,15 +257,16 @@ def _malformed_api_ref(repo, branch):
     validation before `_reading_from_check_runs` and
     `_reading_from_combined_status` build
     ``"repos/{}/commits/{}/...".format(repo, branch)`` directly. `repo` reuses
-    `_REPO_RE` -- the same `owner/name` check `_expected_watch_name` above
-    already applies to the identical config value -- and `branch` is refused
-    on whitespace, `?`, or a `..` segment. A malformed value would otherwise
-    make the call address a different endpoint than the one configured, and
-    the reading returned would report that other endpoint's state as though
-    it were the configured default branch's.
+    `_malformed_repo` -- the same `owner/name` check `_expected_watch_name`
+    above already applies to the identical config value -- and `branch` is
+    refused on whitespace, `?`, or a `..` segment. A malformed value would
+    otherwise make the call address a different endpoint than the one
+    configured, and the reading returned would report that other endpoint's
+    state as though it were the configured default branch's.
     """
-    if not isinstance(repo, str) or not _REPO_RE.match(repo):
-        return f"repo {repo!r} is not a plain owner/name value"
+    problem = _malformed_repo(repo)
+    if problem:
+        return problem
     if (not isinstance(branch, str) or not branch
             or ".." in branch or _BRANCH_UNSAFE_RE.search(branch)):
         return f"branch {branch!r} is not a safe ref to interpolate"
@@ -1462,7 +1482,14 @@ def _gh_count(repo, kind):
     runs its filter once per page and prints one number per page with no total, so
     whoever reads the first line gets a number smaller than the truth, correctly
     formatted, at exit 0. One call and one field cannot fail that way.
+
+    `repo` reaches here the same way it reaches `_malformed_api_ref`'s two call
+    sites (#2245) -- `config.get("repo")`, no upstream validation -- and is
+    interpolated straight into the search query below, so it is checked the
+    same way before `_run` is ever invoked (#2278).
     """
+    if _malformed_repo(repo):
+        return None
     query = "repo:{} is:{} is:open".format(repo, kind)
     out = _run(
         [
@@ -1535,8 +1562,14 @@ def _gh_external_issue_count(repo, total):
     smaller than the truth -- the same convention `_gh_count`'s own docstring names.
     A `null` line (jq's raw-mode spelling of a missing/`None` field) is treated the
     same as a missing row: one unreadable association and the whole count is untaken.
+
+    `repo` reaches here the same unvalidated way `_malformed_api_ref`'s two call
+    sites (#2245) receive it, interpolated straight into the path below, so it
+    is checked the same way before `_run` is ever invoked (#2278).
     """
     if not isinstance(total, int):
+        return None
+    if _malformed_repo(repo):
         return None
     out = _run(
         [
@@ -1821,8 +1854,15 @@ def _latest_release(repo):
     `doctor.published_versions` already asks this exact question this exact way. Two
     sources for one question is how a status line and a diagnostic come to disagree in
     front of the same person, which is worse than either being wrong alone.
+
+    `repo` here is `slug` from `refresh()`'s own loop -- `repo_from_url(record.get
+    ("repository"))`, a plugin manifest's own repository URL rather than
+    `config.get("repo")` -- but it is the identical `owner/name`-shaped value
+    interpolated straight into the path below with no upstream validation, so
+    it is checked the same way `_malformed_api_ref`'s call sites (#2245) check
+    `config.get("repo")` before `_run` is ever invoked (#2278).
     """
-    if not repo:
+    if not repo or _malformed_repo(repo):
         return None
     encoded = _run(
         [
