@@ -4110,19 +4110,38 @@ def _expand_env(s: str, env: Dict[str, str]) -> str:
     `C:UsersrunneradminAppDataLocalTemp...` — not doubled, not converted to
     `/`, consumed outright, because none of the characters that followed each
     backslash formed a real escape pair. `shlex.quote` wraps the value in
-    single quotes (backslash-doubling one embedded quote if present), inside
-    which POSIX `shlex.split` treats a backslash as a literal character, not
-    an escape introducer — matching the treatment `{file}`/`{dir}`/`{arg}`
-    already get via `shlex.quote` at every one of this function's call
-    sites, and the same reasoning #1734 applied to those placeholders one
-    layer up. A defined variable whose value has no shell-special
-    characters (the common case — plain words, existing shipped `cmd`
-    templates) round-trips through `shlex.quote` unchanged, so this narrows
-    nothing that worked before; a caller relying on a `$VAR` value being
-    split into SEVERAL argv tokens by `shlex.split` gets it as one token
-    instead, which is the same one-token guarantee `{file}` etc. already
-    make and is what makes this expansion "no shell" in fact rather than
-    only in the docstring.
+    single quotes -- an embedded single quote is closed out and re-opened
+    (`'` becomes the four bytes `'"'"'`), never backslash-escaped, but that
+    detail does not matter here: what matters is that POSIX `shlex.split`
+    treats a backslash inside a single-quoted segment as a literal
+    character, not an escape introducer -- matching the treatment
+    `{file}`/`{dir}`/`{arg}` already get via `shlex.quote` at every one of
+    this function's call sites, and the same reasoning #1734 applied to
+    those placeholders one layer up. A defined variable whose value has no
+    shell-special characters (the common case — plain words, existing
+    shipped `cmd` templates) round-trips through `shlex.quote` unchanged, so
+    this narrows nothing that worked before; a caller relying on a `$VAR`
+    value being split into SEVERAL argv tokens by `shlex.split` gets it as
+    one token instead, which is the same one-token guarantee `{file}` etc.
+    already make and is what makes this expansion "no shell" in fact rather
+    than only in the docstring.
+
+    **Known remaining gap (self-review finding, not fixed here):** this
+    quoting is blind to the template's OWN quoting. A template that already
+    wraps a `$VAR` reference in its own single quotes -- the shipped example
+    at `docs/notifiers.md`'s `bash -c '...$SLACK_WEBHOOK'` pattern -- gets a
+    SECOND, nested pair of quotes spliced in when that variable's value
+    contains a space or other shell-special character, and `shlex.split` has
+    no notion of nested quoting (POSIX shell does not either), so the value
+    is split back apart at the space. Before this fix such a value survived
+    inside the template's own quotes untouched; after it, only a value with
+    no shell-special characters is safe in that position -- which is every
+    template shipped in this tree today, so nothing here regresses in
+    practice, but a project-authored template following the same documented
+    pattern with a differently-shaped value would now break where it did
+    not before. Fixing this needs the substitution to be aware of the
+    template's own quote state at the match position, which is a different,
+    larger change than the one this docstring documents.
     """
     return re.sub(
         r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)',
