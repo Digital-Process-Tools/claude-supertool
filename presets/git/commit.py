@@ -163,12 +163,10 @@ def _no_verify_ambiguous_refusal():
         ("  Nothing in the argument says which was meant, and both routes "
          + "spell it the same way."),
         "  To commit the FILE, write it so git reads it as a path:",
-        "    ./supertool " + _sh_quote(
-            "git-commit:::MESSAGE:::./" + _NO_VERIFY_TOKEN),
+        "    " + st_hint("git-commit:::MESSAGE:::./" + _NO_VERIFY_TOKEN),
         "  To skip hooks too, name it explicitly alongside the sentinel:",
-        "    ./supertool " + _sh_quote(
-            "git-commit:::MESSAGE:::./" + _NO_VERIFY_TOKEN
-            + ":::" + _NO_VERIFY_TOKEN),
+        "    " + st_hint("git-commit:::MESSAGE:::./" + _NO_VERIFY_TOKEN
+                          + ":::" + _NO_VERIFY_TOKEN),
     ]
 
 
