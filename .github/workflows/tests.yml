@@ -213,12 +213,36 @@ jobs:
       # runners carry no equivalent always-on scanner. Excluding the checkout and the
       # runner temp directory removes that tax without touching what any suite tests --
       # it changes nothing about correctness, only how fast the disk answers.
+      #
+      # continue-on-error, deliberately (#2259): Add-MpPreference has been
+      # observed to fail hard (0x800106ba) when the Defender service is
+      # unavailable/disabled on a given runner instance -- infrastructure this
+      # workflow does not control. This step is pure disk-cost optimisation
+      # and is not correctness-bearing, so failing open (slower green) is the
+      # right default. Do not remove continue-on-error here without reading
+      # #2259 first: without it, a Defender hiccup on the runner takes the
+      # whole pytest job down before a single test runs, and the resulting
+      # red reads exactly like a real regression.
       - name: Exclude the checkout and temp dir from Windows Defender scanning
+        id: defender-exclusion
         if: runner.os == 'Windows'
         shell: pwsh
+        continue-on-error: true
         run: |
           Add-MpPreference -ExclusionPath "${{ github.workspace }}"
           Add-MpPreference -ExclusionPath "$env:RUNNER_TEMP"
+      # continue-on-error above only changes the step's *conclusion* as read
+      # back through the jobs API -- it does not surface anywhere that a
+      # person skimming a slow run, or a tool reading job/step conclusions
+      # after the fact, would notice. This step makes the tolerated failure
+      # visible: a `::warning::` annotation shows in the Actions UI's
+      # Annotations panel and in the raw log regardless of which surface
+      # someone is looking at (#2259).
+      - name: Warn if the Defender exclusion step failed
+        if: steps.defender-exclusion.outcome == 'failure'
+        shell: pwsh
+        run: |
+          echo "::warning::Windows Defender exclusion step failed (Add-MpPreference) -- continuing without it; this Windows run may be slower than usual, see #2259"
       - name: Run tests (excludes slow and benchmark — see #891)
         # Override pyproject addopts default. Until #891 this ran the `slow`
         # marker on all twelve legs, on every push — marking a test `slow`
