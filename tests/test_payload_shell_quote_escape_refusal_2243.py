@@ -45,9 +45,18 @@ BS_FORM = "'" + BS + "''"                          # '\''
 
 
 def _toml_path(target: Path) -> str:
-    r"""A payload `path =` as a basic string, with separators escaped (Windows
-    backslash-in-basic-string trap -- see test_payload_shell_quote_escape_2114.py's
-    own `_toml_path` for the CI leg this guards)."""
+    r"""A payload `path =` as a basic string, with separators escaped.
+
+    On Windows `tmp_path` is `C:\Users\...`, and an unescaped backslash in a
+    basic TOML string starts an escape sequence -- `\U` (as in
+    `...runneradmin\AppData...`) demands 8 hex digits and the payload never
+    parses. This is the same fixture trap the retired
+    test_payload_shell_quote_escape_2114.py's own `_toml_path` carried (that
+    file's fixture was red on `pytest (windows-latest, 3.9/3.10)` in CI for
+    exactly this reason, before this file absorbed its coverage under
+    #2243); every prior test file building a `path =` from a real filesystem
+    path escapes it the same way
+    (test_payload_literal_backslashes_per_field_1839.py's own `_toml_path`)."""
     return chr(34) + str(target).replace(BS, BS * 2) + chr(34)
 
 
@@ -110,13 +119,19 @@ def test_refusal_names_the_remedy(tmp_path: Path) -> None:
 
 def test_refusal_names_the_position(tmp_path: Path) -> None:
     """A count alone ('N occurrences') is not enough to find the field in a
-    long payload -- the refusal must say a payload line number."""
+    long payload -- the refusal must say the correct payload line number.
+
+    Asserts the exact phrase rather than a bare digit: the refusal's own
+    fixed footer names several issues ('#1839', '#2243', ...), so a lone
+    '3' can appear there independent of the reported line number and would
+    let this test pass even if the position math were wrong -- confirmed by
+    forcing a wrong line number and observing the bare-digit form of this
+    assertion still passed (review finding, 2026-09-04)."""
     content = Q3 + "line one" + NL + "line two has " + DQ_FORM + " in it" + Q3
     op = _paste_payload(tmp_path, content)
     out = supertool.dispatch(op)
     assert "ERROR" in out
-    assert "line" in out.lower()
-    assert "3" in out, "the idiom sits on the payload's 3rd line: " + out
+    assert "payload line 3" in out, "the idiom sits on the payload's 3rd line: " + out
 
 
 def test_exempted_whole_payload_writes_unrefused(tmp_path: Path) -> None:
