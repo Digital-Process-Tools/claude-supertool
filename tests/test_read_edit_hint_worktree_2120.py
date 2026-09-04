@@ -106,3 +106,46 @@ def test_footer_still_carries_the_at_dash_alternative_and_the_harness_note(
     _worktree(monkeypatch, tmp_path)
     hint = supertool._read_edit_hint("README.md", "body")
     assert "(or edit:@- ; no harness Read needed)" in hint, hint
+
+
+def test_an_interpreter_path_with_a_space_is_quoted(monkeypatch, tmp_path):
+    """`_modify_hint_quoted_interpreter`'s second branch, which no CI leg
+    reaches incidentally (#1017, and its sibling test
+    `tests/test_st_hint_interpreter_1017.py::test_an_interpreter_path_with_a_space_is_quoted`).
+
+    `sys.executable` on all three GitHub runners is a plain path with no
+    space, so the unquoted branch is the only one any leg exercises unless
+    a test patches it. An interpreter path WITH a space is the ordinary
+    Windows install (`C:\\Program Files\\...`) and any POSIX box whose user
+    has one in `$HOME`; printed unquoted, the remedy asks the shell to run
+    a program named `C:\\Program`.
+
+    Asserted per `os.name` rather than as one substring: the two branches
+    quote differently on purpose (a double-quote wrap on Windows, where
+    `shlex` is a POSIX lexer and its escaping is wrong; `shlex.quote`
+    elsewhere), so a single expectation would be vacuous on one platform.
+    """
+    _worktree(monkeypatch, tmp_path)
+    spaced = str(tmp_path / "py thon" / "bin" / "python3")
+    monkeypatch.setattr(supertool.sys, "executable", spaced)
+    hint = supertool._read_edit_hint("README.md", "body")
+
+    if supertool.os.name == "nt":
+        expected = chr(34) + spaced + chr(34)
+    else:
+        expected = supertool.shlex.quote(spaced)
+    assert expected in hint, hint
+    # The bare, unquoted path must NOT be what got printed -- that is the
+    # defect, and asserting only "the path appears" would pass on it.
+    assert f" {spaced} supertool.py" not in hint, hint
+
+
+def test_an_interpreter_path_without_a_space_is_left_alone(monkeypatch, tmp_path):
+    """The first branch: nothing to quote, so nothing is quoted -- a hint
+    wrapping every path in quotes would pass the test above while making
+    the ordinary case uglier for no reason."""
+    _worktree(monkeypatch, tmp_path)
+    plain = str(tmp_path / "python3")
+    monkeypatch.setattr(supertool.sys, "executable", plain)
+    hint = supertool._read_edit_hint("README.md", "body")
+    assert f"{plain} supertool.py 'edit:::OLD:::NEW:::README.md'" in hint, hint
