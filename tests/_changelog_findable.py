@@ -216,6 +216,19 @@ def pending_fragment_references(root: Path, files: Sequence[Path],
         return []
     wanted = [(name, re.compile(_LEFT_BOUNDARY + re.escape(name)))
               for name in names]
+    # One pass over the whole file, not one pass per line per pending name
+    # (#2227): checked against a real checkout at 880+ tracked files and 34
+    # pending fragments, the per-line/per-name loop below cost ~7-15s because
+    # every line of every file — `supertool.py` alone runs past 17,000 — was
+    # matched against all 34 patterns individually. Almost every file matches
+    # none of them, so `_ANY_PENDING` answers that in one regex pass over the
+    # file's full text (`.search`, not `.finditer`) and lets the untouched
+    # majority skip the line loop entirely. Only a file this combined pattern
+    # says COULD contain a reference pays for the precise per-line scan below,
+    # which is unchanged — same patterns, same left boundary, same order, same
+    # findings — so a file that matches gets exactly the report it always did.
+    _any_pending = re.compile(
+        _LEFT_BOUNDARY + "(?:" + "|".join(re.escape(name) for name in names) + ")")
     findings: List[str] = []
     for entry in sorted(files, key=lambda path: Path(path).as_posix()):
         rel = Path(entry)
@@ -228,6 +241,8 @@ def pending_fragment_references(root: Path, files: Sequence[Path],
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
+            continue
+        if not _any_pending.search(text):
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
             for name, pattern in wanted:

@@ -1657,6 +1657,46 @@ tests `if not out` before it parses, and has since
 and the symptom was never a `JSONDecodeError`. It was a `skipped` reading
 `produced no output`, with the traceback discarded on a stderr nothing reads.
 
+### A stalled-process fixture pays for the shim's shape, not just its budget
+
+`test_git_timeout_disclosure_650.py`'s four slowest tests (#2227) each set
+`SUPERTOOL_GIT_TIMEOUT=1` and a shim `git` that stalls one subcommand, and each
+cost 10-16s against that 1s budget — measured, not the 1-2s the budget and the
+`_stop()` grace should add up to. The shim's `/bin/sh` script ran `sleep 300`
+as a **foreground child** and then, unreached, fell through to `exec real_git`.
+Killing that script (SIGTERM, then SIGKILL) does not touch `sleep`: it is a
+separate process, inherits the script's stdout/stderr pipes, and keeps them
+open after the script dies. `_stop()`'s `_settled()` check is watching those
+pipes, not the process table, so `communicate()` blocks for the full grace on
+BOTH the SIGTERM wait and the SIGKILL wait — +4s per stalled call, on top of
+the 1s budget, paid again for every time the fixture calls a subcommand it
+shares the stall with (`status.main()` calls `rev-parse` more than once).
+
+The fix is `exec sleep 300` in the shim instead of `sleep 300`: `exec` replaces
+the shell's own process image rather than forking a child, so the PID
+`subprocess.Popen` is tracking is the one that stalls, and it dies on the
+first signal the way a real, well-behaved `git` does — collapsing each stalled
+call from ~5s to ~1s with no change to what `_stop()`/`_settled()` are asked to
+prove. A PATH shim that stalls by shelling out to another program is worth
+checking for this: if the fixture's own harness forks where it could `exec`,
+every timeout test built on it pays a multiple of its budget that has nothing
+to do with the code under test.
+
+**A checkout-wide scan pays for what it re-derives per line, not just per
+file.** `test_no_file_in_this_checkout_names_a_pending_fragment`
+(`tests/_changelog_findable.py`, #2227) walks every tracked file and matched
+each line against one compiled pattern per pending changelog fragment — 34
+patterns × every line of files that run past 17,000 lines. Almost every file
+matches none of them. A single combined pattern (`"|".join` of the same
+patterns, still keyed to the same left digit boundary) searched once against
+the whole file's text first, and the untouched per-line/per-pattern loop below
+it only runs for a file that combined search says could match — same
+patterns, same boundary, same findings, ~6x less wall-clock on this checkout.
+The move generalises: when a loop tests N conditions against every line of
+every file and almost all of them are negative, a single cheap whole-file
+pre-filter before the precise per-line pass is real work saved, not coverage
+traded away.
+
 ### Never assert an adapter's verdict as a bare boolean
 
 `assert out["ok"] is True` fires as `assert False is True`. Every adapter under

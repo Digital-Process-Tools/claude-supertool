@@ -95,7 +95,23 @@ def _slow_git_path(tmp_path: Path, subcommand: str) -> str:
     shim = bindir / "git"
     shim.write_text(
         "#!/bin/sh\n"
-        + dispatch_on_subcommand(subcommand, f"{sleep} 300", real)
+        # `exec`, not a plain `sleep 300;`: without it, this line forks
+        # `sleep` as a CHILD of the running `/bin/sh` and waits on it, so
+        # `subprocess.Popen` is tracking the shell, not the sleeper. SIGTERM
+        # (and even SIGKILL) sent to that shell does not touch the orphaned
+        # `sleep`, which keeps the inherited stdout/stderr pipes open --
+        # `communicate()` then blocks on those pipes for the full grace
+        # TWICE (`_stop()`'s SIGTERM wait, then its SIGKILL wait) before
+        # giving up, measured at +4s per stalled call versus this form.
+        # `exec` replaces the shell's own process image with `sleep`, so the
+        # PID Popen is watching IS the one that stalls, and it (like a real,
+        # well-behaved `git`) dies on the first signal -- exercising the
+        # same `_stop()` path this file's tests are actually about, at the
+        # cost that mechanism is meant to bound rather than 5x it. The
+        # SIGTERM-is-ignored / SIGKILL-escalation path itself stays covered,
+        # just not here: tests/test_git_common_stranded_lock_2033.py drives
+        # `_stop()` and `_settled()` directly against a deaf child.
+        + dispatch_on_subcommand(subcommand, f"exec {sleep} 300", real)
     )
     shim.chmod(0o755)
     return str(bindir)
