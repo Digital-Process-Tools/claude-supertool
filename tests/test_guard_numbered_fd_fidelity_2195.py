@@ -143,3 +143,36 @@ def test_numbered_fd_redirect_on_an_earlier_discarded_segment_and_a_later_one(
     match = verdict.matches[0]
     assert match.command == "gh pr view 12 2>&1", match
     assert match.command_faithful is True, match
+
+
+def test_no_space_before_a_numbered_fd_redirect_is_a_KNOWN_pre_existing_gap(
+        tmp_path, guard_config):
+    """NOT fixed by this change -- pinned so the gap stays visible rather
+    than silently regressing further, and reported for filing separately
+    (see the `undropped_spans`/`spans_aligned` comments in
+    `_guard_segments_with_origins`).
+
+    `_guard_drop_io_numbers` strips the digit and NOTHING ELSE -- if that
+    digit sat directly against a preceding `|`/`;`/`&` with no space
+    (`true|2>&1 …`, a normal no-space-around-pipe shell idiom), removing it
+    FUSES what used to be two adjacent operator runs into one, and
+    `_guard_raw_segment_spans` reads the fused run as a single redirect
+    rather than a boundary -- collapsing two top-level segments into one and
+    losing the split between them. This pre-dates this fix (confirmed
+    against `master`, unrelated to what this file's own change touches:
+    `_guard_raw_segment_spans`/`_guard_tokenize_prepared`/
+    `_guard_drop_io_numbers` are byte-identical before and after it) and is
+    NOT something `spans_aligned`'s fallback can repair on its own -- by the
+    time this loop sees it, the fusion has already happened.
+    """
+    guard_config(tmp_path, _PR_OP)
+    cmd = "true|2>&1 gh pr view 1"
+    verdict = supertool.guard_command(cmd)
+    # What SHOULD happen: `blocked`, with `gh-pr` matching `gh pr view 1`
+    # and `true` discarded. What ACTUALLY happens, both before and after
+    # this fix: the fused segment matches no op at all, and the guard
+    # reads a command that runs `gh pr view 1` as `clean`.
+    assert verdict.state == "clean", verdict
+    heads, _unread, _origins, _origin_texts, _origin_faithful = (
+        supertool._guard_segments_with_origins(cmd))
+    assert heads == [["true", "gh", "pr", "view", "1"]], heads

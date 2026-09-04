@@ -20499,13 +20499,23 @@ def _guard_segments_with_origins(
     # itself is built below, once `segments` is known, because a span can
     # cover more than one of `segments`' entries (see the comment there).
     segment_spans = _guard_raw_segment_spans(prepared)
-    # `undropped_spans` is the same walk over `undropped` -- the digit-drop
-    # only ever removes digits, none of which are among
-    # `_GUARD_SEPARATOR_CHARS`, so it can neither create nor remove a
-    # top-level boundary. The two span lists therefore always carry the same
-    # length in the same order, entry for entry, even though each
-    # `undropped` span is one or more characters longer than its `prepared`
-    # counterpart whenever that segment carried a numbered fd redirect.
+    # `undropped_spans` is the same walk over `undropped` -- ordinarily the
+    # two span lists carry the same length in the same order, entry for
+    # entry, since a digit alone is never `_GUARD_SEPARATOR_CHARS` and
+    # dropping one cannot introduce a new boundary out of nothing. What it
+    # CAN do -- found in review, not by this fix, and left as `spans_aligned`
+    # below rather than papered over -- is FUSE two boundaries that used to
+    # be separate: an operator run with no space before the digit (`|2>&1`,
+    # `;2>&1`, `&2>&1`) loses only the digit, so the `|`/`;`/`&` and the
+    # `>&` it used to be separated from by that digit become one adjacent
+    # run, which then reads as a single redirect rather than two operators
+    # either side of a boundary -- collapsing what should be two top-level
+    # segments into one and losing the boundary between them entirely. That
+    # is a guard-bypass class in `_guard_raw_segment_spans`/
+    # `_guard_tokenize_prepared` themselves, pre-existing on `master` and
+    # unrelated to what this function's own origin/faithful pair renders --
+    # reported for filing rather than fixed here, the same call #2076 made
+    # about the digit-drop this function inherited from.
     undropped_spans = _guard_raw_segment_spans(undropped)
     segments = _guard_tokenize_prepared(prepared)  # ValueError on a bad quote
     # `_guard_raw_segment_spans` splits on the same operators as the
@@ -20548,9 +20558,14 @@ def _guard_segments_with_origins(
     origin_faithful: List[bool] = []
     #: Defends the invariant the comment on `undropped_spans` above argues
     #: for, rather than trusting it silently (#2195) -- a mismatch here means
-    #: some construct this scanner did not anticipate really did shift the
-    #: span count, and falling back to `prepared`'s own (digit-dropped) slice
-    #: is the pre-existing behaviour, not a new failure mode.
+    #: this command hit the fusion case documented there, and falling back
+    #: to `prepared`'s own (digit-dropped) slice is the pre-existing
+    #: behaviour, not a new failure mode: `origin_faithful` can still read
+    #: `True` for a fallback entry that lost its fd digit, same as before
+    #: this fix, because the fusion has already merged what should have
+    #: been two segments into the one this loop now sees -- a second,
+    #: entangled half of the same reported-for-filing class, not something
+    #: a local check here could repair without first un-fusing the spans.
     spans_aligned = len(segment_spans) == len(undropped_spans)
     consumed = 0
     for span_index, (lo, hi) in enumerate(segment_spans):
