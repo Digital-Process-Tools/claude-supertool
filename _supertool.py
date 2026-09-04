@@ -4094,10 +4094,40 @@ def _expand_env(s: str, env: Dict[str, str]) -> str:
     commit object. A sixth call site that skips the shield reintroduces that
     silently, because the substitution is invisible unless the variable
     happens to be defined on the machine that runs it.
+
+    **Every substituted value is `shlex.quote`d (#2164 CI, four Windows-only
+    failures on `tests/test_watch_sources_path_relative_2164.py`).** Every
+    call site below builds its command by concatenating this function's
+    output onto a template string, then feeds the WHOLE result to
+    `shlex.split()` before spawning the child argv-form. A value inserted
+    here unquoted is not "no shell" the way the docstring above promised —
+    it is untrusted text handed to `shlex.split`'s own POSIX-mode escape
+    grammar, where a bare backslash escapes (and drops) the next character.
+    An anchored Windows path such as
+    ``C:\\\\Users\\\\runneradmin\\\\...\\\\watch-sources``, exported as
+    `SUPERTOOL_WATCH_SOURCES_PATH` and referenced as `$SUPERTOOL_WATCH_SOURCES_PATH`
+    in a `cmd` template, came back with every single backslash removed —
+    `C:UsersrunneradminAppDataLocalTemp...` — not doubled, not converted to
+    `/`, consumed outright, because none of the characters that followed each
+    backslash formed a real escape pair. `shlex.quote` wraps the value in
+    single quotes (backslash-doubling one embedded quote if present), inside
+    which POSIX `shlex.split` treats a backslash as a literal character, not
+    an escape introducer — matching the treatment `{file}`/`{dir}`/`{arg}`
+    already get via `shlex.quote` at every one of this function's call
+    sites, and the same reasoning #1734 applied to those placeholders one
+    layer up. A defined variable whose value has no shell-special
+    characters (the common case — plain words, existing shipped `cmd`
+    templates) round-trips through `shlex.quote` unchanged, so this narrows
+    nothing that worked before; a caller relying on a `$VAR` value being
+    split into SEVERAL argv tokens by `shlex.split` gets it as one token
+    instead, which is the same one-token guarantee `{file}` etc. already
+    make and is what makes this expansion "no shell" in fact rather than
+    only in the docstring.
     """
     return re.sub(
         r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)',
-        lambda m: env.get(m.group(1) or m.group(2), m.group(0)),
+        lambda m: (shlex.quote(env[m.group(1) or m.group(2)])
+                   if (m.group(1) or m.group(2)) in env else m.group(0)),
         s,
     )
 
