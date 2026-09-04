@@ -140,28 +140,45 @@ def _config_dir() -> "tuple[Path | None, bool, str]":
         return None, True, "{0} was set but empty".format(CONFIG_DIR_ENV)
     try:
         return Path(raw).resolve(), True, ""
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        # ValueError, not just OSError: a malformed value (e.g. an embedded
+        # NUL byte) raises ValueError out of Path.resolve() on some
+        # platforms, not OSError -- self-review (#2228, auditor finding).
         return None, True, "{0}={1!r} could not be resolved: {2}".format(
             CONFIG_DIR_ENV, raw, exc)
 
 
-def _root_is_inside_config_scope(root: Path, config_dir: Path) -> bool:
-    """True when `config_dir` (where `.supertool.json` lives) is `root`
-    itself or somewhere inside it -- the project that wired this validator
-    IS the project whose script is about to be imported and executed.
+def _config_dir_is_untrusted_ancestor(root: Path, config_dir: Path) -> bool:
+    """True exactly when `config_dir` (where `.supertool.json` lives) sits
+    STRICTLY ABOVE `root` -- the directory-of-clones shape #2228 was filed
+    for: a maintainer's own config, above a directory holding several
+    clones, silently wiring this validator against whichever clone the
+    edited file happens to be inside. That is the one relationship this
+    adapter cannot tell apart from "the project that configured supertool
+    IS the project whose script is about to run" without asking.
 
-    False when `config_dir` sits above `root`: the directory-of-clones
-    shape #2228 was filed for, where the script this adapter would find
-    and run belongs to whichever clone is currently being edited, not to
-    the project that configured supertool.
+    False for every other relationship, deliberately -- including two
+    disjoint trees with no ancestry between them at all. Self-review
+    (#2228, reviewer finding): an explicit `path=` argument naming a file
+    outside the config-owning project entirely is ordinary supertool usage
+    -- `test_changelog_fragment_write_receipt_1132.py`'s own end-to-end
+    case pastes into a fragment under a *sibling* tmp_path project while
+    cwd sits in this repo's own `.supertool.json` scope -- and that shape
+    was never the vulnerability: nothing about it lets one clone's script
+    execute in place of another's the way walking DOWN from a shared
+    parent does. Refusing it too would be broader than #2228 asked for and
+    breaks that pre-existing, unmodified guarantee (#1132) for no
+    additional safety.
     """
     root_s = os.path.normcase(str(root))
     config_s = os.path.normcase(str(config_dir))
+    if config_s == root_s:
+        return False
     try:
         common = os.path.commonpath([root_s, config_s])
-    except ValueError:  # e.g. different drives on Windows
+    except ValueError:  # e.g. different drives on Windows -- no ancestry
         return False
-    return common == root_s
+    return common == config_s
 
 
 def _repo_root(start: Path) -> "tuple[Path | None, str | None]":
@@ -288,21 +305,36 @@ def main() -> None:
     override_set = bool(os.environ.get(ENV_LINT_SCRIPT, "").strip())
     if not override_set:
         config_dir, scope_known, scope_reason = _config_dir()
-        if scope_known and (config_dir is None
-                             or not _root_is_inside_config_scope(root, config_dir)):
+        # `scope_reason` is only ever non-empty when `config_dir` is None
+        # (the env var was set but unreadable/empty) -- a config_dir that
+        # resolved fine never sets it, so `None` here always means "no
+        # directory to compare against" rather than "compared and it
+        # happened to be untrusted".
+        if scope_known and config_dir is None:
+            emit(skipped(TOOL, file,
+                         "a new-file-lint script may exist at the default "
+                         "location(s) inside {0}, but this run's "
+                         "SUPERTOOL_CONFIG_DIR could not be used ({1}), so "
+                         "the convention-based location cannot be checked "
+                         "against a project boundary (#2228). Set {2} to an "
+                         "exact path if this project's script is meant to "
+                         "be trusted here.".format(
+                             root, scope_reason, ENV_LINT_SCRIPT),
+                         int((time.time() - start) * 1000)))
+            return
+        if (scope_known and config_dir is not None
+                and _config_dir_is_untrusted_ancestor(root, config_dir)):
             emit(skipped(TOOL, file,
                          "a new-file-lint script may exist at the default "
                          "location(s) inside {0}, but the .supertool.json "
-                         "that wired this run does not live inside that "
-                         "project ({1}) -- the convention-based location is "
-                         "not trusted across that boundary (#2228), because "
-                         "a checkout is not made trustworthy just by being "
-                         "edited under a directory that also holds this "
-                         "config. Set {2} to an exact path if this "
-                         "project's script is meant to be trusted "
-                         "here.".format(
-                             root, scope_reason or "config_dir={0}".format(config_dir),
-                             ENV_LINT_SCRIPT),
+                         "that wired this run lives ABOVE that project, at "
+                         "{1} -- the convention-based location is not "
+                         "trusted across that boundary (#2228), because a "
+                         "checkout is not made trustworthy just by sitting "
+                         "under a directory that also holds this config. "
+                         "Set {2} to an exact path if this project's script "
+                         "is meant to be trusted here.".format(
+                             root, config_dir, ENV_LINT_SCRIPT),
                          int((time.time() - start) * 1000)))
             return
 

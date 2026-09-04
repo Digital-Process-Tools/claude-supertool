@@ -24527,7 +24527,17 @@ def _formatter_run_one(name: str, spec: Dict[str, Any], file: str) -> Dict[str, 
     _merged_env = {**os.environ, **{str(k): str(v) for k, v in _spec_env_dict.items()}}
     cmd = _unshield(_expand_env(cmd, _merged_env), _shield)
     timeout = int(spec.get("timeout", 30))
-    run_env = _merged_env if _spec_env_dict else None
+    # #2228, self-review (reviewer finding): a `.supertool.json` "formatters"
+    # block can name the exact same `cmd` as a "validators" one -- nothing
+    # stops it, and `new-file-lint.py` / `changelog-fragment.py` read
+    # `SUPERTOOL_CONFIG_DIR` regardless of which block wired them. Stamped
+    # unconditionally here too, the same as `_validator_run_one`, so the
+    # trust boundary is not something a validator-vs-formatter choice could
+    # bypass.
+    run_env = dict(_merged_env)
+    run_env[_VALIDATOR_CONFIG_DIR_ENV] = (
+        os.path.dirname(os.path.realpath(_CONFIG_PATH)) if _CONFIG_PATH else ""
+    )
     try:
         r = subprocess.run(shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=timeout,
                            env=run_env, encoding="utf-8", errors="replace")

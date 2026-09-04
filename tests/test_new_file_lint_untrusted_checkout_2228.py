@@ -175,6 +175,36 @@ def test_config_dir_env_absent_preserves_existing_direct_invocation_behavior(
     assert any(e["code"] == "F401" for e in result["errors"]), result
 
 
+def test_a_disjoint_unrelated_project_is_still_trusted(tmp_path):
+    """Self-review finding (#2228): the fix's first cut refused ANY
+    SUPERTOOL_CONFIG_DIR that was not `root` itself or an ancestor of it --
+    which also refused a config directory sharing no ancestry with `root`
+    AT ALL, an entirely ordinary shape when supertool is invoked with an
+    explicit `path=` argument naming a file outside the config-owning
+    project (see `tests/test_changelog_fragment_write_receipt_1132.py`'s
+    own end-to-end CLI test for the sibling adapter's identical case).
+    Only a config directory sitting STRICTLY ABOVE `root` -- the
+    directory-of-clones shape -- may be refused; a disjoint sibling tree
+    must still be trusted."""
+    _require_ruff()
+    unrelated_config_owner = tmp_path / "some-other-project-entirely"
+    unrelated_config_owner.mkdir()
+
+    repo = tmp_path / "sibling-repo"
+    _init_repo(repo)
+    scripts = repo / ".github" / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "lint_new_files.py").write_text(REAL_LINT_SCRIPT_BODY,
+                                                encoding="utf-8")
+    new_file = repo / "brand_new.py"
+    new_file.write_text(DEAD_IMPORT, encoding="utf-8")
+
+    result = _run(new_file, {"SUPERTOOL_CONFIG_DIR": str(unrelated_config_owner)})
+
+    assert result["ok"] is False, result
+    assert any(e["code"] == "F401" for e in result["errors"]), result
+
+
 def test_explicit_override_bypasses_the_scope_check(tmp_path):
     """SUPERTOOL_NEW_FILE_LINT_SCRIPT names one exact path -- an operator's
     own explicit trust, not an inherited one -- and must still be honoured

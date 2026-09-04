@@ -113,21 +113,33 @@ def _config_dir() -> tuple[Path | None, bool, str]:
         return None, True, "{0} was set but empty".format(CONFIG_DIR_ENV)
     try:
         return Path(raw).resolve(), True, ""
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        # ValueError, not just OSError: a malformed value (e.g. an embedded
+        # NUL byte) raises ValueError out of Path.resolve() on some
+        # platforms, not OSError -- self-review (#2228, auditor finding).
         return None, True, "{0}={1!r} could not be resolved: {2}".format(
             CONFIG_DIR_ENV, raw, exc)
 
 
-def _root_is_inside_config_scope(root: Path, config_dir: Path) -> bool:
-    """True when `config_dir` is `root` itself or somewhere inside it --
-    see `new-file-lint.py`'s identical function for the full rationale."""
+def _config_dir_is_untrusted_ancestor(root: Path, config_dir: Path) -> bool:
+    """True exactly when `config_dir` sits STRICTLY ABOVE `root` -- see
+    `new-file-lint.py`'s identical function for the full rationale,
+    including the self-review finding (#2228) this polarity fixes: refusing
+    every relationship OTHER than "config_dir at or below root" also
+    refused a disjoint, unrelated tree named by an explicit `path=`
+    argument -- ordinary usage this file's own pre-existing #1132 write-time
+    test exercises end to end -- and that shape was never the
+    vulnerability. Only walking DOWN from a shared parent (the
+    directory-of-clones shape) is."""
     root_s = os.path.normcase(str(root))
     config_s = os.path.normcase(str(config_dir))
+    if config_s == root_s:
+        return False
     try:
         common = os.path.commonpath([root_s, config_s])
-    except ValueError:  # e.g. different drives on Windows
+    except ValueError:  # e.g. different drives on Windows -- no ancestry
         return False
-    return common == root_s
+    return common == config_s
 
 
 def _repo_root(start: Path) -> tuple[Path | None, str | None]:
@@ -197,12 +209,16 @@ def _find_assembler(target: Path) -> tuple[Path | None, Path | None, str | None]
     Bounding at the repo root closes an escape ABOVE the repo, but says
     nothing about whether the repo ITSELF should be trusted (#2228): unless
     `SUPERTOOL_CHANGELOG_ASSEMBLER` pins an exact path (an operator's own
-    explicit trust), the convention-based locations are only searched when
+    explicit trust), the convention-based locations are refused when
     `SUPERTOOL_CONFIG_DIR` -- the directory holding the `.supertool.json`
-    that wired this run, set by supertool's own validator runner -- is
-    `root` itself or somewhere inside it. A directory of clones, configured
-    from a `.supertool.json` that sits ABOVE every one of them, fails that
-    check and the third return value carries `SCOPE_REFUSED_PREFIX` plus why.
+    that wired this run, set by supertool's own validator runner -- sits
+    STRICTLY ABOVE `root`. A directory of clones, configured from a
+    `.supertool.json` that sits above every one of them, fails that check
+    and the third return value carries `SCOPE_REFUSED_PREFIX` plus why. A
+    config directory unrelated to `root` entirely -- an explicit `path=`
+    naming a file outside the config-owning project, ordinary usage this
+    file's own #1132 write-time test exercises end to end -- is NOT refused
+    (self-review finding): only walking down from a shared parent is.
     """
     root, reason = _repo_root(target.parent)
     if root is None:
@@ -210,10 +226,13 @@ def _find_assembler(target: Path) -> tuple[Path | None, Path | None, str | None]
     override_set = bool(os.environ.get(ENV_ASSEMBLER, "").strip())
     if not override_set:
         config_dir, scope_known, scope_reason = _config_dir()
-        if scope_known and (config_dir is None
-                             or not _root_is_inside_config_scope(root, config_dir)):
+        if scope_known and config_dir is None:
+            return None, root, SCOPE_REFUSED_PREFIX + scope_reason
+        if (scope_known and config_dir is not None
+                and _config_dir_is_untrusted_ancestor(root, config_dir)):
             return None, root, SCOPE_REFUSED_PREFIX + (
-                scope_reason or "config_dir={0}".format(config_dir))
+                "the .supertool.json that wired this run lives ABOVE this "
+                "project, at {0}".format(config_dir))
     resolved_start = target.parent.resolve()
     for parent in [resolved_start, *resolved_start.parents]:
         for relative in _locations():
@@ -278,14 +297,14 @@ def main() -> None:
             detail = could_not_look[len(SCOPE_REFUSED_PREFIX):]
             emit(skipped(TOOL, target,
                          "an assembler may exist at the default location(s) "
-                         "inside {0}, but the .supertool.json that wired this "
-                         "run does not live inside that project ({1}) -- the "
-                         "convention-based location is not trusted across "
-                         "that boundary (#2228), because a checkout is not "
-                         "made trustworthy just by being edited under a "
-                         "directory that also holds this config. Set {2} to "
-                         "an exact path if this project's assembler is meant "
-                         "to be trusted here.".format(root, detail, ENV_ASSEMBLER),
+                         "inside {0}, but {1} -- the convention-based "
+                         "location is not trusted across that boundary "
+                         "(#2228), because a checkout is not made "
+                         "trustworthy just by sitting under a directory "
+                         "that also holds a .supertool.json above it. Set "
+                         "{2} to an exact path if this project's assembler "
+                         "is meant to be trusted here.".format(
+                             root, detail, ENV_ASSEMBLER),
                          _ms(start)))
             return
         if could_not_look is not None:

@@ -236,20 +236,34 @@ executed with the maintainer's own privileges, before either adapter's
 new-file-only check even ran. An innocuous, conventionally-named file was
 enough; no `.supertool.json` of the untrusted repo's own was required.
 
-The fix is provenance: supertool's own validator runner now sets
-`SUPERTOOL_CONFIG_DIR` — the directory holding the `.supertool.json` that
-wired this run — in every validator adapter's environment (the same shape
-`SUPERTOOL_MCP_AUTOSPAWN` already uses, #475). Both adapters refuse the
-convention-based location unless that directory is the edited file's own
-git repo root, or somewhere inside it — i.e. the project that configured
-supertool IS the project whose script is about to run. `SUPERTOOL_NEW_FILE_LINT_SCRIPT`
-/ `SUPERTOOL_CHANGELOG_ASSEMBLER` still work regardless of that boundary:
-an operator naming one exact path is explicit trust, not an inherited one.
+The fix is provenance: supertool's runner now sets `SUPERTOOL_CONFIG_DIR`
+— the directory holding the `.supertool.json` that wired this run — in
+every validator AND formatter adapter's environment (the same shape
+`SUPERTOOL_MCP_AUTOSPAWN` already uses, #475; both call sites are patched,
+since nothing stops a config wiring either adapter's `cmd` under
+`"formatters"` instead of `"validators"`). Both adapters refuse the
+convention-based location only when that directory sits STRICTLY ABOVE the
+edited file's own git repo root — the directory-of-clones shape.
+`SUPERTOOL_NEW_FILE_LINT_SCRIPT` / `SUPERTOOL_CHANGELOG_ASSEMBLER` still
+work regardless of that boundary: an operator naming one exact path is
+explicit trust, not an inherited one.
+
+**Self-review finding.** The first cut of this fix refused every
+`SUPERTOOL_CONFIG_DIR` that was not the edited file's own repo root or an
+ancestor of it — which also refused a config directory sharing no ancestry
+with that repo AT ALL, the ordinary shape of an explicit `path=` argument
+naming a file outside the config-owning project (`paste`, `edit`, etc. all
+take one). That regressed a pre-existing, unrelated guarantee (#1132: a
+malformed `changelog.d/` fragment refused at write time) for every such
+call, caught by that guarantee's own unmodified end-to-end test. Only
+walking DOWN from a shared parent — a config directory that is a strict
+ancestor of the repo, never a disjoint or unrelated one — is the shape this
+issue was filed for.
 
 Running either adapter directly — outside supertool's own wiring, as every
-test in this repo's suite does — leaves `SUPERTOOL_CONFIG_DIR` unset
-entirely, which is read as "no scope claim is being made" rather than "no
-directory is trusted": the pre-#2228 repo-bound behaviour applies
+pre-#2228 test in this repo's suite does — leaves `SUPERTOOL_CONFIG_DIR`
+unset entirely, which is read as "no scope claim is being made" rather
+than "nothing is trusted": the pre-#2228 repo-bound behaviour applies
 unchanged. Only a real supertool run, where the variable is always set
 (empty string when no config loaded at all), enforces the boundary.
 
