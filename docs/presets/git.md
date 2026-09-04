@@ -198,6 +198,41 @@ Resolved: 1 | Failed: 0 | Remaining: 0
 Next: ./supertool 'git-commit:::Merge resolved' (or git merge --continue)
 ```
 
+**`ours`/`theirs` is `git checkout --SIDE`, and that is a whole-file operation
+— git's own semantics, not a bug** ([#2226](https://github.com/Digital-Process-Tools/claude-supertool/issues/2226)). It replaces `PATH` with the chosen side's committed
+version *entirely*, not just the conflicted blocks `git-conflicts` numbered.
+A file that diverged between the two sides **outside** any marked conflict —
+content only one side touched, auto-merged cleanly, carrying no markers — gets
+silently rewritten right along with the resolution. A caller who just read
+`git-conflicts`' one-block listing has no reason to expect the second.
+
+So a resolved file's receipt carries a second line, right under the marker/
+validator digest, comparing the working-tree content immediately before and
+after the checkout:
+
+```text
+# git-resolve: theirs (1 file(s))
+  ✓ docs/contributing.md
+      markers: clean | validate: ok
+      1 conflict block(s), 2 hunk(s) changed — 1 outside any conflict (lines 434-436)
+Resolved: 1 | Failed: 0 | Remaining: 0
+```
+
+**The `... — N outside any conflict (lines ...)` clause is the signal, not the
+raw hunk count** — difflib's own hunk count can differ from the block count
+even in a genuinely clean resolution (matching text elsewhere in the file
+sometimes splits one block's replacement into more than one changed region),
+so "hunks equal to blocks" is not a claim this line makes or relies on.
+Absence of the "outside" clause means the whole diff between the pre- and
+post-checkout file is accounted for by the conflict blocks it had, checked
+per line, not merely per hunk-versus-block arithmetic. The line prints
+`outside-conflict check: not available (...)` instead of falling silent when
+the before/after snapshot could not be read — silence there would read
+exactly like the clean case. It is silent (omitted) only for `both` — union
+resolution rewrites conflict markers in place, line by line, and structurally
+cannot touch anything outside a block, so there is nothing this check would
+ever find there.
+
 **The `PATH` in those rows is git's own, never yours** ([#1693](https://github.com/Digital-Process-Tools/claude-supertool/issues/1693)). A comma-separated `PATH` argument is a filter over the conflicted set, not a second source: anything not already conflicted is refused before a single row is printed.
 
 **What held those rows up used to be `core.quotePath`, and that was the wrong thing to rest on** ([#1708](https://github.com/Digital-Process-Tools/claude-supertool/issues/1708)). The rows interpolated the path raw, sound only because `git diff --name-only --diff-filter=U` octal-quotes every byte above 0x7F — a config *default*, so #1708 proposed pinning it with `-c core.quotePath=true`. Driving it first showed the setting has no correct value, on git 2.46.2:

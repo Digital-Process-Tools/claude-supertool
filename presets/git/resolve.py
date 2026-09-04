@@ -9,6 +9,7 @@ Receipt shows which files were resolved and how many conflicts remain.
 """
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
@@ -464,6 +465,180 @@ def _count_blocks(path: str) -> int:
     except (OSError, UnicodeDecodeError):
         return 0
     return sum(1 for line in text.splitlines() if line.startswith("<<<<<<<"))
+
+
+def _read_text_for_hunks(path: str) -> Optional[str]:
+    """Best-effort snapshot of PATH for the outside-the-conflict hunk check.
+
+    Returns ``None`` on anything that stops a clean read — missing file,
+    permission, non-UTF-8 content — rather than raising, so the caller can
+    say "did not check" instead of guessing at a diff it never took.
+    """
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _block_ranges(lines: list[str]) -> list[tuple[int, int]]:
+    """0-indexed inclusive ``(start, end)`` line span for every conflict block
+    in LINES — from its ``<<<<<<<`` marker line through its ``>>>>>>>`` marker
+    line. Best-effort: an unterminated block runs to the last line rather than
+    being dropped. A span that is too WIDE only makes more hunks count as
+    "inside" a conflict, never fewer — this feeds a receipt line, not a stager,
+    so the failure direction that matters is under-reporting, not over.
+    """
+    ranges: list[tuple[int, int]] = []
+    start: Optional[int] = None
+    for i, line in enumerate(lines):
+        if line.startswith("<<<<<<<") and start is None:
+            start = i
+        elif line.startswith(">>>>>>>") and start is not None:
+            ranges.append((start, i))
+            start = None
+    if start is not None:
+        ranges.append((start, len(lines) - 1))
+    return ranges
+
+
+def _hunk_note(pre_text: Optional[str], post_text: Optional[str]) -> str:
+    """One receipt line naming how much of the file a whole-file ``checkout
+    --ours``/``--theirs`` actually moved — #2226.
+
+    `checkout --SIDE` is git's own whole-file operation: it replaces PATH with
+    the chosen side's committed version entirely, not just the conflicted
+    blocks. A file that diverged between the two sides OUTSIDE any marked
+    conflict — auto-merged cleanly, no markers — gets silently rewritten right
+    along with the resolution, and the old receipt (`markers: clean`,
+    `Resolved: 1`) said nothing about it: a caller who had just read
+    `git-conflicts`' block listing had no way to know.
+
+    Diffs PRE (the working-tree content immediately before the checkout,
+    markers intact) against POST (immediately after) and reports the number of
+    contiguous changed regions ("hunks") against the number of conflict blocks
+    PRE held. For each hunk, the portion of its PRE-side span that does NOT
+    fall inside any conflict block's own line span is content the checkout
+    moved outside the conflict it was asked to resolve.
+
+    **Subtracts the conflict blocks' coverage from each hunk before deciding
+    what is "outside" — a per-hunk yes/no overlap test is not sound.** A
+    single difflib hunk can span *across* a block boundary (its PRE range
+    starts inside a block and ends past it, or the reverse) when the matcher
+    merges the block's own tail with adjacent content that also happens to
+    differ pre/post — a real, if narrow, false negative caught in review
+    (#2226): a hunk that merely *touches* a block was being counted as wholly
+    inside it, silently swallowing the genuinely-outside remainder. Line-exact
+    subtraction has no such blind spot: any PRE line index not covered by a
+    block IS outside a conflict, independent of how difflib chose to group
+    the surrounding changes into hunks.
+
+    **Excludes the conflict blocks' own span before counting** — a naive
+    line-diff would flag a block's own replaced lines as "outside" the
+    conflict, since every one of them differs by construction, and every
+    ordinary resolution would then read as a false alarm.
+
+    Returns a **stated** "could not check" line — never a silent "" — when
+    either snapshot could not be read/decoded: silence here would render
+    identically to the genuinely-clean case (agreeing hunk/block counts also
+    omits the "outside" clause but still prints a line), and a caller cannot
+    tell "verified, nothing moved" from "never verified" unless the second one
+    says so (#1858's three-state rule; caught in review as the receipt still
+    conflating them for exactly the failure mode this whole change exists to
+    stop being silent about).
+
+    Returns ``""`` only when PRE held no conflict block to compare against —
+    unreachable on `git-resolve`'s own call path, where PRE is always read
+    from a file `git` itself just listed as conflicted, but reachable calling
+    this function directly (as the unit tests do); there is nothing to have
+    "not checked", so nothing is said.
+    """
+    if pre_text is None or post_text is None:
+        return "outside-conflict check: not available (could not read the pre/post-resolution snapshot)"
+    # Not str.splitlines(): PRE/POST are file bytes read directly (no
+    # subprocess, no text=True universal-newline translation), and the
+    # comparison must line up with `_block_ranges`' own conflict-marker
+    # spans and with git's own line reckoning -- LF/CR/CRLF only. A file
+    # containing a Unicode line-break character that str.splitlines()
+    # treats as a boundary (NEL, U+2028, ...) but git does not would
+    # otherwise be split into more "lines" than git or `_block_ranges`
+    # recognize,
+    # misaligning every downstream hunk/block index (#1622's shape; see the
+    # `_untrusted.split_lines` docstring: "Use this for anything being
+    # parsed as a line-oriented protocol").
+    pre_lines = _untrusted.split_lines(pre_text)
+    post_lines = _untrusted.split_lines(post_text)
+    blocks = _block_ranges(pre_lines)
+    if not blocks:
+        return ""
+
+    matcher = difflib.SequenceMatcher(None, pre_lines, post_lines, autojunk=False)
+    ops = [op for op in matcher.get_opcodes() if op[0] != "equal"]
+
+    # Merge adjacent non-equal opcodes into one hunk: difflib can hand back a
+    # 'delete' immediately followed by an 'insert' for what is really one
+    # changed region (the delete's PRE end equals the insert's PRE position).
+    hunks: list[tuple[int, int]] = []
+    for _tag, a1, a2, _b1, _b2 in ops:
+        if hunks and hunks[-1][1] == a1:
+            hunks[-1] = (hunks[-1][0], a2)
+        else:
+            hunks.append((a1, a2))
+
+    def _outside_spans(a1: int, a2: int) -> list[tuple[int, int]]:
+        """The sub-span(s) of half-open PRE range [a1, a2) NOT covered by any
+        conflict block. Exact, not a whole-hunk yes/no: a hunk that starts
+        before a block and/or ends after it keeps the outside part(s).
+        """
+        if a2 <= a1:
+            # Pure insert: the insertion POINT is "inside" a block it lands
+            # within or immediately after (its replacement content can be
+            # longer than the marker lines it drops) — else it is its own,
+            # zero-width, outside span.
+            for bstart, bend in blocks:
+                if bstart <= a1 <= bend + 1:
+                    return []
+            return [(a1, a1)]
+        covered = sorted(
+            (max(a1, bstart), min(a2, bend + 1))
+            for bstart, bend in blocks
+            if max(a1, bstart) < min(a2, bend + 1)
+        )
+        merged: list[tuple[int, int]] = []
+        for s, e in covered:
+            if merged and s <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+            else:
+                merged.append((s, e))
+        spans: list[tuple[int, int]] = []
+        cur = a1
+        for s, e in merged:
+            if cur < s:
+                spans.append((cur, s))
+            cur = max(cur, e)
+        if cur < a2:
+            spans.append((cur, a2))
+        return spans
+
+    outside: list[tuple[int, int]] = []
+    for a1, a2 in hunks:
+        outside.extend(_outside_spans(a1, a2))
+    base = f"{len(blocks)} conflict block(s), {len(hunks)} hunk(s) changed"
+    if not outside:
+        return base
+
+    def _fmt(a1: int, a2: int) -> str:
+        if a2 > a1:
+            return f"lines {a1 + 1}-{a2}"
+        return "before line 1" if a1 == 0 else f"after line {a1}"
+
+    shown = ", ".join(_fmt(a1, a2) for a1, a2 in outside[:5])
+    more = f" (+{len(outside) - 5} more)" if len(outside) > 5 else ""
+    return f"{base} — {len(outside)} outside any conflict ({shown}{more})"
 
 
 def _resolve_blocks(path: str, side: str, selected: set[int]) -> tuple[bool, str, int, int]:
@@ -1097,6 +1272,7 @@ def main() -> int:
     forced_headings: list[str] = []
     failed: list[tuple[str, str]] = []
     digests: dict[str, Optional[str]] = {}
+    hunk_notes: dict[str, str] = {}
     for path in targets:
         if path in guarded:
             refused.append((path, _REFUSAL))
@@ -1119,6 +1295,11 @@ def main() -> int:
                 failed.append((path, err))
                 continue
         else:
+            # Snapshot the working tree BEFORE the checkout — #2226. `checkout
+            # --ours`/`--theirs` is git's own whole-file operation: it can
+            # rewrite content OUTSIDE any conflict block, and the only way to
+            # say so afterward is having kept the "before" to diff against.
+            pre_text = _read_text_for_hunks(path)
             co = _git(["checkout", f"--{side}", "--", path])
             if co.returncode != 0:
                 # A child's stream reaching the `✗ PATH: REASON` row below
@@ -1130,6 +1311,7 @@ def main() -> int:
                 failed.append((path, _untrusted.flat(
                     co.stderr.strip() or co.stdout.strip())))
                 continue
+            hunk_notes[path] = _hunk_note(pre_text, _read_text_for_hunks(path))
         # HARD GATE — never stage a file that still carries a conflict marker.
         marker_lines = _scan_markers(path)
         if marker_lines:
@@ -1157,6 +1339,16 @@ def main() -> int:
         if path in forced_headings:
             line += " | ⚠ duplicated heading(s) — verify section structure"
         print(line)
+        # #2226: `checkout --ours`/`--theirs` is whole-file, so a resolution
+        # that touched more hunks than it had conflict blocks moved something
+        # OUTSIDE the conflict it was asked to resolve. Silent only for 'both'
+        # (union rewrites markers in place and cannot do this — not
+        # applicable, so nothing is printed); a file whose before/after
+        # snapshot could not be read still gets a line, saying so, rather
+        # than omitting one indistinguishably from the genuinely-clean case.
+        hunk_note = hunk_notes.get(path)
+        if hunk_note:
+            print(f"      {hunk_note}")
     for path, reason in refused:
         print(f"  ⊘ {_shown(path)}: {reason}")
     for path, err in failed:
