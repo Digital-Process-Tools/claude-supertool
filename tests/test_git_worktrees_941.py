@@ -282,17 +282,17 @@ def test_a_newline_in_the_lookup_reason_cannot_forge_a_row() -> None:
 # ── opting out ───────────────────────────────────────────────────────────
 
 def test_nopr_flag_is_parsed_off_the_argument_list() -> None:
-    path, want_pr = wt.parse_args(["/tmp/st-wt/941", "nopr"])
+    path, want_pr, _since, _conflict = wt.parse_args(["/tmp/st-wt/941", "nopr"])
     assert path == "/tmp/st-wt/941"
     assert want_pr is False
-    path, want_pr = wt.parse_args(["/tmp/st-wt/941"])
+    path, want_pr, _since, _conflict = wt.parse_args(["/tmp/st-wt/941"])
     assert path == "/tmp/st-wt/941"
     assert want_pr is True
 
 
 def test_the_env_knob_turns_the_lookup_off(monkeypatch) -> None:
     monkeypatch.setenv("SUPERTOOL_WORKTREE_PR", "0")
-    _path, want_pr = wt.parse_args([])
+    _path, want_pr, _since, _conflict = wt.parse_args([])
     assert want_pr is False
 
 
