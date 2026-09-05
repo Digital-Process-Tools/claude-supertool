@@ -1286,6 +1286,20 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
         # `_help_entry`, `_configured_op_names`, `_build_at_file_registry` —
         # all reach it with no change at all.
         preset_builtin_docs = preset_data.get("builtin-ops")
+        if preset_builtin_docs is not None and not isinstance(
+                preset_builtin_docs, dict):
+            # The whole `builtin-ops` SECTION being a non-table is the same
+            # #2308 defect one level further up than the per-entry check
+            # below: a preset manifest declaring `"builtin-ops": "oops"`
+            # used to skip this whole branch silently, dropping the section
+            # exactly as if the preset had never declared one at all
+            # (oss:auditor's re-spawned self-review finding, since neither
+            # the per-entry check nor `_preset_warnings` ever saw it).
+            config.setdefault("_preset_warnings", []).append(
+                f"preset {name!r}: builtin-ops is "
+                f"{type(preset_builtin_docs).__name__}, not a table "
+                f"— the whole section was dropped"
+            )
         if isinstance(preset_builtin_docs, dict):
             merged_builtin_docs = dict(config.get("builtin-ops") or {})
             for doc_name, doc_def in preset_builtin_docs.items():
