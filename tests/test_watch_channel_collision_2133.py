@@ -194,11 +194,12 @@ def test_health_surfaces_a_refusal_recorded_during_this_run(forwarding, monkeypa
     _write_refusal(forwarding, pid=9999,
                     reason="another claude-channel server is listening there")
     _, report = channel.health(forwarding)
-    # Not a bare "9999" substring (#2301): the report also legitimately
-    # contains this process's own socket path, built from a nanosecond
-    # timestamp that can coincidentally contain that same four-digit run.
-    # "pid 9999" is the literal `_refusal_lines` renders and cannot collide
-    # with a path, which is never rendered with a "pid " prefix.
+    # A "must fire" positive control (#2301): a real refusal was recorded, so
+    # its render prefix must be present. `"refused  :"` is `_refusal_lines`'s
+    # own label, unique to it -- see the sibling negative control below for
+    # why the label rather than the bare digits is what is checked, on
+    # either side of this pairing.
+    assert "refused  :" in report, report
     assert "pid 9999" in report, report
     assert "listening there" in report, report
 
@@ -211,30 +212,51 @@ def test_health_says_nothing_about_a_refusal_when_none_was_recorded(
     Not a bare "9999" substring (#2301): `forwarding`'s own socket path is
     built from a nanosecond timestamp (`_sock_path`) and can coincidentally
     contain that same four-digit run -- observed for real on CI,
-    `.../8575413370999984.sock`. "pid 9999" is the literal `_refusal_lines`
-    renders for a recorded refusal and cannot collide with a path, which is
-    never rendered with a "pid " prefix.
+    `.../8575413370999984.sock`. A first fix narrowed this to "pid 9999",
+    but that is not collision-proof either: `_holder_lines` also renders
+    `f"pid {holder}"` for this *process's own* real OS pid whenever it holds
+    the socket (`forwarding` monkeypatches `peer_pid` to return
+    `os.getpid()`), so a worker whose real pid happened to be 9999 -- or to
+    contain that run -- would trip the same false positive with no refusal
+    ever written. The only string `_refusal_lines` renders that a marker-free
+    report can never contain, independent of any digit, is the `"refused  :"`
+    label prefix itself.
     """
     _process_table(monkeypatch, TAGGED)
     _configured(monkeypatch, True)
     _, report = channel.health(forwarding)
-    assert "pid 9999" not in report, report
+    assert "refused  :" not in report, report
     assert "listening there" not in report, report
 
 
 def test_health_says_nothing_about_a_refusal_when_the_socket_path_coincidentally_contains_9999(
         monkeypatch):
-    """Regression for #2301, forcing the exact CI coincidence deterministically
-    rather than waiting on `time.time_ns()` to reproduce it: a socket path
-    that itself contains the sentinel digits "9999", with no refusal ever
-    recorded. A bare `"9999" not in report` control would have failed here
-    for a reason that has nothing to do with any refusal marker."""
+    """Regression for #2301, forcing the sentinel digits into the socket path
+    deterministically rather than waiting on `time.time_ns()` to reproduce it:
+    a path that always contains "9999", with no refusal ever recorded. A bare
+    `"9999" not in report` control would have failed here for a reason that
+    has nothing to do with any refusal marker.
+
+    `time.time_ns()` still supplies the per-run uniqueness `_sock_path()`
+    relies on -- a fixed literal name would leave a leftover from a crashed
+    prior run at this exact path on the next run with the same reused pid
+    (common in CI containers), turning that stale collision into an
+    unrelated `EADDRINUSE`. "9999" replaces digits of the timestamp rather
+    than appending to it, so this path is no longer than `_sock_path()`'s own
+    (see its docstring: macOS caps an AF_UNIX path near 104 bytes). `bind()`
+    is still wrapped below rather than assumed to succeed, because nothing
+    about this shape can prove it fits under `sun_path` on every platform in
+    the CI matrix ahead of time.
+    """
     if not _can_bind_af_unix():
         pytest.skip("this platform cannot bind an AF_UNIX socket")
     path = str(Path(tempfile.gettempdir())
-               / f"st2133-{os.getpid()}-forced-9999-collision.sock")
+               / f"st2133-{os.getpid()}-9999{time.time_ns() % 10 ** 12}.sock")
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    srv.bind(path)
+    try:
+        srv.bind(path)
+    except OSError as exc:
+        pytest.skip(f"could not bind the forced-collision socket path: {exc}")
     srv.listen(8)
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     Path(f"{path}{channel.HEALTH_SUFFIX}").write_text(json.dumps({
@@ -252,6 +274,12 @@ def test_health_says_nothing_about_a_refusal_when_the_socket_path_coincidentally
         _configured(monkeypatch, True)
         _, report = channel.health(path)
         assert "9999" in report, "the coincidence must actually land in this fixture, or it proves nothing"
+        # Not "pid 9999" either (#2301 review): `_holder_lines` renders this
+        # process's own real OS pid with a "pid " prefix too, whenever it
+        # holds the socket, which `forwarding`-style fixtures always arrange.
+        # "refused  :" is `_refusal_lines`'s own label and the only string it
+        # renders that no other path in `channel.health()` ever produces.
+        assert "refused  :" not in report, report
         assert "pid 9999" not in report, report
         assert "listening there" not in report, report
     finally:
