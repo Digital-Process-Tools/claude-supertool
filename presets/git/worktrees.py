@@ -731,7 +731,8 @@ def _reflog_newest_entry_time(target: str):
         return None, f"last entry's timestamp field is not numeric: {tokens[-2]!r}"
 
 
-def _newest_write(path: str, gitdir: str | None, now: float):
+def _newest_write(path: str, gitdir: str | None, now: float,
+                  known_good_since: float | None = None):
     """Newest mtime in the tree and its git dir, as `(age_seconds, label)`.
 
     The `"reflog written"` candidate is the one exception: it reports the
@@ -742,6 +743,19 @@ def _newest_write(path: str, gitdir: str | None, now: float):
     Returns `(None, why)` when the answer was not obtained — an unreadable
     tree, or a walk that hit its cap. A truncated walk could have missed a
     newer file, so it must not be allowed to underwrite a claim of quiet.
+
+    `known_good_since` (#2272) is a caller's own declaration: "I wrote this
+    tree myself, at or before this point in time — do not read that write as
+    evidence of a live agent." Any candidate at or before that timestamp is
+    skipped as if it were never found, exactly as #1923's mtime fallback
+    keeps failures pointed at `occupied` rather than at `idle`: a write
+    strictly AFTER the declared cutoff is untouched by this and still counts
+    as evidence, which is what stops the declaration from swallowing a real
+    agent's write that landed a moment later. When every candidate is
+    excluded this way, the answer is not `None` (which downstream reads as
+    "recency not established", i.e. `cannot tell`) — it is the elapsed time
+    since the declared cutoff itself, because that is the caller's own claim
+    about how long the tree has been quiet.
     """
     newest = None
     where = ""
@@ -759,6 +773,8 @@ def _newest_write(path: str, gitdir: str | None, now: float):
                 continue
             entry_time, why = _reflog_newest_entry_time(target)
             if entry_time is not None:
+                if known_good_since is not None and entry_time <= known_good_since:
+                    continue
                 if newest is None or entry_time > newest:
                     newest, where = entry_time, "reflog entry written"
                 continue
@@ -773,12 +789,16 @@ def _newest_write(path: str, gitdir: str | None, now: float):
                 mtime = os.stat(target).st_mtime
             except OSError:
                 continue
+            if known_good_since is not None and mtime <= known_good_since:
+                continue
             if newest is None or mtime > newest:
                 newest, where = mtime, f"reflog file touched, entry unreadable ({why})"
             continue
         try:
             mtime = os.stat(target).st_mtime
         except OSError:
+            continue
+        if known_good_since is not None and mtime <= known_good_since:
             continue
         if newest is None or mtime > newest:
             newest, where = mtime, label
@@ -798,6 +818,8 @@ def _newest_write(path: str, gitdir: str | None, now: float):
                     mtime = os.stat(os.path.join(root, name), follow_symlinks=False).st_mtime
                 except OSError:
                     continue
+                if known_good_since is not None and mtime <= known_good_since:
+                    continue
                 if newest is None or mtime > newest:
                     newest = mtime
                     where = f"newest write {os.path.relpath(os.path.join(root, name), path)}"
@@ -807,11 +829,17 @@ def _newest_write(path: str, gitdir: str | None, now: float):
         return None, f"could not walk the worktree ({exc})"
 
     if newest is None:
-        return None, "nothing in the worktree or its git dir could be stat'd"
+        if known_good_since is not None:
+            newest = known_good_since
+            where = "no write since the declared known-good point"
+        else:
+            return None, "nothing in the worktree or its git dir could be stat'd"
     age = now - newest
     if truncated and age > ACTIVE_WINDOW_DEFAULT:
         return None, (f"stopped walking after {seen} entries — a newer write may exist "
                       f"below the cap, so quiet cannot be claimed")
+    if where == "no write since the declared known-good point":
+        return age, f"{where} ({_age(age)} ago)"
     return age, f"{where} {_age(age)} ago"
 
 
@@ -921,7 +949,8 @@ def _cwd_scan(path: str, memo: dict | None = None) -> CwdScan:
 # ── the verdict ──────────────────────────────────────────────────────────
 
 def assess(entry: dict, *, now: float | None = None, window: int | None = None,
-           scan: CwdScan | None = None) -> Assessment:
+           scan: CwdScan | None = None,
+           known_good_since: float | None = None) -> Assessment:
     """Three states, and `idle` is the one that has to be earned.
 
     Any positive signal is `occupied` — a lock, an in-progress operation, a
@@ -929,6 +958,14 @@ def assess(entry: dict, *, now: float | None = None, window: int | None = None,
     all of them is `idle` **only** when every probe that could have spoken did
     speak: the tree was stat'd and is quiet, and the process table was read and
     holds nobody. Otherwise `cannot tell`, naming which probe went silent.
+
+    `known_good_since` (#2272) is the caller's own declaration — "I wrote this
+    tree myself, at or before this instant" — threaded straight to
+    `_newest_write`, which is the only probe an index write from the caller's
+    own `git merge`/`git push` can otherwise poison. It is disclosed in the
+    evidence unconditionally, whether or not it changed the verdict, because a
+    declaration applied silently is indistinguishable from one that was never
+    read.
     """
     now = time.time() if now is None else now
     window = env_int("SUPERTOOL_WORKTREE_ACTIVE_WINDOW", ACTIVE_WINDOW_DEFAULT,
@@ -936,6 +973,23 @@ def assess(entry: dict, *, now: float | None = None, window: int | None = None,
     quiet_for = max(window, env_int("SUPERTOOL_WORKTREE_IDLE_QUIET",
                                     IDLE_QUIET_DEFAULT, minimum=1))
     evidence: list = []
+
+    # Disclosure of the declaration, kept OUT of `evidence` deliberately: that
+    # list's truthiness is what routes to `occupied` a few lines down, and a
+    # disclosure line is not itself a positive occupancy signal. It is folded
+    # into whichever Assessment this function returns, via `_finish` below,
+    # so a declaration applied silently is never possible — every exit path
+    # names it, whether or not it changed the verdict.
+    disclosure: list = []
+    if known_good_since is not None:
+        disclosure.append(
+            "known-good declaration: writes at or before "
+            f"{_age(now - known_good_since)} ago are attributed to the caller, "
+            "not read as evidence of a live agent"
+        )
+
+    def _finish(state: str, reasons: list) -> Assessment:
+        return Assessment(state, disclosure + reasons)
 
     locked = entry.get("locked")
     if locked is not None:
@@ -945,7 +999,11 @@ def assess(entry: dict, *, now: float | None = None, window: int | None = None,
     evidence.extend(_lock_signals(entry.get("gitdir")))
     evidence.extend(_inprogress_signals(entry.get("gitdir")))
 
-    age, age_label = _newest_write(entry.get("path", ""), entry.get("gitdir"), now)
+    if known_good_since is not None:
+        age, age_label = _newest_write(entry.get("path", ""), entry.get("gitdir"), now,
+                                       known_good_since)
+    else:
+        age, age_label = _newest_write(entry.get("path", ""), entry.get("gitdir"), now)
     if age is not None and age <= window:
         evidence.append(f"{age_label} (inside the {_age(window)} activity window)")
 
@@ -954,19 +1012,19 @@ def assess(entry: dict, *, now: float | None = None, window: int | None = None,
             evidence.append("process-cwd scan not run — occupied on the evidence above")
         else:
             evidence.append(f"process-cwd scan: {scan.detail}")
-        return Assessment(STATE_OCCUPIED, evidence)
+        return _finish(STATE_OCCUPIED, evidence)
 
     if scan is None:
         scan = _cwd_scan(entry.get("path", ""))
 
     if scan.answer == "yes":
-        return Assessment(STATE_OCCUPIED, [scan.detail] + ([age_label] if age is not None else []))
+        return _finish(STATE_OCCUPIED, [scan.detail] + ([age_label] if age is not None else []))
 
     quiet = [age_label] if age is not None else []
     quiet.append("no index.lock or HEAD.lock, no rebase/merge/cherry-pick in progress, no git worktree lock")
 
     if scan.answer == "no" and age is not None and age >= quiet_for:
-        return Assessment(STATE_IDLE, [scan.detail] + quiet)
+        return _finish(STATE_IDLE, [scan.detail] + quiet)
 
     reasons = []
     if scan.answer != "no":
@@ -981,7 +1039,7 @@ def assess(entry: dict, *, now: float | None = None, window: int | None = None,
         )
     reasons.append("no positive signal — but absence of a signal is not proof of absence, "
                    "so this declines rather than reporting the tree free")
-    return Assessment(STATE_UNKNOWN, reasons + quiet[-1:])
+    return _finish(STATE_UNKNOWN, reasons + quiet[-1:])
 
 
 # ── the tracker column ───────────────────────────────────────────────────
@@ -1495,8 +1553,47 @@ _FLAGS = {"nopr"}
 _OFF = {"0", "false", "no", "off"}
 
 
+#: Prefix for the #2272 declaration. `since=90` means "I wrote this tree
+#: myself 90 seconds ago"; `since=@1725500000` means an absolute unix epoch,
+#: for a caller that already holds one rather than an elapsed duration.
+_SINCE_PREFIX = "since="
+
+
+def _parse_since(value: str, now: float):
+    """A `since=` argument's raw value into `(known_good_since, why)` (#2272).
+
+    Two forms, because the two callers who would reach for this hold
+    different facts. A maintainer who just ran `git merge && git push`
+    typically knows "that was 90 seconds ago" — an elapsed duration — not a
+    memorised epoch, so a plain number means seconds-ago-from-now. `@<epoch>`
+    is the escape for a caller that already has an absolute timestamp (a log
+    line, a prior call's own `now`) and would otherwise have to compute an
+    elapsed duration back out of it.
+
+    Returns `(None, why)` on anything that does not parse or is negative — a
+    duration cannot be negative, and a caller who mistyped this should see a
+    refusal, not a declaration silently applied against the wrong instant.
+    """
+    if not value:
+        return None, "since= given with no value"
+    if value.startswith("@"):
+        raw = value[1:]
+        try:
+            return float(raw), None
+        except ValueError:
+            return None, f"since=@{raw!r} is not a number of seconds since the epoch"
+    try:
+        seconds_ago = float(value)
+    except ValueError:
+        return None, (f"since={value!r} is not understood — use `since=<seconds-ago>` "
+                      "or `since=@<unix-epoch-seconds>`")
+    if seconds_ago < 0:
+        return None, f"since={value!r} is negative — a duration ago cannot be negative"
+    return now - seconds_ago, None
+
+
 def parse_args(argv: list) -> tuple:
-    """`(path, want_pr)` from the op's arguments.
+    """`(path, want_pr, since_raw)` from the op's arguments.
 
     The tracker column is **on by default**, with `nopr` and
     `SUPERTOOL_WORKTREE_PR=0` to turn it off. On rather than opt-in because the
@@ -1508,16 +1605,24 @@ def parse_args(argv: list) -> tuple:
     one is `--state open` — both on a short timeout, and a call that fails
     degrades to `PR unknown` / `merge unknown` rather than to a wrong answer or
     a slower op.
+
+    `since_raw` (#2272) is the caller's own declaration of a known-good
+    cutoff, left unparsed here — `main` resolves it against `time.time()` at
+    the point it is used, and only for the single tree the call is about, so
+    the parsing failure mode (a refused argument) belongs there, not here.
     """
     path = ""
+    since_raw = None
     want_pr = (os.environ.get("SUPERTOOL_WORKTREE_PR", "").strip().lower()
                not in _OFF)
     for arg in argv:
         if arg in _FLAGS:
             want_pr = False
+        elif arg.startswith(_SINCE_PREFIX):
+            since_raw = arg[len(_SINCE_PREFIX):]
         elif not path:
             path = arg
-    return path, want_pr
+    return path, want_pr, since_raw
 
 
 def main() -> int:
@@ -1532,7 +1637,7 @@ def main() -> int:
         print(f"  {_copy[0]} is a copy — `cp` copies a worktree's `.git` "
               f"pointer, not its repository. It is not in the list below, "
               f"because git does not know it exists.")
-    wanted, want_pr = parse_args(sys.argv[1:])
+    wanted, want_pr, since_raw = parse_args(sys.argv[1:])
     if wanted.startswith("-"):
         print(f"ERROR: refused — PATH must name a worktree, not an option: {wanted!r}")
         print("  usage: worktrees.py [PATH]   (inspection only; nothing is removed)")
@@ -1542,6 +1647,29 @@ def main() -> int:
         print(_exit_note(EXIT_UNKNOWN, "nothing was inspected — the argument was "
                                        "refused, see the ERROR above"))
         return EXIT_UNKNOWN
+
+    # #2272: `since=` declares a known-good cutoff for the ONE tree a caller
+    # is asking about — "I wrote this myself, at or before this instant". It
+    # is refused rather than silently ignored on either failure mode: no PATH
+    # means there is no single tree to apply one caller's declaration to
+    # (this board can hold many independent trees at once), and a value that
+    # does not parse must not be applied against the wrong instant.
+    known_good_since = None
+    if since_raw is not None:
+        if not wanted:
+            print("ERROR: refused — since= requires a PATH: it declares a "
+                  "known-good cutoff for one worktree's own occupancy signal, "
+                  "and there is no single tree to apply it to when the whole "
+                  "board is requested")
+            print(_exit_note(EXIT_UNKNOWN, "nothing was inspected — since= was "
+                                           "refused, see the ERROR above"))
+            return EXIT_UNKNOWN
+        known_good_since, since_why = _parse_since(since_raw, time.time())
+        if known_good_since is None:
+            print(f"ERROR: refused — {since_why}")
+            print(_exit_note(EXIT_UNKNOWN, "nothing was inspected — since= was "
+                                           "refused, see the ERROR above"))
+            return EXIT_UNKNOWN
 
     listing = _git(["worktree", "list", "--porcelain"])
     if listing.returncode != 0:
@@ -1586,7 +1714,8 @@ def main() -> int:
     upstreams, upstream_why = upstream_refs() if want_pr else (None, "")
     memo: dict = {}
     rows = [(entry,
-             assess(entry, scan=_cwd_scan(entry["path"], memo)),
+             assess(entry, scan=_cwd_scan(entry["path"], memo),
+                    known_good_since=known_good_since),
              tracker_for(entry.get("branch") or "", index, remote_names,
                          remote_why,
                          sync=_sync_for(entry.get("branch") or "", remote_names,
