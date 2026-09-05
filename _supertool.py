@@ -18709,12 +18709,24 @@ def _doctor_formatters_section(config: Dict[str, Any], probe: bool) -> str:
                      ".supertool.json — no formatter configured, and nothing "
                      "on record says that is intentional")
         return "\n".join(lines)
-    if not formatters:
+    if formatters == {}:
         # An explicit empty dict is a DECISION on record -- the repo declared
         # it wants no formatter, the same absent-vs-empty shape claude-oss's
         # own `changelog_untagged` already uses. ok, not a nag (#2316).
         lines.append("- 0 configured — \"formatters\": {} on record, no "
                      "formatter declared")
+        return "\n".join(lines)
+    if not isinstance(formatters, dict) or not formatters:
+        # Present, but neither the dict this key is documented to hold NOR
+        # the empty-dict decision above -- a list, a string, 0, False. This
+        # is a malformed config, not "declared empty", and must not be
+        # laundered into the same ok line real {} gets (oss:auditor review
+        # of #2314x2316: `[]`/`""`/`0`/`False` all rendered the {} sentence
+        # verbatim, claiming a JSON shape the config did not actually hold).
+        lines.append("- " + mark("⚠") + " \"formatters\" is set but is not a "
+                     "table (got " + type(formatters).__name__ + ") — expected "
+                     "either no key, {} for an explicit decision, or a table "
+                     "of formatter specs")
         return "\n".join(lines)
 
     files = _doctor_tracked_files()

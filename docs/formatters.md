@@ -161,6 +161,7 @@ states, not two:
 | no `formatters` key at all | WARN — nobody has declared anything, so every write goes out unformatted and nothing on record says that is intentional |
 | `"formatters": {}` | ok — a decision on record: the repo has deliberately chosen no formatter |
 | `"formatters": {...}` | ok, reported per-formatter as before |
+| `"formatters"` present but not a table (a list, a string, `0`, `false`, ...) | WARN — a malformed value, never laundered into the `{}` decision above |
 
 The distinction is the same one `claude-oss`'s own `changelog_untagged` config
 key draws between absent/null ("nobody declared anything") and an empty list

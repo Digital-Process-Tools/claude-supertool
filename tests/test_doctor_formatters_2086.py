@@ -39,6 +39,20 @@ def test_doctor_is_ok_when_formatters_is_explicitly_an_empty_dict_2316(monkeypat
     assert "0 configured" in section
 
 
+def test_doctor_warns_on_a_malformed_non_dict_formatters_value_2316(monkeypatch) -> None:
+    """A falsy value that is NOT a dict ([], "", 0, False) is a malformed
+    config, not the deliberate {} decision -- it must not be laundered into
+    the same 'declared, no formatter' ok line the empty-dict case gets
+    (oss:auditor review of #2314x2316, class A). It must WARN, and the WARN
+    must name what was actually found rather than repeat the {} claim."""
+    for bad in ([], "", 0, False):
+        monkeypatch.setattr(supertool, "_load_config", lambda bad=bad: {"formatters": bad})
+        out = supertool.op_doctor("")
+        section = out.split("## Formatters")[1].split("##")[0]
+        assert supertool.mark("⚠") in section, (bad, section)
+        assert '"formatters": {}' not in section, (bad, section)
+
+
 def test_doctor_formatters_section_present_and_labelled() -> None:
     out = supertool.op_doctor("")
     assert "## Formatters (#2086)" in out
