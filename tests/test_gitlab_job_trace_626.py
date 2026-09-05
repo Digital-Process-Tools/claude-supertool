@@ -170,6 +170,15 @@ def test_trace_rejects_an_empty_piece_in_the_list(monkeypatch, tmp_path, capsys)
     out = capsys.readouterr().out
     assert rc == 1
     assert "numeric" in out
+    # Reviewer finding (self-review, #2146): `refuse_job_ids` is now called
+    # with op="gl-job-trace", whose real syntax carries no trailing `:trace`
+    # (that literal is baked into gl-job-trace's own cmd template). The
+    # usage hint must match the op it names, not a stale `gl-job:...:trace`
+    # form core itself would refuse for an unconsumed trailing token. Must
+    # match the WHOLE line -- "Usage: gl-job-trace:ID1[,ID2,...]" alone is
+    # also a substring of the stale "...:trace" form and would not catch it.
+    usage_lines = [ln for ln in out.splitlines() if ln.startswith("Usage:")]
+    assert usage_lines == ["Usage: gl-job-trace:ID1[,ID2,...]"], out
 
 
 def test_trace_dedupes_a_repeated_id(monkeypatch, tmp_path, capsys) -> None:

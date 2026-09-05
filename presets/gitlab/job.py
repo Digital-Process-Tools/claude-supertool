@@ -1157,6 +1157,14 @@ def main() -> int:
     # killed partway through a multi-id fetch with nothing to show for it —
     # the same "a mode nobody remembered to gate falls through to the wrong
     # ceiling" shape #1145 already fixed once for an unrecognised mode.
+    #
+    # `gl-job` ALSO declares `"trace_op": false` in gitlab.json — not left
+    # undeclared — so this check cannot be defeated by an ambient
+    # SUPERTOOL_TRACE_OP=true sitting in the caller's own shell (core copies
+    # `os.environ` wholesale before layering an op's own config keys on top,
+    # and a key an op does not declare is never overwritten). Declaring both
+    # sides explicitly closes that gap rather than relying on the flag being
+    # merely absent for `gl-job`.
     if mode == "trace":
         if os.environ.get("SUPERTOOL_TRACE_OP") != "true":
             print("ERROR: gl-job:ID:trace has moved to its own op with its "

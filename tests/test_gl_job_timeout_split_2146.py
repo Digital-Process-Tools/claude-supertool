@@ -87,6 +87,30 @@ def test_gl_job_trace_op_declares_the_env_flag_that_unlocks_trace_mode() -> None
         "SUPERTOOL_TRACE_OP=true into its subprocess (see _resolve_custom_op)")
 
 
+def test_gl_job_itself_also_declares_the_flag_as_false() -> None:
+    """`gl-job` must declare `trace_op: false`, not merely omit the key.
+
+    Auditor finding (self-review, #2146): core builds each op's subprocess
+    env as `dict(os.environ)` -- the CALLER's ambient environment -- with
+    only the declaring op's OWN config keys layered on top. An op that
+    leaves a key undeclared never overwrites an ambient value of the same
+    name, so if `gl-job`'s entry omitted `trace_op` entirely, an operator
+    whose shell happened to already export `SUPERTOOL_TRACE_OP=true` (left
+    over from some other command, or set by hand) would silently unlock
+    `gl-job`'s own `:trace` dispatch -- the exact regression this split
+    exists to close, reachable through ambient state rather than through
+    the old syntax. Declaring `false` explicitly means core's own export
+    loop always sets SUPERTOOL_TRACE_OP=\"false\" for a `gl-job` call,
+    regardless of what the calling shell carried in.
+    """
+    entry = _op("gl-job")
+    assert entry.get("trace_op") is False, (
+        "gl-job must declare trace_op: false explicitly -- leaving the key "
+        "absent lets an ambient SUPERTOOL_TRACE_OP=true in the caller's own "
+        "shell silently unlock trace mode on the very op this split exists "
+        "to keep it off of")
+
+
 def test_gl_job_refuses_trace_mode_without_the_flag(monkeypatch, capsys) -> None:
     """Calling gl-job's own cmd path with mode=trace (the old syntax, or any
     other route that reaches job.py without the flag) must refuse rather than

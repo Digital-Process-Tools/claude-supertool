@@ -83,9 +83,10 @@ def refuse_mode(op: str, mode: str) -> str:
 def refuse_job_ids(op: str, forge: str, job_ids: str) -> tuple[list[str], str]:
     """`(ids, "")` for a valid comma-separated job-id list; `([], message)` else.
 
-    #626's multi-id form (`gl-job:A,B:trace`). Each piece gets the exact same
-    check `refuse_job_id` applies to a single id, before anything is fetched —
-    a stray non-digit anywhere in the list must refuse the whole call rather
+    #626's multi-id form, `gl-job-trace:A,B` since the #2146 split gave the
+    trace fan-out its own op. Each piece gets the exact same check
+    `refuse_job_id` applies to a single id, before anything is fetched — a
+    stray non-digit anywhere in the list must refuse the whole call rather
     than silently drop the bad piece and read the rest.
 
     Duplicates are folded, first occurrence wins, so `A,A` fetches once. An
@@ -97,7 +98,12 @@ def refuse_job_ids(op: str, forge: str, job_ids: str) -> tuple[list[str], str]:
         return [], (
             f"ERROR: {op} takes one or more comma-separated numeric job ids "
             f"and got {job_ids!r}. Nothing was read.\n"
-            f"Usage: {op}:ID1[,ID2,...]:trace"
+            # No trailing `:trace` (#2146): `op` is now `gl-job-trace` itself,
+            # whose own syntax carries no mode suffix — the old caller here
+            # was `gl-job`, whose real syntax DID end in `:trace`, and this
+            # template kept that literal after the caller changed underneath
+            # it, so the usage hint pointed at a form core itself refuses.
+            f"Usage: {op}:ID1[,ID2,...]"
         )
     seen: list[str] = []
     for piece in pieces:
