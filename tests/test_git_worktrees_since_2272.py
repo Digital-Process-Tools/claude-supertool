@@ -23,6 +23,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parent.parent
 PRESET = ROOT / "presets" / "git" / "worktrees.py"
 _spec = importlib.util.spec_from_file_location("git_worktrees", PRESET)
@@ -79,23 +81,43 @@ def test_parse_since_rejects_negative_duration() -> None:
 # ── `parse_args` — the CLI surface ────────────────────────────────────────
 
 def test_parse_args_extracts_since_raw() -> None:
-    path, want_pr, since_raw = wt.parse_args(["/tmp/st-wt/2272", "since=90"])
+    path, want_pr, since_raw, conflict = wt.parse_args(["/tmp/st-wt/2272", "since=90"])
     assert path == "/tmp/st-wt/2272"
     assert want_pr is True
     assert since_raw == "90"
+    assert conflict is None
 
 
 def test_parse_args_since_absent_is_none() -> None:
-    path, want_pr, since_raw = wt.parse_args(["/tmp/st-wt/2272"])
+    path, want_pr, since_raw, conflict = wt.parse_args(["/tmp/st-wt/2272"])
     assert path == "/tmp/st-wt/2272"
     assert since_raw is None
 
 
 def test_parse_args_still_parses_nopr_alongside_since() -> None:
-    path, want_pr, since_raw = wt.parse_args(["/tmp/x", "nopr", "since=@500"])
+    path, want_pr, since_raw, conflict = wt.parse_args(["/tmp/x", "nopr", "since=@500"])
     assert path == "/tmp/x"
     assert want_pr is False
     assert since_raw == "@500"
+    assert conflict is None
+
+
+def test_parse_args_repeated_identical_since_is_not_a_conflict() -> None:
+    """MUST NOT FIRE: the same claim typed twice is not disagreement."""
+    _path, _want_pr, since_raw, conflict = wt.parse_args(
+        ["/tmp/x", "since=90", "since=90"])
+    assert since_raw == "90"
+    assert conflict is None
+
+
+def test_parse_args_repeated_disagreeing_since_is_a_conflict() -> None:
+    """MUST FIRE (auditor finding #2): two DIFFERENT since= tokens on the
+    same call are two different claims about when the tree was written, and
+    silently keeping the last one is the exact failure mode git-push's
+    :budget=SECONDS already refuses for disagreeing tokens."""
+    _path, _want_pr, _since_raw, conflict = wt.parse_args(
+        ["/tmp/x", "since=100", "since=50"])
+    assert conflict == ["100", "50"]
 
 
 # ── `_newest_write` — the mechanism, against real files ───────────────────
@@ -247,3 +269,64 @@ def test_main_refuses_unparseable_since(monkeypatch, tmp_path, capsys) -> None:
     out = capsys.readouterr().out
     assert code == wt.EXIT_UNKNOWN
     assert "since=" in out
+
+
+def test_main_refuses_since_against_a_nested_ancestor_descendant_match(
+        monkeypatch, tmp_path, capsys) -> None:
+    """MUST FIRE -- the reviewer-found gap: the PATH filter is
+    ancestor-OR-descendant, so a nested worktree layout can match more than
+    one row for a single `wanted`. A `since=` declaration is a claim about
+    ONE tree; applying it across every matched row would launder occupancy
+    evidence for a worktree the caller never touched. This must be refused,
+    never silently narrowed or broadened."""
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    porcelain = (
+        f"worktree {tmp_path}\n"
+        "HEAD 0000000000000000000000000000000000000000\n"
+        "branch refs/heads/fix/parent\n"
+        "\n"
+        f"worktree {nested}\n"
+        "HEAD 1111111111111111111111111111111111111111\n"
+        "branch refs/heads/fix/nested\n"
+    )
+    monkeypatch.setattr(sys, "argv", ["worktrees.py", str(tmp_path), "since=90"])
+    monkeypatch.setattr(wt, "_git", lambda *a, **k: type("R", (), {
+        "stdout": porcelain, "stderr": "", "returncode": 0})())
+    monkeypatch.setattr(wt, "resolve_gitdir", lambda p: str(Path(p) / ".git"))
+    code = wt.main()
+    out = capsys.readouterr().out
+    assert code == wt.EXIT_UNKNOWN, out
+    assert "since=" in out
+    assert "2 worktrees" in out or "matched" in out, out
+
+
+def test_main_accepts_since_against_a_single_unambiguous_match(
+        monkeypatch, tmp_path, capsys) -> None:
+    """MUST NOT FIRE (positive control): a PATH that matches exactly one
+    worktree is not ambiguous, and since= must not be refused for it."""
+    porcelain = (
+        f"worktree {tmp_path}\n"
+        "HEAD 0000000000000000000000000000000000000000\n"
+        "branch refs/heads/fix/parent\n"
+    )
+    monkeypatch.setattr(sys, "argv", ["worktrees.py", str(tmp_path), "since=90", "nopr"])
+    monkeypatch.setattr(wt, "_git", lambda *a, **k: type("R", (), {
+        "stdout": porcelain, "stderr": "", "returncode": 0})())
+    monkeypatch.setattr(wt, "resolve_gitdir", lambda p: str(Path(p) / ".git"))
+    monkeypatch.setattr(wt, "_cwd_scan", lambda path, memo=None: wt.CwdScan("no", "0 scanned"))
+    code = wt.main()
+    out = capsys.readouterr().out
+    assert "since= matched" not in out, out
+    assert "ERROR: refused -- since=" not in out, out
+
+
+def test_main_refuses_disagreeing_since_tokens(monkeypatch, tmp_path, capsys) -> None:
+    """MUST FIRE at the main() level too: the parse-time conflict must
+    actually stop the call before anything is inspected."""
+    monkeypatch.setattr(sys, "argv",
+                        ["worktrees.py", str(tmp_path), "since=100", "since=50"])
+    code = wt.main()
+    out = capsys.readouterr().out
+    assert code == wt.EXIT_UNKNOWN, out
+    assert "DISAGREEING" in out

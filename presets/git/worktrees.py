@@ -1593,7 +1593,7 @@ def _parse_since(value: str, now: float):
 
 
 def parse_args(argv: list) -> tuple:
-    """`(path, want_pr, since_raw)` from the op's arguments.
+    """`(path, want_pr, since_raw, since_conflict)` from the op's arguments.
 
     The tracker column is **on by default**, with `nopr` and
     `SUPERTOOL_WORKTREE_PR=0` to turn it off. On rather than opt-in because the
@@ -1610,9 +1610,23 @@ def parse_args(argv: list) -> tuple:
     cutoff, left unparsed here — `main` resolves it against `time.time()` at
     the point it is used, and only for the single tree the call is about, so
     the parsing failure mode (a refused argument) belongs there, not here.
+
+    `since_conflict` is `None` unless `since=` appeared more than once with
+    DISAGREEING values, in which case it is the list of raw values seen, in
+    order. `path` keeps the FIRST token it sees and silently ignores a
+    second one — a caller can only ever mean one worktree, so a second
+    positional argument is not ambiguous, it is simply extra. A second,
+    DIFFERENT `since=` is not the same shape: it is a caller who typed two
+    different claims about when they wrote the tree, and silently picking
+    one (as this used to) is `git-push:budget=SECONDS`'s exact "two
+    disagreeing tokens" failure mode, which that op already refuses rather
+    than resolves. A repeated `since=` carrying the SAME value is not a
+    conflict — it is the same claim typed twice, and refusing that would
+    only punish a caller reasonably repeating themselves.
     """
     path = ""
     since_raw = None
+    since_seen: list = []
     want_pr = (os.environ.get("SUPERTOOL_WORKTREE_PR", "").strip().lower()
                not in _OFF)
     for arg in argv:
@@ -1620,9 +1634,11 @@ def parse_args(argv: list) -> tuple:
             want_pr = False
         elif arg.startswith(_SINCE_PREFIX):
             since_raw = arg[len(_SINCE_PREFIX):]
+            since_seen.append(since_raw)
         elif not path:
             path = arg
-    return path, want_pr, since_raw
+    since_conflict = since_seen if len(set(since_seen)) > 1 else None
+    return path, want_pr, since_raw, since_conflict
 
 
 def main() -> int:
@@ -1637,7 +1653,17 @@ def main() -> int:
         print(f"  {_copy[0]} is a copy — `cp` copies a worktree's `.git` "
               f"pointer, not its repository. It is not in the list below, "
               f"because git does not know it exists.")
-    wanted, want_pr, since_raw = parse_args(sys.argv[1:])
+    wanted, want_pr, since_raw, since_conflict = parse_args(sys.argv[1:])
+    if since_conflict is not None:
+        print("ERROR: refused — since= was given more than once with "
+              f"DISAGREEING values: {since_conflict!r}. A repeated but "
+              "IDENTICAL since= is fine (the same claim twice); two "
+              "different ones is two different claims about when the tree "
+              "was written, and this declines to silently pick one — name "
+              "the one you mean.")
+        print(_exit_note(EXIT_UNKNOWN, "nothing was inspected — since= was "
+                                       "refused, see the ERROR above"))
+        return EXIT_UNKNOWN
     if wanted.startswith("-"):
         print(f"ERROR: refused — PATH must name a worktree, not an option: {wanted!r}")
         print("  usage: worktrees.py [PATH]   (inspection only; nothing is removed)")
@@ -1694,6 +1720,29 @@ def main() -> int:
                                            "repository, so the answer is "
                                            "`cannot tell` — the op itself did "
                                            "not fail"))
+            return EXIT_UNKNOWN
+
+        # #2272: the PATH filter above is ancestor-OR-descendant, so a nested
+        # worktree layout can match more than one row for a single `wanted`
+        # (main()'s own later comment on `code = EXIT_UNKNOWN` names this
+        # exact case). A `since=` declaration is a claim about ONE tree — the
+        # docs promise "the one tree named by PATH" — and applying it across
+        # every matched row would launder occupancy evidence for a worktree
+        # the caller never touched and may not even know is live. So this is
+        # refused before assess() ever sees more than one row, rather than
+        # silently narrowed to "the first match" or broadened to "every
+        # match" — either of those is a guess about which tree the caller
+        # meant.
+        if known_good_since is not None and len(entries) != 1:
+            print(f"ERROR: refused — since= matched {len(entries)} worktrees "
+                  f"for {_untrusted.flat(wanted, disclose_newline=True)!r} (the "
+                  "PATH filter is ancestor-or-descendant), and a known-good "
+                  "declaration is a claim about ONE tree — applying it to "
+                  "every match would attribute a write in an unrelated "
+                  "worktree to this declaration too. Name the exact worktree "
+                  "path.")
+            print(_exit_note(EXIT_UNKNOWN, "nothing was inspected — since= was "
+                                           "refused, see the ERROR above"))
             return EXIT_UNKNOWN
 
     ancestors, ancestors_why, base = _merged_branches()
