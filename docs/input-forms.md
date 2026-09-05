@@ -304,12 +304,12 @@ consumes, not TOML's — and for `.md`, `.txt`, `.rst`, `.adoc` targets it point
 other way, because prose rarely wants the pair as written. Mixed extensions, or one
 this repo has no opinion about, get no hint at all rather than a guess.
 
-**This guard only ever fires on an EVEN run.** A single un-doubled `\n` — building
-JSONL fixture content one record at a time as a Python string literal,
-`'{"type": "x"}\n' * 51`, say — is an ODD run of one backslash per occurrence and
-writes through with no refusal at all, because doubling cannot produce one. The
-case this refusal exists for is the doubled one: two literal characters, `\` and
-`n`, that some parser other than TOML's needs to see — a JSON string's own escaped
+**The odd-run exemption above ("Odd runs — one, three, five — still write unrefused") is what a fixture-writing test hits, in
+practice.** Building JSONL fixture content one record at a time as a Python string
+literal, `'{"type": "x"}\n' * 51`, say, is exactly that case: one un-doubled `\n`
+per occurrence, so it writes through with no refusal at all. What the guard is
+for is the doubled form of the same idea: two literal characters, `\` and `n`,
+that some parser other than TOML's needs to see — a JSON string's own escaped
 newline reaching disk inside a Python source string, spelled `\\n` in the payload,
 for instance.
 
