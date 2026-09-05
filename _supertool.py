@@ -10069,6 +10069,30 @@ def _around_line_delegation(pattern: str, path: str, n: int) -> str:
     redirect target is `read`, a different op, and #983 decided that `between`
     should keep doing exactly one thing rather than grow a fourth spelling of a
     range read. Its error already carries the fully-substituted `read` command.
+
+    #1154 asked whether this should refuse rather than substitute, on the
+    grounds the caller's intent is genuinely ambiguous. It is not: the
+    `os.path.exists(path)` check above is exactly what keeps this from ever
+    guessing between two real readings. When the numeric token names an
+    entry `os.path.exists` reports as present, that call falls straight
+    through to a literal `around` and this function returns "" —
+    delegation only fires on a call whose literal reading was already
+    unanswerable, so there is exactly one answer left, not a choice among
+    several. (A dangling symlink is the one case `os.path.exists` reports
+    as absent though the entry is really there — but a literal `around`
+    against a symlink that resolves nowhere cannot answer either, so the
+    same "only one reading answers" argument still holds; it is a looser
+    proxy for "answerable", not a strict `os.path.exists` synonym.) #1154
+    also claimed the substitution was disclosed only after the answer it
+    substituted; the `note + chr(10) + op_around_line(...)` order below has
+    been disclosure first since this function was written for #1086, so
+    that half of the report does not reproduce here.
+    `tests/test_around_line_delegation_order_1154.py` pins both — including
+    that a genuinely existing numeric-named file must be spelled BARE
+    (relative to cwd) to actually exercise this guard, since an absolute
+    `tmp_path`-rooted name fails `_is_ascii_int` on its slashes before
+    `os.path.exists` is ever reached (self-review caught the first draft's
+    version of this test doing exactly that).
     """
     if not _is_ascii_int(path) or os.path.exists(path):
         return ""
@@ -10688,13 +10712,26 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
 
     if dry:
         out: List[str] = [f"({total_count} occurrences in {len(file_matches)} files)\n"]
+        # Derived the same way the execute-mode receipt derives it (see the
+        # comment above `retermed` in the write branch below): `eff_old !=
+        # old` is exactly "a re-terminated variant matched", so this is the
+        # same disclosure one branch earlier, over the preview rather than
+        # the write (#1069). Per file, not a blanket summary line, for the
+        # same reason: a note true of the run and false of one of its files
+        # is the failure #1057 already rejected in this op's own execute
+        # branch.
+        retermed: Dict[str, str] = {}
         for filepath, positions, eff_old, eff_new in file_matches:
             # splitlines, not split("\n"): the effective strings may be CRLF or
             # CR terminated, and a split on "\n" leaves a trailing \r on every
             # preview line.
             old_lines = eff_old.splitlines() or [eff_old]
             new_lines = eff_new.splitlines() or [eff_new]
-            out.append(f"\n{_fwd(filepath)}\n")
+            if eff_old != old:
+                retermed[filepath] = ("CRLF" if "\r\n" in eff_old
+                                      else "CR" if "\r" in eff_old else "LF")
+            tag = f" [{retermed[filepath]}]" if filepath in retermed else ""
+            out.append(f"\n{_fwd(filepath)}{tag}\n")
             try:
                 with open(filepath, "r", encoding="utf-8",
                           errors="surrogateescape", newline="") as f:
@@ -10710,6 +10747,15 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
                     out.append(f"    - {ol}\n")
                 for nl in new_lines:
                     out.append(f"    + {nl}\n")
+        if retermed:
+            # Only where a choice would be made if this ran for real — a
+            # uniform file whose `old` matched literally gets no tag and no
+            # mention, matching the execute-mode note this mirrors.
+            out.append(f"\n  {mark('↳')} line endings: the text you supplied "
+                       f"does not match {len(retermed)} of these files byte "
+                       f"for byte and would be re-terminated to the "
+                       f"convention marked above to make it match — every "
+                       f"untouched line would be unchanged\n")
         out.append(f"\nSummary: {total_count} replacements in {len(file_matches)} files (DRY RUN — no files modified)\n")
         return "".join(out)
 
