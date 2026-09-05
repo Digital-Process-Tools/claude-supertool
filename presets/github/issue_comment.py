@@ -131,6 +131,22 @@ def validate(payload: dict) -> str | None:
         return ("ERROR: payload has neither body nor body_file, so this op "
                 "has nothing to publish. An absent body is not an empty "
                 'one -- set body = "" if that is really what you mean.')
+    # #2322: a payload whose `body` key parses as a TOML array-of-tables
+    # (`[[body]]`, a list of `{"value": ...}` dicts) used to reach
+    # `_body_text`'s `str(payload.get("body") or "")` unchecked, which
+    # happily stringifies a list -- publishing the literal Python repr
+    # (`[{'value': '...'}]`) as the comment body. Confirmed against a real
+    # posted comment on issue #2310. #2315 made the same call for
+    # gh-issue-create's sibling case: refuse rather than guess at a join.
+    # Applied here too, for the same reason -- a published comment cannot
+    # be un-sent, so a loud refusal beats a silent garbage write.
+    if "body" in payload and not isinstance(payload.get("body"), str):
+        return (
+            "ERROR: body must be a string, not "
+            f"{type(payload['body']).__name__} -- gh-issue-comment does "
+            "not accept a TOML [[body]] table-array. Pass body as a "
+            "single string, or use body_file to read one from a file."
+        )
     return None
 
 
@@ -149,10 +165,24 @@ def _load_payload(path: str) -> dict:
 
 
 def _body_text(payload: dict) -> Tuple[str, str]:
-    """`(content, error)` -- the bytes to publish, from `body` or `body_file`."""
+    """`(content, error)` -- the bytes to publish, from `body` or `body_file`.
+
+    `validate()` already refuses a non-string `body` before this runs on the
+    real `main()` path (#2322) -- checked again here so a direct caller of
+    this function gets the same refusal rather than a stringified `repr()`
+    of whatever it was handed.
+    """
     body_file = payload.get("body_file")
     if not body_file:
-        return (str(payload.get("body") or ""), "")
+        body = payload.get("body")
+        if body is not None and not isinstance(body, str):
+            return ("", (
+                "ERROR: body must be a string, not "
+                f"{type(body).__name__} -- gh-issue-comment does not "
+                "accept a TOML [[body]] table-array. Pass body as a "
+                "single string, or use body_file to read one from a file."
+            ))
+        return (str(body or ""), "")
     if Path(body_file).is_dir():
         return ("", f"ERROR: body_file is a directory, not a file: {body_file}")
     try:
