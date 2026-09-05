@@ -19850,11 +19850,130 @@ def _registry_unknown_op(op_name: str) -> str:
                 f'does not list it under "presets".\n'
                 f"  Every op that is loaded here: `registry`.\n")
     if op_name in _valid_op_names():
+        builtin_entry, contributors, malformed = _registry_builtin_ops_entry(
+            _load_config(), op_name)
+        if builtin_entry is not None:
+            return _registry_builtin_op(op_name, builtin_entry, contributors)
+        if malformed is not None:
+            return (f"ERROR: '{op_name}' is a built-in, and something in this "
+                    f"config set `builtin-ops.{op_name}` to a value that is "
+                    f"not a table, so nothing could be read out of it: "
+                    f"{_flat_field(repr(malformed))}\n"
+                    f"  This is NOT the same answer as no override at all - "
+                    f"the entry was merged in and then dropped, by whichever "
+                    f"preset manifest or project config declared it. A "
+                    f"`builtin-ops` entry must be a table of keys.\n"
+                    f"  `help:{op_name}` documents the op itself.\n")
         return (f"ERROR: '{op_name}' is a built-in, not a preset or project op, "
                 f"so it has no registry entry. `help:{op_name}` documents it; "
                 f"`ops:roster` lists every name.\n")
     return (f"ERROR: no op named '{op_name}' here.\n"
             f"  `registry` lists every op this config loads, with its source.\n")
+
+
+def _registry_builtin_ops_entry(
+        config: Dict[str, Any], op_name: str
+) -> Tuple[Optional[Dict[str, Any]], Tuple[str, ...], Any]:
+    """The merged `builtin-ops.<op_name>` dict, which presets contribute to it,
+    and whether what was merged in could not be read at all (#2079).
+
+    Three states, because two of them are absences and only one of them is an
+    absence in the world:
+
+    - `(None, (), None)` - nothing merged a `builtin-ops.<op_name>` in at all.
+    - `(None, (), <value>)` - something did, and it is not a table. A preset
+      manifest carrying `"read": "not-a-dict-oops"` lands here: `_merge_presets`
+      stores whatever the JSON held without checking its shape and records no
+      preset warning for it, so folding this into the state above rendered a
+      malformed config byte-identical to a clean one. That is this repository
+      own signature defect wearing a config reader clothes, and the reason the
+      caller gets the offending value back rather than a bare `None`.
+    - `(<dict>, <contributors>, None)` - a real entry.
+
+    `_merge_presets` writes every preset's `builtin-ops` section — doc-only
+    entries a project can also carry runtime overrides in (`read.max_lines`,
+    `grep.extensions`) — into `config["builtin-ops"]`, key by key, project
+    entries winning over preset ones the same way `ops` merges (#2025). That
+    section is read by `_get_op_int`, `_get_op_bool` and `_grep_extensions`
+    for a built-in's runtime behaviour, but `registry:OP` used to refuse
+    outright for any built-in, so a preset or project re-tuning one project-
+    wide had nothing in the tool that disclosed it.
+
+    Contributors come from `_preset_doc_contributions`, which the loader
+    stamps per preset during the same walk — never re-derived by re-reading
+    `presets/*.json` here, for the reason `_op_registry`'s own docstring
+    gives: a second walk drifts from what the loader actually merged.
+    """
+    entry = (config.get("builtin-ops") or {}).get(op_name)
+    if not isinstance(entry, dict):
+        # `entry is None` here is the honest absence; anything else was set
+        # and is unreadable, and the caller must be able to tell them apart.
+        return None, (), entry
+    contributions = config.get("_preset_doc_contributions") or {}
+    contributors = tuple(sorted(
+        preset for preset, names in contributions.items()
+        if isinstance(names, list) and op_name in names))
+    return entry, contributors, None
+
+
+#: Keys a `builtin-ops` entry carries purely to document the op (#1675) —
+#: never read by `_get_op_int`/`_get_op_bool`/`_grep_extensions`, so a project
+#: that sets only these has changed nothing about how the built-in runs. Kept
+#: as a set here rather than inferred from "every key `_get_op_int` reads",
+#: because that reader is keyed by call site, not by a registry `registry`
+#: could enumerate — the same reason `_OP_TARGETS` above is a hand-kept map.
+_REGISTRY_BUILTIN_DOC_KEYS = frozenset(
+    {"syntax", "description", "example", "status", "hint", "form"})
+
+
+def _registry_builtin_op(op_name: str, entry: Dict[str, Any],
+                         contributors: Tuple[str, ...]) -> str:
+    """Render a built-in's merged `builtin-ops` entry (#2079).
+
+    Not the same shape as `_registry_one_op`: a built-in has no `cmd`, no
+    `replaces`, and its code is this module's own dispatcher rather than
+    anything a preset or project entry can replace. What CAN change is the
+    handful of runtime knobs `_get_op_int`/`_get_op_bool`/`_grep_extensions`
+    read out of this same merged dict — so that is what this renders, split
+    from the keys that are pure documentation and change nothing.
+    """
+    lines = [f"## {op_name} (built-in)"]
+    lines.append(
+        f"'{op_name}' is a built-in — its code is this module's own "
+        f"dispatcher, and no preset or project op replaces it. But "
+        f"`builtin-ops.{op_name}` re-tunes its RUNTIME behaviour project-"
+        f"wide (#2025), and this project's effective config merges one in:")
+    lines.append("")
+    override_keys = sorted(
+        k for k in entry if k not in _REGISTRY_BUILTIN_DOC_KEYS)
+    doc_keys = sorted(k for k in entry if k in _REGISTRY_BUILTIN_DOC_KEYS)
+    if override_keys:
+        # Both halves are preset- or project-authored: a manifest chooses its
+        # own key names as freely as its values, and a key holding a newline
+        # would otherwise write a line of its author's choosing at column 0
+        # inside this system-authored block - #1391's shape, one function over
+        # from `_guard_quote`, which flattens field names for exactly this.
+        # `!r` already makes any value one line; `_flat_field` does the key.
+        flat = {k: _flat_field(k) for k in override_keys}
+        width = max(len(v) for v in flat.values())
+        for key in override_keys:
+            lines.append(f"- {flat[key].ljust(width)}  {entry[key]!r}")
+    else:
+        lines.append("(no runtime-affecting keys — only documentation.)")
+    if doc_keys:
+        lines.append("")
+        lines.append("Documentation-only keys, which change nothing about "
+                     f"how `{op_name}` runs: " + ", ".join(doc_keys) + ".")
+    if contributors:
+        lines.append("")
+        lines.append("Contributed by preset(s): " + ", ".join(contributors)
+                     + " — a project's own top-level `builtin-ops` entry "
+                       "wins per key over any of these, the same rule "
+                       "`registry:OP` already applies to `ops`.")
+    lines.append("")
+    lines.append(f"`help:{op_name}` documents the op's ordinary contract; "
+                 f"this is only the merged override.")
+    return "\n".join(lines) + "\n"
 
 
 def _registry_incomplete_block(incomplete: List[str]) -> List[str]:

@@ -166,6 +166,23 @@ A config that declares `"presets"` but never passed through the loader is a thir
 
 A `"presets"` value that is not a list is the same shape one step earlier. Nothing is merged, so the config asked for ops that are now absent; the loader records that as a preset warning and `registry` prints it rather than going on to report a complete set.
 
+### `registry:OP` for a built-in carrying a `builtin-ops` override
+
+A built-in's own code cannot be replaced by a preset or a project op — but a preset manifest's `builtin-ops` section, or a project's own top-level `builtin-ops` entry merged over one, CAN re-tune a built-in's runtime behaviour project-wide (`read.max_lines`, `grep.extensions`), the same merge `ops` gets ([#2025](https://github.com/Digital-Process-Tools/claude-supertool/issues/2025)). `registry:OP` used to refuse outright for every built-in regardless — `ERROR: 'read' is a built-in, not a preset or project op, so it has no registry entry` — which meant nothing in the tool disclosed such an override at all. It now checks first, and answers when one is present:
+
+```
+## read (built-in)
+'read' is a built-in — its code is this module's own dispatcher, and no preset or project op replaces it. But `builtin-ops.read` re-tunes its RUNTIME behaviour project-wide (#2025), and this project's effective config merges one in:
+
+- max_lines  3
+
+Contributed by preset(s): evil — a project's own top-level `builtin-ops` entry wins per key over any of these, the same rule `registry:OP` already applies to `ops`.
+```
+
+Documentation-only keys (`syntax`, `description`, `example`, `status`, `hint`, `form` — the shape [#1675](https://github.com/Digital-Process-Tools/claude-supertool/issues/1675) already ships for `vim`/`workspace`) render separately, since they change nothing about how the built-in runs. A built-in nobody's config re-tunes keeps the plain refusal ([#2079](https://github.com/Digital-Process-Tools/claude-supertool/issues/2079)).
+
+Three states here too, and the third is the one that used to be invisible: a `builtin-ops.<op>` set to something that is **not a table** (a malformed manifest — `_merge_presets` stores whatever the JSON held without checking its shape, and records no preset warning for it) is neither a clean config nor a readable override, and used to render byte-identical to the op having no override at all. It now says so and names the value it could not read. A `builtin-ops` key name is preset-authored text as freely chosen as its value, so it is flattened to one line before rendering — a key holding a newline would otherwise write a line of its author's choosing at column 0 inside this system-authored block, which is [#1391](https://github.com/Digital-Process-Tools/claude-supertool/issues/1391)'s shape.
+
 ## `doctor` — the environment and toolchain supertool runs in
 
 Two halves ([#1857](https://github.com/Digital-Process-Tools/claude-supertool/issues/1857), [#1950](https://github.com/Digital-Process-Tools/claude-supertool/issues/1950)), filed separately so neither buries the other, one op because they answer the same question — "what, in this environment, could quietly be going wrong under supertool" — from two directions.
