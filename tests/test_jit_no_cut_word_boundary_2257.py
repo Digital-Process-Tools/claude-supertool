@@ -27,25 +27,35 @@ row this test reads live off disk.
 
 ## What was fixed, and what was not
 
-`(head|tail|sed|cut|awk)` gained `([[:space:]]|$)` on its right. Every real
-cut this rule exists for puts a boundary there: a shell command word is always
-followed by whitespace, redirection, or the end of the string, never by
-another letter continuing the same word. That is a strictly cheaper fix than
-matching quote nesting, and it costs nothing on the `MUST_STILL_FIRE` side --
-every case in `test_jit_no_cut_span_stops_at_a_separator_1565.py` and
+`(head|tail|sed|cut|awk)` gained `([[:space:];&|><)]|$)` on its right. A
+first draft anchored on `[[:space:]]` alone, found in self-review (before
+commit) to be its own regression: a shell command word needs no space before
+a separator or a redirection, so `'x:.'|head;rm -rf x`, `|head>out.txt`,
+`|head&`, `|head)`, `|head&&true` and `|head||true` all stopped matching --
+six real cuts the parent commit caught, silently unmatched by the
+space-only anchor. `STILL_FIRES` below pins all six against the shipped
+pattern so this cannot regress again unnoticed. That is a strictly cheaper
+fix than matching quote nesting, and it costs nothing on the rest of the
+`MUST_STILL_FIRE` side either -- every case in
+`test_jit_no_cut_span_stops_at_a_separator_1565.py` and
 `test_jit_block_match_anchored_1415.py` keeps matching, re-run against the
-fixed pattern below (a representative slice is `STILL_FIRES` here).
+fixed pattern below.
 
-`[[:space:]]` and not a negated alpha class: the latter also compiles under
-Python's `re`, but `hooks/shipped_rules.py`'s `translate()` only knows
-`[[:space:]]` as a POSIX bracket class (see its `_POSIX_CLASSES`) and declines
-any pattern containing an unrecognised one -- `supertool-no-cut.md` is the ONE
-rule in `SHIPPED`, enforced in every repository that has not carried its own
-copy (#1698), so a class `translate()` cannot read does not fail loudly here,
-it silently drops this rule everywhere the plugin is installed but this repo.
+The bracket mixes a class name with literal separator characters rather than
+using a negated alpha class: the latter also compiles under Python's `re`,
+but `hooks/shipped_rules.py`'s `translate()` only knows `[[:space:]]` as a
+POSIX bracket class (see its `_POSIX_CLASSES`) and declines any pattern
+containing an unrecognised one -- `supertool-no-cut.md` is the ONE rule in
+`SHIPPED`, enforced in every repository that has not carried its own copy
+(#1698), so a class `translate()` cannot read does not fail loudly here, it
+silently drops this rule everywhere the plugin is installed but this repo.
 Caught only because `tests/test_shipped_guard_rules_1698.py` reddened seven
-ways when a negated-alpha class was tried first -- kept as the reason
-`[[:space:]]` was chosen and not the other one, not merely stated.
+ways when a negated-alpha class was tried first -- kept as the reason a
+mixed literal-and-class bracket was chosen and not the other one, not merely
+stated. `translate()` handles the mix fine: it substitutes the `[:space:]`
+token wherever it occurs and only declines if an unrecognised `[:...:]` token
+remains, so literal characters sharing the same brackets pass through
+untouched.
 
 **The deeper case in the issue's title is NOT fixed, and is not cheaply
 fixable in this dialect.** A bar sitting entirely inside a quoted op argument,
@@ -144,6 +154,18 @@ STILL_FIRES = [
      "supertool 'gh-job:9:raw'" + BAR + "tail"),
     ("sed with an -n flag", "supertool 'git-status'" + BAR + "sed -n '1,25p'"),
     ("cut with a -c flag", "python3 -m supertool 'read:a'" + BAR + "cut -c1-40"),
+    # The regression a first draft of this fix introduced, caught in
+    # self-review before commit: anchoring on [[:space:]] alone unblocks
+    # every one of these, because a shell command word needs no space before
+    # a separator or a redirection. All six matched the pattern committed at
+    # 45c3a33b8045506bab04379ee976965d8f6063a7 (no anchor at all) AND the
+    # first fix attempt ([[:space:]] only); none may stop matching here.
+    ("no space before a semicolon", "supertool 'x:.'" + BAR + "head;echo done"),
+    ("no space before a redirect", "supertool 'x:.'" + BAR + "head>out.txt"),
+    ("no space before a background &", "supertool 'x:.'" + BAR + "head&"),
+    ("no space before a closing paren", "supertool 'x:.'" + BAR + "head)"),
+    ("no space before &&", "supertool 'x:.'" + BAR + "head&&true"),
+    ("no space before ||", "supertool 'x:.'" + BAR + "head" + BAR + BAR + "true"),
 ]
 
 
