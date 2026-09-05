@@ -54,22 +54,31 @@ def test_the_disclosure_precedes_the_answer_it_discloses(tmp_path: Path) -> None
 
 
 def test_a_numeric_path_that_is_a_real_file_is_answered_literally_not_substituted(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ) -> None:
     """The paired 'must fire' for the assertion above: when the numeric token
     names a file that genuinely exists, that reading is not merely
     plausible, it is correct -- so no delegation, no disclosure, and the
     literal answer (a grep of `pattern` inside the numerically-named file)
-    comes back untouched. A test that only checks 'no substitution note'
-    would pass on a harness that ran nothing at all; asserting the literal
-    grep result too is what makes this a real positive control."""
+    comes back untouched.
+
+    The numeric path has to be spelled BARE for this to actually exercise
+    the `os.path.exists(path)` half of the guard: an absolute
+    `tmp_path`-rooted path (e.g. `/tmp/.../ambig/5`) fails `_is_ascii_int`
+    on the slashes alone, so a test built that way passes even with
+    `os.path.exists` deleted from the guard entirely -- confirmed by
+    mutating the guard to `if not _is_ascii_int(path): return ""` and
+    re-running: the absolute-path version still passed, exercising nothing
+    about existence (review finding on #1154's first draft). `cd` into the
+    fixture directory and use the relative name `5` so the token dispatch
+    actually sees is the bare digits `_is_ascii_int` accepts, which is the
+    only way to reach the `os.path.exists` branch at all."""
     d = tmp_path / "ambig"
     d.mkdir()
-    numeric_file = d / "5"
-    numeric_file.write_text("needle-line\nother\n")
-    pattern_file = d / "pat.txt"
-    pattern_file.write_text("irrelevant\n")
-    out = supertool.dispatch(f"around:{pattern_file}:{numeric_file}:2")
+    (d / "5").write_text("needle-line\nother\n")
+    (d / "pat.txt").write_text("irrelevant\n")
+    monkeypatch.chdir(d)
+    out = supertool.dispatch("around:pat.txt:5:2")
     assert "read as around_line" not in out, (
         "a real file must never be reinterpreted as a line number just "
         f"because its name is digits: {out!r}")

@@ -10073,16 +10073,26 @@ def _around_line_delegation(pattern: str, path: str, n: int) -> str:
     #1154 asked whether this should refuse rather than substitute, on the
     grounds the caller's intent is genuinely ambiguous. It is not: the
     `os.path.exists(path)` check above is exactly what keeps this from ever
-    guessing between two real readings. When the numeric token names a file
-    that actually exists, that call falls straight through to a literal
-    `around` and this function returns "" — delegation only fires on a call
-    whose literal reading was already impossible, so there is exactly one
-    answer left, not a choice among several. #1154 also claimed the
-    substitution was disclosed only after the answer it substituted; the
-    `note + chr(10) + op_around_line(...)` order below has been disclosure
-    first since this function was written for #1086, so that half of the
-    report does not reproduce here. `tests/test_around_line_delegation_order_1154.py`
-    pins both.
+    guessing between two real readings. When the numeric token names an
+    entry `os.path.exists` reports as present, that call falls straight
+    through to a literal `around` and this function returns "" —
+    delegation only fires on a call whose literal reading was already
+    unanswerable, so there is exactly one answer left, not a choice among
+    several. (A dangling symlink is the one case `os.path.exists` reports
+    as absent though the entry is really there — but a literal `around`
+    against a symlink that resolves nowhere cannot answer either, so the
+    same "only one reading answers" argument still holds; it is a looser
+    proxy for "answerable", not a strict `os.path.exists` synonym.) #1154
+    also claimed the substitution was disclosed only after the answer it
+    substituted; the `note + chr(10) + op_around_line(...)` order below has
+    been disclosure first since this function was written for #1086, so
+    that half of the report does not reproduce here.
+    `tests/test_around_line_delegation_order_1154.py` pins both — including
+    that a genuinely existing numeric-named file must be spelled BARE
+    (relative to cwd) to actually exercise this guard, since an absolute
+    `tmp_path`-rooted name fails `_is_ascii_int` on its slashes before
+    `os.path.exists` is ever reached (self-review caught the first draft's
+    version of this test doing exactly that).
     """
     if not _is_ascii_int(path) or os.path.exists(path):
         return ""
