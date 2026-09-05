@@ -67,6 +67,7 @@ import _repo_target  # noqa: E402
 import _payload_keys  # noqa: E402  (unrecognised-key refusal, shared with the other three @payload ops -- #2123)
 import _untrusted  # noqa: E402
 import _digits  # noqa: E402
+import _publish_safety  # noqa: E402  (#2100 -- the forge-write disclosure marker)
 
 # The closing-reference gate.
 REF_OK = "ok"
@@ -554,6 +555,14 @@ def main() -> int:  # noqa: C901
         print(refusal_line(number, ref_state, lost))
         return 1
 
+    # #2100: applied AFTER the closing-reference gate above, on the same
+    # `content` that gate already looked at -- and idempotent, since an
+    # update payload routinely starts from the published body (which may
+    # already carry the marker) and corrects it. A body that already carries
+    # the configured marker is reported "already-present" rather than
+    # stacking a second copy.
+    content, disclosure_state = _publish_safety.apply_forge_disclosure(content)
+
     # ---- what this op cannot apply ---------------------------------------
     ignored = ignored_fields(payload)
     title_fields, title_lines = title_change(payload, old_title)
@@ -577,6 +586,7 @@ def main() -> int:  # noqa: C901
     print()
     print("## What landed")
     print(f"  {landed_msg}")
+    print(f"  disclosure: {disclosure_state}")
     for line in title_lines:
         print(line)
     title_state, title_msg = title_verdict(

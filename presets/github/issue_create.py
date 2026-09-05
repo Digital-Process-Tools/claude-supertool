@@ -77,6 +77,7 @@ import _remote_default as _rd  # noqa: E402
 import _repo_target  # noqa: E402  (repo: op precedence over payload's own field -- #1909)
 import _payload_keys  # noqa: E402  (unrecognised-key refusal, shared with the other three @payload ops -- #2123)
 import _untrusted  # noqa: E402  (the GitHub API writes the failure body — #1606)
+import _publish_safety  # noqa: E402  (#2100 -- the forge-write disclosure marker)
 
 # The transport that actually answered. Named in every receipt (#1790) so a
 # degraded write is never indistinguishable from an ordinary one.
@@ -408,6 +409,10 @@ def main() -> int:
     else:
         content = body
 
+    # #2100: applied once, before either write path (GraphQL create, or the
+    # REST fallback below) -- both send `content`, so both send the marker.
+    content, disclosure_state = _publish_safety.apply_forge_disclosure(content)
+
     tmp_body: str | None = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
@@ -507,7 +512,8 @@ def main() -> int:
             source_note = (f"  (repo from {repo_source})"
                             if repo_source not in ("", "payload") else "")
             print(f"gh-issue-create OK number={number} url={url} "
-                  f"transport={TRANSPORT_REST_FALLBACK}{note_str}{source_note}")
+                  f"transport={TRANSPORT_REST_FALLBACK} "
+                  f"disclosure={disclosure_state}{note_str}{source_note}")
             return 0
 
         match = re.search(r"https?://github\.com/[^/\s]+/[^/\s]+/issues/(\d+)", result.stdout)
@@ -528,7 +534,8 @@ def main() -> int:
         source_note = (f"  (repo from {repo_source})"
                         if repo_source not in ("", "payload") else "")
         print(f"gh-issue-create OK number={number} url={url} "
-              f"transport={TRANSPORT_GRAPHQL}{source_note}")
+              f"transport={TRANSPORT_GRAPHQL} "
+              f"disclosure={disclosure_state}{source_note}")
         return 0
 
     finally:

@@ -179,6 +179,42 @@ def _disclosure_config() -> tuple[bool, str]:
     return True, _DEFAULT_DISCLOSURE_TEXT
 
 
+def apply_forge_disclosure(body: str) -> tuple[str, str]:
+    """Append a machine-authorship marker to a forge (pull request/issue) body.
+
+    Returns `(new_body, state)`:
+      "appended"        -- the marker is in `new_body`, freshly added.
+      "already-present" -- the configured marker was already a substring of
+                            `body`; `new_body == body`, unmodified. This is
+                            what keeps `gh-pr-edit` idempotent: a body update
+                            routinely starts from the published body (which
+                            already carries the marker) and corrects it, and
+                            an unconditional append would stack a second copy
+                            on every such edit (#2100).
+      "suppressed"       -- opted out via env or `.supertool.json`; `new_body
+                            == body`.
+
+    Deliberately a second entry point rather than a `max_len` of `None` on
+    `apply_disclosure`: a pull request or issue body has no analogue of
+    Bluesky's 300-char ceiling, so the `dropped` state has nothing to mean
+    here, and reusing that state's plumbing for a check it can never trigger
+    would be the wrong shape to carry forward.
+
+    Callers that also parse the body for a closing keyword (`gh-pr-create`'s
+    `Closes #N` gate) must call this AFTER that parse, not before: the
+    marker text does not contain the substring `Closes`, but the order is a
+    real constraint the issue names explicitly, not a coincidence to rely on
+    silently (#2100).
+    """
+    enabled, marker = _disclosure_config()
+    if not enabled:
+        return body, "suppressed"
+    if marker in body:
+        return body, "already-present"
+    separator = "\n\n"
+    return body + separator + marker, "appended"
+
+
 def apply_disclosure(body: str, *, max_len: Optional[int] = None) -> tuple[str, str]:
     """Append a machine-authorship marker to a publish body.
 
