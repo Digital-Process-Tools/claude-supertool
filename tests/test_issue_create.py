@@ -766,6 +766,44 @@ class TestGithubIssueCreate:
         assert rc != 0
         assert "body" in out
 
+    def test_body_table_array_refused_not_crashed(self, monkeypatch, capsys, tmp_path):
+        """#2315: a `[[body]]` TOML table-array parses to a list of
+        {"value": ...} dicts, which used to reach apply_forge_disclosure
+        as a `list` and crash with a bare TypeError three frames deep.
+        This must be a clean refusal naming the accepted shape instead."""
+        payload = {
+            "repo": "org/repo",
+            "title": "table array body",
+            "body": [{"value": "hello world"}],
+        }
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "Traceback" not in out
+        assert "body must be a string" in out
+        assert "list" in out
+        assert "body_file" in out
+
+    def test_body_dict_also_refused(self, monkeypatch, capsys, tmp_path):
+        """A single inline table (`body = {value = "x"}`, a dict) is not
+        the string type check either, and must refuse the same way."""
+        payload = {
+            "repo": "org/repo",
+            "title": "dict body",
+            "body": {"value": "hello"},
+        }
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert "Traceback" not in out
+        assert "body must be a string" in out
+
     def test_url_extraction_with_warning_lines(self, monkeypatch, capsys, tmp_path):
         payload_file = _write_payload(tmp_path, GH_MINIMAL)
         monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])

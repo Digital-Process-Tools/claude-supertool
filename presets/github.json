@@ -32,7 +32,7 @@
       "safety": "acts",
       "cmd": "{python} {path}github/issue_create.py {arg}",
       "timeout": 30,
-      "description": "Create a GitHub issue from a JSON/TOML payload file. Supports labels, assignees, and milestone (by title).",
+      "description": "Create a GitHub issue from a JSON/TOML payload file. Supports labels, assignees, and milestone (by title). body must be a plain string (or use body_file to read one from a file) -- a TOML [[body]] table-array is refused rather than accepted, naming the shape (#2315).",
       "syntax": "gh-issue-create:@FILE | gh-issue-create:@-",
       "example": "gh-issue-create:@.max/new-issue.json",
       "replaces": [
