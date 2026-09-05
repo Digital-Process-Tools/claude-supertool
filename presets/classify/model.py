@@ -93,6 +93,7 @@ per *call* to this op, not a constant shared across calls.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -229,6 +230,41 @@ def _default_spawn(prompt: str, system_prompt: str, timeout: int
         )
 
 
+#: A tag-like opener -- `<name>`, `<name:attr>`, `<name attr="x">` -- that the
+#: fixed vocabulary (`SAFE`, `SUSPECT: ...`) can never itself start with.
+#: Matches the opening half only; #2139's own report is a complete tag pair,
+#: but a truncated or single opening tag is just as clearly not a verdict,
+#: so a close is not required. `[\s>]`, not `[ >]`: a tag whose name is
+#: followed by a tab or newline before its first attribute is still a tag.
+_SCAFFOLDING_OPENER = re.compile(r"^<[^\s<>]+[\s>]")
+
+
+def _looks_like_scaffolding(seen: str) -> bool:
+    """True when the WHOLE of `seen` -- not merely its first line -- opens
+    with a bare `<tag`-shaped fragment rather than anything the fixed
+    vocabulary could have produced (#2139): harness scaffolding -- a budget
+    tag, a system reminder, any XML-ish wrapper belonging to the calling
+    environment -- arriving where a verdict was expected.
+
+    Requires `seen` to be a single line on purpose. A reasoning model's
+    known habit of prefacing a real answer with a `<thinking>...</thinking>`
+    block (or similar) also opens with a tag, and if that block is followed
+    by a genuine `SUSPECT: axis` on a later line, calling the whole thing
+    "the caller's own scaffolding" would be a wrong causal claim -- the
+    model attempted a verdict, it just didn't emit only the verdict -- and
+    would throw away the one thing (the raw quote) that told a reader a
+    real answer was in there. Restricting to a single line matches the
+    fixed vocabulary's own contract (SAFE / SUSPECT is always one line, see
+    `_parse` above) and matches every scaffolding shape reported live so
+    far, both of which were one line with nothing else in them.
+
+    Narrow in the other direction too: this names the one shape reported
+    live, not a general "looks like markup" guess, so a genuinely malformed
+    but non-tag-like reply (prose, a typo'd SAFE) is left to the bare
+    'did not parse' message instead of being reclassified."""
+    return "\n" not in seen and bool(_SCAFFOLDING_OPENER.match(seen))
+
+
 def _parse(stdout: str) -> Optional[Verdict]:
     """The fixed-vocabulary parser. `None` means "did not parse" -- the
     caller turns that into `could-not-classify`, never a guess."""
@@ -294,6 +330,13 @@ def classify(text: str, *, spawn: Spawn = _default_spawn,
     verdict = _parse(proc.stdout or "")
     if verdict is None:
         seen = (proc.stdout or "").strip()
+        if _looks_like_scaffolding(seen):
+            # #2139: name the recognised shape rather than quoting a
+            # possibly-truncated prefix of bytes that can never be the
+            # fixed vocabulary anyway.
+            return Verdict(
+                "could-not-classify", [],
+                "the output was the caller's own scaffolding, not a verdict")
         if len(seen) > 80:
             seen = seen[:80] + "…"
         return Verdict("could-not-classify", [],

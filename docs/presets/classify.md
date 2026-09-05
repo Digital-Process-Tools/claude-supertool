@@ -56,6 +56,20 @@ not the scope — see [#2046](https://github.com/Digital-Process-Tools/claude-su
    own error text there, not stderr — [#2060](https://github.com/Digital-Process-Tools/claude-supertool/issues/2060)),
    and `!r`-escaped so a multi-line diagnostic cannot render as a second,
    well-formed verdict block once printed ([#2061](https://github.com/Digital-Process-Tools/claude-supertool/issues/2061)).
+   A parse failure whose whole output is a single line that opens with a
+   bare `<tag`-shaped fragment — harness scaffolding such as a budget tag,
+   arriving where a verdict was expected — says so by name (`the output was
+   the caller's own scaffolding, not a verdict`) rather than quoting a
+   possibly-truncated 80-character prefix of bytes that can never be the
+   fixed vocabulary anyway. Restricted to a single line on purpose: a
+   reasoning model's habit of prefacing a real answer with a
+   `<thinking>...</thinking>` block also opens with a tag, and if a genuine
+   verdict follows on a later line, calling the whole thing "the caller's
+   own scaffolding" would be the wrong causal claim and would discard the
+   one clue (the raw quote) that a real answer was in there — so that case,
+   and every other parse failure, keeps the original bare `model output did
+   not parse: '...'` quote unchanged
+   ([#2139](https://github.com/Digital-Process-Tools/claude-supertool/issues/2139)).
 
    **Isolated, not just tool-denied (#2053).** `--tools ""` /
    `--strict-mcp-config` / `--disable-slash-commands` deny tools, MCP
