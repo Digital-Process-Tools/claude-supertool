@@ -11559,7 +11559,40 @@ def _nearest_diff_kind(anchor: List[str], window: List[str]) -> str:
     # and it is kept because `differs in 0 of 12 lines` under `old string not
     # found` would be this issue again, one rewrite later.
     differing = max(1, len(anchor) - same)
+    # #1794 -- naming the count still left a real case costing a second
+    # round-trip: two lines that read as identical at a glance (a doubled
+    # backslash escaping a quote inside a TOML literal block, invisible to
+    # the eye) but differ at one byte. When exactly one line differs AND
+    # the two blocks are the same height -- no insertion or deletion
+    # shifted anything, so "index i in anchor" and "index i in window"
+    # name the same line -- the offset of the first character where that
+    # one line diverges is cheap to compute and turns "which of these 12
+    # lines" into "which byte of this one line". Left unnamed when heights
+    # differ: an insertion could make every positional pair after it
+    # differ, and a byte offset picked from the wrong pairing would be
+    # confidently wrong, which costs more than saying nothing
+    # (docs/validators.md).
+    if differing == 1 and len(anchor) == len(window):
+        _diff_at = [i for i in range(len(anchor)) if anchor[i] != window[i]]
+        if len(_diff_at) == 1:
+            _i = _diff_at[0]
+            _off = _first_diff_offset(anchor[_i], window[_i])
+            return (f"differs in {differing} of {len(anchor)} lines -- "
+                    f"first byte diverges at line {_i + 1}, offset {_off}")
     return f"differs in {differing} of {len(anchor)} lines"
+
+
+def _first_diff_offset(a: str, b: str) -> int:
+    """0-based index of the first character where *a* and *b* diverge.
+
+    Where one is a prefix of the other, the divergence IS the length of the
+    shorter string -- the point past its last character, which is where a
+    caller re-anchoring the line would need to look.
+    """
+    for _idx, (_ca, _cb) in enumerate(zip(a, b)):
+        if _ca != _cb:
+            return _idx
+    return min(len(a), len(b))
 
 
 def _edit_nearest_hint(old: str, lines: List[str], path: str = "") -> str:
@@ -28221,6 +28254,66 @@ def _payload_shell_quote_escape_refusal(parsed: Any, raw: str) -> str:
     return "".join(out)
 
 
+_PAYLOAD_BS_CODE_EXTS = frozenset((
+    ".json", ".py", ".js", ".jsx", ".ts", ".tsx", ".jsonc", ".yaml", ".yml"))
+_PAYLOAD_BS_PROSE_EXTS = frozenset((".md", ".txt", ".rst", ".adoc"))
+
+
+def _payload_target_paths(parsed: Any) -> List[str]:
+    """Every `path` string this payload writes to -- the top-level field for
+    a single-op payload, or one per `[[ops]]` entry for a batch.
+    """
+    paths: List[str] = []
+    if not isinstance(parsed, dict):
+        return paths
+    top = parsed.get("path")
+    if isinstance(top, str):
+        paths.append(top)
+    ops = parsed.get("ops")
+    if isinstance(ops, list):
+        for entry in ops:
+            if isinstance(entry, dict) and isinstance(entry.get("path"), str):
+                paths.append(entry["path"])
+    return paths
+
+
+def _payload_extension_bs_hint(parsed: Any) -> str:
+    """One extra line naming which of the two fixes below is the common case
+    for THIS payload's target (#1794).
+
+    Additive only: never changes whether the refusal fires, only nudges the
+    reader toward the fix they are more likely to want. The refusal asks the
+    same question ("half the run, or the run as written?") of a payload
+    writing `.json`/`.py` -- where a doubled backslash is very often a REAL
+    one, a JSON string escape or a Python string-literal escape landing
+    correctly -- and of a payload writing prose, where it almost never is.
+    Silent (returns "") when the targets are mixed or the extension is not
+    one this repo has an opinion about -- a wrong nudge costs more than none,
+    and this is a hint, not a verdict the refusal itself is not making.
+    """
+    exts = {os.path.splitext(p)[1].lower() for p in _payload_target_paths(parsed)}
+    exts.discard("")
+    if not exts:
+        return ""
+    which = ", ".join(sorted(exts))
+    if exts <= _PAYLOAD_BS_CODE_EXTS:
+        return (
+            "  " + mark(chr(8627)) + " the target here is " + which + " -- a "
+            "doubled backslash there is often a REAL one (a JSON string "
+            "escape, a Python string-literal escape) rather than an escape "
+            "reflex: the SECOND fix below is the common case for this "
+            "extension, not the first." + chr(10)
+        )
+    if exts <= _PAYLOAD_BS_PROSE_EXTS:
+        return (
+            "  " + mark(chr(8627)) + " the target here is " + which + " -- "
+            "prose rarely wants a literal doubled backslash: the FIRST fix "
+            "below (write half) is the common case for this extension, not "
+            "the second." + chr(10)
+        )
+    return ""
+
+
 def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
     """Refuse a payload that would WRITE a doubled backslash (#1087).
 
@@ -28284,6 +28377,9 @@ def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
             ) + chr(10)
         )
     field_example = _literal_bs_field_list_example(findings, scope)
+    ext_hint = _payload_extension_bs_hint(parsed)
+    if ext_hint:
+        out.append(ext_hint)
     out.append(
         "  " + arrow + " TWO OPPOSITE fixes, and nothing here can tell which you "
         "meant -- decide per occurrence, then send the payload once:" + chr(10)
@@ -28296,7 +28392,7 @@ def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
         + _PAYLOAD_LITERAL_BS_KEY + " = " + field_example + "` -- to leave any other "
         "field's own doubled runs refused (#1839). Either way, this refusal becomes "
         "a decision you recorded." + chr(10)
-        + "  (#1087, #1096, #1808, #1814, #1819, #1839)"
+        + "  (#1087, #1096, #1808, #1814, #1819, #1839, #1794)"
     )
     return "".join(out)
 
@@ -29884,6 +29980,28 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             _arg_sep = ":"
         op = parts[0] if parts else ""
 
+    # #1878 -- the #1942 check below used to sit after the @file/'@-' payload
+    # route a few blocks down, so a mixed-tree decline for a write-class
+    # builtin -- or for a config-declared custom op with a ':::'-syntax
+    # payload route, like `git-commit` -- still drained stdin first. Reading
+    # the payload teaches nothing the decline needs: `op`, `argv` and the cwd
+    # already answer the question. `sys.stdin` is a single stream (#341), so
+    # once it is drained the caller cannot retry without re-sending the whole
+    # payload -- exactly the round-trip #1878 reports. Scoped to the same two
+    # classes `_resolve_custom_op`'s own #678 check gates further downstream
+    # (a write-class builtin via `_OP_SAFETY_BUILTIN`, or any op this
+    # project's config actually declares under "ops") so an unrecognized op
+    # name still falls through to "unknown operation" rather than being
+    # swallowed here as a mixed-tree decline.
+    _custom_ops_cfg = _load_config().get("ops")
+    if _OP_SAFETY_BUILTIN.get(op) == "writes" or (
+        isinstance(_custom_ops_cfg, dict) and op in _custom_ops_cfg
+    ):
+        _mixed_early = _mixed_tree_pair()
+        if _mixed_early is not None and not _mixed_tree_allowed():
+            _SKIP_COUNT[0] += 1
+            return _receipt(header, _mixed_tree_decline(op, _mixed_early))
+
     # Read-op @payload route — 'grep:@file' / 'around:@-' etc. (#625).
     #
     # Gated on the reference actually resolving ('@-', or an existing file)
@@ -30067,22 +30185,10 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         for _i, _pos in enumerate(_path_slots):
             parts[_pos] = _gated[_i]
 
-    # #1942 -- #678's guard declined a preset/custom op outright under a
-    # mixed core/tree pair, but a built-in WRITE op only got the stderr
-    # warning `main()` prints once and kept running to completion: the
-    # write itself always lands on the right file (`_safe_path` resolves
-    # against `os.getcwd()` regardless of which core answered), but the
-    # CODE that answered -- validators, formatters, hooks -- was the other
-    # tree's, and the receipt read exactly like a correct one. Gate the
-    # same class `_OP_SAFETY_BUILTIN` already names as "writes", at the
-    # same chokepoint every path argument already passes through, rather
-    # than adding a second list that can drift from the first (#1285's
-    # own lesson, about this exact table).
-    if _OP_SAFETY_BUILTIN.get(op) == "writes":
-        _mixed = _mixed_tree_pair()
-        if _mixed is not None and not _mixed_tree_allowed():
-            _SKIP_COUNT[0] += 1
-            return _receipt(header, _mixed_tree_decline(op, _mixed))
+    # #1942's write-class mixed-tree check used to live here. Moved to
+    # #1878's earlier chokepoint above -- right after `op` is known, before
+    # either payload route can drain stdin -- because nothing between there
+    # and here needs the payload or the gated path to decide it.
 
     try:
         if op == "read":
