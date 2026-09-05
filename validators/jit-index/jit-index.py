@@ -133,6 +133,14 @@ def _rows(text):
     A paths row is `pattern<TAB>file`, and its first column is *always* handed
     to `match()` — calling it a "prefix" is what made that easy to miss.
 
+    A vocabulary row is `keyword<TAB>file<TAB>verdict` (claude-jit-context
+    0.7.1's `build_vocab_tsv`, #2211), where `verdict` is empty or the literal
+    string `generic` (the deferred generic-word classifier, #232/#255).
+    `keyword` is never handed to awk: `pre-prompt-hook.sh` matches it with a
+    literal `index()` against a padded, space-delimited prompt, not `match()`,
+    so a vocabulary row's first column joins neither `patterns` nor the
+    escape/case/compile checks below — there is no regex to check.
+
     Returns (patterns, shape_errors, parsed_row_count, tabbed_row_count); each
     pattern is (line, text, family).
 
@@ -165,13 +173,26 @@ def _rows(text):
                 "paths row is `pattern<TAB>file` and the hook needs both — an "
                 "empty pattern is handed to match() and matches everything",
                 "shape"))
+        elif (len(fields) == 3 and fields[0].strip() and fields[1].strip()
+              and fields[2] in ("", "generic")):
+            parsed += 1
+        elif len(fields) == 3:
+            shape_errors.append(_err(
+                line,
+                "row has 3 tab-separated fields but is not a vocabulary row: "
+                "a vocabulary row is `keyword<TAB>file<TAB>verdict`, keyword "
+                "and file both non-empty and verdict either empty or the "
+                "literal word `generic` (claude-jit-context 0.7.1's "
+                "generic-word classifier, #232/#2211)",
+                "shape"))
         else:
             shape_errors.append(_err(
                 line,
                 "row has {0} tab-separated field(s): a tools row has 6 or 7 "
-                "(claude-jit-context 0.6.0 added `requires`, #1992) and a "
-                "paths row has 2, so the hook will read this row's columns as "
-                "something other than what is written here".format(len(fields)),
+                "(claude-jit-context 0.6.0 added `requires`, #1992), a paths "
+                "row has 2, and a vocabulary row has 3 (#2211), so the hook "
+                "will read this row's columns as something other than what "
+                "is written here".format(len(fields)),
                 "shape"))
     return patterns, shape_errors, parsed, tabbed
 
