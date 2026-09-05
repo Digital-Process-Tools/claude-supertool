@@ -690,7 +690,7 @@ With nothing configured the last line reads `SUPERTOOL_WATCH_SOURCES_PATH is not
 | `gitlab-mr-feed` | `glab mr list` for a whole filter | `mr_opened`, `mr_merged`, `mr_closed`, `mr_left_feed`, `mrs_unreachable` |
 | `github-pr-feed` | `gh pr list` for a whole filter ([#1780](https://github.com/Digital-Process-Tools/claude-supertool/issues/1780)) | `pr_opened`, `pr_merged`, `pr_closed`, `pr_left_feed`, `prs_unreachable` |
 | `github-issue-feed` | `gh api repos/{owner}/{repo}/issues` for a whole scope | `issue_opened`, `issue_reopened`, `issue_entered_feed`, `issue_labeled`, `issue_unlabeled`, `issue_assigned`, `issue_unassigned`, `issue_comment_added`, `issue_closed`, `issue_left_feed`, `issues_unreachable` |
-| `gl-runners` | `glab api projects/:id/runners` + the pending/running job queue | `runner_silent`, `runner_liveness_unknown`, `runner_recovered`, `runner_starved`, `queue_liveness_unknown`, `queue_cleared`, `runner_paused`, `runner_added`, `runner_vanished` |
+| `gl-runners` | `glab api projects/:id/runners` + the pending/running job queue | `runner_silent`, `runner_liveness_unknown`, `runner_recovered`, `runner_starved`, `queue_liveness_unknown`, `queue_cleared`, `runner_paused`, `runner_added`, `runner_vanished`, `runner_failing_systemically`, `runner_recovered_systemically` |
 | `gh-run` | `gh run view <id> --json status,conclusion,workflowName,url,...` | `run_succeeded`, `run_failed`, `run_cancelled`, `run_action_required`, `run_started`, `run_inconclusive`, `run_unreachable` |
 | `gh-branch` | the same composition `gh-branch:<ref>` and `radar`'s default-branch member row already use — `gh api commits/<ref>` then `gh run list --branch <ref>` | `went_green`, `went_not_green`, `no_run`, `unknown`, `branch_unreachable` |
 | `slack` | `conversations.history` for a bare channel id, `conversations.replies` for `<channel>~<thread-ts>` | `slack_message`, `slack_unreachable` |
@@ -980,6 +980,33 @@ NOTE: DONE/30m 0 reads as a wedge only for a runner that has been up the whole 3
 ```
 
 The evidence ladder, the 30-minute heartbeat threshold and the throughput window are untouched — those were measured against a live fleet and getting their order wrong is what produced the fleet-wide false alarm above. This is a rendering change only.
+
+### `runner_failing_systemically` — every event above answers "is it taking work", none answer "is it killing it" ([#2296](https://github.com/Digital-Process-Tools/claude-supertool/issues/2296))
+
+A self-hosted runner with a full disk accepted jobs and died in
+`prepare_executor` within 4-10 seconds of each one, over and over. Nothing
+above fires on that: the runner stays `online`, un-paused, never leaves the
+fleet, and a queue that drains fast enough — GitLab accepts and kills work
+quickly — never starves either. Every event in the table above is about
+membership or the pending queue; none of them read how a job *ended*.
+
+GitLab's own jobs API already carries the diagnosis: a job GitLab attributes
+to the runner rather than to the pipeline's own script gets
+`failure_reason: "runner_system_failure"`. `annotate_systemic_failures`
+(`presets/gitlab/runners.py`) counts those per runner over the same window
+`annotate_recent_work` already reads for the `_recent_jobs` throughput count —
+no second API call, no separate state. `runner_failing_systemically` fires
+when a runner crosses `_SYSTEMIC_FAILURE_THRESHOLD` (3, tuned at the module
+level in `poller.py`) inside that 30-minute window; `runner_recovered_systemically`
+fires once it drops back to zero **and** the runner has completed at least one
+job in the window since — a window that has merely aged out with no new
+activity is silence, not evidence, and this preset declines to read silence as
+an all-clear anywhere else in it either.
+
+Quiet on the first tick, for the same reason membership and pause flips are:
+a state that predates the watcher is history, not news. Orthogonal to
+`runner_silent`/`runner_liveness_unknown` above — a runner can be responsive,
+heartbeating and taking jobs, and still be the thing this event exists for.
 
 ### `conflicts_appeared` is edge-triggered, and stays re-armable ([#463](https://github.com/Digital-Process-Tools/claude-supertool/issues/463))
 
