@@ -171,6 +171,32 @@ def test_a_timed_out_wait_that_then_raises_does_not_double_call_fn(
         "fn ran more than once on the timeout-fallback path: %r" % calls)
 
 
+def test_an_exception_while_holding_the_lock_still_releases_it(
+        tmp_path: Path) -> None:
+    """Auditor finding: the docstring promises release "even if `fn` raises",
+    and nothing exercised the acquired-lock branch of that promise -- every
+    existing raising test goes through a fallback path where the lock was
+    never actually held by this caller. A caller that raises while genuinely
+    holding the lock must still leave it releasable, or the next caller
+    would be stuck behind a lock nobody will ever free."""
+    def fn():
+        raise ValueError("boom while holding the lock")
+
+    with pytest.raises(ValueError, match="boom while holding the lock"):
+        lock_mod.serialize_once(tmp_path, "go_build_cache", fn, 5.0)
+
+    assert not (tmp_path / "go_build_cache.lock").exists(), (
+        "the lock survived a raising fn -- the next caller would be "
+        "permanently blocked behind a lock nobody will ever free")
+
+    # And a normal caller right after really can acquire it immediately.
+    called = []
+    result = lock_mod.serialize_once(
+        tmp_path, "go_build_cache", lambda: called.append(1) or "ran", 5.0)
+    assert result == "ran"
+    assert called == [1]
+
+
 def test_an_unwritable_lock_dir_falls_back_to_running_fn(
         tmp_path: Path, monkeypatch) -> None:
     """Coordination must never gate correctness: if the lock file itself
