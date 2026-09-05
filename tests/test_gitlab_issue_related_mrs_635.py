@@ -81,7 +81,9 @@ def test_capped_related_mrs_disclose_after_the_list(monkeypatch, capsys) -> None
     assert issue.main() == 0
     out = capsys.readouterr().out
 
-    body = out.split("Related MRs:")[1].split("## Description")[0]
+    # Bounded at "Closing MRs:" now that #1607 item 2 renders that section
+    # immediately after this one, off a separately-stubbed endpoint.
+    body = out.split("Related MRs:")[1].split("Closing MRs:")[0]
     lines = [line for line in body.strip().splitlines() if line.strip()]
     assert "37" in lines[-1], f"no footer marker after the list: {lines[-1]!r}"
 
@@ -94,7 +96,7 @@ def test_uncut_related_mrs_say_nothing_extra(monkeypatch, capsys) -> None:
 
     assert out.count("    branch: ") == 3, out
     assert _related_header(out) == "Related MRs: 3", out
-    body = out.split("Related MRs:")[1].split("## Description")[0]
+    body = out.split("Related MRs:")[1].split("Closing MRs:")[0]
     assert "shown" not in body and "full" not in body, body
 
 

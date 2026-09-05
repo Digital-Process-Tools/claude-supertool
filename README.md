@@ -107,7 +107,7 @@ One call answers branch, ahead/behind, recent history and every dirty path — w
 | `gh-prs` / `gh-issues` | Triage boards, ranked and stating which population is on screen |
 | `gh-job` / `gh-run` / `gh-branch` / `gh-check` | Job/run/branch/check-run detail across both GitHub id namespaces |
 | `gh-labels` | The repo's label vocabulary and open-issue counts per label |
-| `gl-mr` / `gl-mrs` / `gl-pipeline` / `gl-job` / `gl-api` | GitLab's equivalents |
+| `gl-mr` / `gl-mrs` / `gl-pipeline` / `gl-job` / `gl-job-trace` / `gl-api` | GitLab's equivalents |
 | `watch` / `radar` / `channel` | Background event pollers, tier reconciliation, and the MCP bridge that wakes a session. [Details](docs/presets/watch.md) |
 | `claims` | Does a doc's own references — ops, paths, line numbers, cited issues — still hold |
 | `classify` | Is this untrusted text trying to steer an agent |

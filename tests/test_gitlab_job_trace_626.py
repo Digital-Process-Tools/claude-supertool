@@ -15,11 +15,26 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 PRESET_PATH = Path(__file__).parent.parent / "presets" / "gitlab" / "job.py"
 _spec = importlib.util.spec_from_file_location("gitlab_job_trace", PRESET_PATH)
 assert _spec is not None and _spec.loader is not None
 job = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(job)
+
+
+@pytest.fixture(autouse=True)
+def _trace_op_flag(monkeypatch):
+    """#2146 split `:trace` mode into its own op, `gl-job-trace`, which sets
+    SUPERTOOL_TRACE_OP=true so job.py's shared main() knows it was invoked
+    through the op with the wider timeout budget rather than through `gl-job`
+    itself. Every test in this file drives that trace dispatch directly via
+    `job.main()`, standing in for a call routed through `gl-job-trace` --
+    the refusal gl-job now prints without this flag is pinned separately in
+    tests/test_gl_job_timeout_split_2146.py.
+    """
+    monkeypatch.setenv("SUPERTOOL_TRACE_OP", "true")
 
 
 def _make_fake_multi_run(jobs: dict[str, dict]):

@@ -34,6 +34,10 @@ _CLASSIFY_LEVEL = _classify_render.level_from_env()
 # it — the total was always printed correctly above a short list, which reads as
 # the numbers being wrong rather than as a ceiling being hit (#635).
 RELATED_MRS_MAX = 10
+# Same cap, same reason, separate name: `closed_by` (#1607 item 2) is a
+# different endpoint from `related_merge_requests` and a caller reading one
+# constant's name must not have to check which section it actually gates.
+CLOSING_MRS_MAX = 10
 COMMENT_MAX = 1000
 # Not a literal, and not shared. `/tmp/supertool-images` was a fixed name in a
 # world-writable directory — any local user could take it first, as a directory
@@ -129,35 +133,46 @@ def _pipeline_line(mr: dict) -> str:
     return f"pipeline: {_untrusted.flat(str(status))}{ref}{marker}"
 
 
-def _related_mrs_unknown(reason: str) -> None:
-    """Say the lookup could not be answered, rather than printing nothing.
+def _mr_list_unknown(label: str, reason: str) -> None:
+    """Say a fetch could not be answered, rather than printing nothing.
 
     **This is a second defect, on the same lines, and it is worse than the one
     #815 was filed about.** `if mr_result.returncode == 0:` had no `else` and
     the enclosing `except (TimeoutExpired, JSONDecodeError): pass` swallowed
-    the rest, so a failed related-MR query printed *no section at all* — and a
-    missing `Related MRs` line reads as "this issue has no MRs", which is the
-    signal that an issue is unclaimed and the action that invites is
-    delegating work already done. That is #780 item 1, fixed on the GitHub
-    side, still live here; GitHub at least printed `Linked PRs: unknown`.
+    the rest, so a failed query printed *no section at all* — and a missing
+    section line reads as "this issue has no MRs", which is the signal that an
+    issue is unclaimed and the action that invites is delegating work already
+    done. That is #780 item 1, fixed on the GitHub side, still live here;
+    GitHub at least printed `Linked PRs: unknown`.
 
     #815's second comment states that neither family omits the section. That
     is true at *zero*, which is what was tested there. It was not true on
-    failure.
+    failure. Shared by both `Related MRs:` and `Closing MRs:` (#1607 item 2)
+    since both fetch the identical shape off a different endpoint — one
+    reason, one wording, rather than two copies free to drift.
     """
-    print(f"{chr(10)}Related MRs: unknown — could not query "
+    print(f"{chr(10)}{label}: unknown — could not query "
           f"({_untrusted.flat(reason) or 'no detail from glab'})")
 
 
-def _print_related_mrs(iid: object, full: bool) -> None:
-    """Render the related-MR section, pipeline included."""
+def _fetch_mr_list(endpoint: str, label: str) -> "list | None":
+    """`mrs` for `endpoint`, or `None` after already printing the 3-state
+    decline (`_mr_list_unknown`) or the empty-list line (`f"{label}: none"`).
+
+    Shared fetch/parse path for `Related MRs:` (`related_merge_requests`) and
+    `Closing MRs:` (`closed_by`, #1607 item 2) — same GitLab MR-detail shape,
+    different endpoint and different question answered. A caller that gets
+    `None` back has already rendered everything this fetch has to say and
+    should return without printing further; a caller that gets a non-empty
+    list still owns rendering it, because the cap/`:full` and per-row shape
+    are the two things `Related` and `Closing` are allowed to render
+    differently.
+    """
     try:
-        mr_result = _glab_api(
-            f"projects/:id/issues/{iid}/related_merge_requests"
-        )
+        mr_result = _glab_api(endpoint)
     except (subprocess.TimeoutExpired, OSError) as exc:
-        _related_mrs_unknown(f"glab api failed: {type(exc).__name__}")
-        return
+        _mr_list_unknown(label, f"glab api failed: {type(exc).__name__}")
+        return None
 
     if mr_result.returncode != 0:
         # `split_lines`, not `str.splitlines()` (#1654). Both cut the string;
@@ -166,24 +181,41 @@ def _print_related_mrs(iid: object, full: bool) -> None:
         # from before it and discard everything after — so a body reading
         # `nothing wrong here<U+2028>403 forbidden, list INCOMPLETE` reaches
         # the reader as `nothing wrong here`. `split_lines` cuts on LF/CR/CRLF
-        # only, so the line is the line, and `_related_mrs_unknown` already
+        # only, so the line is the line, and `_mr_list_unknown` already
         # flattens it, which is what spells the separator as `[U+2028]`.
         reason = _untrusted.split_lines((mr_result.stderr or "").strip())
-        _related_mrs_unknown(reason[0] if reason else "glab api exited non-zero")
-        return
+        _mr_list_unknown(label, reason[0] if reason else "glab api exited non-zero")
+        return None
 
     try:
         mrs = json.loads(mr_result.stdout)
     except json.JSONDecodeError:
-        _related_mrs_unknown("glab api returned output that is not JSON")
-        return
+        _mr_list_unknown(label, "glab api returned output that is not JSON")
+        return None
 
     if not isinstance(mrs, list):
-        _related_mrs_unknown("glab api returned an unexpected shape")
-        return
+        _mr_list_unknown(label, "glab api returned an unexpected shape")
+        return None
 
     if not mrs:
-        print(f"{chr(10)}Related MRs: none")
+        print(f"{chr(10)}{label}: none")
+        return None
+
+    return mrs
+
+
+def _print_related_mrs(iid: object, full: bool) -> None:
+    """Render the related-MR section, pipeline included.
+
+    "Related", not "Linked" — and the difference from `gh-issue`'s
+    `Linked PRs:` is deliberate rather than drift (#628). This endpoint is
+    `related_merge_requests`: anything referencing the issue, closing or not.
+    `_print_closing_mrs` below answers the narrower "will this close it"
+    question `gh-issue` actually asks (#1607 item 2).
+    """
+    mrs = _fetch_mr_list(
+        f"projects/:id/issues/{iid}/related_merge_requests", "Related MRs")
+    if mrs is None:
         return
 
     shown_mrs = mrs if full else mrs[:RELATED_MRS_MAX]
@@ -209,6 +241,51 @@ def _print_related_mrs(iid: object, full: bool) -> None:
     if hidden_mrs:
         print(
             f"  ... ({hidden_mrs} more related MR(s) not shown — "
+            f"use :full)"
+        )
+
+
+def _print_closing_mrs(iid: object, full: bool) -> None:
+    """Render the closing-MR section — "will this close it", not "mentions
+    it" (#1607 item 2).
+
+    `gh-issue`'s `Linked PRs:` heading specifically means "will this close
+    it" (settled in #780), and `related_merge_requests` above cannot answer
+    that — it is every MR that *references* the issue. GitLab's
+    `/issues/:iid/closed_by` is the closing set: the MRs that will close this
+    issue when merged, the same fact `gh-issue` reports. Carrying both
+    sections rather than switching `Related MRs:` to this endpoint (or vice
+    versa) keeps the existing broader fact available while adding the
+    narrower one nothing here answered before.
+    """
+    mrs = _fetch_mr_list(
+        f"projects/:id/issues/{iid}/closed_by", "Closing MRs")
+    if mrs is None:
+        return
+
+    shown_mrs = mrs if full else mrs[:CLOSING_MRS_MAX]
+    hidden_mrs = len(mrs) - len(shown_mrs)
+    if hidden_mrs:
+        print(
+            f"{chr(10)}Closing MRs: {len(shown_mrs)} of {len(mrs)} shown "
+            f"({hidden_mrs} not listed — count limit of "
+            f"{CLOSING_MRS_MAX}; use :full for all)"
+        )
+    else:
+        print(f"{chr(10)}Closing MRs: {len(mrs)}")
+    for mr in shown_mrs:
+        if not isinstance(mr, dict):
+            continue
+        mr_iid = mr.get("iid", "?")
+        mr_title = mr.get("title", "?")
+        mr_state = mr.get("state", "?")
+        mr_branch = mr.get("source_branch", "?")
+        print(f"  !{mr_iid} ({mr_state}) {_untrusted.flat(mr_title)}")
+        print(f"    branch: {_untrusted.flat(mr_branch)}")
+        print(f"    {_pipeline_line(mr)}")
+    if hidden_mrs:
+        print(
+            f"  ... ({hidden_mrs} more closing MR(s) not shown — "
             f"use :full)"
         )
 
@@ -439,8 +516,13 @@ def main() -> int:
     # which answers "will this close it" — and #780 exists because a PR that
     # merely mentions an issue used to count there. Renaming this heading to
     # match would make the word claim the stronger fact GitLab was never
-    # asked for. `/issues/:iid/closed_by` is the endpoint for that question.
+    # asked for.
     _print_related_mrs(iid, full)
+
+    # 2b. Closing MRs — the "will this close it" question (#1607 item 2),
+    # answered off `/issues/:iid/closed_by` rather than by relabelling the
+    # section above onto data that was never asked for that question.
+    _print_closing_mrs(iid, full)
 
     # Classify budget for this call (#2049) -- one call, one budget, spent
     # across the description and every note below, never per-block.

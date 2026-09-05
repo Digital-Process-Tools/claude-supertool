@@ -1203,6 +1203,23 @@ def main() -> int:
         print(f"!{iid} | state: {state} | merge_status: {merge_status} | conflicts: {'yes' if has_conflicts else 'no'}")
         print(f"branch: {_untrusted.flat(d.get('source_branch') or '?')} -> "
               f"{_untrusted.flat(d.get('target_branch') or '?')}")
+        # One extra `glab api` round trip, bought unconditionally — the same
+        # #815 disclosure the leg tally below already makes (#1607 item 2).
+        # `:status` is the poll-loop render a maintainer calls ad hoc to
+        # decide whether an MR is mergeable, and approval state answers
+        # exactly that question; `_approvals_line` already carries its own
+        # three states (approved/none/UNKNOWN), so reusing it here rather
+        # than reporting "no approvals" for "did not ask" costs nothing new
+        # to get right. NOT paid by the gitlab-mr watch poller, which reads
+        # the MR endpoint directly rather than calling this op (poller.py).
+        #
+        # `_approvals_line`'s own wording ("Approved by: ...") is #720's pinned
+        # contract for the FULL dashboard and is left untouched; slim's own
+        # casing convention is lowercase/underscored labels (`merge_status:`,
+        # `pipeline:`), the same split documented for every other slim field,
+        # so the prefix is reformatted to match rather than mixing the two
+        # styles on one render — the value and its three states are identical.
+        print(_approvals_line(iid).replace("Approved by:", "approved_by:", 1))
         if pipe_reason is not None and not pipeline:
             # Slim is the poll-loop render — read most often, looked at least
             # closely — so it is the one where `pipeline: none` from a failed

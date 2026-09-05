@@ -107,14 +107,17 @@ def test_the_counts_the_decision_rests_on():
     # 24 → 21 in #873: `hashnode_list`, `devto_list` and `hashnode_search` each
     # documented a `[:N]` second token that a `{arg}` template cannot receive,
     # so all three moved to `{args}`. 21 → 20 in #1715, when `gh-run` gained an
-    # `attempt=K` second token for the same reason. The 8 path-shaped ops are
-    # unchanged through both — every op that moved passes a username, a query
-    # or a run id, not a path — so the trade this file measures (12 ops
-    # carrying a handle, ref, tag, ID or slug that a widened `{arg}` signal
-    # would refuse) is the same argument at a smaller N each time.
-    assert len(arg_ops) == 20, sorted(n for n, _f, _e in arg_ops)
+    # `attempt=K` second token for the same reason. 20 → 21 in #2146, when
+    # `gl-job-trace` (a job id, not a path) was carved out of `gl-job`'s own
+    # `:trace` mode to give the fan-out its own timeout budget. The 8
+    # path-shaped ops are unchanged through all three — every op that moved
+    # or was added passes a username, a query, a run id or a job id, not a
+    # path — so the trade this file measures (13 ops carrying a handle, ref,
+    # tag, ID or slug that a widened `{arg}` signal would refuse) is the
+    # same argument at a different N each time.
+    assert len(arg_ops) == 21, sorted(n for n, _f, _e in arg_ops)
     assert len(path_shaped) == 8, sorted(n for n, _f, _e in path_shaped)
-    assert len(arg_ops) - len(path_shaped) == 12
+    assert len(arg_ops) - len(path_shaped) == 13
 
 
 def test_a_new_arg_op_with_a_path_shaped_syntax_is_refused_not_linted():

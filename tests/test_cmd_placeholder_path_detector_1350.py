@@ -25,11 +25,11 @@ detector would have disarmed the gate for all 25 — the reason this file pins t
 `syntax`-only shape as loudly as the `cmd`-only one.
 
 **`{arg}` and `{args}` are deliberately not signals**, though `{arg}` substitutes
-the very same `parts[1]` that `{file}` does. 20 shipped ops carry `{arg}`; 8 of
+the very same `parts[1]` that `{file}` does. 21 shipped ops carry `{arg}`; 8 of
 those name a path in `syntax` and are already held by the syntax detector,
-leaving 12 that use it for a handle, a ref, a tag, an ID or a repo slug and take
-no path. Promoting it would refuse those 12 and gate nothing. `{file}` and
-`{dir}` are the placeholders whose NAME is the claim. The 20/8/12 split, and the
+leaving 13 that use it for a handle, a ref, a tag, an ID or a repo slug and take
+no path. Promoting it would refuse those 13 and gate nothing. `{file}` and
+`{dir}` are the placeholders whose NAME is the claim. The 21/8/13 split, and the
 reason #1357's proposed `{arg}` lint was measured and not built, are in
 `tests/test_arg_placeholder_and_paths_env_1357.py`.
 

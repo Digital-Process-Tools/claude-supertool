@@ -122,6 +122,11 @@ _ABSENT = {
     "gl-runners": "the runner fleet is read through the REST API and joined "
                   "with the job queue to derive STARVED; `glab` ships no "
                   "runner subcommand that answers it",
+    "gl-job-trace": "an internal split of gl-job's own :trace mode (#2146), "
+                    "carved out solely to give a multi-id trace fan-out its "
+                    "own timeout budget without widening gl-job's; the raw "
+                    "invocation it stands in for is already claimed by "
+                    "gl-job's own `glab ci trace` mapping above",
 
     # --- presets/bluesky.json, devto.json, hashnode.json ------------------
     "bluesky_publish": _NO_CLI, "bluesky_read": _NO_CLI,
