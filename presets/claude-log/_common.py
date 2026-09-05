@@ -156,11 +156,48 @@ def source_note(res: ProjectDir) -> str:
     )
 
 
-def session_path(uuid: str) -> Path:
-    """Path to a session jsonl file. Prefers the current project; falls back
-    to scanning all projects under ~/.claude/projects/ if the UUID is not found
-    locally — useful when inspecting sessions from worktrees or other projects
-    without changing cwd.
+def _own_store_desc(res: ProjectDir) -> str:
+    """Describe the caller's own resolved store for the cross-store note below.
+
+    `project_dir()` can itself be an ancestor's store, never the cwd's own
+    directory encoded literally (#1317) — so "own store" has to be worded
+    against `res.kind`, not assumed to mean "direct hit", or the cross-store
+    note in `session_path()` would call an ancestor's store "this directory's
+    own" when it is not.
+    """
+    if res.kind == "direct":
+        return f"{res.path} (this directory's own store)"
+    if res.kind == "ancestor":
+        return f"{res.path} (the store for the ancestor project {res.cwd_of})"
+    return f"{res.path} (no store exists for this directory or any ancestor)"
+
+
+def session_path(uuid: str) -> "tuple[Path, str]":
+    """Path to a session jsonl file, and a disclosure note (#1337).
+
+    Prefers the current project; falls back to scanning all projects under
+    ~/.claude/projects/ if the UUID is not found locally — useful when
+    inspecting sessions from worktrees or other projects without changing
+    cwd. A session id is globally unique, so finding it anywhere is usually
+    what the caller wanted: unlike #1317's resolve_project_dir(), which
+    declines rather than nominate a sibling, this function keeps the
+    cross-store hit.
+
+    What #1317 left out: nothing said WHICH store answered when it wasn't the
+    caller's own. Returns `(path, note)`:
+
+    - direct hit in the cwd's own store           -> note == ""
+    - hit in an ancestor's store (`project_dir()`'s own #1317 fallback)
+      -> note is `source_note()`'s ancestor-substitution text, same wording
+         every other op in this family already prints for that case
+    - hit in a genuinely unrelated store, found only by the full scan
+      -> note names that store, and describes what the caller's own store
+         was (or would have been) so "own" is never misworded as "direct"
+         when it was really an ancestor's, or "no store at all"
+    - UUID not found anywhere                      -> note == ""
+
+    Every caller must render a non-empty note; the terminal `[result]`-adjacent
+    line is the part that survives a pipe.
 
     Security: reject UUIDs that contain path separators, traversal segments,
     or an absolute-path prefix. Python's pathlib treats `Path("a") / "/abs"`
@@ -171,9 +208,11 @@ def session_path(uuid: str) -> Path:
     """
     if not uuid or "/" in uuid or "\\" in uuid or ".." in uuid.split("/") or os.path.isabs(uuid):
         raise ValueError(f"invalid session UUID: {uuid!r}")
-    direct = project_dir() / f"{uuid}.jsonl"
+    own_res = resolve_project_dir()
+    own = own_res.path
+    direct = own / f"{uuid}.jsonl"
     if direct.is_file():
-        return direct
+        return direct, source_note(own_res)
     root = claude_projects_root()
     if root.is_dir():
         for project in root.iterdir():
@@ -181,8 +220,16 @@ def session_path(uuid: str) -> Path:
                 continue
             candidate = project / f"{uuid}.jsonl"
             if candidate.is_file():
-                return candidate
-    return direct
+                if project == own:
+                    return candidate, source_note(own_res)
+                note = (
+                    f"Source: cross-project store — this session was not found "
+                    f"under {_own_store_desc(own_res)}; resolved instead "
+                    f"from {project} by scanning every store under "
+                    f"{claude_projects_root()} (a session id is globally unique)"
+                )
+                return candidate, note
+    return direct, ""
 
 
 def read_jsonl(path: Path):

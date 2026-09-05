@@ -998,8 +998,10 @@ def test_the_glyph_scan_reports_what_it_cannot_verify() -> None:
 
     Widening `test_every_preset_printing_a_non_ascii_literal_pins_its_stdout`
     itself to also fail on every computed print was measured before landing,
-    not assumed: 41 of 103 preset entry points -- about 4 in 10 -- have an
-    unpinned `print()` call whose argument is not a literal. That is not a
+    not assumed: 41 of 103 preset entry points -- about 4 in 10 -- had an
+    unpinned `print()` call whose argument is not a literal (now 39: #1337
+    added a `use_utf8_stdout()` call to claude-log's tail.py and summary.py,
+    moving them out of "unpinned"). That is not a
     small number to triage by hand in the same change that adds the
     detector, and #2065 names the exact risk of doing it anyway: a guard
     that fires on 4 in 10 files trains people to add the pin without
@@ -1023,9 +1025,9 @@ def test_the_glyph_scan_reports_what_it_cannot_verify() -> None:
         and computed_print_sites(ast.parse(path.read_text(encoding="utf-8")))
     ]
     names = sorted(str(p.relative_to(ROOT)) for p in unpinned_with_computed)
-    assert len(unpinned_with_computed) == 41, (
+    assert len(unpinned_with_computed) == 39, (
         f"{len(unpinned_with_computed)} unpinned entry points now have a "
-        "print() call whose argument is not a literal (was 41 when this was "
+        "print() call whose argument is not a literal (was 39 when this was "
         "written) -- update this count if the change is deliberate, or "
         "investigate why it moved if it is not:\n  " + "\n  ".join(names)
     )

@@ -524,7 +524,7 @@ def main():
 
     if uuid:
         try:
-            sp = session_path(uuid)
+            sp, cross_store_note = session_path(uuid)
         except ValueError as exc:
             print(f"ERROR: {exc}")
             return 1
@@ -533,6 +533,8 @@ def main():
             return 1
         paths = [sp]
         header = [f"Tool result cost — session {red(uuid)}", f"File: {sp}"]
+        if cross_store_note:
+            header.append(cross_store_note)
     else:
         source = resolve_project_dir()
         if source.kind == "missing":

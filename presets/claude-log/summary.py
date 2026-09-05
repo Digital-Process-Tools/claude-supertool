@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _common import Redactor, event_content_parts, event_role, read_jsonl, session_path, trunc, wants_raw  # noqa: E402
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 
 
 def _parse_ts(ts: str) -> datetime | None:
@@ -41,13 +42,14 @@ def _format_tokens(n: int) -> str:
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) < 2:
         print("ERROR: usage: claude-log-summary:UUID")
         return 1
 
     uuid = sys.argv[1]
     red = Redactor(enabled=not wants_raw(sys.argv[2:]))
-    sp = session_path(uuid)
+    sp, cross_store_note = session_path(uuid)
     if not sp.exists():
         print(f"ERROR: session not found: {sp}")
         return 1
@@ -134,6 +136,8 @@ def main() -> int:
 
     print(f"Session: {uuid}")
     print(f"File:    {sp}")
+    if cross_store_note:
+        print(cross_store_note)
     note = red.note()
     if note:
         print(note)

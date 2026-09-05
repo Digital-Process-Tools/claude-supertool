@@ -208,7 +208,7 @@ class TestUUIDPathTraversal:
 
         # The scan only touches project dirs under ~/.claude/projects/
         # Verify it finds the legit session without escaping to the filesystem root
-        found = _common.session_path("legit-uuid")
+        found, _note = _common.session_path("legit-uuid")
         assert found == other_dir / "legit-uuid.jsonl"
 
 
@@ -371,7 +371,7 @@ class TestCrossProjectUUID:
         monkeypatch.chdir(cwd_a)
 
         # From project A, read a session that lives in project B
-        result = _common.session_path(secret_uuid)
+        result, _note = _common.session_path(secret_uuid)
         assert result == proj_b / f"{secret_uuid}.jsonl"
         # CONTRACT: cross-project read is intentional (worktree support).
         # There is no per-project access control. All sessions under
@@ -544,7 +544,7 @@ class TestSymlinkInProjectsDir:
         monkeypatch.setenv("USERPROFILE", str(home))
         monkeypatch.chdir(cwd)
 
-        result = _common.session_path("symlinked-uuid")
+        result, _note = _common.session_path("symlinked-uuid")
         # session_path() resolves to the symlink (which is_file() == True)
         assert result == link
         # CONTRACT: symlinks are followed without restriction.
@@ -582,7 +582,7 @@ class TestSymlinkInProjectsDir:
         monkeypatch.setenv("USERPROFILE", str(home))
         monkeypatch.chdir(cwd)
 
-        result = _common.session_path("ext-session")
+        result, _note = _common.session_path("ext-session")
         # CONTRACT: symlinked project dirs are scanned and sessions found
         assert result.name == "ext-session.jsonl"
 
