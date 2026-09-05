@@ -612,6 +612,8 @@ The case that cost the most was not a PR: `master` sat red after a squash landed
 
 `NO RUN` and `UNKNOWN` both set `healthy=False`: neither establishes a green, and `healthy` here means "this tier could tell you the truth".
 
+**Since [#2024](https://github.com/Digital-Process-Tools/claude-supertool/issues/2024) this row also spawns and heals the standing `gh-branch` poller** ([#1953](https://github.com/Digital-Process-Tools/claude-supertool/issues/1953), see "`gh-branch` — the default branch is a member, and now it is also pushed" below) exactly as this tier already spawns `github-pr-feed` — through the same `_watch` callable, so radar owns the death cap and the ledger. That closes [#2292](https://github.com/Digital-Process-Tools/claude-supertool/issues/2292)'s own question about *discovery*: once a bare `radar` (not `radar:--state`, which spawns nothing) has run once for a repo, the standing poller survives between ticks and pushes `went_not_green` the moment the default branch turns red, rather than that state only being read on the next `radar` call. `poller_ok` folds into this row's own `healthy`, a stray poller left on a renamed ref is named and never silently accepted, and a poller that is down, capped, unreachable-under-a-repo-target or blind on its last poll all print a `radar: WARNING` naming the exact gap.
+
 ### `radar:--state` — looking without acting
 
 `radar` heals, and healing forks pollers. That made *looking* at this subsystem cost the same as acting on it, and the result was hours of not looking. `radar:--state` reads the resolved config, the snapshot on disk and the pid files, and calls nothing:
