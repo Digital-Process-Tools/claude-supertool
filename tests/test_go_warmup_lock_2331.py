@@ -19,9 +19,12 @@ depend on Go being installed for a fact that has nothing to do with Go.
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from pathlib import Path
+
+import pytest
 
 import _go_warmup_lock as lock_mod
 
@@ -82,7 +85,12 @@ def test_a_stale_lock_falls_back_to_running_fn_after_the_timeout(
         tmp_path: Path) -> None:
     """A lock file left behind by a crashed holder must not deadlock every
     later caller forever -- it degrades to "no serialization", not to a hang
-    or a swallowed answer."""
+    or a swallowed answer.
+
+    Its mtime here is "now" -- freshly written, not old enough to be treated
+    as abandoned by the staleness check below -- so this still exercises the
+    per-call timeout path, distinct from `test_an_abandoned_lock_is_broken_...`
+    which exercises the age-based path instead of waiting it out."""
     stale = tmp_path / "go_warmup.lock"
     stale.write_text("", encoding="utf-8")
 
@@ -92,6 +100,75 @@ def test_a_stale_lock_falls_back_to_running_fn_after_the_timeout(
 
     assert result == "ran anyway"
     assert called == [1]
+
+
+def test_an_abandoned_lock_older_than_the_timeout_is_broken_immediately(
+        tmp_path: Path) -> None:
+    """Auditor finding: without an age check, one leaked lock file forced
+    every later caller -- in this run, and in every run after it that reuses
+    the same lock_dir -- to sit out the full `timeout_s` again, forever, which
+    is worse than paying the cold cost this function exists to avoid paying
+    twice. A lock older than `timeout_s` must be broken and re-acquired
+    quickly rather than waited out."""
+    lock_path = tmp_path / "go_warmup.lock"
+    lock_path.write_text("", encoding="utf-8")
+    old = time.time() - 1000
+    os.utime(lock_path, (old, old))
+
+    called = []
+    start = time.monotonic()
+    result = lock_mod.serialize_once(
+        tmp_path, "go_warmup", lambda: called.append(1) or "ran", 5.0)
+    elapsed = time.monotonic() - start
+
+    assert result == "ran"
+    assert called == [1]
+    assert elapsed < 1.0, (
+        "an abandoned lock forced the full timeout instead of being broken "
+        "immediately: %.3fs" % elapsed)
+
+
+def test_a_release_failure_is_reported_not_swallowed(
+        tmp_path: Path, monkeypatch) -> None:
+    """Auditor finding: a `finally`-block unlink failure was silently
+    swallowed, so a leaked lock (Windows AV holding the just-closed handle,
+    for instance) left no trace anywhere a reader could see it. `fn`'s own
+    result must still reach the caller -- a release failure is not `fn`
+    failing -- but it must be visible."""
+    def _boom(self):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(lock_mod.Path, "unlink", _boom)
+
+    with pytest.warns(UserWarning, match="could not remove its own lock"):
+        result = lock_mod.serialize_once(
+            tmp_path, "go_warmup", lambda: "ran", 5.0)
+
+    assert result == "ran"
+
+
+def test_a_timed_out_wait_that_then_raises_does_not_double_call_fn(
+        tmp_path: Path) -> None:
+    """Self-review finding: an earlier draft nested the timeout-fallback
+    `fn()` call inside the same `try` whose sibling `except OSError` was
+    meant for the lock file itself -- so an `OSError` `fn` raised on this
+    path was caught by that handler and `fn` was silently invoked a second
+    time before the error finally propagated. `fn` must run exactly once,
+    and its own exception must reach this caller unchanged."""
+    stale = tmp_path / "go_warmup.lock"
+    stale.write_text("", encoding="utf-8")
+
+    calls = []
+
+    def fn():
+        calls.append(1)
+        raise OSError("boom, e.g. the tool fn wraps vanished mid-run")
+
+    with pytest.raises(OSError, match="boom"):
+        lock_mod.serialize_once(tmp_path, "go_warmup", fn, 0.2)
+
+    assert calls == [1], (
+        "fn ran more than once on the timeout-fallback path: %r" % calls)
 
 
 def test_an_unwritable_lock_dir_falls_back_to_running_fn(

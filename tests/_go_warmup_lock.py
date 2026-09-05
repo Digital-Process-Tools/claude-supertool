@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import time
+import warnings
 from pathlib import Path
 from typing import Callable, TypeVar
 
@@ -63,17 +64,47 @@ def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
     lock_path = lock_dir / (name + ".lock")
     deadline = time.time() + timeout_s
     fd = None
-    try:
-        while True:
+    while fd is None:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            # A lock file older than `timeout_s` is presumed abandoned by a
+            # holder that never reached its own `finally` -- killed outright,
+            # or an unlink that itself failed (see the warning below). Without
+            # breaking it here, an orphaned lock is permanent: nothing else in
+            # this function ever removes one, so every later caller for this
+            # `name`, in this run and in every run after it that reuses the
+            # same `lock_dir`, would sit out the full `timeout_s` forever
+            # instead of the one-time cost this function exists to bound
+            # (#2331 self-review -- an auditor finding, not observed failing
+            # in production, since no CI leg kills a worker mid-hold today).
             try:
-                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                break
-            except FileExistsError:
-                if time.time() >= deadline:
-                    return fn()
-                time.sleep(0.05)
-    except OSError:
-        return fn()
+                age = time.time() - lock_path.stat().st_mtime
+            except OSError:
+                age = 0.0  # gone already, or unreadable -- just retry below
+            if age > timeout_s:
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+                continue
+            # `fn()` here is outside every `except OSError` in this function,
+            # on purpose: an `OSError` `fn` itself raises must propagate to
+            # *this* caller once, not be mistaken for a second
+            # lock-acquisition failure and rerun `fn` a second time (#2331
+            # self-review) -- an earlier draft nested this `return fn()`
+            # inside a `try` whose sibling `except OSError:` below caught
+            # exactly that, and a real `fn` failure on this path silently ran
+            # twice before finally propagating.
+            if time.time() >= deadline:
+                return fn()
+            time.sleep(0.05)
+        except OSError:
+            # The lock file itself could not be created for some other reason
+            # (an unwritable lock_dir, for instance) -- not "someone else has
+            # it". `fn` has not been called yet on this branch, so calling it
+            # once here cannot double-invoke anything.
+            return fn()
 
     try:
         return fn()
@@ -81,5 +112,15 @@ def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
         os.close(fd)
         try:
             lock_path.unlink()
-        except OSError:
-            pass
+        except OSError as exc:
+            # Best-effort, and not fatal to this call -- the staleness check
+            # above is what actually bounds the cost of a lock this process
+            # could not clean up after itself (a Windows AV scan transiently
+            # holding the just-closed handle is the case tests/conftest.py
+            # already names for a different lock, around a `git fsmonitor`
+            # daemon). But silence here is exactly what let a leaked lock go
+            # unnoticed until every later caller paid for it, so it is
+            # reported rather than swallowed (#2331 self-review, auditor).
+            warnings.warn(
+                "serialize_once could not remove its own lock file %s after "
+                "running %r: %s" % (lock_path, name, exc), stacklevel=2)
