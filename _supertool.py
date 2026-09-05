@@ -11559,7 +11559,54 @@ def _nearest_diff_kind(anchor: List[str], window: List[str]) -> str:
     # and it is kept because `differs in 0 of 12 lines` under `old string not
     # found` would be this issue again, one rewrite later.
     differing = max(1, len(anchor) - same)
+    # #1794 -- naming the count still left a real case costing a second
+    # round-trip: two lines that read as identical at a glance (a doubled
+    # backslash escaping a quote inside a TOML literal block, invisible to
+    # the eye) but differ at one byte. When exactly one line differs AND
+    # the two blocks are the same height -- no insertion or deletion
+    # shifted anything, so "index i in anchor" and "index i in window"
+    # name the same line -- the offset of the first character where that
+    # one line diverges is cheap to compute and turns "which of these 12
+    # lines" into "which byte of this one line". Left unnamed when heights
+    # differ: an insertion could make every positional pair after it
+    # differ, and a byte offset picked from the wrong pairing would be
+    # confidently wrong, which costs more than saying nothing
+    # (docs/validators.md).
+    if differing == 1 and len(anchor) == len(window):
+        _diff_at = [i for i in range(len(anchor)) if anchor[i] != window[i]]
+        if len(_diff_at) == 1:
+            _i = _diff_at[0]
+            _off = _first_diff_offset(anchor[_i], window[_i])
+            return (f"differs in {differing} of {len(anchor)} lines -- "
+                    f"first byte diverges at line {_i + 1}, offset {_off}")
     return f"differs in {differing} of {len(anchor)} lines"
+
+
+def _first_diff_offset(a: str, b: str) -> int:
+    """0-based UTF-8 BYTE index of the first byte where *a* and *b* diverge.
+
+    A CHARACTER index would be wrong the moment either line holds a
+    multi-byte character before the divergence point -- named as a "byte
+    offset" in the hint that calls this (#1794 asked for one explicitly),
+    so it has to actually be one rather than a character count that happens
+    to coincide with it on ASCII, which is all the tests that shipped
+    alongside the first version of this function covered.
+
+    Where one is a prefix of the other, the divergence IS the length of the
+    shorter encoded string -- the point past its last byte, which is where a
+    caller re-anchoring the line would need to look. `surrogatepass` rather
+    than the default strict encoder: a line read back through `read` can
+    carry a lone surrogate from an upstream decode-with-replacement, and this
+    is a diagnostic computing a position, not a write -- raising here would
+    turn "cannot show WHERE" into "cannot show anything at all" for the one
+    kind of file that most needs a byte offset instead of a character count.
+    """
+    ab = a.encode("utf-8", errors="surrogatepass")
+    bb = b.encode("utf-8", errors="surrogatepass")
+    for _idx, (_ca, _cb) in enumerate(zip(ab, bb)):
+        if _ca != _cb:
+            return _idx
+    return min(len(ab), len(bb))
 
 
 def _edit_nearest_hint(old: str, lines: List[str], path: str = "") -> str:
@@ -28221,6 +28268,66 @@ def _payload_shell_quote_escape_refusal(parsed: Any, raw: str) -> str:
     return "".join(out)
 
 
+_PAYLOAD_BS_CODE_EXTS = frozenset((
+    ".json", ".py", ".js", ".jsx", ".ts", ".tsx", ".jsonc", ".yaml", ".yml"))
+_PAYLOAD_BS_PROSE_EXTS = frozenset((".md", ".txt", ".rst", ".adoc"))
+
+
+def _payload_target_paths(parsed: Any) -> List[str]:
+    """Every `path` string this payload writes to -- the top-level field for
+    a single-op payload, or one per `[[ops]]` entry for a batch.
+    """
+    paths: List[str] = []
+    if not isinstance(parsed, dict):
+        return paths
+    top = parsed.get("path")
+    if isinstance(top, str):
+        paths.append(top)
+    ops = parsed.get("ops")
+    if isinstance(ops, list):
+        for entry in ops:
+            if isinstance(entry, dict) and isinstance(entry.get("path"), str):
+                paths.append(entry["path"])
+    return paths
+
+
+def _payload_extension_bs_hint(parsed: Any) -> str:
+    """One extra line naming which of the two fixes below is the common case
+    for THIS payload's target (#1794).
+
+    Additive only: never changes whether the refusal fires, only nudges the
+    reader toward the fix they are more likely to want. The refusal asks the
+    same question ("half the run, or the run as written?") of a payload
+    writing `.json`/`.py` -- where a doubled backslash is very often a REAL
+    one, a JSON string escape or a Python string-literal escape landing
+    correctly -- and of a payload writing prose, where it almost never is.
+    Silent (returns "") when the targets are mixed or the extension is not
+    one this repo has an opinion about -- a wrong nudge costs more than none,
+    and this is a hint, not a verdict the refusal itself is not making.
+    """
+    exts = {os.path.splitext(p)[1].lower() for p in _payload_target_paths(parsed)}
+    exts.discard("")
+    if not exts:
+        return ""
+    which = ", ".join(sorted(exts))
+    if exts <= _PAYLOAD_BS_CODE_EXTS:
+        return (
+            "  " + mark(chr(8627)) + " the target here is " + which + " -- a "
+            "doubled backslash there is often a REAL one (a JSON string "
+            "escape, a Python string-literal escape) rather than an escape "
+            "reflex: the SECOND fix below is the common case for this "
+            "extension, not the first." + chr(10)
+        )
+    if exts <= _PAYLOAD_BS_PROSE_EXTS:
+        return (
+            "  " + mark(chr(8627)) + " the target here is " + which + " -- "
+            "prose rarely wants a literal doubled backslash: the FIRST fix "
+            "below (write half) is the common case for this extension, not "
+            "the second." + chr(10)
+        )
+    return ""
+
+
 def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
     """Refuse a payload that would WRITE a doubled backslash (#1087).
 
@@ -28284,6 +28391,9 @@ def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
             ) + chr(10)
         )
     field_example = _literal_bs_field_list_example(findings, scope)
+    ext_hint = _payload_extension_bs_hint(parsed)
+    if ext_hint:
+        out.append(ext_hint)
     out.append(
         "  " + arrow + " TWO OPPOSITE fixes, and nothing here can tell which you "
         "meant -- decide per occurrence, then send the payload once:" + chr(10)
@@ -28296,7 +28406,7 @@ def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
         + _PAYLOAD_LITERAL_BS_KEY + " = " + field_example + "` -- to leave any other "
         "field's own doubled runs refused (#1839). Either way, this refusal becomes "
         "a decision you recorded." + chr(10)
-        + "  (#1087, #1096, #1808, #1814, #1819, #1839)"
+        + "  (#1087, #1096, #1808, #1814, #1819, #1839, #1794)"
     )
     return "".join(out)
 
@@ -29884,6 +29994,19 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             _arg_sep = ":"
         op = parts[0] if parts else ""
 
+    def _op_gated_by_mixed_tree_write_check() -> bool:
+        """True for the same two classes `_resolve_custom_op`'s own #678
+        check gates downstream: a write-class builtin (`_OP_SAFETY_BUILTIN`),
+        or any op this project's config actually declares under "ops". An
+        unrecognized op name must NOT match, so it still falls through to
+        "unknown operation" rather than being swallowed as a mixed-tree
+        decline it was never going to earn (#1878).
+        """
+        if _OP_SAFETY_BUILTIN.get(op) == "writes":
+            return True
+        _ops_cfg = _load_config().get("ops")
+        return isinstance(_ops_cfg, dict) and op in _ops_cfg
+
     # Read-op @payload route — 'grep:@file' / 'around:@-' etc. (#625).
     #
     # Gated on the reference actually resolving ('@-', or an existing file)
@@ -29966,6 +30089,28 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 f"JSON/TOML payload, not on the colon CLI."
                 + _at_file_payload_hint(op) + chr(10)
             ))
+        # #1878 -- gated to fire ONLY here, immediately before `_load_at_file`
+        # can drain stdin, rather than unconditionally at the top of the
+        # function. A first version of this fix ran the same check the
+        # instant `op` was known, ahead of `_gate_paths`/the extra-colon-
+        # token refusal too -- which changed which refusal wins for a
+        # MIXED-TREE call that ALSO uses the plain colon-CLI (no payload at
+        # all): `edit:::old:::new:::/etc/passwd` under a mix used to answer
+        # `ERROR: path escapes cwd` and started answering the generic
+        # mixed-tree `SKIPPED` instead, silently -- a more specific,
+        # actionable refusal replaced by a less specific one for a call that
+        # was never going to touch stdin. Caught in self-review, not by any
+        # test (#1878's own repro is `@-`/`@file` only). Scoping the early
+        # exit to "about to call `_load_at_file`" -- after the `len(parts) >
+        # 2` refusal above, which never touches stdin either -- restores the
+        # original precedence for every refusal that does not need the
+        # payload, and still declines before stdin is touched for the one
+        # that does.
+        if _op_gated_by_mixed_tree_write_check():
+            _mixed_early = _mixed_tree_pair()
+            if _mixed_early is not None and not _mixed_tree_allowed():
+                _SKIP_COUNT[0] += 1
+                return _receipt(header, _mixed_tree_decline(op, _mixed_early))
         try:
             payload = _load_at_file(parts[1])
             parts, _at_file_replace_all = _at_file_to_parts(op, payload)
@@ -30078,7 +30223,18 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # same chokepoint every path argument already passes through, rather
     # than adding a second list that can drift from the first (#1285's
     # own lesson, about this exact table).
-    if _OP_SAFETY_BUILTIN.get(op) == "writes":
+    #
+    # #1878 added an EARLIER instance of this same check, gated to fire only
+    # when a payload route is about to drain stdin (see the `@file route`
+    # block above) -- so a call that reaches here already survived that one
+    # (or never triggered it, having no payload). This one still has to run:
+    # it is what declines a plain colon-CLI write-class call
+    # (`edit:::old:::new:::path`, no `@-`/`@file` at all) under a mixed
+    # tree, and moving it earlier unconditionally was tried and reverted in
+    # self-review -- it silently replaced a more specific `_gate_paths` /
+    # extra-colon-token refusal with this generic one for a call that was
+    # never going to touch stdin either way.
+    if _op_gated_by_mixed_tree_write_check():
         _mixed = _mixed_tree_pair()
         if _mixed is not None and not _mixed_tree_allowed():
             _SKIP_COUNT[0] += 1
