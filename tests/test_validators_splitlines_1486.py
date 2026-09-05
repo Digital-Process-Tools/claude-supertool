@@ -294,7 +294,7 @@ def test_jit_index_rows_are_framed_the_way_the_hook_frames_them(sep):
     mod = adapter("jit-index")
     text = (f"Bash\t~one{sep}still-one\tf.md\tremind\tk\t\n"
             "Bash\t~two\tg.md\tremind\tk\t\n")
-    patterns, shape_errors, parsed, tabbed = mod._rows(text)
+    patterns, shape_errors, parsed, tabbed = mod._rows(text, is_vocab_layer=False)
 
     assert (parsed, tabbed) == (2, 2), (parsed, tabbed, shape_errors)
     assert [ln for ln, _p, _f in patterns] == [1, 2]

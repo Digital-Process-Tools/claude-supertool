@@ -85,3 +85,45 @@ def test_vocab_keyword_column_is_not_treated_as_an_awk_pattern(tmp_path):
     result = _run(idx)
     assert result["ok"] is True, result
     assert result.get("errors", []) == []
+
+
+def _tools_index(tmp_path, *rows):
+    """A `00-index.tsv` under `tools/`, never `vocabulary/` -- deliberately
+    the wrong dimension, to pin the disambiguation the review round added."""
+    d = tmp_path / "jit-context" / "tools" / "00-manual"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "00-index.tsv"
+    f.write_text("".join(r + "\n" for r in rows), encoding="utf-8")
+    return f
+
+
+def test_a_truncated_tools_row_that_collapses_to_3_fields_is_still_refused(tmp_path):
+    """Review finding (#2211): `_rows()` classifies a 3-field row as
+    vocabulary purely by shape, with no directory check, so a hand-truncated
+    tools row missing its last three columns (`tool<TAB>match<TAB>` with an
+    empty `file`) satisfied the same predicate a real vocabulary row does --
+    and unlike a vocabulary row, which is never checked at all, a tools row's
+    `match` column IS supposed to be compiled by awk. A file under `tools/`
+    must never take the vocabulary branch, no matter how a row's fields
+    happen to look.
+
+    Would this pass if the code did nothing? No: before the disambiguation
+    fix, this exact row was silently accepted with zero errors.
+    """
+    row = TAB.join(["mytool", "~gh pr", ""])
+    idx = _tools_index(tmp_path, row)
+    result = _run(idx)
+    assert result["ok"] is False, result
+    assert "shape" in _shape_codes(result)
+
+
+def test_a_genuine_vocab_row_under_tools_is_still_refused(tmp_path):
+    """The disambiguation cuts the other way too: a well-formed-looking
+    vocabulary row placed under `tools/` (never written there for real) must
+    not be accepted just because its fields happen to satisfy the vocabulary
+    shape -- only a `vocabulary/` layer gets that branch at all."""
+    row = TAB.join(["three states", "three-states.md", "generic"])
+    idx = _tools_index(tmp_path, row)
+    result = _run(idx)
+    assert result["ok"] is False, result
+    assert "shape" in _shape_codes(result)
