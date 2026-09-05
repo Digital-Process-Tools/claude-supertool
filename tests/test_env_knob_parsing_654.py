@@ -26,6 +26,7 @@ import ast
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,15 @@ import supertool  # noqa: E402
 from _preset_loader import load_preset_module  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# (#810) `_run_trail` below drives the same `git log -S` object-store walk
+# `tests/test_git_trail_635.py` already found intermittently raising "fatal:
+# unable to read <sha>" on a rare GitHub Actions leg -- a listing-then-stat
+# race on the object store, not a `trail.py` bug. That file's own `_run()`
+# retries past the exact signature (see its `_UNREADABLE_OBJECT_RE` and the
+# `for attempt in range(3)` loop); this file builds its own history fixture
+# and drives the same script the same way, so it needs the identical guard.
+_UNREADABLE_OBJECT_RE = re.compile(r"unable to read [0-9a-f]{40}")
 
 
 def _decode(raw: bytes | None) -> str:
@@ -566,17 +576,27 @@ def _run_trail(repo, env_extra):
     `SUPERTOOL_TRAIL_DETAIL_CAP=0` is a legitimate value (minimum 0) and so is
     silent; it just spares us one `git show` per commit, which is the only slow
     part of the preset.
+
+    Retries past the transient object-store race #810 documents (see the
+    `_UNREADABLE_OBJECT_RE` comment above): a non-zero exit whose stdout names
+    an unreadable object gets one more try, exactly like
+    `tests/test_git_trail_635.py`'s own `_run()`. Any other failure — including
+    a real `trail.py` bug — returns on the first attempt, unretried.
     """
     import os
 
     env = dict(os.environ)
     env.setdefault("SUPERTOOL_TRAIL_DETAIL_CAP", "0")
     env.update(env_extra)
-    return _run_utf8(
-        [sys.executable, str(REPO_ROOT / "presets" / "git" / "trail.py"),
-         "NEEDLE", "data.txt"],
-        timeout=120, cwd=str(repo), env=env,
-    )
+    argv = [sys.executable, str(REPO_ROOT / "presets" / "git" / "trail.py"),
+            "NEEDLE", "data.txt"]
+    proc = None
+    for attempt in range(3):
+        proc = _run_utf8(argv, timeout=120, cwd=str(repo), env=env)
+        if proc.returncode == 0 or not _UNREADABLE_OBJECT_RE.search(proc.stdout):
+            break
+        time.sleep(0.2 * (attempt + 1))
+    return proc
 
 
 def test_the_history_fixture_outgrows_the_default_cap(history_repo):
@@ -658,6 +678,56 @@ def test_good_knob_still_reaches_the_preset(history_repo):
     assert "## Timeline (3 commits)" in out, out[:2000]
     assert "note: SUPERTOOL_" not in out, (
         "a good value must not be reported as a problem")
+
+
+def test_run_trail_retries_past_a_transient_unreadable_object(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """The #810 retry must reach this file's own `_run_trail`, not just
+    `test_git_trail_635.py`'s `_run()` — both drive the same `git log -S`
+    object-store walk against a fixture-built history."""
+    calls: list[list[str]] = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(
+                argv, returncode=1,
+                stdout=("ERROR: git failed searching for %r: fatal: unable "
+                         "to read %s\n" % ("NEEDLE", "a" * 40)).encode("utf-8"),
+                stderr=b"",
+            )
+        return subprocess.CompletedProcess(
+            argv, returncode=0, stdout=b"ok\n", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+
+    proc = _run_trail(tmp_path, {})
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout == "ok\n"
+    assert len(calls) == 2, "expected exactly one retry, not a retry loop"
+
+
+def test_run_trail_does_not_retry_an_unrelated_failure(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """A real `trail.py` bug must fail fast, not be absorbed by the #810 retry."""
+    calls: list[list[str]] = []
+
+    def _fake_run(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv, returncode=1,
+            stdout=b"ERROR: not inside a git repository.\n", stderr=b"")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    proc = _run_trail(tmp_path, {})
+
+    assert proc.returncode == 1
+    assert len(calls) == 1, "an unrelated failure must not be retried"
 
 
 # --------------------------------------------------------------------------
