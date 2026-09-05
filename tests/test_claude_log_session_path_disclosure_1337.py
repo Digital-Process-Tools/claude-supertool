@@ -176,3 +176,65 @@ class TestSessionPathDisclosesCrossStoreHit:
         out = cp.stdout + cp.stderr
         assert cp.returncode == 0
         assert "cross" not in out.lower()
+
+
+class TestSessionPathAncestorAndOwnDescription:
+    """Reviewer finding on #1337: `project_dir()` can itself be an ancestor's
+    store (#1317), never necessarily the cwd's own directory encoded
+    literally, so "own store" must be worded against the resolved `kind`
+    rather than assumed to always mean a direct hit."""
+
+    def test_hit_in_ancestor_own_store_gets_the_ancestor_note_not_silence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "fake-home"
+        proj = tmp_path / "work" / "proj"
+        deep = proj / "presets" / "claude-log"
+        deep.mkdir(parents=True)
+        store = _store(home, proj)
+        uuid = "ffffffff-0000-0000-0000-000000000000"
+        expected = _session(store, uuid, "hello from the ancestor project")
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.chdir(deep)
+
+        path, note = _common.session_path(uuid)
+        assert path == expected
+        # It IS the caller's own resolved store (an ancestor's), so the note
+        # must be the ancestor-substitution note, not the cross-project one,
+        # and must not claim "this directory's own store" for a directory
+        # that is not `deep` itself.
+        assert note != ""
+        assert "ancestor" in note.lower()
+        assert "cross-project" not in note.lower()
+
+    def test_cross_store_note_describes_an_ancestor_own_store_accurately(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the caller's own resolved store is an ancestor's (not a direct
+        hit) and the UUID is found in a THIRD, unrelated store, the note must
+        not call the ancestor's store "this directory's own" — it is not."""
+        home = tmp_path / "fake-home"
+        proj = tmp_path / "work" / "proj"
+        deep = proj / "presets" / "claude-log"
+        deep.mkdir(parents=True)
+        _store(home, proj)  # caller's own resolved store: an ancestor's, empty
+        unrelated = tmp_path / "work" / "unrelated"
+        unrelated.mkdir(parents=True)
+        other_store = _store(home, unrelated)
+        uuid = "99999999-0000-0000-0000-000000000000"
+        expected = _session(other_store, uuid, "hello from a stranger")
+
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.chdir(deep)
+
+        path, note = _common.session_path(uuid)
+        assert path == expected
+        assert note != ""
+        assert "this directory's own store" not in note
+        assert "ancestor project" in note
+        assert str(other_store) in note
