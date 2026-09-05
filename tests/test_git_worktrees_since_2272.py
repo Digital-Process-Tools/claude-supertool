@@ -23,8 +23,6 @@ import sys
 import time
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).parent.parent
 PRESET = ROOT / "presets" / "git" / "worktrees.py"
 _spec = importlib.util.spec_from_file_location("git_worktrees", PRESET)
@@ -319,6 +317,16 @@ def test_main_accepts_since_against_a_single_unambiguous_match(
     out = capsys.readouterr().out
     assert "since= matched" not in out, out
     assert "ERROR: refused -- since=" not in out, out
+    # `code` was a dropped local here, not a placeholder: with the real
+    # (unmocked) `_newest_write`, since=90 against a tmp_path with no
+    # candidate files makes every candidate excluded, so `_newest_write`
+    # falls back to `age = now - known_good_since` (~90s), which is inside
+    # `ACTIVE_WINDOW_DEFAULT` (900s) -- so the row is deterministically
+    # `occupied` (the caller's own declared write still counts as recent
+    # activity; it is only EXCLUDED for a caller-declared cutoff further in
+    # the past than the activity window, not for one this fresh), never the
+    # since= refusal this test exists to rule out.
+    assert code == wt.EXIT_OCCUPIED, (code, out)
 
 
 def test_main_refuses_disagreeing_since_tokens(monkeypatch, tmp_path, capsys) -> None:
