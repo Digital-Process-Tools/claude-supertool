@@ -76,3 +76,29 @@ def test_an_inserted_line_still_gets_no_offset() -> None:
     assert hint, "no hint at all"
     assert "offset" not in hint.lower(), (
         f"named a byte offset across a height mismatch: {hint}")
+
+def test_the_offset_is_a_real_utf8_byte_offset_not_a_character_count():
+    """Self-review finding: a CHARACTER index reads as correct on every
+    ASCII fixture in this file and is silently wrong the moment the
+    COMMON PREFIX before the divergence point holds a multi-byte character
+    -- exactly the kind of invisible-at-a-glance difference #1794 is about.
+    The line and its near-miss here share `caf` + accented-e (2 bytes) +
+    `_value = compute` as an identical prefix, THEN diverge -- so a
+    character count and a byte count disagree by exactly one, and only the
+    byte count is correct for a caller re-anchoring with a byte-oriented
+    tool.
+    """
+    accented_e = chr(233)  # 'e' with acute accent, 2 bytes in UTF-8
+    body = list(_block())
+    body[6] = "    caf" + accented_e + "_value = compute(6, 6)"
+    anchor = list(body)
+    anchor[6] = "    caf" + accented_e + "_value = computeX(6, 6)"
+    hint = supertool._edit_nearest_hint(NL.join(anchor), _file(body), "f.py")
+    assert "1 of 12" in hint, f"expected exactly one differing line: {hint}"
+    assert "offset 25" in hint, (
+        f"expected the true UTF-8 byte offset (25 -- one more than the "
+        f"24-character prefix, because the accented e costs 2 bytes): "
+        f"{hint}")
+    assert "offset 24" not in hint, (
+        f"reported a CHARACTER offset where a byte offset was promised: "
+        f"{hint}")

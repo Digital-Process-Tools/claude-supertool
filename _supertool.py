@@ -11583,16 +11583,30 @@ def _nearest_diff_kind(anchor: List[str], window: List[str]) -> str:
 
 
 def _first_diff_offset(a: str, b: str) -> int:
-    """0-based index of the first character where *a* and *b* diverge.
+    """0-based UTF-8 BYTE index of the first byte where *a* and *b* diverge.
+
+    A CHARACTER index would be wrong the moment either line holds a
+    multi-byte character before the divergence point -- named as a "byte
+    offset" in the hint that calls this (#1794 asked for one explicitly),
+    so it has to actually be one rather than a character count that happens
+    to coincide with it on ASCII, which is all the tests that shipped
+    alongside the first version of this function covered.
 
     Where one is a prefix of the other, the divergence IS the length of the
-    shorter string -- the point past its last character, which is where a
-    caller re-anchoring the line would need to look.
+    shorter encoded string -- the point past its last byte, which is where a
+    caller re-anchoring the line would need to look. `surrogatepass` rather
+    than the default strict encoder: a line read back through `read` can
+    carry a lone surrogate from an upstream decode-with-replacement, and this
+    is a diagnostic computing a position, not a write -- raising here would
+    turn "cannot show WHERE" into "cannot show anything at all" for the one
+    kind of file that most needs a byte offset instead of a character count.
     """
-    for _idx, (_ca, _cb) in enumerate(zip(a, b)):
+    ab = a.encode("utf-8", errors="surrogatepass")
+    bb = b.encode("utf-8", errors="surrogatepass")
+    for _idx, (_ca, _cb) in enumerate(zip(ab, bb)):
         if _ca != _cb:
             return _idx
-    return min(len(a), len(b))
+    return min(len(ab), len(bb))
 
 
 def _edit_nearest_hint(old: str, lines: List[str], path: str = "") -> str:
@@ -29980,27 +29994,18 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             _arg_sep = ":"
         op = parts[0] if parts else ""
 
-    # #1878 -- the #1942 check below used to sit after the @file/'@-' payload
-    # route a few blocks down, so a mixed-tree decline for a write-class
-    # builtin -- or for a config-declared custom op with a ':::'-syntax
-    # payload route, like `git-commit` -- still drained stdin first. Reading
-    # the payload teaches nothing the decline needs: `op`, `argv` and the cwd
-    # already answer the question. `sys.stdin` is a single stream (#341), so
-    # once it is drained the caller cannot retry without re-sending the whole
-    # payload -- exactly the round-trip #1878 reports. Scoped to the same two
-    # classes `_resolve_custom_op`'s own #678 check gates further downstream
-    # (a write-class builtin via `_OP_SAFETY_BUILTIN`, or any op this
-    # project's config actually declares under "ops") so an unrecognized op
-    # name still falls through to "unknown operation" rather than being
-    # swallowed here as a mixed-tree decline.
-    _custom_ops_cfg = _load_config().get("ops")
-    if _OP_SAFETY_BUILTIN.get(op) == "writes" or (
-        isinstance(_custom_ops_cfg, dict) and op in _custom_ops_cfg
-    ):
-        _mixed_early = _mixed_tree_pair()
-        if _mixed_early is not None and not _mixed_tree_allowed():
-            _SKIP_COUNT[0] += 1
-            return _receipt(header, _mixed_tree_decline(op, _mixed_early))
+    def _op_gated_by_mixed_tree_write_check() -> bool:
+        """True for the same two classes `_resolve_custom_op`'s own #678
+        check gates downstream: a write-class builtin (`_OP_SAFETY_BUILTIN`),
+        or any op this project's config actually declares under "ops". An
+        unrecognized op name must NOT match, so it still falls through to
+        "unknown operation" rather than being swallowed as a mixed-tree
+        decline it was never going to earn (#1878).
+        """
+        if _OP_SAFETY_BUILTIN.get(op) == "writes":
+            return True
+        _ops_cfg = _load_config().get("ops")
+        return isinstance(_ops_cfg, dict) and op in _ops_cfg
 
     # Read-op @payload route — 'grep:@file' / 'around:@-' etc. (#625).
     #
@@ -30084,6 +30089,28 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 f"JSON/TOML payload, not on the colon CLI."
                 + _at_file_payload_hint(op) + chr(10)
             ))
+        # #1878 -- gated to fire ONLY here, immediately before `_load_at_file`
+        # can drain stdin, rather than unconditionally at the top of the
+        # function. A first version of this fix ran the same check the
+        # instant `op` was known, ahead of `_gate_paths`/the extra-colon-
+        # token refusal too -- which changed which refusal wins for a
+        # MIXED-TREE call that ALSO uses the plain colon-CLI (no payload at
+        # all): `edit:::old:::new:::/etc/passwd` under a mix used to answer
+        # `ERROR: path escapes cwd` and started answering the generic
+        # mixed-tree `SKIPPED` instead, silently -- a more specific,
+        # actionable refusal replaced by a less specific one for a call that
+        # was never going to touch stdin. Caught in self-review, not by any
+        # test (#1878's own repro is `@-`/`@file` only). Scoping the early
+        # exit to "about to call `_load_at_file`" -- after the `len(parts) >
+        # 2` refusal above, which never touches stdin either -- restores the
+        # original precedence for every refusal that does not need the
+        # payload, and still declines before stdin is touched for the one
+        # that does.
+        if _op_gated_by_mixed_tree_write_check():
+            _mixed_early = _mixed_tree_pair()
+            if _mixed_early is not None and not _mixed_tree_allowed():
+                _SKIP_COUNT[0] += 1
+                return _receipt(header, _mixed_tree_decline(op, _mixed_early))
         try:
             payload = _load_at_file(parts[1])
             parts, _at_file_replace_all = _at_file_to_parts(op, payload)
@@ -30185,10 +30212,33 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         for _i, _pos in enumerate(_path_slots):
             parts[_pos] = _gated[_i]
 
-    # #1942's write-class mixed-tree check used to live here. Moved to
-    # #1878's earlier chokepoint above -- right after `op` is known, before
-    # either payload route can drain stdin -- because nothing between there
-    # and here needs the payload or the gated path to decide it.
+    # #1942 -- #678's guard declined a preset/custom op outright under a
+    # mixed core/tree pair, but a built-in WRITE op only got the stderr
+    # warning `main()` prints once and kept running to completion: the
+    # write itself always lands on the right file (`_safe_path` resolves
+    # against `os.getcwd()` regardless of which core answered), but the
+    # CODE that answered -- validators, formatters, hooks -- was the other
+    # tree's, and the receipt read exactly like a correct one. Gate the
+    # same class `_OP_SAFETY_BUILTIN` already names as "writes", at the
+    # same chokepoint every path argument already passes through, rather
+    # than adding a second list that can drift from the first (#1285's
+    # own lesson, about this exact table).
+    #
+    # #1878 added an EARLIER instance of this same check, gated to fire only
+    # when a payload route is about to drain stdin (see the `@file route`
+    # block above) -- so a call that reaches here already survived that one
+    # (or never triggered it, having no payload). This one still has to run:
+    # it is what declines a plain colon-CLI write-class call
+    # (`edit:::old:::new:::path`, no `@-`/`@file` at all) under a mixed
+    # tree, and moving it earlier unconditionally was tried and reverted in
+    # self-review -- it silently replaced a more specific `_gate_paths` /
+    # extra-colon-token refusal with this generic one for a call that was
+    # never going to touch stdin either way.
+    if _op_gated_by_mixed_tree_write_check():
+        _mixed = _mixed_tree_pair()
+        if _mixed is not None and not _mixed_tree_allowed():
+            _SKIP_COUNT[0] += 1
+            return _receipt(header, _mixed_tree_decline(op, _mixed))
 
     try:
         if op == "read":

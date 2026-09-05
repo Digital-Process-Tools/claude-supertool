@@ -123,3 +123,51 @@ def test_edit_at_dash_still_reads_stdin_when_the_tree_matches(tmp_path, monkeypa
     assert (root / "existing.txt").read_text(encoding="utf-8") == "new\n", (
         f"an unmixed edit:@- did not apply the payload:\n{out}"
     )
+
+def test_a_plain_colon_cli_containment_error_still_wins_over_mixed_tree(
+    tmp_path, monkeypatch
+):
+    """Self-review finding: an earlier version of this fix ran the
+    mixed-tree check unconditionally the instant `op` was known, ahead of
+    `_gate_paths`. That silently swapped a specific, actionable refusal
+    (`ERROR: path escapes cwd`) for the generic mixed-tree `SKIPPED` on any
+    call that never touches a payload at all -- a call this fix has no
+    business changing, since it was never going to drain stdin either way.
+    The chokepoint the class-instance edits actually landed on is gated to
+    fire only immediately before `_load_at_file` would run, restoring this
+    precedence for the plain colon-CLI form.
+
+    `SUPERTOOL_ALLOW_OUTSIDE_CWD=1` is on by default for the whole suite
+    (conftest.py `pytest_configure`) so tmp_path fixtures outside cwd stay
+    writable -- unset here, per that same docstring's own documented escape
+    hatch, because THIS test needs the containment gate to actually fire.
+    """
+    monkeypatch.delenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", raising=False)
+    root = _project_root(tmp_path, "other_checkout")
+    _foreign_core(root)
+    _stand_in(monkeypatch, root)
+
+    out = supertool.dispatch("edit:::old:::new:::/etc/passwd")
+
+    assert "path escapes cwd" in out, (
+        f"a mixed-tree decline swallowed the more specific containment "
+        f"error for a call with no payload at all: {out}")
+    assert "SKIPPED" not in out, out
+
+
+def test_a_plain_colon_cli_extra_token_refusal_still_wins_over_mixed_tree(
+    tmp_path, monkeypatch
+):
+    """Same class, the other refusal `_dispatch_impl` checks before the
+    #1942 chokepoint: an unconsumed trailing token."""
+    root = _project_root(tmp_path, "other_checkout")
+    _foreign_core(root)
+    _stand_in(monkeypatch, root)
+
+    out = supertool.dispatch("paste:::f.txt:::content:::extra_token")
+
+    assert "SKIPPED" in out, (
+        f"the parent commit (pre-#1878) also answers SKIPPED here -- "
+        f"paste has no fixed extra-token slot to violate, so this is "
+        f"the correct receipt, pinned as a control against a future "
+        f"refactor changing it silently: {out}")
