@@ -181,6 +181,8 @@ Contributed by preset(s): evil — a project's own top-level `builtin-ops` entry
 
 Documentation-only keys (`syntax`, `description`, `example`, `status`, `hint`, `form` — the shape [#1675](https://github.com/Digital-Process-Tools/claude-supertool/issues/1675) already ships for `vim`/`workspace`) render separately, since they change nothing about how the built-in runs. A built-in nobody's config re-tunes keeps the plain refusal ([#2079](https://github.com/Digital-Process-Tools/claude-supertool/issues/2079)).
 
+Three states here too, and the third is the one that used to be invisible: a `builtin-ops.<op>` set to something that is **not a table** (a malformed manifest — `_merge_presets` stores whatever the JSON held without checking its shape, and records no preset warning for it) is neither a clean config nor a readable override, and used to render byte-identical to the op having no override at all. It now says so and names the value it could not read. A `builtin-ops` key name is preset-authored text as freely chosen as its value, so it is flattened to one line before rendering — a key holding a newline would otherwise write a line of its author's choosing at column 0 inside this system-authored block, which is [#1391](https://github.com/Digital-Process-Tools/claude-supertool/issues/1391)'s shape.
+
 ## `doctor` — the environment and toolchain supertool runs in
 
 Two halves ([#1857](https://github.com/Digital-Process-Tools/claude-supertool/issues/1857), [#1950](https://github.com/Digital-Process-Tools/claude-supertool/issues/1950)), filed separately so neither buries the other, one op because they answer the same question — "what, in this environment, could quietly be going wrong under supertool" — from two directions.
