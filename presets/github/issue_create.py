@@ -292,6 +292,22 @@ def _validate(payload: dict) -> str | None:
         return "ERROR: payload missing required field: title"
     if payload.get("body") and payload.get("body_file"):
         return "ERROR: payload has both body and body_file — use one"
+    # #2315: a payload whose `body` key parses as a TOML array-of-tables
+    # (`[[body]]`, a list of `{"value": ...}` dicts) reached
+    # `apply_forge_disclosure(body: str)` as a `list` with no type check
+    # here, three frames from where the crash actually surfaced.
+    # gh-issue-comment accepts the same shape without crashing, but its own
+    # `_body_text` does not actually join it -- `str([{"value": "..."}])`
+    # publishes the Python repr of the list as the comment body (reported
+    # separately). Refuse here instead of matching that: `body` must be a
+    # plain string.
+    if "body" in payload and not isinstance(payload.get("body"), str):
+        return (
+            "ERROR: body must be a string, not "
+            f"{type(payload['body']).__name__} -- gh-issue-create does "
+            "not accept a TOML [[body]] table-array. Pass body as a "
+            "single string, or use body_file to read one from a file."
+        )
     return None
 
 

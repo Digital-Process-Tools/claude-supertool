@@ -2193,6 +2193,8 @@ Resolution order (most specific wins): explicit `repo` in the payload → `defau
 
 **`body_file` gets the same treatment as the payload itself** ([#630](https://github.com/Digital-Process-Tools/claude-supertool/issues/630)). A missing, directory, or unreadable `body_file` used to leak a raw traceback — the payload load had a guard, the second read ten lines later did not. It now reports `ERROR: body_file not found: PATH`, `ERROR: body_file is a directory, not a file: PATH`, or `ERROR: permission denied reading body_file: PATH — ...`, naming the field so it's never confused with a payload-file error.
 
+**`body` must be a plain string, and a TOML `[[body]]` table-array is refused rather than accepted** ([#2315](https://github.com/Digital-Process-Tools/claude-supertool/issues/2315)). A payload whose `body` key parses as a TOML array-of-tables (a list of `{"value": ...}` dicts) used to reach `apply_forge_disclosure(body: str)` as a `list` with no type check anywhere upstream, crashing with a bare `TypeError` three frames deep instead of a clean refusal. `gh-issue-comment` accepts the same shape without crashing, but does not actually join it either — its own reader stringifies the raw Python list, publishing the literal repr as the comment body rather than the intended prose. `gh-issue-create` does not copy that: a non-string `body` is refused with `ERROR: body must be a string, not TYPE -- ...`, naming `body_file` as the way to publish content from a file.
+
 ### A GraphQL outage falls back to REST, and the receipt names which transport wrote it
 
 `gh issue create` mutates over GraphQL, and that transport can 503 while REST
