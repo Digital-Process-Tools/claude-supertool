@@ -1,7 +1,7 @@
 ---
 title: "Piping a supertool op through head/tail/sed selects against the answer"
 tool: Bash
-match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+(proxy[[:space:]]+)?)?(python3?[[:space:]]+(-m[[:space:]]+)?)?([^[:space:]]*/)?supertool(\.py)?[[:space:]]([^;&\n]|&[^&[:space:]])*[[:space:]'"]\|[[:space:]]*(head|tail|sed|cut|awk)
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+(proxy[[:space:]]+)?)?(python3?[[:space:]]+(-m[[:space:]]+)?)?([^[:space:]]*/)?supertool(\.py)?[[:space:]]([^;&\n]|&[^&[:space:]])*[[:space:]'"]\|[[:space:]]*(head|tail|sed|cut|awk)([[:space:]]|$)
 mode: block
 ---
 
@@ -39,3 +39,9 @@ block is the safe direction here; a wrong one teaches routing around the block.
 The reasoning is in #1415,
 \#1426, #1430 and #1433, not here: this body is re-injected in full on every
 match, false ones included, so its length is the price of every wrong block.
+
+**#2257**: the keyword itself had no end anchor, so `'grep:foo |header:.'`
+(no real pipe) matched on the same substring a real `| head` does. Fixed with
+`(head|tail|sed|cut|awk)([[:space:]]|$)`. A bar fully inside a quoted argument
+followed by whitespace-then-keyword is unfixed for the same reason as the `;`
+case above — no quote tracking in this dialect.
