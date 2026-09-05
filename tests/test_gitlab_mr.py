@@ -313,7 +313,8 @@ def _mr_json_payload(**overrides: Any) -> str:
 
 
 def test_main_slim_status_mode_outputs_minimal_dashboard(monkeypatch, capsys) -> None:
-    """gl-mr:NUMBER:status returns ~5 lines: state, pipeline, merged_at, url."""
+    """gl-mr:NUMBER:status returns a short dashboard: state, pipeline,
+    approval, merged_at, url."""
     payload = _mr_json_payload()
     monkeypatch.setattr(
         mr.subprocess, "run",
@@ -329,6 +330,13 @@ def test_main_slim_status_mode_outputs_minimal_dashboard(monkeypatch, capsys) ->
     assert "merge_status: merged" in out
     assert "conflicts: no" in out
     assert "pipeline: success (#136900)" in out
+    # #1607 item 2 — approval state is bought unconditionally in :status too,
+    # the same #815 disclosure the leg tally already makes. The stub above
+    # answers every subprocess call with the MR payload, which carries no
+    # `approved_by` field, so this is the UNKNOWN state — a real third
+    # state, never a printed "no approvals" for "did not ask". Slim's own
+    # lowercase key convention (`approved_by:`), not full's `Approved by:`.
+    assert "approved_by: UNKNOWN" in out
     assert "merged_at: 2026-05-04T13:48:21.913Z" in out
     assert "merge_commit: b5cd36306f67" in out
     assert "url: https://gitlab.example/foo/-/merge_requests/20881" in out
@@ -340,8 +348,9 @@ def test_main_slim_status_mode_outputs_minimal_dashboard(monkeypatch, capsys) ->
     assert "## Files" not in out
     assert "Reviewers:" not in out
     assert "Labels:" not in out
-    # Output stays under 500 bytes — fits in hook cache
-    assert len(out) < 500
+    # Output stays well under the hook cache's byte ceiling despite the
+    # added line — this is a "still slim" check, not the old fixed number.
+    assert len(out) < 700
 
 
 def test_main_slim_status_with_conflicts(monkeypatch, capsys) -> None:

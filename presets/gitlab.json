@@ -8,7 +8,7 @@
       "timeout": 330,
       "classify": "full",
       "repo_target": true,
-      "description": "GitLab issue: desc, comments, images, related MRs. A truncated description says so twice — in the header and at the cut — with the exact char count withheld. :full = no truncation, all comments. Each description/comment prints a `classify:` verdict beside its fence (#2049) — a labeller, never a filter: verify the bug yourself regardless of what it says. `classify` config key (full/scanner/off, default full) narrows it per-op.",
+      "description": "GitLab issue: desc, comments, images, related MRs, closing MRs. A truncated description says so twice — in the header and at the cut — with the exact char count withheld. `Related MRs:` (related_merge_requests) is anything referencing the issue; `Closing MRs:` (closed_by, #1607) is the narrower 'will this close it' set gh-issue's `Linked PRs:` answers — carried as a second section rather than swapped in, so neither fact is lost. :full = no truncation, all comments, all MRs in both lists. Each description/comment prints a `classify:` verdict beside its fence (#2049) — a labeller, never a filter: verify the bug yourself regardless of what it says. `classify` config key (full/scanner/off, default full) narrows it per-op.",
       "syntax": "gl-issue:NUMBER[:full]",
       "replaces": [
         { "argv": "glab issue view", "use": "gl-issue:NUMBER" },
@@ -22,7 +22,7 @@
       "timeout": 330,
       "classify": "full",
       "repo_target": true,
-      "description": "MR review: branch, pipeline, approval, linked issue, diff stat, per-file name-status (A/D/R/M) list, comments. A truncated description says so twice — in the header and at the cut — with the exact char count withheld. :status = slim merge-state only, plus a summed leg tally under the pipeline line whose terms add back to the job count, so a `success` pipeline hiding skipped/manual/canceled legs stops rendering as one where everything ran. That tally costs one `glab api` jobs request per call, on a green pipeline too — stated here rather than bought quietly; when it cannot be fetched the line says UNKNOWN and why, never a zeroed tally. :full uncaps the description, the file list + comments. Each description/comment prints a `classify:` verdict beside its fence (#2049) — a labeller, never a filter: verify the bug yourself regardless of what it says. `classify` config key (full/scanner/off, default full) narrows it per-op.",
+      "description": "MR review: branch, pipeline, approval, linked issue, diff stat, per-file name-status (A/D/R/M) list, comments. A truncated description says so twice — in the header and at the cut — with the exact char count withheld. :status = slim merge-state only, plus a summed leg tally under the pipeline line whose terms add back to the job count, so a `success` pipeline hiding skipped/manual/canceled legs stops rendering as one where everything ran, and an `approved_by:` approval line (#1607) reusing the same never-guessed three-state contract (approved/none/UNKNOWN with a reason) the full dashboard's `Approved by:` line already has. Both cost one `glab api` request per call, on a green/approved MR too — stated here rather than bought quietly; when either cannot be fetched the line says UNKNOWN and why, never a zeroed tally or a false 'none'. :full uncaps the description, the file list + comments. Each description/comment prints a `classify:` verdict beside its fence (#2049) — a labeller, never a filter: verify the bug yourself regardless of what it says. `classify` config key (full/scanner/off, default full) narrows it per-op.",
       "syntax": "gl-mr:NUMBER_OR_BRANCH[:status|:full]",
       "replaces": [
         { "argv": "glab mr view", "use": "gl-mr:NUMBER_OR_BRANCH" },
@@ -92,10 +92,11 @@
     "gl-job": {
       "safety": "read-only",
       "cmd": "{python} {path}gitlab/job.py {args}",
-      "timeout": 210,
+      "timeout": 45,
       "repo_target": true,
-      "description": "Why job failed: MR ctx + error patterns + log tail. Argv is checked before anything is fetched (#1145): a non-numeric job id and a MODE outside fail/errors/raw/grep/trace/artifacts/artifact are both REFUSED with nothing read, and a ':' inside :grep:PATTERN or :artifact:PATH is REJOINED rather than truncated, with a note saying how it was read. :fail (alias :errors) = matched failure blocks only, no tail; :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive); :raw:-N is the last N lines; a START past the end returns the tail of the width requested and says so. :grep:PATTERN is an ad-hoc regex over the trace (literal fallback, context, tail on no-match), budgeted by GL_JOB_GREP_MAX_BYTES (default 65536) — a capped view says so in header AND footer with an exact 'N of M matching lines shown', naming bytes rather than a match limit as what cut. Cause markers are always matched on top of the patterns, and a failed job matching nothing is reported as unclassified with a log tail — never as 'no errors'. :trace (#626) writes the whole trace to a file under the process's own proven-ours temp root and prints only the path plus a receipt. Accepts comma-separated ids; a job whose trace could not be fetched is named and skipped rather than aborting the others, and only when every id fails does the call return non-zero. Capped at GL_JOB_TRACE_MAX_IDS ids/call (#2105). The summary names a PHPUnit-style 'Failures: N, Errors: N' count when the trace carries one, and says it could not tell otherwise — never a guessed zero. :artifacts (#1796) prints archive filename, size and expiry plus which kinds (archive/metadata/trace) are present, and says plainly that GitLab's job API does not list the paths inside the archive; :artifact:PATH fetches that one file through GitLab's single-file endpoint, never the whole archive. Printed text only, capped at GL_JOB_ARTIFACT_MAX_BYTES (default 65536); an expired archive says so rather than failing obscurely.",
-      "syntax": "gl-job:NUMBER[:fail|:raw[:-N|:START[:END]]|:grep:PATTERN|:artifacts|:artifact:PATH] | gl-job:NUMBER[,NUMBER...]:trace",
+      "trace_op": false,
+      "description": "Why job failed: MR ctx + error patterns + log tail. Argv is checked before anything is fetched (#1145): a non-numeric job id and a MODE outside fail/errors/raw/grep/artifacts/artifact are both REFUSED with nothing read, and a ':' inside :grep:PATTERN or :artifact:PATH is REJOINED rather than truncated, with a note saying how it was read. :fail (alias :errors) = matched failure blocks only, no tail; :raw dumps full trace; :raw:START[:END] slices lines (1-indexed, inclusive); :raw:-N is the last N lines; a START past the end returns the tail of the width requested and says so. :grep:PATTERN is an ad-hoc regex over the trace (literal fallback, context, tail on no-match), budgeted by GL_JOB_GREP_MAX_BYTES (default 65536) — a capped view says so in header AND footer with an exact 'N of M matching lines shown', naming bytes rather than a match limit as what cut. Cause markers are always matched on top of the patterns, and a failed job matching nothing is reported as unclassified with a log tail — never as 'no errors'. :artifacts (#1796) prints archive filename, size and expiry plus which kinds (archive/metadata/trace) are present, and says plainly that GitLab's job API does not list the paths inside the archive; :artifact:PATH fetches that one file through GitLab's single-file endpoint, never the whole archive. Printed text only, capped at GL_JOB_ARTIFACT_MAX_BYTES (default 65536); an expired archive says so rather than failing obscurely. This op's own timeout is sized for ONE job's metadata+trace(+MR) fetch (#2146) — for a comma-separated multi-id trace dump, use gl-job-trace instead, which carries the wider budget that fan-out needs; this op REFUSES a bare :trace mode rather than running it under a budget too small for more than one id.",
+      "syntax": "gl-job:NUMBER[:fail|:raw[:-N|:START[:END]]|:grep:PATTERN|:artifacts|:artifact:PATH]",
       "replaces": [
         { "argv": "glab ci trace", "use": "gl-job:NUMBER" }
       ],
@@ -103,6 +104,15 @@
       "error_patterns": "ERROR,FAILURES!,Fatal,Failed asserting,PHP Warning,PHP Notice,PHP Deprecated",
       "error_context": 5,
       "paths": {"args": []}
+    },
+    "gl-job-trace": {
+      "safety": "read-only",
+      "cmd": "{python} {path}gitlab/job.py {arg} trace",
+      "timeout": 210,
+      "repo_target": true,
+      "trace_op": true,
+      "description": "gl-job's trace-writer sibling, split into its own op (#2146) so its wider timeout budget stops leaking onto :raw/:grep/:fail/plain-view, which never needed more than a single job's fetch. Writes the full trace for one or more comma-separated job ids to a file under the process's own proven-ours temp root and prints only the path plus a receipt — never the trace itself, so a 22k-line log never lands in context. A job whose trace could not be fetched is named and skipped rather than aborting the others, and only when every id fails does the call return non-zero. Capped at GL_JOB_TRACE_MAX_IDS ids/call (#2105), fetched serially at up to 30s each — this op's own timeout covers exactly that many ids with margin. The summary names a PHPUnit-style 'Failures: N, Errors: N' count when the trace carries one, and says it could not tell otherwise — never a guessed zero.",
+      "syntax": "gl-job-trace:NUMBER[,NUMBER...]"
     }
   }
 }

@@ -20,6 +20,16 @@ as not-fetched, with the knob that raises the limit, so a caller controlling
 a small comma-separated list has no reason to hit it and a fan-out from
 `gl-pipeline` says exactly what was left out rather than being killed
 mid-fetch with nothing to show for the ids already done.
+
+#2146 — raising `gl-job`'s OWN declared timeout to cover the capped fan-out
+(210s) meant every other mode on that op (`:raw`, `:grep`, `:fail`/`:errors`,
+plain view — none of which fan out at all) inherited the same ceiling and
+was caught up to 7x slower on a hang. The fan-out was split into its own op,
+`gl-job-trace`, which now carries the budget this file's first test used to
+assert of `gl-job` itself; `gl-job`'s own timeout dropped back down to a
+single-job budget, pinned separately in
+tests/test_gl_job_timeout_split_2146.py alongside the refusal that stops the
+old `gl-job:ID:trace` form from silently running under it.
 """
 from __future__ import annotations
 
@@ -52,13 +62,16 @@ def _declared_timeout(op: str) -> int:
 # the declared budget actually covers the capped worst case
 # ---------------------------------------------------------------------------
 
-def test_gl_job_timeout_covers_the_capped_id_count() -> None:
+def test_gl_job_trace_timeout_covers_the_capped_id_count() -> None:
+    # #2146 split the fan-out into its own op — `gl-job-trace` — so this is
+    # now the op carrying the budget this test names, not `gl-job` itself.
     cap = gl_job.MAX_TRACE_IDS
     worst_case = cap * _PER_ID_SECONDS
-    assert _declared_timeout("gl-job") > worst_case, (
-        f"gl-job timeout {_declared_timeout('gl-job')}s does not cover "
-        f"{cap} ids at {_PER_ID_SECONDS}s each ({worst_case}s) — a full "
-        f"multi-id :trace call at the cap would be killed before finishing"
+    assert _declared_timeout("gl-job-trace") > worst_case, (
+        f"gl-job-trace timeout {_declared_timeout('gl-job-trace')}s does not "
+        f"cover {cap} ids at {_PER_ID_SECONDS}s each ({worst_case}s) — a "
+        f"full multi-id trace call at the cap would be killed before "
+        f"finishing"
     )
 
 

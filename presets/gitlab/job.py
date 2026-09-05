@@ -1145,12 +1145,39 @@ def main() -> int:
     # shared MODES — that constant is read by `gh-job` too, and adding `trace`
     # there would let `gh-job:ID:trace` pass argv validation for a mode it does
     # not implement, which is exactly the silent-fallthrough bug #1145 fixed.
+    #
+    # #2146 — `write_traces` fetches serially at up to 30s per id, and
+    # `gl-job`'s own declared timeout is sized for ONE job's metadata+trace
+    # fetch, not for a fan-out (see gitlab.json). `gl-job-trace` is the op
+    # with the wider budget that fan-out needs, and it sets
+    # SUPERTOOL_TRACE_OP=true via its `trace_op` config key (core exports any
+    # non-reserved op-config key as SUPERTOOL_<KEY>) so this shared script can
+    # tell which op it was invoked through. Without the flag, trace mode is
+    # REFUSED here rather than run under gl-job's smaller budget and silently
+    # killed partway through a multi-id fetch with nothing to show for it —
+    # the same "a mode nobody remembered to gate falls through to the wrong
+    # ceiling" shape #1145 already fixed once for an unrecognised mode.
+    #
+    # `gl-job` ALSO declares `"trace_op": false` in gitlab.json — not left
+    # undeclared — so this check cannot be defeated by an ambient
+    # SUPERTOOL_TRACE_OP=true sitting in the caller's own shell (core copies
+    # `os.environ` wholesale before layering an op's own config keys on top,
+    # and a key an op does not declare is never overwritten). Declaring both
+    # sides explicitly closes that gap rather than relying on the flag being
+    # merely absent for `gl-job`.
     if mode == "trace":
-        if len(sys.argv) > 3:
-            print("ERROR: gl-job:ID:trace takes no argument after 'trace' — "
-                  "nothing was read. Usage: gl-job:JOB_ID[,JOB_ID...]:trace")
+        if os.environ.get("SUPERTOOL_TRACE_OP") != "true":
+            print("ERROR: gl-job:ID:trace has moved to its own op with its "
+                  "own timeout budget (#2146) — gl-job's declared timeout is "
+                  "sized for a single job's fetch, not for a multi-id "
+                  "trace fan-out. Nothing was read. Use: "
+                  "gl-job-trace:JOB_ID[,JOB_ID...]")
             return 1
-        job_ids, refusal = _job_argv.refuse_job_ids("gl-job", "GitLab", job_id)
+        if len(sys.argv) > 3:
+            print("ERROR: gl-job-trace:ID takes no argument after the id(s) — "
+                  "nothing was read. Usage: gl-job-trace:JOB_ID[,JOB_ID...]")
+            return 1
+        job_ids, refusal = _job_argv.refuse_job_ids("gl-job-trace", "GitLab", job_id)
         if refusal:
             print(refusal)
             return 1

@@ -272,7 +272,10 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # colon-rejoined blob, so its cmd is `{args}` too.
         # 89 → 90 in #2078: `gh-issue-comment` takes NUMBER and the payload,
         # so its cmd is `{args}` too.
-        assert len(rows) == 90, len(rows)
+        # 90 → 91 in #2146: `gl-job-trace` is split out of `gl-job` as its
+        # own op, `{arg}` from the first line (the trace mode's job id, or
+        # comma-separated ids, is one colon-rejoined token).
+        assert len(rows) == 91, len(rows)
         multi = [n for n, _f, _e, c in rows
                  if "{args}" in c or "{argjoin}" in c]
         one = [n for n, _f, _e, c in rows
@@ -288,7 +291,9 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # (see the population count's own comment above).
         # 65 → 66 in #2078: `gh-issue-comment` is `{args}` from the first
         # line too (see the population count's own comment above).
-        assert (len(multi), len(one), len(none)) == (66, 20, 4), (
+        # 20 → 21 in #2146: `gl-job-trace` is `{arg}` from the first line
+        # too (see the population count's own comment above).
+        assert (len(multi), len(one), len(none)) == (66, 21, 4), (
             len(multi), len(one), len(none))
         # The 4 placeholder-free ops are outside this gate on purpose — see
         # `_unconsumed_arg_tokens`. Named so the exclusion is a list, not a

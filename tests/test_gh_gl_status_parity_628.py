@@ -86,21 +86,25 @@ _SYNONYMS: dict[str, tuple[str, str, str]] = {
         "onto an indented `legs:` line under it. The spellings differ because "
         "the objects do; the arithmetic and the vocabulary do not.",
     ),
+    "review": (
+        "review",
+        "approved_by",
+        "GitHub answers a single reviewDecision word (APPROVED/CHANGES_"
+        "REQUESTED/none), already inside the `gh pr view --json` call the op "
+        "makes; GitLab answers a list of approvers off a separate "
+        "`/approvals` request, bought unconditionally on the same #815 "
+        "'state it, don't smuggle it' argument the leg tally above already "
+        "uses (#1607 item 2). The full dashboard's own pinned wording is "
+        "`Approved by: ...` (#720, test_approvals_line_keeps_its_720_wording) "
+        "— `:status` reformats only the prefix to `approved_by:` to match "
+        "its own lowercase/underscored key convention, never the value.",
+    ),
 }
 
 #: Facts one side reports and the other does not. Key is (side that is SILENT,
 #: canonical fact). Every entry states why the silence is defensible today and
 #: what it would cost to close.
 _EXEMPTIONS: dict[tuple[str, str], str] = {
-    ("gitlab", "review"): (
-        "GitHub's reviewDecision arrives inside the single `gh pr view --json` "
-        "call the op already makes, so it is free. GitLab approvals are a "
-        "separate `/merge_requests/:iid/approvals` request, and `:status` is "
-        "the poll-loop render — #815 is explicit that an extra per-call round "
-        "trip must not be bought silently. `gl-mr` (full mode) does render an "
-        "approvals line, so the fact is reachable; what is not decided is "
-        "whether the slim render should pay for it. Filed rather than guessed."
-    ),
 }
 
 

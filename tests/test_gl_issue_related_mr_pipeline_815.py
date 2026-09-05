@@ -91,8 +91,11 @@ def _render(monkeypatch, capsys, mrs: object, *, related_rc: int = 0,
 
 
 def _section(out: str) -> str:
+    """Just the `Related MRs:` section -- bounded on both sides now that
+    `Closing MRs:` (#1607 item 2) renders immediately after it, off a
+    separately-stubbed endpoint that this file's fixtures answer with `[]`."""
     assert "Related MRs" in out, f"no related-MR section at all:\n{out}"
-    return out.split("Related MRs")[1].split("## Description")[0]
+    return out.split("Related MRs")[1].split("Closing MRs")[0]
 
 
 def test_a_failed_pipeline_is_visible(monkeypatch, capsys) -> None:
