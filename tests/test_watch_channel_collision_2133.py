@@ -194,19 +194,74 @@ def test_health_surfaces_a_refusal_recorded_during_this_run(forwarding, monkeypa
     _write_refusal(forwarding, pid=9999,
                     reason="another claude-channel server is listening there")
     _, report = channel.health(forwarding)
-    assert "9999" in report, report
+    # Not a bare "9999" substring (#2301): the report also legitimately
+    # contains this process's own socket path, built from a nanosecond
+    # timestamp that can coincidentally contain that same four-digit run.
+    # "pid 9999" is the literal `_refusal_lines` renders and cannot collide
+    # with a path, which is never rendered with a "pid " prefix.
+    assert "pid 9999" in report, report
     assert "listening there" in report, report
 
 
 def test_health_says_nothing_about_a_refusal_when_none_was_recorded(
         forwarding, monkeypatch):
     """The positive control for the assertion above: a clean run must not grow
-    a `refused` line out of nothing."""
+    a `refused` line out of nothing.
+
+    Not a bare "9999" substring (#2301): `forwarding`'s own socket path is
+    built from a nanosecond timestamp (`_sock_path`) and can coincidentally
+    contain that same four-digit run -- observed for real on CI,
+    `.../8575413370999984.sock`. "pid 9999" is the literal `_refusal_lines`
+    renders for a recorded refusal and cannot collide with a path, which is
+    never rendered with a "pid " prefix.
+    """
     _process_table(monkeypatch, TAGGED)
     _configured(monkeypatch, True)
     _, report = channel.health(forwarding)
-    assert "9999" not in report, report
+    assert "pid 9999" not in report, report
     assert "listening there" not in report, report
+
+
+def test_health_says_nothing_about_a_refusal_when_the_socket_path_coincidentally_contains_9999(
+        monkeypatch):
+    """Regression for #2301, forcing the exact CI coincidence deterministically
+    rather than waiting on `time.time_ns()` to reproduce it: a socket path
+    that itself contains the sentinel digits "9999", with no refusal ever
+    recorded. A bare `"9999" not in report` control would have failed here
+    for a reason that has nothing to do with any refusal marker."""
+    if not _can_bind_af_unix():
+        pytest.skip("this platform cannot bind an AF_UNIX socket")
+    path = str(Path(tempfile.gettempdir())
+               / f"st2133-{os.getpid()}-forced-9999-collision.sock")
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(path)
+    srv.listen(8)
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    Path(f"{path}{channel.HEALTH_SUFFIX}").write_text(json.dumps({
+        "pid": os.getpid(),
+        "started": "2026-09-01T05:26:44Z",
+        "updated": now,
+        "last_forwarded": now,
+        "lines_read": 19,
+        "forwarded": 19,
+        "dropped": 0,
+    }), encoding="utf-8")
+    monkeypatch.setattr(channel, "peer_pid", lambda _p: (os.getpid(), ""))
+    try:
+        _process_table(monkeypatch, TAGGED)
+        _configured(monkeypatch, True)
+        _, report = channel.health(path)
+        assert "9999" in report, "the coincidence must actually land in this fixture, or it proves nothing"
+        assert "pid 9999" not in report, report
+        assert "listening there" not in report, report
+    finally:
+        srv.close()
+        for leftover in (path, f"{path}{channel.HEALTH_SUFFIX}",
+                          f"{path}{REFUSAL_SUFFIX}"):
+            try:
+                os.unlink(leftover)
+            except OSError:
+                pass
 
 
 @needs_nofollow
