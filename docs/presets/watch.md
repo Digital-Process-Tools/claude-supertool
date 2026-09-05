@@ -1366,6 +1366,25 @@ Pollers emit through three channels (all best-effort, none can crash the poller)
 | Received receipt (JSON) | `{sock_path}.received.json` | Written by `channel:received:N` — a session's own report of how many events it has received, compared against `forwarded` ([#2150](https://github.com/Digital-Process-Tools/claude-supertool/issues/2150), below). The only sidecar here written from the receiving side rather than the forwarder's |
 | macOS osascript | system notification center | Desktop ping on terminal status / error |
 
+**Silencing the desktop ping without cutting the wire (#2170).** `only=event1,event2`
+filters what a poller emits at all, so narrowing it to quiet the desktop
+equally starves the socket and the status file — the wrong knob for an
+operator who wants every event reaching `claude-channel` and none of them on
+screen. `SUPERTOOL_WATCH_NO_DESKTOP=1` is the dedicated opt-out, read once in
+`desktop_notify` before its `shutil.which` probe: it stops only the macOS
+notification. The equivalent `.supertool.json` op-config key is
+`watch_no_desktop: true`, set under `ops.watch` and/or `ops.radar` (whichever
+op actually spawns the poller you want quiet) — any non-reserved key in an
+op's config block reaches its subprocess as a `SUPERTOOL_`-prefixed
+environment variable (see "Extra config keys as environment variables" in
+`docs/contributing.md` for the general mechanism), and a JSON boolean arrives
+stringified lowercase.
+`watches` and `radar` both state the opt-out through `channel_disclosure()`
+rather than going quiet about it — a silenced desktop is a stated
+configuration, not an absence you have to explain by process of elimination
+against "nothing has happened" or "macOS ate it" (misattributed to Script
+Editor, which is what actually made this worth fixing).
+
 Override the socket path with the `SUPERTOOL_WATCH_SOCK` env var — set it to
 the **same** value on every poller and on the Phase 2 `claude-channel`
 consumer (see

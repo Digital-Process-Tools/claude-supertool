@@ -900,9 +900,37 @@ def reap_dead_pidfile(source: str, watcher_id: str) -> int:
     return pid
 
 
+#: The opt-out (#2170): `only=event1,event2` filters what a poller emits *at
+#: all*, socket included, so it cannot silence only the desktop transport
+#: while keeping the wire events flowing to the `claude-channel` MCP server.
+#: This is the dedicated knob, read once in `desktop_notify` before the
+#: `shutil.which` probe. `channel_disclosure()` below is what keeps a silent
+#: desktop a stated configuration rather than an unexplained absence -- this
+#: repo's own defect class, applied to itself.
+NO_DESKTOP_ENV = "SUPERTOOL_WATCH_NO_DESKTOP"
+
+
+def desktop_notify_disabled(env: dict[str, str] | None = None) -> bool:
+    """Whether the operator opted the desktop transport out.
+
+    One predicate so `desktop_notify` and every board disclosure read the same
+    value. Two spellings count: a hand-exported `SUPERTOOL_WATCH_NO_DESKTOP=1`
+    is what an operator actually types, and a non-reserved `.supertool.json`
+    op-config key reaches its subprocess as a `SUPERTOOL_`-prefixed variable
+    with a JSON boolean stringified by `json.dumps` (`docs/contributing.md`),
+    so `no_desktop_notify: true` arrives here as the *lowercase* string
+    "true", never "True". Anything else -- unset, "", "0", "false" -- is not
+    opted out.
+    """
+    src = os.environ if env is None else env
+    return (src.get(NO_DESKTOP_ENV) or "").strip().lower() in ("1", "true", "yes")
+
+
 def desktop_notify(title: str, message: str) -> None:
-    """Fire-and-forget macOS notification. No-op elsewhere."""
+    """Fire-and-forget macOS notification. No-op elsewhere, or when opted out."""
     if sys.platform != "darwin":
+        return
+    if desktop_notify_disabled():
         return
     if not shutil.which("osascript"):
         return
@@ -1230,8 +1258,20 @@ def channel_disclosure() -> list[str]:
     `watches` and `channel:health` cannot disagree about the same resolution —
     the reason `delivery_of` and `DELIVERY_LABELS` live here too. `[]` when there
     is nothing to say.
+
+    The desktop opt-out (#2170) joins the same list for the same reason: an
+    operator who has silenced the macOS ping must see that stated here, not
+    infer it from the absence of a notification they cannot distinguish from
+    "nothing has happened" or "System Settings ate it" (the gap the issue
+    itself names). The socket and status-file transports are unaffected and
+    say so, so a reader does not read this as the fleet going dark.
     """
-    return naming.disclosure_lines(RESOLVED, naming.declared_names())
+    lines = naming.disclosure_lines(RESOLVED, naming.declared_names())
+    if desktop_notify_disabled():
+        lines = lines + [
+            f"desktop notifications are OFF ({NO_DESKTOP_ENV} is set) — the "
+            f"socket and status-file transports are unaffected"]
+    return lines
 
 
 def list_active_pids() -> list[dict[str, Any]]:
