@@ -1674,3 +1674,26 @@ def test_a_capped_feed_is_reported_as_a_discovery_gap(env) -> None:
     assert healthy is False
     assert any("no longer being respawned" in line for line in lines)
     assert any("feed DOWN (respawn capped)" in line for line in lines)
+
+
+def test_the_radar_description_discloses_the_standing_branch_poller_2292() -> None:
+    """#2292: the sentence that used to describe the default branch here --
+    "as a board member (the red-master case no PR covers)" -- read as the
+    default branch being re-evaluated synchronously on every `radar` call
+    with nothing standing between ticks. #2292 quotes exactly that reading
+    back as its own evidence for a gap in this architecture.
+
+    It was already the wrong sentence when filed: `tiers/gh_prs.py`'s
+    `default_branch_report` has spawned and healed a standing `gh-branch`
+    poller (`sources/gh-branch/poller.py`) since #2024, on the same footing
+    as the sibling `github-pr-feed` poller this same paragraph already
+    discloses a few words later -- it just never said so for the branch
+    poller, so a reader had no way to learn it short of reading the Python.
+    This pins the disclosure the sibling sentence already sets the bar for.
+    """
+    manifest = json.loads(
+        (Path(__file__).parent.parent / "presets" / "watch.json").read_text(encoding="utf-8")
+    )
+    desc = manifest["ops"]["radar"]["description"]
+    assert "gh-branch" in desc
+    assert "#2024" in desc
