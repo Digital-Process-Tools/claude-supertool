@@ -918,12 +918,15 @@ def desktop_notify_disabled(env: dict[str, str] | None = None) -> bool:
     is what an operator actually types, and a non-reserved `.supertool.json`
     op-config key reaches its subprocess as a `SUPERTOOL_`-prefixed variable
     with a JSON boolean stringified by `json.dumps` (`docs/contributing.md`),
-    so `no_desktop_notify: true` arrives here as the *lowercase* string
-    "true", never "True". Anything else -- unset, "", "0", "false" -- is not
-    opted out.
+    so `watch_no_desktop: true` under `ops.watch`/`ops.radar` arrives here as
+    the *lowercase* string "true", never "True" -- see `docs/presets/watch.md`
+    for the config-key form. Anything else -- unset, "", "0", "false" -- is
+    not opted out. `"on"` also counts, matching `presets/git/diff._plain()`'s
+    reading of `SUPERTOOL_PLAIN` -- the closest existing boolean env knob --
+    so the same word means the same thing across both.
     """
     src = os.environ if env is None else env
-    return (src.get(NO_DESKTOP_ENV) or "").strip().lower() in ("1", "true", "yes")
+    return (src.get(NO_DESKTOP_ENV) or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def desktop_notify(title: str, message: str) -> None:
