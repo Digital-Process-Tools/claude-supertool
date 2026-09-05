@@ -50,6 +50,7 @@ import _repo_target  # noqa: E402
 import _payload_keys  # noqa: E402  (unrecognised-key refusal, shared with the other three @payload ops -- #2123)
 import _untrusted  # noqa: E402
 import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
+import _publish_safety  # noqa: E402  (#2100 -- the forge-write disclosure marker)
 
 # GitHub's own run-creation latency, measured in #585 and reused by `gh-branch`
 # rather than re-guessed. Inside it, zero runs means "still coming"; past it,
@@ -443,6 +444,12 @@ def main() -> int:  # noqa: C901
         print(no_closing_reference_refusal())
         return 1
 
+    # #2100: appended AFTER the closing-reference parse above, never before --
+    # the marker text carries no "Closes" substring, but the order is a real
+    # constraint the issue names explicitly (a marker parsed as part of the
+    # gate would be a coincidence to rely on, not a guarantee).
+    content, disclosure_state = _publish_safety.apply_forge_disclosure(content)
+
     cmd = ["pr", "create", "--repo", repo, "--base", base, "--head", head,
            "--title", title]
     tmp_body: str | None = None
@@ -504,6 +511,7 @@ def main() -> int:  # noqa: C901
     print(f"URL:  {url or '(not returned by gh)'}")
     print(f"Base: {base}  (from payload — never defaulted)")
     print(f"Head: {head}  (from {head_source})")
+    print(f"Disclosure: {disclosure_state}")
     print()
 
     # ---- did anything actually start? -----------------------------------

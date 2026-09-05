@@ -23,6 +23,7 @@ import _remote_default as _rd  # noqa: E402
 import _repo_target  # noqa: E402  (repo: op precedence over payload's own field -- #1909)
 import _payload_keys  # noqa: E402  (unrecognised-key refusal, shared with the other three @payload ops -- #2123)
 import _untrusted  # noqa: E402  (glab relays the API's own error body — #1485)
+import _publish_safety  # noqa: E402  (#2100 -- the forge-write disclosure marker)
 
 # Every key this op reads from a payload. Checked against the payload before
 # anything is created (#2123) -- a key outside this set is refused rather
@@ -226,6 +227,11 @@ def main() -> int:
     else:
         body = description
 
+    # #2100: applied before the `/estimate` quick action below, not after --
+    # a GitLab quick action needs to be its own trailing paragraph, and
+    # appending prose past it risks the API no longer recognising it.
+    body, disclosure_state = _publish_safety.apply_forge_disclosure(body)
+
     if estimate:
         if not re.match(r"^\d+(\.\d+)?[mhdw]\Z", estimate):  # \Z, not $ — #1188
             print(f"ERROR: invalid estimate format: {estimate!r} (expected e.g. '4h', '30m', '2d')")
@@ -319,7 +325,8 @@ def main() -> int:
 
     source_note = (f"  (project from {repo_source})"
                     if repo_source not in ("", "payload") else "")
-    print(f"gl-issue-create OK iid={iid} url={url}{source_note}")
+    print(f"gl-issue-create OK iid={iid} url={url} "
+          f"disclosure={disclosure_state}{source_note}")
     return 0
 
 
