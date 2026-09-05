@@ -290,11 +290,18 @@ def _fleet_events(
                 "notify_message": f"{now['running']} running, {now['waiting']} "
                                   f"pending — {now['status_phrase']}",
             })
-        # Recovery needs positive evidence of clean completions, not merely
-        # the window aging the failures out with nothing else happening — a
-        # runner gone silent has not proven anything about itself either way
-        # (see `superseded`/`runner_silent` above for the same asymmetry).
-        elif (was.get("systemically_failing") and not now["systemically_failing"]
+        # Recovery needs positive evidence of a CLEAN completion, not merely
+        # `recent_jobs > 0` — that count is every finished job regardless of
+        # outcome, so a runner dropping from 3 systemic failures to 2 (still
+        # below `_SYSTEMIC_FAILURE_THRESHOLD`, still failing every job it
+        # completes) satisfied it and fired a recovery notice claiming "none
+        # ending in runner_system_failure" while two just had (self-review
+        # finding, #2296). Gate on the window actually reaching zero, not on
+        # the threshold it crossed to get flagged in the first place — the
+        # window merely aging out with nothing else happening is still not
+        # evidence either way (see `superseded`/`runner_silent` above for the
+        # same asymmetry).
+        elif (was.get("systemically_failing") and now["systemic_failures"] == 0
               and now["recent_jobs"] > 0):
             events.append({
                 "event": "runner_recovered_systemically",

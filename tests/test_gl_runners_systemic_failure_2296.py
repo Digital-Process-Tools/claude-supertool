@@ -213,6 +213,31 @@ def test_recovery_fires_once_completions_resume_with_no_systemic_failures(
     assert state["runners"][str(rid)]["systemically_failing"] is False
 
 
+def test_dropping_below_threshold_with_lingering_failures_is_not_recovery(
+        monkeypatch) -> None:
+    """Self-review finding: `recent_jobs > 0` was true of a runner that went
+    from 3 systemic failures to 2 -- still below the (now non-)threshold, but
+    every one of those 2 completions was itself a `runner_system_failure`.
+    `runner_recovered_systemically` must not fire, and its `notify_message`
+    claiming "none ending in runner_system_failure" must never be false."""
+    rid = 13
+    fleet = [_runner(rid)]
+    _first, state = _poll(monkeypatch, {}, fleet, [], [], [])
+
+    failing = [_finished_job(rid, 300, failure_reason="runner_system_failure"),
+               _finished_job(rid, 400, failure_reason="runner_system_failure"),
+               _finished_job(rid, 500, failure_reason="runner_system_failure")]
+    events, state = _poll(monkeypatch, state, fleet, [], [], failing)
+    assert len(_by_name(events, "runner_failing_systemically")) == 1
+
+    # Still failing every job it completes, just two of them this tick.
+    still_failing = [_finished_job(rid, 200, failure_reason="runner_system_failure"),
+                     _finished_job(rid, 300, failure_reason="runner_system_failure")]
+    events, state = _poll(monkeypatch, state, fleet, [], [], still_failing)
+
+    assert "runner_recovered_systemically" not in _names(events)
+
+
 def test_no_recovery_event_while_the_runner_stays_idle(monkeypatch) -> None:
     """Failures aging out of the window with no new completions at all is not
     evidence of recovery — it is silence, and this repo declines to read
