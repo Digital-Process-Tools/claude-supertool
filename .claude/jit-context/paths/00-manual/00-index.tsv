@@ -10,3 +10,4 @@ presets/watch/	presets-watch.md
 tests/	tests-suite.md
 validators/	validators.md
 .claude-plugin/|pyproject.toml	version-sites.md
+\.claude/jit-context/vocabulary/	vocabulary-index.md
