@@ -412,9 +412,10 @@ class TestSessionPathCrossProject:
         monkeypatch.setenv("HOME", str(p.home))
         monkeypatch.setenv("USERPROFILE", str(p.home))
         monkeypatch.chdir(p.cwd)
-        path = _common.session_path(uuid)
+        path, note = _common.session_path(uuid)
         assert path == p.proj_dir / f"{uuid}.jsonl"
         assert path.is_file()
+        assert note == ""
 
     def test_falls_back_to_sibling_project(self, tmp_path: Path,
                                            monkeypatch: pytest.MonkeyPatch) -> None:
@@ -433,10 +434,12 @@ class TestSessionPathCrossProject:
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.setenv("USERPROFILE", str(home))
         monkeypatch.chdir(cwd_a)
-        path = _common.session_path(uuid)
+        path, note = _common.session_path(uuid)
         # Should resolve to project B even though we're cwd'd in project A.
         assert path == proj_b / f"{uuid}.jsonl"
         assert path.is_file()
+        assert note != ""
+        assert str(proj_b) in note
 
     def test_missing_uuid_returns_direct_path(self, tmp_path: Path,
                                               monkeypatch: pytest.MonkeyPatch) -> None:
@@ -447,9 +450,10 @@ class TestSessionPathCrossProject:
         monkeypatch.setenv("HOME", str(p.home))
         monkeypatch.setenv("USERPROFILE", str(p.home))
         monkeypatch.chdir(p.cwd)
-        path = _common.session_path("does-not-exist")
+        path, note = _common.session_path("does-not-exist")
         assert path == p.proj_dir / "does-not-exist.jsonl"
         assert not path.exists()
+        assert note == ""
 
     def test_skips_non_directory_entries(self, tmp_path: Path,
                                          monkeypatch: pytest.MonkeyPatch) -> None:
@@ -468,5 +472,7 @@ class TestSessionPathCrossProject:
         monkeypatch.setenv("HOME", str(p.home))
         monkeypatch.setenv("USERPROFILE", str(p.home))
         monkeypatch.chdir(p.cwd)
-        path = _common.session_path(uuid)
+        path, note = _common.session_path(uuid)
         assert path == sibling_dir / f"{uuid}.jsonl"
+        assert note != ""
+        assert str(sibling_dir) in note

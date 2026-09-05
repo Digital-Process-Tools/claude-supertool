@@ -47,7 +47,7 @@ def main() -> int:
 
     uuid = sys.argv[1]
     red = Redactor(enabled=not wants_raw(sys.argv[2:]))
-    sp = session_path(uuid)
+    sp, source_note = session_path(uuid)
     if not sp.exists():
         print(f"ERROR: session not found: {sp}")
         return 1
@@ -134,6 +134,8 @@ def main() -> int:
 
     print(f"Session: {uuid}")
     print(f"File:    {sp}")
+    if source_note:
+        print(source_note)
     note = red.note()
     if note:
         print(note)

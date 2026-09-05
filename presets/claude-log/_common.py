@@ -156,11 +156,24 @@ def source_note(res: ProjectDir) -> str:
     )
 
 
-def session_path(uuid: str) -> Path:
-    """Path to a session jsonl file. Prefers the current project; falls back
-    to scanning all projects under ~/.claude/projects/ if the UUID is not found
-    locally — useful when inspecting sessions from worktrees or other projects
-    without changing cwd.
+def session_path(uuid: str) -> "tuple[Path, str]":
+    """Path to a session jsonl file, and a disclosure note (#1337).
+
+    Prefers the current project; falls back to scanning all projects under
+    ~/.claude/projects/ if the UUID is not found locally — useful when
+    inspecting sessions from worktrees or other projects without changing
+    cwd. A session id is globally unique, so finding it anywhere is usually
+    what the caller wanted: unlike #1317's resolve_project_dir(), which
+    declines rather than nominate a sibling, this function keeps the
+    cross-store hit.
+
+    What #1317 left out: nothing said WHICH store answered when it wasn't the
+    caller's own. Returns `(path, note)` — `note` is "" when the hit came
+    from this directory's own store (or nothing was found), and otherwise
+    names the store the session actually lives under, the same disclosure
+    discipline `source_note()` applies to `resolve_project_dir()`. Every
+    caller must render a non-empty note; the terminal `[result]`-adjacent
+    line is the part that survives a pipe.
 
     Security: reject UUIDs that contain path separators, traversal segments,
     or an absolute-path prefix. Python's pathlib treats `Path("a") / "/abs"`
@@ -171,9 +184,10 @@ def session_path(uuid: str) -> Path:
     """
     if not uuid or "/" in uuid or "\\" in uuid or ".." in uuid.split("/") or os.path.isabs(uuid):
         raise ValueError(f"invalid session UUID: {uuid!r}")
-    direct = project_dir() / f"{uuid}.jsonl"
+    own = project_dir()
+    direct = own / f"{uuid}.jsonl"
     if direct.is_file():
-        return direct
+        return direct, ""
     root = claude_projects_root()
     if root.is_dir():
         for project in root.iterdir():
@@ -181,8 +195,14 @@ def session_path(uuid: str) -> Path:
                 continue
             candidate = project / f"{uuid}.jsonl"
             if candidate.is_file():
-                return candidate
-    return direct
+                note = "" if project == own else (
+                    f"Source: cross-project store — this session was not found "
+                    f"under {own}, this directory's own store; resolved instead "
+                    f"from {project} by scanning every store under "
+                    f"{claude_projects_root()} (a session id is globally unique)"
+                )
+                return candidate, note
+    return direct, ""
 
 
 def read_jsonl(path: Path):

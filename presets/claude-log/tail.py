@@ -58,7 +58,7 @@ def main() -> int:
             break
     red = Redactor(enabled=not wants_raw(sys.argv[2:]))
 
-    sp = session_path(uuid)
+    sp, source_note = session_path(uuid)
     if not sp.exists():
         print(f"ERROR: session not found: {sp}")
         return 1
@@ -85,6 +85,8 @@ def main() -> int:
     tail = lines[-n:]
     total = len(lines)
     print(f"Session: {uuid}")
+    if source_note:
+        print(source_note)
     print(f"Total events: {total}, showing last {len(tail)}")
     note = red.note(sum(Redactor.markers_in(ln) for ln in tail))
     if note:
