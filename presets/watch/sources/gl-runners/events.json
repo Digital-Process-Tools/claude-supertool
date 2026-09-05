@@ -9,6 +9,8 @@
     {"key": "queue_cleared",    "label": "A starved or unaccounted-for queue drained"},
     {"key": "runner_paused",    "label": "A runner was paused or unpaused"},
     {"key": "runner_added",     "label": "A runner joined the fleet"},
-    {"key": "runner_vanished",  "label": "A runner left the fleet"}
+    {"key": "runner_vanished",  "label": "A runner left the fleet"},
+    {"key": "runner_failing_systemically", "label": "N jobs on this runner ended with failure_reason=runner_system_failure inside the throughput window -- taking work and killing it, not silent and not starved"},
+    {"key": "runner_recovered_systemically", "label": "A runner flagged above completed jobs again with none ending in runner_system_failure"}
   ]
 }

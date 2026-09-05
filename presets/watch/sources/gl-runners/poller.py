@@ -55,6 +55,18 @@ from typing import Any
 # still actionable without hammering the API.
 INTERVAL = 60
 
+# GitLab attributes a job's failure to the runner itself -- disk full,
+# `prepare_executor` dying -- via `failure_reason == RUNNER_SYSTEM_FAILURE`
+# rather than to the pipeline's own script (see `annotate_systemic_failures`).
+# The issue's own worked example -- a runner failing every job for the best
+# part of an hour -- clears this comfortably, while a single flaky job inside
+# the throughput window does not reach it. Counted over
+# `runners_op._THROUGHPUT_WINDOW_SECONDS` (30 minutes), the window
+# `_fetch_fleet` already fetches on every tick for the `_recent_jobs` count --
+# no separate window or state needed for this. Tune here, not in the
+# conditional below (#2296).
+_SYSTEMIC_FAILURE_THRESHOLD = 3
+
 _PRESETS_DIR = Path(__file__).parents[3]
 
 
@@ -106,7 +118,12 @@ def _fetch_fleet() -> tuple[list[dict], list[dict] | None, list[dict]] | None:
         return None
     running = running or []
     runners_op.annotate_live_jobs(merged, running)
-    runners_op.annotate_recent_work(merged, runners_op.fetch_recent_finished()[0])
+    finished, _truncated = runners_op.fetch_recent_finished()
+    runners_op.annotate_recent_work(merged, finished)
+    # Same finished-job window, a different verdict — see
+    # `annotate_systemic_failures` (#2296). No second API call: the fetch
+    # above already runs on every tick for the throughput count.
+    runners_op.annotate_systemic_failures(merged, finished)
 
     pending, err_pending = runners_op._api(
         "projects/:id/jobs?scope[]=pending&per_page=100", paginate=True
@@ -149,6 +166,9 @@ def _snapshot(runner: dict, pending: list[dict], running: list[dict],
         "running": sum(1 for job in running
                        if (job.get("runner") or {}).get("id") == runner.get("id")),
         "recent_jobs": runner.get("_recent_jobs", 0),
+        "systemic_failures": runner.get("_systemic_failures", 0),
+        "systemically_failing": runner.get("_systemic_failures", 0)
+                                >= _SYSTEMIC_FAILURE_THRESHOLD,
         # Silence is only news when work is stuck behind it. A quiet runner with
         # an empty queue is a runner with nothing to do, and alerting on that
         # fires on the whole fleet every time the pipeline goes idle. "Stuck
@@ -251,6 +271,44 @@ def _fleet_events(
                             **counts},
                 "notify_title": f"runner {name} {'paused' if now['paused'] else 'unpaused'}",
                 "notify_message": ", ".join(now["tags"]) or "untagged",
+            })
+
+        # Orthogonal to responsive/blocked above: a runner can be `online`,
+        # heartbeating, taking jobs, and still killing every one of them
+        # (disk full, `prepare_executor` dying) -- the incident this pair
+        # exists for (#2296). Quiet on first tick, same as the transitions
+        # above it, for the reason the module docstring gives: a state that
+        # predates the watcher is history, not news.
+        if now["systemically_failing"] and not was.get("systemically_failing"):
+            events.append({
+                "event": "runner_failing_systemically",
+                "payload": {"runner_id": rid, "description": name,
+                            "failed_for_it": now["systemic_failures"], **counts},
+                "notify_title": f"runner {name} failing systemically — "
+                                f"{now['systemic_failures']} job(s) ended in "
+                                f"runner_system_failure",
+                "notify_message": f"{now['running']} running, {now['waiting']} "
+                                  f"pending — {now['status_phrase']}",
+            })
+        # Recovery needs positive evidence of a CLEAN completion, not merely
+        # `recent_jobs > 0` — that count is every finished job regardless of
+        # outcome, so a runner dropping from 3 systemic failures to 2 (still
+        # below `_SYSTEMIC_FAILURE_THRESHOLD`, still failing every job it
+        # completes) satisfied it and fired a recovery notice claiming "none
+        # ending in runner_system_failure" while two just had (self-review
+        # finding, #2296). Gate on the window actually reaching zero, not on
+        # the threshold it crossed to get flagged in the first place — the
+        # window merely aging out with nothing else happening is still not
+        # evidence either way (see `superseded`/`runner_silent` above for the
+        # same asymmetry).
+        elif (was.get("systemically_failing") and now["systemic_failures"] == 0
+              and now["recent_jobs"] > 0):
+            events.append({
+                "event": "runner_recovered_systemically",
+                "payload": {"runner_id": rid, "description": name, **counts},
+                "notify_title": f"runner {name} recovered — completing jobs again",
+                "notify_message": f"{now['recent_jobs']} job(s) completed recently, "
+                                  f"none ending in runner_system_failure",
             })
 
     for rid, was in previous.items():

@@ -437,6 +437,34 @@ def annotate_recent_work(runners: list[dict], finished: list[dict]) -> list[dict
     return runners
 
 
+# The value GitLab's own jobs API writes into `failure_reason` when it
+# attributes a job's failure to the runner itself -- disk full,
+# `prepare_executor` dying -- rather than to the pipeline's own script. See
+# `annotate_systemic_failures` (#2296).
+RUNNER_SYSTEM_FAILURE = "runner_system_failure"
+
+
+def annotate_systemic_failures(runners: list[dict], finished: list[dict]) -> list[dict]:
+    """Record per-runner `RUNNER_SYSTEM_FAILURE` counts, in place (#2296).
+
+    Counted over the same `finished` window `annotate_recent_work` already
+    reads, so a runner that fails every job it accepts is visible without a
+    second API call: `_fetch_fleet` fetches `fetch_recent_finished()` once per
+    tick regardless, for the `_recent_jobs` throughput count, and this walks
+    the same list a second time for a different verdict.
+    """
+    failed: dict[int, int] = {}
+    for job in finished:
+        if job.get("failure_reason") != RUNNER_SYSTEM_FAILURE:
+            continue
+        rid = (job.get("runner") or {}).get("id")
+        if rid is not None:
+            failed[rid] = failed.get(rid, 0) + 1
+    for runner in runners:
+        runner["_systemic_failures"] = failed.get(runner.get("id"), 0)
+    return runners
+
+
 def annotate_live_jobs(runners: list[dict],
                        running: list[dict] | None) -> list[dict]:
     """Mark runners the job list shows executing work as active, in place.
