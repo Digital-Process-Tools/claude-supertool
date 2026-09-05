@@ -127,6 +127,31 @@ def test_prose_that_is_not_tag_shaped_keeps_the_original_bare_message() -> None:
     assert "maybe? unsure about this one" in v.reason
 
 
+def test_a_tag_opener_followed_by_a_real_verdict_on_a_later_line_is_not_called_scaffolding() -> None:
+    """A second, review-found negative control: a reasoning model's known
+    habit of prefacing a real answer with a `<thinking>...</thinking>`
+    block, followed by a genuine verdict on a later line, must NOT be
+    reported as "the caller's own scaffolding" -- that would be a false
+    causal claim (the model did attempt a verdict) and would throw away the
+    one clue (the raw quote) that a real answer is in there. Recognition is
+    restricted to a single line for exactly this reason."""
+    v = model.classify("x", spawn=_spawn(
+        "<thinking>reasoning</thinking>\nSUSPECT: instruction-shaped"))
+    assert v.state == "could-not-classify"
+    assert "scaffolding" not in v.reason
+    assert "did not parse" in v.reason
+    assert "SUSPECT: instruction-shaped" in v.reason
+
+
+def test_a_tag_followed_by_a_tab_before_the_close_is_still_recognised() -> None:
+    """The opener regex accepts any whitespace after the tag name, not only
+    a literal space -- a tag serialised with a tab before its first
+    attribute is just as clearly not the fixed vocabulary."""
+    v = model.classify("x", spawn=_spawn("<budget:token_budget\t200000>"))
+    assert v.state == "could-not-classify"
+    assert "scaffolding" in v.reason
+
+
 def test_a_nonzero_exit_is_could_not_classify_even_with_safe_looking_stdout() -> None:
     """A crash that happened to print something SAFE-shaped on its way down
     must not be read as a real verdict."""
