@@ -87,3 +87,22 @@ def test_no_config_file_at_all_is_not_announced(
     assert cfg == {}
     err = capsys.readouterr().err
     assert "WARNING" not in err
+
+
+def test_non_utf8_config_is_announced_and_falls_back_instead_of_crashing(
+        fresh_config_cache, tmp_path, capsys) -> None:
+    """Self-review follow-up (oss:auditor spawn): the except clause this fix
+    rewrote did not catch `UnicodeDecodeError` (a `ValueError`, not an
+    `OSError`), so a `.supertool.json` that is not valid UTF-8 escaped it
+    entirely and crashed the whole publish op -- the opposite of the "warn
+    and fall back, never refuse" policy this function's own docstring
+    states. Mirrors the identical fix `_supertool.py::_load_config` already
+    carries for the sibling loader (#418)."""
+    (tmp_path / ".supertool.json").write_bytes(b"\xff\xfe\x00{\"a\":1}")
+
+    cfg = _publish_safety._supertool_config()
+
+    assert cfg == {}
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert ".supertool.json" in err

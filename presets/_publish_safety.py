@@ -67,7 +67,17 @@ def _supertool_config() -> dict:
                         f"default, exactly as if this file set nothing at "
                         f"all.\n"
                     )
-            except (OSError, json.JSONDecodeError) as exc:
+            except (OSError, json.JSONDecodeError,
+                    UnicodeDecodeError) as exc:
+                # UnicodeDecodeError is a ValueError, not an OSError, so it
+                # is caught by name rather than folded into the tuple above
+                # by inheritance -- the same gap `_supertool.py::_load_config`
+                # already closed for the sibling loader (#418): a
+                # `.supertool.json` that is not valid UTF-8 used to escape
+                # this clause entirely and crash the whole publish op, which
+                # is the opposite of the "warn and fall back, never refuse"
+                # policy this function's own docstring states (self-review
+                # finding on #2306, confirmed by the oss:auditor spawn).
                 sys.stderr.write(
                     f"WARNING: could not read {candidate} "
                     f"({exc.__class__.__name__}: {exc}) -- ignoring it. "

@@ -1376,6 +1376,19 @@ def _load_config() -> Dict[str, Any]:
                     # to non-dict. _merge_presets needs a dict — coerce to
                     # empty to keep the rest of the loader honest.
                     if not isinstance(_CONFIG, dict):
+                        # Adjacent to #2308/#2306, same signature defect one
+                        # layer higher: this used to coerce to `{}` with
+                        # nothing recorded, rendering a `.supertool.json`
+                        # that parses but is a JSON array/string/number
+                        # byte-identical to no config file existing at all.
+                        # `presets/_publish_safety._supertool_config` fixed
+                        # the identical shape for its own loader in this
+                        # same commit (#2306); this is the sibling fix for
+                        # the loader every other op goes through.
+                        _CONFIG_WARNINGS.append(
+                            f"{candidate} does not hold a JSON object (got "
+                            f"{type(_CONFIG).__name__}) — ignoring it"
+                        )
                         _CONFIG = {}
                     project_dir = d
                     _CONFIG_PATH = candidate
@@ -1860,7 +1873,15 @@ def _get_op_int(op_name: str, key: str, default: int) -> int:
     env_val = os.environ.get(env_key)
     cfg = _load_config()
     op_cfg = cfg.get("builtin-ops", {}).get(op_name, {})
-    val = op_cfg.get(key)
+    # A `builtin-ops.<op>` entry that is not a table is `_merge_presets`'s
+    # own #2308 finding -- it now records a `_preset_warnings` entry naming
+    # exactly this shape, but the unconditional `.get(key)` this guard
+    # replaces crashed with `AttributeError` on the string/list/etc it
+    # merged in unchecked, which is worse than the "fell back to its
+    # default" this function's own docstring already promised (caught in
+    # self-review, both spawned reviewers independently found the same
+    # crash; `_get_op_bool` right below already carried this same guard).
+    val = op_cfg.get(key) if isinstance(op_cfg, dict) else None
     fallback = default
     if val is not None:
         # `isinstance(True, int)` is True, so a JSON `true` used to read as the
@@ -1975,7 +1996,10 @@ def _grep_file_includes() -> Tuple[str, ...] | None:
     cfg = _load_config()
     builtin_ops = cfg.get("builtin-ops", {})
     op_cfg = builtin_ops.get("grep", {})
-    exts = op_cfg.get("extensions", [])
+    # Same #2308 guard as `_get_op_int` just above, and for the identical
+    # reason: a `builtin-ops.grep` entry that is not a table used to crash
+    # `.get("extensions", ...)` with `AttributeError` rather than fall back.
+    exts = op_cfg.get("extensions", []) if isinstance(op_cfg, dict) else []
     if exts and isinstance(exts, list):
         valid = tuple(sorted(e for e in exts if isinstance(e, str) and e.startswith("*.")))
         if valid:
@@ -4139,7 +4163,7 @@ def _in_template_single_quotes(s: str, pos: int) -> bool:
 
 
 def _expand_env(s: str, env: Dict[str, str]) -> str:
-    """Safe $VAR / ${VAR} expansion from env (no shell).
+    r"""Safe $VAR / ${VAR} expansion from env (no shell).
 
     Replaces $NAME and ${NAME} with values from env. Unknown vars are left
     literal (vs shell which silently empties them). Used at all argv-form
@@ -4188,22 +4212,30 @@ def _expand_env(s: str, env: Dict[str, str]) -> str:
     already make and is what makes this expansion "no shell" in fact rather
     than only in the docstring.
 
-    **Known remaining gap (self-review finding, not fixed here):** this
-    quoting is blind to the template's OWN quoting. A template that already
-    wraps a `$VAR` reference in its own single quotes -- the shipped example
-    at `docs/notifiers.md`'s `bash -c '...$SLACK_WEBHOOK'` pattern -- gets a
-    SECOND, nested pair of quotes spliced in when that variable's value
-    contains a space or other shell-special character, and `shlex.split` has
-    no notion of nested quoting (POSIX shell does not either), so the value
-    is split back apart at the space. Before this fix such a value survived
-    inside the template's own quotes untouched; after it, only a value with
-    no shell-special characters is safe in that position -- which is every
-    template shipped in this tree today, so nothing here regresses in
-    practice, but a project-authored template following the same documented
-    pattern with a differently-shaped value would now break where it did
-    not before. Fixing this needs the substitution to be aware of the
-    template's own quote state at the match position, which is a different,
-    larger change than the one this docstring documents.
+    **Formerly a known gap, closed by #2291 for the single-quote case:**
+    this quoting used to be blind to the template's OWN quoting. A template
+    that already wraps a `$VAR` reference in its own single quotes -- the
+    shipped example at `docs/notifiers.md`'s `bash -c '...$SLACK_WEBHOOK'`
+    pattern -- got a SECOND, nested pair of quotes spliced in when that
+    variable's value contained a space or other shell-special character,
+    and `shlex.split` has no notion of nested quoting (POSIX shell does not
+    either), so the value split back apart at the space, or raised
+    `ValueError: No closing quotation` outright for an odd count of special
+    characters. `_in_template_single_quotes` below now tracks that state and
+    splices the value directly when it is already inside the template's own
+    single-quote span, so this case no longer regresses.
+
+    **Still open:** the identical shape inside the template's OWN DOUBLE
+    quotes (`bash -c "echo $VAR"`) is untouched -- `_in_template_single_quotes`
+    only tracks double-quote spans well enough to know it is not INSIDE a
+    single-quote span there, not well enough to splice correctly into one.
+    No template shipped in this tree, or named in any issue, uses that
+    pattern; a project-authored one that does keeps today's (already
+    imperfect, pre-#2291) behaviour. Fixing this needs the substitution to
+    track double-quote-specific escaping rules too (POSIX grants a
+    backslash real escape power there only before `\`, `"`, `` ` `` and
+    `$`), which is a different, larger change than the one this docstring
+    documents.
     """
     def _replace(m: "re.Match[str]") -> str:
         name = m.group(1) or m.group(2)
