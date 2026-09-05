@@ -123,8 +123,21 @@ def _err(line, msg, code):
     return {"line": line, "col": None, "severity": "error", "code": code, "msg": msg}
 
 
-def _rows(text):
-    """Classify each row by its own shape, not by the directory it sits in.
+def _rows(text, is_vocab_layer):
+    """Classify each row by its own shape -- with one exception, disambiguated by directory.
+
+    A tools row and a paths row cannot collide: 6/7 fields versus 2 never
+    overlap. A vocabulary row's 3 fields DO collide with a truncated tools
+    row that is missing its last three columns (`tool<TAB>match<TAB>file`,
+    with `file` itself empty reads identically to `keyword<TAB>file<TAB>
+    verdict`), and unlike the tools/paths pair, nothing checks a vocabulary
+    row's keyword column at all -- it is never handed to awk, so a
+    corrupted tools row misread as vocabulary would pass with ZERO checks,
+    not merely the wrong ones (#2211 review). `is_vocab_layer` -- true when
+    "vocabulary" is a path component of the file being validated, per this
+    repo's own layout and the `jit-index` `match` glob in `.supertool.json`
+    -- is the one place this function is keyed on a path rather than a
+    shape, and it exists only to break that one collision.
 
     A tools row is `tool<TAB>match<TAB>file<TAB>mode<TAB>require<TAB>forbid`,
     optionally followed by a 7th `requires` column (claude-jit-context 0.6.0,
@@ -132,6 +145,14 @@ def _rows(text):
     with `~`.
     A paths row is `pattern<TAB>file`, and its first column is *always* handed
     to `match()` — calling it a "prefix" is what made that easy to miss.
+
+    A vocabulary row is `keyword<TAB>file<TAB>verdict` (claude-jit-context
+    0.7.1's `build_vocab_tsv`, #2211), where `verdict` is empty or the literal
+    string `generic` (the deferred generic-word classifier, #232/#255).
+    `keyword` is never handed to awk: `pre-prompt-hook.sh` matches it with a
+    literal `index()` against a padded, space-delimited prompt, not `match()`,
+    so a vocabulary row's first column joins neither `patterns` nor the
+    escape/case/compile checks below — there is no regex to check.
 
     Returns (patterns, shape_errors, parsed_row_count, tabbed_row_count); each
     pattern is (line, text, family).
@@ -165,13 +186,31 @@ def _rows(text):
                 "paths row is `pattern<TAB>file` and the hook needs both — an "
                 "empty pattern is handed to match() and matches everything",
                 "shape"))
+        elif (is_vocab_layer and len(fields) == 3 and fields[0].strip()
+              and fields[1].strip() and fields[2] in ("", "generic")):
+            parsed += 1
+        elif len(fields) == 3 and is_vocab_layer:
+            shape_errors.append(_err(
+                line,
+                "row has 3 tab-separated fields but is not a vocabulary row: "
+                "a vocabulary row is `keyword<TAB>file<TAB>verdict`, keyword "
+                "and file both non-empty and verdict either empty or the "
+                "literal word `generic` (claude-jit-context 0.7.1's "
+                "generic-word classifier, #232/#2211)",
+                "shape"))
         else:
+            vocab_clause = (
+                "a vocabulary row has 3 (#2211), " if is_vocab_layer else
+                "(a vocabulary row has 3, #2211, but this file is not under "
+                "a `vocabulary/` layer, so a 3-field row here is refused as "
+                "a malformed tools/paths row rather than read as one) ")
             shape_errors.append(_err(
                 line,
                 "row has {0} tab-separated field(s): a tools row has 6 or 7 "
-                "(claude-jit-context 0.6.0 added `requires`, #1992) and a "
-                "paths row has 2, so the hook will read this row's columns as "
-                "something other than what is written here".format(len(fields)),
+                "(claude-jit-context 0.6.0 added `requires`, #1992), a paths "
+                "row has 2, and {1}so the hook will read this row's columns "
+                "as something other than what is written here".format(
+                    len(fields), vocab_clause),
                 "shape"))
     return patterns, shape_errors, parsed, tabbed
 
@@ -399,7 +438,8 @@ def main():
               "duration_ms": _ms(start)})
         return
 
-    patterns, errors, parsed, tabbed = _rows(text)
+    is_vocab_layer = "vocabulary" in path.parts
+    patterns, errors, parsed, tabbed = _rows(text, is_vocab_layer)
     if parsed == 0 and tabbed == 0:
         # Nothing here is even tabular, so this is prose sitting at an index's
         # path rather than a broken index. Declining is the honest answer; a
@@ -407,7 +447,8 @@ def main():
         # skip there would drop an answer already in hand.
         emit(skipped(TOOL, target,
                      "no row here has the shape of a jit-context index row "
-                     "(6 or 7 tab-separated fields for tools, 2 for paths)",
+                     "(6 or 7 tab-separated fields for tools, 2 for paths, "
+                     "3 for vocabulary under a `vocabulary/` layer, #2211)",
                      _ms(start)))
         return
 
