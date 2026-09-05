@@ -1299,9 +1299,26 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
                 # whole entry and leave the op undocumented. That is #1356's
                 # stub, one section over.
                 project_entry = (config.get("builtin-ops") or {}).get(doc_name)
-                merged_builtin_docs[doc_name] = (
+                merged_entry = (
                     _merge_op_def(doc_def, project_entry)
                     if project_entry is not None else doc_def)
+                merged_builtin_docs[doc_name] = merged_entry
+                if not isinstance(merged_entry, dict):
+                    # The same defect `_get_op_int`/`_get_op_bool` fixed at the
+                    # reader (#1332/#654) and `registry:OP` fixed at the
+                    # disclosure surface (#2079), one layer further upstream:
+                    # a `builtin-ops.<op>` entry that is not a table used to be
+                    # stored here unchecked, with nothing recorded anywhere.
+                    # Every runtime reader then fell back to its own default,
+                    # identically to the key never having been set at all —
+                    # this repository's own signature defect, an absence the
+                    # tool produced read as an absence in the world.
+                    config.setdefault("_preset_warnings", []).append(
+                        f"preset {name!r}: builtin-ops.{doc_name} is "
+                        f"{type(merged_entry).__name__}, not a table "
+                        f"— every runtime reader will fall back to its "
+                        f"default as if this key were never set"
+                    )
                 # Stamped by the loader, for the same reason `_op_sources` is:
                 # "did this preset contribute anything?" is asked against the
                 # provenance, never by re-walking the manifests, and a preset
@@ -4076,6 +4093,51 @@ def _check_vim_shell_allowed() -> Optional[str]:
     )
 
 
+def _in_template_single_quotes(s: str, pos: int) -> bool:
+    r"""Whether `pos` in shell-syntax string `s` sits inside a single-quoted
+    span the string ITSELF opens -- the state `_expand_env` needs at each
+    `$VAR` match to know whether splicing in `shlex.quote()`'d value would
+    nest a second quote pair inside the template author's own (#2291).
+
+    Deliberately narrower than a full POSIX tokenizer, in the same spirit
+    as the docstring above it names as the larger alternative: it tracks
+    single-quote and double-quote spans and backslash escapes OUTSIDE
+    quotes accurately, but inside a double-quoted span it treats every
+    backslash as consuming the next character, where POSIX only grants
+    that to `\\`, `\"`, `` \` `` and `\$` -- a backslash immediately
+    followed by an unescaped `"` in some OTHER escape context could
+    therefore misjudge the state. No template shipped in this tree, or
+    named in any issue, has that shape; a project-authored one that does
+    is the same "differently-shaped value" caveat #2291's own docstring
+    already carries for the untracked case, one level further in rather
+    than a new gap this introduces.
+    """
+    in_single = False
+    in_double = False
+    i = 0
+    while i < pos:
+        c = s[i]
+        if in_single:
+            if c == "'":
+                in_single = False
+        elif in_double:
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                in_double = False
+        else:
+            if c == "\\":
+                i += 2
+                continue
+            if c == "'":
+                in_single = True
+            elif c == '"':
+                in_double = True
+        i += 1
+    return in_single
+
+
 def _expand_env(s: str, env: Dict[str, str]) -> str:
     """Safe $VAR / ${VAR} expansion from env (no shell).
 
@@ -4143,10 +4205,27 @@ def _expand_env(s: str, env: Dict[str, str]) -> str:
     template's own quote state at the match position, which is a different,
     larger change than the one this docstring documents.
     """
+    def _replace(m: "re.Match[str]") -> str:
+        name = m.group(1) or m.group(2)
+        if name not in env:
+            return m.group(0)
+        value = env[name]
+        if _in_template_single_quotes(s, m.start()):
+            # Already inside a single-quote span the TEMPLATE itself opened
+            # (docs/notifiers.md's `bash -c '...$SLACK_WEBHOOK'` pattern) --
+            # nothing but a literal `'` is special there, so wrapping the
+            # value in ANOTHER quote pair (shlex.quote's job below) would
+            # nest quotes `shlex.split` has no notion of (#2291). Splice the
+            # value directly; a `'` inside it is broken out with the same
+            # close-quote/literal-quote/reopen-quote idiom shlex.quote uses
+            # internally, just without the wrapping pair this context
+            # already provides.
+            return value.replace("'", "'\"'\"'")
+        return shlex.quote(value)
+
     return re.sub(
         r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)',
-        lambda m: (shlex.quote(env[m.group(1) or m.group(2)])
-                   if (m.group(1) or m.group(2)) in env else m.group(0)),
+        _replace,
         s,
     )
 

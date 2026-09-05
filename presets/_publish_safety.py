@@ -26,7 +26,24 @@ from typing import Optional
 
 
 def _supertool_config() -> dict:
-    """Walk up from cwd to find `.supertool.json`. Cached per process."""
+    """Walk up from cwd to find `.supertool.json`. Cached per process.
+
+    An unreadable or malformed file used to fall back to `cfg = {}` with
+    nothing said anywhere -- indistinguishable from a config file that
+    parses fine and simply sets none of `no_publish_confirm`,
+    `publish_body_allowlist`, `publish_disclosure_text` or
+    `no_publish_disclosure` (#2306). Every publish safety reader
+    (`require_confirm`, `_body_allowlist`, `_disclosure_config`) goes
+    through this one function, so it is the single choke point to warn
+    from -- the same reasoning `_merge_presets` uses for `builtin-ops`
+    (#2308): one function, so one warning covers every downstream reader
+    rather than teaching each of them to check for it separately.
+
+    Policy chosen here is "warn and fall back", not "refuse": a malformed
+    key unrelated to the one a caller actually needs must not block an
+    unrelated publish, but the read failure is no longer silent -- it is
+    named on stderr, once per process, before the default takes over.
+    """
     global _CACHED_CONFIG
     try:
         return _CACHED_CONFIG  # type: ignore[has-type]
@@ -38,11 +55,26 @@ def _supertool_config() -> dict:
         candidate = d / ".supertool.json"
         if candidate.is_file():
             try:
-                cfg = json.loads(candidate.read_text(encoding="utf-8"))
-                if not isinstance(cfg, dict):
-                    cfg = {}
-            except (OSError, json.JSONDecodeError):
-                cfg = {}
+                parsed = json.loads(candidate.read_text(encoding="utf-8"))
+                if isinstance(parsed, dict):
+                    cfg = parsed
+                else:
+                    sys.stderr.write(
+                        f"WARNING: {candidate} does not hold a JSON object "
+                        f"(got {type(parsed).__name__}) -- ignoring it. "
+                        f"Every publish safety setting (disclosure, body "
+                        f"allowlist, confirmation) falls back to its "
+                        f"default, exactly as if this file set nothing at "
+                        f"all.\n"
+                    )
+            except (OSError, json.JSONDecodeError) as exc:
+                sys.stderr.write(
+                    f"WARNING: could not read {candidate} "
+                    f"({exc.__class__.__name__}: {exc}) -- ignoring it. "
+                    f"Every publish safety setting (disclosure, body "
+                    f"allowlist, confirmation) falls back to its default, "
+                    f"exactly as if this file set nothing at all.\n"
+                )
             break
         if d.parent == d:
             break
