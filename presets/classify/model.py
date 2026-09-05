@@ -93,6 +93,7 @@ per *call* to this op, not a constant shared across calls.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -229,6 +230,26 @@ def _default_spawn(prompt: str, system_prompt: str, timeout: int
         )
 
 
+#: A tag-like opener -- `<name>`, `<name:attr>`, `<name attr="x">` -- that the
+#: fixed vocabulary (`SAFE`, `SUSPECT: ...`) can never itself start with.
+#: Matches the opening half only; #2139's own report is a complete tag pair,
+#: but a truncated or single opening tag is just as clearly not a verdict,
+#: so a close is not required.
+_SCAFFOLDING_OPENER = re.compile(r"^<[^\s<>]+[ >]")
+
+
+def _looks_like_scaffolding(seen: str) -> bool:
+    """True when `seen` opens with a bare `<tag`-shaped fragment rather than
+    anything the fixed vocabulary could have produced (#2139): harness
+    scaffolding -- a budget tag, a system reminder, any XML-ish wrapper
+    belonging to the calling environment -- arriving where a verdict was
+    expected. Narrow on purpose: this names the one shape reported live, not
+    a general "looks like markup" guess, so a genuinely malformed but
+    non-tag-like reply (prose, a typo'd SAFE) is left to the bare
+    'did not parse' message instead of being reclassified."""
+    return bool(_SCAFFOLDING_OPENER.match(seen))
+
+
 def _parse(stdout: str) -> Optional[Verdict]:
     """The fixed-vocabulary parser. `None` means "did not parse" -- the
     caller turns that into `could-not-classify`, never a guess."""
@@ -294,6 +315,13 @@ def classify(text: str, *, spawn: Spawn = _default_spawn,
     verdict = _parse(proc.stdout or "")
     if verdict is None:
         seen = (proc.stdout or "").strip()
+        if _looks_like_scaffolding(seen):
+            # #2139: name the recognised shape rather than quoting a
+            # possibly-truncated prefix of bytes that can never be the
+            # fixed vocabulary anyway.
+            return Verdict(
+                "could-not-classify", [],
+                "the output was the caller's own scaffolding, not a verdict")
         if len(seen) > 80:
             seen = seen[:80] + "…"
         return Verdict("could-not-classify", [],
