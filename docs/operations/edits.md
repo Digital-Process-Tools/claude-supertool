@@ -422,6 +422,23 @@ statement about `src/win.rs` and not about `src/nix.rs`:
   ↳ line endings: the text you supplied did not match 1 of these files byte for byte and was re-terminated to the convention marked above to make it match — every untouched line is unchanged
 ```
 
+`replace_dry` shows the same tag and note, one branch earlier and worded for
+a preview rather than a completed write — the file it names has not been
+touched (#1069, the disclosure `replace` already had since #1057/#1049):
+
+```
+(1 occurrences in 1 files)
+
+src/win.rs [CRLF]
+  L12-L13:
+    - old text
+    + new text
+
+  ↳ line endings: the text you supplied does not match 1 of these files byte for byte and would be re-terminated to the convention marked above to make it match — every untouched line would be unchanged
+
+Summary: 1 replacements in 1 files (DRY RUN — no files modified)
+```
+
 A clean edit or replace of a uniform CRLF file says nothing: nothing was
 decided, and on Windows every file is CRLF, so a note there would fire on every
 call ever made.
