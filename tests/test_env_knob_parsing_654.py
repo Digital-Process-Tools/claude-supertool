@@ -579,9 +579,9 @@ def _run_trail(repo, env_extra):
 
     Retries past the transient object-store race #810 documents (see the
     `_UNREADABLE_OBJECT_RE` comment above): a non-zero exit whose stdout names
-    an unreadable object gets one more try, exactly like
-    `tests/test_git_trail_635.py`'s own `_run()`. Any other failure — including
-    a real `trail.py` bug — returns on the first attempt, unretried.
+    an unreadable object is retried up to twice with a short backoff, exactly
+    like `tests/test_git_trail_635.py`'s own `_run()`. Any other failure —
+    including a real `trail.py` bug — returns on the first attempt, unretried.
     """
     import os
 
