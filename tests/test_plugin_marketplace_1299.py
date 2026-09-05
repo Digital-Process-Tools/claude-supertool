@@ -523,3 +523,30 @@ def test_bump_prs_that_fill_the_cap_and_keep_none_names_the_cap() -> None:
     assert "none found" not in body
     assert str(pin.BUMP_PR_LIMIT) in body
     assert "searched" in body
+
+
+def test_bump_prs_that_fill_the_cap_but_keep_one_still_names_the_cap() -> None:
+    """returned == BUMP_PR_LIMIT with at least one row surviving the filter:
+    the cap note belongs on the searched line regardless of whether the
+    zero-result branch or the 'N found' branch is the one that renders --
+    capped is a property of what the forge sent back, not of how many of
+    those rows turned out to be ours."""
+
+    def fake_run(argv: Any, timeout: int) -> Any:
+        payload = [
+            {"number": 1934, "state": "MERGED", "title": "bump(supertool): c -> d", "createdAt": "2026-08-08T00:00:00Z"},
+        ] + [
+            {
+                "number": n,
+                "state": "MERGED",
+                "title": "bump(supertool-extra): a -> b",
+                "createdAt": "2026-08-%02dT00:00:00Z" % (n % 28 + 1),
+            }
+            for n in range(pin.BUMP_PR_LIMIT - 1)
+        ]
+        return 0, json.dumps(payload), ""
+
+    rows = pin._bump_rows("r", "supertool", fake_run)
+    body = "\n".join(t for _, t in rows)
+    assert "1 found" in body
+    assert "(limit %d)" % pin.BUMP_PR_LIMIT in body
