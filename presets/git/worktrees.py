@@ -48,6 +48,7 @@ line it was given.
 """
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import subprocess
@@ -1570,23 +1571,37 @@ def _parse_since(value: str, now: float):
     line, a prior call's own `now`) and would otherwise have to compute an
     elapsed duration back out of it.
 
-    Returns `(None, why)` on anything that does not parse or is negative — a
-    duration cannot be negative, and a caller who mistyped this should see a
-    refusal, not a declaration silently applied against the wrong instant.
+    Returns `(None, why)` on anything that does not parse, is negative, is
+    non-finite (`inf`/`nan`/an overflowing literal like `1e400`, none of
+    which raise `ValueError` out of `float()`), or — for the `@<epoch>` form
+    — names a point after `now`. A duration cannot be negative, an age is
+    not a real number when it is `inf` or `nan`, and a known-good point in
+    the future is not a fact anyone can hold; a caller who mistyped this
+    (#2332: the ordinary slip is a millisecond epoch, off by 1000x and
+    landing in the future) should see a refusal, not a declaration folded
+    into a silently-wrong age.
     """
     if not value:
         return None, "since= given with no value"
     if value.startswith("@"):
         raw = value[1:]
         try:
-            return float(raw), None
+            epoch = float(raw)
         except ValueError:
             return None, f"since=@{raw!r} is not a number of seconds since the epoch"
+        if not math.isfinite(epoch):
+            return None, f"since=@{raw!r} is not a finite point in time"
+        if epoch > now:
+            return None, (f"since=@{raw!r} is in the future ({epoch - now:.0f}s ahead of "
+                          "now) — a known-good point cannot be after now")
+        return epoch, None
     try:
         seconds_ago = float(value)
     except ValueError:
         return None, (f"since={value!r} is not understood — use `since=<seconds-ago>` "
                       "or `since=@<unix-epoch-seconds>`")
+    if not math.isfinite(seconds_ago):
+        return None, f"since={value!r} is not a finite number of seconds"
     if seconds_ago < 0:
         return None, f"since={value!r} is negative — a duration ago cannot be negative"
     return now - seconds_ago, None
