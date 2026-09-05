@@ -290,6 +290,29 @@ The retry on this route is the whole payload, so a refusal that named one of
 three offences cost three full re-sends of a file that had already been parsed
 in full — measured at four re-sends in one agent run, on payloads up to 14 KB.
 
+**Two nudges sit inside this same message.** The pointer to `literal_backslashes`
+opens the message rather than sitting only at the end, after every occurrence is
+listed ([#2314](https://github.com/Digital-Process-Tools/claude-supertool/issues/2314)) —
+useful once you already know you want the override and just need the flag. A second
+hint, keyed off the payload's own `path` extension
+([#1794](https://github.com/Digital-Process-Tools/claude-supertool/issues/1794)),
+follows the located occurrences: for `.py`, `.json`, `.js`, `.jsx`, `.ts`, `.tsx`,
+`.jsonc`, `.yaml`, `.yml` targets it points at `literal_backslashes`, because a
+doubled backslash reaching one of those files is usually real — a JSON string
+escape, or a Python string-literal escape that the *target file's own parser*
+consumes, not TOML's — and for `.md`, `.txt`, `.rst`, `.adoc` targets it points the
+other way, because prose rarely wants the pair as written. Mixed extensions, or one
+this repo has no opinion about, get no hint at all rather than a guess.
+
+**This guard only ever fires on an EVEN run.** A single un-doubled `\n` — building
+JSONL fixture content one record at a time as a Python string literal,
+`'{"type": "x"}\n' * 51`, say — is an ODD run of one backslash per occurrence and
+writes through with no refusal at all, because doubling cannot produce one. The
+case this refusal exists for is the doubled one: two literal characters, `\` and
+`n`, that some parser other than TOML's needs to see — a JSON string's own escaped
+newline reaching disk inside a Python source string, spelled `\\n` in the payload,
+for instance.
+
 **Whole-payload is the only coherent unit here, not an unexamined default**
 ([#2119](https://github.com/Digital-Process-Tools/claude-supertool/issues/2119)).
 This scan runs at *parse* time, over the raw source, before any op exists to
