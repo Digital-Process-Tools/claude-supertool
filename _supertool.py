@@ -1286,6 +1286,20 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
         # `_help_entry`, `_configured_op_names`, `_build_at_file_registry` —
         # all reach it with no change at all.
         preset_builtin_docs = preset_data.get("builtin-ops")
+        if preset_builtin_docs is not None and not isinstance(
+                preset_builtin_docs, dict):
+            # The whole `builtin-ops` SECTION being a non-table is the same
+            # #2308 defect one level further up than the per-entry check
+            # below: a preset manifest declaring `"builtin-ops": "oops"`
+            # used to skip this whole branch silently, dropping the section
+            # exactly as if the preset had never declared one at all
+            # (oss:auditor's re-spawned self-review finding, since neither
+            # the per-entry check nor `_preset_warnings` ever saw it).
+            config.setdefault("_preset_warnings", []).append(
+                f"preset {name!r}: builtin-ops is "
+                f"{type(preset_builtin_docs).__name__}, not a table "
+                f"— the whole section was dropped"
+            )
         if isinstance(preset_builtin_docs, dict):
             merged_builtin_docs = dict(config.get("builtin-ops") or {})
             for doc_name, doc_def in preset_builtin_docs.items():
@@ -1299,9 +1313,26 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
                 # whole entry and leave the op undocumented. That is #1356's
                 # stub, one section over.
                 project_entry = (config.get("builtin-ops") or {}).get(doc_name)
-                merged_builtin_docs[doc_name] = (
+                merged_entry = (
                     _merge_op_def(doc_def, project_entry)
                     if project_entry is not None else doc_def)
+                merged_builtin_docs[doc_name] = merged_entry
+                if not isinstance(merged_entry, dict):
+                    # The same defect `_get_op_int`/`_get_op_bool` fixed at the
+                    # reader (#1332/#654) and `registry:OP` fixed at the
+                    # disclosure surface (#2079), one layer further upstream:
+                    # a `builtin-ops.<op>` entry that is not a table used to be
+                    # stored here unchecked, with nothing recorded anywhere.
+                    # Every runtime reader then fell back to its own default,
+                    # identically to the key never having been set at all —
+                    # this repository's own signature defect, an absence the
+                    # tool produced read as an absence in the world.
+                    config.setdefault("_preset_warnings", []).append(
+                        f"preset {name!r}: builtin-ops.{doc_name} is "
+                        f"{type(merged_entry).__name__}, not a table "
+                        f"— every runtime reader will fall back to its "
+                        f"default as if this key were never set"
+                    )
                 # Stamped by the loader, for the same reason `_op_sources` is:
                 # "did this preset contribute anything?" is asked against the
                 # provenance, never by re-walking the manifests, and a preset
@@ -1359,6 +1390,19 @@ def _load_config() -> Dict[str, Any]:
                     # to non-dict. _merge_presets needs a dict — coerce to
                     # empty to keep the rest of the loader honest.
                     if not isinstance(_CONFIG, dict):
+                        # Adjacent to #2308/#2306, same signature defect one
+                        # layer higher: this used to coerce to `{}` with
+                        # nothing recorded, rendering a `.supertool.json`
+                        # that parses but is a JSON array/string/number
+                        # byte-identical to no config file existing at all.
+                        # `presets/_publish_safety._supertool_config` fixed
+                        # the identical shape for its own loader in this
+                        # same commit (#2306); this is the sibling fix for
+                        # the loader every other op goes through.
+                        _CONFIG_WARNINGS.append(
+                            f"{candidate} does not hold a JSON object (got "
+                            f"{type(_CONFIG).__name__}) — ignoring it"
+                        )
                         _CONFIG = {}
                     project_dir = d
                     _CONFIG_PATH = candidate
@@ -1843,7 +1887,15 @@ def _get_op_int(op_name: str, key: str, default: int) -> int:
     env_val = os.environ.get(env_key)
     cfg = _load_config()
     op_cfg = cfg.get("builtin-ops", {}).get(op_name, {})
-    val = op_cfg.get(key)
+    # A `builtin-ops.<op>` entry that is not a table is `_merge_presets`'s
+    # own #2308 finding -- it now records a `_preset_warnings` entry naming
+    # exactly this shape, but the unconditional `.get(key)` this guard
+    # replaces crashed with `AttributeError` on the string/list/etc it
+    # merged in unchecked, which is worse than the "fell back to its
+    # default" this function's own docstring already promised (caught in
+    # self-review, both spawned reviewers independently found the same
+    # crash; `_get_op_bool` right below already carried this same guard).
+    val = op_cfg.get(key) if isinstance(op_cfg, dict) else None
     fallback = default
     if val is not None:
         # `isinstance(True, int)` is True, so a JSON `true` used to read as the
@@ -1958,7 +2010,10 @@ def _grep_file_includes() -> Tuple[str, ...] | None:
     cfg = _load_config()
     builtin_ops = cfg.get("builtin-ops", {})
     op_cfg = builtin_ops.get("grep", {})
-    exts = op_cfg.get("extensions", [])
+    # Same #2308 guard as `_get_op_int` just above, and for the identical
+    # reason: a `builtin-ops.grep` entry that is not a table used to crash
+    # `.get("extensions", ...)` with `AttributeError` rather than fall back.
+    exts = op_cfg.get("extensions", []) if isinstance(op_cfg, dict) else []
     if exts and isinstance(exts, list):
         valid = tuple(sorted(e for e in exts if isinstance(e, str) and e.startswith("*.")))
         if valid:
@@ -4076,8 +4131,53 @@ def _check_vim_shell_allowed() -> Optional[str]:
     )
 
 
+def _in_template_single_quotes(s: str, pos: int) -> bool:
+    r"""Whether `pos` in shell-syntax string `s` sits inside a single-quoted
+    span the string ITSELF opens -- the state `_expand_env` needs at each
+    `$VAR` match to know whether splicing in `shlex.quote()`'d value would
+    nest a second quote pair inside the template author's own (#2291).
+
+    Deliberately narrower than a full POSIX tokenizer, in the same spirit
+    as the docstring above it names as the larger alternative: it tracks
+    single-quote and double-quote spans and backslash escapes OUTSIDE
+    quotes accurately, but inside a double-quoted span it treats every
+    backslash as consuming the next character, where POSIX only grants
+    that to `\\`, `\"`, `` \` `` and `\$` -- a backslash immediately
+    followed by an unescaped `"` in some OTHER escape context could
+    therefore misjudge the state. No template shipped in this tree, or
+    named in any issue, has that shape; a project-authored one that does
+    is the same "differently-shaped value" caveat #2291's own docstring
+    already carries for the untracked case, one level further in rather
+    than a new gap this introduces.
+    """
+    in_single = False
+    in_double = False
+    i = 0
+    while i < pos:
+        c = s[i]
+        if in_single:
+            if c == "'":
+                in_single = False
+        elif in_double:
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                in_double = False
+        else:
+            if c == "\\":
+                i += 2
+                continue
+            if c == "'":
+                in_single = True
+            elif c == '"':
+                in_double = True
+        i += 1
+    return in_single
+
+
 def _expand_env(s: str, env: Dict[str, str]) -> str:
-    """Safe $VAR / ${VAR} expansion from env (no shell).
+    r"""Safe $VAR / ${VAR} expansion from env (no shell).
 
     Replaces $NAME and ${NAME} with values from env. Unknown vars are left
     literal (vs shell which silently empties them). Used at all argv-form
@@ -4126,27 +4226,52 @@ def _expand_env(s: str, env: Dict[str, str]) -> str:
     already make and is what makes this expansion "no shell" in fact rather
     than only in the docstring.
 
-    **Known remaining gap (self-review finding, not fixed here):** this
-    quoting is blind to the template's OWN quoting. A template that already
-    wraps a `$VAR` reference in its own single quotes -- the shipped example
-    at `docs/notifiers.md`'s `bash -c '...$SLACK_WEBHOOK'` pattern -- gets a
-    SECOND, nested pair of quotes spliced in when that variable's value
-    contains a space or other shell-special character, and `shlex.split` has
-    no notion of nested quoting (POSIX shell does not either), so the value
-    is split back apart at the space. Before this fix such a value survived
-    inside the template's own quotes untouched; after it, only a value with
-    no shell-special characters is safe in that position -- which is every
-    template shipped in this tree today, so nothing here regresses in
-    practice, but a project-authored template following the same documented
-    pattern with a differently-shaped value would now break where it did
-    not before. Fixing this needs the substitution to be aware of the
-    template's own quote state at the match position, which is a different,
-    larger change than the one this docstring documents.
+    **Formerly a known gap, closed by #2291 for the single-quote case:**
+    this quoting used to be blind to the template's OWN quoting. A template
+    that already wraps a `$VAR` reference in its own single quotes -- the
+    shipped example at `docs/notifiers.md`'s `bash -c '...$SLACK_WEBHOOK'`
+    pattern -- got a SECOND, nested pair of quotes spliced in when that
+    variable's value contained a space or other shell-special character,
+    and `shlex.split` has no notion of nested quoting (POSIX shell does not
+    either), so the value split back apart at the space, or raised
+    `ValueError: No closing quotation` outright for an odd count of special
+    characters. `_in_template_single_quotes` below now tracks that state and
+    splices the value directly when it is already inside the template's own
+    single-quote span, so this case no longer regresses.
+
+    **Still open:** the identical shape inside the template's OWN DOUBLE
+    quotes (`bash -c "echo $VAR"`) is untouched -- `_in_template_single_quotes`
+    only tracks double-quote spans well enough to know it is not INSIDE a
+    single-quote span there, not well enough to splice correctly into one.
+    No template shipped in this tree, or named in any issue, uses that
+    pattern; a project-authored one that does keeps today's (already
+    imperfect, pre-#2291) behaviour. Fixing this needs the substitution to
+    track double-quote-specific escaping rules too (POSIX grants a
+    backslash real escape power there only before `\`, `"`, `` ` `` and
+    `$`), which is a different, larger change than the one this docstring
+    documents.
     """
+    def _replace(m: "re.Match[str]") -> str:
+        name = m.group(1) or m.group(2)
+        if name not in env:
+            return m.group(0)
+        value = env[name]
+        if _in_template_single_quotes(s, m.start()):
+            # Already inside a single-quote span the TEMPLATE itself opened
+            # (docs/notifiers.md's `bash -c '...$SLACK_WEBHOOK'` pattern) --
+            # nothing but a literal `'` is special there, so wrapping the
+            # value in ANOTHER quote pair (shlex.quote's job below) would
+            # nest quotes `shlex.split` has no notion of (#2291). Splice the
+            # value directly; a `'` inside it is broken out with the same
+            # close-quote/literal-quote/reopen-quote idiom shlex.quote uses
+            # internally, just without the wrapping pair this context
+            # already provides.
+            return value.replace("'", "'\"'\"'")
+        return shlex.quote(value)
+
     return re.sub(
         r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)',
-        lambda m: (shlex.quote(env[m.group(1) or m.group(2)])
-                   if (m.group(1) or m.group(2)) in env else m.group(0)),
+        _replace,
         s,
     )
 
