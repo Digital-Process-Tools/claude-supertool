@@ -296,11 +296,11 @@ def _validate(payload: dict) -> str | None:
     # (`[[body]]`, a list of `{"value": ...}` dicts) reached
     # `apply_forge_disclosure(body: str)` as a `list` with no type check
     # here, three frames from where the crash actually surfaced.
-    # gh-issue-comment accepts the same shape without crashing, but its own
-    # `_body_text` does not actually join it -- `str([{"value": "..."}])`
-    # publishes the Python repr of the list as the comment body (reported
-    # separately). Refuse here instead of matching that: `body` must be a
-    # plain string.
+    # gh-issue-comment used to accept the same shape without crashing, but
+    # its own `_body_text` did not actually join it either --
+    # `str([{"value": "..."}])` published the Python repr of the list as
+    # the comment body. Fixed the same way there too (#2322): `body` must
+    # be a plain string in both ops.
     if "body" in payload and not isinstance(payload.get("body"), str):
         return (
             "ERROR: body must be a string, not "
