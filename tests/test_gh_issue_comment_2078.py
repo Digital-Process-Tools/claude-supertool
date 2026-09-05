@@ -91,6 +91,31 @@ def test_a_payload_missing_repo_is_refused():
     assert err is not None and "repo" in err.lower()
 
 
+def test_a_toml_body_table_array_is_refused_not_stringified_2322():
+    # #2322: a `[[body]]` TOML table-array parses as a list of
+    # `{"value": ...}` dicts. `_body_text` used to do
+    # `str(payload.get("body") or "")`, which happily stringifies a list --
+    # publishing the literal Python repr (`[{'value': '...'}]`) as the
+    # comment body. Confirmed against a real posted comment on issue #2310.
+    # #2315 made the same call for gh-issue-create's sibling case: refuse
+    # instead of guessing at a join. Applied here too.
+    payload = {"repo": "o/r", "body": [{"value": "hello"}]}
+    err = m.validate(payload)
+    assert err is not None, "a list body must be refused by validate()"
+    assert "string" in err.lower(), err
+    assert "list" in err, err
+
+
+def test_a_toml_body_table_array_never_reaches_the_publish_step_2322():
+    # Even if validate() were bypassed, _body_text itself must refuse a
+    # non-string body rather than stringify it -- never a Python repr as
+    # the content to publish.
+    content, err = m._body_text({"body": [{"value": "hello"}]})
+    assert err != "", "a list body must be refused by _body_text() too"
+    assert "{'value'" not in content, (
+        f"a Python repr leaked into the published body: {content!r}")
+
+
 # ===========================================================================
 # landed verdict -- the read-back
 # ===========================================================================
