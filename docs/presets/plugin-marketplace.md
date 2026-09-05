@@ -70,12 +70,15 @@ community  anthropics/claude-plugins-community
   pinned    dcb574ea  v0.27.0  2026-08-08
   distance  101 commits, 6 releases, 0.27.0 -> 0.33.0
   bump PRs  1 found, latest #1934 MERGED 2026-08-08 -- bump(supertool): 796166cc -> dcb574ea
-            searched: bump(supertool) in:title (limit 30)
+            searched: bump(supertool) in:title
 ```
+
+(1 is well below the 30-row cap, so `(limit 30)` does not print here -- see below.)
 
 - **`pinned`** — the sha, the plugin manifest version *at* that sha, and its date. A sha alone says nothing; the version at it is the thing users have.
 - **`distance`** — commits and tags between the pin and local `HEAD`, resolved from this clone. When it cannot be resolved the row is `skipped` and says which of the two reasons applies: the commit is not in this clone (fetch it), or it is here and carries no `.claude-plugin/plugin.json`, which fetching will not fix. `git show SHA:PATH` exits 128 for both.
 - **`bump PRs`** — the catalogue's automation opens one PR per bump, titled `bump(NAME): old -> new`. **The search is printed under its own result**, because that title convention belongs to one repository's workflow and not to the ecosystem: if it is renamed, this renders as a query that found nothing rather than as a plugin that was never bumped. An `OPEN` bump PR gets its own line — that is a bump waiting on review, not a bump that never happened. Two things the forge's answer needs correcting for, both measured 2026-08-11: **the search is tokenized**, so `bump(claude) in:title` comes back with `bump(claude-mem)`, `bump(claude-hud)`, twelve more siblings and a `ci:` PR merely holding both words — only titles beginning `bump(NAME):` are kept, and the row says `kept N of M returned` whenever that narrowed anything; and **the order is relevance, not time**, since GitHub search defaults to best match with no `sort:` qualifier, so the list is re-sorted here rather than requested that way.
+- **the cap is disclosed only when it could matter (#2138)**. The search asks for at most `BUMP_PR_LIMIT` (30) rows. When the forge genuinely returned fewer than that, `(limit 30)` does not print at all — the cap was never close to being reached, and printing it there is noise in one direction. When it returned exactly 30 and every one of them is filtered out by `keep_own_bumps`, the row is **not** `none found`: it says `none in the first 30, and the search filled its limit, so more may exist`, because a bare "none found" at the cap reads as a checked absence when nobody looked past row 30 — noise in the other direction, and the bug this fixed.
 - **unpinned** — an entry with no `sha` tracks the repository default branch, so every release reaches users at once. That is the *opposite* of a stale pin and is not rendered as a missing one.
 
 Titles come from another repository's tracker, so they are flattened to one line under a single disclosure line, the same trade `gh-prs` and `gl-mrs` make.

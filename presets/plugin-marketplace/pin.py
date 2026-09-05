@@ -586,11 +586,20 @@ def keep_own_bumps(prs: Sequence[Dict[str, Any]], plugin: str) -> List[Dict[str,
 def _bump_rows(repo: str, plugin: str, run: Callable[..., Any]) -> List[Tuple[str, str]]:
     prs, reason = fetch_bump_prs(repo, plugin, run=run)
     query = bump_query(plugin)
-    searched = ("", "searched: %s (limit %d)" % (query, BUMP_PR_LIMIT))
     if prs is None:
+        searched = ("", "searched: %s (limit %d)" % (query, BUMP_PR_LIMIT))
         return [("bump PRs", "%s -- %s" % (SKIPPED, reason)), searched]
 
     returned = len(prs)
+    # The cap note only means something once the forge actually filled the
+    # page -- below the cap, "(limit 30)" is noise about a ceiling nothing
+    # came close to (#2138, same seam, opposite direction).
+    capped = returned == BUMP_PR_LIMIT
+    if capped:
+        searched = ("", "searched: %s (limit %d)" % (query, BUMP_PR_LIMIT))
+    else:
+        searched = ("", "searched: %s" % query)
+
     prs = keep_own_bumps(prs, plugin)
     rows_extra: List[Tuple[str, str]] = []
     if returned != len(prs):
@@ -602,7 +611,19 @@ def _bump_rows(repo: str, plugin: str, run: Callable[..., Any]) -> List[Tuple[st
             % (len(prs), returned, plugin, plugin, "bump(%s)" % plugin),
         ))
     if not prs:
-        return [("bump PRs", "none found"), searched] + rows_extra
+        if capped:
+            # Zero of the first BUMP_PR_LIMIT rows was ours, and the search
+            # filled that limit -- there may be one past the cap nobody
+            # looked at. A bare "none found" reads as a confirmed absence
+            # this render never checked for (#2138).
+            none_row = (
+                "bump PRs",
+                "none in the first %d, and the search filled its limit, so "
+                "more may exist" % BUMP_PR_LIMIT,
+            )
+        else:
+            none_row = ("bump PRs", "none found")
+        return [none_row, searched] + rows_extra
     latest = prs[0]
     when = (latest.get("mergedAt") or latest.get("createdAt") or "")[:10]
     # The title is another repository's tracker text on its way into a render

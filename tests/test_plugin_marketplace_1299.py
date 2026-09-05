@@ -468,3 +468,58 @@ def test_an_unknown_pin_still_says_to_fetch() -> None:
     version, why = pin.git_version_at(Path("/repo"), "dcb574ea3444", run=fake_run)
     assert version is None
     assert why is not None and "not in this clone" in why
+
+
+def test_zero_bump_prs_is_genuine_none_found_with_no_cap_note() -> None:
+    """returned == 0 -- the forge genuinely found nothing, and the cap could
+    not possibly have been reached. '(limit 30)' here would be noise in the
+    opposite direction from #2138's main bug."""
+
+    def fake_run(argv: Any, timeout: int) -> Any:
+        return 0, json.dumps([]), ""
+
+    rows = pin._bump_rows("r", "supertool", fake_run)
+    body = "\n".join(t for _, t in rows)
+    assert "none found" in body
+    assert "(limit" not in body
+
+
+def test_a_few_bump_prs_below_the_cap_carries_no_cap_note() -> None:
+    """0 < returned < BUMP_PR_LIMIT: not the cap-filled case, so no cap note
+    on the searched line either."""
+
+    def fake_run(argv: Any, timeout: int) -> Any:
+        payload = [
+            {"number": 1934, "state": "MERGED", "title": "bump(supertool): c -> d", "createdAt": "2026-08-08T00:00:00Z"},
+        ]
+        return 0, json.dumps(payload), ""
+
+    rows = pin._bump_rows("r", "supertool", fake_run)
+    body = "\n".join(t for _, t in rows)
+    assert "1 found" in body
+    assert "(limit" not in body
+
+
+def test_bump_prs_that_fill_the_cap_and_keep_none_names_the_cap() -> None:
+    """returned == BUMP_PR_LIMIT and every row is filtered out by
+    keep_own_bumps: the honest answer is 'none of the first 30 was ours, and
+    there may be one past the cap nobody looked at' -- not a bare 'none
+    found', which reads as a confirmed absence it never checked for (#2138)."""
+
+    def fake_run(argv: Any, timeout: int) -> Any:
+        payload = [
+            {
+                "number": n,
+                "state": "MERGED",
+                "title": "bump(supertool-extra): a -> b",
+                "createdAt": "2026-08-%02dT00:00:00Z" % (n % 28 + 1),
+            }
+            for n in range(pin.BUMP_PR_LIMIT)
+        ]
+        return 0, json.dumps(payload), ""
+
+    rows = pin._bump_rows("r", "supertool", fake_run)
+    body = "\n".join(t for _, t in rows)
+    assert "none found" not in body
+    assert str(pin.BUMP_PR_LIMIT) in body
+    assert "searched" in body
