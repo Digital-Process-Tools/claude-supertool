@@ -18697,11 +18697,24 @@ def _doctor_formatters_section(config: Dict[str, Any], probe: bool) -> str:
     caching layer exists for them, unlike `_validator_run_one`'s
     `~/.cache/supertool/validators/`), so there is nothing to bypass.
     """
-    formatters = config.get("formatters") or {}
+    formatters = config.get("formatters")
     lines: List[str] = ["## Formatters (#2086)"]
+    if formatters is None:
+        # No key at all -- nobody has DECLARED anything, so every write this
+        # tool makes goes out unformatted and nothing says so at the moment
+        # it lands. WARN rather than an unweighted bullet (#2316): unlike a
+        # genuine not-applicable ("no tracked file matches"), this is a
+        # capability switched off, not a fact about the tree.
+        lines.append("- " + mark("⚠") + " no \"formatters\" section in "
+                     ".supertool.json — no formatter configured, and nothing "
+                     "on record says that is intentional")
+        return "\n".join(lines)
     if not formatters:
-        lines.append("- no \"formatters\" section in .supertool.json — no "
-                     "formatter configured")
+        # An explicit empty dict is a DECISION on record -- the repo declared
+        # it wants no formatter, the same absent-vs-empty shape claude-oss's
+        # own `changelog_untagged` already uses. ok, not a nag (#2316).
+        lines.append("- 0 configured — \"formatters\": {} on record, no "
+                     "formatter declared")
         return "\n".join(lines)
 
     files = _doctor_tracked_files()
@@ -28365,7 +28378,10 @@ def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
         "(" + bs * 2 + ", " + bs * 4 + ", ...) in a field that is WRITTEN to the "
         "file, and a literal block processes NO escapes -- the run would reach "
         "disk at its full length, pass every validator, and be wrong only in "
-        "string contents. Each occurrence below names the run it found."
+        "string contents. Each occurrence below names the run it found -- if "
+        "you already know this run is meant AS WRITTEN (documentation of the "
+        "sequence itself, not a doubling mistake), skip straight to `"
+        + _PAYLOAD_LITERAL_BS_KEY + "` at the end of this message. (#2314)"
         + chr(10)
     ]
     for _key, label, _line, total, occs in findings[:_PAYLOAD_DBS_MAX_FIELDS]:

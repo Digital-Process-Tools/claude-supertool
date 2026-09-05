@@ -15,7 +15,28 @@ import supertool
 
 def test_doctor_reports_no_formatters_configured_when_section_absent() -> None:
     out = supertool.op_doctor("")
-    assert "no \"formatters\" section in .supertool.json" in out
+    assert "no " + chr(34) + "formatters" + chr(34) + " section in .supertool.json" in out
+
+
+def test_doctor_warns_when_formatters_key_is_absent_2316(monkeypatch) -> None:
+    """#2316 -- nobody has DECLARED anything, so writes go out unformatted
+    with nothing saying so. That is a WARN, not an unweighted bullet sitting
+    beside a genuine not-applicable (no tracked file matches)."""
+    monkeypatch.setattr(supertool, "_load_config", lambda: {})
+    out = supertool.op_doctor("")
+    assert "no " + chr(34) + "formatters" + chr(34) + " section in .supertool.json" in out
+    assert supertool.mark("⚠") in out.split("## Formatters")[1].split("##")[0]
+
+
+def test_doctor_is_ok_when_formatters_is_explicitly_an_empty_dict_2316(monkeypatch) -> None:
+    """#2316 -- an empty dict is a DECISION on record (no formatter, and
+    the repo said so), the same shape claude-oss's own changelog_untagged
+    already uses for absent-vs-empty. It must not warn."""
+    monkeypatch.setattr(supertool, "_load_config", lambda: {"formatters": {}})
+    out = supertool.op_doctor("")
+    section = out.split("## Formatters")[1].split("##")[0]
+    assert supertool.mark("⚠") not in section
+    assert "0 configured" in section
 
 
 def test_doctor_formatters_section_present_and_labelled() -> None:

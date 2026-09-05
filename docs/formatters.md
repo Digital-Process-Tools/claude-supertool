@@ -151,6 +151,22 @@ when editing another checkout from this shell.
 
 When the underlying tool is missing (e.g. `prettier` not installed), the formatter warns and continues. No formatter failure blocks an unrelated edit. The project stays fully usable without pre-installed dependencies.
 
+## `doctor` and an absent `formatters` key (#2316)
+
+`supertool doctor`'s `## Formatters` section reads `.supertool.json` for three
+states, not two:
+
+| `.supertool.json` | `doctor` |
+| --- | --- |
+| no `formatters` key at all | WARN — nobody has declared anything, so every write goes out unformatted and nothing on record says that is intentional |
+| `"formatters": {}` | ok — a decision on record: the repo has deliberately chosen no formatter |
+| `"formatters": {...}` | ok, reported per-formatter as before |
+
+The distinction is the same one `claude-oss`'s own `changelog_untagged` config
+key draws between absent/null ("nobody declared anything") and an empty list
+("declared, and the answer is empty"). A repo that wants no formatter writes
+`"formatters": {}` to get the `ok` rather than a permanent nag.
+
 ## Field reference
 
 Full list of `.supertool.json` formatter config fields:
