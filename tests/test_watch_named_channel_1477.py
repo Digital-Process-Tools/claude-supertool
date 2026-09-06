@@ -248,8 +248,13 @@ def test_an_unclaimable_slot_names_the_variable_that_chose_the_directory(
     `SUPERTOOL_WATCH_STATE_DIR`. Under a name that variable is the one they
     deliberately did not set, so the sentence sends them to the wrong knob —
     a refusal that names the wrong cause is barely better than a silent one."""
-    import dispatcher  # noqa: PLC0415
     import transport  # noqa: PLC0415
+
+    # `dispatcher` is a contested basename -- `presets/worktree/dispatcher.py`
+    # claims it too (#726, #532) -- loaded by absolute path instead of a bare
+    # `import dispatcher`, which xdist's work split would resolve arbitrarily.
+    from _preset_loader import load_preset_module  # noqa: PLC0415
+    dispatcher = load_preset_module("watch", "dispatcher", prefix="watch_1477a_")
 
     blocker = tmp_path / "blocked"
     blocker.write_text("not a directory", encoding="utf-8")
@@ -270,8 +275,13 @@ def test_an_unclaimable_slot_under_the_default_still_names_the_state_dir_var(
         tmp_path, monkeypatch, capsys):
     """The pre-name sentence has to survive: nothing was derived here, so the
     directory is the operator's or the default, and that is what to check."""
-    import dispatcher  # noqa: PLC0415
     import transport  # noqa: PLC0415
+
+    # `dispatcher` is a contested basename -- `presets/worktree/dispatcher.py`
+    # claims it too (#726, #532) -- loaded by absolute path instead of a bare
+    # `import dispatcher`, which xdist's work split would resolve arbitrarily.
+    from _preset_loader import load_preset_module  # noqa: PLC0415
+    dispatcher = load_preset_module("watch", "dispatcher", prefix="watch_1477b_")
 
     monkeypatch.setattr(dispatcher, "_spawn_poller",
                         lambda *a, **k: pytest.fail("must not spawn"))

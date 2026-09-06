@@ -152,7 +152,14 @@ def run(target: Path) -> "tuple[int, str]":
         manifest_path = _common.git_path(target, _common.MANIFEST_REL)
         if manifest_path.is_file():
             manifest_path.unlink()
-    except (_common.TargetError, OSError):
-        pass
+    except (_common.TargetError, OSError) as exc:
+        # Everything this manifest named has already been undone above (or
+        # reported a WARNING and left in place) by the time we get here, so
+        # a failure to remove the RECEIPT itself is never a reason to fail
+        # the whole run -- the next `worktree:setup` just overwrites a stale
+        # manifest rather than reading it. Reported rather than swallowed
+        # (matching this function's own WARNING discipline elsewhere) so a
+        # permission error here is at least visible, never silent.
+        lines.append(f"  WARNING could not remove the provisioning manifest itself: {exc}")
 
     return 0, "worktree:teardown " + str(target) + "\n" + "\n".join(lines)

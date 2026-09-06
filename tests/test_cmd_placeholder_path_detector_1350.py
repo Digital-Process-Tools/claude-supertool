@@ -272,26 +272,31 @@ class TestTheShippedRegistryIsFullyDetected:
         # boundary (`"paths": {"args": []}` — the `gl-api` precedent, since
         # PATH there names an artifact's own path or a GitLab API route
         # rather than anything on this filesystem). Named and declared each
-        # moved by two, the 19-strong undeclared register still did not. The
-        # register's own header comment in `_supertool.py` now reads "30
-        # shipped PRESET ops name a path, 11 declare a boundary, these 19 do
+        # moved by two, the 19-strong undeclared register still did not.
+        # #532 adds `worktree`, the same `"paths": {"args": []}` shape again
+        # — PATH there deliberately points outside cwd, at a sibling
+        # worktree of the same repo, so a `parts` index would validate the
+        # wrong thing. Named and declared each moved by one, the 19-strong
+        # undeclared register still did not. The
+        # register's own header comment in `_supertool.py` now reads "31
+        # shipped PRESET ops name a path, 12 declare a boundary, these 19 do
         # not" — these four numbers are the only thing under it.
-        assert len(named) == 30, sorted(named)
+        assert len(named) == 31, sorted(named)
         assert sorted(declared) == [
             "claims", "classify", "gh-issue-comment", "gh-job", "gh-pr-edit",
-            "gl-api", "gl-job", "slack_publish", "xml", "xml_attr",
-            "xml_count"], sorted(declared)
+            "gl-api", "gl-job", "slack_publish", "worktree", "xml",
+            "xml_attr", "xml_count"], sorted(declared)
         assert len(supertool._UNDECLARED_PATH_OPS) == 19
 
         whole = _registry()
         named_all = [n for n, e in whole.items()
                      if supertool._entry_names_a_path(e) is not None]
         declared_all = [n for n in named_all if "paths" in whole[n]]
-        assert len(named_all) == 30, sorted(named_all)
+        assert len(named_all) == 31, sorted(named_all)
         assert sorted(declared_all) == [
             "claims", "classify", "gh-issue-comment", "gh-job", "gh-pr-edit",
-            "gl-api", "gl-job", "slack_publish", "xml", "xml_attr",
-            "xml_count"], sorted(declared_all)
+            "gl-api", "gl-job", "slack_publish", "worktree", "xml",
+            "xml_attr", "xml_count"], sorted(declared_all)
 
     def test_this_repo_ships_no_project_only_path_naming_op(self) -> None:
         """`oss_train` was the one, and #1472 deleted it.

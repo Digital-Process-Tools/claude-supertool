@@ -3726,16 +3726,18 @@ def _dropped_tokens_refusal(
     return chr(10).join(lines) + chr(10)
 
 #: Preset ops that name a path and predate the declaration (#1287). **This set
-#: only ever shrinks.** It is not a policy — it is a debt register: 30 shipped
-#: PRESET ops name a path, 11 declare a boundary (#1796 added `gh-job` and
+#: only ever shrinks.** It is not a policy — it is a debt register: 31 shipped
+#: PRESET ops name a path, 12 declare a boundary (#1796 added `gh-job` and
 #: `gl-job` to the declared side, both `"paths": {"args": []}` — the `gl-api`
 #: precedent, since PATH there names an artifact's own path or a GitLab API
-#: route rather than anything on this filesystem), these 19 do not. It opened
+#: route rather than anything on this filesystem; #532 added `worktree`, the
+#: same `"paths": {"args": []}` shape again, since PATH there deliberately
+#: points outside cwd), these 19 do not. It opened
 #: at
 #: 20 — see the #1351 note below for the one it has lost. Counting this repo's
 #: own `.supertool.json` as well used to add one to each of those first two
 #: numbers, the extra being `oss_train`, deleted in #1472; the two scopes now
-#: agree at 30 and 11. All
+#: agree at 31 and 12. All
 #: four numbers are pinned in
 #: `tests/test_cmd_placeholder_path_detector_1350.py` so this comment cannot
 #: drift again.
