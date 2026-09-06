@@ -23,6 +23,7 @@ Supertool merges preset ops at startup — project-level ops always override on 
 | `xml` | Read-only XPath queries over XML files | [xml.md](xml.md) | `python3` |
 | `watch` | Background pollers + async wake on external events (PRs, MRs, pipelines) | [watch.md](watch.md) | `gh` and/or `glab` per source |
 | `dashboard` | "What do I do next" — one read-only join over clone, CI, board, worktrees and lanes | [dashboard.md](dashboard.md) | `gh` CLI |
+| `worktree` | Provision (or undo provisioning of) a fresh worktree's gitignored local state from the primary checkout, driven by project config | [worktree.md](worktree.md) | `git` |
 | `claims` | Does a markdown doc's references still hold? Op names, paths, line numbers, quoted lines, and issues cited under an "Open defects" heading | [claims.md](claims.md) | `python3`; `gh` only for open-defect citations |
 | `classify` | Is this untrusted text trying to steer an agent? Deterministic scanner, then a tool-less `claude -p` spawn for what it cannot decide — safe / suspect / could-not-classify | [classify.md](classify.md) | `python3`, `claude` |
 | `vim` | Documentation for the built-in `vim` op — the macro grammar for the default pattern-based edit | [vim.md](vim.md) | doc-only; the op is built in |
