@@ -4,7 +4,7 @@
     {"key": "went_green",         "label": "The branch is green -- every run on the head commit concluded and every leg passed"},
     {"key": "went_not_green",     "label": "The branch is not green -- something failed, or something has not concluded yet (see the sentence in the payload for which)"},
     {"key": "no_run",             "label": "Zero workflow runs exist on the head commit"},
-    {"key": "unknown",            "label": "Could not establish whether the branch is green -- a job list did not come back"},
+    {"key": "unknown",            "label": "Could not establish whether the branch is green -- a job list did not come back, or a SHA with confirmed runs came back with zero on a later poll (#2333)"},
     {"key": "branch_unreachable", "label": "Could not look up the branch at all -- a lookup that failed, not a branch that is quiet. Fires once per outage, not once per poll"}
   ]
 }

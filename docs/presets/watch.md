@@ -746,7 +746,13 @@ leg failed" and "nothing failed but nothing has concluded either" — the
 distinction lives in the event's `sentence` payload field, the same sentence
 `gh-branch` itself would print), `no_run` (zero workflow runs on the head
 commit — never folded into red, because it is the ordinary state for the first
-seconds after a squash), and `unknown` (a job list that did not come back). A
+seconds after a squash), and `unknown` (a job list that did not come back, or
+a sha this poller already confirmed runs on that came back with zero runs on
+a later poll — runs on a concluded commit do not disappear, so that reading
+is treated as a fetch that did not answer rather than a fact about the world;
+one such reading is absorbed this way, a second consecutive one on the same
+sha is trusted and surfaces as the real `no_run` —
+[#2333](https://github.com/Digital-Process-Tools/claude-supertool/issues/2333)). A
 lookup failure that could not resolve the ref, list runs, or identify the
 repository itself is `branch_unreachable`, edge-triggered like every other
 source's `*_unreachable` event — a `gh` that could not answer at all is never
