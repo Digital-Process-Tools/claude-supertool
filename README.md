@@ -125,7 +125,7 @@ Five subsystems the table above only gestures at, each with its own doc:
 
 ## Security — cwd containment
 
-Every path argument is checked against the current working directory; `~` is expanded before the check, symlinks crossing the boundary are caught, and a malicious `.supertool.json` or a prompt-injected `paste:~/.ssh/authorized_keys:::pwned` is refused rather than run. Opt out per-call (`SUPERTOOL_ALLOW_OUTSIDE_CWD=1`) or per-project (`"allow_outside_cwd": true`). Vim shell verbs (`:!`, `:%!`, `:r !`) are disabled by default for the same reason. Full threat model: [issue #146](https://github.com/Digital-Process-Tools/claude-supertool/issues/146) and [issue #147](https://github.com/Digital-Process-Tools/claude-supertool/issues/147); config keys and defaults: [docs/configuration.md](docs/configuration.md).
+Every path argument is checked against the current working directory; `~` is expanded before the check, symlinks crossing the boundary are caught, and a malicious `.supertool.json` or a prompt-injected `paste:~/.ssh/authorized_keys:::pwned` is refused rather than run. For a one-off call outside cwd, prefix it with `cwd:PATH` -- no config edit, no residue ([#1784](https://github.com/Digital-Process-Tools/claude-supertool/issues/1784)). To widen every future call instead, opt out per-call (`SUPERTOOL_ALLOW_OUTSIDE_CWD=1`) or per-project (`"allow_outside_cwd": true`). Vim shell verbs (`:!`, `:%!`, `:r !`) are disabled by default for the same reason. Full threat model: [issue #146](https://github.com/Digital-Process-Tools/claude-supertool/issues/146) and [issue #147](https://github.com/Digital-Process-Tools/claude-supertool/issues/147); config keys and defaults: [docs/configuration.md](docs/configuration.md).
 
 ## The raw-command guard
 
