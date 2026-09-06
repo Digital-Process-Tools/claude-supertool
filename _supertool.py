@@ -7592,6 +7592,24 @@ _NOT_A_REPO = "not a git repository"
 # replaces, none of which mention git.
 PATH_META_UNKNOWN = "git?"
 
+# The fourth state, added for #1397: the repo-root walk (`_path_meta_repo_root`)
+# already climbed from this path's own directory to the filesystem root and
+# found no `.git` anywhere. A per-path `git status` spawn in that state can
+# only ever answer "not a git repository" (a spawn that produced nothing) or
+# fail (which would render as `PATH_META_UNKNOWN` above) -- so it is skipped
+# outright rather than paid on every single-file read outside a repository.
+#
+# Skipping the spawn must not be confused with the spawn having answered
+# "clean" (no marker at all): the walk has known gaps -- an unreadable `.git`
+# (permissions), or a `GIT_DIR` that escaped the #714 scrub and points
+# somewhere the walk never looks -- where git would actually disagree with
+# it. `PATH_META_NOT_CONSULTED` says plainly "the walk found no repository;
+# git was never asked", which is a claim about what this process *checked*,
+# not a claim about the file's working-tree state. Never conflate it with
+# `PATH_META_UNKNOWN` (git *was* asked and failed to answer) or with a clean
+# answer (nothing appended, the marker's normal silence).
+PATH_META_NOT_CONSULTED = "no-git"
+
 
 # One `git status` answer per repo root, reused across the paths rendered in a
 # single process (#1126). The filed shape was a memo keyed by path; that cannot
@@ -7789,6 +7807,8 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
     """Compact suffix for read/workspace meta line. Empty when nothing notable.
     Tokens: ->target [broken] | bin | non-utf8 | ? | ! | m | x | crlf | Nd|Nw|Nmo
             | git? (the working-tree lookup declined — state unknown, not clean)
+            | no-git (the repo-root walk found no `.git` at all — git was never
+              asked, distinct from both a clean answer and git? (#1397))
 
     The `Nd|Nw|Nmo` token is a symlink-only fact as of #1379: it used to fire
     for any file over a week old, using `os.lstat`'s mtime, on the same line
@@ -7855,6 +7875,16 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
     code = None
     absolute = os.path.abspath(path)
     root = _path_meta_repo_root(path)
+    if not root:
+        # The walk climbed from this path's own directory to the filesystem
+        # root and found no `.git` anywhere -- the per-path spawn below runs
+        # with that exact same directory as its cwd, so it could only ever
+        # report "not a git repository" too, or fail. Skip a spawn that
+        # cannot produce information (#1397) and say so explicitly rather
+        # than rendering as clean, which would silently paper over the
+        # walk's own gaps (an unreadable `.git`, an escaped `GIT_DIR`).
+        parts.append(PATH_META_NOT_CONSULTED)
+        return (" " + " ".join(parts)) if parts else ""
     # A repo-wide status keys every record by the path as it sits in the tree.
     # If any component of this path is a link, the name we would look up is not
     # the name git recorded, the lookup misses, and a miss is indistinguishable
