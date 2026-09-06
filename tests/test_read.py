@@ -308,7 +308,7 @@ def test_path_meta_suffix_stale_mtime_days(tmp_path: Path) -> None:
     on the same header line just ahead of this suffix, already discloses the
     identical mtime in a labeled form, and the two used to say it twice.
     """
-    _symlink.require_symlink()
+    _symlink.require_symlink_utime()
     target = tmp_path / "real.txt"
     target.write_text("ancient")
     link = tmp_path / "old.txt"
@@ -320,7 +320,7 @@ def test_path_meta_suffix_stale_mtime_days(tmp_path: Path) -> None:
 
 
 def test_path_meta_suffix_stale_mtime_weeks(tmp_path: Path) -> None:
-    _symlink.require_symlink()
+    _symlink.require_symlink_utime()
     target = tmp_path / "real.txt"
     target.write_text("middle")
     link = tmp_path / "weeks.txt"
@@ -332,7 +332,7 @@ def test_path_meta_suffix_stale_mtime_weeks(tmp_path: Path) -> None:
 
 
 def test_path_meta_suffix_stale_mtime_months(tmp_path: Path) -> None:
-    _symlink.require_symlink()
+    _symlink.require_symlink_utime()
     target = tmp_path / "real.txt"
     target.write_text("old")
     link = tmp_path / "ancient.txt"

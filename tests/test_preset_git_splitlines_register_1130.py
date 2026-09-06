@@ -1,8 +1,13 @@
 """#1130 - the `presets/git/` audit table, as a build gate instead of a paragraph.
 
 Third and largest of the forged-boundary audits: #1105 read `presets/github`,
-#1119 read `presets/gitlab`, and this one reads `presets/git` - 23
-`str.splitlines()` call sites across 23 enclosing functions in 8 files.
+#1119 read `presets/gitlab`, and this one reads `presets/git` - 24
+`str.splitlines()` call sites across 24 enclosing functions in 8 files.
+
+They were 23 / 23 / 8 until #1379 added `status.py::_head_age_note`, reading
+`git log -1 --format=%ct` to date HEAD for the `Working tree: clean, HEAD ...
+old` disclosure - `NOT QUOTED, harmless`, since the stream is a commit
+timestamp git itself writes, not a byte any committer chooses.
 
 Those numbers were 27 / 24 / 9 until #1693, which narrowed the four sites in
 `investigate.py::main` and so emptied the file: the log render and the two diff
@@ -124,7 +129,7 @@ GROUNDS = ("QUOTED PATH - ", "NOT QUOTED, harmless - ", "NOT QUOTED, open - ")
 #: How many entries rest on each, published so a drift is one visible line in a
 #: diff rather than a re-derivation. Asserted exact in both directions.
 GROUND_TALLY = {"QUOTED PATH - ": 5,
-                "NOT QUOTED, harmless - ": 17,
+                "NOT QUOTED, harmless - ": 18,
                 "NOT QUOTED, open - ": 0}
 
 #: Phrases that state the argument #1652 retired. An entry may describe it in
@@ -322,6 +327,15 @@ REGISTER: dict[str, str] = {
         "could add is one more untracked line carrying a time, in a section "
         "whose whole point is to be read sceptically - and the added field "
         "cannot manufacture a clean verdict, because it publishes no verdict.",
+
+    "presets/git/status.py::_head_age_note":
+        "NOT QUOTED, harmless - `log -1 --format=%ct` prints a commit "
+        "timestamp git itself generates, never a byte a commit author "
+        "chooses, so there is nothing here for a forged separator to carry. "
+        "`[0]` takes the first line before `int()` parses it; a stream with "
+        "an extra line still yields the correct digits at index 0, and "
+        "anything non-numeric fails `int()` and returns '' rather than a "
+        "wrong age (#1379) - decline, not guess.",
 
     # -- trail.py -----------------------------------------------------------
     # `trail.py::main` was here with three sites, on the ground that its output
