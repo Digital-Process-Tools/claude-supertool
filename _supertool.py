@@ -2463,7 +2463,7 @@ def _rtk_run(args: List[str], timeout: int = 30) -> str | None:
 # through supertool at all): `rtk read -n --max-lines 300 FILE` on any file
 # over its window reliably renders this head-window-plus-tail-line-preview
 # collision. That is a bug in `rtk`'s own compression
-# (github.com/reachingforthejack/rtk), not in anything this file computes --
+# (github.com/rtk-ai/rtk), not in anything this file computes --
 # grep for "lines omitted" in this module finds nothing, because supertool
 # never emits that phrase itself.
 #

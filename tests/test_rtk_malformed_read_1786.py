@@ -1,6 +1,6 @@
 """A full-file `read:PATH` delegated to `rtk read` came back garbled (#1786).
 
-Reproduced directly against the real `rtk` binary (github.com/reachingforthejack/rtk,
+Reproduced directly against the real `rtk` binary (github.com/rtk-ai/rtk,
 0.35.0): `rtk read -n --max-lines N FILE` on a file over its window renders the
 file's real last line sandwiched between TWO elision-style footers whose
 counts do not even sum to the file's own line count -- e.g. (real bytes,

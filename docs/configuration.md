@@ -615,7 +615,7 @@ Wherever these docs write `./supertool`, use that path instead. `hooks/guard-sel
 
 ## RTK integration
 
-Moved from `README.md` by [#2142](https://github.com/Digital-Process-Tools/claude-supertool/issues/2142). When [rtk](https://github.com/reachingforthejack/rtk) is installed, supertool automatically delegates `read`, `grep`, and `wc` to RTK for compressed output. No configuration needed -- detected via `which rtk` at first use.
+Moved from `README.md` by [#2142](https://github.com/Digital-Process-Tools/claude-supertool/issues/2142). When [rtk](https://github.com/rtk-ai/rtk) is installed, supertool automatically delegates `read`, `grep`, and `wc` to RTK for compressed output. No configuration needed -- detected via `which rtk` at first use. (The URL here previously pointed at `reachingforthejack/rtk` -- an unrelated "Rust Type Kit" project -- rather than the actual token-optimizing CLI proxy this integration targets; corrected in #1786's own review.)
 
 - With RTK + compact: uses `rtk read --level aggressive` (maximum compression)
 - With RTK, no compact: uses `rtk read` (RTK formatting, no stripping)
