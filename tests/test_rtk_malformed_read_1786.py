@@ -174,9 +174,13 @@ def test_prose_that_merely_quotes_the_marker_shape_is_not_malformed() -> None:
     with no anchor to rtk's actual footer shape cannot tell that apart from
     a genuine corrupted render, and would falsely tell a caller a perfectly
     clean file "looked malformed" -- found by `oss:auditor` self-review
-    against this exact file and `changelog.d/1786.fixed.md`, both of which
-    quote the marker text as ordinary prose with a plain `|`, never rtk's
-    real separator.
+    against this exact file and this fix's own changelog fragment, both of
+    which quote the marker text as ordinary prose with a plain `|`, never
+    rtk's real separator. (Named without its literal path here on purpose --
+    tests/test_changelog_findable_1293.py refuses any tracked file that
+    names a still-pending changelog.d fragment by its literal path, since
+    the tag that ships this fix deletes it and the reference would go red on
+    every release after.)
     """
     prose = (
         "1 | some line" + NL
