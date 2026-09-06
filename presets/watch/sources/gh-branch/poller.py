@@ -164,6 +164,44 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         }], new_state
 
     prev_state = state.get("branch_state", "")
+    prev_sha = str(state.get("sha") or "")
+    # A state this composition only reaches with `selected` non-empty
+    # (`verdict()` routes to `no_run_verdict` before this module ever sees
+    # a state at all when it is empty) -- so GREEN, NOT_GREEN and UNKNOWN
+    # all mean "some earlier poll saw at least one run on this sha", and
+    # only NO_RUN/`""` mean it did not (or nothing has polled yet). Reading
+    # this off `prev_state` rather than a separate stored flag means an
+    # UNKNOWN produced by the guard below keeps the confirmation live for
+    # the next poll for free -- there is nothing extra to carry forward.
+    prev_confirmed_runs = prev_state in (GREEN, NOT_GREEN, UNKNOWN)
+
+    # Direction guard (#2333): runs on a concluded commit do not disappear
+    # -- only the read of them can fail. Observed live: `went_green` ->
+    # `no_run` -> `went_green`, same SHA, 36 seconds apart, while `gh-branch`
+    # run cold seconds after the middle event showed four concluded,
+    # all-passing runs on that exact commit. A later poll of the SAME sha
+    # claiming zero runs, after this poller already confirmed runs exist on
+    # it, is read as UNKNOWN rather than trusted at face value -- the fetch
+    # did not answer, not the commit losing its history.
+    #
+    # Keyed on the sha matching, not on suppressing NO_RUN altogether: a
+    # fresh sha that legitimately has zero runs (nothing to regress from)
+    # still fires `no_run` for real, which is this repository's own named
+    # positive-control requirement (CLAUDE.md) applied to this exact fix.
+    # A retry-inside-the-fetch alternative was also on the table (issue
+    # #2333) and is not taken here: retrying moves the same ambiguity one
+    # call earlier without resolving it -- a second empty answer would still
+    # need this same judgment call -- while the direction guard is a fact
+    # this poller already has for free, having polled before.
+    if branch_state == NO_RUN and sha and sha == prev_sha and prev_confirmed_runs:
+        branch_state = UNKNOWN
+        sentence = (
+            f"{UNKNOWN} — a previous poll confirmed runs on {sha[:7]}; this "
+            f"poll's run list came back empty for the same commit. Runs on "
+            f"a concluded commit do not disappear, so this is read as a "
+            f"fetch that did not answer rather than the commit losing its "
+            f"run history. Original reading: {sentence}")
+
     events: list[dict] = []
     # `""` never equals a real state, so this fires on the very first
     # successful poll too -- exactly like `github-pr`'s `checks_state`
