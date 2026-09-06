@@ -340,7 +340,7 @@ def test_the_warmup_actually_runs_before_the_spawns_it_exists_for() -> None:
 
 @go_vet_tests.needs_go
 def test_the_warmup_returns_nothing_to_report_when_go_answers(
-        tmp_path: Path) -> None:
+        tmp_path: Path, tmp_path_factory) -> None:
     """A non-zero exit is not a failure of the warm-up: `go vet` on the probe
     module is allowed to have opinions about it. Only not answering is.
 
@@ -351,12 +351,23 @@ def test_the_warmup_returns_nothing_to_report_when_go_answers(
     without reaching a verdict"): absent toolchain and slow toolchain are
     different facts and the skip list has to keep them apart.
     """
-    reason = go_vet_tests._warm_the_go_build_cache(tmp_path)
-    # This file has no warm-up fixture of its own, so on a cold runner this is
-    # the call that pays the standard-library compile. A budget it did not fit
-    # in is a statement about the machine and declines — the same distinction
-    # the whole change is about, applied to the change's own test. Any *other*
-    # reason is the helper being wrong and stays red.
+    # This file has no warm-up fixture of its own, so without the shared lock
+    # below this was the call that always paid the standard-library compile —
+    # and under `-n auto` it could pay it concurrently with, rather than
+    # after, `test_validators_go_vet_669.py`'s own module-scoped warm-up,
+    # since a pytest fixture's scope stops at its own worker process (#2331).
+    # `serialize_once` shares one lock across every worker in this session, so
+    # whichever of the two callers gets there first pays the cold cost and
+    # this one runs fast if it lost the race.
+    shared = go_vet_tests.go_warmup_lock.shared_worker_root(tmp_path_factory)
+    reason = go_vet_tests.go_warmup_lock.serialize_once(
+        shared, "go_build_cache",
+        lambda: go_vet_tests._warm_the_go_build_cache(tmp_path),
+        go_vet_tests.GO_WARMUP_S)
+    # A budget it did not fit in is a statement about the machine and
+    # declines — the same distinction the whole change is about, applied to
+    # the change's own test. Any *other* reason is the helper being wrong and
+    # stays red.
     if reason is not None and str(go_vet_tests.GO_WARMUP_S) in reason:
         pytest.skip(reason)
     assert reason is None, reason

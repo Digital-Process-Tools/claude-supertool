@@ -32,6 +32,7 @@ from pathlib import Path
 
 import pytest
 
+import _go_warmup_lock as go_warmup_lock
 from _adapter_budget import adapter_budget, inner_budget, platform_factor
 from _adapter_verdict import (assert_declined, assert_ok, describe,
                               skip_if_stalled, verdict)
@@ -177,10 +178,26 @@ def _warm_the_go_build_cache(root: Path) -> str | None:
 
 @pytest.fixture(scope="module", autouse=True)
 def _go_build_cache_is_warm(tmp_path_factory) -> None:
-    """Pay the cold-cache cost once, before any adapter spawn, and off the wall."""
+    """Pay the cold-cache cost once, before any adapter spawn, and off the wall.
+
+    "Once" used to mean once per pytest worker: this fixture's `module` scope
+    is a worker's own session, and `-n auto` runs several workers as separate
+    processes, so a worker landing on this module raced whichever other
+    worker was concurrently paying the same cold `go vet` compile in
+    `tests/test_go_vet_stall_1461.py` (#2331 — measured, not assumed: two
+    workers hitting an empty `GOCACHE` at the same moment each paid the full
+    ~6.2s compile rather than one benefiting from the other's work).
+    `_go_warmup_lock.serialize_once` turns that race into a queue against a
+    lock file shared by every worker in this session, so only the first
+    caller across the whole run pays the cold cost.
+    """
     if not shutil.which("go"):
         return
-    reason = _warm_the_go_build_cache(tmp_path_factory.mktemp("go_warmup"))
+    shared = go_warmup_lock.shared_worker_root(tmp_path_factory)
+    reason = go_warmup_lock.serialize_once(
+        shared, "go_build_cache",
+        lambda: _warm_the_go_build_cache(tmp_path_factory.mktemp("go_warmup")),
+        GO_WARMUP_S)
     if reason is not None:
         # Not a skip and not a failure. A skip here takes the whole module with
         # it, including the attribution tests that need no toolchain at all,
