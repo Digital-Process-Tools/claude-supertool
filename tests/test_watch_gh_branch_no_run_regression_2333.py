@@ -132,3 +132,35 @@ def test_the_uncertain_state_survives_a_second_no_run_poll_without_reflaring() -
                                sha="e1a6a4ac")):
         events, _new_state = poller.poll(state, _ctx())
     assert events == [], events
+
+
+def test_a_second_consecutive_no_run_on_the_same_sha_surfaces_for_real() -> None:
+    """The guard's suppression is single-shot, not permanent (review finding,
+    #2333): a real, sustained emptiness on a SHA that once had confirmed runs
+    -- e.g. GitHub's own run-retention purging history off a long-quiet
+    branch -- must not be masked as `unknown` forever just because the first
+    empty reading was. One suppressed reading is a plausible transient; a
+    second one right behind it, still on the same SHA, is trusted and fires
+    the real `no_run`."""
+    # First poll: guard fires, downgrading to UNKNOWN and recording the
+    # streak so the *next* same-sha empty reading is not swallowed too.
+    state = {"branch_state": poller.GREEN, "sha": "e1a6a4ac", "ref": "main",
+             "lookup": poller.LOOKUP_OK}
+    with mock.patch.object(
+            poller, "_snapshot",
+            return_value=_snap(poller.NO_RUN,
+                               "NO RUN — zero workflow runs on e1a6a4a",
+                               sha="e1a6a4ac")):
+        events, state = poller.poll(state, _ctx())
+    assert events[0]["event"] == "unknown", events
+
+    # Second consecutive poll, same SHA, still empty: this one is real.
+    with mock.patch.object(
+            poller, "_snapshot",
+            return_value=_snap(poller.NO_RUN,
+                               "NO RUN — zero workflow runs on e1a6a4a",
+                               sha="e1a6a4ac")):
+        events, state = poller.poll(state, _ctx())
+    assert len(events) == 1, events
+    assert events[0]["event"] == "no_run", events[0]["event"]
+    assert state["branch_state"] == poller.NO_RUN

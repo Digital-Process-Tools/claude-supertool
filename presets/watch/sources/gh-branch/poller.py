@@ -105,6 +105,12 @@ def _snapshot(ref: str) -> tuple[str, str, str, str, str]:
     past it (#1965): a repository this call could not identify must not
     reach `branch.verdict()`, which would happily compute a state -- GREEN
     included -- off an empty `repo`.
+
+    That is not the only route to `UNKNOWN` a caller of this module sees,
+    though: `poll()`, below, can itself downgrade a `NO_RUN` this function
+    *did* return into `UNKNOWN` when the same sha previously had confirmed
+    runs (#2333) -- a second, poll()-level finding this function never
+    produces on its own and knows nothing about.
     """
     sha, age, err = branch._head_commit(ref)
     if err:
@@ -165,6 +171,7 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
 
     prev_state = state.get("branch_state", "")
     prev_sha = str(state.get("sha") or "")
+    sha_repeated = bool(sha) and sha == prev_sha
     # A state this composition only reaches with `selected` non-empty
     # (`verdict()` routes to `no_run_verdict` before this module ever sees
     # a state at all when it is empty) -- so GREEN, NOT_GREEN and UNKNOWN
@@ -174,6 +181,10 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # UNKNOWN produced by the guard below keeps the confirmation live for
     # the next poll for free -- there is nothing extra to carry forward.
     prev_confirmed_runs = prev_state in (GREEN, NOT_GREEN, UNKNOWN)
+    # How many consecutive polls of THIS sha have read raw-empty already --
+    # reset the moment the sha changes, so it never leaks across commits.
+    prev_no_run_streak = int(state.get("no_run_streak") or 0) if sha_repeated else 0
+    raw_is_no_run = branch_state == NO_RUN
 
     # Direction guard (#2333): runs on a concluded commit do not disappear
     # -- only the read of them can fail. Observed live: `went_green` ->
@@ -193,7 +204,19 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # call earlier without resolving it -- a second empty answer would still
     # need this same judgment call -- while the direction guard is a fact
     # this poller already has for free, having polled before.
-    if branch_state == NO_RUN and sha and sha == prev_sha and prev_confirmed_runs:
+    #
+    # `prev_no_run_streak == 0` makes the suppression single-shot rather
+    # than permanent (review finding on this issue): "runs do not disappear"
+    # is not quite true forever -- GitHub's own run-retention window (as
+    # low as 1 day, operator-configured) genuinely purges history off a
+    # SHA that once had confirmed runs, and a branch that goes quiet for
+    # that long would otherwise read as UNKNOWN on every poll from then on,
+    # never again as the true NO_RUN. One suppressed reading absorbs the
+    # kind of transient this issue was filed over (recovered 36s later); a
+    # SECOND consecutive empty reading on the same sha is trusted and
+    # surfaces as the real `no_run`.
+    if (raw_is_no_run and sha_repeated and prev_confirmed_runs
+            and prev_no_run_streak == 0):
         branch_state = UNKNOWN
         sentence = (
             f"{UNKNOWN} — a previous poll confirmed runs on {sha[:7]}; this "
@@ -201,6 +224,8 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
             f"a concluded commit do not disappear, so this is read as a "
             f"fetch that did not answer rather than the commit losing its "
             f"run history. Original reading: {sentence}")
+
+    no_run_streak = (prev_no_run_streak + 1) if (raw_is_no_run and sha_repeated) else 0
 
     events: list[dict] = []
     # `""` never equals a real state, so this fires on the very first
@@ -231,6 +256,7 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         "sha": sha,
         "ref": ref,
         "lookup": LOOKUP_OK,
+        "no_run_streak": no_run_streak,
     }
     return events, new_state
 
