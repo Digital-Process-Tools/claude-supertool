@@ -433,6 +433,11 @@ ALLOWED = {
         'msg = " · ".join(msg.splitlines())[:300]':
             "a flattener, as terraform-check's `plain()`.",
     },
+    "mypy/mypy.py": {
+        'msg = " · ".join(msg.splitlines())[:300]':
+            "a flattener, as pyright's twin line above -- both join a "
+            "diagnostic message for display, never parse it.",
+    },
     "jit-index/jit-index.py": {
         'blob = (proc.stdout or proc.stderr or "").strip().splitlines()':
             "`awk --version`, quoted for the reader. Not the file under "
