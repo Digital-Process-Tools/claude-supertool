@@ -114,3 +114,18 @@ def test_a_dirty_tree_is_unaffected(tmp_path: Path, monkeypatch) -> None:
     out = _run_main(repo, monkeypatch)
     assert "Working tree (1 changes)" in out, out
     assert "HEAD" not in out.split("Working tree")[1].split(chr(10))[0], out
+
+
+def test_head_age_note_declines_rather_than_guesses_on_an_unborn_head(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The third state, checked directly: `_git(["log", ...])` failing (an
+    unborn HEAD, git not answering) must render as nothing appended, never
+    as a fabricated age that looks like a real answer.
+    """
+    def _fail(args, timeout=None):
+        return subprocess.CompletedProcess(
+            args=["git"] + args, returncode=128, stdout="", stderr="fatal")
+
+    monkeypatch.setattr(status, "_git", _fail)
+    assert status._head_age_note() == ""

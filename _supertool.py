@@ -7787,6 +7787,19 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
     """Compact suffix for read/workspace meta line. Empty when nothing notable.
     Tokens: ->target [broken] | bin | non-utf8 | ? | ! | m | x | crlf | Nd|Nw|Nmo
             | git? (the working-tree lookup declined — state unknown, not clean)
+
+    The `Nd|Nw|Nmo` token is a symlink-only fact as of #1379: it used to fire
+    for any file over a week old, using `os.lstat`'s mtime, on the same line
+    `_read_freshness_note` now prints right before this suffix using
+    `os.stat`'s mtime (follows a symlink; `os.lstat` does not). For a plain
+    file the two stats see the same mtime, so both used to say the identical
+    age twice in two unlabeled spellings on one line -- `modified 20d ago)
+    20d` -- confusable as two different facts rather than one restated.
+    For a symlink they can genuinely disagree (the link's own mtime vs. the
+    target's), which is a real fact worth keeping, not a duplicate to drop --
+    a link's own age is exactly the kind of thing `->target` beside it is
+    already disclosing. Gated on `os.path.islink` so the token now fires only
+    where it says something the freshness note does not already say.
     """
     parts = []
     if sample:
@@ -7815,16 +7828,21 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
         mtime_ns = st.st_mtime_ns
         if st.st_mode & 0o111 and not os.path.isdir(path):
             parts.append("x")
-        age_sec = max(0, int(time.time() - st.st_mtime))
-        SEVEN_DAYS = 7 * 86400
-        if age_sec > SEVEN_DAYS:
-            days = age_sec // 86400
-            if days < 30:
-                parts.append(f"{days}d")
-            elif days < 365:
-                parts.append(f"{days // 7}w")
-            else:
-                parts.append(f"{days // 30}mo")
+        # Symlink-only (#1379) — see the docstring above for why. `path` is
+        # re-tested rather than reusing the earlier `os.path.islink` result:
+        # both are cheap `lstat`-backed checks, and duplicating the syscall
+        # is a smaller cost than threading a boolean an extra 20 lines.
+        if os.path.islink(path):
+            age_sec = max(0, int(time.time() - st.st_mtime))
+            SEVEN_DAYS = 7 * 86400
+            if age_sec > SEVEN_DAYS:
+                days = age_sec // 86400
+                if days < 30:
+                    parts.append(f"{days}d")
+                elif days < 365:
+                    parts.append(f"{days // 7}w")
+                else:
+                    parts.append(f"{days // 30}mo")
     except OSError:
         pass
 
@@ -12065,10 +12083,7 @@ def _retract_write(path: str) -> None:
     """
     _drop_write_warnings(path)
     _bump_counter(_ROLLBACK_COUNT, "cnt_rollback")
-    if _WRITE_COUNT[0] > 0:
-        _WRITE_COUNT[0] -= 1
-    if _cnt_frame("cnt_write") > 0:
-        _DISPATCH_STATE.cnt_write -= 1
+    _bump_counter(_WRITE_COUNT, "cnt_write", by=-1)
 
 
 def _rollback_action(pre_existed: bool, pre_content: Optional[bytes]) -> str:
@@ -30097,9 +30112,25 @@ def _bump_counter(counter: List[int], field: str, by: int = 1) -> None:
     """Bump the process-global *counter* AND this frame's own delta by *by*.
 
     The single call site every increment (and the one decrement, in
-    `_retract_write`) should use instead of touching `counter[0]` directly —
-    doing both by hand at five call sites is exactly how one of them drifts.
+    `_retract_write`) uses instead of touching `counter[0]` directly and the
+    frame field by hand beside it — doing both separately at every call site
+    is exactly how one of them drifts, which a self-review of this issue
+    caught happening in `_retract_write` itself: it called this function for
+    the rollback bump and then still hand-wrote its own two-line write-count
+    decrement right beside it.
+
+    `by < 0` floors each side independently at 0 rather than sharing one
+    floor check, the same defensive shape `_retract_write`'s own decrement
+    had: a global and a frame delta are two different counters, and a
+    decrement that floors one while the other is already at 0 must not carry
+    it negative regardless of which is which.
     """
+    if by < 0:
+        if counter[0] > 0:
+            counter[0] += by
+        if getattr(_DISPATCH_STATE, field, 0) > 0:
+            setattr(_DISPATCH_STATE, field, getattr(_DISPATCH_STATE, field, 0) + by)
+        return
     counter[0] += by
     setattr(_DISPATCH_STATE, field, getattr(_DISPATCH_STATE, field, 0) + by)
 
