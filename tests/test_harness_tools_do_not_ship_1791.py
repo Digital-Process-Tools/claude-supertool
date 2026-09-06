@@ -109,18 +109,26 @@ def _hook(tool_name: str, tool_input: dict, project: Path, tmp_path: Path):
     return envelope(proc.stdout)["hookSpecificOutput"]
 
 
-def test_the_rule_the_issue_describes_is_not_in_this_tree() -> None:
-    """#1791 names a file. Nothing here ships that, at any tracked path.
+def test_the_rule_the_issue_describes_is_not_in_the_shipped_layer() -> None:
+    """#1791 names a file. Nothing ships that, from the one directory that ships.
 
-    Asserted against `git ls-files`, not a filesystem walk. `/oss:scaffold
-    --apply` writes an untracked `.claude/jit-context/tools/01-oss/` layer
-    into a maintainer's own checkout for reasons that have nothing to do with
-    this test (#1956) -- a plugin-owned rule file sitting on disk, unshipped,
-    is not the state this test exists to catch. What ships to a clone, and
-    what CI sees, is the tracked set.
+    Asserted against `git ls-files`, not a filesystem walk: what reaches a
+    clone, and what CI sees, is the tracked set.
 
-    Reddens if a `supertool-required.md` is ever tracked: at that point the
-    issue stops being a non-reproduction and the rest of this file stops
+    **This used to ban the filename at every path**, on the reasoning that
+    `/oss:scaffold --apply` writes `.claude/jit-context/tools/01-oss/` into a
+    maintainer's checkout and a plugin-owned file sitting there untracked is
+    not the state this test is about (#1956). The ban was wider than the
+    guarantee. `shipped_rules._RULE_DIR` is
+    `.claude/jit-context/tools/00-manual`, and nothing else -- so a rule under
+    `01-oss` is read by `claude-jit-context` in THIS checkout and travels to no
+    other repository through the plugin's guard at all. Banning it there
+    protected nothing and cost the layer a file it is scaffolded with on every
+    run, which then had to be deleted again by hand after each one.
+
+    So the assertion is now the directory that actually ships. Reddens if a
+    `supertool-required.md` is ever tracked under `00-manual/`: at that point
+    the issue stops being a non-reproduction and the rest of this file stops
     describing the shipped set.
     """
     proc = subprocess.run(
@@ -130,8 +138,31 @@ def test_the_rule_the_issue_describes_is_not_in_this_tree() -> None:
     tracked = [p for p in
                proc.stdout.decode("utf-8", "surrogateescape").split("\0")
                if p]
-    assert tracked == [], tracked
+    shipped_dir = "/".join(shipped_rules._RULE_DIR) + "/"
+    assert [p for p in tracked if p.startswith(shipped_dir)] == [], tracked
     assert (_MANUAL / _RULE).is_file(), "the rule it really means moved"
+
+
+def test_the_ban_is_narrower_than_the_filename_and_says_where() -> None:
+    """The positive control for the narrowing above.
+
+    A test asserting "no such path under 00-manual" also passes when the file
+    exists nowhere at all, which is the state the previous version of this file
+    enforced -- so the narrowing is unproven without a row that fails when the
+    layer is empty. This one fails then.
+
+    Mutation that reddens it: delete
+    `.claude/jit-context/tools/01-oss/supertool-required.md`.
+    """
+    proc = subprocess.run(
+        ["git", "ls-files", "-z", "--", "*supertool-required.md"],
+        cwd=str(_ROOT), capture_output=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    tracked = [p for p in
+               proc.stdout.decode("utf-8", "surrogateescape").split("\0")
+               if p]
+    assert tracked == [
+        ".claude/jit-context/tools/01-oss/supertool-required.md"], tracked
 
 
 def test_the_harness_tool_rule_stays_a_recorded_absence() -> None:
