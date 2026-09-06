@@ -351,13 +351,19 @@ def test_path_meta_suffix_plain_file_has_no_bare_age_token(tmp_path: Path) -> No
     for a symlink the two could even disagree (link mtime vs. target mtime).
     A plain file's own age is dropped from this function entirely now that
     the freshness note beside it already says it, once, labeled.
+
+    `tmp_path` sits outside any git repository, so since #1397 this now
+    carries `no-git` (the repo-root walk found nothing, git never asked) --
+    the assertion is narrowed to the age token specifically rather than to
+    the whole suffix being empty.
     """
     f = tmp_path / "old.txt"
     f.write_text("ancient")
     old = _time.time() - 400 * 86400
     _os.utime(f, (old, old))
     out = supertool._path_meta_suffix(str(f), b"ancient")
-    assert out == "", (
+    assert "400d" not in out and "mo" not in out.replace(
+        supertool.PATH_META_NOT_CONSULTED, ""), (
         "a plain file's own age leaked back into the bare-token suffix, "
         "duplicating _read_freshness_note's labeled clause on the same "
         "line:" + chr(10) + repr(out))
