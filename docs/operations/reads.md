@@ -319,6 +319,27 @@ gate there is supertool's own caps rather than a parse of rtk's text, which
 under-fires where rtk compresses a file supertool would have returned intact.
 That is the safe direction.
 
+**A malformed rtk render is discarded, not trusted** (#1786). `rtk read` can
+answer a full-file `read:PATH` with a real content line sandwiched between two
+contradicting elision-style footers — reproduced directly against `rtk`
+0.35.0, a bug in its own compression, not in anything this repo computes.
+`_rtk_output_looks_malformed` treats that whole-line shape, repeated, as the
+signature — a genuine truncation cuts once — and falls back to the native
+renderer below, disclosing the fallback (`rtk's compressed read looked
+malformed for this file -- falling back to the built-in renderer; #1786`)
+rather than silently swapping it in. `read:PATH:START-END` never goes through
+RTK delegation at all, which is why a ranged read of the same file was
+already clean.
+
+The check is deliberately narrow, both found in self-review: it is skipped
+entirely when the delegated call used `--level aggressive`, which legitimately
+renders several elision markers in one correct output (one per compacted
+function body it elides); and it is anchored to the exact line shape `rtk -n`
+emits — a line number, its `│` column separator, then nothing else on that
+line but the marker — rather than a bare substring search, because a bare
+substring search fires on ordinary prose that merely quotes the marker text,
+including this fix's own test file and changelog entry.
+
 ## Eliding a repeat read
 
 A second `read:PATH` of a **byte-identical** file inside 15 minutes returns one line instead of the content — **provided both reads share the same parent process.** Under Claude Code that means the same Bash tool call, and only that; see "Where it actually fires" below before you count on it.

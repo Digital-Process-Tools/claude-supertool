@@ -2454,6 +2454,72 @@ def _rtk_run(args: List[str], timeout: int = 30) -> str | None:
         pass
     return None
 
+
+# #1786: a full-file `read:PATH` delegated to `rtk read` on a >150-line file
+# came back with the file's real last line (`export = 1`) sandwiched between
+# TWO elision-style footers -- `// ... 362 lines omitted` above it and
+# `// ... 361 more lines (total: 512)` below it -- whose counts do not even
+# sum to the file's own line count. Reproduced directly against `rtk` (not
+# through supertool at all): `rtk read -n --max-lines 300 FILE` on any file
+# over its window reliably renders this head-window-plus-tail-line-preview
+# collision. That is a bug in `rtk`'s own compression
+# (github.com/rtk-ai/rtk), not in anything this file computes --
+# grep for "lines omitted" in this module finds nothing, because supertool
+# never emits that phrase itself.
+#
+# What is this file's own bug: `render_file`'s RTK delegation trusted that
+# render wholesale and returned it to the caller unchanged, so a third
+# party's malformed output became supertool's own answer with nothing to
+# tell the two apart. A caller who does not already know the file cannot
+# tell a garbled compression from a correct one (the failure mode the issue
+# itself named as the worst part). Two occurrences of the elision-marker
+# shape bracketing real content is not a pattern any well-formed `rtk read`
+# truncation produces -- a truncation cuts once -- so it is the signature
+# checked for here.
+#
+# Anchored to rtk's own footer-line SHAPE, not a bare substring (self-review,
+# #1786): a plain substring search matches this exact text sitting inside
+# ordinary prose that merely discusses this bug -- confirmed against the
+# real rtk 0.35.0 binary reading this very test file and the changelog
+# fragment for #1786, both of which quote the marker text in their own
+# docstrings/prose and neither of which rtk actually truncates. Every line
+# `rtk -n` emits, including its own elision markers, is prefixed with
+# `N <U+2502>` (the box-drawing vertical bar rtk uses as its column
+# separator, never a plain `|`); a source line merely talking about the
+# shape does not carry that exact prefix immediately before the marker,
+# because it is prose or code, not rtk's own render. Requiring the whole
+# line (after that prefix and optional indentation) to be nothing but the
+# marker is what a genuine footer looks like and ordinary quoted text does
+# not.
+_RTK_ELISION_MARKER_RE = re.compile(
+    r"(?m)^\s*\d+\s*" + "│"
+    + r"\s*//\s*\.\.\.\s*\d+\s+(?:lines omitted|more lines(?:\s*\(total:\s*\d+\))?)\s*$")
+
+
+def _rtk_output_looks_malformed(text: str, *, aggressive: bool = False) -> bool:
+    """True if `text` carries the double-elision-marker corruption (#1786).
+
+    A single elision marker is `rtk`'s ordinary "I truncated here" footer and
+    is left alone. Two or more, in the same render, means real content sits
+    between a head-truncation notice and a tail-preview notice that
+    contradict each other's counts -- the shape reproduced in #1786 at
+    `rtk`'s default and `minimal` levels, not a guess at what a well-formed
+    render could also look like.
+
+    `aggressive=True` disables the check entirely (#1786 self-review). Under
+    `--level aggressive`, `rtk` legitimately compacts EACH function body it
+    elides with its own marker -- reproduced directly: a six-function file
+    at `--max-lines 10 --level aggressive` renders three `// ... N lines
+    omitted` markers plus a final `// ... N more lines (total: M)` summary,
+    four matches in one entirely correct render, because aggressive mode
+    truncates per block rather than once. Counting markers cannot tell that
+    apart from the corruption this function exists to catch, so the
+    corruption check is scoped to the levels it was actually reproduced at.
+    """
+    if aggressive:
+        return False
+    return len(_RTK_ELISION_MARKER_RE.findall(text)) >= 2
+
 # Built-in op names — custom ops/aliases with these names are ignored
 _BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc", "check", "around", "map", "diff", "stat", "around_line", "tree", "replace", "replace_dry", "edit", "replace_lines", "paste", "append", "vi", "validate", "format", "validate_staged", "format_staged", "workspace", "resolve", "diag", "hover", "rename", "payload-lint"}
 
@@ -3182,7 +3248,10 @@ _MAX_SAFE_PATH_LEN = 4096
 #: and would otherwise have retyped this — and a retyped remedy drifts out of
 #: step with the knobs it names.
 _ALLOW_OUTSIDE_HINT = (
-    "To allow: set SUPERTOOL_ALLOW_OUTSIDE_CWD=1 (env), or add "
+    "For a one-off call, no config edit and no residue: prefix the call "
+    "with `cwd:PATH` to move the boundary there for this call only "
+    "(#1784). To allow it for every future call: set "
+    "SUPERTOOL_ALLOW_OUTSIDE_CWD=1 (env), or add "
     '`"allow_outside_cwd": true` to .supertool.json.'
 )
 
@@ -5030,14 +5099,33 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         return _path_not_found(path, label="file", op="read",
                                call_prefix="read")
 
+    # #1786: set before the branch below runs, so the native path further
+    # down can tell "rtk was never tried" from "rtk was tried and its output
+    # was discarded as malformed" -- both leave `rtk_out` unset, but only the
+    # second is worth disclosing to the caller.
+    rtk_malformed = False
     # RTK delegation — simple reads without offset/filter/limit changes
     if not grep_filter and offset == 0 and limit == _get_op_int("read", "max_lines", MAX_READ_LINES) and _rtk_enabled() and _has_rtk():
         rtk_args = ["read", "-n", "--max-lines", str(_get_op_int("read", "max_lines", MAX_READ_LINES))]
-        if _is_compact():
+        rtk_used_aggressive = _is_compact()
+        if rtk_used_aggressive:
             rtk_args += ["--level", "aggressive"]
         rtk_args.append(path)
         rtk_out = _rtk_run(rtk_args)
-        if rtk_out is not None:
+        # #1786: rtk's own compression can render a real content line
+        # sandwiched between two contradicting elision markers -- a bug in
+        # `rtk` itself (see `_rtk_output_looks_malformed`'s docstring), not
+        # in this module. Trusting that wholesale turned a third party's
+        # corruption into a plausible-looking answer about the file; a
+        # malformed render is discarded here and the call falls through to
+        # the native renderer below instead, which is disclosed rather than
+        # silently swapped in. `aggressive=` is threaded through rather than
+        # re-derived: `--level aggressive` legitimately renders several
+        # elision markers in one correct output (one per compacted function
+        # body), which the detector must not mistake for this corruption.
+        rtk_malformed = rtk_out is not None and _rtk_output_looks_malformed(
+            rtk_out, aggressive=rtk_used_aggressive)
+        if rtk_out is not None and not rtk_malformed:
             # rtk renders the body, but the line-numbering disclosure is
             # supertool's own contract and rtk knows nothing about it. A
             # delegated read that stays silent is the same silence #1060 is
@@ -5091,6 +5179,13 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         # output, and a filtered read emits only the lines that matched.
         limit = max(0, line_count - offset)
     out = [f"({line_count} lines, {size} bytes){_path_meta_suffix(path, b''.join(raw_lines[:64]))}\n"]
+    if rtk_malformed:
+        # #1786: disclosed rather than silently swapped in -- the caller
+        # gets the native render either way, but only this line says the
+        # first attempt was thrown away and why.
+        out.append(
+            "(rtk's compressed read looked malformed for this file -- "
+            "falling back to the built-in renderer; #1786)\n")
     _ambiguity = _line_break_ambiguity_note(data)
     if _ambiguity:
         out.append(_ambiguity)
