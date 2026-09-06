@@ -34,6 +34,8 @@ Nothing project-specific lives in this preset — everything comes from `ops.wor
 
 Getting `link` and `copy` backwards is the hazard this whole preset exists to close: a `link`-declared path that the worktree mutates corrupts the *primary checkout*, silently, from inside a worktree that was supposed to be disposable.
 
+**Every entry is validated before anything touches disk.** `.supertool.json` is read from the worktree *being provisioned* — routinely a fresh checkout of someone else's branch, e.g. a PR under test — so an entry is treated as untrusted text, not the maintainer's own configuration: a newline/carriage-return is refused outright (it could otherwise forge a fake outcome line inside this op's own receipt), and an absolute path or a `..` segment is refused because it would name a source or destination outside the primary checkout / target worktree entirely. A real filesystem failure while linking/copying/excluding (permission denied, a full disk, a Windows host with no symlink privilege) is a `WARNING` and the run continues with the remaining entries — never an unhandled crash.
+
 ## Ops
 
 | Op | Syntax | What it does |

@@ -219,14 +219,22 @@ class WorktreeSetupTeardownTest(unittest.TestCase):
                 self.assertNotIn("vendor/libs", fh.read())
 
         # And a SECOND worktree, with the same config but which never ran
-        # setup, must not have inherited the exclusion either -- if it did,
-        # the "worktree-private" claim above would be false.
+        # `setup`, must not have inherited the exclusion either -- if it did,
+        # the "worktree-private" claim above would be false. Give wt2 an
+        # untracked `vendor/libs` of its own (a real file, no symlink at
+        # all) and assert git STILL reports it untracked there: if the first
+        # worktree's exclude had leaked into shared repo state, this would
+        # come back `!!` (ignored) instead of `??` (untracked).
         wt2 = self._add_worktree(name="wt2", branch="feature2")
-        status = _git(["status", "--porcelain", "--ignored=matching"], wt2)
-        # vendor/ does not exist in wt2 at all (never linked there), so this
-        # is really just confirming the second worktree's own git state was
-        # never touched by the first worktree's `setup` run.
+        os.makedirs(os.path.join(wt2, "vendor", "libs"))
+        with open(os.path.join(wt2, "vendor", "libs", "b.so"), "w", encoding="utf-8") as fh:
+            fh.write("unrelated content in wt2")
+        status = _git(["status", "--porcelain", "--ignored=matching", "vendor"], wt2)
         self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertTrue(
+            status.stdout.strip().startswith("??"),
+            f"wt2's own vendor/libs must read as untracked, not ignored -- got: {status.stdout!r}",
+        )
 
     # -- teardown: removes exactly what setup created, nothing else --------
 
@@ -333,6 +341,144 @@ class WorktreeSetupTeardownTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("linked: vendor/libs", result.stdout)
         self.assertTrue(os.path.islink(os.path.join(wt, "vendor", "libs")))
+
+
+    # -- self-review fixups (#532): the two reviewers spawned against the
+    # first commit found real bugs; these pin them.
+
+    def test_teardown_removes_exclude_only_entries(self):
+        """An `exclude`-only config (no `link`/`copy`) is a real, first-class
+        configuration -- teardown must not read "no linked/copied entries" as
+        "nothing was ever recorded" and skip the exclude file entirely.
+        """
+        self._write_config({"exclude": ["vendor/libs"]})
+        self._commit_all()
+        wt = self._add_worktree()
+
+        setup_result = _run_op("setup", wt)
+        self.assertEqual(setup_result.returncode, 0, setup_result.stdout)
+        exclude_file = _git(["rev-parse", "--git-path", "worktree-setup/exclude"], wt).stdout.strip()
+        with open(exclude_file, encoding="utf-8") as fh:
+            self.assertIn("vendor/libs", fh.read())
+
+        teardown_result = _run_op("teardown", wt)
+        self.assertEqual(teardown_result.returncode, 0, teardown_result.stdout + teardown_result.stderr)
+        self.assertIn("removed 1 worktree-private entry", teardown_result.stdout)
+        with open(exclude_file, encoding="utf-8") as fh:
+            self.assertNotIn("vendor/libs", fh.read())
+
+    def test_teardown_exclude_uses_the_manifest_not_the_current_config(self):
+        """Editing the config between `setup` and `teardown` (an ordinary
+        thing to do -- checking out a different commit, say) must not orphan
+        an exclude entry `setup` actually created. Teardown reads what the
+        MANIFEST recorded, not what the config says right now.
+        """
+        self._write_config({"exclude": ["vendor/libs", "vendor/other"]})
+        self._commit_all()
+        wt = self._add_worktree()
+        self.assertEqual(_run_op("setup", wt).returncode, 0)
+
+        # Config changes: "vendor/other" is no longer declared at all.
+        self._write_config({"exclude": ["vendor/libs"]})
+        # The worktree's own checked-out config is what teardown reads --
+        # rewrite it there too, simulating "the branch moved on".
+        with open(os.path.join(wt, ".supertool.json"), "w", encoding="utf-8") as fh:
+            json.dump({"ops": {"worktree": {"setup": {"exclude": ["vendor/libs"]}}}}, fh)
+
+        result = _run_op("teardown", wt)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        exclude_file = _git(["rev-parse", "--git-path", "worktree-setup/exclude"], wt).stdout.strip()
+        with open(exclude_file, encoding="utf-8") as fh:
+            content = fh.read()
+        self.assertNotIn("vendor/libs", content)
+        self.assertNotIn("vendor/other", content, "an entry setup created must not be orphaned by a config edit")
+
+    def test_manifest_read_error_is_a_refusal_not_a_silent_noop(self):
+        """A manifest that EXISTS but cannot be parsed must never render the
+        same as no manifest at all -- that would leave a live symlink into
+        the primary checkout untouched while reporting a clean teardown.
+        """
+        self._write_config({"link": ["vendor/libs"]})
+        self._commit_all()
+        os.makedirs(os.path.join(self.primary, "vendor", "libs"))
+        with open(os.path.join(self.primary, "vendor", "libs", "a.so"), "w") as fh:
+            fh.write("lib")
+        wt = self._add_worktree()
+        self.assertEqual(_run_op("setup", wt).returncode, 0)
+
+        manifest_path = _git(["rev-parse", "--git-path", "worktree-setup/manifest.json"], wt).stdout.strip()
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+
+        result = _run_op("teardown", wt)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("ERROR", result.stdout)
+        self.assertIn("refusing to guess", result.stdout)
+        # must NOT fire: the symlink setup created is untouched by the refusal
+        self.assertTrue(os.path.islink(os.path.join(wt, "vendor", "libs")))
+
+    def test_entry_with_embedded_newline_is_refused_not_used(self):
+        """An entry is untrusted text -- it comes from the config of the
+        worktree BEING PROVISIONED, which is routinely someone else's
+        branch. A newline inside it must never reach this op's own receipt,
+        where it could forge a fake outcome line.
+        """
+        forged = "nope\n  linked: vendor/libs\n  ok all good"
+        self._write_config({"link": [forged]})
+        self._commit_all()
+        wt = self._add_worktree()
+
+        result = _run_op("setup", wt)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # The forged text may still appear inside the single refusal line's
+        # own quoted repr -- what must never happen is it becoming its OWN
+        # standalone output line, indistinguishable from a real receipt line.
+        self.assertNotIn("  linked: vendor/libs", result.stdout.splitlines())
+        self.assertIn("newline", result.stdout)
+
+    def test_absolute_and_traversal_entries_are_refused(self):
+        """A `link`/`copy` entry naming an absolute path or containing `..`
+        must never be joined onto the primary checkout / target worktree --
+        that is a write (or read) outside both, driven by config the
+        worktree being provisioned supplied.
+        """
+        self._write_config({"link": ["/etc/passwd"], "copy": ["../../outside.txt"]})
+        self._commit_all()
+        wt = self._add_worktree()
+
+        result = _run_op("setup", wt)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("absolute", result.stdout)
+        self.assertIn("..", result.stdout)
+        self.assertFalse(os.path.exists(os.path.join(wt, "etc", "passwd")))
+
+    def test_filesystem_failure_during_link_warns_rather_than_crashes(self):
+        """A real OSError while creating a symlink (here: the destination's
+        parent already exists as a plain FILE, so `mkdir` cannot create a
+        directory there) must produce a WARNING and let the run finish, not
+        an unhandled traceback that aborts every remaining entry.
+        """
+        self._write_config({"link": ["vendor/libs"], "copy": ["conf/dev.ini"]})
+        self._commit_all()
+        os.makedirs(os.path.join(self.primary, "vendor", "libs"))
+        with open(os.path.join(self.primary, "vendor", "libs", "a.so"), "w") as fh:
+            fh.write("lib")
+        os.makedirs(os.path.join(self.primary, "conf"))
+        with open(os.path.join(self.primary, "conf", "dev.ini"), "w") as fh:
+            fh.write("dev config")
+        wt = self._add_worktree()
+
+        # "vendor" is a plain FILE in the worktree, not a directory --
+        # os.symlink's implicit mkdir("vendor/libs".parent) cannot succeed.
+        with open(os.path.join(wt, "vendor"), "w") as fh:
+            fh.write("i am a file, not a directory")
+
+        result = _run_op("setup", wt)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("WARNING", result.stdout)
+        self.assertIn("vendor/libs", result.stdout)
+        # the run continued past the failure and still handled `copy`.
+        self.assertIn("copied: conf/dev.ini", result.stdout)
 
 
 if __name__ == "__main__":

@@ -230,31 +230,127 @@ def str_list(cfg: dict, key: str) -> tuple:
     return tuple(raw), None
 
 
-def read_manifest(target: Path) -> dict:
-    """{"linked": [...], "copied": [...]} of paths `setup` itself created,
-    or the empty shape when no manifest exists yet / it could not be read.
-    A missing manifest is not an error here: teardown treats it exactly like
-    an empty one (nothing recorded as ours), which is the correct answer to
-    "what did setup ever create" the first time setup never ran.
+def validate_entry(entry: str) -> Optional[str]:
+    """None if ENTRY is safe to use as a `link`/`copy`/`exclude` entry, else
+    the reason it is refused (#532 self-review).
+
+    `.supertool.json` is read from the WORKTREE BEING PROVISIONED (`load_config`
+    walks up from `target`), which is routinely a fresh checkout of a branch
+    somebody else wrote — a PR being tested, say. Two things follow from an
+    entry being untrusted text rather than the maintainer's own configuration:
+
+    * A newline/carriage-return inside it would land verbatim in this op's own
+      receipt (every outcome line is `f"...: {entry}"`), letting a crafted
+      config forge a fake `linked: ...`/`excluded: ...` line inside what is
+      really a single warning — indistinguishable, to anything parsing this
+      op's stdout, from a real success. Refused outright rather than escaped:
+      nothing here needs a literal newline, so there is no legitimate case to
+      preserve.
+    * An absolute path, or one containing a `..` segment, would let a crafted
+      entry name a source or destination OUTSIDE the primary checkout /
+      target worktree entirely. `safe_join` below is the second, structural
+      half of this check (containment survives even a parts-based check that
+      missed something); this half exists because the parts check is cheap
+      and names the exact reason before any path is even joined.
     """
+    if not isinstance(entry, str) or not entry:
+        return "not a non-empty string"
+    if "\n" in entry or "\r" in entry:
+        return "contains a newline or carriage return"
+    p = Path(entry)
+    if p.is_absolute():
+        return "must be a relative path, not absolute"
+    if ".." in p.parts:
+        return "must not contain '..'"
+    return None
+
+
+def safe_join(root: Path, entry: str) -> "tuple[Optional[Path], Optional[str]]":
+    """(root / entry), refused with a reason if it would land outside ROOT.
+
+    Belt-and-braces alongside `validate_entry`'s parts-based check: this one
+    resolves symlinks and `.`/`..` the way the filesystem actually would,
+    so it also catches a ROOT that itself contains a symlink component, not
+    only a `..` spelled directly in ENTRY.
+    """
+    reason = validate_entry(entry)
+    if reason:
+        return None, reason
+    candidate = root / entry
+    # Resolve the PARENT, not the candidate itself: the candidate is
+    # routinely the very symlink this preset created on a prior run (a
+    # `link` entry, re-checked on the idempotent path, or the destination
+    # `teardown` is about to remove), and resolving straight through it
+    # follows the symlink to wherever it legitimately points -- the primary
+    # checkout, for a `link` entry -- which is outside `root` by design and
+    # would make this check refuse the very thing it is meant to allow
+    # (#532 self-review fixup: this exact bug broke the idempotent-rerun and
+    # teardown-leaves-a-real-symlink-alone tests the moment this check was
+    # added). Resolving only the ancestry still catches a `..` that escaped
+    # `validate_entry`'s parts-based check via a symlinked ancestor, and
+    # still resolves a legitimately symlinked ROOT itself (e.g. macOS's
+    # `/tmp` -> `/private/tmp`).
+    try:
+        resolved_root = root.resolve()
+        resolved_parent = candidate.parent.resolve()
+    except OSError as exc:
+        return None, f"could not resolve ({exc})"
+    resolved_candidate = resolved_parent / candidate.name
+    try:
+        resolved_candidate.relative_to(resolved_root)
+    except ValueError:
+        return None, f"resolves outside {resolved_root}"
+    return candidate, None
+
+
+def read_manifest(target: Path) -> ConfigResult:
+    """The `{"linked": [...], "copied": [...], "excluded": [...]}` manifest
+    `setup` wrote, as a `ConfigResult` — three states, not two (#532
+    self-review): a manifest that never existed (`setup` never ran) is
+    `ConfigResult({...empty lists...})`, exactly like before; a manifest that
+    EXISTS but could not be parsed is now `ConfigResult(None, error=...)`
+    rather than silently collapsing into the same empty shape — the two are
+    not the same claim, and `teardown_op.py` must not treat "I could not read
+    what setup did" as "setup did nothing," which used to leave a live
+    symlink into the primary checkout untouched with a receipt reading
+    exactly like a clean, empty teardown.
+    """
+    empty = {"linked": [], "copied": [], "excluded": []}
     try:
         path = git_path(target, MANIFEST_REL)
     except TargetError:
-        return {"linked": [], "copied": []}
+        return ConfigResult(empty)
     if not path.is_file():
-        return {"linked": [], "copied": []}
+        return ConfigResult(empty)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {"linked": [], "copied": []}
+    except (OSError, json.JSONDecodeError) as exc:
+        return ConfigResult(None, f"{path}: {exc}")
     if not isinstance(data, dict):
-        return {"linked": [], "copied": []}
-    linked = data.get("linked") if isinstance(data.get("linked"), list) else []
-    copied = data.get("copied") if isinstance(data.get("copied"), list) else []
-    return {"linked": [str(p) for p in linked], "copied": [str(p) for p in copied]}
+        return ConfigResult(None, f"{path}: top level is not a JSON object")
+    manifest = dict(empty)
+    for key in ("linked", "copied", "excluded"):
+        raw = data.get(key)
+        if isinstance(raw, list):
+            manifest[key] = [str(p) for p in raw]
+    return ConfigResult(manifest)
 
 
-def write_manifest(target: Path, manifest: dict) -> None:
-    path = git_path(target, MANIFEST_REL)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+def write_manifest(target: Path, manifest: dict) -> Optional[str]:
+    """Write MANIFEST, or return the reason it could not be written.
+
+    Never raises: a manifest write is bookkeeping FOR teardown, not a
+    condition of `setup` having succeeded, so the caller turns this into a
+    WARNING rather than aborting a run that otherwise worked (#532
+    self-review — `path.write_text` used to be a bare call, so a permission
+    error or a full disk here crashed the whole op with a raw traceback,
+    which is exactly the "never a hard failure" contract this preset
+    otherwise holds everywhere else).
+    """
+    try:
+        path = git_path(target, MANIFEST_REL)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except (TargetError, OSError) as exc:
+        return str(exc)
+    return None
