@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import supertool
@@ -98,7 +99,24 @@ def _supertool_path() -> Path:
 #
 # So the token is normalised out of BOTH sides. Everything else in the receipt,
 # including the order these tests exist to check, is still compared byte-exact.
-_META_LINE = re.compile(r"^\(\d+ lines, \d+ bytes\)")
+_META_LINE = re.compile(
+    r"^\(\d+ lines, \d+ bytes(?:, modified \d+[smhd] ago)?\)"
+)
+
+# The freshness note itself (#1379) -- ", modified Xs/Xm/Xh/Xd ago" -- computed
+# from wall-clock elapsed time between the read and the moment `now` is taken.
+# Two subprocess runs of the identical read a couple of seconds apart --
+# exactly what the sequential-then-parallel comparison below does -- can
+# legitimately disagree on this note alone, worse on a loaded CI runner. #2347
+# reddened `pytest (windows-latest, 3.10)` on master over exactly this: same
+# file, same content, same order, different age. Mirrors `_short_age` in
+# `_supertool.py` (`{int}s`/`{int}m`/`{int}h`/`{int}d`) precisely enough to
+# match it and nothing else. Scoped to the meta-line prefix, same as
+# `_META_LINE` above, so a body line that happens to spell the same words
+# out is left alone -- the same anti-vacuity concern `_without_decline_token`
+# is built to satisfy.
+_META_LINE_PREFIX = re.compile(r"^\(\d+ lines, \d+ bytes")
+_FRESHNESS_NOTE = re.compile(r", modified \d+[smhd] ago")
 
 
 def _without_decline_token(receipt: str) -> str:
@@ -110,6 +128,32 @@ def _without_decline_token(receipt: str) -> str:
             line = line.replace(token, "")
         out.append(line)
     return "\n".join(out)
+
+
+def _without_freshness_note(receipt: str) -> str:
+    """Erase the `, modified Xs/Xm/Xh/Xd ago` suffix from every meta line.
+
+    Nothing else -- same scoping discipline as `_without_decline_token`: only
+    a line that opens with the `(N lines, N bytes...)` parenthetical is a
+    candidate, so a body line that happens to spell out the same words (an
+    agent quoting this very feature back, say) is content, not a disclosure,
+    and is left untouched.
+    """
+    out = []
+    for line in receipt.split("\n"):
+        if _META_LINE_PREFIX.match(line):
+            line = _FRESHNESS_NOTE.sub("", line, count=1)
+        out.append(line)
+    return "\n".join(out)
+
+
+def _normalized_receipt(receipt: str) -> str:
+    """Strip every source of receipt-to-receipt timing noise a seq-vs-par
+    comparison is not supposed to be sensitive to -- the git-status decline
+    token (#1364) and the read freshness note (#2347) -- leaving order,
+    content and formatting exactly as load-bearing as before.
+    """
+    return _without_decline_token(_without_freshness_note(receipt))
 
 
 def _run(argv: list[str], parallel: bool, tmp_path: Path) -> str:
@@ -144,6 +188,58 @@ def test_decline_token_is_normalised_out_but_order_is_not() -> None:
     assert _without_decline_token(body) == body
 
 
+def test_freshness_note_is_normalised_out_but_order_is_not() -> None:
+    """`_without_freshness_note` erases the freshness suffix and nothing else.
+
+    Same shape as `test_decline_token_is_normalised_out_but_order_is_not`,
+    for the other source of receipt-to-receipt timing noise (#2347). The last
+    two assertions are the anti-vacuity clauses: a normaliser that returned
+    its input would fail the first, and one that flattened the whole meta
+    line would pass the first and fail the third.
+    """
+    fresh = "--- read:f0.txt ---\n(1 lines, 10 bytes, modified 0s ago) crlf\n1\u2192content0\n"
+    stale = "--- read:f0.txt ---\n(1 lines, 10 bytes, modified 47s ago) crlf\n1\u2192content0\n"
+    hours = "--- read:f0.txt ---\n(1 lines, 10 bytes, modified 3h ago) crlf\n1\u2192content0\n"
+    bare = "--- read:f0.txt ---\n(1 lines, 10 bytes) crlf\n1\u2192content0\n"
+    assert _without_freshness_note(fresh) == _without_freshness_note(stale)
+    assert _without_freshness_note(fresh) == _without_freshness_note(hours)
+    assert _without_freshness_note(fresh) == bare
+    assert _without_freshness_note(bare) == bare
+    # Order is still load-bearing after normalisation.
+    reordered = "--- read:f1.txt ---\n(1 lines, 10 bytes, modified 0s ago) crlf\n1\u2192content0\n"
+    assert _without_freshness_note(fresh) != _without_freshness_note(reordered)
+    # Content is still load-bearing after normalisation.
+    changed = "--- read:f0.txt ---\n(1 lines, 10 bytes, modified 0s ago) crlf\n1\u2192content9\n"
+    assert _without_freshness_note(fresh) != _without_freshness_note(changed)
+    # The phrase is only ever a meta-line suffix; a body line that happens to
+    # spell it out is content, not a disclosure.
+    body = "--- read:f0.txt ---\n(1 lines, 10 bytes) crlf\n1\u2192wait, modified 5s ago now\n"
+    assert _without_freshness_note(body) == body
+
+
+def test_parallel_preserves_input_order_despite_freshness_skew(
+    tmp_path: Path,
+) -> None:
+    """Deterministic reproduction of #2347.
+
+    `test_parallel_preserves_input_order` below relies on real elapsed
+    wall-clock time to trip the freshness-note race, which is exactly why it
+    took a loaded Windows CI runner to show it and stayed invisible
+    everywhere else. Here the skew is manufactured with `os.utime` -- the
+    files are backdated between the two runs -- so the two freshness notes
+    are guaranteed to differ regardless of how fast this machine actually is.
+    """
+    for i in range(5):
+        (tmp_path / f"f{i}.txt").write_text(f"content{i}\n")
+    argv = [f"read:f{i}.txt" for i in range(5)]
+    seq = _run(argv, parallel=False, tmp_path=tmp_path)
+    past = time.time() - 5
+    for i in range(5):
+        os.utime(tmp_path / f"f{i}.txt", (past, past))
+    par = _run(argv, parallel=True, tmp_path=tmp_path)
+    assert _normalized_receipt(seq) == _normalized_receipt(par)
+
+
 def test_parallel_preserves_input_order(tmp_path: Path) -> None:
     """Output must match input order, not completion order."""
     for i in range(5):
@@ -151,7 +247,7 @@ def test_parallel_preserves_input_order(tmp_path: Path) -> None:
     argv = [f"read:f{i}.txt" for i in range(5)]
     seq = _run(argv, parallel=False, tmp_path=tmp_path)
     par = _run(argv, parallel=True, tmp_path=tmp_path)
-    assert _without_decline_token(seq) == _without_decline_token(par)
+    assert _normalized_receipt(seq) == _normalized_receipt(par)
 
 
 def test_parallel_falls_back_to_sequential_for_mixed_batch(
@@ -168,7 +264,7 @@ def test_parallel_falls_back_to_sequential_for_mixed_batch(
     argv = ["read:x.txt", "replace_dry:::foo:::FOO:::."]
     seq = _run(argv, parallel=False, tmp_path=tmp_path)
     par = _run(argv, parallel=True, tmp_path=tmp_path)
-    assert _without_decline_token(seq) == _without_decline_token(par)
+    assert _normalized_receipt(seq) == _normalized_receipt(par)
 
 
 def test_parallel_single_op_unchanged(tmp_path: Path) -> None:
@@ -176,7 +272,7 @@ def test_parallel_single_op_unchanged(tmp_path: Path) -> None:
     f.write_text("hi\n")
     seq = _run(["read:x.txt"], parallel=False, tmp_path=tmp_path)
     par = _run(["read:x.txt"], parallel=True, tmp_path=tmp_path)
-    assert _without_decline_token(seq) == _without_decline_token(par)
+    assert _normalized_receipt(seq) == _normalized_receipt(par)
 
 
 def test_parallel_disabled_by_default(tmp_path: Path) -> None:
