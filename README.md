@@ -101,6 +101,7 @@ One call answers branch, ahead/behind, recent history and every dirty path — w
 | `workspace` / `resolve` / `diag` / `hover` / `rename` | LSP-backed ops via the warm MCP daemon. [Details](docs/presets/lsp.md), [docs/mcp-integration.md](docs/mcp-integration.md) |
 | `git-status` | Branch, ahead/behind, dirty files, open PR/MR, suggested next step |
 | `git-worktrees` | Occupancy, tracker and merge state for every worktree, none of it guessed |
+| `worktree` | `worktree:setup[:PATH]` / `worktree:teardown[:PATH]` — provision a fresh worktree's gitignored local state (vendored libs, machine config, caches) from the primary checkout, driven by project config; teardown undoes exactly what setup created. [Details](docs/presets/worktree.md) |
 | `git-commit` / `git-push` / `git-diff` / `git-blame` / `git-conflicts` / `git-resolve` | Commit with a receipt, push with a watcher, diff/blame/resolve without raw `git` |
 | `gh-pr` / `gh-pr-create` / `gh-pr-merge` / `gh-pr-edit` | Full PR dashboard, create, merge-with-proof, and correct a published body |
 | `gh-issue` / `gh-issue-create` / `gh-issue-comment` | Issue dashboard, file and comment with a read-back |

@@ -18,7 +18,8 @@
     "plugin-marketplace",
     "classify",
     "lsp",
-    "vim"
+    "vim",
+    "worktree"
   ],
   "mcp": {
     "py-lsp": {

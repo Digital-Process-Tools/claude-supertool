@@ -54,9 +54,14 @@ for _dir in (str(REPO / "presets" / "watch"), str(REPO / "presets"), str(REPO / 
 
 import _symlink  # noqa: E402
 import _untrusted  # noqa: E402
-import dispatcher  # noqa: E402
 import transport  # noqa: E402
 from _changelog_findable import assert_change_is_findable  # noqa: E402
+# `dispatcher` is a contested basename -- `presets/worktree/dispatcher.py`
+# claims it too (#726, #532) -- loaded by absolute path instead of a bare
+# `import dispatcher`, which xdist's work split would resolve arbitrarily.
+from _preset_loader import load_preset_module  # noqa: E402
+
+dispatcher = load_preset_module("watch", "dispatcher", prefix="watch_1197_")
 
 #: A complete row of the `watches` table, in the table's own column widths. Not
 #: arbitrary text: it names a real-looking MR as watched and green, which is the

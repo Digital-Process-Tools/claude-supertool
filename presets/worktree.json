@@ -1,0 +1,13 @@
+{
+  "description": "Provision/undo a git worktree's gitignored local state from the primary checkout, driven by project config (#532)",
+  "ops": {
+    "worktree": {
+      "safety": "writes",
+      "cmd": "{python} {path}worktree/dispatcher.py {args}",
+      "timeout": 60,
+      "description": "A fresh `git worktree add` never brings gitignored local state along — vendored binaries, machine-specific DB config, a generated asset cache — so a project's test suite fails there in a misleading way (OOM, an empty exception, a wrong-looking red). `worktree:setup[:PATH]` (PATH defaults to cwd) provisions PATH from the repo's primary checkout using `ops.worktree.setup` in `.supertool.json` — nothing project-specific lives in this op itself. Three configured lists: `link` (symlinked — large, immutable, shared artefacts only; a write through a symlink is a write to the primary checkout), `copy` (copied, never linked — anything machine-specific or the worktree might mutate), `exclude` (appended to a worktree-PRIVATE exclude file via `extensions.worktreeConfig` + a private `core.excludesFile`, NOT `.git/info/exclude` which git shares across worktrees, so a symlinked artefact can never be swept into a commit by `git add -A`). No config declared is a clean no-op naming where to declare one. Every entry reports linked/copied/excluded, already-there (idempotent), or a WARNING (never a failure) for a source missing from the primary checkout. A path in both `link` and `copy` is refused under both. `worktree:teardown[:PATH]` undoes exactly what `setup` recorded creating (a manifest in the worktree's own private git dir, never the working tree) and leaves everything else untouched. Every entry is validated first: config is read from the worktree BEING PROVISIONED and treated as untrusted text — a newline, an absolute path or a `..` segment is refused — and a real filesystem failure is a WARNING, never a crash. PATH is exempt from the generic cwd/repo containment gate (\"paths\": {\"args\": []}) because pointing outside cwd IS the use case; instead the op enforces its own boundary: PATH must resolve to a worktree of the SAME repository this call was invoked from, or it is refused by name. See docs/presets/worktree.md.",
+      "syntax": "worktree:setup[:PATH]|worktree:teardown[:PATH]",
+      "paths": {"args": []}
+    }
+  }
+}

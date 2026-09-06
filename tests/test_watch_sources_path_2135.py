@@ -47,10 +47,15 @@ for _dir in (str(REPO / "presets" / "watch"), str(REPO / "presets"), str(REPO / 
     if _dir not in sys.path:
         sys.path.insert(0, _dir)
 
-import dispatcher  # noqa: E402
 import sourcepath  # noqa: E402
 import transport  # noqa: E402
 from _changelog_findable import assert_change_is_findable  # noqa: E402
+# `dispatcher` is a contested basename -- `presets/worktree/dispatcher.py`
+# claims it too (#726, #532) -- loaded by absolute path instead of a bare
+# `import dispatcher`, which xdist's work split would resolve arbitrarily.
+from _preset_loader import load_preset_module  # noqa: E402
+
+dispatcher = load_preset_module("watch", "dispatcher", prefix="watch_2135_")
 
 POLLER_BODY = """INTERVAL = 7
 

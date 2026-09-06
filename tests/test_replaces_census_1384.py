@@ -196,6 +196,14 @@ _ABSENT = {
                 "no raw command produces this verdict; the `claude -p` spawn "
                 "underneath it is an implementation detail, not a raw "
                 "invocation this op supersedes",
+
+    # --- presets/worktree.json (#532) --------------------------------------
+    "worktree": "a config-driven composite over `ln -s`, `cp -r`/`rsync` "
+                "and `git config --worktree core.excludesFile`, run under "
+                "its own untrusted-input and containment checks -- no "
+                "single raw command is the same call, and the project-"
+                "specific list of what to link/copy/exclude has no raw "
+                "spelling at all",
 }
 
 

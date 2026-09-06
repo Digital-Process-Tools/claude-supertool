@@ -89,7 +89,20 @@ from _repo_walk import repo_python_files
 TESTS = Path(__file__).resolve().parent
 
 #: Calls that hand back a directory the caller now owns.
-OWNERS = ("mkdtemp", "TemporaryDirectory", "mkstemp", "NamedTemporaryFile")
+OWNERS = ("mkdtemp", "TemporaryDirectory", "mkstemp", "NamedTemporaryFile",
+          "safe_join")
+
+#: Calls that hand back `(directory, reason)` -- the first element is the
+#: same proof `OWNERS` grants a single-value factory, since establishing
+#: containment IS the whole job, the same way manufacturing a fresh
+#: directory is `mkdtemp`'s. `presets/worktree/_common.py::safe_join`
+#: resolves `root / entry` and refuses (empty first element, a reason
+#: string) an entry that would land outside ROOT -- every caller in this
+#: tree already discards the result on a non-empty reason before the
+#: first element is ever used, and the shape recorded here does not prove
+#: that discipline was followed at any one call site; it only lets
+#: `_is_owned` see through the unpack to the call at all (#532).
+TUPLE_OWNERS = ("safe_join",)
 
 #: Calls that re-spell a path without changing which directory it names, so
 #: ownership passes straight through them.
@@ -182,8 +195,30 @@ def _bindings_in(container, target):
         table = {}
         for node in ast.walk(container):
             if isinstance(node, ast.Assign):
-                for one in node.targets:
-                    table.setdefault(ast.unparse(one), []).append(node.value)
+                lhs = node.targets[0]
+                value_func = (node.value.func if isinstance(node.value, ast.Call)
+                              else None)
+                value_name = (value_func.attr if isinstance(value_func, ast.Attribute)
+                              else value_func.id if isinstance(value_func, ast.Name)
+                              else None)
+                if (isinstance(lhs, (ast.Tuple, ast.List))
+                        and len(node.targets) == 1
+                        and value_name in TUPLE_OWNERS
+                        and lhs.elts):
+                    # `dest, reason = safe_join(root, entry)` -- a
+                    # two-element unpack from a validator whose whole job is
+                    # proving the FIRST element's containment; the second
+                    # element is the refusal reason, never a path. Binding
+                    # only `lhs.elts[0]` to the call (not the tuple as a
+                    # whole, which the generic branch below would otherwise
+                    # do under the key `"(dest, reason)"` -- a name nothing
+                    # ever looks up) is what lets `_is_owned` see the call at
+                    # all.
+                    table.setdefault(
+                        ast.unparse(lhs.elts[0]), []).append(node.value)
+                else:
+                    for one in node.targets:
+                        table.setdefault(ast.unparse(one), []).append(node.value)
             elif isinstance(node, ast.AnnAssign) and node.value is not None:
                 table.setdefault(ast.unparse(node.target), []).append(node.value)
             elif isinstance(node, ast.withitem) and node.optional_vars is not None:
@@ -518,6 +553,12 @@ REGISTER = {
 
     'tests/test_git_worktrees_unpushed_1496.py::_Sandbox.close': OWNED,
     'tests/test_git_worktrees_upstream_remote_1525.py::_Sandbox.close': OWNED,
+    # #532's own `worktree:teardown`. `dest` is `target / entry` -- but
+    # never composed by a plain join: `_common.safe_join` (TUPLE_OWNERS
+    # above) refuses ANY entry that would resolve outside `target`, so the
+    # `OSError`-wrapped `shutil.rmtree(dest)` here can only ever remove a
+    # path already proven to be inside the worktree this op was invoked on.
+    'presets/worktree/teardown_op.py::_remove_copy': OWNED,
     'tests/test_kevin_2026_05_17.py::test_paste_op_creates_missing_file_and_parent': OWNED,
     'tests/test_mcp_autospawn_honoured_1743.py::runtime': OWNED,
     'tests/test_mcp_daemon_dedup_451.py::runtime': OWNED,

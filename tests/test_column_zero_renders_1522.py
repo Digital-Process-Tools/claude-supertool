@@ -41,9 +41,17 @@ sys.path.insert(0, str(_ROOT / "presets" / "watch"))
 sys.path.insert(0, str(_ROOT / "presets"))
 
 import channel  # noqa: E402
-import dispatcher  # noqa: E402
 import naming  # noqa: E402
 import transport  # noqa: E402
+# `dispatcher` is a contested basename -- `presets/worktree/dispatcher.py`
+# claims it too (#726, #532) -- so it is loaded by absolute path instead of a
+# bare `import dispatcher`, which xdist's work split would resolve to
+# whichever preset happens to sit first on `sys.path` in that worker. Its own
+# bare `import channel`/`naming`/`transport` still resolve to the modules
+# already bound above, via `sys.modules`, not via the path this call narrows.
+from _preset_loader import load_preset_module  # noqa: E402
+
+dispatcher = load_preset_module("watch", "dispatcher", prefix="watch_1522_")
 
 run = _load("presets/github/run.py", "github_run_1522")
 

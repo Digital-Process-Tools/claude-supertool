@@ -275,7 +275,9 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # 90 → 91 in #2146: `gl-job-trace` is split out of `gl-job` as its
         # own op, `{arg}` from the first line (the trace mode's job id, or
         # comma-separated ids, is one colon-rejoined token).
-        assert len(rows) == 91, len(rows)
+        # 91 → 92 in #532: `worktree` takes `setup[:PATH]|teardown[:PATH]`,
+        # `{args}` from the first line (the optional PATH is the whole tail).
+        assert len(rows) == 92, len(rows)
         multi = [n for n, _f, _e, c in rows
                  if "{args}" in c or "{argjoin}" in c]
         one = [n for n, _f, _e, c in rows
@@ -293,7 +295,9 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # line too (see the population count's own comment above).
         # 20 → 21 in #2146: `gl-job-trace` is `{arg}` from the first line
         # too (see the population count's own comment above).
-        assert (len(multi), len(one), len(none)) == (66, 21, 4), (
+        # 66 → 67 in #532: `worktree` is `{args}` from the first line too
+        # (see the population count's own comment above).
+        assert (len(multi), len(one), len(none)) == (67, 21, 4), (
             len(multi), len(one), len(none))
         # The 4 placeholder-free ops are outside this gate on purpose — see
         # `_unconsumed_arg_tokens`. Named so the exclusion is a list, not a
