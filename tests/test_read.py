@@ -15,7 +15,10 @@ def test_read_returns_line_numbered_content(tmp_path: Path) -> None:
     # bumping byte count and adding a "crlf" meta tag.
     f.write_bytes(b"line1\nline2\nline3\n")
     out = supertool.op_read(str(f))
-    assert "(3 lines, 18 bytes)" in out
+    # ", modified Xs ago" (#1379) is a real fact about a just-written temp
+    # file, not a fixed string -- checked by prefix/suffix rather than by
+    # the exact freshness clause in between.
+    assert "(3 lines, 18 bytes, modified " in out and " ago)" in out
     assert "     1→line1" in out
     assert "     3→line3" in out
 
@@ -134,8 +137,7 @@ def test_render_file_handles_empty_file(tmp_path: Path) -> None:
     f = tmp_path / "empty.txt"
     f.write_text("")
     out = supertool.render_file(str(f))
-    assert "(0 lines, 0 bytes)" in out
-
+    assert "(0 lines, 0 bytes, modified " in out and " ago)" in out
 
 # ---------------------------------------------------------------------------
 # Abstract mode — size threshold, :full bypass, env var override
