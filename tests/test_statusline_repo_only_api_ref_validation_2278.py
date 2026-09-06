@@ -1,20 +1,25 @@
-"""2278 -- three more `gh api` call sites in `.oss/statusline.py` that used
+"""2278/#1035 -- three `gh api` call sites in `.oss/statusline.py` that used
 to interpolate `repo` after a guard (`_gh_count` at :1466, `_gh_external_issue_count`
 at :1548, `_latest_release` at :1831 in the pre-#2298 tree) now interpolate it
-with no such check, or with a narrower one than before, and that is a
-recorded, accepted gap rather than a bug this file guards against.
+after the equivalent guard again.
 
-This file previously asserted the guards refused a malformed `repo` before
-`_run` was invoked. `/oss:scaffold --apply` replaced this oss-owned
-`.oss/statusline.py` wholesale with the plugin's own copy (#2298), which does
-not ship `_malformed_repo`. The fix is filed upstream instead, as
+This file previously asserted the opposite: `/oss:scaffold --apply` (#2298)
+had replaced this oss-owned `.oss/statusline.py` wholesale with a copy of
+claude-oss's own plugin file, which at the time did not ship `_malformed_repo`
+at all, so every value in `MALFORMED_REPO` -- including `None` and `""` --
+reached `_run` unchanged except through `_latest_release`'s own pre-existing,
+unrelated `if not repo: return None`. The fix was filed upstream instead, as
 claude-oss#1035, rather than re-forked locally.
 
-`_gh_count` and `_gh_external_issue_count` carry no repo check at all any
-more -- every value in `MALFORMED_REPO`, including `None` and `""`, now
-reaches `_run`. `_latest_release` still carries its own pre-existing
-`if not repo: return None`, unrelated to the removed guard, so `None` and
-`""` are still refused there; the three shape-invalid values are not.
+That day is claude-oss 0.26.0 (#2350): `/oss:scaffold --apply` against that
+release carries `_malformed_repo` again, and all three call sites -- `_gh_count`,
+`_gh_external_issue_count` and `_latest_release` alike -- call it and return
+before `_run` when it is True. `_latest_release` no longer carries a separate
+falsy check at all; `_malformed_repo(None)` and `_malformed_repo("")` are both
+True on their own (neither is a str matching `_REPO_RE`), so the previous split
+between "refused by the old falsy check" and "now reaches `_run`" collapses --
+every value in `MALFORMED_REPO` is refused at all three call sites now, and
+`_latest_release` gets the same single parametrized test as the other two.
 """
 from __future__ import annotations
 
@@ -40,17 +45,6 @@ MALFORMED_REPO = [
     "has space/name",
 ]
 
-#: The subset of `MALFORMED_REPO` still refused by `_latest_release`'s own
-#: pre-existing, unrelated `if not repo` falsy check.
-_LATEST_RELEASE_STILL_REFUSED = [None, ""]
-
-#: The subset that now reaches `_run` there -- shape-invalid but truthy.
-_LATEST_RELEASE_NOW_REACHES = [
-    "not-a-repo-at-all",
-    "owner/name/extra-segment",
-    "has space/name",
-]
-
 
 def _recording_run():
     calls = []
@@ -63,34 +57,30 @@ def _recording_run():
 
 
 @pytest.mark.parametrize("repo", MALFORMED_REPO)
-def test_gh_count_still_reaches_the_api_call_for_a_malformed_repo(repo):
+def test_gh_count_is_refused_before_the_api_call_for_a_malformed_repo(repo):
     calls, fake_run = _recording_run()
     with mock.patch.object(statusline, "_run", side_effect=fake_run):
         assert statusline._gh_count(repo, "issue") is None
-    assert len(calls) == 1
+    assert len(calls) == 0
 
 
 @pytest.mark.parametrize("repo", MALFORMED_REPO)
-def test_gh_external_issue_count_still_reaches_the_api_call_for_a_malformed_repo(repo):
+def test_gh_external_issue_count_is_refused_before_the_api_call_for_a_malformed_repo(repo):
     calls, fake_run = _recording_run()
     with mock.patch.object(statusline, "_run", side_effect=fake_run):
         assert statusline._gh_external_issue_count(repo, 3) is None
-    assert len(calls) == 1
+    assert len(calls) == 0
 
 
-@pytest.mark.parametrize("repo", _LATEST_RELEASE_STILL_REFUSED)
-def test_latest_release_still_refuses_a_falsy_repo_before_the_api_call(repo):
+@pytest.mark.parametrize("repo", MALFORMED_REPO)
+def test_latest_release_is_refused_before_the_api_call_for_a_malformed_repo(repo):
+    """`_malformed_repo` now covers this call site too, so every shape in
+    `MALFORMED_REPO` -- falsy or merely shape-invalid -- is refused the same
+    way, with no separate falsy-only case left to distinguish.
+    """
     with mock.patch.object(statusline, "_run",
                             side_effect=AssertionError("gh must not be called")):
         assert statusline._latest_release(repo) is None
-
-
-@pytest.mark.parametrize("repo", _LATEST_RELEASE_NOW_REACHES)
-def test_latest_release_now_reaches_the_api_call_for_a_shape_invalid_repo(repo):
-    calls, fake_run = _recording_run()
-    with mock.patch.object(statusline, "_run", side_effect=fake_run):
-        assert statusline._latest_release(repo) is None
-    assert len(calls) == 1
 
 
 def test_gh_count_a_normal_repo_still_reaches_the_api_path():
