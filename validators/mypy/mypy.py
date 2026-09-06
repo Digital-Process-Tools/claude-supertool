@@ -148,7 +148,13 @@ def main() -> None:
             continue
         line_no = d.get("line")
         col_no = d.get("column")
-        line_no = int(line_no) if line_no else None
+        # `isinstance`, not truthiness: mypy never emits a real diagnostic's
+        # `line` as 0 (unset/synthetic positions are its own -1 sentinel, per
+        # `mypy/nodes.py`'s `Context`), but a truthiness check would silently
+        # drop a genuine `line: 0` were that ever to change, the same way a
+        # bare `if col_no` would treat a genuine leftmost column 0 as absent —
+        # kept symmetric with the guard already used for `col_no` below.
+        line_no = int(line_no) if isinstance(line_no, int) else None
         # mypy's JSON `column` is 0-indexed (checked directly: a bare
         # `undefined_name` on its own line reports column 0), same
         # convention as pyright's `range.start.character` — both get the

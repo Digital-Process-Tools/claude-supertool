@@ -159,7 +159,7 @@ So the orchestrator now takes the third state whenever the adapter gave it nothi
 jsonlint    : skipped — jsonlint adapter replied with something that is not JSON — Expecting value: line 1 column 1 (char 0) — this file was not checked
 ```
 
-Four exits route here, all of them "no verdict was produced": empty stdout, stdout that is not JSON, a reply that parses but carries neither `ok` nor `skipped`, and a `cmd` that could not be spawned at all (the missing-binary case — `1 err` there claimed the *file* was broken because a tool was not installed).
+Four exits route here, all of them "no verdict was produced": empty stdout, stdout that is not JSON, a reply that parses but carries neither `ok` nor `skipped`, and a `cmd` that could not be spawned at all (the missing-binary case — `1 err` there claimed the *file* was broken because a tool was not installed). A fifth joined them in [#2185](https://github.com/Digital-Process-Tools/claude-supertool/issues/2185): a `resolve` command that could not look at all — git absent, git timed out, not a repo, unspawnable, or its own crash receipt — one step earlier than any adapter this repo ships gets to run.
 
 The skip reason names the program from the **spec**, never from the exception text: POSIX puts the missing binary in the `OSError` (`No such file or directory: 'jsonlint'`) and Windows does not (`[WinError 2] The system cannot find the file specified`), so reading it from the exception told Windows users a checker could not run without telling them which one — the platform-shaped hole #627 already paid for once. Only the platform's *reason* (`e.strerror`) is quoted, so the message reads the same shape everywhere: `jsonlint adapter could not be run: jsonlint — No such file or directory — this file was not checked`.
 
@@ -487,7 +487,7 @@ adapter is too broken to reach that code exited 0 for a release
 ([#975](https://github.com/Digital-Process-Tools/claude-supertool/issues/975)) —
 it printed nothing, printed something that is not JSON, crashed, replied with
 no verdict key, or hung until the timeout. The first four became a `skipped`
-and the fifth rendered `1 err (timeout)` — since
+and the fifth rendered `1 err (timeout)`. A sixth, one step earlier than any of these -- a `resolve` command that could not look at all -- joined the first four in [#2185](https://github.com/Digital-Process-Tools/claude-supertool/issues/2185), carrying the same `no_verdict` marker rather than a bare `skipped` with none. Since
 [#969](https://github.com/Digital-Process-Tools/claude-supertool/issues/969) it
 renders `NOT CHECKED (timed out — no verdict about this file)` and escalates
 whether or not it was named, so only the first four still depend on the
