@@ -230,7 +230,7 @@ def str_list(cfg: dict, key: str) -> tuple:
     return tuple(raw), None
 
 
-def validate_entry(entry: str) -> Optional[str]:
+def validate_entry(entry: str, path_cls: type = Path) -> Optional[str]:
     """None if ENTRY is safe to use as a `link`/`copy`/`exclude` entry, else
     the reason it is refused (#532 self-review).
 
@@ -252,13 +252,35 @@ def validate_entry(entry: str) -> Optional[str]:
       half of this check (containment survives even a parts-based check that
       missed something); this half exists because the parts check is cheap
       and names the exact reason before any path is even joined.
+
+    **`is_absolute()` alone missed a whole class on Windows** (#532 CI,
+    windows-latest/3.11): `WindowsPath("/etc/passwd").is_absolute()` is
+    `False` — pathlib calls a path "absolute" only once it names a drive,
+    and a POSIX-style entry like `/etc/passwd` has none, so it is merely
+    *rooted* ("anchored to whichever drive is current"). `root`/`drive`
+    catch that (and the sibling case, a *drive-relative* entry like
+    `C:foo` — relative to the CWD on drive C: at run time, which is exactly
+    as unpredictable as no root at all) without weakening the check on
+    POSIX: a legitimate relative entry has both empty there on either
+    platform, and a POSIX host never sets `drive` at all. `safe_join`'s
+    containment check still caught the escape either way (`root`/`drive`
+    or not, an entry landing outside the target resolves outside it) — the
+    bug was only that the CHEAP check no longer named the reason before the
+    structural one had to.
+
+    `path_cls` defaults to the platform's own `Path` and exists so a test on
+    any host can exercise Windows path semantics deterministically via
+    `PureWindowsPath`, the way `tests/test_worktree_setup_teardown_532.py`
+    does — this repo's suite runs on macOS/Linux, so the Windows arm below
+    is otherwise unreachable here and would be reasoned about, never
+    observed, without it.
     """
     if not isinstance(entry, str) or not entry:
         return "not a non-empty string"
     if "\n" in entry or "\r" in entry:
         return "contains a newline or carriage return"
-    p = Path(entry)
-    if p.is_absolute():
+    p = path_cls(entry)
+    if p.is_absolute() or p.root or p.drive:
         return "must be a relative path, not absolute"
     if ".." in p.parts:
         return "must not contain '..'"

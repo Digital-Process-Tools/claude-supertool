@@ -481,5 +481,62 @@ class WorktreeSetupTeardownTest(unittest.TestCase):
         self.assertIn("copied: conf/dev.ini", result.stdout)
 
 
+class ValidateEntryWindowsSemanticsTest(unittest.TestCase):
+    """`validate_entry`'s absolute-path check, exercised against
+    `PureWindowsPath` deterministically -- no real Windows host needed.
+
+    CI on windows-latest/3.11 found `/etc/passwd` sailing PAST this check
+    (`WindowsPath("/etc/passwd").is_absolute()` is `False`: pathlib calls a
+    path "absolute" only once it names a drive, and this entry has none, so
+    it is merely *rooted*) and only getting refused by `safe_join`'s later
+    containment check -- a real refusal, but under a different message than
+    the one this suite's own `test_absolute_and_traversal_entries_are_refused`
+    asserts, and only because it runs on macOS/Linux where `/etc/passwd`
+    genuinely IS absolute. This suite has no Windows leg, so `PureWindowsPath`
+    is injected directly via `validate_entry`'s `path_cls` parameter to
+    reach the arm that `Path` alone cannot reach on this host.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(ROOT / "tests"))
+        from _preset_loader import load_preset_module  # noqa: PLC0415
+        cls._common = load_preset_module(
+            "worktree", "_common", prefix="wt532_common_")
+
+    def test_a_posix_style_rooted_entry_is_refused_on_windows_semantics(self):
+        from pathlib import PureWindowsPath  # noqa: PLC0415
+        reason = self._common.validate_entry(
+            "/etc/passwd", path_cls=PureWindowsPath)
+        self.assertIsNotNone(reason)
+        self.assertIn("absolute", reason)
+
+    def test_a_drive_relative_entry_is_refused_on_windows_semantics(self):
+        """`C:foo` -- relative to whatever the CWD on drive C: happens to be
+        at run time -- is exactly as unpredictable as no root at all."""
+        from pathlib import PureWindowsPath  # noqa: PLC0415
+        reason = self._common.validate_entry(
+            "C:foo", path_cls=PureWindowsPath)
+        self.assertIsNotNone(reason)
+        self.assertIn("absolute", reason)
+
+    def test_an_ordinary_relative_entry_still_passes_on_windows_semantics(self):
+        """The positive control: the widened check must not start refusing
+        the entries this preset exists to accept."""
+        from pathlib import PureWindowsPath  # noqa: PLC0415
+        self.assertIsNone(self._common.validate_entry(
+            "vendor/libs", path_cls=PureWindowsPath))
+        self.assertIsNone(self._common.validate_entry(
+            "conf/dev.ini", path_cls=PureWindowsPath))
+
+    def test_a_posix_absolute_entry_is_still_refused_on_posix_semantics(self):
+        """The platform this suite actually runs on must keep working."""
+        from pathlib import PurePosixPath  # noqa: PLC0415
+        reason = self._common.validate_entry(
+            "/etc/passwd", path_cls=PurePosixPath)
+        self.assertIsNotNone(reason)
+        self.assertIn("absolute", reason)
+
+
 if __name__ == "__main__":
     unittest.main()
