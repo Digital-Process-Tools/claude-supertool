@@ -323,13 +323,22 @@ That is the safe direction.
 answer a full-file `read:PATH` with a real content line sandwiched between two
 contradicting elision-style footers — reproduced directly against `rtk`
 0.35.0, a bug in its own compression, not in anything this repo computes.
-`_rtk_output_looks_malformed` treats two elision markers in one render as that
+`_rtk_output_looks_malformed` treats that whole-line shape, repeated, as the
 signature — a genuine truncation cuts once — and falls back to the native
 renderer below, disclosing the fallback (`rtk's compressed read looked
 malformed for this file -- falling back to the built-in renderer; #1786`)
 rather than silently swapping it in. `read:PATH:START-END` never goes through
 RTK delegation at all, which is why a ranged read of the same file was
 already clean.
+
+The check is deliberately narrow, both found in self-review: it is skipped
+entirely when the delegated call used `--level aggressive`, which legitimately
+renders several elision markers in one correct output (one per compacted
+function body it elides); and it is anchored to the exact line shape `rtk -n`
+emits — a line number, its `│` column separator, then nothing else on that
+line but the marker — rather than a bare substring search, because a bare
+substring search fires on ordinary prose that merely quotes the marker text,
+including this fix's own test file and changelog entry.
 
 ## Eliding a repeat read
 

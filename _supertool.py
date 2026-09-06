@@ -2476,19 +2476,48 @@ def _rtk_run(args: List[str], timeout: int = 30) -> str | None:
 # shape bracketing real content is not a pattern any well-formed `rtk read`
 # truncation produces -- a truncation cuts once -- so it is the signature
 # checked for here.
+#
+# Anchored to rtk's own footer-line SHAPE, not a bare substring (self-review,
+# #1786): a plain substring search matches this exact text sitting inside
+# ordinary prose that merely discusses this bug -- confirmed against the
+# real rtk 0.35.0 binary reading this very test file and the changelog
+# fragment for #1786, both of which quote the marker text in their own
+# docstrings/prose and neither of which rtk actually truncates. Every line
+# `rtk -n` emits, including its own elision markers, is prefixed with
+# `N <U+2502>` (the box-drawing vertical bar rtk uses as its column
+# separator, never a plain `|`); a source line merely talking about the
+# shape does not carry that exact prefix immediately before the marker,
+# because it is prose or code, not rtk's own render. Requiring the whole
+# line (after that prefix and optional indentation) to be nothing but the
+# marker is what a genuine footer looks like and ordinary quoted text does
+# not.
 _RTK_ELISION_MARKER_RE = re.compile(
-    r"//\s*\.\.\.\s*\d+\s+(?:lines omitted|more lines)")
+    r"(?m)^\s*\d+\s*" + "│"
+    + r"\s*//\s*\.\.\.\s*\d+\s+(?:lines omitted|more lines(?:\s*\(total:\s*\d+\))?)\s*$")
 
 
-def _rtk_output_looks_malformed(text: str) -> bool:
+def _rtk_output_looks_malformed(text: str, *, aggressive: bool = False) -> bool:
     """True if `text` carries the double-elision-marker corruption (#1786).
 
     A single elision marker is `rtk`'s ordinary "I truncated here" footer and
     is left alone. Two or more, in the same render, means real content sits
     between a head-truncation notice and a tail-preview notice that
-    contradict each other's counts -- the shape reproduced in #1786, not a
-    guess at what a well-formed render could also look like.
+    contradict each other's counts -- the shape reproduced in #1786 at
+    `rtk`'s default and `minimal` levels, not a guess at what a well-formed
+    render could also look like.
+
+    `aggressive=True` disables the check entirely (#1786 self-review). Under
+    `--level aggressive`, `rtk` legitimately compacts EACH function body it
+    elides with its own marker -- reproduced directly: a six-function file
+    at `--max-lines 10 --level aggressive` renders three `// ... N lines
+    omitted` markers plus a final `// ... N more lines (total: M)` summary,
+    four matches in one entirely correct render, because aggressive mode
+    truncates per block rather than once. Counting markers cannot tell that
+    apart from the corruption this function exists to catch, so the
+    corruption check is scoped to the levels it was actually reproduced at.
     """
+    if aggressive:
+        return False
     return len(_RTK_ELISION_MARKER_RE.findall(text)) >= 2
 
 # Built-in op names — custom ops/aliases with these names are ignored
@@ -5078,7 +5107,8 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
     # RTK delegation — simple reads without offset/filter/limit changes
     if not grep_filter and offset == 0 and limit == _get_op_int("read", "max_lines", MAX_READ_LINES) and _rtk_enabled() and _has_rtk():
         rtk_args = ["read", "-n", "--max-lines", str(_get_op_int("read", "max_lines", MAX_READ_LINES))]
-        if _is_compact():
+        rtk_used_aggressive = _is_compact()
+        if rtk_used_aggressive:
             rtk_args += ["--level", "aggressive"]
         rtk_args.append(path)
         rtk_out = _rtk_run(rtk_args)
@@ -5089,8 +5119,12 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         # corruption into a plausible-looking answer about the file; a
         # malformed render is discarded here and the call falls through to
         # the native renderer below instead, which is disclosed rather than
-        # silently swapped in.
-        rtk_malformed = rtk_out is not None and _rtk_output_looks_malformed(rtk_out)
+        # silently swapped in. `aggressive=` is threaded through rather than
+        # re-derived: `--level aggressive` legitimately renders several
+        # elision markers in one correct output (one per compacted function
+        # body), which the detector must not mistake for this corruption.
+        rtk_malformed = rtk_out is not None and _rtk_output_looks_malformed(
+            rtk_out, aggressive=rtk_used_aggressive)
         if rtk_out is not None and not rtk_malformed:
             # rtk renders the body, but the line-numbering disclosure is
             # supertool's own contract and rtk knows nothing about it. A
