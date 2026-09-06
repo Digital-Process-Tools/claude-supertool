@@ -192,10 +192,13 @@ def test_freshness_note_is_normalised_out_but_order_is_not() -> None:
     """`_without_freshness_note` erases the freshness suffix and nothing else.
 
     Same shape as `test_decline_token_is_normalised_out_but_order_is_not`,
-    for the other source of receipt-to-receipt timing noise (#2347). The last
-    two assertions are the anti-vacuity clauses: a normaliser that returned
-    its input would fail the first, and one that flattened the whole meta
-    line would pass the first and fail the third.
+    for the other source of receipt-to-receipt timing noise (#2347). The
+    anti-vacuity clauses are the equality against `fresh == bare`, which a
+    normaliser that returned its input unchanged would fail, and the
+    inequality against `reordered`/`changed`, which one that flattened the
+    whole meta line -- or the whole receipt -- would pass by accident. The
+    final `body` check is the scoping guard: the phrase spelled out in
+    content, not in a meta line, must survive untouched.
     """
     fresh = "--- read:f0.txt ---\n(1 lines, 10 bytes, modified 0s ago) crlf\n1\u2192content0\n"
     stale = "--- read:f0.txt ---\n(1 lines, 10 bytes, modified 47s ago) crlf\n1\u2192content0\n"
@@ -233,7 +236,16 @@ def test_parallel_preserves_input_order_despite_freshness_skew(
         (tmp_path / f"f{i}.txt").write_text(f"content{i}\n")
     argv = [f"read:f{i}.txt" for i in range(5)]
     seq = _run(argv, parallel=False, tmp_path=tmp_path)
-    past = time.time() - 5
+    # 45s, not a token 2-5s margin: `_short_age`'s seconds-branch spans
+    # [0, 90) and reports the integer second exactly, so a margin close to
+    # the gap #2347 actually observed (2s on a loaded windows-latest runner)
+    # leaves a real chance the sequential subprocess itself stalls long
+    # enough that its own freshness note lands on the same second this
+    # backdates the parallel run to -- which would make the comparison below
+    # pass whether or not the normalizer does anything, on the exact kind of
+    # loaded runner this test exists to cover. 45s keeps well clear of both
+    # that stall range and the 90s boundary where the unit itself changes.
+    past = time.time() - 45
     for i in range(5):
         os.utime(tmp_path / f"f{i}.txt", (past, past))
     par = _run(argv, parallel=True, tmp_path=tmp_path)
