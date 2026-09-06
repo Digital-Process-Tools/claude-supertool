@@ -50,6 +50,21 @@ TOOL = "mypy"
 INSTALL_HINT = ("mypy not found on PATH — this file was NOT type-checked "
                 "(`pip install mypy`)")
 
+#: How this adapter's `count` relates to `errors` (validators/SCHEMA.md, #1728).
+#:
+#: `total`: every verdict emitted below writes `count = len(errors)` -- there
+#: is no separate accounting that excludes an `adapter`-coded stall row from
+#: the count, the way `phpstan`'s `measured` convention does. Nothing here
+#: mixes a stall row into the same payload as real findings today (a crash or
+#: a non-JSON line short-circuits before any real finding is collected), but
+#: the declaration is about what `count` COUNTS, not about today's inputs --
+#: same reasoning cargo-check's own COUNT_CONTRACT gives for the adapter it
+#: shares this convention with.
+#:
+#: `errors_truncated: False`: nothing here caps the list -- every diagnostic
+#: mypy's `--output json` prints for the file is collected.
+COUNT_CONTRACT = {"count_basis": "total", "errors_truncated": False}
+
 
 def emit(d: dict) -> None:
     print(json.dumps(d))
@@ -63,7 +78,7 @@ def _adapter_error(file: str, duration: int, msg: str) -> dict:
     return {"tool": TOOL, "file": file, "ok": False, "count": 1,
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": msg[:300]}],
-            "duration_ms": duration}
+            "duration_ms": duration, **COUNT_CONTRACT}
 
 
 def main() -> None:
@@ -123,7 +138,7 @@ def main() -> None:
         # JSON line per finding, so exit 1 with empty stdout should not
         # happen) with nothing on stdout: no diagnostics, file is clean.
         emit({"tool": TOOL, "file": file, "ok": True, "count": 0,
-              "errors": [], "duration_ms": duration})
+              "errors": [], "duration_ms": duration, **COUNT_CONTRACT})
         return
 
     errors = []
@@ -175,7 +190,7 @@ def main() -> None:
 
     ok = len(errors) == 0
     emit({"tool": TOOL, "file": file, "ok": ok, "count": len(errors),
-          "errors": errors, "duration_ms": duration})
+          "errors": errors, "duration_ms": duration, **COUNT_CONTRACT})
 
 
 if __name__ == "__main__":
