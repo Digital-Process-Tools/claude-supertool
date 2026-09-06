@@ -15,7 +15,10 @@ def test_read_returns_line_numbered_content(tmp_path: Path) -> None:
     # bumping byte count and adding a "crlf" meta tag.
     f.write_bytes(b"line1\nline2\nline3\n")
     out = supertool.op_read(str(f))
-    assert "(3 lines, 18 bytes)" in out
+    # ", modified Xs ago" (#1379) is a real fact about a just-written temp
+    # file, not a fixed string -- checked by prefix/suffix rather than by
+    # the exact freshness clause in between.
+    assert "(3 lines, 18 bytes, modified " in out and " ago)" in out
     assert "     1→line1" in out
     assert "     3→line3" in out
 
@@ -134,8 +137,7 @@ def test_render_file_handles_empty_file(tmp_path: Path) -> None:
     f = tmp_path / "empty.txt"
     f.write_text("")
     out = supertool.render_file(str(f))
-    assert "(0 lines, 0 bytes)" in out
-
+    assert "(0 lines, 0 bytes, modified " in out and " ago)" in out
 
 # ---------------------------------------------------------------------------
 # Abstract mode — size threshold, :full bypass, env var override
@@ -300,30 +302,95 @@ def test_path_meta_suffix_executable_bit(tmp_path: Path) -> None:
 
 
 def test_path_meta_suffix_stale_mtime_days(tmp_path: Path) -> None:
-    f = tmp_path / "old.txt"
-    f.write_text("ancient")
+    """The `Nd` token is symlink-only since #1379 -- see
+    `test_path_meta_suffix_plain_file_has_no_bare_age_token` for why a plain
+    file no longer carries this token at all: `_read_freshness_note`, printed
+    on the same header line just ahead of this suffix, already discloses the
+    identical mtime in a labeled form, and the two used to say it twice.
+    """
+    _symlink.require_symlink_utime()
+    target = tmp_path / "real.txt"
+    target.write_text("ancient")
+    link = tmp_path / "old.txt"
+    link.symlink_to(target)
     old = _time.time() - 10 * 86400
-    _os.utime(f, (old, old))
-    out = supertool._path_meta_suffix(str(f), b"ancient")
+    _os.utime(link, (old, old), follow_symlinks=False)
+    out = supertool._path_meta_suffix(str(link), b"ancient")
     assert "10d" in out
 
 
 def test_path_meta_suffix_stale_mtime_weeks(tmp_path: Path) -> None:
-    f = tmp_path / "weeks.txt"
-    f.write_text("middle")
+    _symlink.require_symlink_utime()
+    target = tmp_path / "real.txt"
+    target.write_text("middle")
+    link = tmp_path / "weeks.txt"
+    link.symlink_to(target)
     old = _time.time() - 60 * 86400
-    _os.utime(f, (old, old))
-    out = supertool._path_meta_suffix(str(f), b"middle")
+    _os.utime(link, (old, old), follow_symlinks=False)
+    out = supertool._path_meta_suffix(str(link), b"middle")
     assert "8w" in out  # 60 // 7 = 8
 
 
 def test_path_meta_suffix_stale_mtime_months(tmp_path: Path) -> None:
-    f = tmp_path / "ancient.txt"
-    f.write_text("old")
+    _symlink.require_symlink_utime()
+    target = tmp_path / "real.txt"
+    target.write_text("old")
+    link = tmp_path / "ancient.txt"
+    link.symlink_to(target)
+    old = _time.time() - 400 * 86400
+    _os.utime(link, (old, old), follow_symlinks=False)
+    out = supertool._path_meta_suffix(str(link), b"old")
+    assert "mo" in out
+
+
+def test_path_meta_suffix_plain_file_has_no_bare_age_token(tmp_path: Path) -> None:
+    """The regression #1379's Explore review caught: a plain file over a week
+    old used to carry BOTH `_read_freshness_note`'s labeled `modified 20d
+    ago` and this function's own bare, unlabeled `20d` on the same header
+    line -- the identical fact, stated twice in two different spellings, and
+    for a symlink the two could even disagree (link mtime vs. target mtime).
+    A plain file's own age is dropped from this function entirely now that
+    the freshness note beside it already says it, once, labeled.
+    """
+    f = tmp_path / "old.txt"
+    f.write_text("ancient")
     old = _time.time() - 400 * 86400
     _os.utime(f, (old, old))
-    out = supertool._path_meta_suffix(str(f), b"old")
-    assert "mo" in out
+    out = supertool._path_meta_suffix(str(f), b"ancient")
+    assert out == "", (
+        "a plain file's own age leaked back into the bare-token suffix, "
+        "duplicating _read_freshness_note's labeled clause on the same "
+        "line:" + chr(10) + repr(out))
+
+
+def test_read_header_states_an_old_files_age_exactly_once(tmp_path: Path) -> None:
+    """The full-header shape of the same regression, through `op_read` rather
+    than `_path_meta_suffix` in isolation: a file over a week old must not
+    show its own age twice on one header line.
+    """
+    f = tmp_path / "old.py"
+    f.write_text("x = 1\n")
+    old = _time.time() - 20 * 86400
+    _os.utime(f, (old, old))
+    out = supertool.op_read(str(f))
+    header = out.splitlines()[0]
+    assert header.count("20d") <= 1, (
+        "the header states the file's age twice on one line:" + chr(10) + header)
+    assert ", modified 20d ago)" in header, header
+
+
+def test_freshness_note_declines_rather_than_guesses_on_a_stat_failure(
+    monkeypatch,
+) -> None:
+    """The third state, checked directly: a path `os.stat` cannot answer for
+    must not render a freshness clause that looks like a real one -- an
+    absence produced by the tool must not be read as a fact about the file.
+    """
+    def _raise(_path):
+        raise OSError("stat failed")
+
+    monkeypatch.setattr(supertool.os, "stat", _raise)
+    assert supertool._read_freshness_note("anything") == ""
 
 
 def test_path_meta_suffix_broken_symlink(tmp_path: Path) -> None:

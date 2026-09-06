@@ -160,7 +160,11 @@ def test_control_raw_git_really_does_honour_the_leak(tmp_path):
 # --------------------------------------------------------------------------
 
 def _meta_line(stdout: str) -> str:
-    m = re.search(r"^\(\d+ lines, \d+ bytes\)(.*)$", stdout, re.MULTILINE)
+    # ", modified Xs ago" (#1379) sits inside the parens now, ahead of the
+    # `_path_meta_suffix` tokens this helper actually cares about -- matched
+    # away rather than pinned to a literal age nobody controls in this test.
+    m = re.search(r"^\(\d+ lines, \d+ bytes(?:, modified \S+ ago)?\)(.*)$",
+                  stdout, re.MULTILINE)
     assert m, f"no read meta line in output:\n{stdout}"
     return m.group(1)
 

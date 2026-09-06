@@ -119,6 +119,32 @@ def require_symlink() -> None:
         pytest.skip(skip_reason())
 
 
+#: Grep handle for the second capability gap this module answers: not "can I
+#: create a symlink" but "can I set a symlink's OWN mtime without following
+#: it to the target". Distinct from `TOKEN` on purpose -- a runner can create
+#: symlinks fine (Developer Mode, an elevated account) and still lack this:
+#: measured on GitHub Actions `windows-latest`, Python 3.9, `os.utime(link,
+#: times, follow_symlinks=False)` raised `NotImplementedError: utime:
+#: follow_symlinks unavailable on this platform` even though the symlink
+#: itself was created without incident one line above.
+UTIME_TOKEN = "symlink-utime-capability(#1379)"
+
+
+def require_symlink_utime() -> None:
+    """Skip a test that needs to set a symlink's own mtime, where the
+    platform's `os.utime` cannot do that without following the link.
+
+    Checked separately from `require_symlink()`: creating the symlink can
+    succeed while timing it (without following) still raises, so a test
+    gated only on the create privilege would fail rather than skip there.
+    """
+    require_symlink()
+    if os.utime not in os.supports_follow_symlinks:
+        pytest.skip(
+            UTIME_TOKEN + ": os.utime(..., follow_symlinks=False) is not "
+            "supported on this platform")
+
+
 #: Decorator form. Evaluated at import, like every other ``skipif``.
 requires_symlink = pytest.mark.skipif(
     not symlink_support()[0],

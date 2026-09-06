@@ -266,6 +266,38 @@ def _age(seconds: float) -> str:
     return f"{int(seconds // 86400)}d"
 
 
+def _head_age_note() -> str:
+    """', HEAD Xs/Xm/Xh/Xd old' appended to `Working tree: clean` (#1379).
+
+    `clean` is a true statement about the instant this ran, and carries no
+    signal about whether that instant is stale by the time a reader with no
+    memory acts on it. In a worktree somebody else is committing into, a bare
+    `clean` reads as "nothing happened here" when it only ever meant "nothing
+    is happening right now, in the working tree, as of this instant" -- HEAD
+    itself can have moved a second before this ran, and nothing here said so.
+
+    HEAD's own commit age is the cheapest available proxy for that: a HEAD a
+    few seconds old means something just landed in this tree, which is
+    exactly the situation worth disclosing rather than leaving to be inferred
+    later from confused evidence. `_age()` beside this function is the same
+    vocabulary `git-worktrees` already renders as `newest write ... ago` /
+    `reflog written ... ago` -- reused rather than reinvented, so a reader
+    never has to learn two spellings of the same fact.
+
+    Empty when HEAD cannot be dated (an unborn HEAD, git failing to answer) --
+    the note is a bonus disclosure on an already-computed `clean`, not a new
+    claim, so it declines rather than guesses.
+    """
+    r = _git(["log", "-1", "--format=%ct"], timeout=3)
+    if r.returncode != 0 or not r.stdout.strip():
+        return ""
+    try:
+        commit_ts = int(r.stdout.strip().splitlines()[0])
+    except ValueError:
+        return ""
+    return f", HEAD {_age(time.time() - commit_ts)} old"
+
+
 def _worktree_root() -> str | None:
     """Absolute path of this working tree, **to open** — not to print.
 
@@ -753,7 +785,7 @@ def main() -> int:
         untracked = [l for l in lines if l.startswith("??")]
 
         if not lines:
-            print(f"\n## Working tree: clean")
+            print(f"\n## Working tree: clean{_head_age_note()}")
         else:
             print(f"\n## Working tree ({len(lines)} changes)")
             if staged:

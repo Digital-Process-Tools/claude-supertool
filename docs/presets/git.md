@@ -934,10 +934,12 @@ An abandoned call is never rendered as a git that succeeded and printed nothing.
 **A skipped section says so where the section belongs, not only in the footer** ([#1002](https://github.com/Digital-Process-Tools/claude-supertool/issues/1002)). `git-status`'s working-tree and stash sections used to be omitted entirely when their call did not answer, and the footer below carried the only disclosure. A reader who scrolls to where the working tree should be and finds nothing has already concluded the tree is clean — the footer arrives after the decision. Both sections now render three states, and the third is a marker in place:
 
 ```
-## Working tree: clean
+## Working tree: clean, HEAD 15s old
 ## Working tree (7 changes)
 ## Working tree: UNKNOWN — `git status --porcelain=v1` did not answer (exit 128: fatal: unable to read index). This run did not look — it is not 'clean'.
 ```
+
+`clean` carries HEAD's own commit age since ([#1379](https://github.com/Digital-Process-Tools/claude-supertool/issues/1379)): it is a true statement about the instant it ran, and on its own gives a reader with no memory nothing to tell a fact read a minute ago from one read just now. A HEAD a few seconds old means something just landed in this tree, which is exactly the situation worth disclosing rather than leaving to be inferred later from confused evidence — reusing the same vocabulary `git-worktrees` renders elsewhere (`newest write … ago`). Omitted when HEAD cannot be dated (an unborn HEAD, git failing to answer), which declines rather than guesses.
 
 The footer stays as well, deliberately. The marker is where the eye is; the footer is the line that survives a `| tail` and the one a script greps. Neither is printed on a run where every call answered, so the common case gains nothing to skim past.
 

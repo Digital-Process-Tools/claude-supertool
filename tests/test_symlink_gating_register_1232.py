@@ -83,6 +83,10 @@ PLATFORM_TOKENS = (
 #: The mechanisms this file recognises. Anything else is `UNGATED`.
 A = "A: @requires_symlink on the test (or an enclosing one)"
 B = "B: require_symlink() in the body"
+#: `require_symlink_utime()` (#1379) also counts as B: it calls
+#: `require_symlink()` as its own first line, so a site gated through it is
+#: gated at least as strictly, and a separate letter would only fragment the
+#: tally for no distinction a reader of this register needs to make.
 #: Unused since #1274 and kept anyway: the classifier has to keep recognising a
 #: hand-rolled probe, or the next one is silently relabelled `P` or `UNGATED`.
 #: `tests/test_symlink_count_population_1274.py` asserts no site carries it.
@@ -159,7 +163,9 @@ class _Visitor(ast.NodeVisitor):
             if "requires_symlink" in self._decorator_source(node):
                 return A
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if self._called_before("require_symlink", node, lineno):
+                if (self._called_before("require_symlink", node, lineno)
+                        or self._called_before(
+                            "require_symlink_utime", node, lineno)):
                     return B
                 if (self._called_before("_can_symlink", node, lineno)
                         and self._called_before("skip", node, lineno)):
@@ -263,6 +269,9 @@ REGISTER = {
     'tests/test_path_meta_bulk_1126.py::test_a_symlink_gets_the_same_marker_from_either_route': B,
     'tests/test_path_meta_bulk_1126.py::test_a_symlink_is_never_answered_from_another_repo': B,
     'tests/test_read.py::test_path_meta_suffix_broken_symlink': B,
+    'tests/test_read.py::test_path_meta_suffix_stale_mtime_days': B,
+    'tests/test_read.py::test_path_meta_suffix_stale_mtime_months': B,
+    'tests/test_read.py::test_path_meta_suffix_stale_mtime_weeks': B,
     'tests/test_read.py::test_read_meta_symlink': P,
     'tests/test_retraction_realpath_abspath_1146.py::test_retraction_subject_matches_the_quoted_success_lines_own_spelling': B,
     'tests/test_review_regressions_395.py::test_gate_follows_symlinks_to_the_real_repo': B,
@@ -314,6 +323,7 @@ REGISTER = {
     'tests/test_watch_transport_read_state_hostile_1197.py::test_the_symlink_refusal_is_its_own_state_and_not_could_not_be_read': B,
     'tests/test_watch_transport_read_state_hostile_1197.py::test_the_symlink_refusal_reaches_the_board': B,
     'tests/test_windows_wrapper_probe_1919.py::_real_wrapper': E,
+    'tests/test_write_target_double_resolution_1147.py::_symlink': B,
 }
 
 #: The escape hatch, deliberately empty. A site belongs here only if failing --

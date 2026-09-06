@@ -4672,7 +4672,7 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     # the right one.
     _mixed = _mixed_tree_pair()
     if _mixed is not None and not _mixed_tree_allowed():
-        _SKIP_COUNT[0] += 1
+        _bump_counter(_SKIP_COUNT, "cnt_skip")
         return _mixed_tree_decline(op, _mixed)
 
     entry = ops[op]
@@ -5178,7 +5178,8 @@ def render_file(path: str, offset: int = 0, limit: int = 0,
         # LIMIT, not by the file (#1052). The byte cap below still bounds the
         # output, and a filtered read emits only the lines that matched.
         limit = max(0, line_count - offset)
-    out = [f"({line_count} lines, {size} bytes){_path_meta_suffix(path, b''.join(raw_lines[:64]))}\n"]
+    out = [f"({line_count} lines, {size} bytes{_read_freshness_note(path)})"
+           f"{_path_meta_suffix(path, b''.join(raw_lines[:64]))}\n"]
     if rtk_malformed:
         # #1786: disclosed rather than silently swapped in -- the caller
         # gets the native render either way, but only this line says the
@@ -7737,10 +7738,68 @@ def _path_meta_bulk_code(codes: Dict[str, str], rel: str) -> str:
     return ""
 
 
+def _short_age(seconds: float) -> str:
+    """Seconds as one short human token.
+
+    Byte-identical to `presets/git/status.py::_age` (itself duplicated from
+    `presets/git/worktrees.py::_age`) -- one number is what changes between a
+    seconds-old file and an hours-old one, and every render in this tool that
+    states an age should say it the same way rather than inventing a fourth
+    spelling. Duplicated rather than imported for the same reason those two
+    are: this module has no import path to `presets/git/status.py`, and a
+    number this small does not earn one.
+    """
+    seconds = max(0.0, float(seconds))
+    if seconds < 90:
+        return f"{int(seconds)}s"
+    if seconds < 5400:
+        return f"{int(seconds // 60)}m"
+    if seconds < 172800:
+        return f"{int(seconds // 3600)}h"
+    return f"{int(seconds // 86400)}d"
+
+
+def _read_freshness_note(path: str) -> str:
+    """', modified Xs/Xm/Xh/Xd ago' for a read/workspace header (#1379).
+
+    `(N lines, N bytes)` and the `[complete file -- no more lines]` footer
+    beside it are both true statements about the instant this op ran, and
+    carry no signal about how long ago that instant was. A reader with no
+    memory -- which is every agent in this loop -- cannot tell a fact it read
+    a minute ago from one it read just now unless the render says so; without
+    it, `[complete file]` reads as a standing fact rather than a claim with an
+    expiry, which cost one session ~20 minutes of forensics reconciling a
+    17-line read against a file that had grown to 35 lines a minute later.
+
+    One extra `os.stat` -- `_path_meta_suffix` already pays this exact cost
+    for the same path a few characters later in the same header line, so this
+    is not a second file-system round trip class, only a second read of a
+    value the op was already about to fetch.
+    """
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return ""
+    return f", modified {_short_age(time.time() - mtime)} ago"
+
+
 def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
     """Compact suffix for read/workspace meta line. Empty when nothing notable.
     Tokens: ->target [broken] | bin | non-utf8 | ? | ! | m | x | crlf | Nd|Nw|Nmo
             | git? (the working-tree lookup declined — state unknown, not clean)
+
+    The `Nd|Nw|Nmo` token is a symlink-only fact as of #1379: it used to fire
+    for any file over a week old, using `os.lstat`'s mtime, on the same line
+    `_read_freshness_note` now prints right before this suffix using
+    `os.stat`'s mtime (follows a symlink; `os.lstat` does not). For a plain
+    file the two stats see the same mtime, so both used to say the identical
+    age twice in two unlabeled spellings on one line -- `modified 20d ago)
+    20d` -- confusable as two different facts rather than one restated.
+    For a symlink they can genuinely disagree (the link's own mtime vs. the
+    target's), which is a real fact worth keeping, not a duplicate to drop --
+    a link's own age is exactly the kind of thing `->target` beside it is
+    already disclosing. Gated on `os.path.islink` so the token now fires only
+    where it says something the freshness note does not already say.
     """
     parts = []
     if sample:
@@ -7769,16 +7828,21 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
         mtime_ns = st.st_mtime_ns
         if st.st_mode & 0o111 and not os.path.isdir(path):
             parts.append("x")
-        age_sec = max(0, int(time.time() - st.st_mtime))
-        SEVEN_DAYS = 7 * 86400
-        if age_sec > SEVEN_DAYS:
-            days = age_sec // 86400
-            if days < 30:
-                parts.append(f"{days}d")
-            elif days < 365:
-                parts.append(f"{days // 7}w")
-            else:
-                parts.append(f"{days // 30}mo")
+        # Symlink-only (#1379) — see the docstring above for why. `path` is
+        # re-tested rather than reusing the earlier `os.path.islink` result:
+        # both are cheap `lstat`-backed checks, and duplicating the syscall
+        # is a smaller cost than threading a boolean an extra 20 lines.
+        if os.path.islink(path):
+            age_sec = max(0, int(time.time() - st.st_mtime))
+            SEVEN_DAYS = 7 * 86400
+            if age_sec > SEVEN_DAYS:
+                days = age_sec // 86400
+                if days < 30:
+                    parts.append(f"{days}d")
+                elif days < 365:
+                    parts.append(f"{days // 7}w")
+                else:
+                    parts.append(f"{days // 30}mo")
     except OSError:
         pass
 
@@ -10802,7 +10866,7 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
         # never reached the exit code either (#680). A preview finding nothing
         # is a truthful preview, not a decline — only the real op declines.
         if not dry:
-            _SKIP_COUNT[0] += 1
+            _bump_counter(_SKIP_COUNT, "cnt_skip")
         return f"(0 occurrences of '{old}' found)\n"
 
     if dry:
@@ -11022,6 +11086,12 @@ def _atomic_write(path: str, content: str) -> None:
     # Containment check happens against the symlink target (real path) so a
     # symlinked write doesn't escape cwd via the symlink itself.
     _safe_path(path)
+    # #1147: a pinned target beats re-deriving one, keyed on the very string
+    # `_run_with_validators` sampled `_write_target` against -- BEFORE
+    # `_expand_home` below can change what `path` spells, so the key matches
+    # what the pin was set with rather than a rewritten copy of it.
+    _pinned = getattr(_DISPATCH_STATE, "pinned_write_target", None)
+    _use_pin = _pinned is not None and _pinned[0] == path
     # Behind that check, and for the same reason as `render_file` (#1300): a
     # direct internal caller must not write to `<cwd>/~/x` after the gate
     # approved the home path.
@@ -11036,7 +11106,12 @@ def _atomic_write(path: str, content: str) -> None:
     # at the one place every mutating op passes through (#380).
     _warn = _sh_backslash_warning(path, content)
     _key = os.path.abspath(path)
-    real_path = _write_target(path)
+    # The sampled value if one is pinned for this exact path (#1147) -- never
+    # re-asking `_write_target` a question whose answer may have moved since
+    # `_run_with_validators` asked it. Any other caller (a bare internal write,
+    # `op_replace`'s own per-file loop) has no pin keyed to its `path` and
+    # resolves exactly as before.
+    real_path = _pinned[1] if _use_pin else _write_target(path)
     target_dir = os.path.dirname(os.path.abspath(real_path)) or "."
     # Preserve the original file's mode (#259). mkstemp creates the temp file
     # with 0600; os.replace would then clobber the target's mode, silently
@@ -11082,7 +11157,7 @@ def _atomic_write(path: str, content: str) -> None:
     # warning queue must describe what is on disk. A write that raised did
     # neither, and counting it would let dispatch treat a failed op as a
     # successful one.
-    _WRITE_COUNT[0] += 1
+    _bump_counter(_WRITE_COUNT, "cnt_write")
     # A rollback rewrites the same path, so drop any stale entry for it first.
     _drop_write_warnings(path)
     if _warn:
@@ -12007,9 +12082,8 @@ def _retract_write(path: str) -> None:
     reproducibility gap the header rule exists to avoid.
     """
     _drop_write_warnings(path)
-    _ROLLBACK_COUNT[0] += 1
-    if _WRITE_COUNT[0] > 0:
-        _WRITE_COUNT[0] -= 1
+    _bump_counter(_ROLLBACK_COUNT, "cnt_rollback")
+    _bump_counter(_WRITE_COUNT, "cnt_write", by=-1)
 
 
 def _rollback_action(pre_existed: bool, pre_content: Optional[bytes]) -> str:
@@ -12062,7 +12136,7 @@ def _note_left_on_disk() -> None:
     disclosure path added later must not be able to print the marker without
     moving the number the footer reads.
     """
-    _LEFT_ON_DISK_COUNT[0] += 1
+    _bump_counter(_LEFT_ON_DISK_COUNT, "cnt_left_on_disk")
 
 
 def _left_on_disk_line(names: Sequence[str], path: str, body: object,
@@ -12577,11 +12651,11 @@ def op_edit(old: str, new: str, path: str) -> str:
                 old, new, wrote, count = cand, _retermed(new, nl), nl, n
                 break
     if count == 0:
-        _SKIP_COUNT[0] += 1
+        _bump_counter(_SKIP_COUNT, "cnt_skip")
         return (f"ERROR: old string not found in {path}\n"
                 + _edit_miss_diagnostic(old, content, new, path))
     if count > 1:
-        _SKIP_COUNT[0] += 1
+        _bump_counter(_SKIP_COUNT, "cnt_skip")
         return (
             f"ERROR: old string found {count} times in {path} — ambiguous. "
             f"Use a larger snippet to make it unique, or use replace for "
@@ -12624,7 +12698,7 @@ def op_edit(old: str, new: str, path: str) -> str:
         return f"ERROR: failed to write {path}: {e}\n"
 
     if reapplied:
-        _REAPPLY_COUNT[0] += 1
+        _bump_counter(_REAPPLY_COUNT, "cnt_reapply")
 
     # Receipt — locate the change and show ±2 lines context
     start_line = _line_number_at(content, idx)
@@ -14064,7 +14138,7 @@ def op_vim(path: str, script: str) -> str:
     if out.startswith("ERROR"):
         # Atomic by contract: an errored vim op applied none of its actions, so
         # every one of them is a decline the footer has to carry (#680).
-        _SKIP_COUNT[0] += 1
+        _bump_counter(_SKIP_COUNT, "cnt_skip")
         suffix = " (file unchanged — vim ops are atomic, no actions applied)\n"
         # Ensure the suffix sits on its own line right before EOF.
         if out.endswith("\n"):
@@ -25746,6 +25820,35 @@ def _advice_wants_pre(op: str, path: str) -> bool:
     return False
 
 
+def _write_target_pinned(path: str, target: str, fn: "Any") -> Any:
+    """Run *fn* -- a `do_op` call -- with `path`'s write target pinned.
+
+    #1147: `_run_with_validators` samples `_target = _write_target(path)`
+    once, before the op runs, and every rollback arm below reuses that exact
+    sample. `_atomic_write` did not -- it re-derived `real_path =
+    _write_target(path)` at write time, from `path` alone. #1136 made the two
+    resolutions agree in the ordinary case; it did not remove having two of
+    them. If `path` is retargeted between the sample and the write (or turns
+    into a symlink having not been one when sampled), the writer and the
+    rollback can act on different objects again, through the narrower window
+    #1136 left open.
+
+    One resolution: `_atomic_write` consults this pin, keyed on the same
+    `path` string `_run_with_validators` sampled against, before it asks
+    `_write_target` a second time. Cleared in `finally` so a pin from one
+    `do_op()` call never leaks into an unrelated later write on the same
+    thread -- `op_replace`'s own multi-file loop calls `_atomic_write` on
+    each matched file, none of which equals the single `path` pinned here,
+    so it falls through to its own per-file resolution unchanged.
+    """
+    _prev_pin = getattr(_DISPATCH_STATE, "pinned_write_target", None)
+    _DISPATCH_STATE.pinned_write_target = (path, target)
+    try:
+        return fn()
+    finally:
+        _DISPATCH_STATE.pinned_write_target = _prev_pin
+
+
 def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     """Wrap edit op with format+snapshot+run+diff using configured formatters/validators.
 
@@ -25759,7 +25862,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     # Counted here, before the op runs and whatever it returns: this is the
     # branch footer's signal, and the cases worth reporting most are the ones
     # where nothing lands on disk — a failed anchor, a validator rollback.
-    _MUTATION_ATTEMPTS[0] += 1
+    _bump_counter(_MUTATION_ATTEMPTS, "cnt_mutation")
     try:
         path = extract(parts)
     except (IndexError, TypeError):
@@ -25838,7 +25941,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
                     pre_for_notif = f.read()
             except OSError:
                 pass
-        body = do_op()
+        body = _write_target_pinned(path, _target, do_op)
         _run_notifiers(op, path, pre_content=pre_for_notif)
         if isinstance(body, str) and body.startswith("ERROR"):
             return body
@@ -25898,7 +26001,7 @@ def _run_with_validators(op: str, parts: Any, do_op: Any) -> str:
     before = (_validators_run_batch(applicable, path)
               if applicable and _pre_existed else {})
 
-    body = do_op()
+    body = _write_target_pinned(path, _target, do_op)
 
     # Fire notifiers (observers) — never blocks, never raises
     _run_notifiers(op, path, pre_content=pre_content)
@@ -26736,7 +26839,8 @@ def op_workspace(path: str) -> str:
 
     line_count = len(raw_lines)
     _WS_LINE_CAP = 1000
-    out.append(f"({line_count} lines, {size} bytes){_path_meta_suffix(path, b''.join(raw_lines[:64]))}\n")
+    out.append(f"({line_count} lines, {size} bytes{_read_freshness_note(path)})"
+              f"{_path_meta_suffix(path, b''.join(raw_lines[:64]))}\n")
     shown = min(line_count, _WS_LINE_CAP)
     for i in range(shown):
         try:
@@ -29949,6 +30053,88 @@ def _acc_pop(prev: Tuple[Optional[List[str]],
          else prev_not_checked).extend(mine_not_checked)
         (_VALIDATED_FILES if prev_validated is None
          else prev_validated).extend(mine_validated)
+
+
+# The six mutation counters share one shape (#1116): `_dispatch_impl` used to
+# snapshot the process-global at op entry and subtract at op exit, correct
+# only while exactly one mutating op runs at a time — the identical failure
+# #1109 fixed for `_NOT_CHECKED`/`_VALIDATED_FILES` above, left standing here
+# because it was a different value and bundling it into #1109 would have
+# widened a validators fix into the mutation path. It holds today only
+# because every mutating op is excluded from `_PARALLEL_SAFE_OPS`, which is a
+# reachability argument about a membership list kept for an unrelated reason,
+# not a design one: nothing here says "I depend on that list", and nothing in
+# that list says "adding a mutating op breaks these counters".
+#
+# Two scopes, same split as the lists beside it:
+#
+#   * the FOOTER describes one op. It reads this frame's own delta, which is
+#     exact by construction.
+#   * `main`'s exit-code checks (`$SUPERTOOL_REQUIRE_VALIDATORS`, the skip and
+#     rollback per-call deltas) read the process-global unchanged — every
+#     caller of these six IS genuinely call-wide there, so the global stays.
+#
+# `_CNT_FIELDS` is every reader that exists for the per-op frame value; a
+# reader added later that needs the whole call reads the process-global list
+# beside each field's definition instead, same as `main` already does.
+_CNT_FIELDS = (
+    "cnt_mutation", "cnt_write", "cnt_skip", "cnt_reapply", "cnt_rollback",
+    "cnt_left_on_disk",
+)
+
+
+def _cnt_push() -> Tuple[int, ...]:
+    """Install fresh per-op counter deltas, returning the ones they displace."""
+    prev = tuple(getattr(_DISPATCH_STATE, f, 0) for f in _CNT_FIELDS)
+    for f in _CNT_FIELDS:
+        setattr(_DISPATCH_STATE, f, 0)
+    return prev
+
+
+def _cnt_pop(prev: Tuple[int, ...]) -> None:
+    """Restore `prev`, folding this frame's own deltas up into it.
+
+    No lock needed, unlike `_acc_pop`'s flush beside it: each frame's counters
+    are its own thread-local ints, summed into a value only this call
+    constructs — never a shared object another worker thread could be
+    mutating at the same time.
+    """
+    for f, p in zip(_CNT_FIELDS, prev):
+        setattr(_DISPATCH_STATE, f, p + getattr(_DISPATCH_STATE, f, 0))
+
+
+def _cnt_frame(field: str) -> int:
+    """This dispatch frame's own delta for *field* — never the process total."""
+    return getattr(_DISPATCH_STATE, field, 0)
+
+
+def _bump_counter(counter: List[int], field: str, by: int = 1) -> None:
+    """Bump the process-global *counter* AND this frame's own delta by *by*.
+
+    The single call site every increment (and the one decrement, in
+    `_retract_write`) uses instead of touching `counter[0]` directly and the
+    frame field by hand beside it — doing both separately at every call site
+    is exactly how one of them drifts, which a self-review of this issue
+    caught happening in `_retract_write` itself: it called this function for
+    the rollback bump and then still hand-wrote its own two-line write-count
+    decrement right beside it.
+
+    `by < 0` floors each side independently at 0 rather than sharing one
+    floor check, the same defensive shape `_retract_write`'s own decrement
+    had: a global and a frame delta are two different counters, and a
+    decrement that floors one while the other is already at 0 must not carry
+    it negative regardless of which is which.
+    """
+    if by < 0:
+        if counter[0] > 0:
+            counter[0] += by
+        if getattr(_DISPATCH_STATE, field, 0) > 0:
+            setattr(_DISPATCH_STATE, field, getattr(_DISPATCH_STATE, field, 0) + by)
+        return
+    counter[0] += by
+    setattr(_DISPATCH_STATE, field, getattr(_DISPATCH_STATE, field, 0) + by)
+
+
 # Parsed at module scope, so a bad value here used to raise during *import* and
 # take down every op in the tool, most of which have nothing to do with dispatch
 # depth. The widest blast radius of the #654 class, for the smallest knob.
@@ -29997,6 +30183,7 @@ def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) ->
         )
     _DISPATCH_STATE.depth = depth + 1
     _acc_prev = _acc_push()
+    _cnt_prev = _cnt_push()
     try:
         out = _dispatch_impl(arg, pre_parsed)
         # The edit ops read with surrogateescape and echo the buffer in their
@@ -30008,6 +30195,7 @@ def dispatch(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = None) ->
     finally:
         _DISPATCH_STATE.depth = depth
         _acc_pop(_acc_prev)
+        _cnt_pop(_cnt_prev)
         # An op outside the read-only set may have moved the index without
         # moving any file's mtime — `git-commit` is the everyday case — so the
         # repo-wide status snapshot cannot speak for the next op (#1126).
@@ -30059,20 +30247,23 @@ def dispatch_verdict(
     return out, _call_failed()
 
 
-def _depth1_call_footer(op: str, body: str,
-                        attempts_before: int, writes_before: int,
-                        skips_before: int, reapplies_before: int,
-                        rollbacks_before: int, left_on_disk_before: int) -> str:
+def _depth1_call_footer(op: str, body: str) -> str:
     """`[result]`/`[branch: X]` footer for a depth<=1 call (#381, #990).
 
     Factored out of the tail of `_dispatch_impl` so the `op:@-` payload route
     can carry it too (#1158): that route used to `return` its body directly,
     before dispatch ever reached this block, so `validate:@-` silently
     dropped the summary line `validate:PATH` prints for the identical file
-    and identical config. Same computation either way — the six `*_before`
-    counters are deltas taken at whichever call site snapshotted them, and a
-    read-only route (nothing in `_READ_OP_AT_FIELDS` mutates) can snapshot
-    them immediately before the op runs without losing anything.
+    and identical config.
+
+    The six mutation counters used to arrive as `*_before` snapshots the
+    caller took at op entry, subtracted here against the process-global at
+    exit — correct only while exactly one mutating op runs at a time (#1116,
+    the same failure #1109 fixed for the two lists beside it). They are read
+    straight off this dispatch frame's own delta instead: `dispatch` installed
+    it before `_dispatch_impl` ran, and every nested sub-op (a batch's own
+    children) has already folded its share up into this frame by the time
+    a depth-1 caller gets here, the same way the two lists do.
     """
     if getattr(_DISPATCH_STATE, "depth", 1) > 1:
         return body
@@ -30085,17 +30276,18 @@ def _depth1_call_footer(op: str, body: str,
         getattr(_DISPATCH_STATE, "acc_not_checked", None) or ())
     _validated_slice = list(
         getattr(_DISPATCH_STATE, "acc_validated", None) or ())
-    if not (op in _OP_TARGETS or _MUTATION_ATTEMPTS[0] > attempts_before
+    _mutation_delta = _cnt_frame("cnt_mutation")
+    if not (op in _OP_TARGETS or _mutation_delta
             or _not_checked_slice or _validated_slice):
         return body
-    _result = _result_line(_MUTATION_ATTEMPTS[0] - attempts_before,
-                           _WRITE_COUNT[0] - writes_before,
-                           _SKIP_COUNT[0] - skips_before,
-                           _REAPPLY_COUNT[0] - reapplies_before,
+    _result = _result_line(_mutation_delta,
+                           _cnt_frame("cnt_write"),
+                           _cnt_frame("cnt_skip"),
+                           _cnt_frame("cnt_reapply"),
                            _not_checked_slice,
-                           _ROLLBACK_COUNT[0] - rollbacks_before,
+                           _cnt_frame("cnt_rollback"),
                            _validated_slice,
-                           _LEFT_ON_DISK_COUNT[0] - left_on_disk_before)
+                           _cnt_frame("cnt_left_on_disk"))
     # A batch says its count twice, and the leading copy is the load-bearing
     # one. The footer is separated from the per-op results by a validators
     # block long enough that `tail` lands on `git-status : ok` and reads as
@@ -30220,26 +30412,18 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         # The warnings lead the body, so the verdict is taken from the op's
         # own answer rather than from whatever ends up first on the line.
         _read_warnings = _take_payload_warnings()
-        # Snapshotted immediately before the op runs (#1158): nothing in
-        # `_READ_OP_AT_FIELDS` mutates, so a footer built from a delta against
-        # this point is exact -- and without it, `validate:@-` printed
-        # neither `[result]` nor `[branch: X]`, the two lines `validate:PATH`
-        # ends on, because this branch returned before dispatch ever reached
-        # the footer block.
-        _read_attempts_before = _MUTATION_ATTEMPTS[0]
-        _read_writes_before = _WRITE_COUNT[0]
-        _read_skips_before = _SKIP_COUNT[0]
-        _read_reapplies_before = _REAPPLY_COUNT[0]
-        _read_rollbacks_before = _ROLLBACK_COUNT[0]
-        _read_left_on_disk_before = _LEFT_ON_DISK_COUNT[0]
+        # No `*_before` snapshot needed here any more (#1116): nothing in
+        # `_READ_OP_AT_FIELDS` mutates, and `_depth1_call_footer` now reads
+        # this dispatch frame's own counter delta directly rather than a
+        # subtraction against a point this branch used to have to capture --
+        # without which `validate:@-` printed neither `[result]` nor
+        # `[branch: X]`, the two lines `validate:PATH` ends on, because this
+        # branch returned before dispatch ever reached the footer block.
         _read_body = _read_op_from_payload(
             op, _read_payload, no_exclude=no_exclude)
         if _op_body_failed(_read_body):
             _mark_op_failure()
-        _read_body = _depth1_call_footer(
-            op, _read_body, _read_attempts_before, _read_writes_before,
-            _read_skips_before, _read_reapplies_before,
-            _read_rollbacks_before, _read_left_on_disk_before)
+        _read_body = _depth1_call_footer(op, _read_body)
         return header + _read_warnings + _read_body
 
     # @file route — 'op:@path' or 'op:@-' (stdin).
@@ -30278,7 +30462,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
         if _op_gated_by_mixed_tree_write_check():
             _mixed_early = _mixed_tree_pair()
             if _mixed_early is not None and not _mixed_tree_allowed():
-                _SKIP_COUNT[0] += 1
+                _bump_counter(_SKIP_COUNT, "cnt_skip")
                 return _receipt(header, _mixed_tree_decline(op, _mixed_early))
         try:
             payload = _load_at_file(parts[1])
@@ -30343,12 +30527,6 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # rather than sniffed off the receipt, for the reason stated at the swap
     # below — a preset writes no file, so `_WRITE_COUNT` cannot speak for it.
     _custom_op_ok: Optional[bool] = None
-    _writes_before = _WRITE_COUNT[0]
-    _attempts_before = _MUTATION_ATTEMPTS[0]
-    _skips_before = _SKIP_COUNT[0]
-    _reapplies_before = _REAPPLY_COUNT[0]
-    _rollbacks_before = _ROLLBACK_COUNT[0]
-    _left_on_disk_before = _LEFT_ON_DISK_COUNT[0]
 
     # Every non-empty token past the last slot the op reads is refused, not
     # dropped (#1582, #1345). Ahead of the containment gate and of every op
@@ -30406,7 +30584,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     if _op_gated_by_mixed_tree_write_check():
         _mixed = _mixed_tree_pair()
         if _mixed is not None and not _mixed_tree_allowed():
-            _SKIP_COUNT[0] += 1
+            _bump_counter(_SKIP_COUNT, "cnt_skip")
             return _receipt(header, _mixed_tree_decline(op, _mixed))
 
     try:
@@ -31163,7 +31341,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # is silent for it and its own exit status is the only success signal
     # available. Same rule as above rather than a looser one: taken from a
     # status code, never from the prose of the receipt being summarised.
-    if _compact_header and (_WRITE_COUNT[0] > _writes_before
+    if _compact_header and (_cnt_frame("cnt_write") > 0
                             or _custom_op_ok is True):
         header = (f"--- {_flat_field(_compact_header, disclose_newline=True)}"
                   f"{_NO_EXCLUDE_SUFFIX if no_exclude else ''} ---\n")
@@ -31194,9 +31372,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # summary line entirely -- `_depth1_call_footer` (factored out for #1158,
     # so the `validate:@-` payload route could carry the identical footer)
     # applies the same gate.
-    body = _depth1_call_footer(op, body, _attempts_before, _writes_before,
-                               _skips_before, _reapplies_before,
-                               _rollbacks_before, _left_on_disk_before)
+    body = _depth1_call_footer(op, body)
 
     return header + body
 
