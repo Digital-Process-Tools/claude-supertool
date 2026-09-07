@@ -35,31 +35,22 @@ def test_two_racing_calls_do_not_overlap(tmp_path: Path) -> None:
     same real moment -- the same shape as two xdist workers both compiling
     into an empty `GOCACHE` at the same time.
 
-    #2398: an earlier version of this test inferred "did they overlap" by
-    comparing `time.monotonic()` readings taken by each caller and checking
-    the sorted windows never overlapped. That reasoning is unsound on its
-    own terms: cross-thread comparison of a clock is only as good as the
-    clock's own guarantee to stay ordered *across threads*, and that
-    guarantee is a platform promise, not something this test controls --
-    Windows' monotonic clock has a documented history of skew across CPU
-    cores under virtualization (the exact shape a GitHub Actions
-    `windows-latest` runner is), which lets two calls that a *real*
-    synchronization primitive would show never overlapped still print as
-    `s2 < e1` once each caller's reading came from a different core. That
-    is exactly what was observed once, on `windows-latest, py3.11`: two
-    windows in the failure's own printed list were byte-identical --
-    `(530.781, 530.875)` twice -- which two genuinely distinct 0.1s-sleep
-    calls cannot produce from a working clock no matter how tight the race,
-    and which a real overlap (both actually inside `fn` at once) would not
-    produce either, since neither call's `fn` shares any state that could
-    make its own start/end identical to another caller's.
+    #2398: an earlier version inferred "did they overlap" by comparing
+    `time.monotonic()` readings taken on different threads. That is only as
+    reliable as the clock's guarantee to stay ordered *across threads*,
+    which is a platform promise this test does not control -- Windows'
+    monotonic clock has a documented history of skew across CPU cores under
+    virtualization, and one CI run's failure (two byte-identical windows for
+    two distinct 0.1s-sleep calls -- see the linked issue and changelog for
+    the exact numbers) is consistent with exactly that, not with a real
+    overlap.
 
     So this test no longer reads a clock to decide the answer. It counts
     how many callers are inside `fn` at once, using a `threading.Lock`-
     guarded counter -- a real synchronization primitive, not an inference
     from two independent clock readings -- which answers the actual
-    question ("was more than one caller inside `fn` at the same time")
-    directly, on every platform, regardless of what any clock reports."""
+    question directly, on every platform, regardless of what any clock
+    reports."""
     active = 0
     max_active = 0
     active_guard = threading.Lock()
