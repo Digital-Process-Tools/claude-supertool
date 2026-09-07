@@ -71,6 +71,7 @@ sys.path.insert(0, _PRESETS)
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 
 import _checks  # noqa: E402  (the one check tally — #454, shared with every board)
+import _pr_board  # noqa: E402  (the board/default-branch fetch, shared with radar's GitHub tier — #958)
 import _untrusted  # noqa: E402  (branch names and paths are not ours — #694/#876)
 
 
@@ -682,11 +683,13 @@ def collect_default(repo: str, default_branch: str) -> Section:
     if not default_branch:
         return Section("default", error="the repository's default branch was "
                                         "not established")
-    sha, age, err = _gh_branch._head_commit(default_branch)
-    if err:
-        return Section("default", error=err)
-
-    runs, err = _gh_branch._run_list(default_branch)
+    # `_pr_board.head_and_runs` (#958) -- the same two-call sequence radar's
+    # `default_branch_report` runs, mechanically: resolve the head commit,
+    # then the run list on it. Everything after this point -- concurrency,
+    # `declared_pair` scoping -- stays here rather than joining the shared
+    # module; the two callers currently do that composition differently on
+    # purpose (see `_pr_board.py`'s own docstring).
+    sha, age, runs, err = _pr_board.head_and_runs(_gh_branch, default_branch)
     if err:
         return Section("default", error=err)
 
@@ -793,12 +796,16 @@ def collect_board(issue_lanes: dict, workers: int, prefix: str = ""):
     lists each. It runs concurrently because the answer is a join and a serial
     join is six sequential round trips wearing one command's clothes.
     """
-    data, err = _json_cmd(["gh", "pr", "list", "--state", "open", "--limit",
-                           "50", "--json", _PR_FIELDS], timeout=60)
+    # The spawn, the JSON parse and the "is this even a list" check are
+    # `_pr_board.run_pr_list` (#958) -- radar's GitHub tier runs the identical
+    # mechanical sequence over its own filtered argv. This op needs none of
+    # its richer exit-code classification (no retry policy here, just a
+    # Section), so only `data` and `error` are used.
+    data, err, _rc, _raw = _pr_board.run_pr_list(
+        ["gh", "pr", "list", "--state", "open", "--limit", "50", "--json",
+         _PR_FIELDS], timeout=60)
     if err:
         return Section("board", error=err), []
-    if not isinstance(data, list):
-        return Section("board", error="gh pr list did not return a list"), []
     if not data:
         return Section("board", ["no open PRs"]), []
 
