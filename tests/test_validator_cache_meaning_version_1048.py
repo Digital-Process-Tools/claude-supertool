@@ -135,3 +135,28 @@ def test_an_entry_written_under_one_meaning_is_a_miss_under_another(
     assert supertool._validator_cache_read(new_key) is None, (
         "the entry written under the old meaning was served under the new one"
     )
+
+
+def test_a_schema_rewrite_under_a_live_process_is_not_served_stale(
+        tmp_path, monkeypatch) -> None:
+    """#1110 finding 1: the memo never re-checks the file it hashed.
+
+    Unlike every test above, this one does NOT reset `_VALIDATOR_MEANING_VERSION`
+    to `None` between the two reads -- that is exactly the daemon-process shape
+    the issue reports: an upgrade rewrites `SCHEMA.md` on disk while the process
+    that already computed the memo keeps running, and the cached fields keep
+    being read under the old meaning for that process's whole remaining life.
+    """
+    monkeypatch.setattr(supertool, "_INSTALL_DIR", str(_install(tmp_path, SCHEMA_A)))
+    supertool._VALIDATOR_MEANING_VERSION = None
+    before = supertool._validator_meaning_version()
+
+    (tmp_path / "install" / "validators" / "SCHEMA.md").write_text(
+        SCHEMA_B, encoding="utf-8")
+
+    after = supertool._validator_meaning_version()
+    assert before != after, (
+        "SCHEMA.md was rewritten under a live process and the memo, never "
+        "invalidated, kept serving the meaning computed before the rewrite -- "
+        "exactly what #1048 was built to prevent"
+    )

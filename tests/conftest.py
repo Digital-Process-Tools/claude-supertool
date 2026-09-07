@@ -1289,6 +1289,13 @@ RESET_GLOBALS = (
     # a tmp_path, it is the hash of `schema-unreadable`, and every later entry
     # in that worker is written and read under a key space no install has.
     "_VALIDATOR_MEANING_VERSION",
+    # `_VALIDATOR_MEANING_VERSION`'s own stat companion (#1110): without this
+    # entry the memo above is correctly reset to `None` but the stat it was
+    # keyed against survives, so the very next call recomputes against a
+    # tmp_path install, sees `current_stat == None == the leftover`, and
+    # produces the identical false "still fresh" hit this whole list exists to
+    # rule out for the memo itself.
+    "_VALIDATOR_MEANING_VERSION_STAT",
     # Memo of `builtin-ops.grep.extensions`, derived from `_load_config()` —
     # and the fixture below hands every test `_CONFIG = {}`. Same mechanism as
     # `_mcp_specs` below: one test that forces a real config load fixes this

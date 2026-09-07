@@ -277,7 +277,11 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # comma-separated ids, is one colon-rejoined token).
         # 91 → 92 in #532: `worktree` takes `setup[:PATH]|teardown[:PATH]`,
         # `{args}` from the first line (the optional PATH is the whole tail).
-        assert len(rows) == 92, len(rows)
+        # 92 → 93 in #2035: `slack_authorization` takes an optional
+        # `CHANNEL_ID[:USER_ID]`, so it is `{args}` too -- one colon-split
+        # token per field, and both are optional, the same shape as
+        # `gl-job-trace`'s comma-joined id list one entry up.
+        assert len(rows) == 93, len(rows)
         multi = [n for n, _f, _e, c in rows
                  if "{args}" in c or "{argjoin}" in c]
         one = [n for n, _f, _e, c in rows
@@ -297,7 +301,9 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # too (see the population count's own comment above).
         # 66 → 67 in #532: `worktree` is `{args}` from the first line too
         # (see the population count's own comment above).
-        assert (len(multi), len(one), len(none)) == (67, 21, 4), (
+        # 67 → 68 in #2035: `slack_authorization` is `{args}` from the first
+        # line too (see the population count's own comment above).
+        assert (len(multi), len(one), len(none)) == (68, 21, 4), (
             len(multi), len(one), len(none))
         # The 4 placeholder-free ops are outside this gate on purpose — see
         # `_unconsumed_arg_tokens`. Named so the exclusion is a list, not a

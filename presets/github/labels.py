@@ -474,6 +474,22 @@ def tally_main(prefix: str, rows: list[dict], target: str) -> int:
               "with a leading repo:OWNER/NAME op.")
         return 1
 
+    # Core's `repo:` shape check (`_repo_target.owner_repo`) is "exactly one
+    # `/`, both halves non-empty" — no character-set check. The prefix and
+    # every label name are already guarded against `_QUERY_UNSAFE` below; the
+    # repo target went straight into `f"repo:{repo}"` unguarded (#1110), so a
+    # shape like `owner/name is:public` — one slash, two non-empty halves —
+    # walked past `owner_repo` and into the query as extra search syntax.
+    # Operator-supplied rather than remote, so this is a consistency gap
+    # against the other two checks rather than a boundary crossing — refused
+    # the same way, for the same reason: GitHub's search grammar has no
+    # documented escape for a quote inside a term.
+    if _QUERY_UNSAFE.search(target):
+        print(f"ERROR: refusing the repo target {target!r} — a quote or "
+              f"newline would end the quoted term in the search query and "
+              f"the remainder would be read as query syntax.")
+        return 1
+
     names = [str(r.get("name") or "") for r in rows]
     members = family_members(names, prefix)
     if not members:

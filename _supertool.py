@@ -24224,6 +24224,14 @@ def _validator_fingerprint(spec: Dict[str, Any], cmd: str,
 
 
 _VALIDATOR_MEANING_VERSION: Optional[str] = None
+#: The stat identity of `validators/SCHEMA.md` at the moment
+#: `_VALIDATOR_MEANING_VERSION` was computed. Companion to the memo above, not
+#: a cache of its own: it is what lets a reused process notice its own memo has
+#: gone stale (#1110) without falling back to the blunt "hash every call" cost
+#: #1044 rejected. `None` doubles as "no memo yet" and "the file was
+#: unreadable at that time", which `_stat_signature` also returns for a
+#: missing file -- both cases recompute below, which is the safe direction.
+_VALIDATOR_MEANING_VERSION_STAT: Optional[str] = None
 
 
 def _validator_meaning_version() -> str:
@@ -24270,21 +24278,30 @@ def _validator_meaning_version() -> str:
     entries cross the boundary in the one direction this exists to prevent. The
     three-state contract, applied to the key itself.
 
-    Memoised: the file is read once per process, not once per cache lookup.
+    Memoised, and the memo is checked against `SCHEMA.md`'s own `stat` identity
+    on every call (#1110) -- so the expensive re-hash only happens the one time
+    a call notices the file changed underneath the process, not on every cache
+    lookup, and not never. Two `stat` calls per lookup is the same trade
+    `_mixed_tree_pair` already makes for the same reason: a cached verdict is
+    one more thing to go stale in a reused daemon process (#680).
     """
-    global _VALIDATOR_MEANING_VERSION
-    if _VALIDATOR_MEANING_VERSION is not None:
+    global _VALIDATOR_MEANING_VERSION, _VALIDATOR_MEANING_VERSION_STAT
+    schema_path = os.path.join(_INSTALL_DIR, "validators", "SCHEMA.md")
+    current_stat = _stat_signature(schema_path)
+    if (_VALIDATOR_MEANING_VERSION is not None
+            and current_stat == _VALIDATOR_MEANING_VERSION_STAT):
         return _VALIDATOR_MEANING_VERSION
     import hashlib
     h = hashlib.sha256()
     try:
-        with open(os.path.join(_INSTALL_DIR, "validators", "SCHEMA.md"), "rb") as f:
+        with open(schema_path, "rb") as f:
             h.update(f.read())
     except OSError:
         h.update(b"schema-unreadable")
     h.update(b"\x00" + "\x00".join(
         sorted(_VALIDATOR_CORE_ONLY_KEYS)).encode("utf-8"))
     _VALIDATOR_MEANING_VERSION = h.hexdigest()[:16]
+    _VALIDATOR_MEANING_VERSION_STAT = current_stat
     return _VALIDATOR_MEANING_VERSION
 
 
