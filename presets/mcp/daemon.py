@@ -30,6 +30,16 @@ import time
 from pathlib import Path
 from typing import Optional, Tuple
 
+# #1429: this file is documented above as directly runnable
+# (`python3 daemon.py SERVER_NAME`), so it cannot rely on inheriting the
+# `FORCE_COLOR` strip `_supertool.py` applies at import -- a process that
+# never imported that module never ran it. Popped here too, before the
+# `env = os.environ.copy()` a few hundred lines down builds the MCP server
+# child's environment, so an operator's ambient `FORCE_COLOR` (this repo's
+# own agent harness exports one) cannot land in that long-lived child's
+# stderr regardless of which of the two ways this script was started.
+os.environ.pop("FORCE_COLOR", None)
+
 # Shared path helpers (#148): per-user runtime dir, NOT /tmp.
 # sys.path manipulation so `_paths` resolves whether daemon.py runs as a
 # script (python3 daemon.py — script-dir added automatically) or is imported
