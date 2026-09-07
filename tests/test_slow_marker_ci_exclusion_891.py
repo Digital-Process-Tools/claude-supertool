@@ -35,7 +35,6 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import List, Optional, Sequence
 
 import pytest
 
