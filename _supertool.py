@@ -143,6 +143,31 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, MutableMappin
 
 VERSION = "0.57.0"
 
+# Children never see an operator's ambient `FORCE_COLOR` (#1429). CPython
+# 3.13+ colourises its own tracebacks purely because the variable is set --
+# even when stderr is a pipe -- so any child this process spawns hands back
+# ANSI escapes baked into whatever receipt field captures its output
+# (`_mcp_stop_server`'s `detail`, a validator's stdout, a declared preset's
+# captured run). Stripped here, once, before anything can spawn a child,
+# rather than scrubbed per call site: every `subprocess.run`/`Popen` in this
+# file that does not pass its own `env=` inherits the live `os.environ`, and
+# every one that DOES build an explicit env does so by copying/merging
+# `os.environ` first (`{**os.environ, ...}` or `os.environ.copy()`) -- so one
+# mutation, this early, reaches all of them, plus every standalone
+# validator/formatter subprocess this tool launches (they receive their
+# environment as that same merge). A declared preset's own `.supertool.json`
+# `env:` block is applied AFTER this merge and still wins, so an operator who
+# deliberately wants colour for one declared command keeps it; only the
+# ambient value inherited from the shell supertool itself was launched from
+# is removed. `NO_COLOR` is set too, for tools that check for its presence
+# rather than the absence of `FORCE_COLOR`.
+def _disable_force_color_for_children() -> None:
+    os.environ.pop("FORCE_COLOR", None)
+    os.environ["NO_COLOR"] = "1"
+
+
+_disable_force_color_for_children()
+
 #: The one "is this string a number" test the core shares (#1748), anchored with
 #: a capital-Z escape rather than `$` because Python's `$` also matches before a
 #: final newline (#1188).
