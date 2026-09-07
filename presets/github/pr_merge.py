@@ -1648,13 +1648,27 @@ def main() -> int:
                             stack_state=stack_state)):
             print(line)
         # #2337: named here, not derived again — `verdicts` is the exact list
-        # `## Linked issues` above already rendered from.
-        released = release_candidates(verdicts)
-        print(f"  [release] {', '.join(released) if released else 'none'} — "
-              f"same-repo issue(s) this merge verified CLOSED; a caller with "
-              f"its own per-issue lane bookkeeping may release these now "
-              f"(#2337). This op stores nothing and calls nothing on your "
-              f"behalf.")
+        # `## Linked issues` above already rendered from. Gated on the same
+        # `m_state == MERGED` fact `run_cleanup` above is gated on, and for
+        # the same reason: `verdicts` reads each issue's CURRENT state off
+        # the live tracker, independent of whether this merge attempt
+        # actually succeeded, so an issue closed for an unrelated reason
+        # (a duplicate, a manual close, an earlier attempt) must never be
+        # named as something THIS merge verified closed when this merge was
+        # never confirmed. Caught in self-review: the reproduction was a
+        # failed `gh pr merge` alongside an issue already CLOSED for some
+        # other reason, where every reap item correctly read `skipped` but
+        # this line printed the issue anyway.
+        if m_state == MERGED:
+            released = release_candidates(verdicts)
+            print(f"  [release] {', '.join(released) if released else 'none'} "
+                  f"— same-repo issue(s) this merge verified CLOSED; a "
+                  f"caller with its own per-issue lane bookkeeping may "
+                  f"release these now (#2337). This op stores nothing and "
+                  f"calls nothing on your behalf.")
+        else:
+            print("  [release] none — the merge is not confirmed, so "
+                  "nothing here is attributed to it")
         print()
         print(result_line(m_state, issue_overall, branch_state, stack_state))
         return 0 if (m_state == MERGED and

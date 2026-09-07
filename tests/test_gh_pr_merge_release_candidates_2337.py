@@ -149,6 +149,28 @@ def test_an_unclosed_issue_is_never_offered_as_a_release_candidate(
     assert "899" not in release_line, release_line
 
 
+def test_an_unverified_merge_never_offers_a_release_candidate(
+        monkeypatch, capsys) -> None:
+    """Self-review finding: `[release]` used to print unconditionally,
+    unlike every other line in `## Cleanup`, which is gated on
+    `m_state == MERGED`. An issue can read CLOSED for a reason unrelated to
+    this merge attempt (a duplicate, a manual close, an earlier attempt) --
+    naming it as something THIS merge verified closed, while the merge
+    itself is unconfirmed and every reap item reads `skipped`, is exactly
+    the premature-release failure this whole mechanism exists to prevent."""
+    _stub_cleanup_items(monkeypatch)
+    h = _main._Harness(_main._pr(), merge_rc=1,
+                       after={"state": "OPEN", "mergedAt": None,
+                              "mergeCommit": None},
+                       issue_states={"#924": "CLOSED"})
+    _install_main(monkeypatch, h, argv=["944", "cleanup"])
+    m.main()
+    out = capsys.readouterr().out
+    cleanup = out.split("## Cleanup")[1]
+    assert "[release] none" in cleanup, cleanup
+    assert "924" not in cleanup.split("[release]")[1].split(chr(10))[0]
+
+
 def test_a_changelog_fragment_exists() -> None:
     from _changelog_findable import assert_change_is_findable
     assert_change_is_findable(2337)
