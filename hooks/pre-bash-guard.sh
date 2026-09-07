@@ -140,7 +140,9 @@ NL='
 #: One carriage return, for the reason `relay` gives.
 CR=$'\r'
 
-# The three envelopes this script may write, and the only three there are.
+# The two envelopes this script may write for a rung's own verb, and the
+# only two there are - `silent` used to be a third, and #1686 is why it is
+# not any more.
 #
 # **Nothing outside these functions prints a document** (#1625). That is the
 # whole property: `permissionDecision` appears once in this file, as a literal
@@ -153,12 +155,20 @@ CR=$'\r'
 # `hooks/pre_bash_guard.py`, and until it is, it cannot be emitted. That is
 # the trade re-serialising makes - an open channel into someone else's schema,
 # exchanged for a closed one this repository owns both ends of.
-# shellcheck disable=SC2329  # reached through `relay`, itself a callback
-_silent() {
-    printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse"}}'
-    exit 0
-}
-
+#
+# **A bare, fieldless envelope is still written, but never for a rung's own
+# word** (#1686). `{"hookSpecificOutput":{"hookEventName":"PreToolUse"}}` used
+# to be `_silent`, reachable the moment any rung - forged or real - printed
+# the word `silent`. That word cost a forger nothing: it is bit-identical to
+# this script's own no-op, so a rung that never even ran `$BIN` could claim it
+# for free and end the walk right there, before a real interpreter further
+# down the ladder ever got to inspect the command. `silent` is gone from
+# `attempt`'s own vocabulary below rather than from this one - a rung that
+# prints it now gets exactly the treatment a rung that prints nothing
+# recognisable gets: discarded, walk continues. This file no longer has a
+# function that a rung's own text can reach to produce this envelope; the
+# nearest neighbour is `note` with an empty body, which still carries a field
+# a forger cannot get for free by staying silent.
 _note() {
     _json_string "$1"
     printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"'"$JSON_STRING"'"}}'
@@ -181,9 +191,17 @@ decline() {
 
 # relay ANSWER - the envelope this script writes for a rung's answer.
 #
+# **Never called with a `silent` verb** (#1686): `attempt` below filters that
+# word out before this function is reached at all, treating it the same as a
+# candidate whose output does not match the wire protocol - discarded, walk
+# continues. Everything this function does receive has already been judged
+# "an answer this wrapper will honour as terminal", so what is left to sort
+# is only ever `note`, `deny`, or a dialect this build does not know.
+#
 # The answer is a verb line and then, from the second line to the end, the
 # text. `$(...)` has already stripped the trailing newline, so an answer with
-# no newline at all is `silent` with nothing after it rather than a truncation.
+# no newline at all is a bare verb with nothing after it rather than a
+# truncation.
 #
 # **A verb this script does not know is declined, not dropped and not
 # forwarded.** It cannot be forwarded - that is the defect. It must not be
@@ -210,9 +228,8 @@ relay() {
         _text=
     fi
     case "$_verb" in
-        silent) _silent ;;
-        note)   _note "$_text" ;;
-        deny)   _deny "$_text" ;;
+        note) _note "$_text" ;;
+        deny) _deny "$_text" ;;
     esac
     decline "the interpreter answered '${_verb:0:60}', which is not a verdict this wrapper knows how to write, so its answer was refused rather than relayed"
 }
@@ -237,6 +254,45 @@ attempt() {
     out=$(printf '%s' "$EVENT" | "$@" "$BIN")
     rc=$?
     case "$out" in
+        "$WIRE_PREFIX"silent|"$WIRE_PREFIX"silent"$CR"|"$WIRE_PREFIX"silent"$NL"*|"$WIRE_PREFIX"silent"$CR""$NL"*)
+            # `silent` is not a word a rung may assert (#1686): it is the one
+            # verb that costs a forger nothing, because it is bit-identical
+            # to this wrapper's own no-op. A rung that prints it is treated
+            # exactly like one whose output does not match this wire
+            # protocol at all - fall through with neither `relay` called nor
+            # `PARTIAL_TRIED` set, so the walk continues to the next
+            # candidate. That is the same road #1625 already cut for a
+            # forged `allow`: not a verb this build accepts, so the answer
+            # is never committed to, and a real interpreter further down the
+            # ladder still gets to inspect the command and deny it.
+            #
+            # **The `$CR` alternatives are load-bearing, not decoration**
+            # (self-review, #1686). `$(...)` strips a trailing newline and
+            # nothing else, so `supertool-guard-v1 silent<CR>` - what a
+            # CRLF-emitting rung under Git Bash or a Windows launcher writes,
+            # or simply what a forger chooses to send - used to miss this
+            # match entirely, fall into the `"$WIRE_PREFIX"*` branch below,
+            # reach `relay`, have its CR stripped there (the same tolerance
+            # `relay` already has for a legitimate `deny` on that platform),
+            # and come back out as the bare word `silent` - which `relay`'s
+            # own case no longer recognises, so it declined. But `decline`
+            # exits the whole script: the ladder still stopped one rung
+            # early, on a wrapper that had already committed to answering,
+            # exactly reproducing the original defect with a visible refusal
+            # note in place of zero trace instead of the trace-free bypass.
+            # Matching the CR here, before `relay` is ever reached, is what
+            # keeps the walk going instead of stopping on a decline.
+            #
+            # Deliberately not `PARTIAL_TRIED` either. That sink means "this
+            # rung began writing a real answer and died mid-write" - an
+            # actionable diagnosis about a broken interpreter. A rung that
+            # prints exactly `silent` (with or without a trailing CR) has not
+            # begun anything: `_nothing_to_say` in `hooks/pre_bash_guard.py`
+            # no longer writes this word at all, so nothing on the
+            # legitimate side of this wrapper ever produces it, and folding
+            # it into `PARTIAL_TRIED` would send a reader looking for a
+            # crashed interpreter instead of a rung that lied.
+            ;;
         "$WIRE_PREFIX"*)
             # The prefix identifies a Python 3 that ran — but a *prefix* of an
             # answer is what an interpreter killed part-way through

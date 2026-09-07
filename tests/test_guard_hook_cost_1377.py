@@ -110,9 +110,12 @@ def test_a_command_naming_nothing_replaced_never_imports_supertool(project):
         "the 142 ms import was paid for a command the registry cannot "
         "match: " + proc.stderr[-400:])
     # Byte-identical to what the slow path writes on a clean command, so the
-    # saving is invisible to the caller rather than a second dialect.
+    # saving is invisible to the caller rather than a second dialect. `note`
+    # with an empty body, not the bare envelope, since #1686 — see
+    # `_nothing_to_say` in `hooks/pre_bash_guard.py`.
     assert _guard_wire.envelope(proc.stdout) == {
-        "hookSpecificOutput": {"hookEventName": "PreToolUse"}}, proc.stdout
+        "hookSpecificOutput": {"hookEventName": "PreToolUse",
+                              "additionalContext": ""}}, proc.stdout
 
 
 def test_a_project_that_declares_replaces_turns_the_fast_path_off(tmp_path):

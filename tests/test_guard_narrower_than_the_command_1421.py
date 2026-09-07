@@ -364,7 +364,10 @@ def test_a_powershell_command_naming_nothing_mapped_stays_silent(tmp_path):
         json.dumps({"ops": _preset("git")}), encoding="utf-8")
     hook = _run_hook("Get-ChildItem -Recurse", tmp_path,
                      tool="PowerShell")["hookSpecificOutput"]
-    assert "additionalContext" not in hook, hook
+    # Falsy rather than absent (#1686): `_nothing_to_say` now writes `note`
+    # with an empty body rather than the bare envelope, so the key can be
+    # present with nothing in it. Either shape discloses nothing to read.
+    assert not hook.get("additionalContext"), hook
     assert "permissionDecision" not in hook, hook
 
 
@@ -399,7 +402,10 @@ def test_the_disclosure_matches_a_binary_not_a_filename(
         json.dumps({"ops": _preset("git")}), encoding="utf-8")
     hook = _run_hook(command, tmp_path,
                      tool="PowerShell")["hookSpecificOutput"]
-    assert ("additionalContext" in hook) is disclosed, (command, hook)
+    # Truthy rather than present (#1686): a clean command's `note` now
+    # carries the key with an empty body, so presence alone no longer marks
+    # a real disclosure.
+    assert bool(hook.get("additionalContext")) is disclosed, (command, hook)
 
 
 def test_the_disclosure_is_off_when_the_gate_is_off(tmp_path):
@@ -408,7 +414,8 @@ def test_the_disclosure_is_off_when_the_gate_is_off(tmp_path):
         encoding="utf-8")
     hook = _run_hook("git status", tmp_path,
                      tool="PowerShell")["hookSpecificOutput"]
-    assert "additionalContext" not in hook, hook
+    # Falsy rather than absent (#1686) - see the sibling test above.
+    assert not hook.get("additionalContext"), hook
 
 
 def test_bash_is_unchanged_by_the_widened_matcher(tmp_path):
@@ -438,7 +445,8 @@ def test_a_tool_with_no_command_says_nothing(tmp_path):
         errors="replace", cwd=str(tmp_path), env=env, timeout=60)
     assert proc.returncode == 0, proc.stderr
     hook = _guard_wire.envelope(proc.stdout)["hookSpecificOutput"]
-    assert "additionalContext" not in hook, hook
+    # Falsy rather than absent (#1686) - see the PowerShell test above.
+    assert not hook.get("additionalContext"), hook
     assert "permissionDecision" not in hook, hook
 
 
