@@ -69,7 +69,15 @@ _PLATFORM_SIGNAL = re.compile(
     # is the value that diverges by platform; `ntpath`/`PureWindowsPath`
     # are the two spellings a test constructs a Windows path with without
     # naming Windows.
-    r"os\.pathsep|ntpath|PureWindowsPath",
+    r"os\.pathsep|ntpath|PureWindowsPath|"
+    # #2376 release audit: `test_registry_names_dispatch_1285.py` filters a
+    # config list with `c.startswith("presets" + os.sep)` -- written
+    # correctly today, but a future edit that "simplifies" it to a
+    # hardcoded `/` would only ever fail on a Windows leg, and every
+    # Windows leg deselects this file as `invariant`. `os.sep` is the
+    # token; `os.pathsep` above is a DIFFERENT attribute (list separator,
+    # not path separator) and does not already cover it.
+    r"os\.sep",
     re.IGNORECASE,
 )
 
