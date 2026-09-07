@@ -182,7 +182,7 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | YAML (`.yaml`)      | `yaml-check-yaml`| PyYAML (`pip install pyyaml`)      | Identical logic, different glob            |
 | INI                 | `inilint`        | stdlib only                        | No external dep                            |
 | Python              | `py-compile`     | stdlib only                        | Uses `py_compile` — syntax only, not type  |
-| Python (types)      | `pyright`        | `pyright` (`npm install -g pyright`)| Real type-check via `pyright --outputjson` |
+| Python (types)      | `pyright`        | `pyright` (`npm install -g pyright`)| Real type-check via `pyright --outputjson`; the target is contained before it reaches argv (#2379) — see below |
 | Python (types, second checker) | `mypy` | `mypy` (`pip install mypy`)  | Coexists with `pyright` rather than replacing it (#669) -- different findings, not a subset. `mypy --output json`, one JSON object per line rather than pyright's single envelope; `--cache-dir` pinned to `os.devnull` so no `.mypy_cache/` is left behind |
 | Python (lint)       | `ruff`           | `ruff` (`pip install ruff`)        | `ruff check --output-format json`. Ruleset comes from the **project's** config, not the adapter — see below |
 | Bash                | `bash-check`     | `bash` on PATH                     | Uses `bash -n`                             |
@@ -596,6 +596,32 @@ separator `tsc` knows (`error TS5023: Unknown compiler option '--'`). A relative
 target is prefixed with `./` — the platform's own separator — which `tsc`
 normalises straight back, so the diagnostic it prints is unchanged. An absolute
 path is left alone.
+
+### pyright — a target `pyright` must not read as an option either (#2379)
+
+`pyright --outputjson FILE` has the same missing-boundary shape `tsc --noEmit
+FILE` has (#1519, above): `subprocess.run` passes `file` through untouched,
+and pyright's own CLI decides what a leading `-` (or `@`) means, not the
+shell. A file named `--outputjson` handed to `pyright --outputjson
+--outputjson` is read as a second, unknown, option — `Unexpected option
+outputjson.`, exit 4 — never type-checked at all.
+
+**`mypy.py`'s own fix for the identical class (#2375) does not carry over.**
+mypy honors a `--` ahead of its file argument as an end-of-options marker;
+pyright does not honor `--` at all. Measured against a real installed
+pyright 2.x/1.1.409 binary: `pyright --outputjson -- --outputjson` still
+errors `Unexpected option outputjson.` (exit 4) — the separator is itself
+read as a bare positional, and the argument after it is still parsed as an
+option. So `pyright.py` uses the other containment already documented here
+for `tsc-check` — the relative-prefix, not the separator: a relative target
+starting with `-` is prefixed with `os.curdir` via `os.path.join` (the
+platform's own separator, so pyright normalises it straight back — the file
+it reports in a diagnostic is unaffected). A leading `@` is contained the
+same way for symmetry with `tsc-check`'s own character class, though
+pyright — unlike `tsc` — was NOT measured to treat `@FILE` as a response
+file; `pyright --outputjson @r.py` type-checked `@r.py` directly on
+1.1.409. An absolute path already cannot be read as an option and is left
+alone.
 
 ### shellcheck — and the bug in the issue that asked for it
 

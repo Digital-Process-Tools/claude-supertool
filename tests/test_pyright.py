@@ -125,3 +125,94 @@ def test_info_and_hint_severities_dropped(tmp_path: Path) -> None:
     out = _run(str(f))
     for err in out["errors"]:
         assert err["severity"] in ("error", "warning")
+
+
+# ---------------------------------------------------------------------------
+# Flag-shaped filename (#2379) — pyright does not honor `--` at all
+# ---------------------------------------------------------------------------
+
+def _adapter_module():
+    """The adapter as a module, to inspect the argv/target it builds without
+    needing pyright installed — mirrors mypy's own `_adapter_module` helper
+    (test_mypy.py, #2375)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("pyright_adapter_2379", ADAPTER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_dashdash_separator_does_not_protect_pyright(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unlike mypy, pyright's own CLI does not honor `--` as an
+    end-of-options marker at all — `pyright --outputjson -- --outputjson`
+    still errors `Unexpected option outputjson` (exit 4), measured against a
+    real installed pyright 2.x/1.1.409 binary. So this adapter must NOT rely
+    on a `--` separator the way mypy.py does; it must contain the target
+    before it ever reaches pyright's argv, the same shape tsc-check.py uses
+    (docs/validators.md, "tsc-check — a program verdict")."""
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+
+        class _Result:
+            stdout = ""
+            stderr = ""
+            returncode = 0
+
+        return _Result()
+
+    mod = _adapter_module()
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/pyright")
+    monkeypatch.setattr(mod.sys, "argv", ["pyright.py", "--outputjson"])
+    mod.main()
+
+    cmd = captured["cmd"]
+    assert "--" not in cmd, (
+        f"pyright does not honor `--` as a separator; relying on one is "
+        f"not a fix: {cmd}")
+    # cmd[0] is the binary, cmd[1] is the deliberate `--outputjson` flag this
+    # adapter always passes — the target is cmd[2:]. It must not appear bare
+    # as the flag-shaped string itself; it must be contained (e.g. prefixed
+    # with `./`) so pyright's own option parser cannot read it as a flag.
+    target_args = cmd[2:]
+    assert "--outputjson" not in target_args, (
+        f"the flag-shaped filename must be contained (e.g. relative-"
+        f"prefixed) before being handed to pyright, not passed bare: {cmd}")
+    assert target_args, f"the target is missing from the command: {cmd}"
+
+
+@pytest.mark.skipif(not shutil.which("pyright"), reason="pyright not on PATH")
+def test_flag_shaped_filename_is_type_checked_not_misparsed(
+    tmp_path: Path,
+) -> None:
+    """A real file named like a pyright option (e.g. `--outputjson`), passed
+    as a RELATIVE path (an absolute path is already unambiguous — the bug is
+    specifically about a bare flag-shaped relative operand), must still be
+    type-checked, not misparsed as an option by pyright's own CLI (#2379,
+    the same missing-boundary shape as #2375's mypy fix — but `--` does not
+    work here, so this must use a different containment)."""
+    f = tmp_path / "--outputjson"
+    f.write_text("x: int = 'not a number'\nprint(x)\n")
+    result = subprocess.run(
+        [sys.executable, str(ADAPTER), "--outputjson"],
+        capture_output=True, text=True, cwd=str(tmp_path),
+        encoding="utf-8", errors="replace",
+    )
+    out = json.loads(result.stdout)
+    assert "skipped" not in out, out
+    assert_declined(out)
+    assert out["count"] >= 1, (
+        "pyright must have actually type-checked the flag-shaped file and "
+        f"reported the type error in it: {out}")
+    err = out["errors"][0]
+    assert err["code"] != "adapter", (
+        "the target was misparsed as a pyright option instead of being "
+        f"type-checked — this is the adapter-level 'Unexpected option' "
+        f"crash, not a real type-check finding: {out}")
+    assert err["line"] is not None and err["line"] >= 1, (
+        f"a real pyright finding carries a line number; a null line means "
+        f"pyright never actually looked at the file's contents: {out}")

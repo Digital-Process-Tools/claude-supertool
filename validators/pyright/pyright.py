@@ -14,11 +14,30 @@ Output shape matches the supertool validator SCHEMA:
 Note on scope: pyright wants a project root (it walks up for pyproject.toml /
 pyrightconfig.json). We pass a single file and let pyright resolve the project
 from the file's location — same UX as tsc-check.
+
+**A flag-shaped target is contained before it reaches pyright's argv, not
+separated with `--` (#2379).** `mypy.py` (#2375) puts `--` ahead of its file
+argument because mypy honors that as an end-of-options marker. pyright's own
+CLI does not: measured against a real installed pyright 2.x/1.1.409 binary,
+`pyright --outputjson -- --outputjson` still errors `Unexpected option
+outputjson.` (exit 4) — the `--` is itself read as a bare positional and the
+file after it is still parsed as an option. So this adapter uses the same
+containment `tsc-check.py` uses for the identical problem
+(`docs/validators.md`, "tsc-check — a program verdict"): a relative target
+starting with `-` is prefixed with `os.curdir` via `os.path.join`, so
+pyright's own argv parser sees a string that cannot start with `-` and
+therefore cannot be read as an option. A leading `@` is contained the same
+way for symmetry with `tsc-check.py`'s shape, though unlike `tsc` — which
+reads `@FILE` as a response file — pyright was measured to treat a leading
+`@` as an ordinary filename (`pyright --outputjson @r.py` type-checked
+`@r.py` directly, no response-file behaviour observed on 1.1.409). An
+absolute path is already unambiguous and is left alone.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -36,6 +55,31 @@ INSTALL_HINT = ("pyright not found on PATH — this file was NOT type-checked "
 
 def emit(d: dict) -> None:
     print(json.dumps(d))
+
+
+def contained_target(file: str) -> str:
+    """The target, spelled so pyright can only read it as a path (#2379).
+
+    Shaped after `tsc-check.py`'s `contained_target` (#1519):
+    `subprocess.run` passes the argument through untouched, and pyright
+    itself decides what a leading `-` means — `--` does not change that
+    decision (module docstring above, measured on real pyright 1.1.409). A
+    relative prefix goes through `os.path.join` rather than a literal `./`
+    so Windows gets its own separator; pyright normalises either back to the
+    same path, so the file it reports in a diagnostic is unaffected.
+
+    Also contains a leading `@`, though pyright itself was NOT measured to
+    treat `@FILE` as a response file the way `tsc` does — this is a
+    conservative match with `tsc-check.py`'s character class rather than a
+    documented pyright behaviour, and it is a no-op either way since the
+    prefix survives pyright's own path normalisation.
+
+    An absolute path is already unambiguous and is left alone — prefixing
+    one would name nothing.
+    """
+    if not file or os.path.isabs(file) or file[0] not in "@-":
+        return file
+    return os.path.join(os.curdir, file)
 
 
 def _skip(file: str, start: float, reason: str) -> None:
@@ -59,7 +103,7 @@ def main() -> None:
 
     try:
         result = subprocess.run(
-            ["pyright", "--outputjson", file],
+            ["pyright", "--outputjson", contained_target(file)],
             capture_output=True,
             text=True,
             timeout=60, encoding="utf-8", errors="replace",
