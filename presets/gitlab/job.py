@@ -210,20 +210,40 @@ def _last_section(lines: list[str]) -> str | None:
 # `ERROR: Job failed: execution took longer than ...` DO say why the job died,
 # and discounting those would trade this loud bug for a quiet one.
 #
-# `search`, not `match`: the trace on job 7125000 carries a stream prefix
-# (`00O `) ahead of the line which the ANSI cleanup above does not remove, so
-# anchoring at the start of the line would miss it on exactly the log this was
-# filed from.
+# Anchored to the WHOLE line rather than a bare `search` (#1110): a failing
+# test's own assertion text can quote `Cleaning up project directory` or
+# `section_start:...` inside a message that names a real cause, and a bare
+# substring match discounted that line as teardown noise too -- the same
+# reader, same threat model as #1105's `job.py:939` note. `_STREAM_PREFIX`
+# alone is optional so the anchor still lands at position 0 on job 7125000's
+# trace, which carries a stream prefix (`00O `) ahead of the line that the
+# ANSI cleanup above does not remove -- `\S+\s+` consumes exactly that
+# prefix and nothing past it, so the boilerplate literal still has to occupy
+# the rest of the line unchanged.
+_STREAM_PREFIX = r"(?:\S+\s+)?"
+# `[ \t]*`, not `\s*` (#1188's own guard, tripped by the #1110 fix that added
+# these): `\s` matches a newline, so `\s*\Z` in front of the anchor can
+# itself swallow one -- the run eats it and `\Z` never has to reject
+# anything, which is a no-op anchor over an unchanged defect. `[ \t]*` is
+# what "end of line, optional trailing spaces/tabs" actually means; a real
+# embedded newline past this point is content the anchor is meant to refuse.
+_TRAILING = r"[ \t]*\Z"
 _BOILERPLATE = [
-    re.compile(r"\bERROR: Job failed: exit code \d+\s*$"),
-    re.compile(r"\bsection_(?:start|end):\d+:"),
-    re.compile(r"\bCleaning up project directory"),
+    re.compile(_STREAM_PREFIX + r"ERROR: Job failed: exit code \d+" + _TRAILING),
+    re.compile(_STREAM_PREFIX + r"section_(?:start|end):\d+:\S+" + _TRAILING),
+    re.compile(_STREAM_PREFIX +
+              r"Cleaning up project directory and file based variables" + _TRAILING),
 ]
 
 
 def _is_boilerplate(line: str) -> bool:
-    """True for a line that is present because the job ended, not because it failed."""
-    return any(rx.search(line) for rx in _BOILERPLATE)
+    """True for a line that IS runner teardown noise, not one that mentions it.
+
+    `rx.match`, anchored at position 0 and each pattern's own trailing `\Z`:
+    the marker has to account for the whole line (past an optional stream
+    prefix), not just appear somewhere inside a longer message.
+    """
+    return any(rx.match(line) for rx in _BOILERPLATE)
 
 
 # `:fail` fits exactly one status. Written as the complement rather than as a

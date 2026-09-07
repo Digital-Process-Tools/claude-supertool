@@ -34,6 +34,7 @@ A **user token** (`xoxp-...`, User Token Scopes -- `scopes: user: [chat:write]` 
 | Op | Syntax | What it returns |
 |----|--------|-----------------|
 | `slack_publish` | `slack_publish:CHANNEL_ID\|TEXT_OR_file://PATH[\|THREAD_TS[\|force]]` | Posted message `ts` and, when the lookup succeeds, a permalink |
+| `slack_authorization` | `slack_authorization[:CHANNEL_ID[:USER_ID]]` | The resolved instruction-authorization level for a channel (and optionally one Slack user id) — see below |
 
 `CHANNEL_ID`, not a channel name: a name is resolved server-side and can be re-pointed by someone else out from under a saved call, while an id cannot. Find it in the Slack UI under the channel's details.
 
@@ -65,7 +66,22 @@ Reply in the same thread once you have the `ts` (from the output above, or from 
 ./supertool 'slack_publish:C0123456|Following up on this thread.|1700000000.000200'
 ```
 
+## `slack_authorization` — is a Slack channel allowed to instruct this session? (#2035)
+
+Delivering a message (above, and the paired `slack` watch source) is a different question from whether that message may INSTRUCT the agent sitting in the session. `slack_authorization` resolves and prints the second question, out of a config file the machine owner controls — never a tracked `.supertool.json` — see [../configuration.md#configuration-that-grants-execution-must-not-be-repo-tracked](../configuration.md#configuration-that-grants-execution-must-not-be-repo-tracked) for the full design and why.
+
+```bash
+./supertool 'slack_authorization'                    # every channel the config declares
+./supertool 'slack_authorization:C0123456'            # one channel
+./supertool 'slack_authorization:C0123456:U024BE7LH'  # one channel, one Slack user id
+```
+
+Four levels, `off` by default and by absence: `off` (nothing delivered, nobody may instruct), `context` (delivered, marked untrusted, nobody may instruct), `allowlist` (a pinned list of Slack `U...` ids may instruct), `open` (declared in the schema but **refused rather than implemented** in this build — resolving "anyone who can post in the channel" needs work this change does not do, and a declared-but-unimplemented level fails the channel closed with a stated reason rather than silently behaving like `context`).
+
+**Not yet wired into delivery.** `presets/watch/sources/slack/poller.py` does not consult this module today — every channel still delivers every message, unchanged from #2031. This op answers "would a message from this channel/user be authorized", which a future change can use to gate delivery itself.
+
 ## See also
 
 - [watch.md](watch.md#slack) — the paired `slack` watch source (inbound half).
 - [../notifiers.md](../notifiers.md) — the fire-and-forget Slack webhook example.
+- [../configuration.md](../configuration.md#configuration-that-grants-execution-must-not-be-repo-tracked) — why authorization config is out-of-repo.

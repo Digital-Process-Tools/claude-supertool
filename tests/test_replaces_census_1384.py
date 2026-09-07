@@ -145,6 +145,9 @@ _ABSENT = {
 
     # --- presets/slack.json -------------------------------------------------
     "slack_publish": _NO_CLI,
+    "slack_authorization": _SUPERTOOL_OWN + " (#2035) -- it resolves supertool's "
+                           "own out-of-repo config, which no Slack CLI could "
+                           "name",
 
     # --- presets/watch.json ------------------------------------------------
     "watch": "`gh pr checks --watch` and `gh run watch` are FOREGROUND "

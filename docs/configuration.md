@@ -300,6 +300,23 @@ Two things it does not do, both deliberate. It does not fire in a repository tha
 
 `raw_command_guard: false` turns this layer off with the rest of the guard, because it is the same hook. **What it is not is silent about its own gaps:** `python3 hooks/guard-selftest.py` prints each shipped rule's state and each unshipped rule's reason, so "this repo does not have that rule" is something a reader can discover rather than something they find out by doing the thing the rule exists to stop.
 
+## Configuration that grants execution must not be repo-tracked
+
+Two features independently reached the same rule ([#2035](https://github.com/Digital-Process-Tools/claude-supertool/issues/2035)): **anything that decides whether an agent may ACT belongs outside the tree a `git clone` reproduces**, never inside a tracked `.supertool.json`. If it could live there, cloning a repository would hand whoever wrote that file authority over the machine that cloned it.
+
+The statusline design ([#1850](https://github.com/Digital-Process-Tools/claude-supertool/issues/1850)) hit this first: an array of shell strings in a tracked config would execute on every clone, several times a minute, so the array is restricted to op strings and a repo-declared custom op with a `cmd` field is pushed behind an out-of-repo opt-in.
+
+Slack channel authorization ([#2035](https://github.com/Digital-Process-Tools/claude-supertool/issues/2035)) is the second instance, and the shape it settled on:
+
+- The machine-owner's own file, `~/.config/supertool/slack_authorization.json` — the same directory `.supertool.json` resolution already uses for user-level presets (`~/.config/supertool/presets/{name}.json`) — is the *only* place a channel can be raised above `off`. Four levels, ascending: `off` (default — nothing delivered, nobody may instruct), `context` (delivered, marked untrusted, nobody may instruct), `allowlist` (delivered, a pinned list of Slack `U...` user ids may instruct), `open` (declared in the schema, refused rather than implemented in this build — see below).
+- **Absent means refuse.** No file, or a channel the file does not name, resolves to `off` — never a permissive default silently inherited from whatever this build happens to default to.
+- **A tracked `.supertool.json` may narrow a channel's level, never widen it.** A project can force a channel to `off` regardless of what the machine-owner's file says; a project asking for a wider level than the out-of-repo file grants is ignored, and the ignored attempt is named in the resolved decision rather than silently dropped.
+- **The resolved level is runtime-visible**, not only inferable from the file: `slack_authorization[:CHANNEL_ID[:USER_ID]]` prints it, with the reasoning (`presets/slack/_authorization.py`, `presets/slack/auth.py`).
+- **A level this build does not implement fails the whole channel closed rather than being silently downgraded or granted.** `open` needs resolving "anyone who can post in the channel", which is not implemented yet; declaring it in the config file refuses the channel outright, with a stated reason, rather than quietly behaving like `context` or `allowlist`.
+- **Pinned IDs, never a live Slack group lookup.** `allowlist`'s `users` list is a snapshot a human wrote down. Resolving eligibility from a live Slack user group or channel membership would mean whoever administers the Slack workspace also administers who gets code execution on a developer's machine — an authority handed over in a different system, silently, the moment someone edits a group there.
+
+**What this does not cover yet.** The authorization decision above is not currently wired into `presets/watch/sources/slack/poller.py`'s delivery path — that channel already delivers every message today, the same behaviour it shipped with under [#2031](https://github.com/Digital-Process-Tools/claude-supertool/issues/2031), regardless of what `slack_authorization.json` says. Gating delivery itself (`off` meaning "the poller never emits an event for this channel", not just "the authorization module says off") is tracked as follow-on work.
+
 ## Compact mode
 
 Set `"compact": true` in `.supertool.json` to enable compact reads. When enabled, `read` ops skip blank lines and comment-only lines (`//`, `#`, `/* */`, `<!-- -->`, PHPDoc `*` lines), preserving original line numbers. Reduces token cost for exploration without losing structure.
