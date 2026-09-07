@@ -326,8 +326,28 @@ jobs:
         # re-derivation of xdist's own resolution logic that could drift
         # from it (the step above measures the same thing from the outside,
         # and names *which* source answered, which this banner cannot say).
+        # #2360: `invariant`-marked tests (tree-walking guards over this repo's
+        # own tree, `tests/_invariant_census.py`) are deselected on every leg
+        # except one designated full leg -- (ubuntu-latest, 3.12), the same
+        # leg the durations census in #2360 was measured against. One `-m`
+        # expression built by a single script-level `if`, never two
+        # independently-guarded steps or two ternaries on one step: #2360
+        # names exactly that shape (two `${{ }}` conditions, both false, is a
+        # leg that silently runs no tests) as claude-oss's own first mistake
+        # on this feature. The default arm here (no exclusion) is also the
+        # safe direction if MATRIX_OS/MATRIX_PY are ever wrong or unset --
+        # the worst case is every leg runs the invariant population, never
+        # that a leg runs nothing.
         shell: bash
-        run: python -X utf8 -m pytest -m 'not slow and not benchmark' --tb=no --no-cov --durations=25 --junit-xml=junit.xml
+        env:
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_PY: ${{ matrix.python-version }}
+        run: |
+          MARKER="not slow and not benchmark"
+          if [ "$MATRIX_OS" != "ubuntu-latest" ] || [ "$MATRIX_PY" != "3.12" ]; then
+            MARKER="$MARKER and not invariant"
+          fi
+          python -X utf8 -m pytest -m "$MARKER" --tb=no --no-cov --durations=25 --junit-xml=junit.xml
       - name: Show failing tests with full messages (always runs)
         # `--tb=no` above means the one-line summary is all there is, and pytest
         # elides the middle of a long one to fit the terminal width — on one real

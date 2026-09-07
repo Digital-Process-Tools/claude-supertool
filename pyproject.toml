@@ -130,6 +130,18 @@ markers = [
     # `test_xml.py`'s parse-scaling assertions are the other side: they name a
     # budget the code is meant to meet, and all four are marked.
     "benchmark: wall-clock timing assertions measuring performance, not liveness. Run deliberately and serially: `pytest -m benchmark -n0`.",
+    # #2360: tree-walking guards over this repo's own source/config whose
+    # answer cannot vary by OS or interpreter -- claude-oss's own `invariant`
+    # marker halved that half of its win by deselecting these on 11 of its
+    # 12 legs and keeping them on one designated full leg. Never applied by
+    # hand: `tests/conftest.py`'s `pytest_collection_modifyitems` hook marks
+    # every item from a file `tests/_invariant_census.py` derives via AST, so
+    # a new tree-walking test file joins or is excluded without anyone
+    # remembering to list it here. `.github/workflows/tests.yml`'s `Run
+    # tests` step deselects this marker on 11 of 12 pytest legs and keeps it
+    # on (ubuntu-latest, 3.12) -- and locally, where it always runs, because
+    # nothing here excludes it from the default `addopts` selection.
+    "invariant: tree-walking guard over this repo's own tree whose answer cannot vary by OS or interpreter (#2360). Auto-applied at collection; see tests/_invariant_census.py.",
 ]
 
 [project.optional-dependencies]
