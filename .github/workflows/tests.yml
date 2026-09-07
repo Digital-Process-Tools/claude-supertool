@@ -488,9 +488,12 @@ jobs:
       # the whole suite (`-m 'not benchmark'`, which includes both files)
       # rather than a scoped subset, so a single install here reaches every
       # skipped assertion without adding either tool to a 12-way matrix.
-      # `pip install` for both — pyright's PyPI wheel bundles and manages
-      # its own Node runtime, so it needs no separate `npm install` step the
-      # way markdownlint-cli (a Node-only package with no PyPI wrapper) does.
+      # `pip install` for both — pyright's PyPI wheel (pyright-python)
+      # depends on `nodeenv`, which reuses a compatible Node already on
+      # PATH or downloads and builds one on first run, so it needs no
+      # separate `npm install` step the way markdownlint-cli (a Node-only
+      # package with no PyPI wrapper) does. `ubuntu-latest` ships Node
+      # already, same as the markdownlint-cli step relies on.
       # Unpinned versions, deliberately: unlike markdownlint-cli, neither
       # adapter (`validators/pyright/pyright.py`,
       # `validators/mypy/mypy.py`) asserts against a specific tool version
