@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 
@@ -536,6 +537,114 @@ class ValidateEntryWindowsSemanticsTest(unittest.TestCase):
             "/etc/passwd", path_cls=PurePosixPath)
         self.assertIsNotNone(reason)
         self.assertIn("absolute", reason)
+
+
+class LoadConfigTrustBoundaryTest(unittest.TestCase):
+    """`_common.load_config`'s own #695-style trust boundary (#2370):
+    stop at the nearest `.git` ancestor, and skip a config this process
+    does not own -- the same two limits `_supertool._load_config` and
+    `presets/gitlab/_maintenance.py::load_config` already carry (#695,
+    #2365). Every "must not fire" case sits beside a "must fire" positive
+    control, per this repo's own testing discipline (module docstring).
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(ROOT / "tests"))
+        from _preset_loader import load_preset_module  # noqa: PLC0415
+        cls._common = load_preset_module(
+            "worktree", "_common", prefix="wt532_trust_")
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp(prefix="st2370_")
+        self.addCleanup(shutil.rmtree, self._tmp, ignore_errors=True)
+
+    def _write_cfg(self, path, section):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"ops": {"worktree": {"setup": section}}}, fh)
+
+    # -- .git ancestor stops the walk --------------------------------
+
+    def test_walk_stops_at_git_ancestor(self):
+        """A `.supertool.json` above the nearest `.git` must NOT be picked
+        up -- the boundary #695 already enforces for the core loader."""
+        outer_cfg = os.path.join(self._tmp, ".supertool.json")
+        self._write_cfg(outer_cfg, {"link": ["from-outside-repo"]})
+
+        repo = os.path.join(self._tmp, "repo")
+        os.makedirs(os.path.join(repo, ".git"))
+        target = os.path.join(repo, "sub")
+        os.makedirs(target)
+
+        result = self._common.load_config(Path(target))
+
+        self.assertIsNone(result.error)
+        self.assertIsNone(result.config)
+
+    def test_config_at_git_root_is_still_found(self):
+        """Positive control: a config living IN the repo root (beside
+        `.git`) still loads -- the walk-stop must not swallow the one
+        config it is meant to find."""
+        repo = os.path.join(self._tmp, "repo")
+        os.makedirs(os.path.join(repo, ".git"))
+        self._write_cfg(os.path.join(repo, ".supertool.json"),
+                         {"link": ["vendor/libs"]})
+        target = os.path.join(repo, "sub")
+        os.makedirs(target)
+
+        result = self._common.load_config(Path(target))
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.config, {"link": ["vendor/libs"]})
+
+    # -- ownership / writability (POSIX only) -------------------------
+
+    @unittest.skipUnless(os.name == "posix", "POSIX permission bits only")
+    def test_group_world_writable_config_is_skipped(self):
+        """A world-writable config must be skipped exactly like an absent
+        one -- never surfaced through `.error` (see `load_config`'s own
+        docstring for why): another local account could have rewritten it
+        between review and read."""
+        cfg = os.path.join(self._tmp, ".supertool.json")
+        self._write_cfg(cfg, {"link": ["from-evil"]})
+        os.chmod(cfg, 0o666)
+
+        result = self._common.load_config(Path(self._tmp))
+
+        self.assertIsNone(result.error)
+        self.assertIsNone(result.config)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX uid model only")
+    def test_config_owned_by_different_user_is_skipped(self):
+        """Ownership check via a forged `os.getuid` -- can't chown to
+        another uid without privileges, so the mismatch is simulated by
+        making the CALLER look like someone else instead (equivalent: the
+        check only ever compares the two)."""
+        cfg = os.path.join(self._tmp, ".supertool.json")
+        self._write_cfg(cfg, {"link": ["from-other-owner"]})
+        os.chmod(cfg, 0o600)
+        real_uid = os.getuid()
+
+        with unittest.mock.patch.object(
+                self._common.os, "getuid", return_value=real_uid + 12345):
+            result = self._common.load_config(Path(self._tmp))
+
+        self.assertIsNone(result.error)
+        self.assertIsNone(result.config)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX permission bits only")
+    def test_normal_owner_only_config_still_loads(self):
+        """Positive control: a normal, project-owned config with sane
+        permissions must still load -- the hardening above must discriminate,
+        not simply refuse everything."""
+        cfg = os.path.join(self._tmp, ".supertool.json")
+        self._write_cfg(cfg, {"link": ["vendor/libs"]})
+        os.chmod(cfg, 0o600)
+
+        result = self._common.load_config(Path(self._tmp))
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.config, {"link": ["vendor/libs"]})
 
 
 if __name__ == "__main__":
