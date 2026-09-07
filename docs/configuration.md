@@ -361,6 +361,49 @@ The call exits non-zero (the decline is counted as a skip, per
 | **Deliberate mixing** | `SUPERTOOL_ALLOW_MIXED_TREE=1`. Config ops then run, and the verdict line carries the pairing — `PASS (0.42s) [mixed supertool trees: core=… presets=…]` — so it is never a bare `PASS`. |
 | **A second, earlier case** | the entry point checks the same thing about *itself*. `supertool.py` loads the `_supertool.py` sitting beside it; if the name resolves to some other tree first — a `sys.meta_path` finder from an editable install outranks `sys.path` — it says so on stderr and runs on. If there is no `_supertool.py` beside it at all, it refuses with exit 2 rather than importing whichever copy the environment offers. |
 
+## Caller-declared read-only mode
+
+`ops:roster` has always classed every op unmarked (read-only), `*` (writes
+in this tree) or `!` (reaches outside it, or outlives the call) — the only
+place read and write are distinguished at all. Until
+[#1787](https://github.com/Digital-Process-Tools/claude-supertool/issues/1787)
+that classification was unenforceable: a caller that IS read-only by design —
+a review or audit agent whose whole remit is annotating a diff — had no way
+to say so and no way to be held to it. The concrete incident, filed as
+`claude-oss#251`: a review agent ran `radar` (classed `!`) against the live
+watch fleet it was auditing, mid-audit of that fleet's own healing logic.
+Nothing stopped it, and it was knowable only because the agent reported
+itself.
+
+`SUPERTOOL_READ_ONLY=1` (also `true`/`yes`/`on`, matching every other
+`SUPERTOOL_*` boolean in this file) makes `dispatch` refuse any op whose
+class is not `read-only`, before the op's own argument shape is even looked
+at:
+
+```
+$ SUPERTOOL_READ_ONLY=1 python3 supertool.py 'paste:::x.txt:::hello'
+--- paste:::x.txt:::hello ---
+SKIPPED: 'paste' is class `*` (writes) -- it writes files in this tree -- and SUPERTOOL_READ_ONLY=1 is set.
+Declined rather than run: the caller asked to be held to read-only, and acting anyway would be exactly the silent gap this declaration exists to close (#1787).
+Every op's class: `ops:roster`. To act anyway for this call, unset SUPERTOOL_READ_ONLY.
+```
+
+(Wrapped here for the page; each of the three sentences above is one
+unwrapped line at the terminal, and the separators are a literal
+double-hyphen `--`, not an em dash — self-review caught this fenced block
+not byte-matching the real output.)
+
+The refusal names the op and its class rather than a bare "denied" — the
+same third-state argument the mixed-tree decline above makes: a caller
+reading this receipt can tell "declined because I asked for read-only" from
+"failed for an unrelated reason" without cross-referencing anything else.
+
+| | |
+| --- | --- |
+| **An env var, not a `.supertool.json` key** | the flag is a property of ONE CALLER's intent for one invocation, not of the repo. The same worktree is dispatched into by a read-only audit agent and a normal writing session in the same tick, sometimes the same process tree — a project-level toggle would gate every caller or none, and whichever session wrote it last would silently win for every sibling. |
+| **What it does not do** | stop a determined caller. The raw-command guard hooks `Bash` only, and a caller that wants to write can always not call the op — `Edit`/`Write` reach disk with no op, no validator, no rollback, exactly as the roster's own legend already says. This is a guardrail against a cooperative agent's own mistake, the same shape as a shell `readonly` variable or `set -o noclobber`: worth having, and it claims nothing about an adversary. |
+| **Scope** | every op class other than `read-only` — builtins classed `writes` or falling back to `acts`, and preset/project ops declaring either. Gated on the op being *recognised* first: an unrecognised or typo'd name falls through to the ordinary `unknown operation` error rather than being declined as a manufactured `!`-class op (self-review caught this — the mixed-tree gate a few lines below carries the identical carve-out for the identical reason, [#1878](https://github.com/Digital-Process-Tools/claude-supertool/issues/1878)). A batch sub-op that recurses back through `dispatch` is caught the same way; the six `_READ_OP_AT_FIELDS` read ops (`grep`, `read`, `between`, `around`, `grep_around`, `validate`) route straight to the op function instead and never re-enter the gate — harmless only because every one of them is `read-only`, an invariant a census test pins rather than the gate itself enforcing. |
+
 ## Numeric environment knobs, and what happens when one is wrong
 
 Every `SUPERTOOL_*` knob that takes a number — `SUPERTOOL_MAX_COMMITS`,
