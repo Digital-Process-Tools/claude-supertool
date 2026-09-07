@@ -230,8 +230,30 @@ def run(target: Path) -> "tuple[int, str]":
     exclude_entries = tuple(valid_exclude)
 
     manifest_result = _common.read_manifest(target)
-    if manifest_result.error:
-        lines.append(f"  WARNING could not read the existing provisioning manifest, treating as empty: {manifest_result.error}")
+    # `.error` here is an UNKNOWN, never a genuine "no manifest was ever
+    # written" (#2371's own contract, and see `read_manifest`'s docstring):
+    # a transient `git` failure resolving the manifest path, or a manifest
+    # file that exists but failed to parse, both come back this way. A
+    # prior, successful setup run may have recorded real `linked`/`copied`/
+    # `excluded` entries in that very file. Rebuilding an empty in-memory
+    # manifest and writing it out unconditionally -- what this used to do
+    # -- would silently discard that record the moment `write_manifest`
+    # below ran, even though nothing about THIS run's own provisioning
+    # failed (#2386). So: proceed with provisioning (setup's own docstring
+    # already treats a missing/unreadable *source* as a WARN, never a
+    # refusal -- `.supertool.json` config may have a legitimate reason to
+    # provision even when the manifest can't be read), but track the
+    # failure so the manifest WRITE step below can skip clobbering
+    # whatever is already on disk rather than overwriting it with an
+    # incomplete record.
+    manifest_unreadable = manifest_result.error is not None
+    if manifest_unreadable:
+        lines.append(
+            "  WARNING could not read the existing provisioning manifest "
+            f"({manifest_result.error}) -- proceeding with provisioning, "
+            "but leaving the on-disk manifest untouched rather than "
+            "overwriting it with an incomplete record"
+        )
         manifest = {"linked": [], "copied": [], "excluded": []}
     else:
         manifest = manifest_result.config
@@ -254,9 +276,16 @@ def run(target: Path) -> "tuple[int, str]":
         lines.append("exclude:")
         _do_exclude(target, exclude_entries, lines, manifest)
 
-    manifest_write_error = _common.write_manifest(target, manifest)
-    if manifest_write_error:
-        lines.append(f"  WARNING could not save the provisioning manifest, teardown may miss entries: {manifest_write_error}")
+    if manifest_unreadable:
+        lines.append(
+            "  WARNING skipped saving the provisioning manifest -- could not "
+            "read the existing one, refusing to overwrite it; this run's own "
+            "entries above may go unrecorded until the manifest is readable again"
+        )
+    else:
+        manifest_write_error = _common.write_manifest(target, manifest)
+        if manifest_write_error:
+            lines.append(f"  WARNING could not save the provisioning manifest, teardown may miss entries: {manifest_write_error}")
 
     if not (link_entries or copy_entries or exclude_entries):
         if lines:
