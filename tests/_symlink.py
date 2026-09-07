@@ -150,3 +150,25 @@ requires_symlink = pytest.mark.skipif(
     not symlink_support()[0],
     reason=skip_reason() or (TOKEN + ": available"),
 )
+
+
+def gated_by_caller(fn):
+    """Marks a bare helper that creates a symlink but carries no gate of its
+    own -- every one of its callers is responsible for skipping first (#1630).
+
+    A convention, not a check: this decorator does nothing at runtime, and
+    applying it to a non-test function has no effect on collection either
+    way. It exists so `tests/test_symlink_gating_register_1232.py`'s AST walk
+    -- which already inspects the decorators on a call site's enclosing `def`
+    -- can see, directly on the `def` line, that a human decided the callers
+    are the gate. That register cannot see past the enclosing function to a
+    *caller*'s own decorators (#1630: `_toolbox` in
+    `test_guard_envelope_serialisation_1613.py` was referenced only from
+    `_run`, whose six callers all carried `@_POSIX_ONLY`, and read UNGATED
+    anyway -- 13 of 23 CI legs went red on a fixture that was already
+    correct). Interprocedural call-graph analysis was the other option; this
+    is the cheaper one, and it is only as honest as the person who applies
+    it: marking a helper whose callers are NOT all gated defeats the whole
+    register.
+    """
+    return fn
