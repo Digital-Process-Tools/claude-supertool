@@ -44,9 +44,20 @@ def envelope(stdout: str) -> Dict[str, Any]:
     # than the thing it mirrors fails on input the wrapper accepts.
     verb, _sep, text = stdout[len(PREFIX):].partition(_NL)
     if verb == "silent":
-        hook: Dict[str, Any] = {}
-    elif verb == "note":
-        hook = {"additionalContext": text}
+        # No longer a pure function of this one rung's stdout (#1686).
+        # `silent` is not a verb `hooks/pre-bash-guard.sh` commits to any
+        # more - a rung that prints it is discarded exactly like one whose
+        # output does not match the wire protocol, and the wrapper's actual
+        # envelope then depends on whatever rung the ladder tries next,
+        # which this mirror has no way to know. A caller reaching this line
+        # is asking the wrong question.
+        raise AssertionError(
+            "silent has no single-rung envelope any more: the wrapper "
+            "discards it and continues the ladder instead of answering "
+            "(#1686), so what Claude Code sees depends on the next "
+            "candidate, not on this stdout alone")
+    if verb == "note":
+        hook: Dict[str, Any] = {"additionalContext": text}
     elif verb == "deny":
         hook = {"permissionDecision": "deny", "permissionDecisionReason": text}
     else:

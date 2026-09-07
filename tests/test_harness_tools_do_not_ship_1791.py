@@ -219,7 +219,13 @@ def test_a_harness_file_tool_is_allowed_where_supertool_was_never_installed(
     project = _foreign_project(tmp_path)
     hook = _hook(tool, tool_input, project, tmp_path)
     assert "permissionDecision" not in hook, hook
-    assert "additionalContext" not in hook, hook
+    # Falsy rather than absent (#1686): `_nothing_to_say` writes `note` with
+    # an empty body rather than the bare envelope, so the key can be present
+    # with nothing in it. `silent` used to be reachable by any rung, forged
+    # or real, for free - it no longer is, and this is the visible cost of
+    # that on the one case that carries no `command` at all to disclose
+    # about.
+    assert not hook.get("additionalContext"), hook
 
     for value in tool_input.values():
         if not isinstance(value, str):
@@ -256,4 +262,5 @@ def test_a_neutral_command_is_untouched_in_somebody_elses_repository(
     hook = _hook("Bash", {"command": _NEUTRAL},
                  _foreign_project(tmp_path), tmp_path)
     assert "permissionDecision" not in hook, hook
-    assert "additionalContext" not in hook, hook
+    # Falsy rather than absent (#1686) - see the fixture above.
+    assert not hook.get("additionalContext"), hook

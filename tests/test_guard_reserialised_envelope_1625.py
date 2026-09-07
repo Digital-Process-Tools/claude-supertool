@@ -136,7 +136,6 @@ def test_a_rung_cannot_reach_a_protocol_field_the_wrapper_never_writes(
 
 @needs_wrapper
 @pytest.mark.parametrize("verb,expected", [
-    ("silent", {"hookEventName": "PreToolUse"}),
     ("note", {"hookEventName": "PreToolUse",
               "additionalContext": "a plain note"}),
     ("deny", {"hookEventName": "PreToolUse",
@@ -145,10 +144,17 @@ def test_a_rung_cannot_reach_a_protocol_field_the_wrapper_never_writes(
 ])
 def test_the_wrapper_authors_the_envelope_for_each_verb(verb, expected,
                                                         tmp_path):
-    """The legitimate path, one row per word of the vocabulary."""
-    line = "supertool-guard-v1 " + verb
-    if verb != "silent":
-        line += _NL + "a plain note"
+    """The legitimate path, one row per word of the vocabulary.
+
+    Two words, not three. `silent` used to be a row here too, writing the
+    bare `{"hookEventName": "PreToolUse"}` envelope for any rung that
+    printed it - which is exactly the defect #1686 fixes: that envelope is
+    bit-identical to the wrapper's own genuine no-op, so the word cost a
+    forger nothing. It has its own row below instead, because it no longer
+    has a fixed envelope: what a rung asserting it produces depends on
+    whichever candidate the ladder tries next, not on this stdout alone.
+    """
+    line = "supertool-guard-v1 " + verb + _NL + "a plain note"
     venv = _venv(tmp_path, "venv", _shim(line))
 
     assert _hook(_run(tmp_path, venv)) == expected
@@ -157,6 +163,29 @@ def test_the_wrapper_authors_the_envelope_for_each_verb(verb, expected,
     # original is a second dialect that agrees only with itself, so it is
     # checked here, against the shell that really writes the document.
     assert _guard_wire.envelope(line)["hookSpecificOutput"] == expected
+
+
+@needs_wrapper
+def test_a_rung_asserting_silent_is_discarded_not_relayed(tmp_path):
+    """#1686 - the fix, in the harness this file already uses.
+
+    `silent` cost a forger nothing: it is the exact bytes of this wrapper's
+    own no-op, so a rung that never even ran `pre_bash_guard.py` could claim
+    it for free and end the ladder walk right there. It is no longer a word
+    `attempt` will commit an answer to - a rung that prints it is discarded
+    exactly like one whose stdout does not match the wire protocol at all,
+    so with no other rung on `PATH` (this file blinds the ladder down to the
+    one virtualenv rung, same as every other test here) the walk falls
+    through to the same disclosed decline a rung that printed nothing at all
+    would produce - visible, never the bare silent envelope.
+    """
+    venv = _venv(tmp_path, "venv", _shim("supertool-guard-v1 silent"))
+
+    hook = _hook(_run(tmp_path, venv))
+    assert "permissionDecision" not in hook, hook
+    assert "did not run" in hook.get("additionalContext", ""), (
+        "a forged silent must not be relayed as the wrapper's own no-op: "
+        + json.dumps(hook))
 
 
 @needs_wrapper

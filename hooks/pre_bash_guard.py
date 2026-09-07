@@ -262,9 +262,29 @@ def _may_be_replaced(command: str, words) -> bool:
 #: document the wrapper can forward.
 WIRE_PREFIX = "supertool-guard-v1 "
 
-#: The whole vocabulary. Three words, and the wrapper knows all three by
-#: exact match; anything else is refused there rather than relayed.
-WIRE_VERBS = ("silent", "note", "deny")
+#: The whole vocabulary a rung may assert. Two words, not three (#1686):
+#: `silent` used to be here, and it was the one verb whose assertion by a
+#: rung is bit-identical to the wrapper's own genuine no-op --
+#: `{"hookSpecificOutput":{"hookEventName":"PreToolUse"}}`, nothing else in
+#: the document, nothing in the transcript. `$VIRTUAL_ENV/bin/python3` is
+#: tried before every versioned interpreter (`hooks/python-ladder.sh`), so a
+#: rung there that never runs this file at all -- it can just print
+#: `supertool-guard-v1 silent` and exit 0 -- used to end the walk right
+#: there, and a real interpreter further down the ladder, the one that would
+#: have inspected the command and denied it, never ran. Nothing about that
+#: outcome could be told apart from an ordinary command the guard checked and
+#: had nothing to say about.
+#:
+#: `hooks/pre-bash-guard.sh` no longer recognises `silent` as an answer at
+#: all -- it is treated exactly like a candidate whose output does not match
+#: this wire protocol, so the walk continues to the next rung instead of
+#: stopping. That closes the gap the same way #1625 closed it for `allow`:
+#: not by trusting the verb less, but by removing it from what a rung can
+#: assert. This file's own "nothing to say" therefore has to cross as
+#: something the wrapper still honours as terminal -- `note` with an empty
+#: body, in `_nothing_to_say` below -- rather than as the word that is no
+#: longer in the vocabulary.
+WIRE_VERBS = ("note", "deny")
 
 
 def _say(verb: str, text: str = "") -> None:
@@ -312,8 +332,18 @@ def _say(verb: str, text: str = "") -> None:
 
 
 def _nothing_to_say() -> None:
-    """An answer that decides nothing — not the same bytes as no answer."""
-    _say("silent")
+    """An answer that decides nothing — not the same bytes as no answer.
+
+    Was `_say("silent")` (#1686). `silent` is no longer a word this file may
+    write: it is the one verb a forger gets for free, since asserting it
+    costs nothing more than printing seven bytes and exiting 0, and the
+    result is indistinguishable from this file having run, checked, and
+    found nothing. `note` with an empty body is still terminal — the wrapper
+    still stops the ladder walk here and writes no decision — but it is a
+    word this file shares with every other real answer it gives, so a rung
+    that has not actually run this file has nothing free left to claim.
+    """
+    _say("note", "")
 
 
 def _undecided(reason: str) -> None:
