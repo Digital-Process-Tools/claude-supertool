@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import os
 import stat as stat_mod
-import sys
 from pathlib import Path
 
 import pytest
