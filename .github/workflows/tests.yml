@@ -474,6 +474,31 @@ jobs:
       # under #2012's fix without anyone deciding to.
       - name: Install markdownlint-cli (#2019)
         run: npm install -g markdownlint-cli@0.49.1
+      # #2389: no leg installed pyright or mypy, so every test in
+      # tests/test_pyright.py and tests/test_mypy.py that exercises the
+      # adapters end to end (argv-containment of a flag-shaped target, the
+      # `--` separator mypy's own adapter relies on) skipped on all twelve
+      # pytest legs, on this job, and on changelog.yml and slow-tests.yml
+      # alike — a skip that renders identically to a genuine pass on any
+      # board that counts red legs, for exactly the class of regression
+      # those tests exist to catch (#2379 fixed one such argv-containment
+      # bug and its own self-review is what surfaced this gap). One ubuntu
+      # leg, same reasoning as the markdownlint-cli step above: this job is
+      # off the critical path of the twelve, and `Coverage gate` below runs
+      # the whole suite (`-m 'not benchmark'`, which includes both files)
+      # rather than a scoped subset, so a single install here reaches every
+      # skipped assertion without adding either tool to a 12-way matrix.
+      # `pip install` for both — pyright's PyPI wheel bundles and manages
+      # its own Node runtime, so it needs no separate `npm install` step the
+      # way markdownlint-cli (a Node-only package with no PyPI wrapper) does.
+      # Unpinned versions, deliberately: unlike markdownlint-cli, neither
+      # adapter (`validators/pyright/pyright.py`,
+      # `validators/mypy/mypy.py`) asserts against a specific tool version
+      # or a fixed set of findings from either checker — they test their own
+      # argv construction and output parsing, which is stable across
+      # releases of the underlying tool.
+      - name: Install pyright and mypy (#2389)
+        run: pip install pyright mypy
       # The script prints all three states — enforced, measured-without-a-floor,
       # and not-measured-with-the-reason — on every run, pass or fail. A report
       # that silently omits a directory is the defect being fixed here, and it
