@@ -59,6 +59,11 @@ _KEY_RE = re.compile(r"^        ([A-Za-z_][A-Za-z0-9_-]*):(?: (.*))?$")
 _BLOCK_SCALAR_RE = re.compile(r"^[|>][+-]?$")
 _MATRIX_OS_RE = re.compile(r"^        os:\s*\[(.*)\]\s*$", re.M)
 
+#: Same indentation and shape as `_MATRIX_OS_RE`, one line down -- the
+#: `python-version:` list is quoted (`"3.9"`) where `os:` is not, so the two
+#: are separate patterns rather than one generalised over quoting.
+_MATRIX_PYTHON_RE = re.compile(r"^        python-version:\s*\[(.*)\]\s*$", re.M)
+
 
 def workflow_text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
@@ -113,6 +118,22 @@ def matrix_os(block: str) -> list[str]:
     if not match:
         return []
     return [item.strip() for item in match.group(1).split(",") if item.strip()]
+
+
+def matrix_python_versions(block: str) -> list[str]:
+    """The `matrix.python-version` list a job declares, quotes stripped --
+    `[]` if it declares none.
+
+    `os:` entries (`ubuntu-latest`) are bare; `python-version:` entries
+    (`"3.9"`) are quoted strings, so the quote is stripped here rather than
+    folded into a shared parser that would leave one of the two callers
+    comparing a quoted literal against a bare one.
+    """
+    match = _MATRIX_PYTHON_RE.search(block)
+    if not match:
+        return []
+    return [item.strip().strip('"').strip("'")
+            for item in match.group(1).split(",") if item.strip()]
 
 
 @dataclass(frozen=True)

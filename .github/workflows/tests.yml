@@ -334,10 +334,22 @@ jobs:
         # independently-guarded steps or two ternaries on one step: #2360
         # names exactly that shape (two `${{ }}` conditions, both false, is a
         # leg that silently runs no tests) as claude-oss's own first mistake
-        # on this feature. The default arm here (no exclusion) is also the
-        # safe direction if MATRIX_OS/MATRIX_PY are ever wrong or unset --
-        # the worst case is every leg runs the invariant population, never
-        # that a leg runs nothing.
+        # on this feature.
+        #
+        # #2372 corrected the claim previously made here, which had the
+        # failure direction backwards. An unset MATRIX_OS/MATRIX_PY compares
+        # against the empty string, `"" != "ubuntu-latest"` is true, and the
+        # EXCLUSION branch runs -- not the "no exclusion" default arm the old
+        # comment named. Worse, if `ubuntu-latest` or `3.12` is ever repinned
+        # in the matrix above without updating the two literals in the `if`
+        # below, EVERY leg (including whichever was meant to be the one full
+        # run) decides it is not the designated leg and applies the
+        # exclusion -- zero of twelve legs then run the invariant
+        # population, silently, with no leg left to notice from. That is the
+        # opposite of "every leg runs the invariant population": it is every
+        # leg deselecting it. `tests/test_ci_invariant_exclusion_repin_2372.py`
+        # pins the two literals below against the matrix's own `os:` and
+        # `python-version:` lists so a repin breaks this file loudly instead.
         shell: bash
         env:
           MATRIX_OS: ${{ matrix.os }}
