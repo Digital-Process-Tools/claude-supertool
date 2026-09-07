@@ -877,7 +877,17 @@ The always-run failure summary (`.github/scripts/junit_summary.py`) reconfigures
 - the `encoding-seam` supertool validator (`validators/encoding-seam/encoding-seam.py`, wired in `.supertool.json`) runs on every `edit`/`paste`/`replace`/`append`/`vim` of a `*.py` file — no push required, since every lane already writes through supertool;
 - `.github/scripts/check_encoding_seam.py` runs the identical check against `git diff --name-only` (or explicit files on argv), for a manual or scripted pre-push pass.
 
-[#2263](https://github.com/Digital-Process-Tools/claude-supertool/issues/2263) tracks the broader "run every tree-wide guard on a diff" design; this is deliberately narrower — just this one guard, just the files a lane touched — because a slow or false-positive local check teaches lanes to route around it, which defeats the point.
+**Two more of the same shape, run together** ([#2263](https://github.com/Digital-Process-Tools/claude-supertool/issues/2263)). The thread on that issue named two more tree-wide, pattern-keyed guards a lane's own targeted TDD loop never sees until CI: the `_winenv.empty_path_env()` env-scrub pattern (`tests/test_handrolled_path_env_guard_1151.py`) and the `presets/git/` splitlines register (`tests/test_preset_git_splitlines_register_1130.py`). `.github/scripts/check_meta_guards.py` runs all three — encoding-seam by calling into `check_encoding_seam.py`, the other two by importing (never re-implementing) the same scan functions the real guard tests use — scoped to `git diff` or explicit files on argv, same shape as `check_encoding_seam.py`:
+
+```
+python3 .github/scripts/check_meta_guards.py                 # files changed vs merge-base with origin/<default branch>
+python3 .github/scripts/check_meta_guards.py --base REF      # files changed vs REF
+python3 .github/scripts/check_meta_guards.py FILE [FILE...]  # explicit files, no git diff at all
+```
+
+Run it before you push. Three exit codes, not two: `0` clean, `1` a real finding, `2` could not check (not a git repo, no merge-base, the guard file itself absent) — a caller gating on exit status alone must never read "nothing to check" as "checked and clean".
+
+**Still deliberately narrow, and the gap is named rather than implied.** #2263's own thread found three MORE guard families the same day this issue was measured (preset-global-lifetimes, hint-register, state-reset) that neither this script nor `check_encoding_seam.py` covers — widening further is a design decision #2263 leaves open, not something this change presumes to settle. A slow or false-positive local check teaches lanes to route around it, which is why this stays a fixed, cheap set rather than growing into "run the whole suite locally".
 
 ---
 

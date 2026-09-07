@@ -257,3 +257,27 @@ def test_zero_check_runs_still_offers_the_op_for_an_ordinary_branch() -> None:
         None, [])
     joined = chr(10).join(lines)
     assert "gh-branch:fix/993" in joined, joined
+
+
+def test_zero_check_runs_declines_the_op_for_a_colon_carrying_branch() -> None:
+    """#1089's own live-instance claim, checked directly.
+
+    A `:` in a branch name is well inside what `check-ref-format` accepts
+    and is exactly the byte supertool's own colon CLI splits an op string
+    on -- `gh-branch:feature:x` would not name the branch `feature:x`, it
+    would name a THIRD op-string field. #1092 already gated this exact
+    pointer on `_refname.ordinary()`, which excludes `:`
+    (`presets/_refname.py`'s `ORDINARY_REF` character class has no colon in
+    it); this pins that a colon-carrying head branch takes the SAME declined
+    path as the U+2028 case above, not a variant of it.
+    """
+    lines = pr_merge._check_findings(
+        {"number": 7, "headRefOid": "a" * 40, "statusCheckRollup": [],
+         "headRefName": "feature:x"},
+        None, [])
+    joined = chr(10).join(lines)
+    assert "gh-branch:feature:x" not in joined, joined
+    assert "gh-branch:feature" not in joined, joined
+    assert "no `gh-branch:` command is offered" in joined, joined
+    # Declined, not censored (#965): the name is still readable in full.
+    assert "feature:x" in joined, joined
