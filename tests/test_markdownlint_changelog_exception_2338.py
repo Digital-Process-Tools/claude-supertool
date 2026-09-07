@@ -29,6 +29,7 @@ changelog.d/ path is silently exempted regardless of convention".
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -117,3 +118,97 @@ def test_changelog_fragment_not_exempted_when_project_has_no_assembler(tmp_path:
     out = _run(frag, tmp_path)
 
     assert out.get("ok") is False, out
+
+
+def test_repo_root_walk_does_not_climb_past_a_symlinked_boundary() -> None:
+    """Self-review finding: `git rev-parse --show-toplevel` resolves symlinks
+    (chdir + getcwd), so comparing it against a plain `os.path.abspath`
+    walk never matches on a tree reached through a symlink -- macOS's own
+    default `TMPDIR` is one (`/var` -> `/private/var`) -- and the walk then
+    climbs past the true repo root into an unrelated ancestor directory,
+    silently picking up ITS assembler script as though it belonged to this
+    project.
+
+    Deliberately NOT using pytest's `tmp_path` fixture: it is already
+    resolved to the physical path (observed: `/private/var/folders/...` on
+    this machine), which would erase the exact logical/physical mismatch
+    this test exists to exercise. `tempfile.mkdtemp()` returns the RAW,
+    unresolved `TMPDIR`-relative path (`/var/folders/...`), which is the
+    shape that actually reproduces this on a stock macOS box -- confirmed by
+    reverting the fix locally and watching this test go red before writing
+    it here, exactly what a tmp_path-based version failed to do.
+
+    Reproduced directly against `_owned_by_changelog_fragment` rather than
+    through the CLI, since the walk is the thing at issue and the CLI adds
+    nothing to the assertion; no `markdownlint` binary needed."""
+    import importlib.util
+    import shutil as _shutil
+    import tempfile
+
+    raw_root = tempfile.mkdtemp()
+    try:
+        outer = os.path.join(raw_root, "outer")
+        os.makedirs(os.path.join(outer, ".oss"))
+        with open(os.path.join(outer, ".oss", "assemble_changelog.py"), "w") as f:
+            f.write("# outer stub -- must NOT be found\n")
+        repo = os.path.join(outer, "repo")
+        os.makedirs(repo)
+        _git_init(Path(repo))
+        frag_dir = os.path.join(repo, "changelog.d")
+        os.makedirs(frag_dir)
+        frag = os.path.join(frag_dir, "100.fixed.md")
+        with open(frag, "w") as f:
+            f.write(FRAGMENT_BODY)
+
+        spec = importlib.util.spec_from_file_location(
+            "_st_markdownlint_2338", str(ADAPTER))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        assert mod._owned_by_changelog_fragment(frag) is False, (
+            "the walk climbed past the repo root and picked up "
+            "outer/.oss/assemble_changelog.py, which belongs to no project "
+            "this fragment is part of"
+        )
+    finally:
+        _shutil.rmtree(raw_root, ignore_errors=True)
+
+
+def test_constants_do_not_drift_from_their_sources_of_truth() -> None:
+    """Self-review (auditor finding): `CHANGELOG_FRAGMENT_GLOB_DEFAULT` and
+    `CHANGELOG_ASSEMBLER_LOCATIONS` in markdownlint.py are fresh literals
+    claimed in a comment to equal `.supertool.json`'s `changelog-fragment`
+    entry and `changelog-fragment.py`'s own `ASSEMBLER_LOCATIONS`, "so the
+    two never drift" -- a claim nothing enforced. This is the same shape
+    `ci_lint_resolve_root.py`'s `RESOLVE_ERROR_PREFIX` comment names and
+    `test_resolve_error_prefix_pinned_2229.py` guards: a second,
+    independently-typed literal goes red here the moment either source
+    changes without this one following."""
+    import importlib.util
+
+    repo_root = Path(__file__).parent.parent
+
+    md_spec = importlib.util.spec_from_file_location(
+        "_st_markdownlint_2338_pin",
+        str(repo_root / "validators" / "markdownlint" / "markdownlint.py"))
+    md = importlib.util.module_from_spec(md_spec)
+    md_spec.loader.exec_module(md)
+
+    cf_spec = importlib.util.spec_from_file_location(
+        "_st_changelog_fragment_2338_pin",
+        str(repo_root / "validators" / "changelog-fragment" / "changelog-fragment.py"))
+    cf = importlib.util.module_from_spec(cf_spec)
+    cf_spec.loader.exec_module(cf)
+
+    assert md.CHANGELOG_ASSEMBLER_LOCATIONS == cf.ASSEMBLER_LOCATIONS, (
+        "markdownlint.py's assembler search order has drifted from "
+        "changelog-fragment.py's ASSEMBLER_LOCATIONS -- update the mirrored "
+        "constant"
+    )
+
+    cfg = json.loads((repo_root / ".supertool.json").read_text(encoding="utf-8"))
+    configured_glob = cfg["validators"]["changelog-fragment"]["match"]
+    assert md.CHANGELOG_FRAGMENT_GLOB_DEFAULT == configured_glob, (
+        "markdownlint.py's default changelog-fragment glob has drifted "
+        "from .supertool.json's own changelog-fragment.match"
+    )

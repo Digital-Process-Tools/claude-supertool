@@ -96,15 +96,32 @@ def _owned_by_changelog_fragment(file: str) -> bool:
     assembler script is discoverable somewhere at or above the file, bounded
     at the repo root. The glob alone is not enough: a project with an
     unrelated `changelog.d/` directory (no assembler anywhere above it) gets
-    ordinary markdownlint coverage there, same as any other Markdown."""
+    ordinary markdownlint coverage there, same as any other Markdown.
+
+    Self-review finding: `root` came from `git rev-parse --show-toplevel`,
+    which chdir()s and calls getcwd() -- the PHYSICAL, symlink-resolved
+    path -- while `current` was built from repeated `os.path.dirname` on a
+    plain `os.path.abspath`, which never resolves a symlink. On a tree where
+    any component between the file and the repo root is a symlink (macOS's
+    default TMPDIR sits under `/var`, itself a symlink to `/private/var`; a
+    symlinked worktree or checkout is the same shape), the two never
+    string-compare equal, the walk never stops at the true root, and it
+    climbs into an unrelated ancestor directory whose own conventionally-
+    named file gets picked up as if it belonged to this project -- exactly
+    the escape #2178/#2236 bound `changelog-fragment.py`'s identical walk
+    against, which uses `Path(...).resolve()` throughout for the same
+    reason. `os.path.realpath` here matches that fix: both `current` and
+    `root` are resolved once, so the loop's stop condition is a physical-
+    path comparison on both sides.
+    """
     norm = os.path.abspath(file).replace(os.sep, "/")
     if not fnmatch.fnmatch(norm, _changelog_fragment_glob()):
         return False
     root = _repo_root(file)
     if root is None:
         return False
-    root = os.path.abspath(root)
-    current = os.path.dirname(os.path.abspath(file))
+    root = os.path.realpath(root)
+    current = os.path.dirname(os.path.realpath(file))
     locations = [loc for loc in _assembler_locations() if loc]
     while True:
         for loc in locations:
