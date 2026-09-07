@@ -11,7 +11,9 @@ Usage:  markdownlint.py <file>
 
 from __future__ import annotations
 
+import fnmatch
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -28,6 +30,110 @@ from path_anchor import (anchor as _anchor, safe_realpath as _safe_realpath,
 TOOL = "markdownlint"
 INSTALL_HINT = ("markdownlint not found on PATH — this file was NOT linted "
                 "(`npm install -g markdownlint-cli`)")
+
+# #2338: a project's own changelog-fragment convention (bullet-only, no
+# heading, no 80-column wrap -- this repo's own changelog.d/README.md is one
+# such convention, and it is a *project* choice, never this validator's)
+# reads as malformed prose to markdownlint's stock ruleset. Scoped to the
+# same glob `.supertool.json` already wires the `changelog-fragment`
+# validator to, not reinvented, so the two never drift.
+CHANGELOG_FRAGMENT_GLOB_ENV = "SUPERTOOL_MARKDOWNLINT_CHANGELOG_GLOB"
+CHANGELOG_FRAGMENT_GLOB_DEFAULT = "*changelog.d/*.md"
+
+# The same three conventions changelog-fragment.py's ASSEMBLER_LOCATIONS
+# tries, in the same order -- this is read-only existence checking, never an
+# import/execution of the found script, so the execution-trust-boundary
+# machinery that guards changelog-fragment.py's own `_load` does not apply
+# here: this file never runs a byte of what it finds.
+CHANGELOG_ASSEMBLER_ENV = "SUPERTOOL_CHANGELOG_ASSEMBLER"
+CHANGELOG_ASSEMBLER_LOCATIONS = (
+    os.path.join(".github", "scripts", "assemble_changelog.py"),
+    os.path.join(".oss", "assemble_changelog.py"),
+    os.path.join("scripts", "assemble_changelog.py"),
+)
+
+CHANGELOG_FRAGMENT_SKIP_REASON = (
+    "this path matches the project's changelog-fragment convention and its "
+    "own assembler script was found above it -- the `changelog-fragment` "
+    "validator already owns this file's shape (no heading, no wrap), so "
+    "markdownlint's generic ruleset does not apply here (#2338)")
+
+
+def _repo_root(start: str) -> str | None:
+    """The git repo root above `start`, or `None` -- mirrors
+    `validators/common/ci_lint_resolve_root.py`'s `_repo_root`. Any failure
+    (git absent, timeout, not a repo) means the walk below cannot be bounded,
+    so the caller treats that as "not exempt" rather than falling back to an
+    unbounded walk."""
+    start_dir = os.path.dirname(os.path.abspath(start)) or "."
+    try:
+        r = subprocess.run(
+            ["git", "-C", start_dir, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=10,
+            encoding="utf-8", errors="replace",
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    top = r.stdout.strip()
+    return top or None
+
+
+def _changelog_fragment_glob() -> str:
+    override = os.environ.get(CHANGELOG_FRAGMENT_GLOB_ENV, "").strip()
+    return override if override else CHANGELOG_FRAGMENT_GLOB_DEFAULT
+
+
+def _assembler_locations() -> tuple:
+    override = os.environ.get(CHANGELOG_ASSEMBLER_ENV, "").strip()
+    return (override,) if override else CHANGELOG_ASSEMBLER_LOCATIONS
+
+
+def _owned_by_changelog_fragment(file: str) -> bool:
+    """True only when `file` matches the project's changelog-fragment glob
+    AND that project has actually adopted the convention -- its own
+    assembler script is discoverable somewhere at or above the file, bounded
+    at the repo root. The glob alone is not enough: a project with an
+    unrelated `changelog.d/` directory (no assembler anywhere above it) gets
+    ordinary markdownlint coverage there, same as any other Markdown.
+
+    Self-review finding: `root` came from `git rev-parse --show-toplevel`,
+    which chdir()s and calls getcwd() -- the PHYSICAL, symlink-resolved
+    path -- while `current` was built from repeated `os.path.dirname` on a
+    plain `os.path.abspath`, which never resolves a symlink. On a tree where
+    any component between the file and the repo root is a symlink (macOS's
+    default TMPDIR sits under `/var`, itself a symlink to `/private/var`; a
+    symlinked worktree or checkout is the same shape), the two never
+    string-compare equal, the walk never stops at the true root, and it
+    climbs into an unrelated ancestor directory whose own conventionally-
+    named file gets picked up as if it belonged to this project -- exactly
+    the escape #2178/#2236 bound `changelog-fragment.py`'s identical walk
+    against, which uses `Path(...).resolve()` throughout for the same
+    reason. `os.path.realpath` here matches that fix: both `current` and
+    `root` are resolved once, so the loop's stop condition is a physical-
+    path comparison on both sides.
+    """
+    norm = os.path.abspath(file).replace(os.sep, "/")
+    if not fnmatch.fnmatch(norm, _changelog_fragment_glob()):
+        return False
+    root = _repo_root(file)
+    if root is None:
+        return False
+    root = os.path.realpath(root)
+    current = os.path.dirname(os.path.realpath(file))
+    locations = [loc for loc in _assembler_locations() if loc]
+    while True:
+        for loc in locations:
+            if os.path.isfile(os.path.join(current, loc)):
+                return True
+        if os.path.normcase(current) == os.path.normcase(root):
+            break
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return False
 
 
 # Budget for the one tool spawn below. A module constant rather than a literal
@@ -84,6 +190,11 @@ def main() -> None:
 
     file = sys.argv[1]
     start = time.time()
+
+    if _owned_by_changelog_fragment(file):
+        emit(skipped(TOOL, file, CHANGELOG_FRAGMENT_SKIP_REASON,
+                     int((time.time() - start) * 1000)))
+        return
 
     if not shutil.which("markdownlint"):
         emit(absent(TOOL, file, INSTALL_HINT,

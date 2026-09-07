@@ -560,6 +560,11 @@ REGISTER = {
     # path already proven to be inside the worktree this op was invoked on.
     'presets/worktree/teardown_op.py::_remove_copy': OWNED,
     'tests/test_kevin_2026_05_17.py::test_paste_op_creates_missing_file_and_parent': OWNED,
+    # #2338's own symlink-boundary regression: `raw_root` is a fresh
+    # `tempfile.mkdtemp()` this test builds and tears down itself, never the
+    # real repo -- the same shape `test_full_suite_canary_1635.py`'s own
+    # sites already carry.
+    'tests/test_markdownlint_changelog_exception_2338.py::test_repo_root_walk_does_not_climb_past_a_symlinked_boundary': OWNED,
     'tests/test_mcp_autospawn_honoured_1743.py::runtime': OWNED,
     'tests/test_mcp_daemon_dedup_451.py::runtime': OWNED,
     'tests/test_notifiers_claude_channel_550.py::sock_dir': OWNED,
