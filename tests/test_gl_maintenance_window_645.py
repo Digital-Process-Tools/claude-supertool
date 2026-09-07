@@ -93,6 +93,17 @@ def test_parse_window_malformed_marker_reads_as_no_window_not_an_error():
     assert maint.parse_window({}) is None
 
 
+def test_parse_window_rejects_a_smuggled_trailing_newline():
+    # #1188 -- Python's $ matches before a final newline, so a fully-anchored
+    # ^...$ pattern with a trailing \s* run (which itself consumes \n) used to
+    # accept "00:00 UTC\n" and "5m\n" as if they were the plain, well-formed
+    # value. Positive control: the plain value with no trailing newline still
+    # parses (test_parse_window_well_formed above already covers that).
+    assert maint.parse_window({"window": "00:00 UTC\n", "duration": "5m"}) is None
+    assert maint.parse_window({"window": "00:00 UTC", "duration": "5m\n"}) is None
+    assert maint.parse_window({"window": "00:00 UTC\n", "duration": "5m\n"}) is None
+
+
 def test_parse_window_never_raises_on_wrong_types():
     assert maint.parse_window({"window": 123, "duration": "5m"}) is None
     assert maint.parse_window({"window": "00:00 UTC", "duration": 5}) is None

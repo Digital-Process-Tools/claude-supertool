@@ -77,11 +77,11 @@ _EXIT_CODE_RE = re.compile(r'\bexit code (\d+)\b', re.IGNORECASE)
 # "00:00 UTC", "3:30 UTC" — one clock, one zone. No other timezone spelling
 # is accepted; a fleet on a different zone writes its window in UTC too,
 # the same way GitLab's own timestamps do.
-_WINDOW_RE = re.compile(r'^\s*(\d{1,2}):(\d{2})\s*UTC\s*$', re.IGNORECASE)
+_WINDOW_RE = re.compile(r'^[ \t]*(\d{1,2}):(\d{2})[ \t]*UTC[ \t]*\Z', re.IGNORECASE)
 # "5m", "30s", "1h" — amount plus a single unit letter. No bare integer:
 # a duration with no unit is exactly the ambiguity #645's own config sketch
 # never had to resolve, so it is treated as unparseable rather than guessed.
-_DURATION_RE = re.compile(r'^\s*(\d+)\s*([smh])\s*$', re.IGNORECASE)
+_DURATION_RE = re.compile(r'^[ \t]*(\d+)[ \t]*([smh])[ \t]*\Z', re.IGNORECASE)
 _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600}
 
 _CACHED_CONFIG: "dict | None" = None
