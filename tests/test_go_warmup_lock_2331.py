@@ -31,18 +31,49 @@ import _go_warmup_lock as lock_mod
 
 def test_two_racing_calls_do_not_overlap(tmp_path: Path) -> None:
     """The hazard this exists to remove: without serialization, concurrent
-    callers all start `fn` at once, and their [start, end] windows overlap --
-    the same shape as two xdist workers both compiling into an empty
-    `GOCACHE` at the same time."""
-    windows = []
-    guard = threading.Lock()
+    callers all start `fn` at once, so more than one is inside `fn` at the
+    same real moment -- the same shape as two xdist workers both compiling
+    into an empty `GOCACHE` at the same time.
+
+    #2398: an earlier version of this test inferred "did they overlap" by
+    comparing `time.monotonic()` readings taken by each caller and checking
+    the sorted windows never overlapped. That reasoning is unsound on its
+    own terms: cross-thread comparison of a clock is only as good as the
+    clock's own guarantee to stay ordered *across threads*, and that
+    guarantee is a platform promise, not something this test controls --
+    Windows' monotonic clock has a documented history of skew across CPU
+    cores under virtualization (the exact shape a GitHub Actions
+    `windows-latest` runner is), which lets two calls that a *real*
+    synchronization primitive would show never overlapped still print as
+    `s2 < e1` once each caller's reading came from a different core. That
+    is exactly what was observed once, on `windows-latest, py3.11`: two
+    windows in the failure's own printed list were byte-identical --
+    `(530.781, 530.875)` twice -- which two genuinely distinct 0.1s-sleep
+    calls cannot produce from a working clock no matter how tight the race,
+    and which a real overlap (both actually inside `fn` at once) would not
+    produce either, since neither call's `fn` shares any state that could
+    make its own start/end identical to another caller's.
+
+    So this test no longer reads a clock to decide the answer. It counts
+    how many callers are inside `fn` at once, using a `threading.Lock`-
+    guarded counter -- a real synchronization primitive, not an inference
+    from two independent clock readings -- which answers the actual
+    question ("was more than one caller inside `fn` at the same time")
+    directly, on every platform, regardless of what any clock reports."""
+    active = 0
+    max_active = 0
+    active_guard = threading.Lock()
+    calls = 0
 
     def fn():
-        start = time.monotonic()
+        nonlocal active, max_active, calls
+        with active_guard:
+            active += 1
+            max_active = max(max_active, active)
         time.sleep(0.1)
-        end = time.monotonic()
-        with guard:
-            windows.append((start, end))
+        with active_guard:
+            active -= 1
+            calls += 1
         return "done"
 
     threads = [threading.Thread(
@@ -53,12 +84,11 @@ def test_two_racing_calls_do_not_overlap(tmp_path: Path) -> None:
     for t in threads:
         t.join()
 
-    assert len(windows) == 3, windows
-    windows.sort()
-    for (_s1, e1), (s2, _e2) in zip(windows, windows[1:]):
-        assert s2 >= e1, (
-            "two callers' fn windows overlapped -- serialization did not "
-            "hold: %r" % (windows,))
+    assert calls == 3, calls
+    assert max_active == 1, (
+        "more than one caller was inside fn() at the same real moment -- "
+        "serialization did not hold (max concurrently active: %d)"
+        % max_active)
 
 
 def test_a_caller_after_release_still_gets_a_correct_isolated_result(
