@@ -24445,17 +24445,44 @@ def _validator_run_one(name: str, spec: Dict[str, Any], file: str,
     """
     import subprocess
     import json
+    import time
+    _t0_resolve = time.monotonic()
     target = _validator_resolve(spec, file)
     if target is None:
         return {"tool": name, "skipped": "no target resolved"}
     if target.startswith(_VALIDATOR_RESOLVE_ERROR_PREFIX):
         # #2177: distinct from "no target resolved" above -- this is "the
         # resolve command could not even look", not "it looked and found
-        # nothing". Both render as a skip (no verdict this run), but the
-        # reason a reader would ask "why" is preserved rather than folded
-        # into the same silence.
-        return {"tool": name, "skipped": "could not resolve target: {0}".format(
-            target[len(_VALIDATOR_RESOLVE_ERROR_PREFIX):])}
+        # nothing".
+        #
+        # #2185: and distinct from an ordinary skip in a second way -- routed
+        # through `_validator_unusable_reply` rather than a bare
+        # `{"skipped": ...}` dict, so it picks up the `no_verdict` marker the
+        # other four core-detected "this validator is too broken to answer
+        # for itself" cases already carry (produced no output, replied
+        # without a verdict, could not be spawned, replied with non-JSON --
+        # see that function's docstring). Before this it was invisible to
+        # `_validator_gate_did_not_run`, so `$SUPERTOOL_REQUIRE_VALIDATORS`
+        # exited 0 over an edit whose gate never ran: git absent, git timed
+        # out, not a repo, the resolve command itself unspawnable, or its own
+        # `guard_main` crash receipt all read as an ordinary "nothing to
+        # check here" skip.
+        #
+        # Deliberately NOT escalated all the way to the unconditional
+        # `NOT CHECKED` a self-reported adapter crash gets (`code: "adapter"`,
+        # read by `_validator_no_verdict` with no gate check at all) --
+        # that channel is for an adapter healthy enough to report on its own
+        # crash (#967); this is the core inferring breakage from a subprocess
+        # that did not behave, exactly the class `_validator_unusable_reply`
+        # already treats more conservatively, gated behind an explicit
+        # `$SUPERTOOL_REQUIRE_VALIDATORS` rather than crying wolf on every
+        # ordinary edit (`_validator_gate_did_not_run`'s own docstring, and
+        # #665/#975).
+        return _validator_unusable_reply(
+            name, file,
+            "could not resolve its target: {0}".format(
+                target[len(_VALIDATOR_RESOLVE_ERROR_PREFIX):]),
+            _elapsed_since(_t0_resolve))
     # #345: some targets this validator's warm process cannot judge — declared
     # per validator as `warm_unsafe` regexes. Checked here, before the adapter
     # is spawned at all: the decision is a property of the target, so paying a
