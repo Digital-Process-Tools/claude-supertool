@@ -278,13 +278,29 @@ def test_unclosed_bracket_pattern(tmp_path: Path, monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 @requires_symlink
-def test_symlink_to_file_outside_cwd_included(tmp_path: Path, monkeypatch) -> None:
-    """A symlink inside cwd that points to a file outside cwd.
+def test_symlink_to_file_outside_cwd_included_under_explicit_opt_out(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A symlink inside cwd pointing to a file outside cwd, WITH containment
+    explicitly opted out (#1370).
 
-    CONTRACT (documented, not enforced): op_glob includes symlinked files
-    because os.path.isfile() returns True for symlinks to regular files.
-    The file is found via the symlink path (which is within cwd).
+    Until #1366, `glob` sat entirely outside the containment gate and this
+    test's old name — `..._included`, no qualifier — was an accurate,
+    unconditional claim. #1366 shipped containment-on-by-default for `glob`,
+    including the exact case this test builds (`_glob_results_escape`
+    refuses a wildcard landing on an outward symlink), so the old name
+    started asserting the opposite of the shipped rule. It only stayed
+    green because `conftest.py` sets `SUPERTOOL_ALLOW_OUTSIDE_CWD=1` for the
+    WHOLE suite, so every test — this one included — silently opts out of
+    the very rule it claims to document.
+
+    This test now sets the opt-out ITSELF, explicitly, so the behaviour it
+    asserts (inclusion) is correctly scoped to "containment off" rather than
+    presented as the default. `test_symlink_to_file_outside_cwd_refused_by_default`
+    is the sibling that covers containment ON, which is what a caller who
+    has not opted out actually gets.
     """
+    monkeypatch.setenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", "1")
     outside_dir = tmp_path / "outside"
     outside_dir.mkdir()
     real_file = outside_dir / "real.txt"
@@ -298,10 +314,40 @@ def test_symlink_to_file_outside_cwd_included(tmp_path: Path, monkeypatch) -> No
 
     monkeypatch.chdir(inside_dir)
     out = supertool.op_glob("*.txt", no_auto_read=True)
-    # The symlink resolves to a file — it IS included (documented behaviour).
+    # The symlink resolves to a file — it IS included, because containment
+    # was explicitly opted out above.
     assert "link.txt" in out, (
-        "Symlink to external file should be included — os.path.isfile() follows symlinks. "
-        f"Got: {out!r}"
+        "Symlink to external file should be included when containment is "
+        f"opted out. Got: {out!r}"
+    )
+
+
+@requires_symlink
+def test_symlink_to_file_outside_cwd_refused_by_default(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Sibling to the opt-out test above, with containment ON (default,
+    #1366): a wildcard landing on a symlink pointing outside cwd must be
+    REFUSED, not silently included and not silently dropped from a
+    seemingly-complete list (#1370)."""
+    monkeypatch.delenv("SUPERTOOL_ALLOW_OUTSIDE_CWD", raising=False)
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    real_file = outside_dir / "real.txt"
+    real_file.write_text("real content\n")
+
+    inside_dir = tmp_path / "inside"
+    inside_dir.mkdir()
+    link = inside_dir / "link.txt"
+    link.symlink_to(real_file)
+
+    monkeypatch.chdir(inside_dir)
+    out = supertool.op_glob("*.txt", no_auto_read=True)
+    assert "escapes cwd" in out, out
+    assert "link.txt" not in out, out
+    assert "(0 files)" not in out, (
+        "a refusal rendered as an empty result set is the absence the tool "
+        f"manufactured, indistinguishable from an empty directory: {out!r}"
     )
 
 
