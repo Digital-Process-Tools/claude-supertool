@@ -3504,17 +3504,26 @@ def _safe_path(p: str, *, allow_outside_cwd: Optional[bool] = None,
     `~` expansion happens via os.path.expanduser — a user-supplied
     `~/.ssh/id_rsa` is resolved to the real path BEFORE the cwd check, which
     is what catches the threat. `$VAR` expansion does NOT happen here (#1370):
-    no op actually expands `$` when it opens the file — every op opens the
-    literal, unexpanded path — so a check that expanded `$HOME` while the op
-    opened the literal string `$HOME` refused a directory that never escaped
-    cwd at all, only its expanded interpretation would have (had it existed).
-    This is the same check/use mismatch #1300 fixed for `~`, applied the other
-    way: there, the fix was to make the *use* match the *check* (both
-    expanded); here, `$` is a legal filename character that no op ever
-    expands on open, so the coherent fix is to make the *check* match the
-    *use* (neither expanded). One rule, applied uniformly, rather than a
-    per-op special case that would drift `_containment_error` the way #1366's
-    review specifically rejected for `glob`.
+    no op gated by THIS check ever expands `$` when it opens the file — every
+    such op opens the literal, unexpanded path — so a check that expanded
+    `$HOME` while the op opened the literal string `$HOME` refused a
+    directory that never escaped cwd at all, only its expanded interpretation
+    would have (had it existed). This is the same check/use mismatch #1300
+    fixed for `~`, applied the other way: there, the fix was to make the
+    *use* match the *check* (both expanded); here, `$` is a legal filename
+    character that no op ever expands on open, so the coherent fix is to make
+    the *check* match the *use* (neither expanded). One rule, applied
+    uniformly, rather than a per-op special case that would drift
+    `_containment_error` the way #1366's review specifically rejected for
+    `glob`.
+
+    One caller elsewhere in this file DOES still expand `$VAR`: the `cwd:PATH`
+    CLI pre-pass (`os.path.expanduser(os.path.expandvars(...))` ahead of
+    `os.chdir`). That is not a counter-example — `cwd:` never calls this
+    function at all. It establishes a new boundary rather than checking
+    against the existing one, so there is no check/use pair here to disagree
+    with itself; the claim above is scoped to callers of `_safe_path`, not to
+    every path-shaped argument this file ever reads.
     """
     if allow_outside_cwd is None:
         if os.environ.get("SUPERTOOL_ALLOW_OUTSIDE_CWD") == "1":
