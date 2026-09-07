@@ -65,19 +65,44 @@ NOT_GREEN = branch.NOT_GREEN
 NO_RUN = branch.NO_RUN
 UNKNOWN = branch.UNKNOWN
 
+# NOT_GREEN split in two, poller-side only (#2355). `branch.verdict()` keeps
+# its own four-state vocabulary unchanged -- `dashboard.py` and
+# `default_branch_report` both render it as-is and neither needed this -- but
+# a *poller* exists to tell a waiting consumer what changed, and "nothing has
+# concluded yet" and "a leg failed" are opposite next actions folded into one
+# string. Classified in `poll()` off `_snapshot`'s own `has_failed_leg`
+# (`bool(branch._red_workflows(selected, legs))`), the same structural check
+# `verdict()` makes before it ever renders a sentence -- never a substring
+# search over the rendered sentence itself: a first cut of this fix did
+# exactly that (`"did not pass" in sentence`) and a review caught the hole --
+# `verdict()`'s pending sentence interpolates a workflow's own `name:` field,
+# which GitHub lets a repo author spell however they like, so a workflow
+# literally named "did not pass" would have forged a false NOT_GREEN_FAILED
+# reading on a genuinely pending commit.
+NOT_GREEN_PENDING = f"{NOT_GREEN} (PENDING)"
+NOT_GREEN_FAILED = f"{NOT_GREEN} (FAILED)"
+
 LOOKUP_OK = "ok"
 LOOKUP_UNAVAILABLE = "unavailable"
 
 _EVENT_FOR_STATE = {
     GREEN: "went_green",
-    NOT_GREEN: "went_not_green",
+    NOT_GREEN_PENDING: "went_not_green",
+    NOT_GREEN_FAILED: "went_failed",
     NO_RUN: "no_run",
     UNKNOWN: "unknown",
 }
 
 
-def _snapshot(ref: str) -> tuple[str, str, str, str, str]:
-    """`(state, sentence, sha, repo, error)` for the named ref, right now.
+def _snapshot(ref: str) -> tuple[str, str, str, str, str, bool]:
+    """`(state, sentence, sha, repo, error, has_failed_leg)` for the named ref,
+    right now.
+
+    `has_failed_leg` is structural, never text-derived: `bool(_red_workflows(
+    selected, legs))`, the same check `verdict()` itself makes before it ever
+    builds a sentence. It is meaningful only when `state == branch.NOT_GREEN`
+    -- `False` on every other path, including the error paths below, where
+    there is no leg data to have an opinion about.
 
     `repo` is `branch._repo_identity()`'s own `nameWithOwner` -- gh's own
     base-repo resolution, which honours `remote.<name>.gh-resolved` -- the
@@ -114,10 +139,11 @@ def _snapshot(ref: str) -> tuple[str, str, str, str, str]:
     """
     sha, age, err = branch._head_commit(ref)
     if err:
-        return "", "", "", "", err
+        return "", "", "", "", err, False
     runs, err = branch._run_list(ref)
     if err or runs is None:
-        return "", "", sha, "", err or "ERROR: gh run list returned nothing readable"
+        return ("", "", sha, "", err or "ERROR: gh run list returned nothing readable",
+                False)
 
     selected = branch.runs_on_sha(runs, sha)
     _prev_sha, prev_names = branch.previous_head(runs, sha)
@@ -135,18 +161,30 @@ def _snapshot(ref: str) -> tuple[str, str, str, str, str]:
 
     repo, _default_ref, repo_err = branch._repo_identity()
     if repo_err:
-        return "", "", sha, "", repo_err
+        return "", "", sha, "", repo_err, False
     marker, _shortfall = branch._reconcile(repo, selected, fetched)
     scope, _scope_lines, _unresolved = branch.scope_for(
         repo, sha, selected, age_secs=age, grace=branch._GRACE)
     state, sentence = branch.verdict(selected, legs, missing, sha, age,
                                      branch._GRACE, marker, scope=scope)
-    return state, sentence, sha, repo, ""
+    # Structural, not textual (#2355 review finding): `bool(_red_workflows(...))`
+    # reads the same `legs`/`selected` data `verdict()` itself reads, never the
+    # rendered sentence. A marker-substring scan over the sentence was tried
+    # first and misfires on a workflow literally named after the marker text --
+    # `_names(moving)`/`_names(missing)` interpolate a workflow's own `name:`
+    # field, which GitHub lets a repo author spell however they like, into the
+    # *pending* sentences, so a workflow named e.g. "did not pass" would forge
+    # a false NOT_GREEN_FAILED reading on a genuinely pending commit. This asks
+    # the same question `_red_workflows` already answers for `verdict()`
+    # itself, off the structured data, so nothing a workflow's name says can
+    # change the answer.
+    has_failed_leg = bool(branch._red_workflows(selected, legs))
+    return state, sentence, sha, repo, "", has_failed_leg
 
 
 def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     ref = str(ctx["id"])
-    branch_state, sentence, sha, repo, error = _snapshot(ref)
+    branch_state, sentence, sha, repo, error, has_failed_leg = _snapshot(ref)
 
     if error:
         # Three answers, not two -- same shape as `github-pr`'s `_fetch`
@@ -169,18 +207,37 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
             "notify_message": error,
         }], new_state
 
+    # NOT_GREEN split into two poller states (#2355): "nothing has
+    # concluded yet" and "a leg failed" are opposite next actions, and a
+    # pending -> failed transition on the SAME commit changed nothing the
+    # old bare-state comparison below could see. `has_failed_leg` is
+    # `_snapshot`'s own structural answer (`bool(branch._red_workflows(...))`)
+    # -- not re-derived from `sentence` here. A first cut of this fix scanned
+    # `sentence` for `branch.NOT_GREEN_FAILED_MARKER` and a review caught the
+    # hole: the pending sentence interpolates a workflow's own `name:` field
+    # (`_names(moving)`/`_names(missing)` in `verdict()`), which GitHub lets a
+    # repo author spell however they like, so a workflow literally named
+    # "did not pass" would have forged a false NOT_GREEN_FAILED reading on a
+    # genuinely pending commit.
+    if branch_state == NOT_GREEN:
+        branch_state = NOT_GREEN_FAILED if has_failed_leg else NOT_GREEN_PENDING
+
     prev_state = state.get("branch_state", "")
     prev_sha = str(state.get("sha") or "")
     sha_repeated = bool(sha) and sha == prev_sha
     # A state this composition only reaches with `selected` non-empty
     # (`verdict()` routes to `no_run_verdict` before this module ever sees
-    # a state at all when it is empty) -- so GREEN, NOT_GREEN and UNKNOWN
-    # all mean "some earlier poll saw at least one run on this sha", and
-    # only NO_RUN/`""` mean it did not (or nothing has polled yet). Reading
-    # this off `prev_state` rather than a separate stored flag means an
-    # UNKNOWN produced by the guard below keeps the confirmation live for
-    # the next poll for free -- there is nothing extra to carry forward.
-    prev_confirmed_runs = prev_state in (GREEN, NOT_GREEN, UNKNOWN)
+    # a state at all when it is empty) -- so GREEN, either NOT_GREEN
+    # sub-state and UNKNOWN all mean "some earlier poll saw at least one run
+    # on this sha", and only NO_RUN/`""` mean it did not (or nothing has
+    # polled yet). Reading this off `prev_state` rather than a separate
+    # stored flag means an UNKNOWN produced by the guard below keeps the
+    # confirmation live for the next poll for free -- there is nothing extra
+    # to carry forward. The bare `NOT_GREEN` stays in this tuple too: a state
+    # file written before #2355 shipped still has it, and this line is what
+    # keeps that stale value read as "confirmed" rather than as a cold start.
+    prev_confirmed_runs = prev_state in (
+        GREEN, NOT_GREEN, NOT_GREEN_PENDING, NOT_GREEN_FAILED, UNKNOWN)
     # How many consecutive polls of THIS sha have read raw-empty already --
     # reset the moment the sha changes, so it never leaks across commits.
     prev_no_run_streak = int(state.get("no_run_streak") or 0) if sha_repeated else 0
@@ -232,7 +289,22 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # successful poll too -- exactly like `github-pr`'s `checks_state`
     # transition. `first_tick` (added by the dispatcher, not this source)
     # is what tells a consumer that first emission apart from a live change.
-    if branch_state != prev_state:
+    #
+    # `sha != prev_sha` is an OR on top of the state comparison, not a
+    # replacement for it (#2355). Half of the incident this issue was filed
+    # over was a same-category transition -- master moved to a brand-new
+    # commit while still reading as "not concluded yet" -- and a consumer
+    # holding the previous sentence has no way to learn the subject changed
+    # under it: every leg on the new commit is unread, and the old sentence
+    # was about a different SHA entirely. This is a deliberate widening of
+    # emission volume, decided here rather than inherited silently: a real
+    # commit landing on a watched branch is exactly the kind of event a
+    # branch watcher exists to report, even when the coarse verdict does not
+    # move, and #2355 asks for this choice to be made and stated rather than
+    # defaulted into. `sha` is only compared once `error` is empty (above),
+    # where `_snapshot` guarantees it is non-empty, so this cannot mistake a
+    # lookup failure for a same-state new-sha transition.
+    if branch_state != prev_state or sha != prev_sha:
         key = _EVENT_FOR_STATE.get(branch_state, "unknown")
         ev = {
             "event": key,

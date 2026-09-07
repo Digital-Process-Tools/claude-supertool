@@ -73,21 +73,23 @@ def _ctx(ref="main"):
 
 def test_a_repo_identity_failure_is_reported_as_an_error_not_a_state() -> None:
     with mock.patch.object(branch, "_gh", side_effect=_fake_gh(repo_view_fails=True)):
-        state, sentence, sha, repo, error = poller._snapshot("main")
+        state, sentence, sha, repo, error, has_failed_leg = poller._snapshot("main")
     assert error, "a gh that could not identify the repository must report an error"
     assert state == "", (
         "a repo-identity failure reached branch.verdict() and produced a "
         f"state anyway: {state!r} ({sentence!r})")
+    assert has_failed_leg is False
 
 
 def test_a_working_repo_identity_still_reports_no_run() -> None:
     """The must-fire positive control for the case above, same fixture
     otherwise: this is not a claim that `_snapshot` stopped answering at all."""
     with mock.patch.object(branch, "_gh", side_effect=_fake_gh(repo_view_fails=False)):
-        state, sentence, sha, repo, error = poller._snapshot("main")
+        state, sentence, sha, repo, error, has_failed_leg = poller._snapshot("main")
     assert error == "", error
     assert state == branch.NO_RUN, (state, sentence)
     assert repo == "OWNER/REPO", repo
+    assert has_failed_leg is False
 
 
 # ---------------------------------------------------------------------------

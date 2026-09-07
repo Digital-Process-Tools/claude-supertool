@@ -901,6 +901,27 @@ def undispatched_lines(undispatched: list, age_secs: object = None,
     return lines
 
 
+def _red_workflows(selected: dict, legs: dict) -> list:
+    """Names of the runs `verdict()` reads as failed -- a leg gone red, or the
+    run's own conclusion gone red with no leg to blame it on.
+
+    Pulled out of `verdict()` (#2355) so `gh-branch`'s watch poller can ask
+    this exact question -- "did anything actually fail" -- without a second,
+    independent copy of the red-leg arithmetic, and without scanning
+    `verdict()`'s rendered *sentence* for a marker substring: that sentence
+    also interpolates workflow names GitHub lets a repo author spell however
+    they like (`_names(moving)`, `_names(missing)` in the pending branches
+    below), so a workflow literally named after the marker text would forge a
+    false failed reading on a genuinely pending commit. This function reads
+    the same structured `legs`/`selected` data `verdict()` reads, never a
+    rendered string, so nothing a workflow's own name says can change its
+    answer.
+    """
+    return sorted(n for n, states in legs.items()
+                  if any(_checks.is_red(s) for s in (states or []))
+                  or _checks.is_red(_run_conclusion(selected[n])))
+
+
 def verdict(selected: dict, legs: dict, missing, sha: str,
             age_secs: object, grace: int = _GRACE,
             unreconciled: str = "", *, scope: str) -> tuple:
@@ -953,9 +974,7 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
                          "the op; if it persists, count by hand with "
                          "`gh run view <run-id> --json jobs`.")
 
-    red_wfs = sorted(n for n, states in legs.items()
-                     if any(_checks.is_red(s) for s in (states or []))
-                     or _checks.is_red(_run_conclusion(selected[n])))
+    red_wfs = _red_workflows(selected, legs)
     if red_wfs:
         bad = sum(1 for states in legs.values()
                   for s in (states or []) if _checks.is_red(s))
