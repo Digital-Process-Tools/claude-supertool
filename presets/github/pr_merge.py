@@ -483,6 +483,30 @@ def render_issue_section(verdicts: Sequence[tuple[str, str, str]],
     return (lines, ALL_CLOSED)
 
 
+def release_candidates(verdicts: Sequence[tuple[str, str, str]]) -> List[str]:
+    """Same-repo issue numbers this merge verified `CLOSED`, bare (no `#`).
+
+    #2337: `cleanup` reaps the merged branch's worktree and remote branch,
+    but had no way to tell a caller-provided release hook which issues the
+    merge closed, so a calling loop's own per-issue lane bookkeeping
+    (`claude-oss`'s `.oss-lanes/<issue>.json`) was never released. The
+    information was already computed here for the `## Linked issues`
+    section -- this is that same `verdicts` list, filtered rather than
+    re-derived, because a second read of the same fact is a second place for
+    it to disagree with the first.
+
+    An explicit list, not a callback: this op has no concept of a caller's
+    own lane registry and should not grow one (the issue's own "What would
+    settle it" leans the same way) -- it names what a merge verified closed
+    and stops there. A cross-repo ref (`owner/repo#N`) never names an issue
+    in the caller's own repository, so it is excluded rather than guessed
+    at; a caller's per-issue bookkeeping for another repository is not
+    addressed by a merge in this one.
+    """
+    return [ref.lstrip("#") for ref, state, _ in verdicts
+           if state == "CLOSED" and "/" not in ref]
+
+
 # ---------------------------------------------------------------------------
 # merge verification
 # ---------------------------------------------------------------------------
@@ -1623,6 +1647,28 @@ def main() -> int:
                             head_oid=str(pr.get("headRefOid") or ""),
                             stack_state=stack_state)):
             print(line)
+        # #2337: named here, not derived again — `verdicts` is the exact list
+        # `## Linked issues` above already rendered from. Gated on the same
+        # `m_state == MERGED` fact `run_cleanup` above is gated on, and for
+        # the same reason: `verdicts` reads each issue's CURRENT state off
+        # the live tracker, independent of whether this merge attempt
+        # actually succeeded, so an issue closed for an unrelated reason
+        # (a duplicate, a manual close, an earlier attempt) must never be
+        # named as something THIS merge verified closed when this merge was
+        # never confirmed. Caught in self-review: the reproduction was a
+        # failed `gh pr merge` alongside an issue already CLOSED for some
+        # other reason, where every reap item correctly read `skipped` but
+        # this line printed the issue anyway.
+        if m_state == MERGED:
+            released = release_candidates(verdicts)
+            print(f"  [release] {', '.join(released) if released else 'none'} "
+                  f"— same-repo issue(s) this merge verified CLOSED; a "
+                  f"caller with its own per-issue lane bookkeeping may "
+                  f"release these now (#2337). This op stores nothing and "
+                  f"calls nothing on your behalf.")
+        else:
+            print("  [release] none — the merge is not confirmed, so "
+                  "nothing here is attributed to it")
         print()
         print(result_line(m_state, issue_overall, branch_state, stack_state))
         return 0 if (m_state == MERGED and
