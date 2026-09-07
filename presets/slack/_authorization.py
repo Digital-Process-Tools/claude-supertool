@@ -88,21 +88,29 @@ def config_path() -> str:
 
 
 def _load_raw() -> tuple[Optional[dict], str]:
-    """(config dict, state) -- state is 'ok', 'absent', or 'invalid'.
+    """(config dict, state) -- state is 'ok', 'absent', 'unreadable', or
+    'invalid'.
 
-    Both non-'ok' states are handled identically by every caller below
-    (fail closed), and are kept apart only so `detail` can say which one
+    Every non-'ok' state is handled identically by every caller below (fail
+    closed), and they are kept apart only so `detail` can say which one
     happened -- the same three-state discipline this repo asks of every
-    other checker: a missing file and a broken one must not read as the
-    same "nothing to report" if a human ever has to debug why a channel
-    that should be open is not.
+    other checker, applied here to the read itself: a missing file, a
+    present-but-unreadable one (permission denied, a directory sitting at
+    the path, a symlink loop) and a broken one must not all collapse into
+    the same "nothing to report" if a human ever has to debug why a channel
+    that should be open is not. `FileNotFoundError` is `absent`; every other
+    `OSError` from the open/read is `unreadable` -- both fail closed
+    identically, so this split only ever changes `detail`, never the
+    decision.
     """
     path = config_path()
     try:
         with open(path, "r", encoding="utf-8") as fh:
             raw = fh.read()
-    except OSError:
+    except FileNotFoundError:
         return None, "absent"
+    except OSError:
+        return None, "unreadable"
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
@@ -141,6 +149,13 @@ def resolve_channel(channel_id: str, user_id: Optional[str] = None, *,
         base_level = "off"
         base_detail = f"no config at {path} — absent means refuse (property 1)"
         entry: dict = {}
+    elif state == "unreadable":
+        base_level = "off"
+        base_detail = (f"{path} exists but could not be read (permission "
+                       f"denied, a directory sitting at that path, or "
+                       f"another OS-level error) — different from an "
+                       f"absent file, though both fail closed the same way")
+        entry = {}
     elif state == "invalid":
         base_level = "off"
         base_detail = (f"{path} exists but could not be parsed as a JSON "

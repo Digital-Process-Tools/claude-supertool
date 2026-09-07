@@ -475,19 +475,29 @@ def tally_main(prefix: str, rows: list[dict], target: str) -> int:
         return 1
 
     # Core's `repo:` shape check (`_repo_target.owner_repo`) is "exactly one
-    # `/`, both halves non-empty" — no character-set check. The prefix and
-    # every label name are already guarded against `_QUERY_UNSAFE` below; the
-    # repo target went straight into `f"repo:{repo}"` unguarded (#1110), so a
-    # shape like `owner/name is:public` — one slash, two non-empty halves —
-    # walked past `owner_repo` and into the query as extra search syntax.
-    # Operator-supplied rather than remote, so this is a consistency gap
-    # against the other two checks rather than a boundary crossing — refused
-    # the same way, for the same reason: GitHub's search grammar has no
-    # documented escape for a quote inside a term.
-    if _QUERY_UNSAFE.search(target):
-        print(f"ERROR: refusing the repo target {target!r} — a quote or "
-              f"newline would end the quoted term in the search query and "
-              f"the remainder would be read as query syntax.")
+    # `/`, both halves non-empty" — no character-set check. `_QUERY_UNSAFE`
+    # (quote/newline) is what protects the prefix and every label name, but
+    # it is not the right guard here: those two are interpolated INSIDE a
+    # quoted term (`f'label:"{n}"'`), where a quote is what it takes to break
+    # out — `repo` is interpolated BARE (`f"repo:{repo}"`, no surrounding
+    # quotes at all), so a plain space already injects extra search syntax
+    # with no quote or newline anywhere in it. `_QUERY_UNSAFE.search('owner/'
+    # 'name is:public')` returns `None` — the exact repro #1110 was filed
+    # with — so it is not the check to reuse here. What IS safe to put after
+    # a bare `repo:` is a strict allowlist: GitHub repo/owner names are
+    # `[A-Za-z0-9._-]+`, the same character class `_repo_target.py::_SLUG`
+    # already uses to decide whether a slug is fit to be pasted into a
+    # printed command. Anything outside that class is refused, not escaped —
+    # matching `_QUERY_UNSAFE`'s own reasoning that GitHub's search grammar
+    # documents no escape to fall back on.
+    if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", target):
+        print(f"ERROR: refusing the repo target {target!r} — it is "
+              f"interpolated into the search query unquoted (`repo:{{repo}}`, "
+              f"not `repo:\"{{repo}}\"`), so any character outside "
+              f"owner/name's own alphabet (letters, digits, `.`, `_`, `-`, "
+              f"one `/`) could add extra search syntax. This shape check runs "
+              f"instead of a quote/newline check because a plain SPACE is "
+              f"already enough to inject a term here.")
         return 1
 
     names = [str(r.get("name") or "") for r in rows]

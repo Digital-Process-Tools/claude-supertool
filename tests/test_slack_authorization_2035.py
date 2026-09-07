@@ -204,3 +204,40 @@ def test_an_unrecognised_level_string_refuses_rather_than_guessing(
     d = auth.resolve_channel("C0123")
     assert d.level == "off"
     assert "not one of" in d.detail
+
+
+# ---------------------------------------------------------------------------
+# An unreadable-but-present config is a different fact than an absent one
+# ---------------------------------------------------------------------------
+
+def test_an_unreadable_config_is_distinguished_from_a_missing_one(
+    monkeypatch, tmp_path,
+) -> None:
+    """The auditor's finding: `except OSError: return None, 'absent'`
+    collapsed a genuinely missing file with one that exists but could not be
+    opened into the identical state and the identical detail string --
+    exactly the diagnostic ambiguity this module's own docstring says it
+    exists to avoid. Both fail closed either way (no security consequence),
+    but a machine-owner debugging "why is this channel off" deserves to be
+    told the file exists and could not be read, not that there is no file
+    at all.
+
+    A directory sitting at the config path, rather than a chmod, so the
+    failure mode is portable: opening a directory for reading raises
+    `IsADirectoryError` on POSIX and `PermissionError` on Windows -- both
+    `OSError` subclasses, neither `FileNotFoundError` -- without depending
+    on permission bits behaving the same way across platforms or on the
+    test not running as root.
+    """
+    home = tmp_path / "home"
+    cfg_dir = home / ".config" / "supertool"
+    (cfg_dir / "slack_authorization.json").mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+
+    d = auth.resolve_channel("C0123")
+
+    assert d.level == "off"
+    assert "no config at" not in d.detail, (
+        "a file (or, here, a directory) present at the path must not read "
+        "as if there were nothing there at all"
+    )

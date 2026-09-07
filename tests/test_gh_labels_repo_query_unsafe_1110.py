@@ -77,6 +77,29 @@ def test_a_query_unsafe_repo_target_is_refused_before_any_search(
     assert rc == 1, "an unsafe repo target must not tally as if nothing was wrong"
 
 
+def test_the_issues_own_repro_needs_no_quote_character_at_all(
+    monkeypatch,
+) -> None:
+    """The auditor's finding on this same fix: `repo:{repo}` is interpolated
+    UNQUOTED in `search_query` (unlike the prefix and every label name, which
+    sit inside `label:"{n}"`), so a bare SPACE is enough to inject extra
+    search syntax -- no `"` or newline required. `_QUERY_UNSAFE` alone
+    (`["\r\n]`) does not see this at all: this is the issue's own repro
+    verbatim, `SUPERTOOL_REPO='owner/name is:public'`, and it must be
+    refused on shape, not on a quote/newline check that was never going to
+    fire for this input."""
+    monkeypatch.setattr(labels.subprocess, "run", _refusing_gh)
+    rc = labels.tally_main(
+        "cohort-", LABELS,
+        "Digital-Process-Tools/claude-supertool is:public")
+
+    assert rc == 1, (
+        "the exact shape from the issue's own repro -- no quote, no "
+        "newline, just a space -- was tallied as if the repo target were "
+        "clean, because it was interpolated unquoted into the query"
+    )
+
+
 def test_a_clean_repo_target_is_not_refused(monkeypatch, capsys) -> None:
     """Positive control: the check must not swallow the ordinary case."""
     monkeypatch.setattr(labels.subprocess, "run", _clean_gh)
