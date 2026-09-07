@@ -496,11 +496,38 @@ def _raw_refname_prints(path: Path) -> list[str]:
     return sorted(set(found))
 
 
+#: The three shapes this scanner recognises as a sink, named here once so
+#: the boundary line below and the "Covered" table in #1089 cannot drift
+#: apart the way the coverage claim in #976 did: print(...) receiving the
+#: value directly or via an f-string, return of an f-string, and return
+#: of a bare name already tainted by an earlier assignment. Anything else --
+#: sys.stdout.write, a helper the value is merely passed to, %/.format,
+#: a dict subscript keyed by a variable -- is outside this count and outside
+#: the scan (#1089's own "Not covered" table).
+SINK_SHAPES = 3
+
+
 def test_no_preset_prints_a_refname_raw() -> None:
+    """checked N files, M sink shapes, these trees (#1089's second ask):
+    a guard that cannot state its own boundary is the three-state defect
+    this repo has filed more than any other, wearing a passing test's
+    clothes. Printed unconditionally -- on the clean run too, not only on a
+    finding -- so a reader of `pytest -rA` or a failure's captured stdout
+    sees the scope this assertion actually claims, not just its verdict.
+    """
     offenders: list[str] = []
+    scanned_files = 0
     for directory in _SCANNED:
         for path in sorted((_ROOT / directory).rglob("*.py")):
+            scanned_files += 1
             offenders.extend(_raw_refname_prints(path))
+    print(
+        f"checked {scanned_files} files across {len(_SCANNED)} trees "
+        f"({', '.join(_SCANNED)}), {len(REFNAME_KEYS)} source keys tracked "
+        f"({', '.join(sorted(REFNAME_KEYS))}), {SINK_SHAPES} sink shapes "
+        f"recognised (print of a value or an f-string, return of an "
+        f"f-string, return of a tainted bare name)."
+    )
     assert offenders == [], (
         "a refname reaches print() without _untrusted.flat:\n  "
         + "\n  ".join(sorted(set(offenders))))
