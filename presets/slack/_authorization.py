@@ -190,9 +190,13 @@ def resolve_channel(channel_id: str, user_id: Optional[str] = None, *,
         if proj_level not in LEVELS:
             detail += (f"; the project's .supertool.json names an unrecognised "
                        f"level {proj_level!r} for this channel — ignored")
-        elif _RANK[proj_level] <= _RANK[base_level]:
+        elif _RANK[proj_level] < _RANK[base_level]:
             effective_level = proj_level
             detail += f"; narrowed to {proj_level!r} by .supertool.json"
+        elif _RANK[proj_level] == _RANK[base_level]:
+            effective_level = proj_level
+            detail += (f"; .supertool.json also names {proj_level!r} for "
+                       f"this channel — same level, unchanged")
         else:
             detail += (f"; .supertool.json asked for {proj_level!r}, which "
                        f"is WIDER than {base_level!r} — a project may narrow "

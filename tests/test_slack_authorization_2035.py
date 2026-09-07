@@ -165,6 +165,21 @@ def test_a_project_cannot_widen_off_to_open(monkeypatch, tmp_path) -> None:
     assert "WIDER" in d.detail or "ignored" in d.detail
 
 
+def test_stating_the_same_level_the_project_already_had_is_not_worded_as_narrowing(
+    monkeypatch, tmp_path,
+) -> None:
+    """Explore's cosmetic finding on this same fix: when the project's level
+    EQUALS the out-of-repo level, nothing was actually narrowed -- the code
+    path was `_RANK[proj_level] <= _RANK[base_level]` (true when equal too),
+    and it worded that as "narrowed to X", which is misleading even though
+    it changes no decision."""
+    home = _write_config(tmp_path, {"channels": {"C0123": {"level": "context"}}})
+    monkeypatch.setenv("HOME", str(home))
+    project = {"slack": {"channels": {"C0123": "context"}}}
+    d = auth.resolve_channel("C0123", project_config=project)
+    assert "narrowed" not in d.detail, d.detail
+
+
 def test_a_project_may_narrow_context_to_off_leaving_other_channels_alone(
     monkeypatch, tmp_path,
 ) -> None:
