@@ -93,6 +93,18 @@ B = "B: require_symlink() in the body"
 D = "D: a local _can_symlink() probe with its own pytest.skip"
 E = "E: the call is inside a try/except OSError"
 P = "P: the test is platform-skipped anyway, for an unrelated reason"
+#: A bare helper -- no decorator of its own, no enclosing pytestmark -- whose
+#: only gate lives on every one of its CALLERS. The register cannot see past
+#: the enclosing def (#1630: `test_guard_envelope_serialisation_1613.py::_toolbox`
+#: read UNGATED though its six callers all carried `@_POSIX_ONLY`, and 13 of 23
+#: CI legs went red on a fixture that was already correct). The remedy chosen
+#: over interprocedural call-graph analysis is a convention: `@gated_by_caller`
+#: from `tests/_symlink.py`, applied to the HELPER's own `def` line, so the
+#: visitor's existing decorator walk sees it directly -- no need to follow
+#: references. It is trust placed at the one site a reader can audit, exactly
+#: like `A` and `B` already are: the register never verifies a `require_symlink()`
+#: call actually executes either.
+C = "C: a bare helper marked @gated_by_caller -- every caller supplies the gate"
 UNGATED = "UNGATED"
 
 
@@ -162,6 +174,8 @@ class _Visitor(ast.NodeVisitor):
         for node in self._scope:
             if "requires_symlink" in self._decorator_source(node):
                 return A
+            if "gated_by_caller" in self._decorator_source(node):
+                return C
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if (self._called_before("require_symlink", node, lineno)
                         or self._called_before(
@@ -466,6 +480,46 @@ def test_the_classifier_refuses_a_gate_that_would_not_have_fired() -> None:
         "fires first and the gate never runs")
     assert mech(prose, call) == UNGATED, (
         "a docstring mentioning require_symlink() was read as a call")
+
+
+def test_a_bare_helper_marked_gated_by_caller_is_not_read_as_ungated() -> None:
+    """#1630: a bare helper -- no decorator of its own, no enclosing
+    pytestmark -- whose real gate lives on every one of its CALLERS used to
+    read UNGATED, because the visitor never looks past the enclosing def.
+    Reproduces `test_guard_envelope_serialisation_1613.py::_toolbox` on PR
+    #1620 (2026-08-13): `_toolbox` created a symlink, was referenced only from
+    `_run`, whose only callers were six tests all carrying `@_POSIX_ONLY` --
+    13 of 23 CI legs went red on a fixture that was already correct.
+
+    The convention: `@gated_by_caller` from `tests/_symlink.py`, applied to
+    the helper's own `def` line, so the existing decorator walk sees it
+    directly -- the author's stated preference over full interprocedural
+    call-graph analysis (#1630).
+    """
+    src = (
+        "from _symlink import gated_by_caller" + chr(10) + chr(10)
+        + "@gated_by_caller" + chr(10)
+        + "def _toolbox(tmp_path):" + chr(10)
+        + "    (tmp_path / 'l').symlink_to(tmp_path)" + chr(10)
+    )
+    sites = _sites_in_source("tests/synthetic.py", src)
+    assert sites["tests/synthetic.py::_toolbox"][0][1] == C, (
+        "a helper marked @gated_by_caller must not read UNGATED")
+
+
+def test_a_bare_helper_with_no_mark_still_reads_ungated() -> None:
+    """Positive control for #1630: the convention must not blanket-exempt
+    every undecorated helper. One with no `@gated_by_caller`, no enclosing
+    pytestmark, and no other recognised mechanism is exactly the case this
+    register exists to catch, and the fix above must not silence it.
+    """
+    src = (
+        "def _toolbox(tmp_path):" + chr(10)
+        + "    (tmp_path / 'l').symlink_to(tmp_path)" + chr(10)
+    )
+    sites = _sites_in_source("tests/synthetic.py", src)
+    assert sites["tests/synthetic.py::_toolbox"][0][1] == UNGATED, (
+        "an undecorated helper with no gate anywhere must still read UNGATED")
 
 
 def test_a_posix_only_module_is_platform_skipped_however_it_is_spelled() -> None:
