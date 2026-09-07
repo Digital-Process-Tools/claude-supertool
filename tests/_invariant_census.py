@@ -59,7 +59,17 @@ _PLATFORM_SIGNAL = re.compile(
     r"posix_only|require_symlink|windows_has_no_usable_bash|codepage|cp1252|"
     r"UnicodeEncodeError|shutil\.which|python3|App Execution Alias|"
     r"_shim|geteuid|O_NOFOLLOW|AF_UNIX|SeCreateSymbolicLinkPrivilege|"
-    r"win32|is_windows|IS_WINDOWS",
+    r"win32|is_windows|IS_WINDOWS|"
+    # #2360 self-review: `test_watch_sources_path_2135.py` walks the tree,
+    # asserted the census's own `_walks_tree` check saw it, and would have
+    # been marked `invariant` -- silently narrowing Windows-leg coverage of
+    # exactly the class the census exists to protect -- because its own
+    # docstring names the defect it guards (a hardcoded ':' splitting a
+    # Windows drive letter) without any of the tokens above. `os.pathsep`
+    # is the value that diverges by platform; `ntpath`/`PureWindowsPath`
+    # are the two spellings a test constructs a Windows path with without
+    # naming Windows.
+    r"os\.pathsep|ntpath|PureWindowsPath",
     re.IGNORECASE,
 )
 

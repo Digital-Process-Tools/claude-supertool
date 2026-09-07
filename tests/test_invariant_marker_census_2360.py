@@ -6,18 +6,33 @@ platform-sensitive.
 
 Measured population, from `tests/_invariant_census.py` (recomputed here, not
 copied, so a change to the census logic and a change to this pin cannot
-silently drift apart): 92 tree-walking test files, 59 of them invariant by
-the heuristic and 33 excluded as platform-sensitive, out of 1061 test files
-total on the commit this was written against -- 5.6% of the suite's files.
+silently drift apart): 92 tree-walking test files, 58 of them invariant by
+the heuristic and 34 excluded as platform-sensitive, out of 1062 test files
+total in this directory once this file itself exists -- 5.5% of the suite's
+files. (An earlier count of 1061/59 total/invariant, quoted in this PR's own
+commit message, was taken one commit before both this file and the
+`os.pathsep` self-review fix below existed; a total counted from `tests/`
+by a file that is itself a new addition to `tests/` is stale from the
+instant it lands, and there is no fixed number to write here that survives
+its own existence -- `_invariant_census.population()` is the number to
+trust, always, never this docstring.)
+
+Self-review found one gap in the heuristic before this landed:
+`test_watch_sources_path_2135.py` walks the tree and was originally
+classified invariant, despite its own docstring naming the exact defect it
+guards -- a hardcoded `':'` splitting a Windows drive letter -- because
+`_PLATFORM_SIGNAL` had no `os.pathsep` token. Fixed by adding one; this is
+why the population is 58 rather than 59.
+
 Timed locally (not on CI, and not a claim about CI's own wall clock): running
-only the 59-file invariant population under `-n 4 --dist loadfile` (matching
-the pytest job's `--dist loadfile`, at a worker count close to a hosted
-ubuntu runner) is 1052 passed, 3 skipped in 45.44s wall, ~115.8s of summed
-per-test duration -- against the 339.84s leg wall this issue's own tail
-sample was measured against, that is a meaningfully larger slice than the
-top-25 tail's own ~35s estimate, and above the 3% floor #2360 says would
-justify closing without a deselect. Worth pursuing, not a halving: `--no-cov`
-already took the other half of what `claude-oss` gained.
+only the invariant population under `-n 4 --dist loadfile` (matching the
+pytest job's `--dist loadfile`, at a worker count close to a hosted ubuntu
+runner) is 1022 passed, 3 skipped in 31.20s wall, ~75.2s of summed per-test
+duration -- against the 339.84s leg wall this issue's own tail sample was
+measured against, that is a meaningfully larger slice than the top-25 tail's
+own ~35s estimate, and above the 3% floor #2360 says would justify closing
+without a deselect. Worth pursuing, not a halving: `--no-cov` already took
+the other half of what `claude-oss` gained.
 """
 from __future__ import annotations
 
