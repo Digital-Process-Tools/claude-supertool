@@ -61,7 +61,7 @@ _OVER_BUDGET = {
     "channel": 6492,
     "gh-prs": 4512,
     "git-push": 3991,
-    "gh-pr-merge": 3589,
+    "gh-pr-merge": 3585,
     "git-commit": 3463,
     "gh-issues": 2866,
     "gh-branch": 2784,
