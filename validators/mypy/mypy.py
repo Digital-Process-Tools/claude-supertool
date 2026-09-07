@@ -14,6 +14,17 @@ plugin-typed libraries." This adapter mirrors `pyright.py`'s shape (same
 three-state contract, same JSON-first parsing, same crash net) so the two
 read as a pair rather than as two designs.
 
+**One place they are not a pair: how a flag-shaped target is kept out of
+the type-checker's own option parser.** This adapter puts a `--` ahead of
+`file` because mypy honors that as an end-of-options marker. `pyright.py`
+cannot do the same — measured against a real installed pyright 2.x/1.1.409,
+`pyright --outputjson -- --outputjson` still errors `Unexpected option
+outputjson.` (exit 4), so it instead relies on `contained_target()`, the
+same relative-prefix containment `tsc-check.py` uses (#2379, #1519). Same
+problem, same three-state contract either side of it, genuinely different
+fix — read `pyright.py`'s own module docstring for why `--` does not work
+there.
+
 Usage:  mypy.py <file>
 
 Output shape matches the supertool validator SCHEMA:
