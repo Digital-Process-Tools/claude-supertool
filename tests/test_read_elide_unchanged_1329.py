@@ -163,12 +163,53 @@ def test_full_never_elides_and_is_named_by_the_elision(elide_on: Path) -> None:
     assert "elided" not in forced
 
 
-def test_full_returns_content_and_rearms_the_window(elide_on: Path) -> None:
-    """After a forced read the caller demonstrably has the bytes again."""
+def test_full_returns_content_and_rearms_the_window(
+    elide_on: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a forced read the caller demonstrably has the bytes again.
+
+    Both `op_read` calls are pinned to the same frozen instant. Left on real
+    `time.time()` this test raced a loaded/parallel CI runner -- 2 of 18
+    cases failed on one run, all 21 legs clean on a rerun with no code
+    change, always green locally -- because the elision gate in
+    `_read_elide` is a genuine `now - prior[1] <= _read_elide_window()`
+    wall-clock comparison, and two back-to-back calls are not guaranteed to
+    land inside it under load (#2354). Freezing time removes the real gap
+    the assertion never meant to depend on, the same technique
+    `test_the_window_is_measured_from_the_last_content_not_the_last_elision`
+    already uses a few tests up.
+    """
     f = elide_on / "h2.py"
     f.write_bytes(b"s = 5\n")
+    base = 1_755_000_000.0
+    monkeypatch.setattr(supertool.time, "time", lambda: base)
     supertool.op_read(str(f), force_full=True)
     assert "elided" in supertool.op_read(str(f))
+
+
+def test_a_loaded_runner_gap_still_correctly_refuses_to_elide(
+    elide_on: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Positive control for the fix above (#2354).
+
+    The frozen-time fix must not paper over the real gate: a genuinely
+    exceeded window has to still withhold the elision. Simulates the
+    "loaded CI runner" scenario the flake was blamed on -- a real gap
+    between the two calls that exceeds the window -- via a mocked clock
+    rather than an actual multi-minute sleep, and confirms `_read_elide`
+    correctly declines to elide when that happens, exactly as it did in
+    the CI run that reported this issue.
+    """
+    f = elide_on / "h3.py"
+    f.write_bytes(b"s = 5\n")
+    base = 1_755_000_000.0
+    monkeypatch.setattr(supertool.time, "time", lambda: base)
+    supertool.op_read(str(f), force_full=True)
+    later = base + supertool._READ_ELIDE_WINDOW_SECONDS + 1
+    monkeypatch.setattr(supertool.time, "time", lambda: later)
+    out = supertool.op_read(str(f))
+    assert "     1→s = 5" in out
+    assert "elided" not in out
 
 
 def test_a_windowed_or_filtered_read_is_never_elided(elide_on: Path) -> None:
@@ -243,8 +284,16 @@ def test_the_config_switch_turns_it_off(
     gave the class its own reader. This test does not care which: it asserts
     the switch enters the state it reports, which is the thing that was false.
     """
+    # #2354: pinned, same as `test_full_returns_content_and_rearms_the_window`
+    # above -- the first `op_read`/second-`op_read` pair used real
+    # `time.time()` and raced a loaded/parallel CI runner (2 of 18 cases
+    # failed on one run). The window check the switch is being tested
+    # against is not what this test is *about*; freezing it removes the
+    # unrelated wall-clock dependency.
     f = elide_on / "m.py"
     f.write_bytes(b"v = 8\n")
+    base = 1_755_000_000.0
+    monkeypatch.setattr(supertool.time, "time", lambda: base)
     supertool.op_read(str(f))
     assert "elided" in supertool.op_read(str(f))
     monkeypatch.setattr(supertool, "_CONFIG",
