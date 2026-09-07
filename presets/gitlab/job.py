@@ -221,11 +221,18 @@ def _last_section(lines: list[str]) -> str | None:
 # prefix and nothing past it, so the boilerplate literal still has to occupy
 # the rest of the line unchanged.
 _STREAM_PREFIX = r"(?:\S+\s+)?"
+# `[ \t]*`, not `\s*` (#1188's own guard, tripped by the #1110 fix that added
+# these): `\s` matches a newline, so `\s*\Z` in front of the anchor can
+# itself swallow one -- the run eats it and `\Z` never has to reject
+# anything, which is a no-op anchor over an unchanged defect. `[ \t]*` is
+# what "end of line, optional trailing spaces/tabs" actually means; a real
+# embedded newline past this point is content the anchor is meant to refuse.
+_TRAILING = r"[ \t]*\Z"
 _BOILERPLATE = [
-    re.compile(_STREAM_PREFIX + r"ERROR: Job failed: exit code \d+\s*\Z"),
-    re.compile(_STREAM_PREFIX + r"section_(?:start|end):\d+:\S+\s*\Z"),
+    re.compile(_STREAM_PREFIX + r"ERROR: Job failed: exit code \d+" + _TRAILING),
+    re.compile(_STREAM_PREFIX + r"section_(?:start|end):\d+:\S+" + _TRAILING),
     re.compile(_STREAM_PREFIX +
-              r"Cleaning up project directory and file based variables\s*\Z"),
+              r"Cleaning up project directory and file based variables" + _TRAILING),
 ]
 
 
