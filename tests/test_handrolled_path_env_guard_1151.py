@@ -77,7 +77,7 @@ DECLARED_UNRESOLVED = [
     "env= expression could not be evaluated by this scanner",
     "test_watch_sock_path_581.py:102 [unresolved] "
     "env= expression could not be evaluated by this scanner",
-    "test_worktree_setup_teardown_532.py:52 [unresolved] "
+    "test_worktree_setup_teardown_532.py:53 [unresolved] "
     "env= expression could not be evaluated by this scanner",
 ]
 
