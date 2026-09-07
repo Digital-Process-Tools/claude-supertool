@@ -243,6 +243,19 @@ jobs:
         shell: pwsh
         run: |
           echo "::warning::Windows Defender exclusion step failed (Add-MpPreference) -- continuing without it; this Windows run may be slower than usual, see #2259"
+      - name: Print xdist worker sizing (#2345)
+        # `pyproject.toml`'s `addopts` carries `-n auto`, and the step below
+        # runs on all twelve legs with a worker count nobody has read.
+        # `.github/scripts/print_worker_sizing.py` walks xdist's own
+        # resolution order (env var, `psutil.cpu_count(logical=False)`,
+        # `os.sched_getaffinity(0)`, `os.cpu_count()`) and names which source
+        # answered -- the one thing the real "N workers" banner on the step
+        # below cannot say, which matters because a transitive dependency
+        # pulling in `psutil` silently changes physical-vs-logical core
+        # counting with no other visible cause. Report only: always exits 0,
+        # never gates a leg.
+        shell: bash
+        run: python .github/scripts/print_worker_sizing.py
       - name: Run tests (excludes slow and benchmark — see #891)
         # Override pyproject addopts default. Until #891 this ran the `slow`
         # marker on all twelve legs, on every push — marking a test `slow`
@@ -294,8 +307,23 @@ jobs:
         # encoding defects precisely by leaving the environment alone. A fix
         # whose blast radius includes the tests that would catch its own
         # regression is not a fix. Pinned by `tests/test_ci_encoding_546.py`.
+        # No `-q` (#2345): `-q` suppresses xdist's own "N workers [M items]"
+        # banner along with the platform/rootdir/plugins header -- confirmed
+        # locally, same invocation as this line minus the interpreter flag,
+        # junit-xml and all: the banner prints without `-q` and is gone the
+        # instant `-q` is added. The issue's own "worth checking" note says
+        # the fix is smaller than it assumes if that is true. It is: the
+        # delta is a fixed ~6-line header, not one that scales with this
+        # suite's ~16.5k tests, and nothing in this repo parses this step's
+        # raw stdout downstream -- `junit_summary.py` and
+        # `duration_report.py` both read junit.xml, never this stream.
+        # Dropping `-q` prints the worker count xdist actually resolved to,
+        # on every leg, for free -- a real measurement rather than a
+        # re-derivation of xdist's own resolution logic that could drift
+        # from it (the step above measures the same thing from the outside,
+        # and names *which* source answered, which this banner cannot say).
         shell: bash
-        run: python -X utf8 -m pytest -m 'not slow and not benchmark' --tb=no --no-cov --durations=25 --junit-xml=junit.xml -q
+        run: python -X utf8 -m pytest -m 'not slow and not benchmark' --tb=no --no-cov --durations=25 --junit-xml=junit.xml
       - name: Show failing tests with full messages (always runs)
         # `--tb=no` above means the one-line summary is all there is, and pytest
         # elides the middle of a long one to fit the terminal width — on one real
