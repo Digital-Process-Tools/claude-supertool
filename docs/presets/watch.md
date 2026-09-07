@@ -476,6 +476,10 @@ Three things are said out loud rather than swallowed, and each is a decision:
 
 A tier that raises while being *loaded* is newly possible, since route 3 imports somebody else's file. It is caught and named like a tier that raises while reporting: one project's broken tier never costs another its board.
 
+### Document a new tier here, not in `radar`'s own description
+
+`radar`'s `description` field in `presets/watch.json` is already one of the twelve entries `tests/test_description_is_not_a_changelog_1774.py` allows to sit over the size ratchet (`MAX_DESCRIPTION`) on the condition that it only ever shrinks. Adding a sentence about a new tier there fails that test regardless of how short the sentence is ([#2367](https://github.com/Digital-Process-Tools/claude-supertool/issues/2367); hit for real adding the `gl-issue` tier, [#898](https://github.com/Digital-Process-Tools/claude-supertool/issues/898)). This page has no such budget — give the new tier its own `## ... tier` section here, in the shape the existing ones use, and leave the op's `description` alone.
+
 ### Silence rules, and the third state
 
 - a **healthy** tier says nothing unless its `RADAR_QUIET_DEFAULT` says otherwise — a green line per tier per run is what trains people to skim past the red one

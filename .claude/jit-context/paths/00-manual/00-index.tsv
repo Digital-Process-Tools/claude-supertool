@@ -11,3 +11,4 @@ tests/	tests-suite.md
 validators/	validators.md
 .claude-plugin/|pyproject.toml	version-sites.md
 \.claude/jit-context/vocabulary/	vocabulary-index.md
+presets/watch\.json	watch-json-description.md
