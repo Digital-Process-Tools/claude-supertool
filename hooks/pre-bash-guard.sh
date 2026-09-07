@@ -254,7 +254,7 @@ attempt() {
     out=$(printf '%s' "$EVENT" | "$@" "$BIN")
     rc=$?
     case "$out" in
-        "$WIRE_PREFIX"silent|"$WIRE_PREFIX"silent"$NL"*)
+        "$WIRE_PREFIX"silent|"$WIRE_PREFIX"silent"$CR"|"$WIRE_PREFIX"silent"$NL"*|"$WIRE_PREFIX"silent"$CR""$NL"*)
             # `silent` is not a word a rung may assert (#1686): it is the one
             # verb that costs a forger nothing, because it is bit-identical
             # to this wrapper's own no-op. A rung that prints it is treated
@@ -266,14 +266,32 @@ attempt() {
             # is never committed to, and a real interpreter further down the
             # ladder still gets to inspect the command and deny it.
             #
+            # **The `$CR` alternatives are load-bearing, not decoration**
+            # (self-review, #1686). `$(...)` strips a trailing newline and
+            # nothing else, so `supertool-guard-v1 silent<CR>` - what a
+            # CRLF-emitting rung under Git Bash or a Windows launcher writes,
+            # or simply what a forger chooses to send - used to miss this
+            # match entirely, fall into the `"$WIRE_PREFIX"*` branch below,
+            # reach `relay`, have its CR stripped there (the same tolerance
+            # `relay` already has for a legitimate `deny` on that platform),
+            # and come back out as the bare word `silent` - which `relay`'s
+            # own case no longer recognises, so it declined. But `decline`
+            # exits the whole script: the ladder still stopped one rung
+            # early, on a wrapper that had already committed to answering,
+            # exactly reproducing the original defect with a visible refusal
+            # note in place of zero trace instead of the trace-free bypass.
+            # Matching the CR here, before `relay` is ever reached, is what
+            # keeps the walk going instead of stopping on a decline.
+            #
             # Deliberately not `PARTIAL_TRIED` either. That sink means "this
             # rung began writing a real answer and died mid-write" - an
             # actionable diagnosis about a broken interpreter. A rung that
-            # prints exactly `silent` has not begun anything: `_nothing_to_say`
-            # in `hooks/pre_bash_guard.py` no longer writes this word at all,
-            # so nothing on the legitimate side of this wrapper ever produces
-            # it, and folding it into `PARTIAL_TRIED` would send a reader
-            # looking for a crashed interpreter instead of a rung that lied.
+            # prints exactly `silent` (with or without a trailing CR) has not
+            # begun anything: `_nothing_to_say` in `hooks/pre_bash_guard.py`
+            # no longer writes this word at all, so nothing on the
+            # legitimate side of this wrapper ever produces it, and folding
+            # it into `PARTIAL_TRIED` would send a reader looking for a
+            # crashed interpreter instead of a rung that lied.
             ;;
         "$WIRE_PREFIX"*)
             # The prefix identifies a Python 3 that ran — but a *prefix* of an

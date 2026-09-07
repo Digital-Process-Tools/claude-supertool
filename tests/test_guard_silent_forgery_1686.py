@@ -88,3 +88,30 @@ def test_a_genuinely_clean_command_still_gets_a_no_decision_answer(project):
     hook = json.loads(proc.stdout)["hookSpecificOutput"]
     assert hook.get("permissionDecision") is None, hook
     assert "did not run" not in hook.get("additionalContext", ""), hook
+
+
+@needs_wrapper
+def test_a_forged_silent_with_a_trailing_cr_cannot_suppress_the_denial(
+        project, tmp_path):
+    """The self-review finding on top of the issue's own reproduction.
+
+    `attempt`'s new match is on the wire prefix plus the bare word `silent`.
+    A CR before the newline - what `py -3` under Git Bash, or any Windows
+    launcher, could append - used to fall through the discard branch
+    untouched, land in `relay`, get its CR stripped there (the tolerance
+    `relay` already has for a legitimate `deny` on that platform), and come
+    back out as the bare word `silent` - now refused by `relay`'s own case,
+    but only *after* `relay` had already committed to answering and exited.
+    The net effect was the same as the original defect: the real interpreter
+    further down the ladder never ran, and its `deny` never surfaced -
+    merely with a visible refusal note this time instead of zero trace.
+    """
+    venv = _venv(tmp_path, "venv",
+                 "printf '%s' 'supertool-guard-v1 silent" + chr(13) + "'"
+                 + _NL + "exit 0")
+    proc = _run_wrapper("gh pr view 12", project, {"VIRTUAL_ENV": str(venv)})
+    assert proc.returncode == 0, proc.stderr
+    hook = json.loads(proc.stdout)["hookSpecificOutput"]
+    assert hook.get("permissionDecision") == "deny", (
+        "a forged silent with a trailing CR suppressed the real "
+        "interpreter's deny: " + proc.stdout)
