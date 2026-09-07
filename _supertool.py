@@ -3229,6 +3229,26 @@ def _read_only_declared() -> bool:
         "1", "true", "yes", "on")
 
 
+def _op_is_recognized(op: str) -> bool:
+    """True when `op` resolves to something dispatch actually runs -- a
+    builtin, or a name this project's config declares under `"ops"` or
+    `"aliases"` (#1787's own self-review). The read-only gate must not ask
+    `_op_safety_class` about a name that fails this: an unrecognised name is
+    not `read-only` either, so a naive gate declined it as a manufactured
+    `!`-class op whose printed remedy -- "unset SUPERTOOL_READ_ONLY" -- could
+    never fix a name that does not exist. `_op_gated_by_mixed_tree_write_check`
+    below carries the identical carve-out for the identical reason (#1878).
+    """
+    if op in _valid_op_names():
+        return True
+    config = _load_config()
+    for section in ("ops", "aliases"):
+        entries = config.get(section)
+        if isinstance(entries, dict) and op in entries:
+            return True
+    return False
+
+
 def _op_safety_class(op: str) -> str:
     """Safety class for ONE op name, without building the whole roster.
 
@@ -3238,10 +3258,14 @@ def _op_safety_class(op: str) -> str:
     `_OP_SAFETY_BUILTIN` -- a project config cannot downgrade one, matching
     `_roster_classes()`'s own rule that class is a property of this binary.
     A preset/project op reads its declared `"safety"` off `.supertool.json`
-    ("ops" then "aliases"); undeclared, unrecognised, or a string-form cmd
-    shorthand (no `"safety"` key to read) falls back to `"acts"`, the loudest
-    class -- an op this function does not recognise is over-marked here for
-    the same reason the roster over-marks it, never under-marked.
+    ("ops" then "aliases"); undeclared or a string-form cmd shorthand (no
+    `"safety"` key to read) falls back to `"acts"`, the loudest class.
+
+    Call `_op_is_recognized(op)` first: an op that fails it is not covered by
+    either rule above, and this function still answers `"acts"` for it --
+    correct for `_roster_classes()`, which only ever asks about names it is
+    already enumerating, and wrong for a caller asking about an arbitrary
+    string, which is exactly what an unrecognised name is.
 
     Deliberately ignores `"status"` (listing suppression): a builtin or
     preset op still dispatches when hidden from `ops`/`ops:roster`, and this
@@ -3268,13 +3292,21 @@ def _read_only_decline(op: str, cls: str) -> str:
     `_mixed_tree_decline` beside it makes: a caller reading this receipt must
     be able to tell "declined because I asked for read-only" from "failed for
     an unrelated reason" without cross-referencing anything else.
+
+    `op` is flattened through `_flat_field(..., disclose_newline=True)`
+    before it is printed -- the same treatment `_dispatch_impl`'s own header
+    already gives it, and for the same reason: a colon-CLI op name can never
+    carry a literal newline, but a `.supertool.json` `"ops"`/`"aliases"` KEY
+    can (a JSON string permits one), and an unflattened name there could
+    forge a `[result] …` line at column 0 (caught in self-review, #1787).
     """
+    flat_op = _flat_field(op, disclose_newline=True)
     marker = _SAFETY_MARKERS.get(cls, "!")
     shown = marker or cls
     what = ("writes files in this tree" if cls == "writes"
             else "reaches outside this tree, or outlives the call")
     return (
-        f"SKIPPED: '{op}' is class `{shown}` ({cls}) -- it {what} -- and "
+        f"SKIPPED: '{flat_op}' is class `{shown}` ({cls}) -- it {what} -- and "
         f"{_READ_ONLY_ENV}=1 is set.\n"
         f"Declined rather than run: the caller asked to be held to "
         f"read-only, and acting anyway would be exactly the silent gap this "
@@ -30679,13 +30711,25 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
 
     # Read-only gate (#1787), the earliest point `op` is known on every path
     # -- built-in, preset/project, and every batch sub-op that recurses back
-    # through this same function. Fires before any argument shape is even
-    # looked at (a mixed-tree pair, an @-payload route, stdin) because none of
-    # that matters once the answer is "do not run this op at all": there is no
-    # more-specific refusal for this call to lose to, unlike the mixed-tree
-    # gate below which deliberately waits until immediately before stdin is
-    # touched.
-    if _read_only_declared():
+    # through this same function (with one exception: a batch sub-op whose
+    # own name is in `_READ_OP_AT_FIELDS` is dispatched straight to the op
+    # function and never re-enters here -- inert today because every name in
+    # that set is `read-only`, pinned by
+    # tests/test_read_only_declared_1787.py's own census). Fires before any
+    # argument shape is even looked at (a mixed-tree pair, an @-payload
+    # route, stdin) because none of that matters once the answer is "do not
+    # run this op at all": there is no more-specific refusal for this call to
+    # lose to, unlike the mixed-tree gate below which deliberately waits
+    # until immediately before stdin is touched.
+    #
+    # Gated on `_op_is_recognized(op)`, not on `op` alone -- self-review
+    # caught this (#1787): an unrecognised/typo'd name is not `read-only`
+    # either, so a naive gate declined it as a manufactured `!`-class op with
+    # a remedy ("unset SUPERTOOL_READ_ONLY") that cannot fix a name that does
+    # not exist. `_op_gated_by_mixed_tree_write_check` two dozen lines below
+    # carries the identical carve-out for the identical reason (#1878): an
+    # unrecognised name must fall through to "unknown operation" unchanged.
+    if _read_only_declared() and _op_is_recognized(op):
         _read_only_cls = _op_safety_class(op)
         if _read_only_cls != "read-only":
             _bump_counter(_SKIP_COUNT, "cnt_skip")

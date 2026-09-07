@@ -383,14 +383,15 @@ at:
 ```
 $ SUPERTOOL_READ_ONLY=1 python3 supertool.py 'paste:::x.txt:::hello'
 --- paste:::x.txt:::hello ---
-SKIPPED: 'paste' is class `*` (writes) — it writes files in this tree — and
-SUPERTOOL_READ_ONLY=1 is set.
-Declined rather than run: the caller asked to be held to read-only, and
-acting anyway would be exactly the silent gap this declaration exists to
-close (#1787).
-Every op's class: `ops:roster`. To act anyway for this call, unset
-SUPERTOOL_READ_ONLY.
+SKIPPED: 'paste' is class `*` (writes) -- it writes files in this tree -- and SUPERTOOL_READ_ONLY=1 is set.
+Declined rather than run: the caller asked to be held to read-only, and acting anyway would be exactly the silent gap this declaration exists to close (#1787).
+Every op's class: `ops:roster`. To act anyway for this call, unset SUPERTOOL_READ_ONLY.
 ```
+
+(Wrapped here for the page; each of the three sentences above is one
+unwrapped line at the terminal, and the separators are a literal
+double-hyphen `--`, not an em dash — self-review caught this fenced block
+not byte-matching the real output.)
 
 The refusal names the op and its class rather than a bare "denied" — the
 same third-state argument the mixed-tree decline above makes: a caller
@@ -401,7 +402,7 @@ reading this receipt can tell "declined because I asked for read-only" from
 | --- | --- |
 | **An env var, not a `.supertool.json` key** | the flag is a property of ONE CALLER's intent for one invocation, not of the repo. The same worktree is dispatched into by a read-only audit agent and a normal writing session in the same tick, sometimes the same process tree — a project-level toggle would gate every caller or none, and whichever session wrote it last would silently win for every sibling. |
 | **What it does not do** | stop a determined caller. The raw-command guard hooks `Bash` only, and a caller that wants to write can always not call the op — `Edit`/`Write` reach disk with no op, no validator, no rollback, exactly as the roster's own legend already says. This is a guardrail against a cooperative agent's own mistake, the same shape as a shell `readonly` variable or `set -o noclobber`: worth having, and it claims nothing about an adversary. |
-| **Scope** | every op class other than `read-only` — builtins classed `writes` or falling back to `acts`, and preset/project ops declaring either, including every batch sub-op, since the gate fires inside `dispatch` itself and batch recurses through the same function. |
+| **Scope** | every op class other than `read-only` — builtins classed `writes` or falling back to `acts`, and preset/project ops declaring either. Gated on the op being *recognised* first: an unrecognised or typo'd name falls through to the ordinary `unknown operation` error rather than being declined as a manufactured `!`-class op (self-review caught this — the mixed-tree gate a few lines below carries the identical carve-out for the identical reason, [#1878](https://github.com/Digital-Process-Tools/claude-supertool/issues/1878)). A batch sub-op that recurses back through `dispatch` is caught the same way; the six `_READ_OP_AT_FIELDS` read ops (`grep`, `read`, `between`, `around`, `grep_around`, `validate`) route straight to the op function instead and never re-enter the gate — harmless only because every one of them is `read-only`, an invariant a census test pins rather than the gate itself enforcing. |
 
 ## Numeric environment knobs, and what happens when one is wrong
 
