@@ -252,8 +252,12 @@ jobs:
         # answered -- the one thing the real "N workers" banner on the step
         # below cannot say, which matters because a transitive dependency
         # pulling in `psutil` silently changes physical-vs-logical core
-        # counting with no other visible cause. Report only: always exits 0,
-        # never gates a leg.
+        # counting with no other visible cause. Report only, and the script
+        # itself catches everything it can raise -- `continue-on-error`
+        # is a second, independent layer, the same pattern already used a
+        # few steps up for the Windows Defender exclusion (#2259): a step
+        # with no correctness stake must fail open, not take the job with it.
+        continue-on-error: true
         shell: bash
         run: python .github/scripts/print_worker_sizing.py
       - name: Run tests (excludes slow and benchmark — see #891)

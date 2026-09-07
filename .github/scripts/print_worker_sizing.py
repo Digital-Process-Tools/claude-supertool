@@ -188,7 +188,24 @@ def render(resolution: Resolution, xdist_installed: bool) -> str:
 
 
 def main() -> int:
-    print(render(resolve(), is_xdist_installed()))
+    """Print the resolution and always return 0.
+
+    Reviewer finding (#2345 self-review): the module docstring and the
+    workflow step's own comment both promise "never gates a leg", but
+    nothing enforced that -- `resolve()`'s helpers catch the specific
+    exceptions xdist's own hook expects (ImportError, OSError), and an
+    exception of any OTHER shape would have propagated out of `main()` and
+    given the process a non-zero exit, failing the step this script is
+    explicitly meant not to be able to fail. `.github/workflows/tests.yml`
+    also gives this step `continue-on-error: true` as a second, independent
+    layer -- the same pattern this same job already uses for its Windows
+    Defender exclusion step (#2259) -- but a report-only script should not
+    rely solely on its caller to make that guarantee true.
+    """
+    try:
+        print(render(resolve(), is_xdist_installed()))
+    except Exception as exc:  # pragma: no cover - defends the "never gates" promise itself
+        print(f"xdist -n auto: worker sizing could not be read ({exc!r})")
     return 0
 
 

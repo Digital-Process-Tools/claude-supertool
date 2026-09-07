@@ -69,6 +69,8 @@ import importlib.util
 import re
 from pathlib import Path
 
+from _workflow_parse import job_blocks, job_steps
+
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO / ".github" / "scripts" / "print_worker_sizing.py"
 WORKFLOW_PATH = REPO / ".github" / "workflows" / "tests.yml"
@@ -214,26 +216,56 @@ def test_main_exits_zero_always(capsys):
 
 # ---------------------------------------------------------------------------
 # Workflow wiring: the "Run tests" step must actually print a worker count
+#
+# Structural, via tests/_workflow_parse.py, not `substring in text` (#731):
+# `tests.yml` is mostly comment explaining the very things these tests check,
+# so a needle search can be satisfied by prose describing the fix rather than
+# by the fix. Reviewer finding (#2345 self-review), reproduced concretely: a
+# text-substring-and-position version of the first test below still passed
+# when the sizing step's `run:` line was replaced with a decoy command while
+# its explanatory comment (which names the script by name) was left in
+# place -- the comment alone satisfied `"print_worker_sizing.py" in text`.
+# Parsing `run:` as its own field, the way `_workflow_parse.Step` does, is
+# what makes that unreachable, and reading `step.run` rather than a raw line
+# is also what survives a legitimate future reflow of the "Run tests" line
+# into a multi-line `run: |` block -- the second reviewer finding, on the
+# `-q` test below.
 # ---------------------------------------------------------------------------
+
+
+def _pytest_job_steps():
+    blocks = job_blocks(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    assert "pytest" in blocks, "the 'pytest' job was not found in tests.yml"
+    steps = job_steps(blocks["pytest"])
+    assert steps, "the 'pytest' job's steps parsed to an empty list"
+    return steps
 
 
 def test_tests_workflow_runs_the_worker_sizing_script_before_pytest():
     """RED on the tree this PR started from: `.github/scripts/print_worker_sizing.py`
 
     existed but nothing under `.github/workflows/` referenced it. GREEN once
-    a step invoking the script is added ahead of "Run tests" on the `pytest`
-    job.
+    a step whose `run:` field actually invokes the script is added ahead of
+    "Run tests" on the `pytest` job -- checked as a step's parsed `run`
+    field, not as a text search, so a step whose comment merely mentions the
+    script's name without its `run:` line invoking it does not count.
     """
-    text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert "print_worker_sizing.py" in text, (
-        "tests.yml has no step invoking .github/scripts/print_worker_sizing.py"
+    steps = _pytest_job_steps()
+    sizing_index = next(
+        (i for i, s in enumerate(steps) if "print_worker_sizing.py" in s.run),
+        None,
     )
-
-    sizing_pos = text.find("print_worker_sizing.py")
-    run_tests_pos = text.find('name: Run tests (excludes slow and benchmark')
-    assert run_tests_pos != -1, "the 'Run tests' step this must precede was not found"
-    assert sizing_pos < run_tests_pos, (
-        "print_worker_sizing.py must run BEFORE the 'Run tests' step"
+    assert sizing_index is not None, (
+        "no step in the 'pytest' job has a run: field invoking "
+        ".github/scripts/print_worker_sizing.py"
+    )
+    run_tests_index = next(
+        (i for i, s in enumerate(steps) if s.name.startswith("Run tests")),
+        None,
+    )
+    assert run_tests_index is not None, "the 'Run tests' step was not found"
+    assert sizing_index < run_tests_index, (
+        "the worker-sizing step must run BEFORE the 'Run tests' step"
     )
 
 
@@ -241,20 +273,24 @@ def test_run_tests_step_no_longer_suppresses_the_xdist_banner_with_q():
     """RED on the tree this PR started from: the pytest invocation carried
 
     `-q`, which measurably (see module docstring) suppresses xdist's own "N
-    workers [M items]" banner. GREEN once `-q` is removed from that line --
-    the primary, measured fix for #2345, config-only and confirmed to have
-    no downstream reader of this step's raw stdout.
+    workers [M items]" banner. GREEN once `-q` is removed from that step's
+    `run:` field -- the primary, measured fix for #2345, config-only and
+    confirmed to have no downstream reader of this step's raw stdout.
+
+    Checked against the step's parsed `run` field (which can span multiple
+    physical lines under a `run: |` block scalar) and tokenised as shell
+    words, not against a single-physical-line regex on raw text -- a future
+    reflow of this long command into a `run: |` block, a pattern already
+    used elsewhere in this same job, would false-red a line-anchored regex
+    on an edit that changed nothing this test is meant to guard.
     """
-    text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    match = re.search(
-        r"run: python -X utf8 -m pytest -m 'not slow and not benchmark'[^\n]*",
-        text,
-    )
-    assert match is not None, "the 'Run tests' pytest invocation was not found"
-    run_line = match.group(0)
-    assert "--junit-xml=junit.xml" in run_line, "sanity: matched the wrong line"
-    tokens = run_line.split()
+    steps = _pytest_job_steps()
+    run_tests = next((s for s in steps if s.name.startswith("Run tests")), None)
+    assert run_tests is not None, "the 'Run tests' step was not found"
+    assert "--junit-xml=junit.xml" in run_tests.run, "sanity: wrong step matched"
+    assert "pytest" in run_tests.run, "sanity: wrong step matched"
+    tokens = run_tests.run.split()
     assert "-q" not in tokens, (
         f"the 'Run tests' step still passes -q, which suppresses xdist's own "
-        f"worker-count banner: {run_line!r}"
+        f"worker-count banner: {run_tests.run!r}"
     )
