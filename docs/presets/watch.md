@@ -688,6 +688,52 @@ The issue that asked for `gl-issue` (#898) describes a larger vision this tier d
 
 Radar passes the *same* `_arg` string to every tier configured in `ops.radar.radar_tiers`. Registering `gl-issue` alongside `gl-mrs` and invoking `radar:gl-issue:12657` therefore also hands `"gl-issue:12657"` to `gl-mrs`'s own filter parser, which does not recognise that shape and raises — reported as a failure for `gl-mrs` alone, never fatal to `gl-issue`. That is an existing property of the tier contract rather than something this tier introduces; a focused radar session is expected to register `gl-issue` on its own rather than beside a population tier that shares the argument slot.
 
+## The GitHub half of the same tier — `gh-issue` ([#2369](https://github.com/Digital-Process-Tools/claude-supertool/issues/2369))
+
+`gl-issue` above answers "how is issue #12657" for GitLab. Nothing answered the same question for a GitHub issue until `gh-issue`, built directly on `gl-issue`'s own shape — same registration, same argument grammar, same reasoning for having no feed and no filter vocabulary — with GitHub's own APIs and event vocabulary substituted where the two forges disagree.
+
+```json
+{ "ops": { "radar": { "radar_tiers": { "gh-issue": {} } } } }
+```
+
+```
+radar:gh-issue:2369
+```
+
+`_arg` accepts either the self-prefixed shape shown above (`"gh-issue:2369"`) or a bare number (`"2369"`); a leading `#` is stripped either way. Anything else is refused with the syntax restated, never guessed at.
+
+### What "related" means on GitHub, and why it is not GitLab's endpoint
+
+GitLab exposes a dedicated `related_merge_requests` endpoint per issue. GitHub has no equivalent collection — "related" is not a first-class relationship there. What GitHub does expose is narrower and more precise: `Issue.closedByPullRequestsReferences`, the set of PRs whose body carries a working **closing reference** (`Closes #2369`, `Fixes #2369`, ...) to the issue. `presets/github/issue.py`'s own `gh-issue` op already queries this field for its "Linked PRs" section ([#780](https://github.com/Digital-Process-Tools/claude-supertool/issues/780)/[#782](https://github.com/Digital-Process-Tools/claude-supertool/issues/782)), and `gh-issue` the radar tier reuses that exact query and that exact parsing rather than re-deriving either — one GraphQL shape, one place that decides what "linked" means.
+
+This is deliberately narrower than a naive `gh pr list --search "#2369"` would be: that would match a PR that only *mentions* the issue in prose exactly as eagerly as one that actually closes it (#780 item 2, measured live on this repo's own tracker). A closing reference is a claim about intent to fix, not about being in the same conversation, so it is the one relation this tier heals a watcher onto.
+
+### What it watches
+
+For every one of the issue's linked PRs still `OPEN` (GitHub's GraphQL PR state, not GitLab's lowercase `opened`), `gh-issue` heals a `github-pr` watcher over it — source `github-pr`, and the **entire** event set `sources/github-pr/events.json` declares: `checks_failed`, `checks_succeeded`, `checks_pending`, `review_approved`, `review_changes_requested`, `comment_added`, `merged`, `closed`, `conflicts_appeared`, `pr_unreachable`. A closed or merged linked PR is not watched: its own terminal event already fired before this tier's next report, and asking `github-pr` to keep polling a merged PR would just accumulate a dead poller.
+
+### The issue's own state is tracked across runs, and a reopen or a label change counts against `healthy`
+
+Exactly `gl-issue`'s own mechanism: `tiers/_snapshot.py` keeps the issue's previous state (`state`, `labels`, linked-PR set), keyed on the issue number, and every run after the first diffs against it to name a **reopen** (`CLOSED` → `OPEN`), a **label change** (added and removed, each listed), and a linked PR that is **new** or **no longer linked/open**. Each counts against `healthy` for the same reason a departed related MR counts against `gl-issue`'s. Cold start is the one exception — the first run has nothing to diff against, so nothing renders as new/changed/reopened on that run.
+
+The vocabulary these lines use — reopened, labeled, unlabeled — matches `sources/github-issue-feed/events.json`'s own `issue_reopened`/`issue_labeled`/`issue_unlabeled`/`issue_closed`, even though `gh-issue` never spawns that source. It cannot: `github-issue-feed` is population-first by design, with "deliberately no per-id companion" (its own module docstring, #525) — its filter vocabulary has no way to scope a REST issue listing down to one number. So `gh-issue` detects the same movement the way `gl-issue` does, by diffing this run's live-fetched state against the previous run's snapshot, not by spawning a feed poller that cannot be aimed at a single issue in the first place. `issues_unreachable` has no analogue here for the same reason: there is no live feed poller whose reachability this tier could report.
+
+### Never green when it cannot tell
+
+`gh-issue` raises the same `RadarError`/`RadarUnreachable` split every other tier does, from the one shared `tiers/_radar_errors.py`, plus the `RadarUnconfigured` state `gh` has and `glab` does not: `gh`'s own auth-configuration exit code (4, measured on gh 2.50.0) is checked before any message-matching arm, because `gh` spells "no credentials" differently depending on whether it thinks it is interactive. An auth failure or a transport failure (DNS, a reset connection, a rate limit) is `RadarUnreachable`; an answered request whose content is the finding — a 404 on the issue itself, or JSON `gh` did not actually return — is a plain `RadarError`. Neither is silently swallowed into "the board says nothing".
+
+### Deliberately out of scope for this issue
+
+The same three `gl-issue` declines, inherited rather than re-litigated:
+
+- **the `radar:gh-issue:N` arg-collision with `gh-prs`'s own filter parser** (see the caveat below) — pre-existing on `gl-issue`, and this tier inherits the same non-fix rather than solving it twice.
+- **no per-tier/per-source policy markdown** (`RADAR_POLICY`) — deferred to [#953](https://github.com/Digital-Process-Tools/claude-supertool/issues/953)/[#898](https://github.com/Digital-Process-Tools/claude-supertool/issues/898) alongside `gl-issue`'s own deferral.
+- **no per-category `history.md` ledger** — needs the policy layer above it to mean anything, so it waits on the same decision.
+
+### A caveat inherited from how `_arg` reaches every registered tier
+
+Radar passes the *same* `_arg` string to every tier configured in `ops.radar.radar_tiers`. Registering `gh-issue` alongside `gh-prs` and invoking `radar:gh-issue:2369` therefore also hands `"gh-issue:2369"` to `gh-prs`'s own `resolve_filter`, which does not recognise that shape and raises — reported as a failure for `gh-prs` alone, never fatal to `gh-issue`. A focused radar session is expected to register `gh-issue` on its own rather than beside a population tier that shares the argument slot.
+
 ## A source outside the plugin — `SUPERTOOL_WATCH_SOURCES_PATH` ([#2135](https://github.com/Digital-Process-Tools/claude-supertool/issues/2135))
 
 A source used to have exactly one possible home, `presets/watch/sources/<NAME>/`, inside the installed plugin — a directory every plugin update overwrites and a symlink into it does not survive. So a poller nobody may publish could not be watched at all: `watch:my-source:scope` answered `unknown source`, and with it went the pid slots, `unwatch`, the `watches` board and radar's healing.
