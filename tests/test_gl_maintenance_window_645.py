@@ -4,8 +4,12 @@ function is exercised directly with an in-memory config dict."""
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 from datetime import time
 from pathlib import Path
+
+import pytest
 
 PRESET_PATH = Path(__file__).parent.parent / "presets" / "gitlab" / "_maintenance.py"
 _spec = importlib.util.spec_from_file_location("gitlab_maintenance", PRESET_PATH)
@@ -34,6 +38,22 @@ def test_resolve_window_falls_back_to_fleet_default_for_unknown_runner():
 def test_resolve_window_per_runner_override_wins():
     assert maint.resolve_window(FLEET_CFG, "dptools-runner-4", 4) == {
         "window": "03:30 UTC", "duration": "5m"}
+
+
+def test_resolve_window_per_runner_override_merges_missing_keys_from_fleet_default():
+    # Self-review finding: a `window`-only override (the docs' own canonical
+    # example) must still carry the fleet's `duration`, not silently become
+    # a 0-second window nothing can ever fall inside.
+    cfg = {
+        "gl-runners": {
+            "maintenance": {"window": "00:00 UTC", "duration": "5m"},
+            "runners": {"dptools-runner-4": {"maintenance": {"window": "03:30 UTC"}}},
+        }
+    }
+    assert maint.resolve_window(cfg, "dptools-runner-4", 4) == {
+        "window": "03:30 UTC", "duration": "5m"}
+    assert maint.parse_window(maint.resolve_window(cfg, "dptools-runner-4", 4)) == (
+        time(3, 30), 300)
 
 
 def test_resolve_window_explicit_null_opts_out_rather_than_falling_back():
@@ -148,7 +168,82 @@ def test_maintenance_note_outside_window_names_it_but_does_not_clear_it(monkeypa
     assert "RETRY" not in note
 
 
+# --- load_config: the #695 trust-boundary hardening, reproduced for this
+# preset-local loader (self-review finding: this file's own walk used to go
+# all the way to filesystem root with no ownership/permission check, unlike
+# the hardened `_supertool._load_config`). ---
+
+def _fresh_load_config_module():
+    """A second import of the module, so `_CACHED_CONFIG` starts unset --
+    the real `maint` import at module scope is already cached by other
+    tests in this file by the time these run."""
+    spec = importlib.util.spec_from_file_location(
+        "gitlab_maintenance_loadconfig", PRESET_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_load_config_stops_at_git_ancestor_rather_than_reaching_further_up(
+    tmp_path, monkeypatch,
+):
+    # outer/  (.supertool.json here -- must NOT be picked up)
+    #   repo/  (.git here -- the boundary)
+    #     sub/  (cwd -- no .supertool.json here)
+    outer = tmp_path / "outer"
+    repo = outer / "repo"
+    sub = repo / "sub"
+    sub.mkdir(parents=True)
+    (repo / ".git").mkdir()
+    (outer / ".supertool.json").write_text(
+        json.dumps({"gl-runners": {"maintenance": {"window": "09:00 UTC", "duration": "5m"}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(sub)
+    mod = _fresh_load_config_module()
+    assert mod.load_config() == {}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="ownership/permission bits are POSIX-only")
+def test_load_config_skips_a_group_world_writable_file(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    candidate = tmp_path / ".supertool.json"
+    candidate.write_text(
+        json.dumps({"gl-runners": {"maintenance": {"window": "09:00 UTC", "duration": "5m"}}}),
+        encoding="utf-8",
+    )
+    candidate.chmod(0o666)  # world-writable
+    monkeypatch.chdir(tmp_path)
+    mod = _fresh_load_config_module()
+    try:
+        assert mod.load_config() == {}
+    finally:
+        candidate.chmod(0o644)
+
+
+def test_load_config_reads_an_ordinary_config_normally(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    candidate = tmp_path / ".supertool.json"
+    payload = {"gl-runners": {"maintenance": {"window": "09:00 UTC", "duration": "5m"}}}
+    candidate.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    mod = _fresh_load_config_module()
+    assert mod.load_config() == payload
+
+
 def test_maintenance_note_unreadable_finish_time_says_could_not_tell(monkeypatch):
     monkeypatch.setattr(maint, "load_config", lambda: FLEET_CFG)
     note = maint.maintenance_note(137, "garbage", "dptools-runner-1", 1)
     assert "could not tell" in note
+
+
+def test_maintenance_note_malformed_window_is_named_not_collapsed_into_silence(monkeypatch):
+    # A declared-but-broken window is a third state, distinct from both a
+    # real verdict and "nothing configured" -- it must never render as the
+    # same empty string as test_maintenance_note_empty_when_no_window_declared.
+    broken_cfg = {"gl-runners": {"maintenance": {"window": "midnight-ish", "duration": "5m"}}}
+    monkeypatch.setattr(maint, "load_config", lambda: broken_cfg)
+    note = maint.maintenance_note(137, "2026-07-31T00:00:08Z", "dptools-runner-1", 1)
+    assert note != ""
+    assert "could not be parsed" in note
+    assert "RETRY" not in note

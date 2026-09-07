@@ -1076,13 +1076,35 @@ own `maintenance` key does too).
 timestamps GitLab's own API already returns. `duration` is an amount plus a
 single unit letter (`s`/`m`/`h`), the grace period after the trigger during
 which a job still finishing counts as caught by the reboot rather than
-having survived it. **Anything that does not parse — a bad clock, an
+having survived it.
+
+**A per-runner override merges onto the fleet default rather than replacing
+it** — `dptools-runner-4`'s `{"window": "03:30 UTC"}` above still inherits
+the fleet's `5m` duration, so overriding just the clock for one host is
+enough; an override needs to name `duration` only when that host's own
+grace period actually differs.
+
+**A window that is declared but does not parse — a bad clock, an
 out-of-range value, a duration with no unit, the wrong JSON shape entirely —
-is read as "no window declared", never as an error**: a garbled declaration
-must not be the reason `gl-job:ID:fail` stops working. Consulted by
+is never treated as an error, and never silently collapsed into "no window
+declared" either.** Those are two different states: the second lets an
+operator's own typo go undetected forever, since a runner's next container
+kill goes right back to a bare exit code with nothing saying why. `gl-job`
+prints a third line instead — *"A maintenance window is declared for this
+runner but could not be parsed"* — naming the broken value, so a garbled
+declaration is discoverable without ever being read as a real RETRY/outside
+verdict. Consulted by
 [`gl-job:ID:fail`](#a-container-level-exit-inside-a-declared-maintenance-window)
 against the job's own `finished_at` and `runner.description`/`runner.id`, and
 only for a container-level exit code — never for a real test failure.
+
+**The config walk stops at the nearest `.git` ancestor and skips a
+group/world-writable or not-caller-owned `.supertool.json`** — the same
+trust boundary `_supertool._load_config` enforces for every other op
+([#695](https://github.com/Digital-Process-Tools/claude-supertool/issues/695)),
+reproduced here because a preset script cannot import the core module. A
+stray ancestor config outside the current project is never picked up for a
+maintenance window either.
 
 ### Default project for `gl-issue-create`
 

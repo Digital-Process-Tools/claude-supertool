@@ -55,6 +55,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import sys
 from datetime import datetime, time, timezone
 from pathlib import Path
@@ -86,13 +87,61 @@ _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600}
 _CACHED_CONFIG: "dict | None" = None
 
 
-def load_config() -> dict:
-    """Walk up from cwd for `.supertool.json`; cached per process.
+def _config_trust_violation(candidate: Path) -> "str | None":
+    """POSIX ownership/permission guard, mirroring `_supertool._load_config`'s
+    own #695 hardening.
 
-    Same convention as `presets/_publish_safety.py::_supertool_config` —
-    warn on stderr and fall back to `{}` for anything unreadable or
-    malformed, never raise. A maintenance-window lookup runs inside a job
-    classifier's own hot path; failing the read must never fail the call.
+    Presets cannot import the core module (`_supertool.py` imports presets,
+    not the other way — a preset importing it back would be circular), so
+    this walk-up loader re-implements the same trust check rather than
+    sharing it: a group/world-writable `.supertool.json`, or one owned by a
+    different user, can be rewritten by another local account between the
+    moment it was reviewed and the moment `gl-job:ID:fail` reads it for a
+    maintenance window — the same TOCTOU shape #695 closed for the loader
+    every other op goes through. POSIX-only: `st_uid` and the write bits
+    are meaningless on Windows, so this returns `None` (trusted)
+    unconditionally there rather than fabricate a check with no signal
+    behind it. Root is treated as trusted, matching `_config_trust_violation`.
+    """
+    if os.name != "posix":
+        return None
+    try:
+        st = candidate.stat()
+    except OSError as exc:
+        return f"cannot stat: {exc}"
+    caller_uid = os.getuid()
+    if st.st_uid not in (caller_uid, 0) and caller_uid != 0:
+        return (
+            f"not owned by the current user (owner uid {st.st_uid}, "
+            f"running as uid {caller_uid})"
+        )
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return f"group/world-writable (mode {stat.S_IMODE(st.st_mode):o})"
+    return None
+
+
+def load_config() -> dict:
+    """Walk up from cwd for `.supertool.json`, stopping at the nearest
+    `.git` ancestor; cached per process.
+
+    Two limits, matching `_supertool._load_config`'s own #695 hardening —
+    a config is exactly as trusted as the project that owns it, and must
+    not reach OUTSIDE that project: opening a subdirectory of an otherwise
+    unrelated tree (a shared `/tmp` extraction, a CI checkout dir with a
+    stray ancestor config) must not silently pick up a `.supertool.json`
+    that governs nothing the caller actually opened.
+
+    * the walk stops once it reaches a directory containing `.git` — the
+      repo root — rather than continuing to `/`; a caller not inside a git
+      repo at all keeps walking to `/`, since there is no repo boundary;
+    * each candidate is checked with `_config_trust_violation` first — a
+      file that is group/world-writable, or not owned by the caller (or
+      root), is skipped exactly like a malformed one.
+
+    Warn on stderr and fall back to `{}` for anything unreadable, not
+    owned by the caller, or malformed — never raise. A maintenance-window
+    lookup runs inside a job classifier's own hot path; failing the read
+    must never fail the call.
     """
     global _CACHED_CONFIG
     if _CACHED_CONFIG is not None:
@@ -102,22 +151,33 @@ def load_config() -> dict:
     while True:
         candidate = d / ".supertool.json"
         if candidate.is_file():
-            try:
-                parsed = json.loads(candidate.read_text(encoding="utf-8"))
-                if isinstance(parsed, dict):
-                    cfg = parsed
-                else:
-                    sys.stderr.write(
-                        f"WARNING: {candidate} does not hold a JSON object "
-                        f"(got {type(parsed).__name__}) -- ignoring it for "
-                        f"gl-runners maintenance windows.\n"
-                    )
-            except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            violation = _config_trust_violation(candidate)
+            if violation is not None:
                 sys.stderr.write(
-                    f"WARNING: could not read {candidate} "
-                    f"({exc.__class__.__name__}: {exc}) -- ignoring it for "
-                    f"gl-runners maintenance windows.\n"
+                    f"WARNING: skipped {candidate} ({violation}) -- "
+                    f"ignoring it for gl-runners maintenance windows.\n"
                 )
+            else:
+                try:
+                    parsed = json.loads(candidate.read_text(encoding="utf-8"))
+                    if isinstance(parsed, dict):
+                        cfg = parsed
+                    else:
+                        sys.stderr.write(
+                            f"WARNING: {candidate} does not hold a JSON "
+                            f"object (got {type(parsed).__name__}) -- "
+                            f"ignoring it for gl-runners maintenance "
+                            f"windows.\n"
+                        )
+                    _CACHED_CONFIG = cfg
+                    return cfg
+                except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    sys.stderr.write(
+                        f"WARNING: could not read {candidate} "
+                        f"({exc.__class__.__name__}: {exc}) -- ignoring it "
+                        f"for gl-runners maintenance windows.\n"
+                    )
+        if (d / ".git").exists():
             break
         if d.parent == d:
             break
@@ -137,10 +197,20 @@ def resolve_window(cfg: dict, runner_description, runner_id) -> "dict | None":
     first, then `str(id)` — the same precedence the issue settled on,
     because description is what a human reads and edits, while id is
     unique but unreadable.
+
+    A per-runner override MERGES onto the fleet default rather than
+    replacing it wholesale — `{"window": "03:30 UTC"}` alone still carries
+    the fleet's `duration` (self-review finding: the docs' own canonical
+    example, a `window`-only override, previously parsed to a 0-second
+    window and silently never fired, because `parse_window` defaults a
+    missing `duration` to `"0m"` with nothing distinguishing that from a
+    deliberately instantaneous window). Only individual keys present in
+    the override win; anything it omits still comes from the default.
     """
     gl_cfg = cfg.get("gl-runners")
     if not isinstance(gl_cfg, dict):
         return None
+    default = gl_cfg.get("maintenance")
     runners = gl_cfg.get("runners")
     entry = None
     if isinstance(runners, dict):
@@ -149,8 +219,18 @@ def resolve_window(cfg: dict, runner_description, runner_id) -> "dict | None":
                 entry = runners[key]
                 break
     if isinstance(entry, dict) and "maintenance" in entry:
-        return entry.get("maintenance")
-    return gl_cfg.get("maintenance")
+        override = entry.get("maintenance")
+        if override is None:
+            return None  # explicit opt-out — never falls back to the default
+        if not isinstance(override, dict) or not isinstance(default, dict):
+            # Either shape is not a plain dict to merge -- hand the override
+            # through as-is; `parse_window` is what judges whether it is
+            # well-formed, not this function.
+            return override
+        merged = dict(default)
+        merged.update(override)
+        return merged
+    return default
 
 
 def parse_window(window_cfg) -> "tuple[time, int] | None":
@@ -244,10 +324,17 @@ def _format_window(start: time, duration_s: int) -> str:
 def maintenance_note(exit_code, finished_at, runner_description, runner_id) -> str:
     """The extra block `gl-job:ID:fail` appends for a container-level exit
     that a declared maintenance window can speak to. `""` when there is
-    nothing to say — not a container exit code, no window resolvable for
-    this runner (fleet default included), or the window itself is
-    malformed — which is the same "nothing new here" state a caller
-    already prints without this note.
+    truly nothing to say — not a container exit code, or no window
+    resolvable at all for this runner (fleet default included) — which is
+    the same "nothing new here" state a caller already prints without this
+    note.
+
+    A *declared but malformed* window is a different, third state — never
+    collapsed into the same silent `""` (self-review finding: a typo'd
+    `window`/`duration` used to render byte-identical to "no window
+    configured", so an operator had no way to discover their declaration
+    never took effect). It gets its own disclosed line instead, distinct
+    from both a real verdict and true silence.
 
     A hint, never a verdict on its own: "inside the window" still only
     says RETRY for a container-level kill, and #645's scope guard (only
@@ -258,9 +345,17 @@ def maintenance_note(exit_code, finished_at, runner_description, runner_id) -> s
         return ""
     cfg = load_config()
     window_cfg = resolve_window(cfg, runner_description, runner_id)
+    if window_cfg is None:
+        return ""
     parsed = parse_window(window_cfg)
     if parsed is None:
-        return ""
+        return (
+            f"A maintenance window is declared for this runner but could "
+            f"not be parsed ({window_cfg!r}) -- treated as no window: exit "
+            f"code {exit_code} is not explained by it. Check "
+            f"gl-runners.maintenance / gl-runners.runners.<key>.maintenance "
+            f"in .supertool.json."
+        )
     start, duration_s = parsed
     window_desc = _format_window(start, duration_s)
     host = f" on {_untrusted.flat(runner_description)}" if runner_description else ""

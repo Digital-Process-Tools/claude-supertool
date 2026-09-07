@@ -139,16 +139,22 @@ def test_no_window_declared_leaves_output_unchanged_from_before_645(
     assert gl_job.BOILERPLATE_ONLY_HEADER in out
 
 
-def test_malformed_window_config_reads_as_no_window_never_an_error(
+def test_malformed_window_config_reads_as_declared_but_unparseable_never_an_error(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Positive control pairs with the well-formed case above: a garbled
-    declaration must not crash gl-job, and must not fabricate a verdict."""
+    declaration must not crash gl-job, and must not fabricate a RETRY/outside
+    verdict -- but it also must not render byte-identical to "no window
+    declared at all" (self-review finding), since that would hide from the
+    operator that their own config never took effect."""
     broken_cfg = {"gl-runners": {"maintenance": {"window": "midnight-ish", "duration": "5m"}}}
     out = _run(monkeypatch, capsys, broken_cfg, LOG_BOILERPLATE_ONLY,
                finished_at="2026-07-31T00:00:08Z",
                runner_description="dptools-runner-1", runner_id=1)
-    assert "maintenance window" not in out.lower()
+    assert "could not be parsed" in out
+    assert "RETRY" not in out
+    assert "inside the declared maintenance window" not in out
+    assert "outside the declared maintenance window" not in out
     assert gl_job.BOILERPLATE_ONLY_HEADER in out
 
 
