@@ -22,6 +22,7 @@ when a caller explicitly writes `op:@...`.
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
 import supertool
@@ -29,9 +30,24 @@ import supertool
 
 def _register_argv_echo(name: str = "say", *, tmp_path: Path) -> None:
     """A synthetic preset op whose only job is to print each argv entry it
-    receives, one per line, as `N=value` — so a test can see exactly what
+    receives, one per line, as `N=value` -- so a test can see exactly what
     `{args}` substitution produced without any real preset's own logic
     (network calls, git, etc.) getting in the way.
+
+    CI found this the hard way (#1165, windows-latest): the script path is a
+    positional literal in the cmd TEMPLATE text, not a `{file}`/`{arg}` value
+    `_resolve_custom_op` quotes for you -- so an unquoted `tmp_path` on
+    Windows (a drive letter plus backslashes, e.g. r"C:\\Users\\...\\argv.py")
+    went straight into the template, and `_resolve_custom_op`'s own
+    `shlex.split(cmd)` treats a backslash as a POSIX escape character
+    regardless of platform: every backslash vanished and the following
+    letter was kept literally, corrupting the path into something no
+    `open()` call can find. macOS/Linux temp paths have no backslashes, so
+    this passed there and only there. `shlex.quote(...as_posix())` is the
+    fix already established for the identical trap in
+    `tests/test_custom_ops.py`'s own `_script` helper (forward slashes
+    sidestep the backslash-escape question entirely, and the quoting
+    survives the re-split whichever way `_ARG_SEP` cuts).
     """
     script = tmp_path / "argv.py"
     script.write_text(
@@ -39,9 +55,10 @@ def _register_argv_echo(name: str = "say", *, tmp_path: Path) -> None:
         "for i, a in enumerate(sys.argv[1:], 1):\n"
         "    print(str(i) + '=' + a)\n"
     )
+    script_arg = shlex.quote(script.as_posix())
     supertool._CONFIG = {
         "ops": {
-            name: {"cmd": f"{{python}} {script} {{args}}", "safety": "read-only"}
+            name: {"cmd": f"{{python}} {script_arg} {{args}}", "safety": "read-only"}
         }
     }
 
