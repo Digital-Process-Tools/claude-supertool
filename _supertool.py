@@ -30996,7 +30996,31 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # (`gh-job:ID:grep:PATTERN`), which could never earn a `:::` entry in
     # `_AT_FILE_REGISTRY` no matter how its syntax string were written.
     _at_file_named_fields = _at_file_fields(op)
-    _generic_preset_route = not _at_file_named_fields and _op_is_preset_op(op)
+    # Gated on the reference actually resolving, mirroring the read-op
+    # @payload route's own gate a few dozen lines up -- NOT on the leading
+    # '@' alone. A named-field op (`edit`, `git-commit`, ...) never has a
+    # legitimate single-token literal call to begin with (its colon form
+    # always needs multiple ':::' fields), so intercepting on '@' alone
+    # never collided with one. A preset op can: `gh-mentions:@octocat` is a
+    # plausible real call whose first argument is a literal string that
+    # happens to start with '@' (self-review caught this -- unguarded, this
+    # route silently turned that into a "file not found" refusal where the
+    # call used to just run, the same class of regression the read-op gate
+    # was written to avoid for `grep:@Override:src/`).
+    _generic_preset_route = (
+        not _at_file_named_fields
+        and _op_is_preset_op(op)
+        and len(parts) >= 2
+        and (
+            parts[1] == "@-"
+            or os.path.isfile(_resolve_at_path(parts[1][1:]))
+            or os.path.isfile(parts[1][1:])
+            or (
+                len(parts) == 2
+                and parts[1][1:].lower().endswith((".toml", ".json"))
+            )
+        )
+    )
     if (
         pre_parsed is None
         and len(parts) >= 2

@@ -157,3 +157,29 @@ class TestGenericRouteScope:
         assert supertool._op_is_preset_op("say") is True
         assert supertool._op_is_preset_op("wc") is False
         assert supertool._op_is_preset_op("does-not-exist") is False
+
+    def test_literal_at_prefixed_first_argument_still_passes_through(
+        self, tmp_path: Path
+    ) -> None:
+        """Self-review finding: a preset op's own colon syntax can legitimately
+        expect a literal first argument that starts with '@' (a mention, an
+        npm-scope name, ...). Gated the same way the read-op @payload route
+        already is -- on the reference actually resolving, not on the bare
+        '@' prefix -- so this must keep working exactly as it did before
+        preset ops had a payload route at all: no interception, no reference
+        to a payload route in the output.
+        """
+        _register_argv_echo(tmp_path=tmp_path)
+        out = supertool.dispatch("say:@octocat")
+        assert "1=@octocat" in out
+        assert "ERROR" not in out
+        assert "reads its argv from" not in out
+
+    def test_literal_at_prefixed_argument_with_more_tokens_passes_through(
+        self, tmp_path: Path
+    ) -> None:
+        _register_argv_echo(tmp_path=tmp_path)
+        out = supertool.dispatch("say:@octocat:issue-123")
+        assert "1=@octocat" in out
+        assert "2=issue-123" in out
+        assert "ERROR" not in out
