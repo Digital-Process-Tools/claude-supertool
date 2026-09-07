@@ -788,9 +788,13 @@ BRANCH_SOURCE = "gh-branch"
 # that could not even look arrive as silence, which is the same shape of bug
 # this whole section exists to close: `branch_unreachable` is what a lookup
 # failure emits, and it is edge-triggered (once per outage, not once per
-# poll) so it must be on the filter or it is never seen at all.
-BRANCH_ONLY = ("went_green", "went_not_green", "no_run", "unknown",
-               "branch_unreachable")
+# poll) so it must be on the filter or it is never seen at all. `went_failed`
+# is the newest arrival (#2355, the split of `went_not_green` into a pending
+# half and a failed half) and belongs here for the identical reason: a
+# poller emitting an event this filter does not list is silence by a longer
+# route, indistinguishable from the poller never having emitted at all.
+BRANCH_ONLY = ("went_green", "went_not_green", "went_failed", "no_run",
+               "unknown", "branch_unreachable")
 
 #: The poller's own `LOOKUP_UNAVAILABLE`, spelled again rather than imported
 #: — see `FEED_LOOKUP_UNAVAILABLE`'s own docstring for why.

@@ -58,17 +58,22 @@ def test_an_unchanged_state_fires_nothing() -> None:
 
 
 def test_green_to_not_green_fires_went_not_green() -> None:
+    """A sentence with nothing failed in it -- "not concluded yet" -- is the
+    `went_not_green` half of the split (#2355). The sibling case, a sentence
+    reporting an actual failed leg, is `went_failed` and lives in
+    tests/test_watch_gh_branch_pending_failed_split_2355.py alongside the
+    pending -> failed same-sha transition that split exists to fix."""
     state = {"branch_state": poller.GREEN, "sha": "aaa", "ref": "main",
              "lookup": poller.LOOKUP_OK}
     with mock.patch.object(
             poller, "_snapshot",
             return_value=_snap(poller.NOT_GREEN,
-                               "NOT GREEN — 3 legs on bbbbbbb did not pass")):
+                               "NOT GREEN — tests have not concluded on bbbbbbb")):
         events, new_state = poller.poll(state, _ctx())
     assert len(events) == 1, events
     assert events[0]["event"] == "went_not_green"
-    assert "did not pass" in events[0]["payload"]["sentence"]
-    assert new_state["branch_state"] == poller.NOT_GREEN
+    assert "not concluded" in events[0]["payload"]["sentence"]
+    assert new_state["branch_state"] == poller.NOT_GREEN_PENDING
 
 
 def test_not_green_to_green_fires_went_green() -> None:

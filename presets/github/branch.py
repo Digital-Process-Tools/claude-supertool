@@ -81,6 +81,17 @@ NOT_GREEN = "NOT GREEN"
 NO_RUN = "NO RUN"
 UNKNOWN = "UNKNOWN"
 
+# The literal substring `verdict()` embeds in the NOT_GREEN sentence when a
+# leg actually failed, as opposed to not having concluded yet or not having
+# been dispatched at all. `gh-branch`'s watch poller (#2355) needs to tell
+# "act now" from "keep waiting" apart -- NOT_GREEN alone folds both, and a
+# pending-to-failed transition on the same commit changed nothing this
+# module's own callers compare on -- so it classifies on this exact
+# substring rather than re-deriving the `red_wfs` check a second time. Kept
+# as a constant, not typed twice, so a wording change here cannot silently
+# desynchronise the poller's classification from this sentence.
+NOT_GREEN_FAILED_MARKER = "did not pass"
+
 # A run's lifecycle phase, in this module's own words. #615 comment 1 is a
 # worked case of a bare column (`[time]`) being read as a possible `TIMED_OUT`
 # and costing a second call to disambiguate, so every row states its phase in a
@@ -960,8 +971,9 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
         bad = sum(1 for states in legs.values()
                   for s in (states or []) if _checks.is_red(s))
         legword = _agrees(bad, "leg", "legs")
-        return (NOT_GREEN, f"{NOT_GREEN} — {bad} {legword} on {short} did not "
-                           f"pass, in {_names(red_wfs)}. Named below.")
+        return (NOT_GREEN, f"{NOT_GREEN} — {bad} {legword} on {short} "
+                           f"{NOT_GREEN_FAILED_MARKER}, in {_names(red_wfs)}. "
+                           "Named below.")
 
     moving = sorted(n for n, r in selected.items()
                     if run_phase(r) != PHASE_CONCLUDED

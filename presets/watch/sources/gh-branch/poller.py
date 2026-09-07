@@ -65,12 +65,25 @@ NOT_GREEN = branch.NOT_GREEN
 NO_RUN = branch.NO_RUN
 UNKNOWN = branch.UNKNOWN
 
+# NOT_GREEN split in two, poller-side only (#2355). `branch.verdict()` keeps
+# its own four-state vocabulary unchanged -- `dashboard.py` and
+# `default_branch_report` both render it as-is and neither needed this -- but
+# a *poller* exists to tell a waiting consumer what changed, and "nothing has
+# concluded yet" and "a leg failed" are opposite next actions folded into one
+# string. Classified in `poll()` off `branch.NOT_GREEN_FAILED_MARKER`, the
+# same substring `verdict()` already puts in the sentence for the failed
+# case, so the two cannot silently drift apart the way two independent
+# copies of the red-leg check would.
+NOT_GREEN_PENDING = f"{NOT_GREEN} (PENDING)"
+NOT_GREEN_FAILED = f"{NOT_GREEN} (FAILED)"
+
 LOOKUP_OK = "ok"
 LOOKUP_UNAVAILABLE = "unavailable"
 
 _EVENT_FOR_STATE = {
     GREEN: "went_green",
-    NOT_GREEN: "went_not_green",
+    NOT_GREEN_PENDING: "went_not_green",
+    NOT_GREEN_FAILED: "went_failed",
     NO_RUN: "no_run",
     UNKNOWN: "unknown",
 }
@@ -169,18 +182,34 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
             "notify_message": error,
         }], new_state
 
+    # NOT_GREEN split into two poller states (#2355): "nothing has
+    # concluded yet" and "a leg failed" are opposite next actions, and a
+    # pending -> failed transition on the SAME commit changed nothing the
+    # old bare-state comparison below could see. Read back off the sentence
+    # rather than re-derived from `legs`/`selected` a second time -- see
+    # `branch.NOT_GREEN_FAILED_MARKER`'s own docstring for why that pairing
+    # is a constant instead of two independent copies of the red-leg check.
+    if branch_state == NOT_GREEN:
+        branch_state = (NOT_GREEN_FAILED
+                         if branch.NOT_GREEN_FAILED_MARKER in sentence
+                         else NOT_GREEN_PENDING)
+
     prev_state = state.get("branch_state", "")
     prev_sha = str(state.get("sha") or "")
     sha_repeated = bool(sha) and sha == prev_sha
     # A state this composition only reaches with `selected` non-empty
     # (`verdict()` routes to `no_run_verdict` before this module ever sees
-    # a state at all when it is empty) -- so GREEN, NOT_GREEN and UNKNOWN
-    # all mean "some earlier poll saw at least one run on this sha", and
-    # only NO_RUN/`""` mean it did not (or nothing has polled yet). Reading
-    # this off `prev_state` rather than a separate stored flag means an
-    # UNKNOWN produced by the guard below keeps the confirmation live for
-    # the next poll for free -- there is nothing extra to carry forward.
-    prev_confirmed_runs = prev_state in (GREEN, NOT_GREEN, UNKNOWN)
+    # a state at all when it is empty) -- so GREEN, either NOT_GREEN
+    # sub-state and UNKNOWN all mean "some earlier poll saw at least one run
+    # on this sha", and only NO_RUN/`""` mean it did not (or nothing has
+    # polled yet). Reading this off `prev_state` rather than a separate
+    # stored flag means an UNKNOWN produced by the guard below keeps the
+    # confirmation live for the next poll for free -- there is nothing extra
+    # to carry forward. The bare `NOT_GREEN` stays in this tuple too: a state
+    # file written before #2355 shipped still has it, and this line is what
+    # keeps that stale value read as "confirmed" rather than as a cold start.
+    prev_confirmed_runs = prev_state in (
+        GREEN, NOT_GREEN, NOT_GREEN_PENDING, NOT_GREEN_FAILED, UNKNOWN)
     # How many consecutive polls of THIS sha have read raw-empty already --
     # reset the moment the sha changes, so it never leaks across commits.
     prev_no_run_streak = int(state.get("no_run_streak") or 0) if sha_repeated else 0
@@ -232,7 +261,22 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # successful poll too -- exactly like `github-pr`'s `checks_state`
     # transition. `first_tick` (added by the dispatcher, not this source)
     # is what tells a consumer that first emission apart from a live change.
-    if branch_state != prev_state:
+    #
+    # `sha != prev_sha` is an OR on top of the state comparison, not a
+    # replacement for it (#2355). Half of the incident this issue was filed
+    # over was a same-category transition -- master moved to a brand-new
+    # commit while still reading as "not concluded yet" -- and a consumer
+    # holding the previous sentence has no way to learn the subject changed
+    # under it: every leg on the new commit is unread, and the old sentence
+    # was about a different SHA entirely. This is a deliberate widening of
+    # emission volume, decided here rather than inherited silently: a real
+    # commit landing on a watched branch is exactly the kind of event a
+    # branch watcher exists to report, even when the coarse verdict does not
+    # move, and #2355 asks for this choice to be made and stated rather than
+    # defaulted into. `sha` is only compared once `error` is empty (above),
+    # where `_snapshot` guarantees it is non-empty, so this cannot mistake a
+    # lookup failure for a same-state new-sha transition.
+    if branch_state != prev_state or sha != prev_sha:
         key = _EVENT_FOR_STATE.get(branch_state, "unknown")
         ev = {
             "event": key,

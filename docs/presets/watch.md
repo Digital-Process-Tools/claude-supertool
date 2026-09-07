@@ -744,7 +744,7 @@ With nothing configured the last line reads `SUPERTOOL_WATCH_SOURCES_PATH is not
 | `github-issue-feed` | `gh api repos/{owner}/{repo}/issues` for a whole scope | `issue_opened`, `issue_reopened`, `issue_entered_feed`, `issue_labeled`, `issue_unlabeled`, `issue_assigned`, `issue_unassigned`, `issue_comment_added`, `issue_closed`, `issue_left_feed`, `issues_unreachable` |
 | `gl-runners` | `glab api projects/:id/runners` + the pending/running job queue | `runner_silent`, `runner_liveness_unknown`, `runner_recovered`, `runner_starved`, `queue_liveness_unknown`, `queue_cleared`, `runner_paused`, `runner_added`, `runner_vanished`, `runner_failing_systemically`, `runner_recovered_systemically` |
 | `gh-run` | `gh run view <id> --json status,conclusion,workflowName,url,...` | `run_succeeded`, `run_failed`, `run_cancelled`, `run_action_required`, `run_started`, `run_inconclusive`, `run_unreachable` |
-| `gh-branch` | the same composition `gh-branch:<ref>` and `radar`'s default-branch member row already use — `gh api commits/<ref>` then `gh run list --branch <ref>` | `went_green`, `went_not_green`, `no_run`, `unknown`, `branch_unreachable` |
+| `gh-branch` | the same composition `gh-branch:<ref>` and `radar`'s default-branch member row already use — `gh api commits/<ref>` then `gh run list --branch <ref>` | `went_green`, `went_not_green`, `went_failed`, `no_run`, `unknown`, `branch_unreachable` |
 | `slack` | `conversations.history` for a bare channel id, `conversations.replies` for `<channel>~<thread-ts>` | `slack_message`, `slack_unreachable` |
 
 Each source declares its event vocabulary in `presets/watch/sources/<NAME>/events.json` for introspection.
@@ -791,10 +791,23 @@ keeps watching the ref you meant even if the repository's default branch is
 renamed later.
 
 The event vocabulary is `gh-branch`'s own four states, unfolded rather than
-collapsed into a green/red pair: `went_green`, `went_not_green` (covers both "a
-leg failed" and "nothing failed but nothing has concluded either" — the
-distinction lives in the event's `sentence` payload field, the same sentence
-`gh-branch` itself would print), `no_run` (zero workflow runs on the head
+collapsed into a green/red pair: `went_green`, `went_not_green` (nothing has
+concluded yet on the head commit -- not a failure, just not cleared) and
+`went_failed` (a leg on the head commit actually failed) -- split out of one
+coarse `went_not_green` in
+[#2355](https://github.com/Digital-Process-Tools/claude-supertool/issues/2355),
+because "keep waiting" and "act now" are opposite next actions and a
+pending-to-failed transition on the SAME commit changed nothing the old
+bare-state comparison could see. The poller classifies off
+`branch.NOT_GREEN_FAILED_MARKER`, the same substring `branch.verdict()`
+already puts in the sentence for the failed case (the event's own `sentence`
+payload field still carries the full detail, the same sentence `gh-branch`
+itself would print); `presets/github/branch.py`'s own four-state vocabulary
+(`GREEN`/`NOT_GREEN`/`NO_RUN`/`UNKNOWN`) is unchanged and this split is
+poller-side only. The transition test also compares `sha`, not just the
+coarse state, so a branch moving to a brand-new commit while remaining in the
+same category emits too -- a real widening of emission volume, decided
+deliberately. `no_run` (zero workflow runs on the head
 commit — never folded into red, because it is the ordinary state for the first
 seconds after a squash), and `unknown` (a job list that did not come back, or
 a sha this poller already confirmed runs on that came back with zero runs on
