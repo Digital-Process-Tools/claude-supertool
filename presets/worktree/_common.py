@@ -408,12 +408,33 @@ def read_manifest(target: Path) -> ConfigResult:
     what setup did" as "setup did nothing," which used to leave a live
     symlink into the primary checkout untouched with a receipt reading
     exactly like a clean, empty teardown.
+
+    Same three-state discipline applies to *resolving the manifest path
+    itself* (#2371): `git rev-parse --git-path` does not look at whether the
+    manifest file exists — it only computes where it WOULD be — so a
+    nonzero return from it here is never "there is genuinely no manifest".
+    By the time any caller reaches `read_manifest`, `target` has already
+    been confirmed by `resolve_target` to be a real git worktree, so a
+    failure at this step is `_run_git`'s own timeout/OSError guard
+    (returncode -1) or some other transient git failure — an UNKNOWN, not
+    an absence — and goes through `.error` exactly like a manifest that
+    exists but fails to parse. Only `path.is_file()` returning False, once
+    the path itself was actually resolved, is a genuine "setup never wrote
+    one". Deliberately does not call the shared `git_path` helper here
+    (unlike `write_manifest` below), because `git_path` collapses every
+    nonzero `_run_git` result into a single `TargetError` and throws away
+    the distinction this needs.
     """
     empty = {"linked": [], "copied": [], "excluded": []}
-    try:
-        path = git_path(target, MANIFEST_REL)
-    except TargetError:
-        return ConfigResult(empty)
+    result = _run_git(["rev-parse", "--git-path", MANIFEST_REL], target)
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or "git did not answer"
+        return ConfigResult(
+            None,
+            f"could not resolve the provisioning manifest path for {target}: {stderr}",
+        )
+    resolved = Path(result.stdout.strip())
+    path = resolved if resolved.is_absolute() else target / resolved
     if not path.is_file():
         return ConfigResult(empty)
     try:
