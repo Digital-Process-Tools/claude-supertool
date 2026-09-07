@@ -636,6 +636,47 @@ Nothing was added to any pattern set to fix this. Adding `ERROR: Job failed: exi
 code 1` as a *pattern* would have flipped every honest refusal into a confident,
 useless block — the opposite of the fix.
 
+### A container-level exit inside a declared maintenance window
+
+[#645](https://github.com/Digital-Process-Tools/claude-supertool/issues/645).
+The boilerplate-only case above is exactly what a scheduled runner reboot
+produces: `137`/`139`/`143` and nothing else, indistinguishable from real
+memory pressure. Filed live after five container deaths across four MRs were
+misdiagnosed as "the fleet degrading under load" — the proof they were benign
+(the same head, red at 00:01, green at 04:40, untouched) only arrived hours
+later.
+
+Declare a maintenance window in `.supertool.json` — see
+[Runner maintenance windows](#runner-maintenance-windows) below — and the
+same boilerplate-only block gets an extra line rather than staying a bare
+exit code:
+
+```
+The one line that matched is a line GitLab writes on every failed job — no cause
+is named, so this is not a classification. Shown, not hidden:
+    129 | ERROR: Job failed: exit code 137
+
+Died 2026-07-31T00:00:08Z on dptools-runner-4, inside the declared maintenance
+window (00:00 UTC +5m).
+Verdict: RETRY — scheduled cleanup, not memory pressure and not code.
+```
+
+A death **outside** the declared window is named as outside rather than left
+silent — silence there would read as "checked and it's clean", which is a
+claim this op cannot make about a code it does not classify:
+
+```
+Died 2026-07-31T06:01:49Z on dptools-runner-4, outside the declared maintenance
+window (00:00 UTC +5m) — exit code 137 is not explained by scheduled
+maintenance.
+```
+
+No window declared for the runner, or the declared window itself unparseable,
+prints neither line — the boilerplate-only output is exactly what it was
+before this existed. **Only container-level exit codes (`137`, `139`, `143`)
+reach this check at all** — a PHPUnit failure at 00:00:03 UTC is still a
+PHPUnit failure, and this never runs when anything else matched.
+
 ### `:fail` says when the selector does not fit the job's status
 
 [#1095](https://github.com/Digital-Process-Tools/claude-supertool/issues/1095), the
@@ -1001,6 +1042,47 @@ The list endpoint omits pipeline, approval, and diff data, so each MR costs a co
 ```
 
 Otherwise inherits from `glab auth status` — no project-specific tokens needed.
+
+### Runner maintenance windows
+
+[#645](https://github.com/Digital-Process-Tools/claude-supertool/issues/645).
+A cron cleanup+reboot at a known time is fleet policy, not a code change, so
+it lives in config rather than being parsed out of the runner's own
+description string — that string is what `gl-runners:queue` already keys its
+own matching on, and `dptools-runner-7` vs `dptools-runner-7 V2` is a real
+distinction there ([#613](https://github.com/Digital-Process-Tools/claude-supertool/issues/613)). Embedding a marker inside it would invite exactly
+the corruption this exists to prevent.
+
+```json
+{
+  "gl-runners": {
+    "maintenance": { "window": "00:00 UTC", "duration": "5m" },
+    "runners": {
+      "dptools-runner-4": { "maintenance": { "window": "03:30 UTC" } },
+      "hercule": { "maintenance": null }
+    }
+  }
+}
+```
+
+Top-level `maintenance` is the fleet-wide default. `runners.<key>.maintenance`
+overrides it for one host — the key tries the runner's own `description`
+first, then its numeric `id` as a string — and an explicit `null` opts that
+host out entirely, which is different from the host simply having no entry
+(no entry falls back to the fleet default; an entry present but without its
+own `maintenance` key does too).
+
+`window` is `"HH:MM UTC"` only — one clock, one zone, matching the
+timestamps GitLab's own API already returns. `duration` is an amount plus a
+single unit letter (`s`/`m`/`h`), the grace period after the trigger during
+which a job still finishing counts as caught by the reboot rather than
+having survived it. **Anything that does not parse — a bad clock, an
+out-of-range value, a duration with no unit, the wrong JSON shape entirely —
+is read as "no window declared", never as an error**: a garbled declaration
+must not be the reason `gl-job:ID:fail` stops working. Consulted by
+[`gl-job:ID:fail`](#a-container-level-exit-inside-a-declared-maintenance-window)
+against the job's own `finished_at` and `runner.description`/`runner.id`, and
+only for a container-level exit code — never for a real test failure.
 
 ### Default project for `gl-issue-create`
 
