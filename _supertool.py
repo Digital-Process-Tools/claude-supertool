@@ -1075,7 +1075,14 @@ def _record_op_sources(config: Dict[str, Any],
 
 #: Keys `_resolve_custom_op`'s launcher never exports as `SUPERTOOL_<KEY>` —
 #: its own control fields, not config for the subprocess to read (#692,
-#: #1347, #1357, #1672, #1675). Module-level and shared with
+#: #1347, #1357, #1672, #1675, #1757). `safety` and `repo_target` join the
+#: list for #1757: both are metadata the CORE reads off the merged registry
+#: entry to decide how to treat the op before ever spawning it (safety
+#: classification; whether a leading `repo:OWNER/NAME` token is honoured) —
+#: never something the subprocess itself consults. A tree-wide grep for
+#: either env var name (`SUPERTOOL_SAFETY`, `SUPERTOOL_REPO_TARGET`) inside
+#: a preset returns zero, the same signature `replaces`/`paths`/`exitStatus`
+#: each had before they were added here. Module-level and shared with
 #: `_op_config_key_collisions` below so the two can never disagree about
 #: which keys actually become an env var: a set redeclared at each site would
 #: let one drift and the other not, and the drift would be silent — exactly
@@ -1083,6 +1090,7 @@ def _record_op_sources(config: Dict[str, Any],
 _OP_CONFIG_RESERVED_KEYS = {
     "cmd", "timeout", "description", "syntax", "example", "status",
     "restartMcp", "replaces", "paths", "exitStatus", "form", "hint",
+    "safety", "repo_target",
 }
 
 #: Extra config keys whose value is a search path -- one or more directories
@@ -4975,6 +4983,9 @@ def _resolve_custom_op(op: str, parts: List[str]) -> str | None:
     # `exitStatus` joins them for the same reason as `paths` (#1672): it is a
     # declaration the dispatcher acts on around the subprocess, so exporting it
     # into that subprocess is the wrong direction for the information to travel.
+    # `safety` and `repo_target` join for #1757 — both are core-only metadata
+    # (safety classification, whether a leading `repo:OWNER/NAME` token is
+    # honoured) with no reader in any op's own subprocess.
     # Shared with `_op_config_key_collisions` — see that constant's docstring
     # for why the two must read the same set (#1009).
     _RESERVED_KEYS = _OP_CONFIG_RESERVED_KEYS

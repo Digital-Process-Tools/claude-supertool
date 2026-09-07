@@ -87,8 +87,8 @@
       "description": "Briefing: new comments + follower count + top posts since timestamp. No arg = uses ~/.config/hashnode/last_check (auto-tracked).",
       "syntax": "hashnode_status_since[:ISO_TIMESTAMP]",
       "example": "hashnode_status_since:2026-04-30T00:00:00Z",
-      "default_status_posts": 10,
-      "default_status_comments": 20
+      "status_posts": 10,
+      "status_comments": 20
     }
   }
 }

@@ -67,7 +67,7 @@
       "description": "Briefing: new mentions, replies, likes, follows since timestamp via the native notifications endpoint. No arg = uses last_check state file.",
       "syntax": "bluesky_status_since[:ISO_TIMESTAMP]",
       "example": "bluesky_status_since:2026-04-30T00:00:00Z",
-      "default_status_limit": 50
+      "status_limit": 50
     }
   }
 }
