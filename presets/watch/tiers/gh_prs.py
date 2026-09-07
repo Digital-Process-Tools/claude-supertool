@@ -135,7 +135,14 @@ import os
 # the patch lands on the same object `_pr_board.py` calls `subprocess.run`
 # against. Removing this import would not change runtime behaviour but
 # would break `tier.subprocess` attribute access from the test.
-import subprocess
+#
+# `noqa: F401` rather than leaving it bare: this repo's own pyproject.toml
+# ignores F401 tree-wide, but `.github/scripts/lint_new_files.py` re-enables
+# it for the diff (baseline: file's own merge-base content) -- `subprocess`
+# WAS called directly here before #958, so its import going from used to
+# unused is a genuinely new finding on this PR, not a pre-existing one the
+# tree-wide ignore is meant to cover.
+import subprocess  # noqa: F401
 import sys
 from pathlib import Path
 from typing import Any
