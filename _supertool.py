@@ -3187,6 +3187,103 @@ _OP_SAFETY_BUILTIN: Dict[str, str] = {
 }
 
 
+# Caller-declared read-only mode (#1787). `ops:roster` has always classed
+# every op unmarked/`*`/`!` -- the only place read and write are distinguished
+# at all -- but until this, the classification was unenforceable: a caller who
+# IS read-only by design (a review/audit agent whose whole remit is
+# annotating a diff) had no way to say so and be held to it. The concrete
+# incident, `claude-oss#251`: a review agent ran `radar` (classed `!`)
+# against the live watch fleet it was auditing, mid-audit of that fleet's own
+# healing logic. Nothing stopped it; it is knowable only because the agent
+# reported itself.
+#
+# An env var, not a `.supertool.json` key: the flag is a property of ONE
+# CALLER's intent for one invocation, not of the repo or the tree. The same
+# worktree is dispatched into by a read-only audit agent and a normal writing
+# session in the same tick, sometimes the same process tree -- a
+# project-level toggle would gate every caller or none, and whichever
+# session wrote it last would silently win for every sibling.
+# `SUPERTOOL_ALLOW_MIXED_TREE` and `SUPERTOOL_ALLOW_OUTSIDE_CWD` beside it are
+# the same shape: a per-process opt a config file cannot represent.
+#
+# And this constrains only the well-behaved (#1787's own third question). The
+# raw-command guard hooks `Bash` only, and a caller who wants to write can
+# always not call the op -- `Edit`/`Write` reach disk with no op, no
+# validator, no rollback (#1671), exactly as the roster's own legend already
+# says. Shipped anyway: the incident this answers was not an adversary, it
+# was a cooperative agent one call away from meaning to be read-only and
+# having no way to say so. A guardrail against your own mistake is not made
+# worthless by a determined caller's ability to route around it -- `noclobber`
+# and a shell `readonly` variable are the same shape, and neither claims to
+# stop an attacker.
+_READ_ONLY_ENV = "SUPERTOOL_READ_ONLY"
+
+
+def _read_only_declared() -> bool:
+    """True when the caller has declared this whole invocation read-only.
+
+    Same truthy spellings as `_mixed_tree_allowed()` beside it, so one
+    convention answers "is this env var set" everywhere in this file.
+    """
+    return (os.environ.get(_READ_ONLY_ENV) or "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _op_safety_class(op: str) -> str:
+    """Safety class for ONE op name, without building the whole roster.
+
+    Same precedence `_roster_classes()` applies across every name, extracted
+    so the dispatch-time read-only gate below doesn't pay for classifying
+    every loaded op to ask about the one about to run (#1787). Builtins are
+    `_OP_SAFETY_BUILTIN` -- a project config cannot downgrade one, matching
+    `_roster_classes()`'s own rule that class is a property of this binary.
+    A preset/project op reads its declared `"safety"` off `.supertool.json`
+    ("ops" then "aliases"); undeclared, unrecognised, or a string-form cmd
+    shorthand (no `"safety"` key to read) falls back to `"acts"`, the loudest
+    class -- an op this function does not recognise is over-marked here for
+    the same reason the roster over-marks it, never under-marked.
+
+    Deliberately ignores `"status"` (listing suppression): a builtin or
+    preset op still dispatches when hidden from `ops`/`ops:roster`, and this
+    gate has to answer about what actually runs, not about what is shown.
+    """
+    if op in _valid_op_names():
+        return _OP_SAFETY_BUILTIN.get(op, "acts")
+    config = _load_config()
+    for section in ("ops", "aliases"):
+        entries = config.get(section)
+        if isinstance(entries, dict):
+            info = entries.get(op)
+            if isinstance(info, dict):
+                declared = info.get("safety")
+                return declared if declared in _SAFETY_CLASSES else "acts"
+    return "acts"
+
+
+def _read_only_decline(op: str, cls: str) -> str:
+    """The refusal for a `*`/`!`-class op under SUPERTOOL_READ_ONLY=1 (#1787).
+
+    Names the op and its class rather than a bare "denied" -- sub-question 2
+    of the issue this answers, and the same third-state argument
+    `_mixed_tree_decline` beside it makes: a caller reading this receipt must
+    be able to tell "declined because I asked for read-only" from "failed for
+    an unrelated reason" without cross-referencing anything else.
+    """
+    marker = _SAFETY_MARKERS.get(cls, "!")
+    shown = marker or cls
+    what = ("writes files in this tree" if cls == "writes"
+            else "reaches outside this tree, or outlives the call")
+    return (
+        f"SKIPPED: '{op}' is class `{shown}` ({cls}) -- it {what} -- and "
+        f"{_READ_ONLY_ENV}=1 is set.\n"
+        f"Declined rather than run: the caller asked to be held to "
+        f"read-only, and acting anyway would be exactly the silent gap this "
+        f"declaration exists to close (#1787).\n"
+        f"Every op's class: `ops:roster`. To act anyway for this call, unset "
+        f"{_READ_ONLY_ENV}.\n"
+    )
+
+
 # Read-only built-in ops. Two consumers, one predicate, because they ask the
 # same question: `_main`'s ThreadPool gate, and the `_path_meta_bulk_drop()` in
 # `dispatch`'s `finally` that keeps the repo-wide `git status` snapshot from
@@ -30579,6 +30676,20 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             parts = _split_arg(arg)
             _arg_sep = ":"
         op = parts[0] if parts else ""
+
+    # Read-only gate (#1787), the earliest point `op` is known on every path
+    # -- built-in, preset/project, and every batch sub-op that recurses back
+    # through this same function. Fires before any argument shape is even
+    # looked at (a mixed-tree pair, an @-payload route, stdin) because none of
+    # that matters once the answer is "do not run this op at all": there is no
+    # more-specific refusal for this call to lose to, unlike the mixed-tree
+    # gate below which deliberately waits until immediately before stdin is
+    # touched.
+    if _read_only_declared():
+        _read_only_cls = _op_safety_class(op)
+        if _read_only_cls != "read-only":
+            _bump_counter(_SKIP_COUNT, "cnt_skip")
+            return _receipt(header, _read_only_decline(op, _read_only_cls))
 
     def _op_gated_by_mixed_tree_write_check() -> bool:
         """True for the same two classes `_resolve_custom_op`'s own #678
