@@ -141,7 +141,20 @@ class TestGenericRouteScope:
     def test_builtin_with_no_registered_route_is_unaffected(
         self, tmp_path: Path
     ) -> None:
-        supertool._CONFIG = {}
+        """Auditor review note: pair the negative claim with a positive
+        control in the SAME fixture, so a broken harness (nothing at all
+        happening) cannot pass this test the same way a correctly-scoped
+        route does. `say` -- registered by the identical
+        `_register_argv_echo` helper every positive test in this file
+        uses -- proves the payload route is live in this process; `wc`
+        proves it is not reached for a builtin with no registered route.
+        """
+        _register_argv_echo(tmp_path=tmp_path)
+        control_spec = tmp_path / "control.json"
+        control_spec.write_text(json.dumps({"args": ["x"]}))
+        control_out = supertool.dispatch(f"say:@{control_spec}")
+        assert "1=x" in control_out
+
         spec = tmp_path / "p.json"
         spec.write_text(json.dumps({"args": ["x"]}))
         # `wc` (word count) has no ':::' syntax and is not in
