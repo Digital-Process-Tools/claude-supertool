@@ -182,7 +182,7 @@ Enable any of these by copying the relevant entry from `.supertool.example.json`
 | YAML (`.yaml`)      | `yaml-check-yaml`| PyYAML (`pip install pyyaml`)      | Identical logic, different glob            |
 | INI                 | `inilint`        | stdlib only                        | No external dep                            |
 | Python              | `py-compile`     | stdlib only                        | Uses `py_compile` — syntax only, not type  |
-| Python (types)      | `pyright`        | `pyright` (`npm install -g pyright`)| Real type-check via `pyright --outputjson` |
+| Python (types)      | `pyright`        | `pyright` (`npm install -g pyright`)| Real type-check via `pyright --outputjson`; the target is contained before it reaches argv (#2379) — see below |
 | Python (types, second checker) | `mypy` | `mypy` (`pip install mypy`)  | Coexists with `pyright` rather than replacing it (#669) -- different findings, not a subset. `mypy --output json`, one JSON object per line rather than pyright's single envelope; `--cache-dir` pinned to `os.devnull` so no `.mypy_cache/` is left behind |
 | Python (lint)       | `ruff`           | `ruff` (`pip install ruff`)        | `ruff check --output-format json`. Ruleset comes from the **project's** config, not the adapter — see below |
 | Bash                | `bash-check`     | `bash` on PATH                     | Uses `bash -n`                             |
