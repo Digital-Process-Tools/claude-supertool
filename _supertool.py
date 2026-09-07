@@ -11028,6 +11028,14 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
     # Execute mode
     files_modified: Dict[str, int] = {}
     vanished: List[str] = []
+    # Per-file count of occurrences that were already sitting inside a prior
+    # application of this same edit (#938, the residual #701 left open:
+    # `edit` gained this disclosure, `replace` shared the silent double-apply
+    # and had none of it — confirmed live in the issue's own follow-up
+    # comment). Same positional test `op_edit` uses, run once per occurrence
+    # against the PRE-write content, because a later occurrence's index would
+    # otherwise be read against text this same write already shifted.
+    reapplied_counts: Dict[str, int] = {}
     for file_path, _scan_positions, eff_old, eff_new in file_matches:
         try:
             # newline="": see op_edit / op_append. Without it every line of a
@@ -11047,6 +11055,21 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
         if not hits:
             vanished.append(file_path)
             continue
+        if len(eff_new) > len(eff_old) and eff_old in eff_new:
+            _idxs: List[int] = []
+            _start = 0
+            while True:
+                _idx = content.find(eff_old, _start)
+                if _idx == -1:
+                    break
+                _idxs.append(_idx)
+                _start = _idx + len(eff_old)
+            _n_reapplied = sum(
+                1 for _idx in _idxs
+                if _edit_already_applied(content, eff_old, eff_new, _idx)
+            )
+            if _n_reapplied:
+                reapplied_counts[file_path] = _n_reapplied
         new_content = content.replace(eff_old, eff_new)
         try:
             _atomic_write(file_path, new_content)
@@ -11076,10 +11099,27 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
         if _fp in files_modified and _eff_old != old:
             retermed[_fp] = ("CRLF" if "\r\n" in _eff_old
                              else "CR" if "\r" in _eff_old else "LF")
+    # #938: disclose, never refuse — same posture #701 took for `edit`. Bumped
+    # once per occurrence found sitting inside a prior application of this
+    # same edit, so the shared `[result]` footer's `K re-applied` (see
+    # `_result_line`) is honest for `replace` too, not only for `edit`.
+    _total_reapplied = sum(reapplied_counts.values())
+    if _total_reapplied:
+        _bump_counter(_REAPPLY_COUNT, "cnt_reapply", _total_reapplied)
     out = [f"({total} replacements in {len(files_modified)} files)\n"]
     for fp, cnt in sorted(files_modified.items()):
         tag = f" [{retermed[fp]}]" if fp in retermed else ""
+        if fp in reapplied_counts:
+            tag += f" [{reapplied_counts[fp]} re-applied]"
         out.append(f"  {_fwd(fp)} ({cnt}){tag}\n")
+    if reapplied_counts:
+        out.append(
+            f"\n  {mark('↳')} re-applied: the text this edit produces was "
+            f"already present around the anchor in "
+            f"{len(reapplied_counts)} file"
+            f"{'' if len(reapplied_counts) == 1 else 's'} — this is a SECOND "
+            f"application, not a repeat of the first\n"
+        )
     if retermed:
         # Only where a choice was made. A uniform file whose `old` matched
         # literally is not marked and produces no line at all — on Windows
