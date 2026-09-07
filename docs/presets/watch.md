@@ -638,6 +638,56 @@ gh-prs:
 
 **It is an argument, not its own op, and that is deliberate.** `ops.radar.radar_tiers` merges into the op it is keyed by, so a `radar-state` op would need a second copy of the tier list — and a read-only view describing a different tier set from the one radar runs is exactly the defect this view exists to remove. A tier that exposes no `radar_state()` says so, rather than rendering as an empty block that reads as healthy.
 
+## A board scoped to one issue — the `gl-issue` tier ([#898](https://github.com/Digital-Process-Tools/claude-supertool/issues/898))
+
+Every tier above answers a *population* question — "how are all my open MRs" (`gl-mrs`), "how are all my open PRs" (`gh-prs`), "how is the runner fleet" (`gl-runners`). None of them answer "how is issue #12657" — its own related MRs, its label changes, its reopens. `gl-issue` does, registered by name like the rest:
+
+```json
+{ "ops": { "radar": { "radar_tiers": { "gl-issue": {} } } } }
+```
+
+```
+radar:gl-issue:12657
+```
+
+The whole invocation string after `radar:` is what every registered tier receives as `_arg`, so `gl-issue` accepts either the self-prefixed shape shown above (`"gl-issue:12657"`) or a bare id (`"12657"`) — a leading `#` is stripped either way. Anything else is refused with the syntax restated, never guessed at.
+
+### No feed, no filter vocabulary, and that is a simplification, not an omission
+
+`gl-mrs` and `gh-prs` both carry a *discovery* problem: their population is "every open MR/PR matching a filter", which can gain a member between one radar run and the next, so both keep a feed poller alive so a session idle for an hour still learns about something opened fifty minutes ago.
+
+`gl-issue` has no such problem. Its population is "issue #12657's own related MRs", answered by one live `related_merge_requests` query scoped to the issue's own id on every run — there is nothing to discover between runs that a fresh query would not already show. So there is no feed, and there is no filter vocabulary either: the one parameter this tier takes is *which issue*, and that arrives through `_arg` rather than through `RADAR_OPTIONS`.
+
+### What it watches
+
+For every one of the issue's related MRs still `opened`, `gl-issue` heals a `gitlab-mr` watcher over it — the same source and the same `defaults.DEFAULT_ONLY` event set `gl-mrs` heals onto every open MR it tracks (pipeline failures/successes, comments, merges, closes, conflicts, `mr_unreachable`). A closed or merged related MR is not watched: its own terminal event already fired before this tier's next report, and asking `gitlab-mr` to keep polling it would just accumulate a dead poller.
+
+### The issue's own state is tracked across runs, and a reopen or a label change counts against `healthy`
+
+`tiers/_snapshot.py` keeps the issue's previous state (`state`, `labels`, related-MR set), keyed on the issue id. On every run after the first, this tier compares against it and names:
+
+- a **reopen** (`closed` → `opened`),
+- a **label change** (added and removed, each listed),
+- a related MR that is **new** or **no longer related/open**.
+
+Each of these counts against `healthy`, for the same reason a departed MR counts against `gl_mrs`'s own health: `quiet_when_healthy` drops the whole report when a tier is healthy, and an event this tier exists to surface must not be the thing that silences it. **Cold start is the one exception** — the very first run has no previous entry to diff against, so nothing is reported as new/changed/reopened on that run; every related MR simply appears on the board, the same way `gl-mrs` renders a full board on its own cold start rather than a delta.
+
+### Never green when it cannot tell
+
+`gl-issue` raises the same `RadarError`/`RadarUnreachable` split every other tier does, from the one shared `tiers/_radar_errors.py`: an auth failure or a transport failure (DNS, a reset connection, a 429) is `RadarUnreachable`; an answered request whose content is the finding — a 404 on the issue itself, or JSON `glab` did not actually return — is a plain `RadarError`. Neither is silently swallowed into "the board says nothing".
+
+### Deliberately out of scope for this issue
+
+The issue that asked for `gl-issue` (#898) describes a larger vision this tier does not attempt, named here rather than dropped silently:
+
+- **no new `gitlab-mr-note` source** for review comments and requested changes specifically. The existing `gitlab-mr` source already emits `comment_added`, which `defaults.DEFAULT_ONLY` already includes, so the noisier tail a focused radar would eventually want (approvals, retargets) has nowhere to come from yet — that is its own source, with its own tests.
+- **no per-tier/per-source policy markdown** (`RADAR_POLICY`). The issue's own second comment asks that the registry-and-policy mechanism be shared with the separate `dashboard` op (#953) before either tier grows it, and building it here first would either duplicate that decision or pre-empt it.
+- **no per-category `history.md` ledger.** It needs the policy layer above it to mean anything — a ledger with nowhere to promote a recognised pattern to is just an unbounded log — so it waits on the same decision.
+
+### A caveat inherited from how `_arg` reaches every registered tier
+
+Radar passes the *same* `_arg` string to every tier configured in `ops.radar.radar_tiers`. Registering `gl-issue` alongside `gl-mrs` and invoking `radar:gl-issue:12657` therefore also hands `"gl-issue:12657"` to `gl-mrs`'s own filter parser, which does not recognise that shape and raises — reported as a failure for `gl-mrs` alone, never fatal to `gl-issue`. That is an existing property of the tier contract rather than something this tier introduces; a focused radar session is expected to register `gl-issue` on its own rather than beside a population tier that shares the argument slot.
+
 ## A source outside the plugin — `SUPERTOOL_WATCH_SOURCES_PATH` ([#2135](https://github.com/Digital-Process-Tools/claude-supertool/issues/2135))
 
 A source used to have exactly one possible home, `presets/watch/sources/<NAME>/`, inside the installed plugin — a directory every plugin update overwrites and a symlink into it does not survive. So a poller nobody may publish could not be watched at all: `watch:my-source:scope` answered `unknown source`, and with it went the pid slots, `unwatch`, the `watches` board and radar's healing.
