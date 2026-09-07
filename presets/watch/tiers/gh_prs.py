@@ -128,7 +128,21 @@ import glob
 import importlib.util
 import json
 import os
-import subprocess
+# Not called directly here since #958 moved the `gh pr list` spawn into
+# `_pr_board.run_pr_list` -- kept as a module-level name because
+# `tests/test_watch_radar_gh_prs_859.py` patches `tier.subprocess.run`, and
+# `subprocess` is one singleton module regardless of which file imports it:
+# the patch lands on the same object `_pr_board.py` calls `subprocess.run`
+# against. Removing this import would not change runtime behaviour but
+# would break `tier.subprocess` attribute access from the test.
+#
+# `noqa: F401` rather than leaving it bare: this repo's own pyproject.toml
+# ignores F401 tree-wide, but `.github/scripts/lint_new_files.py` re-enables
+# it for the diff (baseline: file's own merge-base content) -- `subprocess`
+# WAS called directly here before #958, so its import going from used to
+# unused is a genuinely new finding on this PR, not a pre-existing one the
+# tree-wide ignore is meant to cover.
+import subprocess  # noqa: F401
 import sys
 from pathlib import Path
 from typing import Any
@@ -144,6 +158,7 @@ import transport  # noqa: E402
 sys.path.insert(0, str(_WATCH.parent))
 import _checks  # noqa: E402
 import _filter_tokens  # noqa: E402  (the one tokenizer the boards share)
+import _pr_board  # noqa: E402  (the board fetch, shared with the dashboard op -- #958)
 import _repo_target  # noqa: E402
 import _st_hint  # noqa: E402  (a runnable invocation, not a hardcoded one -- #905)
 import _untrusted  # noqa: E402
@@ -455,15 +470,27 @@ def live_open_prs(filters: dict[str, str]) -> list[dict]:
     """
     cfg = prs._get_config()
     cmd = prs._build_list_cmd(filters, cfg["per_page"])
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
-                                encoding="utf-8", errors="replace")
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
-        # The spawn itself never completed, so nothing was asked of GitHub:
-        # `gh` absent, hung against the 30s budget, or killed. Unreachable by
-        # construction (#1568).
-        raise RadarUnreachable(f"gh pr list failed: {exc}") from exc
-    if result.returncode != 0:
+    # The spawn, the JSON parse and the "is this even a list" check are
+    # `_pr_board.run_pr_list` (#958) -- the dashboard op runs the identical
+    # mechanical sequence over its own argv. What is NOT shared is the
+    # classification below: which exit shape means "no credentials" vs
+    # "rate limited" vs "the request never landed" is radar's own retry
+    # policy, and `raw_stderr` is what it classifies against, unformatted.
+    data, msg, returncode, raw_stderr = _pr_board.run_pr_list(cmd, timeout=30)
+    if data is None:
+        if returncode is None:
+            # The spawn itself never completed, so nothing was asked of
+            # GitHub: `gh` absent, hung against the 30s budget, or killed.
+            # Unreachable by construction (#1568).
+            raise RadarUnreachable(msg)
+        if returncode == 0:
+            # `gh` answered and exited clean, but the payload was not usable
+            # (bad JSON, or JSON that was not a list) -- this is not one of
+            # the exit-code-classified failures below, which all presume a
+            # nonzero exit; raising through them would read `unknown error`
+            # off an empty `raw_stderr` and misreport a parse failure as a
+            # request that never landed.
+            raise RadarError(msg)
         # Flattened, because quoting the stderr is this issue's remedy and it
         # is also how the remote gets a say in a line the reader takes as
         # radar's (#1485). `gh` echoes GitHub's own error body, and radar
@@ -473,8 +500,8 @@ def live_open_prs(filters: dict[str, str]) -> list[dict]:
         # (`presets/github/prs.py`); the tier did not, and #1823 widened the
         # exposure by adding `{err}` to the one arm that used to be a fixed
         # string. One call at the point `err` is bound covers every arm below.
-        err = _untrusted.flat((result.stderr or "").strip()) or "unknown error"
-        if result.returncode < 0:
+        err = _untrusted.flat(raw_stderr) or "unknown error"
+        if returncode < 0:
             # Not a finished answer. `subprocess` reports `-N` for a POSIX
             # signal, and a process that was killed did not finish deciding
             # anything — under a loaded `-n auto` run the OOM killer and a
@@ -496,9 +523,9 @@ def live_open_prs(filters: dict[str, str]) -> list[dict]:
             # for the same reason: one change to both tiers, not a divergence.
             raise RadarUnreachable(
                 f"gh pr list did not finish before it answered (returncode "
-                f"{result.returncode}, consistent with a killing signal on "
+                f"{returncode}, consistent with a killing signal on "
                 f"POSIX — not established on Windows, see #1871): {err}")
-        if result.returncode == GH_RC_NO_CREDENTIALS:
+        if returncode == GH_RC_NO_CREDENTIALS:
             # Checked before the message arms below, because `gh` spells this
             # differently depending on whether it thinks it is interactive, and
             # the CI spelling matches none of them.
@@ -512,14 +539,14 @@ def live_open_prs(filters: dict[str, str]) -> list[dict]:
             # established, and it stays (#1823).
             raise RadarUnreachable(
                 f"gh says this request was not authenticated (exit "
-                f"{result.returncode}): {err}. Run: gh auth login")
+                f"{returncode}): {err}. Run: gh auth login")
         if "rate limit" in low or "http 403" in low:
             raise RadarUnreachable(
                 f"gh refused the query (rate limit or permission, exit "
-                f"{result.returncode}): {err}")
+                f"{returncode}): {err}")
         if _unreachable(err):
             raise RadarUnreachable(
-                f"gh could not reach the API (exit {result.returncode}): {err}")
+                f"gh could not reach the API (exit {returncode}): {err}")
         # State 3: `gh` failed and nothing here established why. The issue's
         # own fallback -- quote the exit status and the stderr of the call that
         # did not answer, rather than name a cause. Naming one costs more than
@@ -527,13 +554,7 @@ def live_open_prs(filters: dict[str, str]) -> list[dict]:
         # a loop told the tier could not answer retries and continues.
         raise RadarError(
             f"gh pr list did not answer, and nothing in its output says why "
-            f"(exit {result.returncode}): {err}")
-    try:
-        data = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise RadarError("could not parse gh JSON output") from exc
-    if not isinstance(data, list):
-        raise RadarError("gh returned no PR list")
+            f"(exit {returncode}): {err}")
     prs._annotate(data)
     return data
 
@@ -926,18 +947,20 @@ def default_branch_report(ref: str | None, repo: str,
     poller_ok = (poller not in ("failed", "capped", "unknown")
                 and not poller_err and not poller_blind and not poller_others)
 
-    sha, age, err = branch._head_commit(ref)
+    # `_pr_board.head_and_runs` (#958) -- the same two-call sequence the
+    # dashboard op's `collect_default` runs, mechanically: resolve the head
+    # commit, then the run list on it. This tier's poller machinery and the
+    # dashboard's `declared_pair` scoping both stay where they are; see
+    # `_pr_board.py`'s own docstring for why the composition below them is
+    # not itself shared yet. Either read failing means the same thing here —
+    # the default branch's state is not established — so both share the one
+    # disclosure below rather than the head-commit failure alone carrying it.
+    sha, age, runs, err = _pr_board.head_and_runs(branch, ref)
     if err:
         return (poller_lines +
                 [f"radar: {ref} — {branch.UNKNOWN}: {err} The default branch's "
                  f"state is not established; a red master looks exactly like "
                  f"this line being absent."], False, poller_ok)
-
-    runs, err = branch._run_list(ref)
-    if err or runs is None:
-        return (poller_lines +
-                [f"radar: {ref} — {branch.UNKNOWN}: {err or 'run list unreadable'}"],
-                False, poller_ok)
 
     selected = branch.runs_on_sha(runs, sha)
     _prev_sha, prev_names = branch.previous_head(runs, sha)
