@@ -244,6 +244,16 @@ SUB_UNKNOWN = "unknown"
 CHANNEL_FLAG = "--dangerously-load-development-channels"
 TAG_PREFIX = "server:"
 
+#: How Claude Code itself qualifies an MCP server name that came from an
+#: installed plugin (`claude mcp list` printed `plugin:supertool:claude-channel`
+#: on 2026-08-13, `_CONTROL`'s own comment below). A tag carrying this prefix is
+#: a *self-declaration*: whoever spawned the session asserted this name is
+#: plugin-provided, not a guess this file makes from a bare name -- unlike
+#: `.mcp.json` declaring `CONSUMER_SERVER`, which #2182 found present in every
+#: install regardless of whether the harness ever loaded it, and therefore
+#: useless as corroboration (`test_watch_channel_census_2182.py`).
+PLUGIN_TAG_PREFIX = "plugin:"
+
 #: `claude mcp get NAME` is the harness's own answer to "is NAME configured" —
 #: the same question `bin/oss-workspace` asks before registering the
 #: consumer, so this op and the launcher cannot disagree about it. It is read
@@ -1434,6 +1444,17 @@ def _configured(name: str, timeout: float | None = None) -> tuple[bool | None, s
     one piece of prose read out of a successful lookup, and it is a claim about
     a load rather than about a connection -- see `CLAUDE_NOT_LOADED_STATUS_RE`.
 
+    **A `False` from the recognised "no such server" text is no longer safe
+    for a `plugin:`-qualified name on every harness version** (#2361). On
+    Claude Code 2.1.261 that text and exit code are also what a genuinely
+    absent name produces, so for that population `CLAUDE_UNKNOWN_SERVER`
+    yields the admission, `None`, rather than the finding. `.mcp.json`
+    declaring `CONSUMER_SERVER` was tried as a second signal and rejected:
+    #2182 found that declaration present in every install regardless of
+    whether the harness loaded it, so it corroborates nothing. No general
+    replacement signal is known; `plugin:`-qualified names are the one
+    self-declared population this can act on without guessing.
+
     **This is the construction site for an argv built out of ambient process
     state, so the shape check lives here rather than in the parser** (#1559).
     `_safe_path` and the `paths` declarations gate arguments the *caller*
@@ -1468,6 +1489,23 @@ def _configured(name: str, timeout: float | None = None) -> tuple[bool | None, s
             return False, ""
         return True, ""
     if CLAUDE_UNKNOWN_SERVER in out:
+        if name.startswith(PLUGIN_TAG_PREFIX):
+            # #2361: on Claude Code 2.1.261, a plugin-provided server that is
+            # loaded and holding its socket (verified via `lsof`/`ps` in the
+            # issue's own repro) produces this exact `rc=1` and text -- the
+            # same as a name that was never configured at all. #2182's
+            # premise -- "`claude mcp get` is the authority on whether the
+            # harness loaded a server not on disk" -- does not hold for this
+            # population on this harness version: the negative surface itself
+            # is unreliable, so "not found" is not a finding here. This is
+            # the admission, not the strongest of the three answers.
+            return None, (
+                f"`{CLAUDE_BIN} mcp get` says no server is named "
+                f"{_untrusted.flat(name)!r}, but `claude mcp list`/`get` no "
+                f"longer reliably report a `{PLUGIN_TAG_PREFIX}`-qualified "
+                f"server at all on some harness versions (#2361) -- a loaded, "
+                f"bound plugin server and a genuinely absent one both produce "
+                f"this same rc=1 text there, so it is not a finding")
         return False, ""
     return None, (f"`{CLAUDE_BIN} mcp get` exited {done.returncode} without saying "
                   f"the name is unknown")
