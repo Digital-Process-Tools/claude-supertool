@@ -129,10 +129,10 @@ def test_report_renders_issue_and_watches_open_related_mrs(state_dir, monkeypatc
         return "alive"
 
     _fake_glab(monkeypatch, {
-        f"issues/12657/related_merge_requests": [
+        "issues/12657/related_merge_requests": [
             _mr(101, title="fix it"), _mr(102, state="merged"),
         ],
-        f"issues/12657": _issue(labels=["bug"]),
+        "issues/12657": _issue(labels=["bug"]),
     })
 
     lines, healthy = tier.radar_report({"_arg": "gl-issue:12657", "_watch": watch})
