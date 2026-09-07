@@ -96,7 +96,7 @@ def main() -> None:
     try:
         result = subprocess.run(
             ["mypy", "--output", "json", "--no-error-summary",
-             "--no-color-output", "--cache-dir", os.devnull, file],
+             "--no-color-output", "--cache-dir", os.devnull, "--", file],
             capture_output=True,
             text=True,
             timeout=60, encoding="utf-8", errors="replace",
