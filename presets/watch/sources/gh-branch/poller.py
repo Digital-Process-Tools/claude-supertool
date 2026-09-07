@@ -70,10 +70,15 @@ UNKNOWN = branch.UNKNOWN
 # `default_branch_report` both render it as-is and neither needed this -- but
 # a *poller* exists to tell a waiting consumer what changed, and "nothing has
 # concluded yet" and "a leg failed" are opposite next actions folded into one
-# string. Classified in `poll()` off `branch.NOT_GREEN_FAILED_MARKER`, the
-# same substring `verdict()` already puts in the sentence for the failed
-# case, so the two cannot silently drift apart the way two independent
-# copies of the red-leg check would.
+# string. Classified in `poll()` off `_snapshot`'s own `has_failed_leg`
+# (`bool(branch._red_workflows(selected, legs))`), the same structural check
+# `verdict()` makes before it ever renders a sentence -- never a substring
+# search over the rendered sentence itself: a first cut of this fix did
+# exactly that (`"did not pass" in sentence`) and a review caught the hole --
+# `verdict()`'s pending sentence interpolates a workflow's own `name:` field,
+# which GitHub lets a repo author spell however they like, so a workflow
+# literally named "did not pass" would have forged a false NOT_GREEN_FAILED
+# reading on a genuinely pending commit.
 NOT_GREEN_PENDING = f"{NOT_GREEN} (PENDING)"
 NOT_GREEN_FAILED = f"{NOT_GREEN} (FAILED)"
 
@@ -89,8 +94,15 @@ _EVENT_FOR_STATE = {
 }
 
 
-def _snapshot(ref: str) -> tuple[str, str, str, str, str]:
-    """`(state, sentence, sha, repo, error)` for the named ref, right now.
+def _snapshot(ref: str) -> tuple[str, str, str, str, str, bool]:
+    """`(state, sentence, sha, repo, error, has_failed_leg)` for the named ref,
+    right now.
+
+    `has_failed_leg` is structural, never text-derived: `bool(_red_workflows(
+    selected, legs))`, the same check `verdict()` itself makes before it ever
+    builds a sentence. It is meaningful only when `state == branch.NOT_GREEN`
+    -- `False` on every other path, including the error paths below, where
+    there is no leg data to have an opinion about.
 
     `repo` is `branch._repo_identity()`'s own `nameWithOwner` -- gh's own
     base-repo resolution, which honours `remote.<name>.gh-resolved` -- the
@@ -127,10 +139,11 @@ def _snapshot(ref: str) -> tuple[str, str, str, str, str]:
     """
     sha, age, err = branch._head_commit(ref)
     if err:
-        return "", "", "", "", err
+        return "", "", "", "", err, False
     runs, err = branch._run_list(ref)
     if err or runs is None:
-        return "", "", sha, "", err or "ERROR: gh run list returned nothing readable"
+        return ("", "", sha, "", err or "ERROR: gh run list returned nothing readable",
+                False)
 
     selected = branch.runs_on_sha(runs, sha)
     _prev_sha, prev_names = branch.previous_head(runs, sha)
@@ -148,18 +161,30 @@ def _snapshot(ref: str) -> tuple[str, str, str, str, str]:
 
     repo, _default_ref, repo_err = branch._repo_identity()
     if repo_err:
-        return "", "", sha, "", repo_err
+        return "", "", sha, "", repo_err, False
     marker, _shortfall = branch._reconcile(repo, selected, fetched)
     scope, _scope_lines, _unresolved = branch.scope_for(
         repo, sha, selected, age_secs=age, grace=branch._GRACE)
     state, sentence = branch.verdict(selected, legs, missing, sha, age,
                                      branch._GRACE, marker, scope=scope)
-    return state, sentence, sha, repo, ""
+    # Structural, not textual (#2355 review finding): `bool(_red_workflows(...))`
+    # reads the same `legs`/`selected` data `verdict()` itself reads, never the
+    # rendered sentence. A marker-substring scan over the sentence was tried
+    # first and misfires on a workflow literally named after the marker text --
+    # `_names(moving)`/`_names(missing)` interpolate a workflow's own `name:`
+    # field, which GitHub lets a repo author spell however they like, into the
+    # *pending* sentences, so a workflow named e.g. "did not pass" would forge
+    # a false NOT_GREEN_FAILED reading on a genuinely pending commit. This asks
+    # the same question `_red_workflows` already answers for `verdict()`
+    # itself, off the structured data, so nothing a workflow's name says can
+    # change the answer.
+    has_failed_leg = bool(branch._red_workflows(selected, legs))
+    return state, sentence, sha, repo, "", has_failed_leg
 
 
 def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     ref = str(ctx["id"])
-    branch_state, sentence, sha, repo, error = _snapshot(ref)
+    branch_state, sentence, sha, repo, error, has_failed_leg = _snapshot(ref)
 
     if error:
         # Three answers, not two -- same shape as `github-pr`'s `_fetch`
@@ -185,14 +210,17 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # NOT_GREEN split into two poller states (#2355): "nothing has
     # concluded yet" and "a leg failed" are opposite next actions, and a
     # pending -> failed transition on the SAME commit changed nothing the
-    # old bare-state comparison below could see. Read back off the sentence
-    # rather than re-derived from `legs`/`selected` a second time -- see
-    # `branch.NOT_GREEN_FAILED_MARKER`'s own docstring for why that pairing
-    # is a constant instead of two independent copies of the red-leg check.
+    # old bare-state comparison below could see. `has_failed_leg` is
+    # `_snapshot`'s own structural answer (`bool(branch._red_workflows(...))`)
+    # -- not re-derived from `sentence` here. A first cut of this fix scanned
+    # `sentence` for `branch.NOT_GREEN_FAILED_MARKER` and a review caught the
+    # hole: the pending sentence interpolates a workflow's own `name:` field
+    # (`_names(moving)`/`_names(missing)` in `verdict()`), which GitHub lets a
+    # repo author spell however they like, so a workflow literally named
+    # "did not pass" would have forged a false NOT_GREEN_FAILED reading on a
+    # genuinely pending commit.
     if branch_state == NOT_GREEN:
-        branch_state = (NOT_GREEN_FAILED
-                         if branch.NOT_GREEN_FAILED_MARKER in sentence
-                         else NOT_GREEN_PENDING)
+        branch_state = NOT_GREEN_FAILED if has_failed_leg else NOT_GREEN_PENDING
 
     prev_state = state.get("branch_state", "")
     prev_sha = str(state.get("sha") or "")

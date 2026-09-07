@@ -792,24 +792,10 @@ renamed later.
 
 The event vocabulary is `gh-branch`'s own four states, unfolded rather than
 collapsed into a green/red pair: `went_green`, `went_not_green` (nothing has
-concluded yet on the head commit -- not a failure, just not cleared) and
-`went_failed` (a leg on the head commit actually failed) -- split out of one
-coarse `went_not_green` in
-[#2355](https://github.com/Digital-Process-Tools/claude-supertool/issues/2355),
-because "keep waiting" and "act now" are opposite next actions and a
-pending-to-failed transition on the SAME commit changed nothing the old
-bare-state comparison could see. The poller classifies off
-`branch.NOT_GREEN_FAILED_MARKER`, the same substring `branch.verdict()`
-already puts in the sentence for the failed case (the event's own `sentence`
-payload field still carries the full detail, the same sentence `gh-branch`
-itself would print); `presets/github/branch.py`'s own four-state vocabulary
-(`GREEN`/`NOT_GREEN`/`NO_RUN`/`UNKNOWN`) is unchanged and this split is
-poller-side only. The transition test also compares `sha`, not just the
-coarse state, so a branch moving to a brand-new commit while remaining in the
-same category emits too -- a real widening of emission volume, decided
-deliberately. `no_run` (zero workflow runs on the head
-commit — never folded into red, because it is the ordinary state for the first
-seconds after a squash), and `unknown` (a job list that did not come back, or
+concluded yet on the head commit -- not a failure, just not cleared), `no_run`
+(zero workflow runs on the head commit — never folded into red, because it is
+the ordinary state for the first seconds after a squash), and `unknown` (a job
+list that did not come back, or
 a sha this poller already confirmed runs on that came back with zero runs on
 a later poll — runs on a concluded commit do not disappear, so that reading
 is treated as a fetch that did not answer rather than a fact about the world;
@@ -825,6 +811,27 @@ allowed to reach `unknown` or any other state, per this composition's own
 collapsing an outage into a finding is a different, cheaper mistake than the
 outage itself, and it is the one a repo lookup that failed used to make —
 `went_green` off a repository nothing had actually identified.
+
+**A fifth event, `went_failed`, splits out of `went_not_green`**
+([#2355](https://github.com/Digital-Process-Tools/claude-supertool/issues/2355)).
+`went_not_green` used to cover two opposite next actions: "nothing has failed,
+but nothing has concluded either" (keep waiting) and "a leg actually failed"
+(act now) — a pending-to-failed transition on the SAME commit changed the
+underlying reason without changing the coarse state, so the old
+`branch_state != prev_state` comparison stayed silent through it, and `master`
+sat red for 3h33m with a live watcher and no event. The poller now tells the
+two apart structurally, off the same `legs`/`selected` data
+`branch.verdict()` itself reads (`branch._red_workflows`) — never by
+re-parsing the rendered `sentence`, since that sentence interpolates a
+workflow's own GitHub `name:` field, which a repo author can spell however
+they like. `presets/github/branch.py`'s own four-state vocabulary
+(`GREEN`/`NOT_GREEN`/`NO_RUN`/`UNKNOWN`) is unchanged by this — `dashboard.py`
+and `default_branch_report` keep rendering the coarse `NOT_GREEN` sentence as
+before; the split is poller-side only. The transition condition also now
+compares `sha`, not just the coarse state, so a branch moving to a brand-new
+commit while remaining in the same category (e.g. still pending) emits too —
+a deliberate widening of emission volume, since a consumer holding the
+previous sentence had no way to learn the subject changed under it.
 
 `is_terminal` is always `False`: a branch has no merged/closed state to stop
 watching for, unlike a PR or an MR.

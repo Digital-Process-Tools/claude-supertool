@@ -93,7 +93,7 @@ def test_snapshot_reports_the_gh_resolved_repo_not_the_cwds_origin() -> None:
     would answer for the same checkout (the fork, `mefork/claude-supertool`)."""
     with mock.patch.object(branch, "_gh",
                            side_effect=_fake_gh_for("Digital-Process-Tools/claude-supertool")):
-        _state, _sentence, _sha, repo, error = poller._snapshot("main")
+        _state, _sentence, _sha, repo, error, _has_failed_leg = poller._snapshot("main")
     assert error == "", error
     assert repo == "Digital-Process-Tools/claude-supertool", repo
 

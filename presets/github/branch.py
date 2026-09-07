@@ -81,17 +81,6 @@ NOT_GREEN = "NOT GREEN"
 NO_RUN = "NO RUN"
 UNKNOWN = "UNKNOWN"
 
-# The literal substring `verdict()` embeds in the NOT_GREEN sentence when a
-# leg actually failed, as opposed to not having concluded yet or not having
-# been dispatched at all. `gh-branch`'s watch poller (#2355) needs to tell
-# "act now" from "keep waiting" apart -- NOT_GREEN alone folds both, and a
-# pending-to-failed transition on the same commit changed nothing this
-# module's own callers compare on -- so it classifies on this exact
-# substring rather than re-deriving the `red_wfs` check a second time. Kept
-# as a constant, not typed twice, so a wording change here cannot silently
-# desynchronise the poller's classification from this sentence.
-NOT_GREEN_FAILED_MARKER = "did not pass"
-
 # A run's lifecycle phase, in this module's own words. #615 comment 1 is a
 # worked case of a bare column (`[time]`) being read as a possible `TIMED_OUT`
 # and costing a second call to disambiguate, so every row states its phase in a
@@ -912,6 +901,27 @@ def undispatched_lines(undispatched: list, age_secs: object = None,
     return lines
 
 
+def _red_workflows(selected: dict, legs: dict) -> list:
+    """Names of the runs `verdict()` reads as failed -- a leg gone red, or the
+    run's own conclusion gone red with no leg to blame it on.
+
+    Pulled out of `verdict()` (#2355) so `gh-branch`'s watch poller can ask
+    this exact question -- "did anything actually fail" -- without a second,
+    independent copy of the red-leg arithmetic, and without scanning
+    `verdict()`'s rendered *sentence* for a marker substring: that sentence
+    also interpolates workflow names GitHub lets a repo author spell however
+    they like (`_names(moving)`, `_names(missing)` in the pending branches
+    below), so a workflow literally named after the marker text would forge a
+    false failed reading on a genuinely pending commit. This function reads
+    the same structured `legs`/`selected` data `verdict()` reads, never a
+    rendered string, so nothing a workflow's own name says can change its
+    answer.
+    """
+    return sorted(n for n, states in legs.items()
+                  if any(_checks.is_red(s) for s in (states or []))
+                  or _checks.is_red(_run_conclusion(selected[n])))
+
+
 def verdict(selected: dict, legs: dict, missing, sha: str,
             age_secs: object, grace: int = _GRACE,
             unreconciled: str = "", *, scope: str) -> tuple:
@@ -964,16 +974,13 @@ def verdict(selected: dict, legs: dict, missing, sha: str,
                          "the op; if it persists, count by hand with "
                          "`gh run view <run-id> --json jobs`.")
 
-    red_wfs = sorted(n for n, states in legs.items()
-                     if any(_checks.is_red(s) for s in (states or []))
-                     or _checks.is_red(_run_conclusion(selected[n])))
+    red_wfs = _red_workflows(selected, legs)
     if red_wfs:
         bad = sum(1 for states in legs.values()
                   for s in (states or []) if _checks.is_red(s))
         legword = _agrees(bad, "leg", "legs")
-        return (NOT_GREEN, f"{NOT_GREEN} — {bad} {legword} on {short} "
-                           f"{NOT_GREEN_FAILED_MARKER}, in {_names(red_wfs)}. "
-                           "Named below.")
+        return (NOT_GREEN, f"{NOT_GREEN} — {bad} {legword} on {short} did not "
+                           f"pass, in {_names(red_wfs)}. Named below.")
 
     moving = sorted(n for n, r in selected.items()
                     if run_phase(r) != PHASE_CONCLUDED
