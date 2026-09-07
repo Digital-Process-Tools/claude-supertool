@@ -1368,11 +1368,74 @@ def _merge_presets(config: Dict[str, Any], project_dir: str) -> None:
                        merged_ops)
 
 
+def _config_trust_violation(candidate: str) -> Optional[str]:
+    """Refuse a config file that is not the caller's own to control (#695).
+
+    `.supertool.json` is executable data — `ops.<name>.cmd` runs a shell
+    command the moment that op is invoked (see the "no execution at load
+    time" contract in ``test_security_config.py``, which is the *only*
+    thing that contract ever promised: it never claimed the file itself is
+    safe to be writable by anyone else). A group- or world-writable config,
+    or one owned by a different user than the one running supertool, can be
+    rewritten by another local account between the moment it was reviewed
+    and the moment an op it declares actually runs — the exact TOCTOU shape
+    `ssh` refuses on `~/.ssh/config` and git refuses (via `safe.directory`)
+    on a repo owned by someone else.
+
+    POSIX-only: `st_uid` and the group/other write bits are meaningless on
+    Windows (`os.stat().st_uid` is always 0 there), so this returns `None`
+    — trusted — unconditionally on that platform rather than fabricate a
+    check with no signal behind it.
+
+    Returns the reason to skip, or `None` when the file is safe to read.
+    Root (`st_uid` of the file owned by root, or the caller running as
+    root) is treated as trusted, matching git's own `safe.directory` carve
+    out for a root-owned tree.
+    """
+    if os.name != "posix":
+        return None
+    try:
+        st = os.stat(candidate)
+    except OSError as exc:
+        return f"cannot stat: {exc}"
+    caller_uid = os.getuid()
+    if st.st_uid not in (caller_uid, 0) and caller_uid != 0:
+        return (
+            f"not owned by the current user (owner uid {st.st_uid}, "
+            f"running as uid {caller_uid})"
+        )
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return f"group/world-writable (mode {stat.S_IMODE(st.st_mode):o})"
+    return None
+
+
 def _load_config() -> Dict[str, Any]:
-    """Load .supertool.json from cwd or parents. Cached.
+    """Load .supertool.json from cwd or parents, stopping at the nearest
+    ``.git`` ancestor. Cached.
 
     After loading, merges any preset ops declared in "presets" key and
     parses the optional "mcp" block into the module-level _mcp_specs dict.
+
+    Trust boundary (#695): a config in this project is exactly as trusted
+    as the project's own code — cloning a hostile repo and running any op
+    already executes its validators, ops and presets, so a project-local
+    `.supertool.json` adds no new attack surface *for the project that owns
+    it*. What it must not do is reach OUTSIDE that project: before #695 the
+    walk went all the way to `/` with no ownership check, so opening a
+    subdirectory of an otherwise-untrusted tree (a shared `/tmp` extraction,
+    a CI checkout dir with a stray ancestor config) could silently pick up
+    a config that governs nothing the user actually opened. Two independent
+    limits now apply, either one enough to stop a candidate that only the
+    first check used to gate:
+
+    * the walk itself stops once it reaches a directory containing `.git`
+      — the repo root — rather than continuing past it; a caller not
+      inside a git repo at all keeps the old to-`/` behaviour, since there
+      is no repo boundary to stop at;
+    * each candidate is checked with `_config_trust_violation` before it is
+      opened — a file that is group/world-writable, or not owned by the
+      caller (or root), is skipped exactly like a malformed one, with the
+      reason recorded in `_CONFIG_WARNINGS` rather than silently ignored.
     """
     global _CONFIG, _CONFIG_CHECKED, _CONFIG_PATH, _mcp_specs
     if _CONFIG_CHECKED:
@@ -1383,6 +1446,16 @@ def _load_config() -> Dict[str, Any]:
     while True:
         candidate = os.path.join(d, ".supertool.json")
         if os.path.isfile(candidate):
+            violation = _config_trust_violation(candidate)
+            if violation is not None:
+                _CONFIG_WARNINGS.append(f"skipped {candidate}: {violation}")
+                if os.path.exists(os.path.join(d, ".git")):
+                    break
+                parent = os.path.dirname(d)
+                if parent == d:
+                    break
+                d = parent
+                continue
             try:
                 with open(candidate, encoding="utf-8") as f:
                     _CONFIG = json.load(f)
@@ -1426,6 +1499,8 @@ def _load_config() -> Dict[str, Any]:
                 _CONFIG_WARNINGS.append(
                     f"skipped {candidate}: {exc.__class__.__name__}: {exc}"
                 )
+        if os.path.exists(os.path.join(d, ".git")):
+            break
         parent = os.path.dirname(d)
         if parent == d:
             break

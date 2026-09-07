@@ -2,6 +2,8 @@
 
 Supertool works with no configuration. The `.supertool.json` is optional — it enables self-documenting ops for LLM onboarding via `./supertool 'introduction' 'ops'`.
 
+**Trust: opening a project and running an op executes configuration from that project.** `ops.<name>.cmd` runs a shell command the moment that op is invoked, and `presets` loads and runs a preset's own scripts — a `.supertool.json` is executable, not a settings file, and it is trusted at exactly the level the project itself is trusted at. See [`SECURITY.md`](../SECURITY.md#trust-model) for the boundary that keeps that trust from reaching past the project you actually opened: the search stops at the first `.git` ancestor, and a config that is group/world-writable or not owned by the current user is refused.
+
 Create a `.supertool.json` in your project root. Supertool walks up from cwd to find it. A starter template ships with the plugin as `.supertool.example.json`.
 
 ```json
