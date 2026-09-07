@@ -3289,6 +3289,26 @@ def _op_is_recognized(op: str) -> bool:
     return False
 
 
+def _op_is_preset_op(op: str) -> bool:
+    """True when `op` is a project-declared preset/custom op -- present in
+    this project's config under `"ops"` -- as opposed to a builtin.
+
+    This is the population the generic `args`-list @payload route (#1165)
+    applies to: a preset op's syntax is free-form (`gh-job:ID:grep:PATTERN`),
+    so it cannot get a named-field `:::` registry entry the way `edit` or
+    `git-commit` can, and had no @payload route of any kind. A builtin with
+    no route has one for a specific, considered reason (it is read-only and
+    reached through `_READ_OP_AT_FIELDS` instead, or its syntax legitimately
+    has no ':::' fields) and must not silently gain one here.
+
+    Deliberately not `_op_is_recognized`'s `"aliases"` branch: an alias
+    expands to other ops before any of them run, so a payload aimed at the
+    alias name itself would have nothing to receive it.
+    """
+    _ops_cfg = _load_config().get("ops")
+    return isinstance(_ops_cfg, dict) and op in _ops_cfg
+
+
 def _op_safety_class(op: str) -> str:
     """Safety class for ONE op name, without building the whole roster.
 
@@ -29923,6 +29943,25 @@ def _at_file_fields(op: str) -> List[str]:
     return [name for name, _opt, _var in _at_file_specs(op)]
 
 
+def _generic_preset_payload_hint(op: str) -> str:
+    """Name the `args` key the generic preset route (#1165) accepts, and
+    show a call that would work -- the same shape `_at_file_payload_hint`
+    gives a named-field op, for the op population that has no named fields
+    to name.
+    """
+    quote = "'" * 3
+    lines = [
+        f"  {op}:@... has no named payload fields -- it reads its argv "
+        f"from '{_GENERIC_PRESET_ARGS_KEY}' instead (a list of strings, "
+        f"one per positional argument, sent verbatim: no colon split, no "
+        f"mode-rejoin heuristic).",
+        f"    ./supertool '{op}:@-' <<'EOF'",
+        f"    {_GENERIC_PRESET_ARGS_KEY} = [{quote}...{quote}]",
+        "    EOF",
+    ]
+    return chr(10) + chr(10).join(lines)
+
+
 def _at_file_payload_hint(op: str) -> str:
     """Name the payload keys *op* wants, and show a call that would work.
 
@@ -29935,9 +29974,16 @@ def _at_file_payload_hint(op: str) -> str:
     The keys come from the same registry that drives the route, so this can
     never drift into describing a payload shape the loader would reject.
     Returns "" for an op with no @file route, leaving its error untouched.
+
+    A preset op with no registered fields (#1165) falls to
+    `_generic_preset_payload_hint` instead of "" -- it DOES have a route,
+    the generic `args`-list one, and an op that has a route but no hint text
+    is indistinguishable from one that has none at all.
     """
     specs = _at_file_specs(op)
     if not specs:
+        if _op_is_preset_op(op):
+            return _generic_preset_payload_hint(op)
         return ""
     quote = "'" * 3
     # Every key the route ACCEPTS, not only the positional ones the worked
@@ -30387,6 +30433,76 @@ def _at_file_to_parts(op: str, payload: Any) -> Tuple[List[str], bool]:
     if op in _PAYLOAD_NO_VERIFY_OPS and bool(lower_payload.get("no_verify", False)):
         parts.append(_GIT_COMMIT_NO_VERIFY_TOKEN)
     return parts, replace_all
+
+
+#: The one payload key the generic preset route (#1165) accepts.
+_GENERIC_PRESET_ARGS_KEY = "args"
+
+
+def _at_file_to_parts_generic(op: str, payload: Any) -> Tuple[List[str], bool]:
+    """Generic @file/@- route for a preset op with no named-field registry
+    (#1165): payload = `{args = [...]}`. Each element becomes ONE positional
+    part, verbatim -- no colon split, no rejoin heuristic, no re-tokenizing
+    of any kind.
+
+    This is the escape hatch `_at_file_to_parts` provides for `edit`,
+    `git-commit` and the rest of `_AT_FILE_REGISTRY`, extended to every
+    preset op that never got a named-field entry because its colon syntax
+    is mode-based rather than a flat field list (`gh-job:ID:grep:PATTERN`,
+    not `edit:::OLD:::NEW:::PATH`). `gh-job:ID:grep:PATTERN`'s colon CLI
+    rejoins everything after the mode (#1145) -- correct for the ordinary
+    case, but a pattern that must genuinely END in ':', or one whose
+    intended reading disagrees with the rejoin, had no way to be spelled at
+    all. `args` sidesteps the question entirely: the caller states the exact
+    argv the op receives, and `_resolve_custom_op`'s existing `{args}`
+    substitution still `shlex.quote`s each entry, so nothing here needs its
+    own quoting logic.
+
+    One key only, and it is required -- no optional/variadic bookkeeping,
+    because there are no named fields to be optional or variadic about.
+    """
+    if isinstance(payload, list) or (
+        isinstance(payload, dict) and isinstance(payload.get("ops"), list)
+    ):
+        raise ValueError(
+            f"this payload is an ops array — use 'batch:@file' instead of "
+            f"'{op}:@file' (e.g. batch:@payload.toml)"
+        )
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"@file payload for op '{op}' must be a JSON object, "
+            f"got {type(payload).__name__}"
+        )
+    lower_payload = {k.lower(): v for k, v in payload.items()}
+    unknown = sorted(k for k in lower_payload if k != _GENERIC_PRESET_ARGS_KEY)
+    if unknown:
+        raise ValueError(
+            f"@file payload for op '{op}' has unknown field(s) "
+            f"{_flat_keys(unknown)} — accepted: {_GENERIC_PRESET_ARGS_KEY} "
+            f"(a list of strings, one per positional argument). Refused "
+            f"rather than dropped (#1551's reasoning applies here too): a "
+            f"call run with an argument nobody read reads, in the receipt, "
+            f"exactly like one that was."
+        )
+    if _GENERIC_PRESET_ARGS_KEY not in lower_payload:
+        raise ValueError(
+            f"@file payload for op '{op}' missing required field "
+            f"'{_GENERIC_PRESET_ARGS_KEY}' (a list of strings, one per "
+            f"positional argument)"
+        )
+    value = lower_payload[_GENERIC_PRESET_ARGS_KEY]
+    if isinstance(value, str):
+        items: List[Any] = [value]
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        raise ValueError(
+            f"@file payload for op '{op}' field '{_GENERIC_PRESET_ARGS_KEY}' "
+            f"must be a string or a list of strings, got "
+            f"{type(value).__name__}"
+        )
+    parts = [op] + [str(v) for v in items if v is not None]
+    return parts, False
 
 
 import threading as _threading
@@ -30873,12 +30989,43 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
 
     # @file route — 'op:@path' or 'op:@-' (stdin).
     # Load JSON, rebuild parts list, then fall through to the normal handlers.
-    # Applies to mutating ops that have ':::' fields in their syntax string.
+    # Applies to mutating ops that have ':::' fields in their syntax string,
+    # OR (#1165) to a preset op with no named-field registry at all, via the
+    # generic `args`-list route below -- the escape hatch for a preset whose
+    # colon syntax is mode-based rather than a flat field list
+    # (`gh-job:ID:grep:PATTERN`), which could never earn a `:::` entry in
+    # `_AT_FILE_REGISTRY` no matter how its syntax string were written.
+    _at_file_named_fields = _at_file_fields(op)
+    # Gated on the reference actually resolving, mirroring the read-op
+    # @payload route's own gate a few dozen lines up -- NOT on the leading
+    # '@' alone. A named-field op (`edit`, `git-commit`, ...) never has a
+    # legitimate single-token literal call to begin with (its colon form
+    # always needs multiple ':::' fields), so intercepting on '@' alone
+    # never collided with one. A preset op can: `gh-mentions:@octocat` is a
+    # plausible real call whose first argument is a literal string that
+    # happens to start with '@' (self-review caught this -- unguarded, this
+    # route silently turned that into a "file not found" refusal where the
+    # call used to just run, the same class of regression the read-op gate
+    # was written to avoid for `grep:@Override:src/`).
+    _generic_preset_route = (
+        not _at_file_named_fields
+        and _op_is_preset_op(op)
+        and len(parts) >= 2
+        and (
+            parts[1] == "@-"
+            or os.path.isfile(_resolve_at_path(parts[1][1:]))
+            or os.path.isfile(parts[1][1:])
+            or (
+                len(parts) == 2
+                and parts[1][1:].lower().endswith((".toml", ".json"))
+            )
+        )
+    )
     if (
         pre_parsed is None
         and len(parts) >= 2
         and parts[1].startswith("@")
-        and _at_file_fields(op)
+        and (_at_file_named_fields or _generic_preset_route)
     ):
         if len(parts) > 2:
             return _receipt(header, (
@@ -30911,7 +31058,11 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                 return _receipt(header, _mixed_tree_decline(op, _mixed_early))
         try:
             payload = _load_at_file(parts[1])
-            parts, _at_file_replace_all = _at_file_to_parts(op, payload)
+            if _at_file_named_fields:
+                parts, _at_file_replace_all = _at_file_to_parts(op, payload)
+            else:
+                parts, _at_file_replace_all = _at_file_to_parts_generic(
+                    op, payload)
             _at_file_used = True
             # The colon prefix got us here; the FIELDS came from the payload
             # and no separator touched them.
