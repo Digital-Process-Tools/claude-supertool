@@ -36,6 +36,7 @@ the other half of what `claude-oss` gained.
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -132,3 +133,50 @@ def test_a_known_invariant_file_and_a_known_platform_sensitive_file_are_marked_a
     assert platform_sensitive_file not in out, (
         f"collecting with -m invariant picked up {platform_sensitive_file}, "
         f"one of the three files #2360 named as platform-sensitive:\n{out}")
+
+
+def test_the_collection_hook_tolerates_a_synthetic_tree_missing_the_census(tmp_path):
+    """The exact shape `test_git_env_leak_416.py` and `test_git_state_guard.py`
+    already use: a synthetic, minimal repo tree that copies only
+    `tests/conftest.py` -- not the rest of `tests/`, so `_invariant_census.py`
+    is absent -- to test something unrelated in isolation. Before the
+    conftest.py fix, `pytest_collection_modifyitems`'s unconditional `from
+    _invariant_census import invariant_files` raised `ModuleNotFoundError`
+    inside that subprocess and aborted its entire collection with an
+    `INTERNALERROR`, failing five unrelated assertions in those two files
+    about a synthetic run that never actually happened.
+    """
+    project = tmp_path / "synthetic"
+    inner_tests = project / "tests"
+    inner_tests.mkdir(parents=True)
+    target = project / "supertool.py"
+    try:
+        target.symlink_to(ROOT / "supertool.py")
+    except OSError:
+        shutil.copy(ROOT / "supertool.py", target)
+    shutil.copy(TESTS / "conftest.py", inner_tests / "conftest.py")
+    (inner_tests / "test_inner.py").write_text(
+        "def test_trivially_true():\n    assert True\n", encoding="utf-8")
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/test_inner.py", "-q",
+         "--no-cov", "-p", "no:cacheprovider"],
+        cwd=str(project), capture_output=True, text=True, timeout=30,
+        encoding="utf-8", errors="replace",
+    )
+    out = proc.stdout + proc.stderr
+    assert "INTERNALERROR" not in out, (
+        f"the collection hook crashed a synthetic tree missing "
+        f"_invariant_census.py instead of degrading to 'mark nothing':\n{out}")
+    assert proc.returncode == 0 and "1 passed" in out, (
+        f"synthetic tree's own trivial test did not pass cleanly:\n{out}")
+
+
+def test_normal_collection_still_applies_the_marker_when_the_census_is_importable():
+    """The other half of the same pair (#2360's own negative-assertion rule):
+    the try/except added for the synthetic-tree case above must not silently
+    swallow a real failure to apply the marker in the normal case, where
+    `_invariant_census` genuinely is importable. Re-runs the existing
+    end-to-end check to confirm the tolerant hook still marks a known file.
+    """
+    test_a_known_invariant_file_and_a_known_platform_sensitive_file_are_marked_apart()

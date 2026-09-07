@@ -485,8 +485,27 @@ def pytest_collection_modifyitems(config, items):
     failure #2360 names as claude-oss's own mistake on this exact feature --
     that risk lives entirely in the workflow step that reads the marker, not
     in the code that applies it.
+
+    Tolerant of `_invariant_census` being unimportable: `test_git_env_leak_416.py`
+    and `test_git_state_guard.py` spawn a real pytest subprocess against a
+    synthetic, minimal repo tree that copies only `tests/conftest.py` -- not
+    the rest of `tests/` -- specifically to test git-state guards in
+    isolation. An unconditional import there raised `ModuleNotFoundError`
+    inside that subprocess and aborted its ENTIRE collection with an
+    `INTERNALERROR`, failing five unrelated assertions about the synthetic
+    run's own behaviour rather than about anything this hook does. A
+    synthetic/minimal pytest tree is a real, existing pattern in this suite,
+    not a hypothetical one; this hook is not the only file such a tree will
+    ever be missing, so it degrades to "mark nothing" rather than crash
+    collection outright -- the same "wider than needed on failure, never a
+    hard requirement" argument `tests/_repo_walk.py` makes for its own
+    machine-state exclusions, applied here to "cannot determine the
+    population" rather than "found nothing in it".
     """
-    from _invariant_census import invariant_files
+    try:
+        from _invariant_census import invariant_files
+    except ImportError:
+        return
     names = invariant_files()
     marker = pytest.mark.invariant
     for item in items:

@@ -259,6 +259,7 @@ REGISTER = {
     'tests/test_git_timeout_disclosure_650.py::_git_only_path': P,
     'tests/test_glob_containment_1366.py::test_a_wildcard_landing_on_an_outward_symlink_refuses_the_whole_call': B,
     'tests/test_guard_envelope_serialisation_1613.py::_toolbox': P,
+    'tests/test_invariant_marker_census_2360.py::test_the_collection_hook_tolerates_a_synthetic_tree_missing_the_census': E,
     'tests/test_mcp_daemon_dirfd_598.py::TestAFailedLogOpenDoesNotOrphanTheServer.test_a_squatted_stderr_symlink_does_not_leave_the_subprocess_running': P,
     'tests/test_mcp_runtime_dir_nofollow_583.py::TestASymlinkedRuntimeDirStillWorks.test_a_symlink_to_a_missing_dir_is_refused_with_a_sentence': P,
     'tests/test_mcp_runtime_dir_nofollow_583.py::linked': B,

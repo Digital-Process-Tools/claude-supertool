@@ -30,9 +30,13 @@ file pins that it stays that way until someone touches it on purpose.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 import sys
+
+import pytest
 
 from _workflow_parse import REPO, job_blocks, job_steps, matrix_os, run_blocks
 
@@ -102,19 +106,95 @@ def test_the_ssrf_network_failure_test_is_deliberately_not_marked_slow() -> None
         "test to say so instead of deleting it.")
 
 
-def test_ci_pytest_job_excludes_slow_and_benchmark() -> None:
+def _run_tests_step():
     blocks = job_blocks()
     steps = job_steps(blocks["pytest"])
-    runs = run_blocks(steps)
-    exprs = [expr for run in runs for expr in _dash_m_exprs(run)]
-    assert exprs, "no quoted `-m` expression found in the pytest job's run steps"
-    assert any("not slow" in expr and "not benchmark" in expr for expr in exprs), (
-        f"pytest job's `-m` expressions are {exprs!r}, none of which exclude "
-        "both slow and benchmark. #891's scope change means CI must exclude "
-        "`slow` the same way the local default does — leaving it in the CI "
-        "`-m` override runs these tests on every one of the twelve legs, on "
-        "every push, which is the exact cost the marker was supposed to "
-        "remove.")
+    for step in steps:
+        if step.name.startswith("Run tests"):
+            return step
+    raise AssertionError(
+        "no step named 'Run tests...' found in the pytest job -- #891's own "
+        "step was renamed or removed")
+
+
+def _resolved_marker(matrix_os_value: str, matrix_py_value: str) -> str:
+    """The real `-m` value CI hands to pytest, for one matrix combination.
+
+    #2360 replaced the previous static `-m 'not slow and not benchmark'`
+    with a script-level bash variable (built from `$MATRIX_OS`/`$MATRIX_PY`,
+    to add `and not invariant` on every leg but one), so the quoted-string
+    text search this file used to run (`_dash_m_exprs` against `-m
+    "$MARKER"`) now finds the literal text `$MARKER` — a variable reference,
+    never a marker expression — and reports that as "no exclusion", which is
+    false. #731's own lesson (a comment satisfying a text search meant for
+    behaviour) applies to a shell variable exactly as it applies to a
+    comment: the fix is to run the actual script and read what it computes,
+    not to keep grepping the YAML text for a shape the diff moved.
+
+    This executes the run step's own shell script (with its final `python
+    ... pytest ...` line replaced by an `echo` of the variable it would have
+    passed to `-m`) under the real bash CI uses for this step
+    (`shell: bash` on the step itself), with `MATRIX_OS`/`MATRIX_PY` set the
+    way GitHub Actions' `env:` block would set them for the given matrix
+    entry. This is the shape CI actually runs, not a decoy of it.
+    """
+    step = _run_tests_step()
+    lines = step.run.rstrip("\n").splitlines()
+    assert lines and "pytest" in lines[-1], (
+        f"expected the 'Run tests' step's last line to invoke pytest, so it "
+        f"could be replaced with an echo of the resolved marker; got: "
+        f"{lines[-1]!r}. If the step's shape changed, update this helper to "
+        f"match the new last line.")
+    script = "\n".join(lines[:-1] + ['echo "$MARKER"'])
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=REPO, capture_output=True, text=True, timeout=15,
+        encoding="utf-8", errors="replace",
+        env={**os.environ, "MATRIX_OS": matrix_os_value, "MATRIX_PY": matrix_py_value},
+    )
+    assert result.returncode == 0, (
+        f"resolving the 'Run tests' step's own $MARKER computation failed "
+        f"(rc={result.returncode}): {result.stderr}")
+    return result.stdout.strip()
+
+
+# The one designated full leg (#2360) and a representative non-full leg. Not
+# every combination -- the step's own `if` is a single condition on two
+# variables, so two points either side of it cover both branches.
+_FULL_LEG = ("ubuntu-latest", "3.12")
+_NON_FULL_LEG = ("windows-latest", "3.9")
+
+
+@pytest.mark.skipif(shutil.which("bash") is None,
+                     reason="bash not on PATH -- cannot resolve the run "
+                            "step's own shell logic here (CI runs this step "
+                            "with `shell: bash` and has one)")
+def test_ci_pytest_job_excludes_slow_and_benchmark() -> None:
+    for matrix_os_value, matrix_py_value in (_FULL_LEG, _NON_FULL_LEG):
+        expr = _resolved_marker(matrix_os_value, matrix_py_value)
+        assert "not slow" in expr and "not benchmark" in expr, (
+            f"resolved -m expression for ({matrix_os_value}, "
+            f"{matrix_py_value}) is {expr!r}, which does not exclude both "
+            "slow and benchmark. #891's scope change means CI must exclude "
+            "`slow` the same way the local default does — leaving it in "
+            "runs these tests on every push, which is the exact cost the "
+            "marker was supposed to remove.")
+
+
+@pytest.mark.skipif(shutil.which("bash") is None,
+                     reason="bash not on PATH -- cannot resolve the run "
+                            "step's own shell logic here")
+def test_ci_pytest_job_deselects_invariant_everywhere_except_the_full_leg() -> None:
+    """#2360's own claim, checked the same way: `invariant` is excluded on
+    every leg but the designated full one, never on all twelve and never on
+    none — the two failure modes #2360's own commit message names.
+    """
+    full = _resolved_marker(*_FULL_LEG)
+    other = _resolved_marker(*_NON_FULL_LEG)
+    assert "invariant" not in full, (
+        f"the full leg {_FULL_LEG} unexpectedly excludes invariant: {full!r}")
+    assert "not invariant" in other, (
+        f"a non-full leg {_NON_FULL_LEG} does not exclude invariant: {other!r}")
 
 
 def test_ci_pytest_job_reports_durations() -> None:
