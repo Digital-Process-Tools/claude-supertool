@@ -25,7 +25,10 @@ assuming cwd is the directory in question.
 from __future__ import annotations
 
 import json
+import os
+import stat
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -177,9 +180,10 @@ class ConfigResult:
     the project HAS the section but never populated `link`/`copy`/`exclude`
     is a real, distinguishable value from `config is None`, which means
     the section was never declared at all — the clean no-op case the issue
-    asks for. `error` is set only when a *found* config file could not be
-    parsed as JSON or was not an object; a config that is simply absent is
-    never routed through `error`.
+    asks for. `error` is set only when a *found, trusted* config file could
+    not be parsed as JSON or was not an object; a config that is simply
+    absent, or that failed the ownership/permission check below (#2370),
+    is never routed through `error` — see `load_config`.
     """
 
     def __init__(self, config: Optional[dict], error: Optional[str] = None):
@@ -191,26 +195,94 @@ class ConfigResult:
         return self.error is None and self.config is not None
 
 
+def _config_trust_violation(candidate: Path) -> Optional[str]:
+    """POSIX ownership/permission guard, mirroring `_supertool._load_config`'s
+    own #695 hardening (and `presets/gitlab/_maintenance.py`'s #2365 copy of
+    it — presets cannot import the core module, so each walk-up loader in
+    this codebase re-implements the same check rather than sharing it).
+
+    `worktree.setup`'s config is read from the WORKTREE BEING PROVISIONED
+    (`load_config` walks up from `target`), and its `link`/`copy`/`exclude`
+    entries drive real filesystem effects (`os.symlink`, `shutil.copytree`,
+    lines appended to a worktree-private `core.excludesFile`). A
+    group/world-writable `.supertool.json`, or one owned by a different
+    local user, can be rewritten by another account between the moment it
+    was reviewed and the moment `worktree:setup` reads it — the same TOCTOU
+    shape #695 closed for the core loader every other op goes through.
+
+    POSIX-only: `st_uid` and the write bits are meaningless on Windows, so
+    this returns `None` (trusted) unconditionally there. Root is treated as
+    trusted, matching `_supertool._config_trust_violation`.
+    """
+    if os.name != "posix":
+        return None
+    try:
+        st = candidate.stat()
+    except OSError as exc:
+        return f"cannot stat: {exc}"
+    caller_uid = os.getuid()
+    if st.st_uid not in (caller_uid, 0) and caller_uid != 0:
+        return (
+            f"not owned by the current user (owner uid {st.st_uid}, "
+            f"running as uid {caller_uid})"
+        )
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return f"group/world-writable (mode {stat.S_IMODE(st.st_mode):o})"
+    return None
+
+
 def load_config(target: Path) -> ConfigResult:
     """Walk up from TARGET for the nearest `.supertool.json`'s
-    `ops.worktree.setup` section.
+    `ops.worktree.setup` section, stopping at the nearest `.git` ancestor
+    and skipping a config this process does not own (#2370).
+
+    Two limits, matching `_supertool._load_config`'s own #695 hardening —
+    a config is exactly as trusted as the project that owns it, and this
+    walk must not reach OUTSIDE that project, nor accept a config another
+    local account could have rewritten:
+
+    * the walk stops once it reaches a directory containing `.git` — the
+      repo root — rather than continuing to `/`; a target not inside a git
+      repo at all keeps walking to `/`, since there is no repo boundary;
+    * each candidate is checked with `_config_trust_violation` before it is
+      opened — a file that is group/world-writable, or not owned by the
+      caller (or root), is skipped with a warning on stderr, exactly like
+      an absent one, so the walk can still find a further, trusted config
+      higher up (until the repo-root boundary above stops it). This is
+      deliberately treated the same as "absent" rather than surfaced as
+      `.error`: the core loader (`_supertool._load_config`) accepts or
+      skips each candidate independently as it walks, and this walk must
+      accept exactly what the core loader would from the same directory —
+      routing a skip through `.error` would make `worktree:setup` refuse
+      outright in a case the core loader would happily resolve by finding
+      a further candidate. A found-and-trusted-but-malformed file is
+      unaffected by this and is still reported through `.error`, as before.
     """
     d = target
     while True:
         candidate = d / CONFIG_FILENAME
         if candidate.is_file():
-            try:
-                data = json.loads(candidate.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                return ConfigResult(None, f"{candidate}: {exc}")
-            if not isinstance(data, dict):
-                return ConfigResult(None, f"{candidate}: top level is not a JSON object")
-            ops_section = data.get("ops")
-            worktree_section = ops_section.get("worktree") if isinstance(ops_section, dict) else None
-            setup_section = worktree_section.get("setup") if isinstance(worktree_section, dict) else None
-            if not isinstance(setup_section, dict):
-                return ConfigResult(None)
-            return ConfigResult(setup_section)
+            violation = _config_trust_violation(candidate)
+            if violation is not None:
+                sys.stderr.write(
+                    f"WARNING: skipped {candidate} ({violation}) -- "
+                    f"ignoring it for worktree.setup config.\n"
+                )
+            else:
+                try:
+                    data = json.loads(candidate.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as exc:
+                    return ConfigResult(None, f"{candidate}: {exc}")
+                if not isinstance(data, dict):
+                    return ConfigResult(None, f"{candidate}: top level is not a JSON object")
+                ops_section = data.get("ops")
+                worktree_section = ops_section.get("worktree") if isinstance(ops_section, dict) else None
+                setup_section = worktree_section.get("setup") if isinstance(worktree_section, dict) else None
+                if not isinstance(setup_section, dict):
+                    return ConfigResult(None)
+                return ConfigResult(setup_section)
+        if (d / ".git").exists():
+            return ConfigResult(None)
         parent = d.parent
         if parent == d:
             return ConfigResult(None)
