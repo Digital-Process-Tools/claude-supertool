@@ -120,6 +120,7 @@ Calls logged to {tempdir}/supertool-calls.log for per-turn analysis
 from __future__ import annotations
 
 import atexit
+import bisect
 import json
 import difflib
 import hashlib
@@ -11028,6 +11029,16 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
     # Execute mode
     files_modified: Dict[str, int] = {}
     vanished: List[str] = []
+    # Per-file count of occurrences that were already sitting inside a prior
+    # application of this same edit (#938, the residual #701 left open:
+    # `edit` gained this disclosure, `replace` shared the silent double-apply
+    # and had none of it — confirmed live in the issue's own follow-up
+    # comment). `_count_already_applied` runs the same positional test
+    # `op_edit` uses, batched across every occurrence in one file rather than
+    # per-occurrence (see its own docstring for why that batching is not
+    # optional), against the PRE-write content — a later occurrence's index
+    # would otherwise be read against text this same write already shifted.
+    reapplied_counts: Dict[str, int] = {}
     for file_path, _scan_positions, eff_old, eff_new in file_matches:
         try:
             # newline="": see op_edit / op_append. Without it every line of a
@@ -11047,6 +11058,9 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
         if not hits:
             vanished.append(file_path)
             continue
+        _n_reapplied = _count_already_applied(content, eff_old, eff_new)
+        if _n_reapplied:
+            reapplied_counts[file_path] = _n_reapplied
         new_content = content.replace(eff_old, eff_new)
         try:
             _atomic_write(file_path, new_content)
@@ -11076,10 +11090,27 @@ def op_replace(old: str, new: str, path: str = ".", dry: bool = False) -> str:
         if _fp in files_modified and _eff_old != old:
             retermed[_fp] = ("CRLF" if "\r\n" in _eff_old
                              else "CR" if "\r" in _eff_old else "LF")
+    # #938: disclose, never refuse — same posture #701 took for `edit`. Bumped
+    # once per occurrence found sitting inside a prior application of this
+    # same edit, so the shared `[result]` footer's `K re-applied` (see
+    # `_result_line`) is honest for `replace` too, not only for `edit`.
+    _total_reapplied = sum(reapplied_counts.values())
+    if _total_reapplied:
+        _bump_counter(_REAPPLY_COUNT, "cnt_reapply", _total_reapplied)
     out = [f"({total} replacements in {len(files_modified)} files)\n"]
     for fp, cnt in sorted(files_modified.items()):
         tag = f" [{retermed[fp]}]" if fp in retermed else ""
+        if fp in reapplied_counts:
+            tag += f" [{reapplied_counts[fp]} re-applied]"
         out.append(f"  {_fwd(fp)} ({cnt}){tag}\n")
+    if reapplied_counts:
+        out.append(
+            f"\n  {mark('↳')} re-applied: the text this edit produces was "
+            f"already present around the anchor in "
+            f"{len(reapplied_counts)} file"
+            f"{'' if len(reapplied_counts) == 1 else 's'} — this is a SECOND "
+            f"application, not a repeat of the first\n"
+        )
     if retermed:
         # Only where a choice was made. A uniform file whose `old` matched
         # literally is not marked and produces no line at all — on Windows
@@ -12577,6 +12608,66 @@ def _edit_already_applied(content: str, old: str, new: str, idx: int) -> bool:
             return True
         j = content.find(new, j + 1)
     return False
+
+
+def _count_already_applied(content: str, old: str, new: str) -> int:
+    """`replace`'s own version of `_edit_already_applied` (#938), batched.
+
+    `op_edit` only ever has ONE occurrence of `old` in play — more than one
+    is refused as ambiguous before this code runs — so a `content.find(new)`
+    scan per call was a single O(n) pass. `replace` is replace-all by design
+    and can have many occurrences of `old` in one file; calling
+    `_edit_already_applied` once per occurrence repeats that O(n) scan for
+    EVERY occurrence, which is O(n·m) over a file with m occurrences of a
+    short `old` — quadratic in the file's own size once occurrence count
+    scales with it, and paid even on a plain first application, since the
+    O(n) part runs before the function can tell there is nothing to find.
+
+    Same positional-containment test, answered once per file instead of once
+    per occurrence: every occurrence of `old` and every occurrence of `new`
+    are each found in one linear pass (`str.find` in a loop, not the
+    windowed scan a naive re-implementation would reach for), then `bisect`
+    answers "is there a `new` occurrence starting in
+    `[old_end - len(new), old_idx]`" — the same interval
+    `_edit_already_applied` searches by hand — in O(log k) against the
+    ascending list, k being how many times `new` already occurs. Total cost
+    O(n + m·log k), not O(n·m).
+    """
+    if len(new) <= len(old) or old not in new:
+        return 0
+    old_idxs: List[int] = []
+    start = 0
+    while True:
+        idx = content.find(old, start)
+        if idx == -1:
+            break
+        old_idxs.append(idx)
+        start = idx + len(old)
+    if not old_idxs:
+        return 0
+    new_idxs: List[int] = []
+    start = 0
+    while True:
+        idx = content.find(new, start)
+        if idx == -1:
+            break
+        new_idxs.append(idx)
+        start = idx + 1
+    if not new_idxs:
+        return 0
+    count = 0
+    for old_idx in old_idxs:
+        lo = old_idx + len(old) - len(new)
+        # The rightmost `new` occurrence at or before `old_idx` is the
+        # strongest candidate — a later start covers further right for the
+        # same length — so only that one needs checking; if it clears `lo`
+        # it satisfies both ends of the interval `_edit_already_applied`
+        # searches by hand, and if it does not, no earlier one (a smaller
+        # start, the same length) can either.
+        pos = bisect.bisect_right(new_idxs, old_idx) - 1
+        if pos >= 0 and new_idxs[pos] >= lo:
+            count += 1
+    return count
 
 
 def _newline_census(text: str) -> Tuple[int, int, int]:
