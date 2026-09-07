@@ -307,8 +307,17 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
 
     only = [event for event in defaults.DEFAULT_ONLY.split(",") if event]
     watch_status = {mr_iid: watch(SOURCE, mr_iid, only) for mr_iid in mr_iids}
+    # "unclaimable" is #693's third state, passed straight through `_watch` /
+    # `ensure_watcher`: the slot could not be claimed, so nothing was spawned
+    # and nothing was established about it -- not covered, and not merely
+    # "failed" either. Both sibling tiers already count it as uncovered
+    # (`gl_mrs.heal`'s own `("failed", "unclaimable")` arm; `gh_prs.heal`'s
+    # catch-all `else`), and leaving it out here would let a slot nobody could
+    # even claim render as a healthy board -- the absence-read-as-presence
+    # this whole tier exists to remove, one status word away.
     uncovered = sorted((mr_iid for mr_iid, status in watch_status.items()
-                        if status in ("failed", "capped")), key=_iid_sort_key)
+                        if status in ("failed", "capped", "unclaimable")),
+                       key=_iid_sort_key)
 
     digest = snapshot.key(iid)
     previous = snapshot.read(SNAPSHOT_PREFIX, digest, "issue")
@@ -330,7 +339,15 @@ def radar_report(options: dict | None = None) -> tuple[list[str], bool]:
     departed_mrs = ([] if cold_start
                     else sorted(prev_mrs - set(mr_iids), key=_iid_sort_key))
 
-    lines = [f"gl-issue #{iid}: {title}",
+    # This board renders the issue's own title on every call, plus every
+    # related MR's title and branch when there are any -- all of it author's
+    # words, flattened by `flat()` rather than fenced. `gl_mrs` and `gh_prs`
+    # both owe this same one-line disclosure once, at the top, for exactly
+    # this reason (`mrs._untrusted.flat_note("MR titles")` / the GitHub
+    # tier's own copy); a board that never says so is the one place this
+    # tier would otherwise drift from the convention it is built on.
+    lines = [issue_op._untrusted.flat_note("the issue and MR titles"),
+             f"gl-issue #{iid}: {title}",
              f"  state: {state}" + ("  <-- REOPENED" if reopened else "")]
     lines.append(f"  labels: {', '.join(labels) or 'none'}")
     if labels_added:
