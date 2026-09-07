@@ -112,10 +112,15 @@ def test_detail_never_carries_terminal_escape_sequences(tmp_path, monkeypatch) -
     version range.
 
     `detail` is printed into a debug line and read by a human, so escapes out of
-    a child process end up steering the reader's terminal. It is stripped rather
-    than suppressed at the source: unsetting `FORCE_COLOR` for the child would
-    have to enumerate every layer that might colour, and `stop.py` is not the
-    only thing whose stderr lands here.
+    a child process end up steering the reader's terminal. It is stripped here
+    on ingest as well as unset at the source: #1429 added
+    `_disable_force_color_for_children()`, which pops `FORCE_COLOR` from
+    `os.environ` once at import, before this process spawns anything -- so a
+    child of THIS process no longer needs enumerating. This ingest-side strip
+    stays as defence in depth for a child launched outside supertool's own
+    process (a `stop.py` run directly), or a `FORCE_COLOR` a caller re-adds on
+    purpose through a declared preset's `env:` block, which the import-time
+    strip deliberately leaves free to win.
 
     Pinned with a script that colours its own stderr rather than relying on the
     interpreter to do it, so it asserts the same thing on every version.

@@ -143,6 +143,38 @@ from typing import Any, Callable, Dict, FrozenSet, Iterable, List, MutableMappin
 
 VERSION = "0.57.0"
 
+# Children never see an operator's ambient `FORCE_COLOR` (#1429). CPython
+# 3.13+ colourises its own tracebacks purely because the variable is set --
+# even when stderr is a pipe -- so any child this process spawns hands back
+# ANSI escapes baked into whatever receipt field captures its output
+# (`_mcp_stop_server`'s `detail`, a validator's stdout, a declared preset's
+# captured run). Stripped here, once, before anything can spawn a child,
+# rather than scrubbed per call site: every `subprocess.run`/`Popen` in this
+# file that does not pass its own `env=` inherits the live `os.environ`, and
+# every one that DOES build an explicit env does so by copying/merging
+# `os.environ` first (`{**os.environ, ...}` or `os.environ.copy()`) -- so one
+# mutation, this early, reaches every call site in THIS process, plus every
+# standalone validator/formatter subprocess this tool launches (they receive
+# their environment as that same merge). `presets/mcp/daemon.py` repeats this
+# same pop, rather than relying on inheriting it, because its own docstring
+# documents it as directly runnable (`python3 daemon.py SERVER_NAME`) outside
+# this process entirely -- a mutation here cannot reach a process that never
+# imported this module.
+#
+# Only `FORCE_COLOR` is removed, never `NO_COLOR` added: CPython's own
+# `_colorize.can_colorize()` checks `NO_COLOR` BEFORE `FORCE_COLOR` (self-
+# review finding, #1429), so forcing `NO_COLOR=1` here would have silently
+# out-ranked a declared preset's own `.supertool.json` `env: {FORCE_COLOR:
+# ...}` -- the escape hatch this comment used to claim still worked, and
+# didn't. Removing only the ambient value leaves that override live: a
+# preset's own `env:` block is applied AFTER this merge and still wins for an
+# operator who deliberately wants colour on one declared command.
+def _disable_force_color_for_children() -> None:
+    os.environ.pop("FORCE_COLOR", None)
+
+
+_disable_force_color_for_children()
+
 #: The one "is this string a number" test the core shares (#1748), anchored with
 #: a capital-Z escape rather than `$` because Python's `$` also matches before a
 #: final newline (#1188).
@@ -32109,13 +32141,20 @@ _MCP_STOP_DETAIL_CAP = 500
 # sequences out of a child whose stderr is a pipe. Two conditions, not a version
 # range, which is why the local red here was green on every 3.9-3.12 CI leg.
 #
-# It is stripped rather than suppressed at the source. Unsetting the variable for
-# the child would have to enumerate every layer that might colour, and would
-# leave a caller that deliberately sets it wondering why. It is also not only
-# cosmetic twice over: `detail` is printed for a human to read, so an OSC out of
-# a child steers the reader's terminal, and the cap below keeps the **last** 500
-# characters — every escape byte is budget spent on something that renders as
-# nothing, so a long enough coloured traceback evicts the exception line.
+# Stripped here on ingest, in ADDITION to `_disable_force_color_for_children`
+# unsetting `FORCE_COLOR` at import (#1429): that one mutation covers every
+# `subprocess.run`/`Popen` this process spawns without enumerating layers, so
+# the objection this paragraph used to raise against "unsetting the variable"
+# no longer applies to a child of THIS process. It stays defence in depth for
+# anything this stripped `detail` might still carry -- a child launched by a
+# process that never imported this module (a raw `stop.py` run outside
+# supertool's own tree), or a `FORCE_COLOR` a caller re-adds deliberately via
+# a declared preset's `env:` block, which the import-time strip intentionally
+# leaves free to win. It is also not only cosmetic twice over: `detail` is
+# printed for a human to read, so an OSC out of a child steers the reader's
+# terminal, and the cap below keeps the **last** 500 characters — every
+# escape byte is budget spent on something that renders as nothing, so a
+# long enough coloured traceback evicts the exception line.
 #
 # Held equal to `validators/tsc-check/tsc-check.py`'s `ANSI_RE` by a test, the way
 # `validators/common/linebreaks.py` is held equal to `_LINE_BREAK_PATTERN` (#1486):
