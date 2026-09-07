@@ -39,6 +39,7 @@ import _job_argv  # noqa: E402  (the argv shape both job presets share — #1145
 import _repo_target  # noqa: E402  (the project this call is about, if not cwd's — #676)
 import _secrets  # noqa: E402  (the one GitLab token-prefix list — #1645)
 import _st_hint  # noqa: E402  (a runnable invocation, not a relative path that may not exist — #905)
+import _maintenance  # noqa: E402  (declared runner maintenance windows — #645)
 
 
 def _local_branch_check(source: str, actionable: bool = True) -> str:
@@ -284,6 +285,9 @@ BOILERPLATE_ONLY_HEADER = (
 def _print_unmatched_failure(
     job_id: str, job_status: str, patterns: list[str], lines: list[str], total: int,
     discounted: list[tuple[int, str]] | None = None,
+    finished_at: str | None = None,
+    runner_description: str | None = None,
+    runner_id: "int | str | None" = None,
 ) -> None:
     """Report a failed job the patterns could not classify — never as silence.
 
@@ -321,6 +325,18 @@ def _print_unmatched_failure(
         for line_num, text in discounted:
             print(f"  {line_num:>5} | {text}")
         print(_untrusted.close_marker())
+        # #645 — a container-level exit (137/143/139) discounted as pure
+        # boilerplate is exactly the case a declared runner maintenance
+        # window can speak to: "died during a scheduled reboot" instead of
+        # a bare exit code indistinguishable from real OOM. "" when there
+        # is nothing to add (not a container code, or no window resolves
+        # for this runner) — the discounted block above is unchanged then.
+        exit_code = _maintenance.exit_code_from_texts(
+            text for _, text in discounted)
+        note = _maintenance.maintenance_note(
+            exit_code, finished_at, runner_description, runner_id)
+        if note:
+            print(f"\n{note}")
     section = _last_section(lines)
     if section:
         print(f"Last step entered: {section}")
@@ -1285,6 +1301,9 @@ def main() -> int:
     web_url = ""
     ref = ""
     pipeline_id = ""
+    finished_at = None
+    runner_description = None
+    runner_id = None
     if meta_result.returncode == 0:
         try:
             meta = json.loads(meta_result.stdout)
@@ -1295,6 +1314,13 @@ def main() -> int:
             web_url = meta.get("web_url", "")
             ref = meta.get("ref", "")
             pipeline_id = str((meta.get("pipeline") or {}).get("id", ""))
+            # #645 — the same job row already carries what a declared
+            # maintenance window needs: when it died, and which runner.
+            finished_at = meta.get("finished_at")
+            runner_meta = meta.get("runner")
+            if isinstance(runner_meta, dict):
+                runner_description = runner_meta.get("description")
+                runner_id = runner_meta.get("id")
         except json.JSONDecodeError:
             pass
 
@@ -1513,7 +1539,9 @@ def main() -> int:
         if not error_sections or (job_status == "failed" and boilerplate_only):
             if job_status == "failed":
                 _print_unmatched_failure(job_id, job_status, patterns, lines,
-                                         total, discounted)
+                                         total, discounted,
+                                         finished_at, runner_description,
+                                         runner_id)
             else:
                 print("\n## No error patterns matched")
                 if mismatch:
@@ -1569,7 +1597,8 @@ def main() -> int:
         # when every anchor was boilerplate (#1097) — same absence, and the
         # discounted lines travel with it.
         _print_unmatched_failure(job_id, job_status, patterns, lines, total,
-                                 discounted)
+                                 discounted, finished_at, runner_description,
+                                 runner_id)
     else:
         # Job didn't fail — just show tail
         shown = lines[-tail_lines:] if len(lines) > tail_lines else lines
