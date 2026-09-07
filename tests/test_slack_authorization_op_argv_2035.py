@@ -38,6 +38,29 @@ def _write_config(tmp_path: Path, data: dict) -> Path:
     return home
 
 
+def _set_home(monkeypatch, path) -> None:
+    """Point `~` at `path` on every platform `expanduser` supports.
+
+    POSIX reads HOME; Windows (`ntpath.expanduser`) prefers USERPROFILE and
+    falls back to HOMEDRIVE+HOMEPATH -- checked BEFORE HOME, not after, so a
+    test that sets only HOME has zero effect on Windows and silently keeps
+    reading whatever `tests/conftest.py::_no_real_preset_credentials`
+    (an autouse fixture) already pointed USERPROFILE at for every test in
+    this suite. Same pattern as `tests/test_tilde_path_1300.py::home`.
+    """
+    import os as _os
+    monkeypatch.setenv("HOME", str(path))
+    monkeypatch.setenv("USERPROFILE", str(path))
+    monkeypatch.delenv("HOMEDRIVE", raising=False)
+    monkeypatch.delenv("HOMEPATH", raising=False)
+    assert Path(_os.path.expanduser("~")) == Path(str(path)), (
+        "expanduser(\"~\") did not resolve to the fake home on this "
+        "platform -- the whole point of this helper (same check "
+        "tests/test_tilde_path_1300.py::home already makes)"
+    )
+
+
+
 def test_channel_and_user_id_arrive_as_separate_argv_entries(
     monkeypatch, tmp_path, capsys,
 ) -> None:
@@ -46,7 +69,7 @@ def test_channel_and_user_id_arrive_as_separate_argv_entries(
     onto `argv[0]` with a colon."""
     home = _write_config(tmp_path, {"channels": {
         "C0123456": {"level": "allowlist", "users": ["U024BE7LH"]}}})
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     monkeypatch.chdir(tmp_path)
 
     rc = auth_op.main(["C0123456", "U024BE7LH"])
@@ -60,7 +83,7 @@ def test_a_channel_with_no_user_id_argv_still_resolves(
     monkeypatch, tmp_path, capsys,
 ) -> None:
     home = _write_config(tmp_path, {"channels": {"C0123456": {"level": "context"}}})
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     monkeypatch.chdir(tmp_path)
 
     rc = auth_op.main(["C0123456"])
@@ -75,7 +98,7 @@ def test_no_argv_at_all_lists_every_declared_channel(
 ) -> None:
     home = _write_config(tmp_path, {"channels": {
         "C_A": {"level": "context"}, "C_B": {"level": "off"}}})
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     monkeypatch.chdir(tmp_path)
 
     rc = auth_op.main([])

@@ -39,12 +39,35 @@ def _write_config(tmp_path: Path, data: dict) -> Path:
     return home
 
 
+def _set_home(monkeypatch, path) -> None:
+    """Point `~` at `path` on every platform `expanduser` supports.
+
+    POSIX reads HOME; Windows (`ntpath.expanduser`) prefers USERPROFILE and
+    falls back to HOMEDRIVE+HOMEPATH -- checked BEFORE HOME, not after, so a
+    test that sets only HOME has zero effect on Windows and silently keeps
+    reading whatever `tests/conftest.py::_no_real_preset_credentials`
+    (an autouse fixture) already pointed USERPROFILE at for every test in
+    this suite. Same pattern as `tests/test_tilde_path_1300.py::home`.
+    """
+    import os as _os
+    monkeypatch.setenv("HOME", str(path))
+    monkeypatch.setenv("USERPROFILE", str(path))
+    monkeypatch.delenv("HOMEDRIVE", raising=False)
+    monkeypatch.delenv("HOMEPATH", raising=False)
+    assert Path(_os.path.expanduser("~")) == Path(str(path)), (
+        "expanduser(\"~\") did not resolve to the fake home on this "
+        "platform -- the whole point of this helper (same check "
+        "tests/test_tilde_path_1300.py::home already makes)"
+    )
+
+
+
 # ---------------------------------------------------------------------------
 # Property 1 -- default is the closed end
 # ---------------------------------------------------------------------------
 
 def test_no_config_file_at_all_refuses(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path / "empty-home"))
+    _set_home(monkeypatch, str(tmp_path / "empty-home"))
     d = auth.resolve_channel("C0123")
     assert d.level == "off"
     assert d.heard is False
@@ -55,7 +78,7 @@ def test_an_unlisted_channel_refuses_even_with_other_channels_configured(
     monkeypatch, tmp_path,
 ) -> None:
     home = _write_config(tmp_path, {"channels": {"C_OTHER": {"level": "open"}}})
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     d = auth.resolve_channel("C0123")
     assert d.level == "off"
     assert d.heard is False
@@ -66,7 +89,7 @@ def test_a_broken_config_file_fails_closed_not_open(monkeypatch, tmp_path) -> No
     (home / ".config" / "supertool").mkdir(parents=True, exist_ok=True)
     (home / ".config" / "supertool" / "slack_authorization.json").write_text(
         "{not json", encoding="utf-8")
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     d = auth.resolve_channel("C0123")
     assert d.level == "off"
     assert "could not be parsed" in d.detail
@@ -79,7 +102,7 @@ def test_a_broken_config_file_fails_closed_not_open(monkeypatch, tmp_path) -> No
 
 def test_context_level_is_heard_but_never_authorizes(monkeypatch, tmp_path) -> None:
     home = _write_config(tmp_path, {"channels": {"C0123": {"level": "context"}}})
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     d = auth.resolve_channel("C0123", user_id="U024BE7LH")
     assert d.level == "context"
     assert d.heard is True
@@ -94,7 +117,7 @@ def test_a_pinned_user_may_instruct_under_allowlist(monkeypatch, tmp_path) -> No
     """Positive control: the case allowlist exists to grant."""
     home = _write_config(tmp_path, {"channels": {
         "C0123": {"level": "allowlist", "users": ["U024BE7LH"]}}})
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     d = auth.resolve_channel("C0123", user_id="U024BE7LH")
     assert d.level == "allowlist"
     assert d.heard is True
@@ -105,7 +128,7 @@ def test_an_unpinned_user_may_not_instruct_under_allowlist(monkeypatch, tmp_path
     """Negative control paired with the test above: same channel, different user."""
     home = _write_config(tmp_path, {"channels": {
         "C0123": {"level": "allowlist", "users": ["U024BE7LH"]}}})
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     d = auth.resolve_channel("C0123", user_id="U999INTRUDER")
     assert d.level == "allowlist"
     assert d.heard is True, "allowlist still delivers to everyone -- it gates authority, not delivery"
@@ -117,7 +140,7 @@ def test_a_display_name_is_not_accepted_in_place_of_a_user_id(monkeypatch, tmp_p
     author's to pick, a display name is."""
     home = _write_config(tmp_path, {"channels": {
         "C0123": {"level": "allowlist", "users": ["U024BE7LH"]}}})
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     d = auth.resolve_channel("C0123", user_id="max")  # a handle, not a U... id
     assert d.may_instruct is False
 
@@ -130,7 +153,7 @@ def test_open_is_refused_rather_than_silently_downgraded_to_context(
     monkeypatch, tmp_path,
 ) -> None:
     home = _write_config(tmp_path, {"channels": {"C0123": {"level": "open"}}})
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     d = auth.resolve_channel("C0123", user_id="anyone")
     assert d.level == "refused"
     assert d.heard is False, "refused must not silently deliver as if it were context"
@@ -145,7 +168,7 @@ def test_open_is_refused_rather_than_silently_downgraded_to_context(
 def test_a_project_may_narrow_allowlist_down_to_off(monkeypatch, tmp_path) -> None:
     home = _write_config(tmp_path, {"channels": {
         "C0123": {"level": "allowlist", "users": ["U024BE7LH"]}}})
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     project = {"slack": {"channels": {"C0123": "off"}}}
     d = auth.resolve_channel("C0123", user_id="U024BE7LH", project_config=project)
     assert d.level == "off"
@@ -158,7 +181,7 @@ def test_a_project_cannot_widen_off_to_open(monkeypatch, tmp_path) -> None:
     able to grant a remote channel authority over the machine that cloned
     it."""
     home = _write_config(tmp_path, {"channels": {"C0123": {"level": "off"}}})
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     project = {"slack": {"channels": {"C0123": "open"}}}
     d = auth.resolve_channel("C0123", user_id="anyone", project_config=project)
     assert d.level == "off"
@@ -174,7 +197,7 @@ def test_stating_the_same_level_the_project_already_had_is_not_worded_as_narrowi
     and it worded that as "narrowed to X", which is misleading even though
     it changes no decision."""
     home = _write_config(tmp_path, {"channels": {"C0123": {"level": "context"}}})
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     project = {"slack": {"channels": {"C0123": "context"}}}
     d = auth.resolve_channel("C0123", project_config=project)
     assert "narrowed" not in d.detail, d.detail
@@ -187,7 +210,7 @@ def test_a_project_may_narrow_context_to_off_leaving_other_channels_alone(
         "C_NARROWED": {"level": "context"},
         "C_UNTOUCHED": {"level": "context"},
     }})
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     project = {"slack": {"channels": {"C_NARROWED": "off"}}}
     narrowed = auth.resolve_channel("C_NARROWED", project_config=project)
     untouched = auth.resolve_channel("C_UNTOUCHED", project_config=project)
@@ -202,7 +225,7 @@ def test_a_project_may_narrow_context_to_off_leaving_other_channels_alone(
 def test_the_detail_names_which_file_or_absence_produced_the_level(
     monkeypatch, tmp_path,
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path / "no-home"))
+    _set_home(monkeypatch, str(tmp_path / "no-home"))
     d = auth.resolve_channel("C0123")
     assert "slack_authorization.json" in d.detail
 
@@ -215,7 +238,7 @@ def test_an_unrecognised_level_string_refuses_rather_than_guessing(
     monkeypatch, tmp_path,
 ) -> None:
     home = _write_config(tmp_path, {"channels": {"C0123": {"level": "SUPER_OPEN"}}})
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
     d = auth.resolve_channel("C0123")
     assert d.level == "off"
     assert "not one of" in d.detail
@@ -247,7 +270,7 @@ def test_an_unreadable_config_is_distinguished_from_a_missing_one(
     home = tmp_path / "home"
     cfg_dir = home / ".config" / "supertool"
     (cfg_dir / "slack_authorization.json").mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("HOME", str(home))
+    _set_home(monkeypatch, str(home))
 
     d = auth.resolve_channel("C0123")
 
