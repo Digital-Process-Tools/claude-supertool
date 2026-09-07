@@ -26,9 +26,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _console (#415/#1388)
 from _authorization import (  # noqa: E402
     LEVELS, config_path, load_project_config, resolve_channel, _load_raw,
 )
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #415/#1388)
 
 
 def _list_all() -> int:
@@ -70,6 +72,7 @@ def _one(channel_id: str, user_id: str | None) -> int:
 
 
 def main(argv: list[str]) -> int:
+    use_utf8_stdout()
     # Core splits `op:CHANNEL_ID:USER_ID` on `:` into separate argv entries
     # before this script ever runs (`gh-job.py`'s own `main()` is the pattern
     # this follows) -- NOT one colon-joined token, which an earlier draft of

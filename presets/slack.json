@@ -12,7 +12,7 @@
       "paths": { "args": [] }
     },
     "slack_authorization": {
-      "safety": "reads",
+      "safety": "read-only",
       "cmd": "{python} {path}slack/auth.py {args}",
       "timeout": 10,
       "description": "The resolved instruction-authorization policy for a Slack channel (off/context/allowlist/open), out-of-repo config plus any project narrowing, made runtime-visible (#2035). With no argument, lists every declared channel.",
