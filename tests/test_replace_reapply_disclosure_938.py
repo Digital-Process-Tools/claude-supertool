@@ -99,3 +99,50 @@ def test_new_text_existing_elsewhere_is_not_a_re_application(
     out = supertool.dispatch(f"batch:@{payload}")
     assert "re-applied" not in out
     assert _result_line_of(out) == "[result] 1 op run, 1 write"
+
+
+def test_multiple_occurrences_per_file_first_run_says_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`replace` is replace-all, unlike `edit` (which refuses more than one
+    occurrence as ambiguous before this code ever runs). A first application
+    over a file with THREE independent occurrences of `old` must not flag any
+    of them, and must count all three: the multi-occurrence-per-file shape
+    where `edit`'s single-occurrence assumption cannot be carried over."""
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
+    f = tmp_path / "mod.py"
+    f.write_text(
+        "def a():\n    pass\n\ndef a():\n    pass\n\ndef a():\n    pass\n",
+        encoding="utf-8",
+    )
+    payload = _payload(tmp_path, f, "def a():\n    pass",
+                       "def a():\n    pass  # touched")
+    out = supertool.dispatch(f"batch:@{payload}")
+    assert "re-applied" not in out
+    assert _result_line_of(out) == "[result] 1 op run, 1 write"
+    assert f.read_text(encoding="utf-8").count("# touched") == 3
+
+
+def test_multiple_occurrences_per_file_second_run_counts_every_reapply(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Re-run the same multi-occurrence payload. Every one of the three
+    occurrences is now sitting inside its own prior application, so all
+    three must be counted -- not just the first one found, and not zero."""
+    monkeypatch.setattr(supertool, "_branch_reading", lambda: ("my-feature", ""))
+    f = tmp_path / "mod.py"
+    f.write_text(
+        "def a():\n    pass\n\ndef a():\n    pass\n\ndef a():\n    pass\n",
+        encoding="utf-8",
+    )
+    payload = _payload(tmp_path, f, "def a():\n    pass",
+                       "def a():\n    pass  # touched")
+
+    supertool.dispatch(f"batch:@{payload}")
+    second = supertool.dispatch(f"batch:@{payload}")
+
+    assert "[3 re-applied]" in second
+    line = _result_line_of(second)
+    assert line.startswith("[result] 1 op run, 1 write, 3 re-applied")
+    assert "an edit already present in the file was applied again" in line
+    assert f.read_text(encoding="utf-8").count("# touched  # touched") == 3
