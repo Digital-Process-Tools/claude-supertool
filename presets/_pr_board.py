@@ -88,7 +88,15 @@ def run_pr_list(cmd: list, timeout: int = 30) -> tuple:
                                 errors="replace")
     except subprocess.TimeoutExpired:
         return None, f"gh pr list timed out after {timeout}s", None, ""
-    except (FileNotFoundError, OSError) as exc:
+    except FileNotFoundError:
+        # Its own arm, not folded into the generic `OSError` one below:
+        # collapsing it produced "gh pr list failed: [Errno 2] No such file
+        # or directory: 'gh'" here, a worse message than the dashboard's own
+        # pre-extraction `_json_cmd` gave for exactly this case
+        # (`f"{argv[0]} not found on PATH"`) -- caught in review (#958).
+        binary = cmd[0] if cmd else "gh"
+        return None, f"{binary} not found on PATH", None, ""
+    except OSError as exc:
         return None, f"gh pr list failed: {exc}", None, ""
     if result.returncode != 0:
         raw = (result.stderr or "").strip()

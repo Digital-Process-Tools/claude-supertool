@@ -71,12 +71,18 @@ def test_run_pr_list_nonzero_exit_is_none_not_empty(monkeypatch):
 
 
 def test_run_pr_list_spawn_failure_is_none_with_no_returncode(monkeypatch):
+    """`FileNotFoundError` gets its own message, not the generic `OSError`
+    one -- caught in review (#958): collapsing the two produced "gh pr list
+    failed: [Errno 2] No such file or directory: 'gh'" where the dashboard's
+    own pre-extraction helper said the more actionable "gh not found on
+    PATH" for exactly this case.
+    """
     def boom(*a, **k):
-        raise FileNotFoundError("gh")
+        raise FileNotFoundError(2, "No such file or directory")
     monkeypatch.setattr(subprocess, "run", boom)
     data, err, rc, _raw = _pr_board.run_pr_list(["gh", "pr", "list"])
     assert data is None
-    assert err
+    assert "not found on PATH" in err
     assert rc is None, "the process never finished, so there is no exit code to report"
 
 

@@ -128,6 +128,13 @@ import glob
 import importlib.util
 import json
 import os
+# Not called directly here since #958 moved the `gh pr list` spawn into
+# `_pr_board.run_pr_list` -- kept as a module-level name because
+# `tests/test_watch_radar_gh_prs_859.py` patches `tier.subprocess.run`, and
+# `subprocess` is one singleton module regardless of which file imports it:
+# the patch lands on the same object `_pr_board.py` calls `subprocess.run`
+# against. Removing this import would not change runtime behaviour but
+# would break `tier.subprocess` attribute access from the test.
 import subprocess
 import sys
 from pathlib import Path
