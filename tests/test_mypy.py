@@ -1,6 +1,7 @@
 """Tests for the mypy validator adapter."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -139,3 +140,59 @@ def test_nonexistent_file_is_declined_not_crashed(tmp_path: Path) -> None:
     out = _run(str(missing))
     assert_declined(out)
     assert out["errors"][0]["code"] == "adapter"
+
+
+# ---------------------------------------------------------------------------
+# `--` separator ahead of the file argument (#2375)
+# ---------------------------------------------------------------------------
+
+def _adapter_module():
+    """The adapter as a module, to inspect the argv it builds without
+    needing mypy installed — mirrors ruff's own `_adapter_module` helper
+    (test_validators_ruff.py), used there for the same reason: the arm under
+    test is about the argv this adapter constructs, not about mypy's own
+    output."""
+    spec = importlib.util.spec_from_file_location("mypy_adapter_2375", ADAPTER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_flag_shaped_filename_gets_a_separator_before_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`file` is argv[1], so mypy needs a `--` before it, same as every
+    sibling adapter (ruff, actionlint, git-status, new-file-lint). Without
+    the separator, a flag-shaped path is read by mypy's own option parser
+    instead of being treated as a positional file argument — the `splices`
+    class: the callee's parser decides what the value means, not this
+    adapter.
+
+    `subprocess.run` is captured rather than exercised for real, the same
+    way ruff's own `_Probe`-based tests avoid needing ruff installed —
+    mypy is not on PATH in this environment either.
+    """
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+
+        class _Result:
+            stdout = ""
+            stderr = ""
+            returncode = 0
+
+        return _Result()
+
+    mod = _adapter_module()
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/mypy")
+    monkeypatch.setattr(mod.sys, "argv", ["mypy.py", "--python-version=3.9"])
+    mod.main()
+
+    cmd = captured["cmd"]
+    assert "--python-version=3.9" in cmd, cmd
+    idx = cmd.index("--python-version=3.9")
+    assert cmd[idx - 1] == "--", (
+        "the file argument must be immediately preceded by a `--` "
+        f"separator so mypy's own option parser cannot consume it: {cmd}")
