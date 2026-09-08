@@ -134,6 +134,21 @@ def run(target: Path) -> "tuple[int, str]":
     # `core.excludesFile` pointing at a since-emptied file is harmless, and
     # leaving the FILE in place is simpler than also undoing the
     # `git config --worktree` pointer.
+    #
+    # `extensions.worktreeConfig` itself (#2419) is left alone too, and for
+    # a stronger reason than "simpler": `setup_op._do_exclude` enables it
+    # with a plain `git config extensions.worktreeConfig true` -- no
+    # `--worktree` flag -- so it lands in the SHARED `.git/config`, not a
+    # file scoped to this worktree. Disabling it here would not undo
+    # anything this worktree alone did; it would stop every worktree in the
+    # repository, including ones that do not exist yet, from having its own
+    # `--worktree`-scoped config read AT ALL. A sibling worktree that is
+    # still relying on its own `core.excludesFile` set this way would have
+    # that setting silently stop applying -- its `git status` would start
+    # showing whatever it excludes as untracked again, with nothing telling
+    # it why. There is also no cost to leaving it enabled: with no
+    # `config.worktree` file present, the extra lookup this flag adds
+    # simply finds nothing.
     if excluded:
         try:
             exclude_file = _common.git_path(target, _common.EXCLUDE_REL)
@@ -147,6 +162,11 @@ def run(target: Path) -> "tuple[int, str]":
                 lines.append(f"exclude: removed {len(excluded)} worktree-private entry/entries")
         except (_common.TargetError, OSError) as exc:
             lines.append(f"  WARNING could not clean up the worktree-private exclude file: {exc}")
+        lines.append(
+            "  extensions.worktreeConfig left enabled (repo-wide, shared .git/config -- "
+            "unsetting it here would also stop any sibling worktree's own --worktree-scoped "
+            "config, e.g. core.excludesFile, from being read; see docs/presets/worktree.md)"
+        )
 
     try:
         manifest_path = _common.git_path(target, _common.MANIFEST_REL)
