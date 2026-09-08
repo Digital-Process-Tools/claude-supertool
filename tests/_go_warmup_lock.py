@@ -88,6 +88,19 @@ def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
     crashed (#2401): conflating the two let a waiter reclaim a still-live
     lock the moment its age passed the same number a legitimately slow
     holder was itself still working within.
+
+    This widens the safe window rather than removing the race outright: the
+    check is still a static wall-clock guess against a lock file's mtime,
+    written once at acquisition and never refreshed while the holder runs,
+    so any `fn` that genuinely takes longer than `stale_after_s` reproduces
+    the identical misclassification, just past a larger threshold. It is
+    sound for a caller whose `fn` is itself bounded by something close to
+    `timeout_s` -- both call sites this was written for pass a subprocess
+    spawn timeout as `timeout_s`, so `fn` cannot outlive it by more than a
+    small margin -- but a caller passing an unrelated `timeout_s` and a
+    `fn` with no comparable bound of its own should pass an explicit
+    `stale_after_s` sized to its own worst case instead of relying on the
+    default multiplier.
     """
     if stale_after_s is None:
         stale_after_s = timeout_s * STALE_MARGIN

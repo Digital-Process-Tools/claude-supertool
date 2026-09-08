@@ -248,8 +248,17 @@ def test_a_holder_near_its_own_timeout_budget_is_not_reclaimed_as_abandoned(
     alone, to one that crashed. A waiter must never unlink a lock file
     while its holder is still genuinely inside `fn`, whatever it ends up
     doing instead (running its own copy is the already-accepted
-    per-call-timeout fallback; stealing the still-live lock file is not)."""
-    timeout_s = 0.3
+    per-call-timeout fallback; stealing the still-live lock file is not).
+
+    `timeout_s` and the holder's sleep are chosen for a wide *absolute*
+    margin against the default `stale_after_s` (`timeout_s * STALE_MARGIN`),
+    not just a wide ratio -- self-review flagged that a margin expressed
+    only as a ratio of small numbers (e.g. 0.3s/0.45s/0.9s) leaves little
+    absolute headroom against real scheduling jitter on a loaded or slower
+    runner (this repo's own CI is measurably slower on Windows), which
+    could turn a genuine near-boundary case into a flake in either
+    direction."""
+    timeout_s = 1.0
     holder_active = {"value": False}
     unlink_events = []
 
