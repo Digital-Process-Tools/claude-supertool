@@ -394,6 +394,32 @@ The GitLab MR board is simply the first tier anyone wrote. Since [#528](https://
 
 The key merges into the `radar` op the same way `ops.gl-job.job_patterns` does, and reaches the preset as `SUPERTOOL_RADAR_TIERS`. Registration order is render order — put `gl-runners` first if you want the fleet verdict above the board.
 
+### Rendering a subset of the registry — `tiers=` ([#2446](https://github.com/Digital-Process-Tools/claude-supertool/issues/2446))
+
+Every registered tier renders on every run by default. A project with several boards registered in one `.supertool.json` — a CI board and a fleet board, say — can render only a named subset:
+
+```bash
+./supertool 'radar:tiers=gl-mrs,gl-runners'    # the CI board
+./supertool 'radar:tiers=server-diag'          # the fleet board
+./supertool 'radar:--state:tiers=server-diag'  # the read-only view honours the same selection
+```
+
+An argument, not a second op, for the reason `--state` already is one: the registry merges into the `radar` op, so a second op name would need a second copy of the tier list, and a view naming a different tier set than the one radar actually runs is the defect this whole mechanism exists to prevent.
+
+`tiers=` is read as the **entire** argument, never combined with a further per-tier filter on the same comma line — `author=@me,state=opened` is already one comma-joined string in one tier's own vocabulary, and `tiers=A,B` is itself comma-joined tier names, so a mixed line cannot say whose commas are whose without a decision this issue does not make. The tiers that render see no `_arg` from a `tiers=` call, same as a bare `radar` with nothing after the op name.
+
+A name in `tiers=` that is not in the registry is **refused and named, never silently dropped** — the same reasoning [the `milestne=v19` typo refusal](#a-token-the-tier-cannot-apply-is-refused-961) already gives one level up: a filter that matched nothing named X must say so, because "nothing rendered because X does not exist" and "nothing rendered because X is healthy and quiet" are different findings and must not read alike:
+
+```
+radar: tiers= selected ['gl-runners'] of ['gl-mrs', 'gl-runners', 'server-diag'] registered.
+radar: WARNING — tiers= named ['gl-typo'], not registered in ops.radar.radar_tiers
+(['gl-mrs', 'gl-runners', 'server-diag']). Not rendered — check for a typo.
+```
+
+The selection is **never persisted** — same reason the `gl-mrs` filter is not: a population of tiers coming from a file nobody in this session chose is the hidden state this preset is built against. `SUPERTOOL_RADAR_TIERS` set in the environment still only controls what is *registered*, not what a given run selects; `tiers=` is the run-level narrowing on top of it.
+
+The board names the selection it was built from whenever one is in force — the same convention `scope ...` already follows for the `gl-mrs` filter — and says nothing extra when no `tiers=` was given, so an unfiltered run costs no new line.
+
 ### ⚠ Breaking change: `radar` now refuses until you configure it
 
 Upgrading with no `radar_tiers` gets you this, on stderr, exit 1:
