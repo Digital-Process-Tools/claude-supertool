@@ -82,6 +82,36 @@ def _remove_copy(entry: str, dest: Path, lines: list) -> None:
     lines.append(f"  removed copy: {entry}")
 
 
+def _worktreeconfig_state_line(target: Path) -> str:
+    """Report what `extensions.worktreeConfig` (#2419) actually is right
+    now -- three states, not a guess. Teardown never sets or unsets this
+    SHARED, repo-wide flag itself, but a receipt that assumed it must still
+    be `true` because `setup` normally enables it would be a false claim
+    the moment it was changed out-of-band (a human, another tool) between
+    `setup` and `teardown` -- caught by review on #2419.
+    """
+    result = _common._run_git(["config", "--get", "extensions.worktreeConfig"], target)
+    if result.returncode == 0:
+        value = result.stdout.strip()
+    elif result.returncode == 1:
+        value = None  # git's own signal: key not set, not an error
+    else:
+        return (
+            "  extensions.worktreeConfig: could not determine current state "
+            f"({result.stderr.strip() or 'git exited ' + str(result.returncode)})"
+        )
+    if value == "true":
+        return (
+            "  extensions.worktreeConfig left enabled (repo-wide, shared .git/config -- "
+            "unsetting it here would also stop any sibling worktree's own --worktree-scoped "
+            "config, e.g. core.excludesFile, from being read; see docs/presets/worktree.md)"
+        )
+    return (
+        f"  extensions.worktreeConfig is not currently set to true (value={value!r}) -- "
+        "teardown never sets or unsets this repo-wide flag itself; see docs/presets/worktree.md"
+    )
+
+
 def run(target: Path) -> "tuple[int, str]":
     lines = []
     try:
@@ -146,9 +176,20 @@ def run(target: Path) -> "tuple[int, str]":
     # still relying on its own `core.excludesFile` set this way would have
     # that setting silently stop applying -- its `git status` would start
     # showing whatever it excludes as untracked again, with nothing telling
-    # it why. There is also no cost to leaving it enabled: with no
-    # `config.worktree` file present, the extra lookup this flag adds
-    # simply finds nothing.
+    # it why.
+    #
+    # A live sibling worktree IS enumerable at teardown time (`git worktree
+    # list --porcelain`, same as `_common.resolve_primary` already does),
+    # so "check whether anything else still needs it" is not impossible --
+    # only a worktree added AFTER this teardown runs is genuinely
+    # unreachable to any such check. Doing the check anyway would buy
+    # nothing: leaving the flag enabled costs nothing (with no
+    # `config.worktree` file present the extra lookup it adds simply finds
+    # nothing), while a "was I the last one" check that races a
+    # concurrently-created sibling would trade a harmless no-op for a real
+    # way to break one. So this teardown never touches the flag either
+    # way -- it reports what it actually finds below, rather than assuming
+    # what `setup` usually leaves behind.
     if excluded:
         try:
             exclude_file = _common.git_path(target, _common.EXCLUDE_REL)
@@ -162,11 +203,7 @@ def run(target: Path) -> "tuple[int, str]":
                 lines.append(f"exclude: removed {len(excluded)} worktree-private entry/entries")
         except (_common.TargetError, OSError) as exc:
             lines.append(f"  WARNING could not clean up the worktree-private exclude file: {exc}")
-        lines.append(
-            "  extensions.worktreeConfig left enabled (repo-wide, shared .git/config -- "
-            "unsetting it here would also stop any sibling worktree's own --worktree-scoped "
-            "config, e.g. core.excludesFile, from being read; see docs/presets/worktree.md)"
-        )
+        lines.append(_worktreeconfig_state_line(target))
 
     try:
         manifest_path = _common.git_path(target, _common.MANIFEST_REL)

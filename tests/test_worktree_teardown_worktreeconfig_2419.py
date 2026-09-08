@@ -125,6 +125,36 @@ class WorktreeConfigExtensionTeardownTest(unittest.TestCase):
         with open(a_exclude_file, encoding="utf-8") as fh:
             self.assertNotIn("vendor/libs", fh.read())
 
+    def test_teardown_receipt_reflects_actual_state_not_an_assumption(self):
+        """Must not lie: the receipt must report what teardown actually
+        finds the shared flag set to, not simply assert 'left enabled'
+        unconditionally because setup normally enables it. If the flag was
+        unset out-of-band (a human, another tool) between setup and
+        teardown, the receipt must not claim it was left enabled -- doing
+        so would be a false claim in exactly the text this fix exists to
+        add (review finding on #2419).
+        """
+        self._write_config({"exclude": ["vendor/libs"]})
+        self._commit_all()
+        wt_a = self._add_worktree("a", "feature-a")
+
+        self.assertEqual(_run_op("setup", wt_a).returncode, 0)
+
+        # Simulate the shared flag having been unset out-of-band since
+        # setup ran -- teardown must not blindly assume its own memory of
+        # what setup usually does.
+        r = _git(["config", "--unset", "extensions.worktreeConfig"], self.primary)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+        teardown_result = _run_op("teardown", wt_a)
+        self.assertEqual(teardown_result.returncode, 0, teardown_result.stdout + teardown_result.stderr)
+
+        self.assertNotIn(
+            "left enabled", teardown_result.stdout.lower(),
+            "receipt must not claim the flag was left enabled when it is not currently set",
+        )
+        self.assertIn("extensions.worktreeConfig", teardown_result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
