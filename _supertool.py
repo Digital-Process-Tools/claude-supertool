@@ -30099,6 +30099,37 @@ def _generic_preset_payload_hint(op: str) -> str:
     return chr(10) + chr(10).join(lines)
 
 
+_PRESET_NAMED_PAYLOAD_FIELDS: Dict[str, Tuple[str, ...]] = {
+    # gh-issue-comment does NOT take the generic args-list preset route --
+    # `repo_target: "payload"` in presets/github.json already marks it (with
+    # gh-issue-create, gh-pr-create, gh-pr-edit) as an op that parses its own
+    # named-field payload, but `_at_file_payload_hint` had no branch for that
+    # population and fell through to `_generic_preset_payload_hint`, printing
+    # an `args = [...]` example the op's own loader refuses outright (#2444:
+    # `help:gh-issue-comment` told a caller to send `args`, and the accepted
+    # keys are `body`/`body_file`/`repo` -- `presets/github/issue_comment.py`'s
+    # own `ACCEPTED_KEYS`, pinned against this registry by
+    # `tests/test_gh_issue_comment_help_text_2444.py` so the two cannot drift
+    # apart again the way they already had).
+    "gh-issue-comment": ("body", "body_file", "repo"),
+}
+
+
+def _preset_named_payload_hint(op: str, fields: Tuple[str, ...]) -> str:
+    """Hint text for a preset op that parses its OWN named-field payload
+    (`_PRESET_NAMED_PAYLOAD_FIELDS`), never the generic `args` list.
+    """
+    quote = "'" * 3
+    lines = [
+        f"  {op}:@... reads its fields from the payload. Keys: "
+        f"{', '.join(fields)}",
+        f"    ./supertool '{op}:@-' <<'EOF'",
+        f"    {fields[0]} = {quote}...{quote}",
+        "    EOF",
+    ]
+    return chr(10) + chr(10).join(lines)
+
+
 def _at_file_payload_hint(op: str) -> str:
     """Name the payload keys *op* wants, and show a call that would work.
 
@@ -30115,10 +30146,16 @@ def _at_file_payload_hint(op: str) -> str:
     A preset op with no registered fields (#1165) falls to
     `_generic_preset_payload_hint` instead of "" -- it DOES have a route,
     the generic `args`-list one, and an op that has a route but no hint text
-    is indistinguishable from one that has none at all.
+    is indistinguishable from one that has none at all. A preset op that
+    parses its OWN named-field payload (`_PRESET_NAMED_PAYLOAD_FIELDS`) is
+    checked before that fallback, so it is never described as an args-list
+    op (#2444).
     """
     specs = _at_file_specs(op)
     if not specs:
+        named = _PRESET_NAMED_PAYLOAD_FIELDS.get(op)
+        if named:
+            return _preset_named_payload_hint(op, named)
         if _op_is_preset_op(op):
             return _generic_preset_payload_hint(op)
         return ""

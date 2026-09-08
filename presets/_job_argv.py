@@ -24,7 +24,20 @@ substituting `{args}`, so alternation reaches the preset intact and always did.
 """
 from __future__ import annotations
 
+import re
+
 import _digits  # (the one ASCII-digit test, shared since #1727)
+
+# #521 -- pytest own short-summary marker, in either separator it ships:
+# FAILED tests/test_x.py::test_name (native) or
+# FAILED tests.test_x.test_name (the dotted form
+# .github/scripts/junit_summary.py re-emits from junit.xml). Anchored at
+# line start so a job-table row this op itself renders elsewhere --
+# - pytest (ubuntu-latest, 3.12) (job #123) -- failure -- or a step name
+# containing the bare word failure never matches: neither begins a line
+# with the literal token FAILED followed by whitespace and a node id.
+_PYTEST_FAILED_LINE_RE = re.compile(
+    r"^FAILED\s+\S+(::|\.)\S+", re.MULTILINE)
 
 # `raw` is here too, though its own START/END parsing lives in each preset.
 # `artifacts`/`artifact` (#1796): list a job's artifacts, or fetch one file
@@ -158,3 +171,31 @@ def artifact_path(op: str, tokens: list[str]) -> tuple[str, str]:
         f"path in this op, so that is the only reading that keeps it whole; "
         f"check that it says what you meant."
     )
+
+
+def classify_unit_test_failure(text: str) -> "str | None":
+    """The ONE row #521's own issue text calls a rule rather than a
+    heuristic: "unit test failure -> MANUAL, always. A bot deciding is the
+    test wrong or the code wrong produces green pipelines and broken
+    production." Returns "MANUAL" when a pytest short-summary failure line
+    is present anywhere in *text*, `None` otherwise.
+
+    `None` is not "not a unit test failure" -- it is "this rule did not
+    fire", never collapsed into a false negative the way this codebase's
+    own defect class (CLAUDE.md) warns against. Every other row in the
+    issue's table (rector/prettier hunks, PHPStan, infra flakes) is
+    deliberately NOT attempted here: the issue says a classifier needs a
+    corpus first, and the corpus this rule was measured against
+    (`docs/operations/ci-failure-classification.md`, six real failed runs
+    on this repository, 2026-09-09) contained no instance of any of them --
+    this repository has no PHP/rector/PHPStan CI leg at all, so that half
+    of the original table may not even apply here.
+
+    Matches BOTH separators a `FAILED` line ships in this codebase's own
+    `gh-job:ID:fail` output: pytest's native `path::test_name` and the
+    dotted `module.test_name` form `.github/scripts/junit_summary.py`
+    re-emits from junit.xml -- both observed live in the sample.
+    """
+    if _PYTEST_FAILED_LINE_RE.search(text):
+        return "MANUAL"
+    return None
