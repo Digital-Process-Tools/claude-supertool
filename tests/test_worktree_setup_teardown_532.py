@@ -189,10 +189,36 @@ class WorktreeSetupTeardownTest(unittest.TestCase):
 
         result = _run_op("setup", wt)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("WARNING refusing shared/thing", result.stdout)
+        self.assertIn("WARNING refusing 'shared/thing'", result.stdout)
         dest = os.path.join(wt, "shared", "thing")
         self.assertFalse(os.path.exists(dest))
         self.assertFalse(os.path.islink(dest))
+
+    def test_both_link_and_copy_newline_entry_cannot_forge_a_receipt_line(self):
+        """The `declared in BOTH link and copy` refusal (setup_op.py) renders
+        the raw config entry BEFORE `_validate`/`validate_entry` ever runs on
+        it -- unlike every other outcome line in this file, which only ever
+        sees an entry that already passed that check. An entry containing a
+        newline, declared under both `link` and `copy`, must not let its
+        embedded text become its OWN standalone receipt line (#2434).
+
+        Paired positive control: an ordinary (non-malicious) `link`+`copy`
+        clash for a ordinary path must still be refused and reported, so
+        this isn't a case where nothing at all renders.
+        """
+        forged = "shared/thing\n  linked: vendor/libs"
+        self._write_config({"link": [forged, "shared/normal"], "copy": [forged, "shared/normal"]})
+        self._commit_all()
+        wt = self._add_worktree()
+
+        result = _run_op("setup", wt)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # must NOT fire: the forged text must never become its own
+        # standalone line, indistinguishable from a real "linked" receipt.
+        self.assertNotIn("  linked: vendor/libs", result.stdout.splitlines())
+        # must fire: the ordinary clashing path is still refused and named.
+        self.assertIn("WARNING refusing 'shared/normal'", result.stdout)
+        self.assertIn("declared in BOTH link and copy", result.stdout)
 
     # -- exclude: worktree-PRIVATE, never the primary checkout's -----------
 
@@ -417,6 +443,53 @@ class WorktreeSetupTeardownTest(unittest.TestCase):
         self.assertIn("refusing to guess", result.stdout)
         # must NOT fire: the symlink setup created is untouched by the refusal
         self.assertTrue(os.path.islink(os.path.join(wt, "vendor", "libs")))
+
+    def test_teardown_manifest_entry_with_newline_cannot_forge_a_removal_line(self):
+        """teardown_op.py's own `manifest entry no longer valid` lines (one
+        for `linked`, one for `copied`) render the entry `safe_join` has
+        JUST rejected -- including a rejection for an embedded newline. A
+        manifest is normally only ever populated with entries `setup`
+        already validated, but the manifest file itself is plain JSON on
+        disk and nothing re-validates it on the way IN (`read_manifest`
+        only ever does `str(p)`) -- so a manifest entry that somehow
+        acquired a newline (a hand-edited/tampered manifest, say) must
+        still not be able to forge its own standalone receipt line (#2434).
+
+        Paired positive control: the real entries `setup` created must
+        still report their ordinary, correct removal lines.
+        """
+        self._write_config({"link": ["vendor/libs"], "copy": ["conf/dev.ini"]})
+        self._commit_all()
+        os.makedirs(os.path.join(self.primary, "vendor", "libs"))
+        with open(os.path.join(self.primary, "vendor", "libs", "a.so"), "w") as fh:
+            fh.write("lib")
+        os.makedirs(os.path.join(self.primary, "conf"))
+        with open(os.path.join(self.primary, "conf", "dev.ini"), "w") as fh:
+            fh.write("dev config")
+        wt = self._add_worktree()
+        self.assertEqual(_run_op("setup", wt).returncode, 0)
+
+        manifest_path = _git(["rev-parse", "--git-path", "worktree-setup/manifest.json"], wt).stdout.strip()
+        with open(manifest_path, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        forged = "gone\n  removed link: definitely-not-removed"
+        manifest["linked"].append(forged)
+        manifest["copied"].append(forged)
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh)
+
+        result = _run_op("teardown", wt)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # must NOT fire: the forged text must never become its own
+        # standalone line, indistinguishable from a real removal receipt.
+        self.assertNotIn("  removed link: definitely-not-removed", result.stdout.splitlines())
+        self.assertNotIn("  removed copy: definitely-not-removed", result.stdout.splitlines())
+        # must fire: the real, legitimately-manifested entries still report
+        # their ordinary, correct removal lines.
+        self.assertIn("removed link: vendor/libs", result.stdout)
+        self.assertIn("removed copy: conf/dev.ini", result.stdout)
+        self.assertFalse(os.path.exists(os.path.join(wt, "vendor", "libs")))
+        self.assertFalse(os.path.exists(os.path.join(wt, "conf", "dev.ini")))
 
     def test_entry_with_embedded_newline_is_refused_not_used(self):
         """An entry is untrusted text -- it comes from the config of the
