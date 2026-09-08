@@ -15,6 +15,17 @@ this guard --
 `trap.d/1165.windows-shlex-backslash-corrupts-unquoted-cmd-template-path.md`
 carries exactly that shape as the subject of its own note, so the negative
 fixture below pins it by name.
+
+A fourth shape joined after a first self-review pass (#2426, Explore spawn):
+the dash-flattened form this repo's own scratchpad directory naming produces
+(`-Users-<name>-Documents-...`, seen verbatim, pre-redaction, in
+`trap.d/2015.scratchpad-collision.md`), and a looser boundary after the
+username on all three slash/backslash shapes -- the original regex required
+a literal trailing separator, so `/Users/<name>` followed by punctuation,
+whitespace or end-of-string (rather than another `/`) went unflagged. Both
+gaps were real: the pre-fix `2015` fragment's dash-flattened line and a
+"/Users/<name>." shape are exactly the kind of prose a trap.d/ fragment
+writes.
 """
 from __future__ import annotations
 
@@ -34,10 +45,21 @@ _ALLOWED_WINDOWS_USERS = {"runneradmin", "Public", "Default", "..."}
 # for "some intermediate path segment", not a username -- the same file's
 # `C:\\Users\\...\\argv.py` is a generic template, not a real account.
 
+# Terminates a captured username without requiring a further path segment
+# -- the original regex demanded a literal trailing separator, so
+# "/Users/<name>." or "/Users/<name> (parenthetical)" went unflagged
+# (#2426 self-review, Explore spawn: reproduced against both shapes).
+_BOUNDARY = r"[/\\ \t\r\n.,;:!?)`]|$"
+
 _LOCAL_PATH = re.compile(
-    r"/Users/(?P<posix_user>[A-Za-z0-9_.-]+)/"
-    r"|/home/(?P<home_user>[A-Za-z0-9_.-]+)/"
-    r"|C:\\Users\\(?P<win_user>[A-Za-z0-9_.-]+)\\"
+    r"/Users/(?P<posix_user>[A-Za-z0-9_.-]+)(?:" + _BOUNDARY + r")"
+    r"|/home/(?P<home_user>[A-Za-z0-9_.-]+)(?:" + _BOUNDARY + r")"
+    r"|C:\\Users\\(?P<win_user>[A-Za-z0-9_.-]+)(?:" + _BOUNDARY + r")"
+    # The dash-flattened shape this repo's own scratchpad directory naming
+    # produces (path separators replaced by "-"), e.g.
+    # "-Users-<name>-Documents-claude-supertool" -- seen verbatim,
+    # pre-redaction, in trap.d/2015.scratchpad-collision.md:22.
+    r"|-Users-(?P<dash_user>[A-Za-z0-9_.]+)-"
 )
 
 
@@ -48,6 +70,7 @@ def _local_path_hits(text: str) -> list[str]:
             match.group("posix_user")
             or match.group("home_user")
             or match.group("win_user")
+            or match.group("dash_user")
         )
         if user in _ALLOWED_WINDOWS_USERS:
             continue
@@ -59,8 +82,20 @@ def test_no_local_home_paths_in_trap_d():
     """Every trap.d/*.md fragment, scanned fresh (glob, not a hardcoded
     filename list) -- new fragments land here constantly and each one ships
     to every plugin install unredacted."""
+    scanned = sorted(TRAP_D.glob("*.md"))
+    # #2426 self-review (oss:auditor spawn): a directory rename or a typo'd
+    # glob pattern would make this loop run zero times and the assertion
+    # below pass vacuously -- "verified clean" and "verified nothing" must
+    # not render the same way. Pin a floor rather than an exact count, since
+    # new fragments land here constantly.
+    assert len(scanned) >= 5, (
+        f"trap.d/*.md scanned {len(scanned)} file(s) -- expected at least "
+        "5 (the count present when this guard was written). A near-zero "
+        "count means the glob stopped finding fragments, not that they "
+        "are clean."
+    )
     offenders = {}
-    for path in sorted(TRAP_D.glob("*.md")):
+    for path in scanned:
         text = path.read_text(encoding="utf-8")
         hits = _local_path_hits(text)
         if hits:
@@ -115,3 +150,37 @@ def test_scanner_fires_on_windows_non_runner_user(tmp_path):
     )
     hits = _local_path_hits(planted.read_text(encoding="utf-8"))
     assert hits == ["C:\\Users\\exampleuser\\"]
+
+
+def test_scanner_fires_without_a_trailing_path_segment(tmp_path):
+    """#2426 self-review (Explore + oss:auditor spawns, converged
+    independently): the original regex required a literal trailing
+    separator, so a bare home-directory mention -- end of sentence,
+    parenthetical, shell operator -- went unflagged. Three shapes in one
+    fixture, none of which have a path segment after the username."""
+    planted = tmp_path / "planted.md"
+    planted.write_text(
+        "reported from /Users/exampleuser.\n"
+        "(cd /Users/exampleuser && ls)\n"
+        "see /Users/exampleuser here\n",
+        encoding="utf-8",
+    )
+    hits = _local_path_hits(planted.read_text(encoding="utf-8"))
+    assert len(hits) == 3
+    assert all(hit.startswith("/Users/exampleuser") for hit in hits)
+
+
+def test_scanner_fires_on_dash_flattened_scratchpad_shape(tmp_path):
+    """#2426 self-review (Explore + oss:auditor spawns, converged
+    independently): this repo's own scratchpad directory naming flattens
+    path separators to dashes -- exactly the shape
+    trap.d/2015.scratchpad-collision.md:22 carried, verbatim, before this
+    same commit hand-redacted it."""
+    planted = tmp_path / "planted.md"
+    planted.write_text(
+        "(`/private/tmp/claude-501/-Users-exampleuser-Documents-"
+        "claude-supertool/<session-uuid>/scratchpad`)\n",
+        encoding="utf-8",
+    )
+    hits = _local_path_hits(planted.read_text(encoding="utf-8"))
+    assert hits == ["-Users-exampleuser-"]
