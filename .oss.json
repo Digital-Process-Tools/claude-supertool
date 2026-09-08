@@ -31,6 +31,65 @@
       "lane-containment",
       "lane-release",
       "lane-git-ops"
+    ],
+    "lane_patterns": {
+      "lane-watch": [
+        "presets/watch",
+        "presets/dashboard",
+        "notifiers",
+        "docs/presets/watch.md"
+      ],
+      "lane-tracker-ops": [
+        "presets/github",
+        "presets/gitlab"
+      ],
+      "lane-validators": [
+        "validators",
+        "formatters",
+        "docs/validators.md",
+        "docs/formatters.md"
+      ],
+      "lane-ci-cost": [
+        ".github/workflows",
+        ".github/scripts"
+      ],
+      "lane-containment": [
+        "hooks"
+      ],
+      "lane-release": [
+        "changelog.d",
+        "CHANGELOG.md",
+        ".oss.json"
+      ],
+      "lane-git-ops": [
+        "presets/git",
+        "presets/worktree"
+      ]
+    },
+    "lane_coupling_allowlist": [
+      "tests/conftest.py",
+      "tests/test_around_line_hint_734.py",
+      "tests/test_changelog_fragment_write_receipt_1132.py",
+      "tests/test_ci_non_python_coverage_557.py",
+      "tests/test_empty_filter_value_974.py",
+      "tests/test_encoding_seam_scoped_check_2287.py",
+      "tests/test_forged_child_stream_line_1475.py",
+      "tests/test_gh_branch_missing_trigger_filter_1959.py",
+      "tests/test_gh_branch_undispatched_workflow_846.py",
+      "tests/test_gh_pr_thread_index_1445.py",
+      "tests/test_git_status_display_config_gates_1295.py",
+      "tests/test_git_timeout_defaults_agree_1903.py",
+      "tests/test_no_bare_python3_spawn.py",
+      "tests/test_normalised_refname_1038.py",
+      "tests/test_ops_roster_1231.py",
+      "tests/test_prs_mrs_unknown_token_939.py",
+      "tests/test_radar_gh_scope_1230.py",
+      "tests/test_radar_gl_mrs_unknown_token_961.py",
+      "tests/test_radar_scope_seam_1077.py",
+      "tests/test_radar_tier_unapplied_tokens_973.py",
+      "tests/test_render_sites_superseded_checks_1804.py",
+      "tests/test_repo_target_effective_slug_1701.py",
+      "tests/test_supertool_hint_register_905.py"
     ]
   },
   "milestones": [

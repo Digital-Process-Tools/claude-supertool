@@ -37,7 +37,7 @@ import ast
 import importlib.util
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -54,44 +54,92 @@ RC_OK = 0
 RC_VIOLATIONS = 1
 RC_COULD_NOT_CHECK = 2
 
+#: `_load_module_from`'s own three states (#2439). The old contract folded
+#: "file absent" and "file present but raised during exec_module" into the
+#: same `None`, which then propagated into every caller's own `None` --
+#: `check_encoding_seam not adopted here` printed for a guard module that
+#: DOES exist and DID fail to import. LOAD_OK / LOAD_ABSENT / LOAD_FAILED
+#: are the three states a caller can now tell apart.
+LOAD_OK = "ok"
+LOAD_ABSENT = "absent"
+LOAD_FAILED = "failed"
 
-def _load_module_from(root: Path, relpath: str, name: str):
+
+class LoadResult(NamedTuple):
+    status: str  # LOAD_OK / LOAD_ABSENT / LOAD_FAILED
+    module: object = None
+    error: Optional[BaseException] = None
+
+
+def _load_module_from(root: Path, relpath: str, name: str) -> LoadResult:
     """Import a project file by path, the same trick #965's own scanner test
     uses for cross-file reuse (`importlib.util.spec_from_file_location`).
 
-    Returns `None` -- never raises -- when the file is absent or fails to
-    import: absence of the convention here is `skipped`, not a crash.
+    Never raises. Returns a `LoadResult` whose `status` distinguishes "the
+    file is not there at all" (`LOAD_ABSENT`, the convention was never
+    adopted -- `skipped`) from "the file is there and raised while
+    importing" (`LOAD_FAILED`, a real problem in an adopted guard module --
+    NOT the same thing as absence, however both used to collapse to a bare
+    `None` here, see #2439).
     """
     path = root / relpath
     if not path.is_file():
-        return None
+        return LoadResult(LOAD_ABSENT)
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        return None
+        return LoadResult(LOAD_ABSENT)
     module = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(module)
-    except Exception:  # the project's own file, not this script's business
-        return None
-    return module
+    except Exception as exc:  # the project's own file, not this script's business
+        return LoadResult(LOAD_FAILED, error=exc)
+    return LoadResult(LOAD_OK, module=module)
+
+
+#: A guard check's own three states, mirrored from `LoadResult` above so a
+#: caller never has to re-derive "adopted" from a bare truthiness check on
+#: `findings` (an adopted-and-clean guard has an EMPTY findings list, which
+#: is falsy and must not be mistaken for "not adopted").
+GUARD_ADOPTED = "adopted"
+GUARD_ABSENT = "absent"
+GUARD_LOAD_ERROR = "load_error"
+
+
+class GuardResult(NamedTuple):
+    status: str  # GUARD_ADOPTED / GUARD_ABSENT / GUARD_LOAD_ERROR
+    # `NamedTuple` evaluates a default ONCE at class-definition time and
+    # every instance that omits the field shares that same object by
+    # reference -- unlike a dataclass `field(default_factory=list)`. A bare
+    # `findings: list = []` here would mean every GUARD_ABSENT/GUARD_LOAD_ERROR
+    # return in this file shares one list, so an in-place `.append()` on any
+    # one of them would silently leak into every other (#2439 review). None
+    # is the safe default; only meaningful when status == GUARD_ADOPTED, in
+    # which case every call site below passes its own fresh list explicitly.
+    findings: Optional[list] = None
+    error: Optional[BaseException] = None  # only meaningful when GUARD_LOAD_ERROR
 
 
 # ---------------------------------------------------------------------------
 # 1. env-scrub -- tests/_pathenv_scan.py, scoped to changed test_*.py files
 # ---------------------------------------------------------------------------
 
-def check_env_scrub(root: Path, py_files: List[str]) -> Optional[List]:
-    """`None` when the project has not adopted the guard; else its findings.
+def check_env_scrub(root: Path, py_files: List[str]) -> GuardResult:
+    """`GUARD_ABSENT` when the project has not adopted the guard; else its
+    findings under `GUARD_ADOPTED` -- or `GUARD_LOAD_ERROR` when the guard
+    module exists but raised while importing (#2439).
 
     Scoped to the guard's own population: `scan_tree` in
     `tests/test_handrolled_path_env_guard_1151.py` only ever looks at
     `tests/test_*.py`, so a changed file outside that set is not this
     check's business either.
     """
-    module = _load_module_from(root, "tests/_pathenv_scan.py",
-                                "meta_guard_pathenv_scan")
-    if module is None:
-        return None
+    load = _load_module_from(root, "tests/_pathenv_scan.py",
+                              "meta_guard_pathenv_scan")
+    if load.status == LOAD_ABSENT:
+        return GuardResult(GUARD_ABSENT)
+    if load.status == LOAD_FAILED:
+        return GuardResult(GUARD_LOAD_ERROR, error=load.error)
+    module = load.module
     findings = []
     for relpath in py_files:
         name = Path(relpath).name
@@ -100,27 +148,35 @@ def check_env_scrub(root: Path, py_files: List[str]) -> Optional[List]:
         path = root / relpath
         text = path.read_text(encoding="utf-8", errors="surrogateescape")
         findings.extend(module.scan_source(text, relpath))
-    return findings
+    return GuardResult(GUARD_ADOPTED, findings=findings)
 
 
 # ---------------------------------------------------------------------------
 # 2. splitlines register -- tests/test_preset_git_splitlines_register_1130.py
 # ---------------------------------------------------------------------------
 
-def check_splitlines_register(root: Path, py_files: List[str]
-                              ) -> Optional[List[Tuple[str, str, List[int]]]]:
-    """`None` when the register file is absent; else `(path, key, lines)` for
-    every changed `presets/git/` call site the register does not name.
+def check_splitlines_register(root: Path, py_files: List[str]) -> GuardResult:
+    """`GUARD_ABSENT` when the register file is absent (or present but not
+    shaped like the real register); `GUARD_ADOPTED` with `(path, key,
+    lines)` findings for every changed `presets/git/` call site the
+    register does not name; `GUARD_LOAD_ERROR` when the register module
+    exists but raised while importing (#2439).
     """
-    module = _load_module_from(
+    load = _load_module_from(
         root, "tests/test_preset_git_splitlines_register_1130.py",
         "meta_guard_splitlines_register")
-    if module is None:
-        return None
+    if load.status == LOAD_ABSENT:
+        return GuardResult(GUARD_ABSENT)
+    if load.status == LOAD_FAILED:
+        return GuardResult(GUARD_LOAD_ERROR, error=load.error)
+    module = load.module
     register = getattr(module, "REGISTER", None)
     visitor_cls = getattr(module, "_Visitor", None)
     if register is None or visitor_cls is None:
-        return None
+        # Imported fine but is not actually the register module -- that is
+        # "not the convention this check needs", the same as absence, and
+        # distinct from an import that raised.
+        return GuardResult(GUARD_ABSENT)
     offenders = []
     for relpath in py_files:
         if not relpath.startswith("presets/git/"):
@@ -137,27 +193,32 @@ def check_splitlines_register(root: Path, py_files: List[str]
         for key, lines in sorted(found.items()):
             if key not in register:
                 offenders.append((relpath, key, lines))
-    return offenders
+    return GuardResult(GUARD_ADOPTED, findings=offenders)
 
 
 # ---------------------------------------------------------------------------
 # 3. encoding-seam -- delegated to check_encoding_seam.py, not re-implemented
 # ---------------------------------------------------------------------------
 
-def check_encoding_seam(root: Path, py_files: List[str]) -> Optional[List]:
+def check_encoding_seam(root: Path, py_files: List[str]) -> GuardResult:
+    """`GUARD_ABSENT` when the guard test module is absent; `GUARD_ADOPTED`
+    with its records when it loaded; `GUARD_LOAD_ERROR` when the module
+    exists but raised while importing -- previously collapsed into the same
+    `None` as absence (#2439).
+    """
     module_path = find_test_module(root)
     if module_path is None:
-        return None
+        return GuardResult(GUARD_ABSENT)
     try:
         module = load_scan_module(module_path)
-    except Exception:
-        return None
+    except Exception as exc:
+        return GuardResult(GUARD_LOAD_ERROR, error=exc)
     records = []
     for relpath in py_files:
         kinds = scope_kinds(relpath, module.SHIPPED)
         for record in scan_one(module, root / relpath, kinds):
             records.append((relpath, record))
-    return records
+    return GuardResult(GUARD_ADOPTED, findings=records)
 
 
 def main(argv=None) -> int:
@@ -204,14 +265,15 @@ def main(argv=None) -> int:
     py_files = [f for f in candidates
                 if f.endswith(".py") and (root / f).is_file()]
 
-    checked_any = False
+    checked_names: List[str] = []
+    load_errors: List[Tuple[str, str, BaseException]] = []
     violated = False
 
-    env_findings = check_env_scrub(root, py_files)
-    if env_findings is not None:
-        checked_any = True
-        violations = [f for f in env_findings if f.kind == "violation"]
-        unresolved = [f for f in env_findings if f.kind == "unresolved"]
+    env_result = check_env_scrub(root, py_files)
+    if env_result.status == GUARD_ADOPTED:
+        checked_names.append("env-scrub")
+        violations = [f for f in env_result.findings if f.kind == "violation"]
+        unresolved = [f for f in env_result.findings if f.kind == "unresolved"]
         if violations:
             violated = True
             print("check-meta-guards: env-scrub violations "
@@ -224,14 +286,23 @@ def main(argv=None) -> int:
                   "DECLARED_UNRESOLVED in the guard test for the pattern:")
             for f in unresolved:
                 print("  {0}".format(f.describe()))
+    elif env_result.status == GUARD_LOAD_ERROR:
+        load_errors.append(("env-scrub", "tests/_pathenv_scan.py",
+                             env_result.error))
+        print("check-meta-guards: env-scrub guard module present but "
+              "failed to import (tests/_pathenv_scan.py) -- {0}: {1} -- "
+              "this is could-not-check, NOT the same as 'not adopted'"
+              .format(type(env_result.error).__name__, env_result.error),
+              file=sys.stderr)
     else:
         print("check-meta-guards: env-scrub guard not adopted here "
               "(no tests/_pathenv_scan.py) -- skipped, not clean",
               file=sys.stderr)
 
-    split_offenders = check_splitlines_register(root, py_files)
-    if split_offenders is not None:
-        checked_any = True
+    split_result = check_splitlines_register(root, py_files)
+    if split_result.status == GUARD_ADOPTED:
+        checked_names.append("splitlines-register")
+        split_offenders = split_result.findings
         if split_offenders:
             violated = True
             print("check-meta-guards: new str.splitlines() in presets/git/ "
@@ -239,13 +310,26 @@ def main(argv=None) -> int:
                   "tests/test_preset_git_splitlines_register_1130.py):")
             for relpath, key, lines in split_offenders:
                 print("  {0}::{1} lines {2}".format(relpath, key, lines))
+    elif split_result.status == GUARD_LOAD_ERROR:
+        load_errors.append(
+            ("splitlines-register",
+             "tests/test_preset_git_splitlines_register_1130.py",
+             split_result.error))
+        print("check-meta-guards: splitlines-register guard module present "
+              "but failed to import "
+              "(tests/test_preset_git_splitlines_register_1130.py) -- "
+              "{0}: {1} -- this is could-not-check, NOT the same as 'not "
+              "adopted'".format(type(split_result.error).__name__,
+                                 split_result.error),
+              file=sys.stderr)
     else:
         print("check-meta-guards: splitlines-register guard not adopted "
               "here -- skipped, not clean", file=sys.stderr)
 
-    seam_records = check_encoding_seam(root, py_files)
-    if seam_records is not None:
-        checked_any = True
+    seam_result = check_encoding_seam(root, py_files)
+    if seam_result.status == GUARD_ADOPTED:
+        checked_names.append("encoding-seam")
+        seam_records = seam_result.findings
         errors = [(p, r) for p, r in seam_records if r["severity"] == "error"]
         warnings = [(p, r) for p, r in seam_records if r["severity"] != "error"]
         if errors:
@@ -260,23 +344,44 @@ def main(argv=None) -> int:
                   "review:")
             for relpath, r in warnings:
                 print("  {0}:{1}: {2}".format(relpath, r["line"], r["msg"]))
+    elif seam_result.status == GUARD_LOAD_ERROR:
+        load_errors.append(("encoding-seam", "tests/test_encoding_seam.py",
+                             seam_result.error))
+        print("check-meta-guards: encoding-seam guard module present but "
+              "failed to import (tests/test_encoding_seam.py) -- {0}: {1} "
+              "-- this is could-not-check, NOT the same as 'not adopted'"
+              .format(type(seam_result.error).__name__, seam_result.error),
+              file=sys.stderr)
     else:
         print("check-meta-guards: encoding-seam guard not adopted here "
               "(no tests/test_encoding_seam.py) -- skipped, not clean",
               file=sys.stderr)
 
-    if not checked_any:
+    if not checked_names and not load_errors:
         print("check-meta-guards: none of the three guards this script "
               "knows about are adopted in this repo -- nothing was checked",
+              file=sys.stderr)
+        return RC_COULD_NOT_CHECK
+
+    if load_errors:
+        # An adopted guard module that cannot even import is a real problem,
+        # not a transient hiccup to shrug past -- silently letting it
+        # through (RC_OK) is exactly the "broken guard slips by" failure
+        # #2439 warns against. Fail loudly and non-zero rather than folding
+        # it into either a clean pass or an ordinary pattern violation.
+        print("check-meta-guards: {0} guard module(s) failed to import -- "
+              "could-not-check, never a silent clean: {1}".format(
+                  len(load_errors),
+                  ", ".join(name for name, _relpath, _exc in load_errors)),
               file=sys.stderr)
         return RC_COULD_NOT_CHECK
 
     if violated:
         return RC_VIOLATIONS
 
-    print("check-meta-guards: {0} changed .py file(s), 3 guards checked "
-          "(env-scrub, splitlines-register, encoding-seam), clean"
-          .format(len(py_files)))
+    print("check-meta-guards: {0} changed .py file(s), {1} guard(s) checked "
+          "({2}), clean".format(
+              len(py_files), len(checked_names), ", ".join(checked_names)))
     return RC_OK
 
 

@@ -25,7 +25,7 @@ from _graphql import gql, gql_safe
 from _outbound import append as track_append
 from _resolve import resolve_post_id
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
-from _publish_safety import apply_disclosure, safe_resolve_body_path  # noqa: E402
+from _publish_safety import apply_disclosure, safe_resolve_body_path, require_confirm  # noqa: E402
 
 _FILE_PREFIX = "file://"
 
@@ -130,6 +130,7 @@ def preflight_comment(post_id: str, me: str, token: str) -> tuple[bool | None, l
 
 def main(arg: str) -> None:
     post_or_url, message, force = parse_args(arg)
+    require_confirm("hashnode_comment", f"comment on {post_or_url}: {message}", force=force)
     token = get_token()
     post_id = resolve_post_id(token, post_or_url)
     if not force:

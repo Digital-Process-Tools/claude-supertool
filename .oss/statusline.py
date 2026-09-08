@@ -36,6 +36,58 @@ import sys
 import time
 from pathlib import Path
 
+#: #1295: this file is vendored standalone (see the module docstring above --
+#: "No third-party imports... installs nothing to run it") so it cannot
+#: `import scripts.gh_which` the way every other converted call site in this
+#: repository does. `_safe_which` below is a reduced, inlined copy of
+#: `gh_which.safe_which`'s own resolution walk -- see that module's docstring
+#: for the full mechanism this closes: a same-named `git.exe`/`gh.cmd`
+#: planted at the root of the repository this statusline is reporting on can
+#: otherwise win over a real `PATH` entry on Windows, because a bare argv[0]
+#: with no directory component lets `CreateProcess` search the *calling
+#: process's* current directory first. Being a separate copy, this can drift
+#: from `gh_which.py`'s own walk without anything here noticing -- logged as
+#: a known trade-off of the vendoring constraint, not fixed by this issue.
+_WIN_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD;.VBS;.JS;.WS;.MSC"
+
+
+def _win_candidate_names(name):
+    pathext_source = os.environ.get("PATHEXT") or _WIN_DEFAULT_PATHEXT
+    pathext = [ext for ext in pathext_source.split(";") if ext]
+    lowered = name.lower()
+    if any(lowered.endswith(ext.lower()) for ext in pathext):
+        return [name]
+    return [name + ext for ext in pathext]
+
+
+def _safe_which(name):
+    """Resolve `name` on the real `PATH`, without ever letting an implicit
+    current-working-directory search take priority over a real `PATH` entry.
+    Returns an absolute path, or `None`.
+    """
+    search_path = os.environ.get("PATH", os.defpath)
+    if not search_path:
+        return None
+    is_windows = sys.platform == "win32"
+    candidate_names = _win_candidate_names(name) if is_windows else [name]
+    seen = set()
+    for directory in search_path.split(os.pathsep):
+        candidate_dir = directory if directory else os.curdir
+        normalised = os.path.normcase(os.path.abspath(candidate_dir))
+        if normalised in seen:
+            continue
+        seen.add(normalised)
+        for candidate_name in candidate_names:
+            candidate = os.path.join(candidate_dir, candidate_name)
+            if (
+                os.path.exists(candidate)
+                and os.access(candidate, os.X_OK)
+                and not os.path.isdir(candidate)
+            ):
+                return os.path.abspath(candidate)
+    return None
+
+
 #: How old a cached board reading may be before a refresh is forked, in seconds. Short,
 #: because this is the half a maintainer watches move: at 300 the line showed a merged pull
 #: request and three still-open issues that had just been closed (#515).
@@ -1254,6 +1306,16 @@ def branch_name(root):
 
 
 def _run(command, timeout=5):
+    """#1295: `command[0]` is resolved through `_safe_which` above before it is
+    ever handed to `subprocess.run` -- every caller in this module passes a
+    bare `"git"`/`"gh"` as argv[0], and a same-named `git.exe`/`gh.cmd`
+    planted at the root of the repository this statusline is reporting on
+    can otherwise win over a real `PATH` entry on Windows.
+    """
+    resolved = _safe_which(command[0])
+    if resolved is None:
+        return None
+    command = [resolved] + list(command[1:])
     try:
         result = subprocess.run(
             command,
@@ -1650,33 +1712,41 @@ def _gh_unlabelled_issue_counts(repo, total, priority_labels, lane_labels):
             "-f",
             "per_page=100",
             "--jq",
-            ".[] | select(.pull_request == null)"
-            ' | "L:" + ([.labels[].name] | join(","))',
+            ".[] | select(.pull_request == null) | ([.labels[].name] | tojson)",
         ],
         timeout=25,
     )
     if out is None:
         return None
-    # The "L:" prefix on every line (rather than a bare comma-joined list) is not
-    # decoration -- `_run` strips the whole blob's leading/trailing whitespace, and
-    # an issue with zero labels would otherwise print a genuinely empty line. That
-    # line is real data (one issue read, and it carries neither axis's label), but a
-    # *trailing* empty line -- the last open issue in the page happening to carry no
-    # labels -- is indistinguishable from ordinary trailing whitespace and would be
-    # silently stripped away, undercounting `lines` by one against `total` below and
-    # failing the cross-check for a page that was, in fact, read completely. Every
-    # line is non-empty by construction with the prefix in place, so `.strip()` never
-    # eats one.
+    # #1226: one JSON array of label names per line (`tojson`, server-side),
+    # rather than the earlier `"L:" + join(",")` scheme this used to split
+    # back apart in Python. A GitHub label name may legally contain a comma
+    # -- a label literally named e.g. `blocked,lane-storage` split into two
+    # names under the old scheme, one of which (`lane-storage`) could
+    # coincidentally collide with a real declared lane, silently counting an
+    # issue as *placed in a lane* when no triage sweep had actually placed it
+    # there. The direction of that error was an undercount of
+    # `no_priority`/`no_lane`, the opposite of this function's own
+    # documented convention (never undercount) -- and the existing
+    # `len(lines) != total` cross-check below could not catch it, because
+    # the line count stayed correct; only the per-line parse was wrong.
+    # `tojson` needs no delimiter a label name could ever contain, and
+    # unlike the old scheme, `[]` (zero labels) is never an empty line, so
+    # there is no longer a trailing-blank-line hazard to guard against with
+    # a prefix the way the old `"L:"` marker did.
     lines = out.split("\n") if out else []
     if len(lines) != total:
         return None
     no_priority = 0
     no_lane = 0
     for line in lines:
-        if not line.startswith("L:"):
+        try:
+            parsed = json.loads(line)
+        except ValueError:
             return None
-        names = set(line[2:].split(",")) if line[2:] else set()
-        names.discard("")
+        if not isinstance(parsed, list):
+            return None
+        names = {str(name) for name in parsed}
         if priority_set and not (names & priority_set):
             no_priority += 1
         if lane_set and not (names & lane_set):
@@ -2137,7 +2207,41 @@ def refresh(root, now=None):
         priority_labels = labels_config.get("priority")
         priority_labels = priority_labels if isinstance(priority_labels, list) else []
         lane_labels = labels_config.get("lanes")
-        lane_labels = lane_labels if isinstance(lane_labels, list) else []
+        # Self-review finding: `oss_config.effective_lane_labels` filters
+        # `labels.lanes` down to string entries before appending
+        # `lane_other` -- `oss_config.validate` checks `labels.lanes` is a
+        # list but never that every element is a string, so a malformed
+        # config (e.g. a stray integer) can carry a non-string entry through
+        # validation. This vendored copy has to filter the same way, or a
+        # non-string entry would survive here (later coerced to a string by
+        # `_gh_unlabelled_issue_counts`'s own `{str(label) for label in
+        # lane_labels}`) while `effective_lane_labels` drops it, reopening
+        # the exact "readers disagree" defect this fix exists to close.
+        lane_labels = (
+            [l for l in lane_labels if isinstance(l, str)]
+            if isinstance(lane_labels, list)
+            else []
+        )
+        # #1181: `labels.lane_other` is a completed triage decision -- "no
+        # real lane owns this issue's files" -- recorded on its own key
+        # rather than as a sixth entry in `labels.lanes` (#1130), because it
+        # carries no file pattern and select_issues.py dispatches it solo,
+        # never bundled. But that split left this exact-membership test as
+        # the one reader that answered "is this issue triaged into a lane?"
+        # without folding lane_other in, so a correctly lane-other-tagged
+        # issue counted toward `issues_no_lane` forever -- triaging it
+        # correctly made the number go up. A vendored copy of
+        # `oss_config.effective_lane_labels`'s own logic (this module cannot
+        # import that module -- #653's own standalone-vendoring reason):
+        # `lane_other` appended once, only if it is a non-blank string not
+        # already present. A `None`/absent `lane_other` changes nothing.
+        lane_other = labels_config.get("lane_other")
+        if (
+            isinstance(lane_other, str)
+            and lane_other.strip()
+            and lane_other not in lane_labels
+        ):
+            lane_labels.append(lane_other)
         unlabelled = _gh_unlabelled_issue_counts(
             repo, document["issues"], priority_labels, lane_labels
         )
