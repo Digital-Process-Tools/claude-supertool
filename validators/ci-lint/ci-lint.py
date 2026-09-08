@@ -123,7 +123,7 @@ def main() -> None:
 
     start = time.time()
     try:
-        r = subprocess.run([*bin_cmd, "ci", "lint", file], capture_output=True,
+        r = subprocess.run([*bin_cmd, "ci", "lint", "--", file], capture_output=True,
                             text=True, timeout=30, encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         # A hung network call is Trap 2, not a parse verdict -- `glab` never

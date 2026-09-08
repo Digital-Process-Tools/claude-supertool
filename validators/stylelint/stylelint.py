@@ -17,6 +17,7 @@ run with no report at all is a fault or a decline, never a pass.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -45,6 +46,24 @@ IGNORED_REASON = ("stylelint declined to lint this file — every input it "
 
 def emit(d: dict) -> None:
     print(json.dumps(d))
+
+
+def contained_target(file: str) -> str:
+    """`file`, spelled so stylelint cannot read it as an option (#2412).
+
+    stylelint's own CLI parsing was not measured against a real binary in
+    this pass (none was installed to test against) -- so rather than
+    assume `--` is honoured, this uses the same containment
+    `validators/pyright/pyright.py` (#2379) and
+    `validators/tsc-check/tsc-check.py` (#1519) already use for the
+    identical problem: a relative target starting with `-` is prefixed
+    with `os.curdir`, so stylelint's argv parser sees a string that
+    cannot start with `-` regardless of what its own option grammar does
+    with `--`. An absolute path is already unambiguous and is left alone.
+    """
+    if not file or os.path.isabs(file) or not file.startswith("-"):
+        return file
+    return os.path.join(os.curdir, file)
 
 
 def _resolve_cmd() -> list:
@@ -94,7 +113,7 @@ def main() -> None:
                     int((time.time() - start) * 1000)))
         return
     try:
-        r = subprocess.run(base + ["--formatter", "json", file],
+        r = subprocess.run(base + ["--formatter", "json", contained_target(file)],
                            capture_output=True, text=True, timeout=60, encoding="utf-8", errors="replace")
     except FileNotFoundError:
         # `which` said yes and exec said no — a PATH entry that vanished

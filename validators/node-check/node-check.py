@@ -127,7 +127,7 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
     try:
-        r = subprocess.run(["node", "--check", file],
+        r = subprocess.run(["node", "--check", "--", file],
                            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace")
     except FileNotFoundError:
         emit({"tool": "node-check", "file": file, "ok": False, "count": 1,

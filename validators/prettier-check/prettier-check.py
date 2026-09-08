@@ -23,6 +23,28 @@ from refusal import guard_main, skipped
 
 TOOL = "prettier-check"
 
+
+def contained_target(file: str) -> str:
+    """`file`, spelled so `--file-info` cannot read it as an option value (#2412).
+
+    `prettier --file-info` takes the path as ITS OWN option value, not as
+    a plain positional after prettier's flags -- so `-- file` (the fix
+    used elsewhere in this repo, ahead of a plain positional) does not
+    apply here: measured against a real installed prettier 3.6.2,
+    `prettier --file-info -- -flagged.json` silently drops `--file-info`
+    (its value becomes the literal string `--`) and instead formats
+    `-flagged.json` under prettier's DEFAULT command, printing formatted
+    source where a `{"ignored": ..., "inferredParser": ...}` verdict was
+    expected. Prefixing a relative, `-`-leading target with `os.curdir`
+    (the same containment `validators/pyright/pyright.py` (#2379) uses)
+    fixes it without moving the value away from the option it belongs to:
+    `prettier --file-info ./-flagged.json` answers the JSON verdict
+    correctly. An absolute path is already unambiguous and is left alone.
+    """
+    if not file or os.path.isabs(file) or not file.startswith("-"):
+        return file
+    return os.path.join(os.curdir, file)
+
 # Budget for each spawn below. Named so a decline can quote it: a reader who
 # sees "timeout" cannot tell a hung prettier from a busy machine (#658).
 TIMEOUT_S = 15
@@ -92,7 +114,7 @@ def _is_ignored(file: str, prettier_bin: str, flags: list,
     floor here would spend time the registration does not have.
     """
     try:
-        r = subprocess.run([prettier_bin, "--file-info", file] + flags,
+        r = subprocess.run([prettier_bin, "--file-info", contained_target(file)] + flags,
                            capture_output=True, text=True,
                            timeout=budget,
                            encoding="utf-8", errors="replace")
@@ -143,7 +165,7 @@ def main() -> None:
         flags += ["--config", prettier_config]
     if prettier_ignore_path:
         flags += ["--ignore-path", prettier_ignore_path]
-    cmd = [prettier_bin, "--check", file] + flags
+    cmd = [prettier_bin, "--check"] + flags + ["--", file]
 
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_S, encoding="utf-8", errors="replace")

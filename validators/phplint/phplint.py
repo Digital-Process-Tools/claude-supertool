@@ -101,7 +101,7 @@ def main() -> None:
     start = time.time()
     try:
         r = subprocess.run(
-            ["php", "-l", file],
+            ["php", "-l", "--", file],
             capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:

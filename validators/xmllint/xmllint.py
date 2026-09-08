@@ -8,6 +8,7 @@ Usage:  xmllint.py <file>
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -80,6 +81,13 @@ def emit(d: dict) -> None:
     print(json.dumps(d))
 
 
+def contained_target(file: str) -> str:
+    """`file`, spelled so xmllint cannot read it as an option (#2412)."""
+    if not file or os.path.isabs(file) or not file.startswith("-"):
+        return file
+    return os.path.join(os.curdir, file)
+
+
 def main() -> None:
     if len(sys.argv) < 2 or not sys.argv[1]:
         emit({"tool": "xmllint", "file": "", "ok": False, "count": 1,
@@ -94,8 +102,18 @@ def main() -> None:
         # entity resolution (DTDs, external entities); `--noent` resolves
         # entities to their text rather than fetching them. Both narrow what
         # libxml2 will do with attacker-influenced XML during validation.
+        #
+        # The target is contained rather than `--`-separated (#2412):
+        # measured against a real installed xmllint (libxml2), `xmllint
+        # --noout --nonet --noent -- -weird.xml` itself errors `Unknown
+        # option --` — the separator is read as a bare option, not a
+        # terminator. Containment (the same shape
+        # `validators/pyright/pyright.py` (#2379) uses) works regardless:
+        # a relative target starting with `-` is prefixed with
+        # `os.curdir`, so xmllint's argv parser sees a string that cannot
+        # start with `-` at all.
         r = subprocess.run(
-            ["xmllint", "--noout", "--nonet", "--noent", file],
+            ["xmllint", "--noout", "--nonet", "--noent", contained_target(file)],
             capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError:

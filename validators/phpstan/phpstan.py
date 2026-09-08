@@ -152,7 +152,7 @@ def main() -> None:
         cmd += ["-c", phpstan_config]
     if phpstan_level:
         cmd += ["--level", phpstan_level]
-    cmd += ["--no-progress", "--error-format=json", file]
+    cmd += ["--no-progress", "--error-format=json", "--", file]
 
     start = time.time()
     try:

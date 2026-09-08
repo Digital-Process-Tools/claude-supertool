@@ -623,6 +623,56 @@ file; `pyright --outputjson @r.py` type-checked `@r.py` directly on
 1.1.409. An absolute path already cannot be read as an option and is left
 alone.
 
+### The fifteen others: `--`, or containment, never assumed (#2412, #2418)
+
+`tsc-check` and `pyright` above are two instances of one class: a linter's
+own CLI decides what a leading `-`/`--` in its filename argument means, not
+the shell, and `subprocess.run` passes that filename through untouched. A
+contributor can add a file named `-o=payload` or `--eval=x` to a pull
+request, and this repo's own post-write validators run on exactly that
+diff (the same risk #1040 tracks for `repo:` reaching `gh repo view`).
+
+Fifteen more adapters had the identical gap — `bash-check`, `ci-lint`
+(`glab`), `eslint`, `gofmt-check`, `hadolint`, `markdownlint`, `phplint`,
+`phpstan`, `node-check`, `prettier-check`, `shellcheck`, `ruby-check`,
+`stylelint`, `terraform-check`, `xmllint` — and each was fixed with
+whichever of the two routes was actually confirmed to work for that tool,
+never assumed:
+
+- **`--` immediately before the target** — `bash-check`, `ci-lint`,
+  `gofmt-check`, `markdownlint`, `phplint`, `phpstan`, `node-check`,
+  `ruby-check`, `shellcheck`, and `prettier-check`'s own `--check` call.
+  Each was measured against a real installed binary: run twice against a
+  flag-shaped filename, once with `--` and once without, and the
+  without-`--` run always misparsed the filename as an option (bash:
+  `invalid option`; gofmt: `flag provided but not defined`; php: dumped
+  `phpinfo()` — the combined short flags `-w -e -i -r -d` triggered `-i`;
+  node: `bad option`; shellcheck: `unrecognized option`;
+  markdownlint/glab: `unknown option`/`unknown shorthand flag`) — and
+  WITH `--` every one of those same runs treated the filename as an
+  ordinary positional path instead.
+
+- **Containment (the `os.curdir`-prefix shape above), never `--`** —
+  `eslint`, `hadolint`, `stylelint`, `terraform-check` (no real binary was
+  installed to test any of the four against, so `--` was never assumed —
+  containment does not depend on whether a tool's own grammar honours
+  `--` at all), and `xmllint` and `prettier-check`'s own `--file-info`
+  call, both measured NOT to honour `--`: `xmllint --noout --nonet
+  --noent -- -weird.xml` itself errors `Unknown option --`, and
+  `prettier --file-info -- -flagged.json` silently drops `--file-info`
+  (its value becomes the literal string `--`) and instead formats the
+  file under prettier's default command — `--file-info` takes its target
+  as ITS OWN option value, not as a plain positional the way `--check`
+  does, so moving the value away from the option with a `--` breaks the
+  binding instead of protecting it.
+
+`tests/test_validator_dash_filename_2412.py` is the shared, table-driven
+pattern #2412 asked for: it never spawns a real tool (`subprocess.run` is
+captured, `shutil.which` reports every tool present), so it runs on every
+CI leg regardless of which of the fifteen linters happen to be installed
+there, and a 20th adapter reusing the same argv shape is one new row, not
+a new test file.
+
 ### shellcheck — and the bug in the issue that asked for it
 
 `bash-check` runs `bash -n` and answers "does this parse". `shellcheck`

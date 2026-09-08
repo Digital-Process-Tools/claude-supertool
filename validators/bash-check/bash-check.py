@@ -115,7 +115,7 @@ def main() -> None:
     file = sys.argv[1]
     start = time.time()
     try:
-        r = subprocess.run(["bash", "-n", file],
+        r = subprocess.run(["bash", "-n", "--", file],
                            capture_output=True, text=True, timeout=10, encoding="utf-8", errors="replace")
     except FileNotFoundError:
         emit({"tool": "bash-check", "file": file, "ok": False, "count": 1,

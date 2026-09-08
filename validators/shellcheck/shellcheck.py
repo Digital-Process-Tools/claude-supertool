@@ -137,7 +137,7 @@ def main() -> None:
         return
 
     try:
-        r = subprocess.run([TOOL, "-f", "json", file], capture_output=True,
+        r = subprocess.run([TOOL, "-f", "json", "--", file], capture_output=True,
                            text=True, timeout=TIMEOUT_S, encoding="utf-8",
                            errors="replace")
     except FileNotFoundError:
