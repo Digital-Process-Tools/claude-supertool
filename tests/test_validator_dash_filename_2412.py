@@ -78,7 +78,13 @@ CASES = [
     ("ci-lint", "ci-lint/ci-lint.py", "separator"),
     ("gofmt-check", "gofmt-check/gofmt-check.py", "separator"),
     ("markdownlint", "markdownlint/markdownlint.py", "separator"),
-    ("phplint", "phplint/phplint.py", "separator"),
+    # NOT "separator": `php -l --` was measured, after this PR's CI first
+    # failed, to silently discard `--` and fall back to reading php's OWN
+    # stdin instead of the file -- see contained_target()'s docstring in
+    # phplint.py for the reproduction (a closed local stdin made the
+    # original `--` fix look green by returning instantly on empty
+    # stdin; CI's own open stdin hung for the full 30s timeout instead).
+    ("phplint", "phplint/phplint.py", "contained"),
     ("phpstan", "phpstan/phpstan.py", "separator"),
     ("node-check", "node-check/node-check.py", "separator"),
     # Two subprocess.run calls with two different fixes: `--check` gets a

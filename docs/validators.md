@@ -640,31 +640,54 @@ whichever of the two routes was actually confirmed to work for that tool,
 never assumed:
 
 - **`--` immediately before the target** — `bash-check`, `ci-lint`,
-  `gofmt-check`, `markdownlint`, `phplint`, `phpstan`, `node-check`,
-  `ruby-check`, `shellcheck`, and `prettier-check`'s own `--check` call.
-  Each was measured against a real installed binary: run twice against a
+  `gofmt-check`, `markdownlint`, `phpstan`, `node-check`, `ruby-check`,
+  `shellcheck`, and `prettier-check`'s own `--check` call. Each was
+  measured against a real installed binary: run twice against a
   flag-shaped filename, once with `--` and once without, and the
   without-`--` run always misparsed the filename as an option (bash:
-  `invalid option`; gofmt: `flag provided but not defined`; php: dumped
-  `phpinfo()` — the combined short flags `-w -e -i -r -d` triggered `-i`;
-  node: `bad option`; shellcheck: `unrecognized option`;
-  markdownlint/glab: `unknown option`/`unknown shorthand flag`) — and
-  WITH `--` every one of those same runs treated the filename as an
-  ordinary positional path instead.
+  `invalid option`; gofmt: `flag provided but not defined`; node: `bad
+  option`; shellcheck: `unrecognized option`; markdownlint/glab: `unknown
+  option`/`unknown shorthand flag`) — and WITH `--` every one of those
+  same runs treated the filename as an ordinary positional path instead.
 
 - **Containment (the `os.curdir`-prefix shape above), never `--`** —
   `eslint`, `hadolint`, `stylelint`, `terraform-check` (no real binary was
   installed to test any of the four against, so `--` was never assumed —
   containment does not depend on whether a tool's own grammar honours
-  `--` at all), and `xmllint` and `prettier-check`'s own `--file-info`
-  call, both measured NOT to honour `--`: `xmllint --noout --nonet
-  --noent -- -weird.xml` itself errors `Unknown option --`, and
-  `prettier --file-info -- -flagged.json` silently drops `--file-info`
-  (its value becomes the literal string `--`) and instead formats the
-  file under prettier's default command — `--file-info` takes its target
-  as ITS OWN option value, not as a plain positional the way `--check`
-  does, so moving the value away from the option with a `--` breaks the
-  binding instead of protecting it.
+  `--` at all), `phplint`, and `xmllint` and `prettier-check`'s own
+  `--file-info` call. `xmllint` and `prettier --file-info` were both
+  measured NOT to honour `--`: `xmllint --noout --nonet --noent --
+  -weird.xml` itself errors `Unknown option --`, and `prettier
+  --file-info -- -flagged.json` silently drops `--file-info` (its value
+  becomes the literal string `--`) and instead formats the file under
+  prettier's default command — `--file-info` takes its target as ITS OWN
+  option value, not as a plain positional the way `--check` does, so
+  moving the value away from the option with a `--` breaks the binding
+  instead of protecting it.
+
+  **`phplint` moved here after shipping with `--` first, and the miss is
+  worth stating rather than quietly correcting.** `php -l -- FILE` was
+  first verified against a real installed PHP 8.2.0 CLI on a machine
+  whose local shell closes stdin immediately for a non-interactive
+  command — that run printed `No syntax errors detected` and read as a
+  pass. The message it printed, and the first pass never checked, was `No
+  syntax errors detected in **Standard input** code`: `php -l` had
+  silently discarded both `--` and the filename after it, and fallen back
+  to its own documented behaviour of reading the script from stdin when
+  it sees no usable file argument. A closed stdin delivers EOF at once,
+  so that fallback returned fast and looked exactly like a genuine lint
+  of the named file. `subprocess.run` in `phplint.py` does not close or
+  redirect stdin, so it inherits whatever stdin the calling process
+  leaves open — in CI, a pipe from the test harness that is never
+  explicitly closed — and `php -l` then blocked reading it until the
+  adapter's own 30s timeout, on every non-macOS CI leg
+  (`tests/test_validators.py::test_phplint_adapter_valid_php` and
+  `..._broken_php_reports_line`). `tests/test_phplint_no_stdin_hang_2412.py`
+  reproduces the actual failure directly — a real, never-closed stdin
+  pipe built with `os.pipe()`, since `Popen.communicate(input=None)`
+  closes stdin as its own first step and would silently recreate the same
+  false pass — rather than trusting a quiet local terminal a second
+  time.
 
 `tests/test_validator_dash_filename_2412.py` is the shared, table-driven
 pattern #2412 asked for: it never spawns a real tool (`subprocess.run` is
