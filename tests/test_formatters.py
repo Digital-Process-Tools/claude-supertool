@@ -340,6 +340,40 @@ def test_formatter_render_row_noop_without_verify_failed_still_silent() -> None:
     }
     assert supertool._formatter_render_row(result) is None
 
+def test_formatter_render_row_changes_reports_touched_line_range() -> None:
+    """#2405: when the adapter reports first/last_changed_line, the row must
+    say so -- this is the caller-visible signal that an earlier same-session
+    read of those lines is now stale, in the same call whose output already
+    carries the metrics.
+    """
+    result = {
+        "name": "ruff-format", "ok": True,
+        "duration_ms": 12,
+        "metrics": {"lines_added": 1, "lines_removed": 4,
+                    "first_changed_line": 2, "last_changed_line": 5},
+    }
+    row = supertool._formatter_render_row(result)
+    assert row is not None
+    assert "2" in row and "5" in row
+    assert "stale" in row.lower() or "re-read" in row.lower()
+
+
+def test_formatter_render_row_changes_without_line_range_omits_it() -> None:
+    """MUST FIRE control: a formatter payload that never learned to report
+    the range (any adapter other than the four SCHEMA ones, or an old
+    payload shape) must not fabricate one -- the row falls back to exactly
+    today's `+N -M` line.
+    """
+    result = {
+        "name": "prettier", "ok": True,
+        "duration_ms": 55, "metrics": {"lines_added": 3, "lines_removed": 1},
+    }
+    row = supertool._formatter_render_row(result)
+    assert row is not None
+    assert "+3" in row and "-1" in row
+    assert "stale" not in row.lower() and "re-read" not in row.lower()
+
+
 
 # ---------------------------------------------------------------------------
 # Silent-on-noop / block omission integration via _run_with_validators

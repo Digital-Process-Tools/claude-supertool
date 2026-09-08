@@ -26,7 +26,7 @@ import shutil
 import subprocess
 import sys
 import time
-from difflib import unified_diff
+from difflib import SequenceMatcher
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "validators" / "common"))
@@ -38,19 +38,42 @@ def emit(obj: dict) -> None:
     print(json.dumps(obj))
 
 
-def _line_diff(before: str, after: str) -> tuple[int, int]:
-    """Return (lines_added, lines_removed) between two file contents."""
+def _line_diff(before: str, after: str):
+    """Return (lines_added, lines_removed, (first_changed_line, last_changed_line)).
+
+    The line-number pair is 1-indexed and refers to `before` -- the file a
+    same-session `around_line` read would have seen moments earlier -- so a
+    caller can tell whether a formatter's own post-write rewrite reached
+    into the region an already-captured read is about to reuse as an
+    `edit`'s `old` string, rather than learning only *that* something
+    changed (#2405). `(None, None)` when nothing changed at all, never a
+    fabricated `(1, 1)` -- the same "must still work when nothing changed"
+    control every "must not silently X" claim here needs.
+
+    `SequenceMatcher.get_opcodes()` rather than `unified_diff(..., n=0)`:
+    the unified-diff hunk header would need re-parsing to recover line
+    numbers, where `get_opcodes()` hands them over as `i1`/`i2` directly.
+    """
+    before_lines = before.splitlines(keepends=True)
+    after_lines = after.splitlines(keepends=True)
+    matcher = SequenceMatcher(a=before_lines, b=after_lines, autojunk=False)
     added = removed = 0
-    for line in unified_diff(
-        before.splitlines(keepends=True),
-        after.splitlines(keepends=True),
-        n=0,
-    ):
-        if line.startswith("+") and not line.startswith("+++"):
-            added += 1
-        elif line.startswith("-") and not line.startswith("---"):
-            removed += 1
-    return added, removed
+    first = last = None
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        removed += i2 - i1
+        added += j2 - j1
+        # A pure insertion (i1 == i2) has no before-side span of its own --
+        # anchor it to the nearest existing before-line so the range still
+        # names a line number a caller's earlier read would recognise.
+        start = i1 + 1 if i2 > i1 else max(i1, 1)
+        end = i2 if i2 > i1 else max(i1, 1)
+        if first is None or start < first:
+            first = start
+        if last is None or end > last:
+            last = end
+    return added, removed, (first, last)
 
 
 def main() -> None:
@@ -60,7 +83,8 @@ def main() -> None:
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": "no file arg"}],
             "duration_ms": 0,
-            "metrics": {"lines_added": 0, "lines_removed": 0},
+            "metrics": {"lines_added": 0, "lines_removed": 0,
+                        "first_changed_line": None, "last_changed_line": None},
         })
         return
 
@@ -87,7 +111,8 @@ def main() -> None:
                         "code": "adapter",
                         "msg": f"RUFF_BIN not found: {describe_unresolved(ruff_bin_cmd_str, ruff_bin)}"}],
             "duration_ms": 0,
-            "metrics": {"lines_added": 0, "lines_removed": 0},
+            "metrics": {"lines_added": 0, "lines_removed": 0,
+                        "first_changed_line": None, "last_changed_line": None},
         })
         return
 
@@ -100,7 +125,8 @@ def main() -> None:
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": f"cannot read file: {e}"}],
             "duration_ms": int((time.time() - start) * 1000),
-            "metrics": {"lines_added": 0, "lines_removed": 0},
+            "metrics": {"lines_added": 0, "lines_removed": 0,
+                        "first_changed_line": None, "last_changed_line": None},
         })
         return
 
@@ -117,7 +143,8 @@ def main() -> None:
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": "timeout after 30s"}],
             "duration_ms": int((time.time() - start) * 1000),
-            "metrics": {"lines_added": 0, "lines_removed": 0},
+            "metrics": {"lines_added": 0, "lines_removed": 0,
+                        "first_changed_line": None, "last_changed_line": None},
         })
         return
     except (FileNotFoundError, OSError) as e:
@@ -127,7 +154,8 @@ def main() -> None:
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": str(e)}],
             "duration_ms": dur,
-            "metrics": {"lines_added": 0, "lines_removed": 0},
+            "metrics": {"lines_added": 0, "lines_removed": 0,
+                        "first_changed_line": None, "last_changed_line": None},
         })
         return
 
@@ -140,7 +168,8 @@ def main() -> None:
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "ruff-format", "msg": msg}],
             "duration_ms": dur,
-            "metrics": {"lines_added": 0, "lines_removed": 0},
+            "metrics": {"lines_added": 0, "lines_removed": 0,
+                        "first_changed_line": None, "last_changed_line": None},
         })
         return
 
@@ -157,7 +186,7 @@ def main() -> None:
         after = before
         verify_failed = f"could not re-read file to verify changes: {e}"
 
-    added, removed = _line_diff(before, after)
+    added, removed, (first, last) = _line_diff(before, after)
 
     payload = {
         "tool": "ruff-format",
@@ -166,7 +195,10 @@ def main() -> None:
         "count": 0,
         "errors": [],
         "duration_ms": dur,
-        "metrics": {"lines_added": added, "lines_removed": removed},
+        "metrics": {
+            "lines_added": added, "lines_removed": removed,
+            "first_changed_line": first, "last_changed_line": last,
+        },
     }
     if verify_failed:
         payload["verify_failed"] = verify_failed

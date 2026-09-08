@@ -138,6 +138,81 @@ def test_file_needing_format_via_stub(tmp_path: Path) -> None:
     assert total_changes > 0
 
 
+def test_reformat_touches_unrelated_lines_reports_range_via_stub(tmp_path: Path) -> None:
+    """#2405: ruff-format collapsing a multi-line condition into one line is
+    exactly the shape the issue reports -- a same-session `around_line` read
+    of the untouched lines below no longer matches byte-for-byte once this
+    write lands, and today's payload (lines_added/lines_removed counts only)
+    gives a caller no way to tell which lines moved. `first_changed_line`/
+    `last_changed_line` name the before-file line span a stub reformat
+    actually touched, so a caller (or the harness) can compare it against
+    the region a queued second edit is about to use as its `old` string.
+    """
+    f = tmp_path / "x.py"
+    before_text = (
+        "def f(x):\n"
+        "    if (\n"
+        "        isinstance(x, int)\n"
+        "        and x > 0\n"
+        "    ):\n"
+        "        return x\n"
+        "    return None\n"
+    )
+    after_text = (
+        "def f(x):\n"
+        "    if isinstance(x, int) and x > 0:\n"
+        "        return x\n"
+        "    return None\n"
+    )
+    f.write_text(before_text)
+
+    body = (
+        "import sys, pathlib\n"
+        f"pathlib.Path(r'{f.as_posix()}').write_text({after_text!r})\n"
+        "sys.exit(0)\n"
+    )
+    bin_cmd = _python_stub(tmp_path, "stub_collapse_condition", body)
+    env = {**os.environ, "RUFF_BIN": bin_cmd}
+    r = subprocess.run(
+        [sys.executable, str(ADAPTER), str(f)],
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 0
+    data = json.loads(r.stdout.strip())
+    assert_ok(data)
+    metrics = data["metrics"]
+    assert metrics["lines_added"] > 0 and metrics["lines_removed"] > 0
+    # Before-file lines 2-5 are the "if (...)" block collapsed to one line --
+    # line 1 ("def f(x):") and the trailing "return x"/"return None" lines
+    # are untouched and must NOT be reported as part of the touched span.
+    assert metrics["first_changed_line"] == 2, metrics
+    assert metrics["last_changed_line"] == 5, metrics
+
+
+def test_noop_reports_no_touched_line_range(tmp_path: Path) -> None:
+    """MUST FIRE control for the test above: when nothing changed, the new
+    fields must be absent/None, never a stale or fabricated range -- the
+    same 'must still work when nothing changed' pairing every 'must not
+    silently X' assertion in this file needs.
+    """
+    f = tmp_path / "x.py"
+    f.write_text("x = 1\n")
+
+    bin_cmd = _python_stub(tmp_path, "stub_exit0", "import sys; sys.exit(0)\n")
+    env = {**os.environ, "RUFF_BIN": bin_cmd}
+    r = subprocess.run(
+        [sys.executable, str(ADAPTER), str(f)],
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 0
+    data = json.loads(r.stdout.strip())
+    assert_ok(data)
+    assert data["metrics"]["lines_added"] == 0
+    assert data["metrics"]["lines_removed"] == 0
+    assert data["metrics"].get("first_changed_line") is None
+    assert data["metrics"].get("last_changed_line") is None
+
+
 def test_syntax_error_file_reports_failure_not_ok(tmp_path: Path) -> None:
     """A file ruff cannot parse must fail loudly, never a silent ok=True no-op --
     the bar every 'would this test still pass if the code did nothing' check
