@@ -37,6 +37,8 @@ The marker said a cut had happened and nothing about undoing it, which is what a
 
 `grep:` with an explicit `CONTEXT` argument (`grep:PATTERN:PATH:LIMIT:CONTEXT`) shares the `grep_around:` code path, so it is capped under the same `grep_around.max_bytes` budget. Plain `grep:` (no context) is unaffected — it has its own `LIMIT`/`max_results` bound.
 
+**`:full` opts one call out of the per-line cap** ([#1712](https://github.com/Digital-Process-Tools/claude-supertool/issues/1712)). The cut was always disclosed with the exact `read:PATH:LINE-LINE` remedy, but that remedy cost a second round-trip to confirm something the first call already found — `grep:PATTERN:PATH:LIMIT:CONTEXT:full`, or `full = true` in a `grep:@payload`, returns every matched and context line uncut instead. The default is unchanged for every call that does not ask: the cap in the paragraph above still protects a batched multi-op call from one pathological line. The disclosure note changes shape rather than disappearing — `note: full: N line(s) would exceed 500 chars and were returned in full, uncut, because full was requested` — so a caller can tell "nothing was long enough to matter" from "the cap fired and full suppressed it" instead of both rendering as silence. `full` does not raise the byte cap above (`around`/`grep_around`'s ~16KB window); a single line long enough to exceed that too still gets cut there, at the line boundary.
+
 ## Truncation is stated, not implied
 
 `(1 results in 1 files, scanned 118353 files, limit 1)` reads as a complete answer. It was not one — the second match was sitting just past the cap, and nothing in that line said so. A result that stopped at its limit now says which:

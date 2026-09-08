@@ -143,7 +143,7 @@ def test_grep_dispatch_default_still_auto_reads(tmp_path: Path) -> None:
 
 
 def test_parse_grep_args_peels_no_auto_read(tmp_path: Path) -> None:
-    pattern, path, limit, context, count_only, no_auto_read = \
+    pattern, path, limit, context, count_only, no_auto_read, full = \
         supertool._parse_grep_args(["grep", "needle", "src/", "no-auto-read"])
     assert pattern == "needle"
     assert path == "src/"
@@ -152,7 +152,7 @@ def test_parse_grep_args_peels_no_auto_read(tmp_path: Path) -> None:
 
 
 def test_parse_grep_args_no_auto_read_with_count_and_ints(tmp_path: Path) -> None:
-    pattern, path, limit, context, count_only, no_auto_read = \
+    pattern, path, limit, context, count_only, no_auto_read, full = \
         supertool._parse_grep_args(
             ["grep", "needle", "src/", "5", "2", "count", "no-auto-read"])
     assert pattern == "needle"

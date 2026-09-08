@@ -6871,13 +6871,18 @@ def _grep_zero_limit() -> str:
 def op_grep(pattern: str, path: str = ".", limit: int = 0,
             context: int = 0, count_only: bool = False,
             no_exclude: bool = False, no_auto_read: bool = False,
-            via_payload: bool = False) -> str:
+            via_payload: bool = False, full: bool = False) -> str:
     """grep, prefixed by #1065's disclosure of the pattern that actually ran.
 
     `via_payload` is set by the @file/@- route (#1825): there, `pattern` is
     taken verbatim from a `pattern` key, so nothing was split on ':' and the
     colon-rejoin disclosure would send the caller back to the route they are
     already on. The positional-CLI route leaves it False and keeps the note.
+
+    `full` (#1712) suppresses the per-line char cap for this call only — the
+    default stays truncating for every call that does not ask, which is the
+    protection #363 added against one pathological line drowning a batched
+    multi-op result.
     """
     _effective, refusal, note = _pattern_gate(pattern)
     if refusal:
@@ -6886,7 +6891,7 @@ def op_grep(pattern: str, path: str = ".", limit: int = 0,
     return (prefix
             + note
             + _op_grep(pattern, path, limit, context, count_only,
-                       no_exclude, no_auto_read))
+                       no_exclude, no_auto_read, full))
 
 
 def _grep_limit_and_label(limit: int) -> Tuple[int, str]:
@@ -6906,7 +6911,8 @@ def _grep_limit_and_label(limit: int) -> Tuple[int, str]:
 
 def _op_grep(pattern: str, path: str = ".", limit: int = 0,
              context: int = 0, count_only: bool = False,
-             no_exclude: bool = False, no_auto_read: bool = False) -> str:
+             no_exclude: bool = False, no_auto_read: bool = False,
+             full: bool = False) -> str:
     """Search pattern recursively. Auto-reads small single file on match.
 
     When context > 0, emits N lines before/after each match in grep -C style:
@@ -6919,6 +6925,10 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
 
     When no_auto_read=True, suppresses the single-small-file auto-read so only
     the matching line(s) are emitted (parity with glob's :no-auto-read flag).
+
+    When full=True (#1712), the per-line char cap (#363) is suppressed for
+    both matched and context lines in this call — see `_cap_grep_line` and
+    `_grep_disclosure_note`.
     """
     unlimited = limit == GREP_LIMIT_ALL
     limit, limit_label = _grep_limit_and_label(limit)
@@ -7094,13 +7104,14 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
             for _fp, lineno, kind, content in group:
                 if len(content) > _grep_line_cap():
                     cut.append((_fp, lineno))
-                capped = _cap_grep_line(content)
+                capped = _cap_grep_line(content, full)
                 if kind == "match":
                     out.append(f"  {lineno}:{capped}\n")
                 else:
                     out.append(f"  {lineno}-{capped}\n")
-        if cut:
-            out.insert(2, _grep_cut_note(cut))
+        _note = _grep_full_note(cut) if full else _grep_cut_note(cut)
+        if _note:
+            out.insert(2, _note)
         out.append("\n")
         return _cap_context_window("".join(out), "grep_around")
 
@@ -7146,9 +7157,10 @@ def _op_grep(pattern: str, path: str = ".", limit: int = 0,
             out.append(f"{fp}\n")
         if len(content) > _grep_line_cap():
             cut.append((fp, lineno))
-        out.append(f"  {lineno}:{_cap_grep_line(content)}\n")
-    if cut:
-        out.insert(2, _grep_cut_note(cut))
+        out.append(f"  {lineno}:{_cap_grep_line(content, full)}\n")
+    _note = _grep_full_note(cut) if full else _grep_cut_note(cut)
+    if _note:
+        out.insert(2, _note)
     out.append("\n")
 
     # Auto-read: single small file + at least one match → emit full file.
@@ -7182,7 +7194,7 @@ def _grep_line_cap() -> int:
     return _get_op_int("grep", "max_line_chars", MAX_GREP_LINE_CHARS)
 
 
-def _cap_grep_line(content: str) -> str:
+def _cap_grep_line(content: str, full: bool = False) -> str:
     """Truncate one grep output line to a char budget (#363).
 
     Files with pathological single lines (minified JS, a 25KB one-line
@@ -7190,7 +7202,15 @@ def _cap_grep_line(content: str) -> str:
     say how much was dropped so the reader knows to widen deliberately.
     Configurable via builtin-ops.grep.max_line_chars or
     SUPERTOOL_GREP_MAX_LINE_CHARS.
+
+    `full=True` (#1712) returns `content` untouched — the default cap stays
+    the protection for every call that does not ask, and this is the opt-out
+    for the one call that does. The caller is still responsible for deciding
+    whether the line WOULD have been cut (see `_grep_line_cap`), because that
+    is what the disclosure note needs regardless of which shape ran.
     """
+    if full:
+        return content
     cap = _grep_line_cap()
     if len(content) <= cap:
         return content
@@ -7217,6 +7237,30 @@ def _grep_cut_note(cut: List[Tuple[str, int]]) -> str:
     return (f"note: {len(cut)} line{plural} cut at {_grep_line_cap()} chars — "
             f"read:PATH:LINE-LINE returns a cut line byte-exactly, e.g. "
             f"read:{fp}:{lineno}-{lineno}\n")
+
+
+def _grep_full_note(cut: List[Tuple[str, int]]) -> str:
+    """Disclosure counterpart to `_grep_cut_note` when `full=True` (#1712).
+
+    Nothing was cut here — `full` suppressed it — so a note built out of
+    `_grep_cut_note`'s wording would claim a truncation that did not happen,
+    the same "absence read as absence" shape CLAUDE.md's house defect names.
+    `cut` still names every line that WOULD have exceeded the cap without
+    `full`, because that is the fact worth surfacing: the caller asked for
+    the whole line and this says whether asking changed anything.
+
+    Empty `cut` returns "" rather than a note claiming full mode ran for
+    nothing — when no line was long enough to matter, `full` genuinely had no
+    effect, and staying silent about a non-event is the honest read, not the
+    "reads as clean when it did nothing" trap: there is no separate clean
+    state to disclose because default output would have looked identical.
+    """
+    if not cut:
+        return ""
+    plural = "" if len(cut) == 1 else "s"
+    return (f"note: full: {len(cut)} line{plural} would exceed "
+            f"{_grep_line_cap()} chars and {'was' if len(cut) == 1 else 'were'} "
+            f"returned in full, uncut, because full was requested\n")
 
 
 def _cap_context_window(text: str, op_name: str) -> str:
@@ -10340,7 +10384,7 @@ def _extra_token_remedy(op: str, parts: List[str], extra: List[str]) -> str:
 
 
 def _grep_peel_trailing(parts: List[str]) -> Tuple[List[str], List[str],
-                                                   bool, bool]:
+                                                   bool, bool, bool]:
     """The two right-to-left peels grep's colon form does, in one place.
 
     Shared so that "how many trailing tokens were there" and "which two did the
@@ -10348,24 +10392,30 @@ def _grep_peel_trailing(parts: List[str]) -> Tuple[List[str], List[str],
     the parser knew it had peeled three and read two, and nothing compared the
     numbers.
 
-    Returns (args, trailing, count_only, no_auto_read) — `args` being what is
-    left for the PATTERN and PATH slots.
+    Returns (args, trailing, count_only, no_auto_read, full) — `args` being
+    what is left for the PATTERN and PATH slots. `full` (#1712) joins the
+    same word-flag peel as `count` and `no-auto-read`: it is order-independent
+    with them and with LIMIT/CONTEXT, which sit in the still-numeric `trailing`
+    slots peeled afterwards.
     """
     args = parts[1:]
     count_only = False
     no_auto_read = False
-    while args and args[-1] in ("count", "no-auto-read"):
+    full = False
+    while args and args[-1] in ("count", "no-auto-read", "full"):
         if args[-1] == "count":
             count_only = True
-        else:
+        elif args[-1] == "no-auto-read":
             no_auto_read = True
+        else:
+            full = True
         args = args[:-1]
     trailing: List[str] = []
     while len(args) >= 3 and (_is_ascii_int(args[-1])
                               or args[-1] == _GREP_ALL_TOKEN):
         trailing.insert(0, args[-1])
         args = args[:-1]
-    return args, trailing, count_only, no_auto_read
+    return args, trailing, count_only, no_auto_read, full
 
 
 def _grep_peeled_extras(parts: List[str]) -> List[str]:
@@ -10381,7 +10431,7 @@ def _grep_peeled_extras(parts: List[str]) -> List[str]:
     """
     if not parts[1:]:
         return []
-    _args, trailing, _count, _no_auto = _grep_peel_trailing(parts)
+    _args, trailing, _count, _no_auto, _full = _grep_peel_trailing(parts)
     if _GREP_ALL_TOKEN in trailing[1:]:
         return []
     return trailing[2:]
@@ -10481,12 +10531,17 @@ def _parse_grep_args(parts: List[str]) -> tuple:
     right, then the path, and rejoin everything left as the pattern.
 
     A third trailing token is not this function's business to refuse — it
-    returns a 6-tuple and has no error channel — so dispatch asks
+    returns a 7-tuple and has no error channel — so dispatch asks
     `_grep_peeled_extras` the same question off the same peel (#1345).
+
+    The 7th field, `full` (#1712), is a word flag peeled alongside `count`
+    and `no-auto-read` — order-independent with them and with LIMIT/CONTEXT —
+    rather than a new positional slot, so `grep:PAT:PATH:LIMIT:CTX:full` and
+    every existing caller's arity both parse unchanged.
     """
     # parts[0] is 'grep', work with parts[1:]
     if not parts[1:]:
-        return ("", ".", _get_op_int("grep", "max_results", MAX_GREP_RESULTS), 0, False, False)
+        return ("", ".", _get_op_int("grep", "max_results", MAX_GREP_RESULTS), 0, False, False, False)
 
     # Peel the trailing LIMIT[:CONTEXT] slots: format is ...PATH:LIMIT:CONTEXT.
     # Two trailing tokens = limit + context; one = limit only. `all` (#1328) is
@@ -10495,7 +10550,7 @@ def _parse_grep_args(parts: List[str]) -> tuple:
     # a directory called `all`.
     context = 0
     limit = _get_op_int("grep", "max_results", MAX_GREP_RESULTS)
-    args, trailing, count_only, no_auto_read = _grep_peel_trailing(parts)
+    args, trailing, count_only, no_auto_read, full = _grep_peel_trailing(parts)
     if len(trailing) == 1:
         limit = (GREP_LIMIT_ALL if trailing[0] == _GREP_ALL_TOKEN
                  else int(trailing[0]))
@@ -10524,7 +10579,7 @@ def _parse_grep_args(parts: List[str]) -> tuple:
         pattern = args[0] if args else ""
         path = "."
 
-    return (pattern, path, limit, context, count_only, no_auto_read)
+    return (pattern, path, limit, context, count_only, no_auto_read, full)
 
 
 def _parse_around_args(parts: List[str]) -> tuple:
@@ -29685,7 +29740,7 @@ def _fields_from_syntax(syntax: str) -> List[Tuple[str, bool, bool]]:
 # hands it back to the colon parsers, which would re-split the very pattern the
 # payload exists to protect. These are dispatched straight to the op (#625).
 _READ_OP_AT_FIELDS: Dict[str, Tuple[str, ...]] = {
-    "grep":        ("pattern", "path", "limit", "context", "count", "no_auto_read"),
+    "grep":        ("pattern", "path", "limit", "context", "count", "no_auto_read", "full"),
     "around":      ("pattern", "path", "n"),
     "grep_around": ("pattern", "path", "n", "limit"),
     "between":     ("symbol", "start", "end", "path"),
@@ -29867,6 +29922,7 @@ def _read_op_from_payload(op: str, payload: Any, no_exclude: bool = False) -> st
                     no_exclude=no_exclude,
                     no_auto_read=_payload_bool(p, "no_auto_read"),
                     via_payload=True,
+                    full=_payload_bool(p, "full"),
                 )
             if op == "grep_around":
                 return op_grep(pattern, path, _payload_grep_limit(p, 10),
@@ -31321,7 +31377,7 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
                     "grep", _grep_extra,
                     "Slot order is grep:PATTERN:PATH:LIMIT:CONTEXT — nothing "
                     "follows CONTEXT."))
-            pattern, path, limit, context, count_only, no_auto_read = \
+            pattern, path, limit, context, count_only, no_auto_read, full = \
                 _parse_grep_args(parts)
             if _kw_path is not None:
                 path = _kw_path
@@ -31347,7 +31403,8 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             if _hint:
                 return _receipt(header, _hint)
             body = op_grep(pattern, path, limit, context, count_only,
-                           no_exclude=no_exclude, no_auto_read=no_auto_read)
+                           no_exclude=no_exclude, no_auto_read=no_auto_read,
+                           full=full)
         elif op == "grep_around":
             # grep_around:PATTERN:PATH[:N[:LIMIT]] — every match with N lines
             # context. Sane defaults for "show me how everyone uses this".
