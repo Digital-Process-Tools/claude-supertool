@@ -145,7 +145,7 @@ def run(target: Path) -> "tuple[int, str]":
             source, reason = _common.safe_join(primary, entry)
             dest, dest_reason = _common.safe_join(target, entry)
             if reason or dest_reason:
-                lines.append(f"  WARNING left alone (manifest entry no longer valid — {reason or dest_reason}): {entry}")
+                lines.append(f"  WARNING left alone (manifest entry no longer valid — {reason or dest_reason}): {entry!r}")
                 continue
             _remove_link(entry, source, dest, lines)
 
@@ -154,7 +154,7 @@ def run(target: Path) -> "tuple[int, str]":
         for entry in copied:
             dest, reason = _common.safe_join(target, entry)
             if reason:
-                lines.append(f"  WARNING left alone (manifest entry no longer valid — {reason}): {entry}")
+                lines.append(f"  WARNING left alone (manifest entry no longer valid — {reason}): {entry!r}")
                 continue
             _remove_copy(entry, dest, lines)
 

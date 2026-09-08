@@ -207,7 +207,7 @@ def run(target: Path) -> "tuple[int, str]":
     both = sorted(set(link_entries) & set(copy_entries))
     if both:
         for entry in both:
-            lines.append(f"  WARNING refusing {entry} — declared in BOTH link and copy (pick one)")
+            lines.append(f"  WARNING refusing {entry!r} — declared in BOTH link and copy (pick one)")
         link_entries = tuple(e for e in link_entries if e not in both)
         copy_entries = tuple(e for e in copy_entries if e not in both)
 
