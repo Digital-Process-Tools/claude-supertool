@@ -53,6 +53,7 @@ import _repo_target  # noqa: E402
 import _payload_keys  # noqa: E402  (unrecognised-key refusal, shared with the other @payload ops -- #2123)
 import _untrusted  # noqa: E402  (the GitHub API writes the receipt fields -- #1606)
 import _digits  # noqa: E402
+import _publish_safety  # noqa: E402  (#691 T4 -- the #2100 disclosure marker, wired here too)
 
 # What the server holds, against what was sent -- the same four states
 # gh-pr-edit uses for its own read-back (#1739).
@@ -345,6 +346,14 @@ def main() -> int:
         print(err)
         return 1
 
+    # #691 T4: `gh-pr-create`, `gh-pr-edit` and `gh-issue-create` already
+    # append the #2100 authorship marker; this op -- the fourth routine
+    # forge write, added later by #2078 -- never got it. No closing-reference
+    # parse runs on this body (a comment has no `Closes #N` gate), so unlike
+    # `gh-pr-edit` there is no "after the parse" ordering constraint here --
+    # the marker can be applied as soon as the body to send is known.
+    content, disclosure_state = _publish_safety.apply_forge_disclosure(content)
+
     repo = str(payload["repo"])
     endpoint = f"repos/{repo}/issues/{number}/comments"
 
@@ -371,6 +380,7 @@ def main() -> int:
     print()
     print("## What landed")
     print(f"  {landed_msg}")
+    print(f"  disclosure: {disclosure_state}")
     print(f"  URL: {url or '(not returned by gh)'}")
     print()
     print(result_line(number, landed_state, comment_id))
