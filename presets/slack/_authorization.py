@@ -100,10 +100,14 @@ def load_project_config() -> dict:
       like an absent one, so the walk can still find a further, trusted
       config higher up (until the repo-root boundary above stops it).
 
-    A found-and-trusted-but-malformed file still yields `{}` rather than
-    continuing the search or raising. `{}` reads as "no project narrowing
-    configured", never as a widening: `resolve_channel` only ever narrows
-    on what this returns.
+    A found-and-trusted-but-malformed file (unparseable JSON, or JSON that
+    is not an object at its top level) still yields `{}` rather than
+    continuing the search or raising, exactly like the absent-config case
+    -- fail-closed is unchanged (#2433). Unlike the absent case, though, a
+    malformed one writes a `WARNING: ...` diagnostic to stderr, matching
+    the trust-violation branch above: silently dropping every Slack
+    channel to `off` because of a typo'd config used to look identical to
+    a project that simply never configured Slack at all.
     """
     d = Path.cwd()
     while True:
@@ -118,9 +122,20 @@ def load_project_config() -> dict:
             else:
                 try:
                     data = json.loads(candidate.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError):
+                except (json.JSONDecodeError, OSError) as exc:
+                    sys.stderr.write(
+                        f"WARNING: {candidate} is not valid JSON ({exc}) -- "
+                        f"ignoring it for slack authorization.\n"
+                    )
                     return {}
-                return data if isinstance(data, dict) else {}
+                if not isinstance(data, dict):
+                    sys.stderr.write(
+                        f"WARNING: {candidate} does not contain a JSON "
+                        f"object at its top level -- ignoring it for slack "
+                        f"authorization.\n"
+                    )
+                    return {}
+                return data
         if (d / ".git").exists():
             return {}
         parent = d.parent

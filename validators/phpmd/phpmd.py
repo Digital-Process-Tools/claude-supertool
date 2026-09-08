@@ -45,6 +45,24 @@ def emit(obj: dict) -> None:
     print(json.dumps(obj))
 
 
+def contained_target(file: str) -> str:
+    """`file`, spelled so phpmd cannot read it as an option (#2438).
+
+    phpmd's own argv shape is positional (`<file> <format> <ruleset>`,
+    the file first, not last) rather than GNU-getopt-style, so unlike the
+    tools in this repo's `--`-separator group, whether phpmd honours a
+    `--` terminator at all was never measured against a real binary
+    (unavailable in this pass). Containment sidesteps the question: a
+    relative target starting with `-` is prefixed with `os.curdir`, so
+    phpmd's own parser sees a string that cannot start with `-` at all —
+    the same shape `validators/xmllint/xmllint.py` (#2412) uses for a
+    tool measured NOT to honour `--`.
+    """
+    if not file or os.path.isabs(file) or not file.startswith("-"):
+        return file
+    return os.path.join(os.curdir, file)
+
+
 def find_project_md_rulesets(file: str) -> list[str]:
     """Walk up from `file` for a `gitlab-ci/md/*.xml` dir (DVSI CI ruleset).
 
@@ -104,7 +122,8 @@ def main() -> None:
     phpmd_format = os.environ.get("PHPMD_FORMAT", "text")
     phpmd_exclude = os.environ.get("PHPMD_EXCLUDE", "")
 
-    cmd = [phpmd_bin, file, phpmd_format, phpmd_rulesets, "--suffixes", "php,phtml"]
+    cmd = [phpmd_bin, contained_target(file), phpmd_format, phpmd_rulesets,
+           "--suffixes", "php,phtml"]
     if phpmd_exclude:
         cmd += ["--exclude", phpmd_exclude]
 

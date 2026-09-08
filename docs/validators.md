@@ -623,7 +623,7 @@ file; `pyright --outputjson @r.py` type-checked `@r.py` directly on
 1.1.409. An absolute path already cannot be read as an option and is left
 alone.
 
-### The fifteen others: `--`, or containment, never assumed (#2412, #2418)
+### The seventeen others: `--`, or containment, never assumed (#2412, #2418, #2438)
 
 `tsc-check` and `pyright` above are two instances of one class: a linter's
 own CLI decides what a leading `-`/`--` in its filename argument means, not
@@ -632,10 +632,11 @@ contributor can add a file named `-o=payload` or `--eval=x` to a pull
 request, and this repo's own post-write validators run on exactly that
 diff (the same risk #1040 tracks for `repo:` reaching `gh repo view`).
 
-Fifteen more adapters had the identical gap — `bash-check`, `ci-lint`
+Seventeen more adapters had the identical gap — `bash-check`, `ci-lint`
 (`glab`), `eslint`, `gofmt-check`, `hadolint`, `markdownlint`, `phplint`,
 `phpstan`, `node-check`, `prettier-check`, `shellcheck`, `ruby-check`,
-`stylelint`, `terraform-check`, `xmllint` — and each was fixed with
+`stylelint`, `terraform-check`, `xmllint`, and `phpmd`/`psr` (missed by
+\#2412's own sweep and fixed separately, #2438) — and each was fixed with
 whichever of the two routes was actually confirmed to work for that tool,
 never assumed:
 
@@ -651,10 +652,13 @@ never assumed:
   same runs treated the filename as an ordinary positional path instead.
 
 - **Containment (the `os.curdir`-prefix shape above), never `--`** —
-  `eslint`, `hadolint`, `stylelint`, `terraform-check` (no real binary was
-  installed to test any of the four against, so `--` was never assumed —
-  containment does not depend on whether a tool's own grammar honours
-  `--` at all), `phplint`, and `xmllint` and `prettier-check`'s own
+  `eslint`, `hadolint`, `stylelint`, `terraform-check`, `phpmd`, `psr`
+  (no real binary was installed to test any of the six against, so `--`
+  was never assumed — containment does not depend on whether a tool's own
+  grammar honours `--` at all; `phpmd`'s own argv shape is positional,
+  `<file> <format> <ruleset>`, file first rather than last, which is a
+  further reason not to assume a GNU-getopt-style `--` terminator applies
+  to it at all), `phplint`, and `xmllint` and `prettier-check`'s own
   `--file-info` call. `xmllint` and `prettier --file-info` were both
   measured NOT to honour `--`: `xmllint --noout --nonet --noent --
   -weird.xml` itself errors `Unknown option --`, and `prettier
@@ -692,9 +696,9 @@ never assumed:
 `tests/test_validator_dash_filename_2412.py` is the shared, table-driven
 pattern #2412 asked for: it never spawns a real tool (`subprocess.run` is
 captured, `shutil.which` reports every tool present), so it runs on every
-CI leg regardless of which of the fifteen linters happen to be installed
-there, and a 20th adapter reusing the same argv shape is one new row, not
-a new test file.
+CI leg regardless of which of the seventeen linters happen to be installed
+there, and the next adapter reusing the same argv shape is one new row,
+not a new test file.
 
 ### shellcheck — and the bug in the issue that asked for it
 
