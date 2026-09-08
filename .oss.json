@@ -31,7 +31,44 @@
       "lane-containment",
       "lane-release",
       "lane-git-ops"
-    ]
+    ],
+    "lane_patterns": {
+      "lane-watch": [
+        "presets/watch",
+        "presets/dashboard",
+        "notifiers",
+        "docs/presets/watch.md"
+      ],
+      "lane-tracker-ops": [
+        "presets/github",
+        "presets/gitlab"
+      ],
+      "lane-validators": [
+        "validators",
+        "formatters",
+        "docs/validators.md",
+        "docs/formatters.md"
+      ],
+      "lane-ci-cost": [
+        ".github/workflows",
+        ".github/scripts"
+      ],
+      "lane-containment": [
+        "hooks",
+        "presets/_untrusted.py",
+        "presets/_publish_safety.py",
+        "presets/_secrets.py"
+      ],
+      "lane-release": [
+        "changelog.d",
+        "CHANGELOG.md",
+        ".oss.json"
+      ],
+      "lane-git-ops": [
+        "presets/git",
+        "presets/worktree"
+      ]
+    }
   },
   "milestones": [
     "backlog"
