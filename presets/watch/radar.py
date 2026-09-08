@@ -151,6 +151,78 @@ def watcher_cap_warnings(statuses: dict[str, str]) -> list[str]:
     ]
 
 
+#: The one token radar itself reads out of the invocation argument, ahead of
+#: any tier's own filter vocabulary. Present only when the caller wants a
+#: named subset of the registered tiers rendered (#2446) -- `--state` is the
+#: other such reserved token, checked at `main()` for the same reason: a
+#: string a tier's own parser was never meant to see must not reach it.
+TIERS_ARG_PREFIX = "tiers="
+
+
+def split_tiers_arg(arg: str) -> tuple[list[str] | None, str]:
+    """Pull a `tiers=NAME[,NAME...]` selector off a radar invocation argument.
+
+    `(names, remaining_arg)`. `names` is `None` when `arg` carries no
+    `tiers=` prefix at all -- every registered tier renders, unchanged from
+    before this existed. When it is present, `tiers=` is read as the WHOLE
+    argument, never combined with a further per-tier filter on the same
+    comma line: `author=@me,state=opened` is already one comma-joined string
+    in one tier's own vocabulary, and a tier-name list is itself comma-joined,
+    so a mixed line cannot say whose commas are whose without a second
+    separator this issue does not introduce. `remaining_arg` is therefore
+    always "" when `names` is not None -- the tiers that do render see no
+    `_arg` from this call, the same as an invocation with nothing after the
+    op name.
+
+    `names` is `[]`, not `None`, for `tiers=` with nothing after the `=` --
+    that is a caller error, not "select everything", and `select_tiers`
+    reports it as one rather than rendering a clean, empty board.
+    """
+    arg = arg.strip()
+    if not arg.startswith(TIERS_ARG_PREFIX):
+        return None, arg
+    names = [n.strip() for n in arg[len(TIERS_ARG_PREFIX):].split(",") if n.strip()]
+    return names, ""
+
+
+def select_tiers(tiers: dict[str, dict],
+                  names: list[str] | None) -> tuple[dict[str, dict], list[str]]:
+    """Filter `tiers` (op name -> options, in registration/render order) to a
+    `tiers=` selection, plus the lines that name what selection was applied.
+
+    `names is None` -- no `tiers=` in play -- returns `tiers` untouched and no
+    lines: the unfiltered case must cost nothing and must not print a banner
+    nobody asked for.
+
+    Otherwise the board names the selection out loud, the way it already
+    names its channel and its scope (`channel_banner`, `gl-mrs`'s own footer):
+    a board silently narrowed by a config nobody in the session chose is the
+    hidden state this preset is built against.
+
+    A requested name absent from the registry is never silently dropped --
+    the same reasoning `docs/presets/watch.md:169` already gives for a typo'd
+    `milestne=x`: a filter that matched nothing named X must say so, because
+    "nothing rendered because X does not exist" and "nothing rendered because
+    X is healthy and quiet" are different findings and must not read alike.
+    An empty `names` list (`tiers=` with nothing after the `=`) is reported
+    the same way, against the full registry, rather than silently selecting
+    nothing.
+    """
+    if names is None:
+        return tiers, []
+    if not names:
+        return {}, [f"radar: WARNING — tiers= named no tiers at all (nothing after "
+                    f"the '='). Registered: {sorted(tiers)}. Nothing rendered."]
+    unknown = sorted(n for n in names if n not in tiers)
+    selected = {name: opts for name, opts in tiers.items() if name in names}
+    lines = [f"radar: tiers= selected {sorted(selected)} of {sorted(tiers)} registered."]
+    if unknown:
+        lines.append(f"radar: WARNING — tiers= named {unknown}, not registered in "
+                     f"ops.radar.radar_tiers ({sorted(tiers)}). Not rendered — "
+                     f"check for a typo.")
+    return selected, lines
+
+
 def read_tiers(raw: str | None = None) -> tuple[dict[str, dict], list[str]]:
     """({op_name: options}, complaints) from ops.radar.radar_tiers.
 
@@ -363,7 +435,10 @@ def tier_reports(arg: str = "") -> tuple[list[str], bool, list[str]]:
     that says "the board below may be this, not your code" is making a claim
     about position, and only the person who wrote the config can settle it.
     """
+    tier_names, arg = split_tiers_arg(arg)
     tiers, lines = read_tiers()
+    tiers, sel_lines = select_tiers(tiers, tier_names)
+    lines = lines + sel_lines
     watch, spawned, reaped = _spawner()
     all_ok = True
     failures: list[str] = []
@@ -432,7 +507,10 @@ def tier_states(arg: str = "") -> tuple[list[str], list[str]]:
     healthy-looking block — a tier with nothing to show and a tier that cannot
     show anything are two different answers.
     """
+    tier_names, arg = split_tiers_arg(arg)
     tiers, lines = read_tiers()
+    tiers, sel_lines = select_tiers(tiers, tier_names)
+    lines = lines + sel_lines
     failures: list[str] = []
     lines.extend(tier_shadow_lines(list(tiers)))
     for name, opts in tiers.items():
