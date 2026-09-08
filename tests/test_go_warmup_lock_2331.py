@@ -235,6 +235,106 @@ def test_an_unwritable_lock_dir_falls_back_to_running_fn(
     assert called == [1]
 
 
+def test_a_holder_near_its_own_timeout_budget_is_not_reclaimed_as_abandoned(
+        tmp_path: Path, monkeypatch) -> None:
+    """#2401: the staleness check age-compares an existing lock file's mtime
+    against the very same `timeout_s` a caller waits before giving up --
+    and `tests/test_validators_go_vet_669.py` and
+    `tests/test_go_vet_stall_1461.py` both pass `GO_WARMUP_S` as *both* a
+    `go vet` subprocess's own spawn timeout and this function's
+    `timeout_s`. So a holder that is merely still running, near its own
+    budget, ages past `timeout_s` at essentially the same real moment its
+    own subprocess would time out -- looking identical, from mtime age
+    alone, to one that crashed. A waiter must never unlink a lock file
+    while its holder is still genuinely inside `fn`, whatever it ends up
+    doing instead (running its own copy is the already-accepted
+    per-call-timeout fallback; stealing the still-live lock file is not)."""
+    timeout_s = 0.3
+    holder_active = {"value": False}
+    unlink_events = []
+
+    real_unlink = lock_mod.Path.unlink
+
+    def _tracking_unlink(self, *a, **kw):
+        unlink_events.append((time.time(), holder_active["value"]))
+        return real_unlink(self, *a, **kw)
+
+    monkeypatch.setattr(lock_mod.Path, "unlink", _tracking_unlink)
+
+    def holder_fn():
+        holder_active["value"] = True
+        time.sleep(timeout_s * 1.5)
+        holder_active["value"] = False
+        return "holder"
+
+    def waiter_fn():
+        return "waiter"
+
+    holder_thread = threading.Thread(
+        target=lock_mod.serialize_once,
+        args=(tmp_path, "go_build_cache", holder_fn, timeout_s))
+    holder_thread.start()
+
+    lock_path = tmp_path / "go_build_cache.lock"
+    wait_deadline = time.time() + 2.0
+    while not lock_path.exists() and time.time() < wait_deadline:
+        time.sleep(0.01)
+    assert lock_path.exists(), "holder never created the lock file"
+
+    waiter_result = lock_mod.serialize_once(
+        tmp_path, "go_build_cache", waiter_fn, timeout_s)
+    holder_thread.join(timeout=5.0)
+
+    assert waiter_result == "waiter"
+    stolen_while_live = [pair for pair in unlink_events if pair[1]]
+    assert not stolen_while_live, (
+        "the waiter unlinked the holder's lock file while the holder was "
+        "still genuinely running: %r" % unlink_events)
+
+
+def test_a_lock_older_than_the_decoupled_margin_is_still_reclaimed_quickly(
+        tmp_path: Path) -> None:
+    """Fixing #2401 must not make legitimate reclamation impossible: a lock
+    old enough to be past the *decoupled* staleness threshold (not just past
+    `timeout_s`) must still be broken and re-acquired quickly rather than
+    waited out."""
+    timeout_s = 0.2
+    lock_path = tmp_path / "go_warmup.lock"
+    lock_path.write_text("", encoding="utf-8")
+    old = time.time() - (timeout_s * lock_mod.STALE_MARGIN + 5)
+    os.utime(lock_path, (old, old))
+
+    called = []
+    start = time.monotonic()
+    result = lock_mod.serialize_once(
+        tmp_path, "go_warmup", lambda: called.append(1) or "ran", timeout_s)
+    elapsed = time.monotonic() - start
+
+    assert result == "ran"
+    assert called == [1]
+    assert elapsed < 1.0, (
+        "a lock past the decoupled staleness margin forced the full "
+        "timeout instead of being broken immediately: %.3fs" % elapsed)
+
+
+def test_stale_after_s_can_be_set_explicitly(tmp_path: Path) -> None:
+    """A caller that knows its own worst-case runtime can pass an exact
+    staleness threshold instead of relying on the default multiplier of
+    `timeout_s`."""
+    lock_path = tmp_path / "go_warmup.lock"
+    lock_path.write_text("", encoding="utf-8")
+    old = time.time() - 2.0
+    os.utime(lock_path, (old, old))
+
+    called = []
+    result = lock_mod.serialize_once(
+        tmp_path, "go_warmup", lambda: called.append(1) or "ran",
+        timeout_s=10.0, stale_after_s=1.0)
+
+    assert result == "ran"
+    assert called == [1]
+
+
 def test_shared_worker_root_strips_the_popen_gw_segment() -> None:
     class _Factory:
         def getbasetemp(self):

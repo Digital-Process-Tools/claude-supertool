@@ -48,8 +48,26 @@ def shared_worker_root(tmp_path_factory) -> Path:
     return base.parent if base.name.startswith("popen-gw") else base
 
 
+# A lock older than `timeout_s * STALE_MARGIN` is presumed abandoned by a
+# crashed holder (#2401). The margin exists because callers commonly pass
+# the exact same number as `timeout_s` here and as a subprocess's own spawn
+# timeout (tests/test_validators_go_vet_669.py and
+# tests/test_go_vet_stall_1461.py both do, via `GO_WARMUP_S`) -- so without
+# a margin, a holder that is merely still running, near its own budget,
+# ages past `timeout_s` at essentially the same real moment its own
+# subprocess would time out, and looks identical to one that crashed.
+# Under the old, undivided threshold a waiter could unlink that still-live
+# lock and take over as the new holder while the original was still
+# genuinely inside `fn` -- not just running `fn` a second time (already an
+# accepted degradation on the per-call timeout-fallback path below), but
+# stealing the lock file out from under a caller that had not released it,
+# so that caller's own eventual `finally`-block unlink could later remove a
+# completely different, unrelated caller's fresh lock.
+STALE_MARGIN = 3.0
+
+
 def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
-                    timeout_s: float) -> T:
+                    timeout_s: float, stale_after_s: float | None = None) -> T:
     """Run `fn` with at most one caller inside it at a time, across processes.
 
     Blocks other callers on the same `name` under `lock_dir` until the
@@ -60,7 +78,19 @@ def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
     working. The same fallback covers an `OSError` from the lock file itself
     (an unwritable `lock_dir`, for instance): correctness never depends on
     this succeeding.
+
+    `stale_after_s` is a *separate* budget from `timeout_s`: the age past
+    which an existing lock file is presumed abandoned by a crashed holder,
+    as opposed to `timeout_s`, which is how long *this* caller waits before
+    giving up and running `fn` itself. Defaults to `timeout_s *
+    STALE_MARGIN` when not given, so a holder that is merely still working
+    -- up to its own `timeout_s` budget -- is never mistaken for one that
+    crashed (#2401): conflating the two let a waiter reclaim a still-live
+    lock the moment its age passed the same number a legitimately slow
+    holder was itself still working within.
     """
+    if stale_after_s is None:
+        stale_after_s = timeout_s * STALE_MARGIN
     lock_path = lock_dir / (name + ".lock")
     deadline = time.time() + timeout_s
     fd = None
@@ -68,21 +98,22 @@ def serialize_once(lock_dir: Path, name: str, fn: Callable[[], T],
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            # A lock file older than `timeout_s` is presumed abandoned by a
-            # holder that never reached its own `finally` -- killed outright,
-            # or an unlink that itself failed (see the warning below). Without
-            # breaking it here, an orphaned lock is permanent: nothing else in
-            # this function ever removes one, so every later caller for this
-            # `name`, in this run and in every run after it that reuses the
-            # same `lock_dir`, would sit out the full `timeout_s` forever
-            # instead of the one-time cost this function exists to bound
-            # (#2331 self-review -- an auditor finding, not observed failing
-            # in production, since no CI leg kills a worker mid-hold today).
+            # A lock file older than `stale_after_s` is presumed abandoned by
+            # a holder that never reached its own `finally` -- killed
+            # outright, or an unlink that itself failed (see the warning
+            # below). Without breaking it here, an orphaned lock is
+            # permanent: nothing else in this function ever removes one, so
+            # every later caller for this `name`, in this run and in every
+            # run after it that reuses the same `lock_dir`, would sit out
+            # the full `timeout_s` forever instead of the one-time cost this
+            # function exists to bound (#2331 self-review -- an auditor
+            # finding, not observed failing in production, since no CI leg
+            # kills a worker mid-hold today).
             try:
                 age = time.time() - lock_path.stat().st_mtime
             except OSError:
                 age = 0.0  # gone already, or unreadable -- just retry below
-            if age > timeout_s:
+            if age > stale_after_s:
                 try:
                     lock_path.unlink()
                 except OSError:
