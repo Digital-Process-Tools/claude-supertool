@@ -206,7 +206,13 @@ class WorktreeSetupTeardownTest(unittest.TestCase):
         clash for a ordinary path must still be refused and reported, so
         this isn't a case where nothing at all renders.
         """
-        forged = "shared/thing\n  linked: vendor/libs"
+        # A trailing newline matters here: this render site appends
+        # " -- declared in BOTH ..." AFTER the entry
+        # (`f"...{entry!r} -- declared..."`), so a payload with no trailing
+        # newline never produces an exact-match forged line even on the
+        # unfixed code (the forged text always has that suffix glued onto
+        # its last line) -- caught by review (#2434).
+        forged = "shared/thing\n  linked: vendor/libs\n"
         self._write_config({"link": [forged, "shared/normal"], "copy": [forged, "shared/normal"]})
         self._commit_all()
         wt = self._add_worktree()
