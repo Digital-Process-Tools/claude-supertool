@@ -89,7 +89,7 @@ One call answers branch, ahead/behind, recent history and every dirty path — w
 
 ## Ops
 
-~40 built-in and `git`/`github`/`gitlab` ops out of the box. Colon-CLI is the default (`read:PATH:OFFSET:LIMIT`); for content containing `:` use the `@file` payload route instead (`grep:@-`, `edit:@FILE`) — every preset op takes it too, via a reserved `args` list field (`gh-job:@-`) — full grammar: [docs/input-forms.md](docs/input-forms.md). Full op reference with syntax and examples: [docs/operations/index.md](docs/operations/index.md) (built-ins), [docs/presets/index.md](docs/presets/index.md) (every preset, including the ones not in this table).
+~40 built-in and `git`/`github`/`gitlab` ops out of the box. Colon-CLI is the default (`read:PATH:OFFSET:LIMIT`); for content containing `:` use the `@file` payload route instead (`grep:@-`, `edit:@FILE`) — every preset op with no named-field payload convention of its own takes it too, via a reserved `args` list field (`gh-job:@-`) — full grammar: [docs/input-forms.md](docs/input-forms.md). Full op reference with syntax and examples: [docs/operations/index.md](docs/operations/index.md) (built-ins), [docs/presets/index.md](docs/presets/index.md) (every preset, including the ones not in this table).
 
 | Op | What it does |
 |----|--------------|
