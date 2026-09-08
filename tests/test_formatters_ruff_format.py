@@ -189,6 +189,106 @@ def test_reformat_touches_unrelated_lines_reports_range_via_stub(tmp_path: Path)
     assert metrics["last_changed_line"] == 5, metrics
 
 
+def test_content_added_to_previously_empty_file_reports_no_touched_range(tmp_path: Path) -> None:
+    """Self-review finding (#2405): the docstring promises `(None, None)` when
+    nothing changed and *never* a fabricated `(1, 1)` -- but a pure insertion
+    at the very start of the diff (`i1 == 0`) used to anchor to `max(0, 1)
+    == 1` regardless of whether a before-file line 1 existed at all. When
+    ruff-format turns a genuinely empty file (0 lines) into a non-empty one,
+    there is no earlier before-line 1 for a caller's earlier read to have
+    gone stale against -- reporting `(1, 1)` there is exactly the fabricated
+    value the docstring disclaims, and indistinguishable from the legitimate
+    case where before-line 1 really did exist and really did move.
+    """
+    f = tmp_path / "x.py"
+    f.write_text("")
+
+    body = (
+        "import sys, pathlib\n"
+        f"pathlib.Path(r'{f.as_posix()}').write_text('x = 1\\n')\n"
+        "sys.exit(0)\n"
+    )
+    bin_cmd = _python_stub(tmp_path, "stub_fill_empty_file", body)
+    env = {**os.environ, "RUFF_BIN": bin_cmd}
+    r = subprocess.run(
+        [sys.executable, str(ADAPTER), str(f)],
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 0
+    data = json.loads(r.stdout.strip())
+    assert_ok(data)
+    assert data["metrics"]["lines_added"] > 0
+    assert data["metrics"].get("first_changed_line") is None, data["metrics"]
+    assert data["metrics"].get("last_changed_line") is None, data["metrics"]
+
+
+def test_insertion_before_existing_first_line_still_reports_it(tmp_path: Path) -> None:
+    """MUST FIRE control for the test above: a pure insertion at the very
+    start of a file that already HAD content is the legitimate case -- the
+    inserted text really did land next to an existing before-line 1, so
+    reporting it is correct and must not regress alongside the empty-file fix.
+    """
+    f = tmp_path / "x.py"
+    f.write_text("a = 1\nb = 2\n")
+
+    body = (
+        "import sys, pathlib\n"
+        f"pathlib.Path(r'{f.as_posix()}').write_text('x = 0\\na = 1\\nb = 2\\n')\n"
+        "sys.exit(0)\n"
+    )
+    bin_cmd = _python_stub(tmp_path, "stub_prepend_line", body)
+    env = {**os.environ, "RUFF_BIN": bin_cmd}
+    r = subprocess.run(
+        [sys.executable, str(ADAPTER), str(f)],
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 0
+    data = json.loads(r.stdout.strip())
+    assert_ok(data)
+    assert data["metrics"]["first_changed_line"] == 1, data["metrics"]
+    assert data["metrics"]["last_changed_line"] == 1, data["metrics"]
+
+
+def test_disjoint_hunks_report_one_merged_span_documented_over_approximation(tmp_path: Path) -> None:
+    """Self-review finding (#2405): two small, far-apart hunks are reported
+    as one contiguous span covering everything between them, not as two
+    separate ranges. This is a documented, intentional over-approximation
+    (never under-reports -- a caller re-reading the whole span will not miss
+    a touched line) rather than a bug: naming every disjoint hunk separately
+    would need a list-of-ranges return shape this issue's scope does not
+    call for. Pinning it here so a future change to `_line_diff` cannot
+    narrow the range silently and start under-reporting.
+    """
+    before = "".join(f"{n}\n" for n in range(1, 11))  # lines 1..10
+    after_lines = list(range(1, 11))
+    after_lines[1] = "X"     # before-line 2 changes
+    after_lines[9] = "Y"     # before-line 10 changes
+    after = "".join(f"{v}\n" for v in after_lines)
+
+    f = tmp_path / "x.py"
+    f.write_text(before)
+
+    body = (
+        "import sys, pathlib\n"
+        f"pathlib.Path(r'{f.as_posix()}').write_text({after!r})\n"
+        "sys.exit(0)\n"
+    )
+    bin_cmd = _python_stub(tmp_path, "stub_disjoint_hunks", body)
+    env = {**os.environ, "RUFF_BIN": bin_cmd}
+    r = subprocess.run(
+        [sys.executable, str(ADAPTER), str(f)],
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 0
+    data = json.loads(r.stdout.strip())
+    assert_ok(data)
+    # Lines 3-9 never changed, but the merged span still covers them --
+    # documented behaviour, pinned so it cannot regress into
+    # under-reporting the touched region.
+    assert data["metrics"]["first_changed_line"] == 2, data["metrics"]
+    assert data["metrics"]["last_changed_line"] == 10, data["metrics"]
+
+
 def test_noop_reports_no_touched_line_range(tmp_path: Path) -> None:
     """MUST FIRE control for the test above: when nothing changed, the new
     fields must be absent/None, never a stale or fabricated range -- the
