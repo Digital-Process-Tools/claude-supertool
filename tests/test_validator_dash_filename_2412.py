@@ -8,7 +8,7 @@ option rather than a bare positional, a crafted filename changes what the
 validator does rather than what file it lints — the same class #1040
 already tracks for `repo:` accepting a leading `-` into `gh repo view`.
 
-Each of the 15 adapters below was checked against its own CLI behaviour
+Each of the 17 adapters below was checked against its own CLI behaviour
 (`--help`, or a local `--` smoke test against the real installed binary
 where available) rather than assumed to support `--` universally:
 
@@ -139,7 +139,7 @@ def _spawn_calls(monkeypatch, tmp_path: Path, adapter: Path, unique: str,
     `shutil.which` is patched to report every tool present -- the adapter's
     OWN existence gate is not what this test is about -- and
     `subprocess.run` is captured rather than let through, so this never
-    depends on any of the 15 real tools being installed. Whatever `main()`
+    depends on any of the 17 real tools being installed. Whatever `main()`
     does with the canned reply afterwards (JSON it cannot parse, a shape it
     does not expect) is swallowed: the argv this test inspects was already
     built and sent before that.
