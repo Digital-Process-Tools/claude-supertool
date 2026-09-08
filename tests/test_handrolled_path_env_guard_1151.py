@@ -70,6 +70,15 @@ NL = chr(10)
 #:    identity and config away from the developer's own, so PATH inherits. The
 #:    same dict is passed to every `git` spawn in the file; only the
 #:    `sys.executable` one reaches this guard.
+#:
+#: Fourth entry read and cleared by hand on 2026-09-08 (#2419):
+#:
+#:  * `test_worktree_teardown_worktreeconfig_2419.py:49` -- `env=_HERMETIC_ENV`,
+#:    the same module-level-name shape as the #1496 entry above. Its binding at
+#:    that file's line 26 is `{**os.environ, ...}` plus the `GIT_CONFIG_GLOBAL`/
+#:    `GIT_CONFIG_SYSTEM`/`GIT_AUTHOR_*`/`GIT_COMMITTER_*`/`GIT_TERMINAL_PROMPT`
+#:    keys that pin git's identity, config and prompting away from the
+#:    developer's own, so PATH inherits.
 DECLARED_UNRESOLVED = [
     "test_encoding_seam.py:659 [unresolved] "
     "env= expression could not be evaluated by this scanner",
@@ -78,6 +87,8 @@ DECLARED_UNRESOLVED = [
     "test_watch_sock_path_581.py:102 [unresolved] "
     "env= expression could not be evaluated by this scanner",
     "test_worktree_setup_teardown_532.py:53 [unresolved] "
+    "env= expression could not be evaluated by this scanner",
+    "test_worktree_teardown_worktreeconfig_2419.py:49 [unresolved] "
     "env= expression could not be evaluated by this scanner",
 ]
 
