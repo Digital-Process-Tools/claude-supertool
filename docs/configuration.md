@@ -25,8 +25,8 @@ Create a `.supertool.json` in your project root. Supertool walks up from cwd to 
       "example": "read:src/app/Module.py:::grep=class"
     },
     "grep": {
-      "syntax": "grep:PATTERN:PATH[:LIMIT[:CONTEXT]][:no-auto-read]",
-      "description": "Search (10 results def). CONTEXT=N lines around match. :no-auto-read suppresses single-file auto-read",
+      "syntax": "grep:PATTERN:PATH[:LIMIT[:CONTEXT]][:no-auto-read][:full]",
+      "description": "Search (10 results def). CONTEXT=N lines around match. :no-auto-read suppresses single-file auto-read. :full (#1712) suppresses the per-line char cap for this call only.",
       "example": "grep:def handle:src/:20:2"
     },
     "map": {

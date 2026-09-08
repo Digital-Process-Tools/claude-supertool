@@ -60,7 +60,7 @@ EOF
 
 | Op | Payload fields |
 | --- | --- |
-| `grep` | `pattern` (required), `path`, `limit`, `context`, `count`, `no_auto_read` |
+| `grep` | `pattern` (required), `path`, `limit`, `context`, `count`, `no_auto_read`, `full` |
 | `grep_around` | `pattern` (required), `path`, `n`, `limit` |
 | `around` | `pattern` (required), `path`, `n` |
 | `between` | `symbol` **or** `start` + `end`, plus `path` |
