@@ -8024,6 +8024,43 @@ def _path_meta_bulk_drop() -> None:
         del _PATH_META_BULK[key]
 
 
+#: Historical hardcoded value for both `git status` spawns behind
+#: `_path_meta_suffix` -- kept as the default so an unconfigured install
+#: behaves exactly as before (#1398).
+_PATH_META_GIT_TIMEOUT_DEFAULT = 2
+
+
+def _path_meta_git_timeout() -> int:
+    """The `git status` spawn budget for `_path_meta_suffix`, in seconds.
+
+    Was a bare `timeout=2` at both spawn sites, with no config key (#1398).
+    Parallel mode spawns several of these against that same fixed budget, so
+    raising worker count raised the rate of honest `git?` declines (the token
+    meaning "the working-tree lookup declined, state unknown") purely as a
+    function of a constant nobody could tune.
+
+    A flat, tunable budget rather than one that scales with worker count: the
+    workers here are separate `supertool` invocations (often separate
+    processes with no shared coordination point), so there is nothing this
+    function could read to learn "how many others are inflight right now"
+    without new cross-process machinery. Making the existing constant
+    configurable lets a caller who *does* know their own concurrency (a CI
+    job setting `-n auto`, a batch script) raise it once; it does not attempt
+    to infer that number automatically.
+
+    No retry-once-before-declining here either: it would double the worst
+    case latency of every read on a genuinely slow tree, and the issue itself
+    asks that be measured before being chosen rather than guessed at. Left
+    as a follow-up.
+
+    Routed through `_get_op_int`, so an explicit `0` is refused loudly and
+    the default is used instead (#1332's lesson: a threshold's `0` must not
+    be silently swallowed into the default with no trace).
+    """
+    return _get_op_int(
+        "read", "git_timeout_seconds", _PATH_META_GIT_TIMEOUT_DEFAULT)
+
+
 def _path_meta_bulk_fill(root: str) -> Optional[Dict[str, Any]]:
     """One repo-wide `git status`, parsed into {relpath: XY}. None = declined.
 
@@ -8040,7 +8077,7 @@ def _path_meta_bulk_fill(root: str) -> Optional[Dict[str, Any]]:
     try:
         r = subprocess.run(
             ["git", "status", "--porcelain", "-z", "--ignored=matching"],
-            capture_output=True, timeout=2, cwd=root,
+            capture_output=True, timeout=_path_meta_git_timeout(), cwd=root,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -8301,7 +8338,7 @@ def _path_meta_suffix(path: str, sample: bytes = b"") -> str:
             r = subprocess.run(
                 ["git", "status", "--porcelain", "--ignored=matching", "--",
                  ":(literal)" + os.path.basename(absolute)],
-                capture_output=True, text=True, timeout=2,
+                capture_output=True, text=True, timeout=_path_meta_git_timeout(),
                 cwd=os.path.dirname(absolute) or ".", encoding="utf-8", errors="replace",
             )
             if r.returncode == 0:
