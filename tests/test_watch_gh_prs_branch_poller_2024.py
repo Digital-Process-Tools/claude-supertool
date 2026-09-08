@@ -124,10 +124,29 @@ def test_the_branch_poller_is_asked_for_through_watch(state_dir, monkeypatch):
     assert branch_calls[0][1] == "main"
 
 
+def _declared_branch_events() -> set[str]:
+    """The event keys `sources/gh-branch/events.json` actually declares --
+    read off the source's own file, never off `tier.BRANCH_ONLY` itself.
+
+    Comparing `BRANCH_ONLY` to a copy of `BRANCH_ONLY` (as this test used to)
+    is a tautology: it stays green even if a future event key -- `went_failed`
+    (#2355) was nearly one such case -- is added to the source and never
+    joined into the filter, and the event then arrives as silence. Reading
+    the source's own declared keys is the only comparison that can catch
+    that (#2417)."""
+    events = json.loads(
+        (WATCH_DIR / "sources" / "gh-branch" / "events.json").read_text(encoding="utf-8"))
+    return {e["key"] for e in events["events"]}
+
+
 def test_the_branch_poller_subscribes_to_every_declared_event(state_dir, monkeypatch):
     """Not just `went_green` -- a `gh` outage that could not even look must
     arrive as `branch_unreachable`, or it arrives as silence, which is the
-    same shape of bug this whole issue closes."""
+    same shape of bug this whole issue closes.
+
+    Regression coverage for #2417: this must compare against the source's
+    own declared event keys, not against `tier.BRANCH_ONLY` itself -- a
+    self-comparison can never fail no matter what the filter forgets."""
     _fake_gh(monkeypatch, [_pr(1)])
     _no_board(monkeypatch)
     watch, calls = _recording_watch()
@@ -135,7 +154,7 @@ def test_the_branch_poller_subscribes_to_every_declared_event(state_dir, monkeyp
     tier.radar_report({"_arg": "", "_watch": watch, "default_branch": "main"})
 
     branch_calls = [c for c in calls if c[0] == tier.BRANCH_SOURCE]
-    assert set(branch_calls[0][2]) == set(tier.BRANCH_ONLY)
+    assert set(branch_calls[0][2]) == _declared_branch_events()
     assert "branch_unreachable" in branch_calls[0][2]
     assert "went_green" in branch_calls[0][2]
 
