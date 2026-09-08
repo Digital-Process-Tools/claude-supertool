@@ -88,7 +88,7 @@ A read-op argument beginning with `@` is only treated as a payload when it could
 
 The table above covers built-ins with a named `:::` field list. A **preset op** (`gh-job`, `gl-job`, every other entry under `.supertool.json`'s `"ops"`) usually has no such list — its colon syntax is mode-based (`gh-job:ID:grep:PATTERN`), not a flat `edit:::OLD:::NEW:::PATH` shape, so it can never earn a named-field registry entry. Its arguments went through `{args}` only, split on `:` like everything else on the colon CLI — and `:` is the one character with no other escape ([#1165](https://github.com/Digital-Process-Tools/claude-supertool/issues/1165); everything else a colon-CLI argument might contain — `$`, `;`, `&`, backtick, `*`, spaces, quotes, backslashes — already survives `shlex.quote`). `gh-job:ID:grep:PATTERN` rejoins everything after the mode into one pattern, which covers the ordinary case, but a pattern that must genuinely *end* in `:`, or one whose intended reading disagrees with the rejoin, had no explicit form at all.
 
-Every preset op now accepts the same `@file`/`@-` route through one reserved key, `args` — a list of strings, each becoming one positional argument, sent verbatim: no colon split, no rejoin heuristic, nothing re-tokenized.
+Every preset op with no named-field convention of its own now accepts the same `@file`/`@-` route through one reserved key, `args` — a list of strings, each becoming one positional argument, sent verbatim: no colon split, no rejoin heuristic, nothing re-tokenized.
 
 ```bash
 ./supertool 'gh-job:@-' <<'EOF'
@@ -97,6 +97,8 @@ EOF
 ```
 
 The colon CLI and its rejoin heuristic are unchanged — `args` is only reached when the call itself is `op:@file` or `op:@-`, so ordinary calls keep working exactly as before.
+
+**Not every preset op takes this route, though — a handful already had their own `@file`/`@-` payload before #1165, with named fields (`title`, `body`, `labels`, ...) parsed by the preset script itself rather than a flat `args` list: `gh-issue-create`, `gh-issue-comment`, `gh-pr-create`, `gh-pr-edit` and `gl-issue-create`.** Landing the generic route without excluding them regressed all three of these that are called as bare `op:@file`/`op:@-` with nothing ahead of the payload (`gh-issue-create`, `gh-pr-create`, `gl-issue-create`) — every real payload was refused with `unknown field(s) title -- accepted: args` before the op's own script ever saw it ([#2408](https://github.com/Digital-Process-Tools/claude-supertool/issues/2408), dc431bc9). `gh-issue-comment:ID:@file` and `gh-pr-edit:ID:@file` were never actually reachable by the generic route regardless — their leading ID argument means the file reference is not the token right after the op name, which is what the route requires — but both are scoped out on the same signal (`repo_target` starting with `"payload"`) so a future change to their calling convention cannot fall into it silently. Ask `help:OP` for any specific op's own field names rather than assuming either shape.
 
 ### `@-` belongs in the reference slot, and nowhere else
 

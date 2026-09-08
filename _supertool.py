@@ -31024,9 +31024,41 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # route silently turned that into a "file not found" refusal where the
     # call used to just run, the same class of regression the read-op gate
     # was written to avoid for `grep:@Override:src/`).
+    # Excludes any op whose own `repo_target` mode already starts with
+    # "payload" (#2408): `gh-issue-create`, `gh-issue-comment`,
+    # `gh-pr-create`, `gh-pr-edit` and `gl-issue-create` all take an
+    # `@FILE`/`@-` payload today, but it is a from-scratch named-field
+    # payload their own preset script parses and validates (title, body,
+    # labels, ...) -- not the `args`-list shape this generic route
+    # produces. None of these five ever earned a `:::` entry in
+    # `_AT_FILE_REGISTRY` (their syntax strings are `op:@FILE | op:@-`,
+    # with no field list to derive one from), so before this exclusion
+    # `_at_file_named_fields` was empty for all five and three of them --
+    # `gh-issue-create`, `gh-pr-create` and `gl-issue-create`, the ones
+    # called as bare `op:@FILE`/`op:@-` with nothing ahead of the
+    # payload -- fell straight into the generic `args`-only route added
+    # by #1165 for `gh-job`-shaped ops that have no named-field
+    # convention at all, refusing every real call with "unknown field(s)
+    # title -- accepted: args" (dc431bc9, #2403). The other two,
+    # `gh-issue-comment:ID:@FILE` and `gh-pr-edit:ID:@FILE`, were never
+    # actually reachable by this route regardless of this bug: the route
+    # gates on `parts[1].startswith("@")` a few lines below, and for
+    # these two `parts[1]` is the issue/PR number, not the payload
+    # reference, so the generic route's own precondition never held for
+    # them (verified directly against dc431bc9 unmodified, not assumed
+    # from the issue text, which had named `gh-pr-edit` as a fourth
+    # broken op -- it was not). They are excluded here anyway, on the
+    # same `repo_target` signal, so a later change to either op's
+    # calling convention cannot silently fall into the generic route.
+    # `repo_target` starting with "payload" is this codebase's own
+    # existing signal for "takes its fields from its own payload dict,
+    # parsed by the preset script" and is what distinguishes these five
+    # from a genuine `args`-only op like `gh-job`, whose `repo_target`
+    # is `True` ("op" mode).
     _generic_preset_route = (
         not _at_file_named_fields
         and _op_is_preset_op(op)
+        and not _repo_target_modes().get(op, "").startswith("payload")
         and len(parts) >= 2
         and (
             parts[1] == "@-"
