@@ -2,7 +2,7 @@
 op) is safe advice for a read-only op and dangerous advice for a write: `cwd:`
 really does `os.chdir(target)` for the rest of the call, so a caller who
 follows the remedy for a *write* op (git-push, git-commit, gh-pr-merge,
-git-conflicts, ...) ends up running that write against `core`'s own
+git-checkout, ...) ends up running that write against `core`'s own
 checked-out branch, not the worktree branch they meant -- silently, because
 the write still succeeds, just against the wrong repository/branch.
 
