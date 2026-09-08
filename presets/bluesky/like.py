@@ -16,8 +16,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
 from _atproto import get_session, xrpc
 from _auth import get_app_password, get_handle
+from _publish_safety import require_confirm  # noqa: E402
 
 
 def parse_args(arg: str) -> tuple[str, bool]:
@@ -72,6 +74,7 @@ def preflight_like(target_uri: str, session: dict) -> bool | None:
 
 def main(arg: str) -> None:
     raw, force = parse_args(arg)
+    require_confirm("bluesky_like", f"like {raw}", force=force)
     handle = get_handle()
     session = get_session(handle, get_app_password())
     uri = to_at_uri(raw, session)

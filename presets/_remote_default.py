@@ -98,8 +98,24 @@ def parse_remote(url: str) -> tuple[str, str] | None:
 def origin_slug(host_substr: str) -> str | None:
     """Return the ``origin`` remote's 'ns/repo' when its host matches.
 
-    ``host_substr`` is matched as a substring of the remote host so a
-    self-hosted GitLab (``gitlab.dp.tools``) matches ``"gitlab"``.
+    ``host_substr`` is matched as a **substring** of the remote host, not an
+    exact or dot-suffix match, so a self-hosted GitLab at ``gitlab.dp.tools``
+    matches ``"gitlab"`` -- an exact/suffix test cannot express that without
+    the operator naming their own host somewhere.
+
+    That substring test is only safe because the input is operator-controlled:
+    ``_run_git(["remote", "get-url", "origin"])`` reads the *local* checkout's
+    own ``origin`` remote, which the operator configured, never text from an
+    issue body, a PR title or any other attacker-influenced source. Under that
+    condition ``host_substr in host`` cannot be tricked into matching a
+    lookalike host, because there is no adversary between the caller and the
+    value being tested.
+
+    A caller that ever passes this a host or a host-shaped string from
+    untrusted input breaks that condition: ``origin_slug("github")`` would
+    then match ``evil-github.com``, ``notgithub.com`` and
+    ``github.com.attacker.example`` just as readily as the real thing (#1327).
+    Do not call this on anything but the operator's own git remote.
     """
     url = _run_git(["remote", "get-url", "origin"])
     if not url:
