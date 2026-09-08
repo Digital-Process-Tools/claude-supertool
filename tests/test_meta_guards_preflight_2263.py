@@ -265,6 +265,28 @@ def test_load_module_from_distinguishes_absent_from_load_failed(tmp_path) -> Non
     assert failed.status == mod.LOAD_FAILED
 
 
+def test_guard_result_default_findings_is_not_a_shared_mutable(tmp_path) -> None:
+    """A bare `findings: list = []` on a `NamedTuple` (unlike a dataclass's
+    `field(default_factory=list)`) evaluates the default ONCE at
+    class-definition time, and every instance that omits the field then
+    shares that SAME list object by reference -- every `GUARD_ABSENT` /
+    `GUARD_LOAD_ERROR` return in this file omits it. `findings` must default
+    to something that cannot leak a mutation between two unrelated
+    instances (#2439's own review); `None`, checked with `is`, is the
+    contract now -- a caller building an ADOPTED result always passes its
+    own fresh list explicitly, so the default is never mutated in place."""
+    mod = _load()
+    a = mod.GuardResult(mod.GUARD_ABSENT)
+    b = mod.GuardResult(mod.GUARD_LOAD_ERROR)
+    assert a.findings is None
+    assert b.findings is None
+    adopted_one = mod.GuardResult(mod.GUARD_ADOPTED, findings=[])
+    adopted_two = mod.GuardResult(mod.GUARD_ADOPTED, findings=[])
+    assert adopted_one.findings is not adopted_two.findings, (
+        "two independently-constructed ADOPTED results share one list "
+        "object -- a mutation of one's findings would leak into the other")
+
+
 # ---------------------------------------------------------------------------
 # env-scrub -- the unresolved arm, not only violation/clean
 # ---------------------------------------------------------------------------
@@ -419,7 +441,17 @@ def test_main_declines_when_no_merge_base_is_resolvable(
 def test_main_runs_the_real_git_diff_path_with_an_explicit_base(capsys) -> None:
     """End to end against THIS repo's own history: diff two real commits,
     which exercises `_changed_files` and the whole aggregation loop rather
-    than the explicit-file shortcut every other main() test takes."""
+    than the explicit-file shortcut every other main() test takes.
+
+    This is the only test in the file that runs against the genuine,
+    currently-adopted guard modules on disk rather than a synthetic
+    `tmp_path` sandbox -- it is this repo's own positive control that the
+    three real guard files still import cleanly. Deliberately kept to
+    (RC_OK, RC_VIOLATIONS), NOT widened to also accept RC_COULD_NOT_CHECK:
+    #2439 made a load-error a real, reachable outcome for the FIRST time,
+    and if one of the three real, adopted guard files ever breaks on
+    import, this is the one test in the suite positioned to go red on the
+    real tree rather than a copy of it (#2439 review)."""
     mod = _load()
     r = subprocess.run(
         ["git", "-C", str(REPO), "rev-list", "--max-parents=0", "HEAD"],
@@ -433,7 +465,10 @@ def test_main_runs_the_real_git_diff_path_with_an_explicit_base(capsys) -> None:
         rc = mod.main(["--base", root_commit[0]])
     finally:
         os.chdir(old_cwd)
-    assert rc in (mod.RC_OK, mod.RC_VIOLATIONS, mod.RC_COULD_NOT_CHECK)
+    assert rc in (mod.RC_OK, mod.RC_VIOLATIONS), (
+        "one of the three genuinely-adopted guard modules failed to "
+        "import against the real tree -- RC_COULD_NOT_CHECK, not a "
+        "loosened assertion, is the honest response to that")
     out = capsys.readouterr().out
     assert "check-meta-guards" in out
 

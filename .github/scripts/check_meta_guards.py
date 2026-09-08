@@ -107,8 +107,16 @@ GUARD_LOAD_ERROR = "load_error"
 
 class GuardResult(NamedTuple):
     status: str  # GUARD_ADOPTED / GUARD_ABSENT / GUARD_LOAD_ERROR
-    findings: list = []  # only meaningful when status == GUARD_ADOPTED
-    error: Optional[BaseException] = None  # only meaningful when LOAD_ERROR
+    # `NamedTuple` evaluates a default ONCE at class-definition time and
+    # every instance that omits the field shares that same object by
+    # reference -- unlike a dataclass `field(default_factory=list)`. A bare
+    # `findings: list = []` here would mean every GUARD_ABSENT/GUARD_LOAD_ERROR
+    # return in this file shares one list, so an in-place `.append()` on any
+    # one of them would silently leak into every other (#2439 review). None
+    # is the safe default; only meaningful when status == GUARD_ADOPTED, in
+    # which case every call site below passes its own fresh list explicitly.
+    findings: Optional[list] = None
+    error: Optional[BaseException] = None  # only meaningful when GUARD_LOAD_ERROR
 
 
 # ---------------------------------------------------------------------------
