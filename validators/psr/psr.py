@@ -29,6 +29,21 @@ def emit(obj: dict) -> None:
     print(json.dumps(obj))
 
 
+def contained_target(file: str) -> str:
+    """`file`, spelled so phpcs cannot read it as an option (#2438).
+
+    Whether phpcs honours a `--` terminator was never measured against a
+    real binary in this pass (unavailable). Containment sidesteps the
+    question: a relative target starting with `-` is prefixed with
+    `os.curdir`, so phpcs's own parser sees a string that cannot start
+    with `-` at all — the same shape `validators/xmllint/xmllint.py`
+    (#2412) uses for a tool measured NOT to honour `--`.
+    """
+    if not file or os.path.isabs(file) or not file.startswith("-"):
+        return file
+    return os.path.join(os.curdir, file)
+
+
 def main() -> None:
     if len(sys.argv) < 2 or not sys.argv[1]:
         emit({
@@ -67,7 +82,7 @@ def main() -> None:
     ]
     if psr_exclude:
         cmd.append(f"--ignore={psr_exclude}")
-    cmd.append(file)
+    cmd.append(contained_target(file))
 
     start = time.time()
     try:

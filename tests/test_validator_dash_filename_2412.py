@@ -1,5 +1,5 @@
-"""15 validator adapters pass a flag-shaped filename to subprocess with no
-separator between the tool's own flags and the target (#2412, #2418).
+"""17 validator adapters pass a flag-shaped filename to subprocess with no
+separator between the tool's own flags and the target (#2412, #2418, #2438).
 
 A contributor can add a file named `-o=payload` or `--eval=x` to a pull
 request; this repo's own post-write validators then run on exactly that
@@ -8,7 +8,7 @@ option rather than a bare positional, a crafted filename changes what the
 validator does rather than what file it lints — the same class #1040
 already tracks for `repo:` accepting a leading `-` into `gh repo view`.
 
-Each of the 15 adapters below was checked against its own CLI behaviour
+Each of the 17 adapters below was checked against its own CLI behaviour
 (`--help`, or a local `--` smoke test against the real installed binary
 where available) rather than assumed to support `--` universally:
 
@@ -33,11 +33,18 @@ where available) rather than assumed to support `--` universally:
 
   reasoned NOT confirmed to honour `--` (no local binary; routed through
     containment rather than assumed): eslint, hadolint, stylelint,
-    terraform-check. Each is routed through the same `contained_target()`
-    shape `validators/pyright/pyright.py` (#2379) and
+    terraform-check, phpmd, psr. Each is routed through the same
+    `contained_target()` shape `validators/pyright/pyright.py` (#2379) and
     `validators/tsc-check/tsc-check.py` (#1519) already use for pyright/tsc
     — containment does not depend on the tool understanding `--` at all,
     so it is the safe default for a tool this pass could not verify.
+    phpmd and psr (#2412's own sweep missed both, filed as #2438) were
+    both unmeasured against a real binary in this pass too: phpmd's own
+    argv shape is positional (`<file> <format> <ruleset>`, file first,
+    not last) rather than GNU-getopt-style, so a `--` separator is not
+    known to be understood the way it is for the tools in the observed
+    group above; psr (phpcs) was likewise never measured. Containment
+    avoids depending on either answer.
 
 This file is the shared pattern #2412 asks for: table-driven, so a 20th
 adapter reusing the same shape is one row, not a new test file. It never
@@ -103,6 +110,8 @@ CASES = [
     ("stylelint", "stylelint/stylelint.py", "contained"),
     ("terraform-check", "terraform-check/terraform-check.py", "contained"),
     ("xmllint", "xmllint/xmllint.py", "contained"),
+    ("phpmd", "phpmd/phpmd.py", "contained"),
+    ("psr", "psr/psr.py", "contained"),
 ]
 
 #: Crafted names a real CLI's own flag parser reads as an option rather
@@ -130,7 +139,7 @@ def _spawn_calls(monkeypatch, tmp_path: Path, adapter: Path, unique: str,
     `shutil.which` is patched to report every tool present -- the adapter's
     OWN existence gate is not what this test is about -- and
     `subprocess.run` is captured rather than let through, so this never
-    depends on any of the 15 real tools being installed. Whatever `main()`
+    depends on any of the 17 real tools being installed. Whatever `main()`
     does with the canned reply afterwards (JSON it cannot parse, a shape it
     does not expect) is swallowed: the argv this test inspects was already
     built and sent before that.
