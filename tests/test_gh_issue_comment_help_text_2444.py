@@ -53,19 +53,25 @@ def _real_config(monkeypatch):
     monkeypatch.setattr(supertool, "_AT_FILE_REGISTRY_BUILT", False)
 
 
-def _load_issue_comment_module():
-    """Import `presets/github/issue_comment.py` in isolation, purely to
-    read its module-level `ACCEPTED_KEYS` -- never executes `main()`.
+def _load_preset_module(relpath: str, name: str):
+    """Import a `presets/...py` module in isolation, purely to read a
+    module-level constant (`ACCEPTED_KEYS`) -- never executes `main()`.
+    Generalised from the gh-issue-comment-only loader this file shipped
+    with, once self-review found the same #2444 defect live against the
+    three sibling ops below.
     """
     repo_root = Path(supertool.__file__).resolve().parent
-    mod_path = repo_root / "presets" / "github" / "issue_comment.py"
-    spec = importlib.util.spec_from_file_location(
-        "_test_issue_comment_2444", mod_path)
+    mod_path = repo_root / "presets" / relpath
+    spec = importlib.util.spec_from_file_location(name, mod_path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
+
+
+def _load_issue_comment_module():
+    return _load_preset_module("github/issue_comment.py", "_test_issue_comment_2444")
 
 
 class TestHelpTextNamesTheRealKeys:
@@ -110,3 +116,41 @@ class TestRegistryPinnedAgainstTheRealOp:
         assert set(
             supertool._PRESET_NAMED_PAYLOAD_FIELDS["gh-issue-comment"]
         ) == mod.ACCEPTED_KEYS
+
+
+class TestSiblingOpsShareTheSameFixAndFixture:
+    """Self-review (reviewer AND auditor, independently) found the #2444
+    fix own new code comment naming three sibling ops -- gh-issue-create,
+    gh-pr-create, gh-pr-edit -- as sharing the identical broken-help-text
+    shape, while the first pass of this fix only added gh-issue-comment to
+    the registry. Verified live against the pre-round-2 code: help colon
+    gh-issue-create and help colon gh-pr-edit both still printed reads its
+    argv from args after the #2444 first commit. This class closes that
+    gap and pins all three the same way the class above pins
+    gh-issue-comment.
+    """
+
+    @pytest.mark.parametrize(
+        "op",
+        ["gh-issue-create", "gh-pr-create", "gh-pr-edit"],
+    )
+    def test_help_shows_the_real_payload_keys(self, op: str) -> None:
+        out = supertool.dispatch("help:" + op)
+        assert "has no named payload fields" not in out
+        assert "reads its argv from 'args'" not in out
+        assert ("args = [" + _Q3) not in out
+
+    @pytest.mark.parametrize(
+        "op,relpath,modname",
+        [
+            ("gh-issue-create", "github/issue_create.py", "_test_issue_create_2444"),
+            ("gh-pr-create", "github/pr_create.py", "_test_pr_create_2444"),
+            ("gh-pr-edit", "github/pr_edit.py", "_test_pr_edit_2444"),
+        ],
+    )
+    def test_registry_matches_each_ops_own_accepted_keys(
+        self, op: str, relpath: str, modname: str
+    ) -> None:
+        mod = _load_preset_module(relpath, modname)
+        registered = supertool._PRESET_NAMED_PAYLOAD_FIELDS[op]
+        assert set(registered) == mod.ACCEPTED_KEYS

@@ -36,8 +36,14 @@ import _digits  # (the one ASCII-digit test, shared since #1727)
 # - pytest (ubuntu-latest, 3.12) (job #123) -- failure -- or a step name
 # containing the bare word failure never matches: neither begins a line
 # with the literal token FAILED followed by whitespace and a node id.
-_PYTEST_FAILED_LINE_RE = re.compile(
-    r"^FAILED\s+\S+(::|\.)\S+", re.MULTILINE)
+#
+# Only captures the token right after FAILED -- self-review caught that an
+# earlier version of this pattern (`\S+(::|\.)\S+` matched inline) fired on
+# ANY dotted token, so "FAILED build.sh exited with code 1" and "FAILED
+# main.py compile step" both read as MANUAL, which defeats the whole point
+# of a rule meant to tell a unit-test failure apart from other kinds. The
+# token itself is graded separately below.
+_PYTEST_FAILED_LINE_RE = re.compile(r"^FAILED\s+(\S+)", re.MULTILINE)
 
 # `raw` is here too, though its own START/END parsing lives in each preset.
 # `artifacts`/`artifact` (#1796): list a job's artifacts, or fetch one file
@@ -186,16 +192,31 @@ def classify_unit_test_failure(text: str) -> "str | None":
     issue's table (rector/prettier hunks, PHPStan, infra flakes) is
     deliberately NOT attempted here: the issue says a classifier needs a
     corpus first, and the corpus this rule was measured against
-    (`docs/operations/ci-failure-classification.md`, six real failed runs
-    on this repository, 2026-09-09) contained no instance of any of them --
-    this repository has no PHP/rector/PHPStan CI leg at all, so that half
-    of the original table may not even apply here.
+    (`docs/ci-failure-classification.md`, six real failed runs on this
+    repository, 2026-09-09) contained no instance of any of them -- this
+    repository has no PHP/rector/PHPStan CI leg at all, so that half of the
+    original table may not even apply here.
 
-    Matches BOTH separators a `FAILED` line ships in this codebase's own
-    `gh-job:ID:fail` output: pytest's native `path::test_name` and the
-    dotted `module.test_name` form `.github/scripts/junit_summary.py`
-    re-emits from junit.xml -- both observed live in the sample.
+    A `FAILED` line alone is not enough: self-review found that grading on
+    the presence of ANY dot or `::` right after the token matched
+    non-pytest lines too (`FAILED build.sh exited with code 1`, `FAILED
+    main.py compile step`), which defeats the rule's whole purpose. The
+    token right after `FAILED` must ALSO look like a real pytest node id --
+    pytest's native `path::test_name` form (any `::` at all -- pytest node
+    ids are the only thing in ordinary CI text that uses a double colon),
+    or the dotted `module.test_name` form `.github/scripts/junit_summary.py`
+    re-emits from junit.xml, gated on at least one dot-separated segment
+    starting with `test` (case-insensitive) -- a signal `build.sh` and
+    `main.py` do not carry, and every dotted node id in the observed
+    corpus does (`tests.test_go_warmup_lock_2331.test_two_racing...`).
     """
-    if _PYTEST_FAILED_LINE_RE.search(text):
-        return "MANUAL"
+    for match in _PYTEST_FAILED_LINE_RE.finditer(text):
+        token = match.group(1)
+        if "::" in token:
+            return "MANUAL"
+        segments = token.split(".")
+        if len(segments) >= 2 and any(
+            seg.lower().startswith("test") for seg in segments
+        ):
+            return "MANUAL"
     return None

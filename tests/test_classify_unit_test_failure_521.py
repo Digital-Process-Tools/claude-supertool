@@ -17,7 +17,7 @@ new test file. None of the issue's other rows (rector, PHPStan, infra
 timeout) occurred even once in this sample, which is itself the measurement
 this lane was asked to make: on a GitHub-Actions/pytest repo, the table's
 non-unit-test rows may not be where the mass of real failures lives at all.
-`docs/operations/ci-failure-classification.md` writes this up in full.
+`docs/ci-failure-classification.md` writes this up in full.
 
 `classify_unit_test_failure` recognises pytest's own short-summary marker --
 a line matching `FAILED <nodeid>` in either pytest's native `::`-separated
@@ -85,3 +85,17 @@ class TestDoesNotFireOnNonTestText:
 
     def test_empty_text_has_no_verdict(self) -> None:
         assert _job_argv.classify_unit_test_failure("") is None
+
+    def test_a_dotted_non_pytest_failed_line_does_not_fire(self) -> None:
+        """Self-review finding: an earlier version of this rule graded on
+        ANY dot right after the token, so a build/step failure line that
+        happens to contain a filename with a dot in it -- never a pytest
+        node id -- read as MANUAL too. `build.sh` and `main.py` are real
+        examples of tokens that must not trip the pytest marker.
+        """
+        assert _job_argv.classify_unit_test_failure(
+            "FAILED build.sh exited with code 1\n"
+        ) is None
+        assert _job_argv.classify_unit_test_failure(
+            "FAILED main.py compile step\n"
+        ) is None
