@@ -61,6 +61,9 @@ OPERATIONS
     grep:PATTERN:PATH:no-auto-read
                                Suppress the single-file auto-read — only the
                                 matching line(s) are emitted (parity with glob).
+    grep:PATTERN:PATH:...:full Suppress the 500-char per-line cap for this call
+                                only (#1712) — order-independent with count/
+                                no-auto-read; the default stays capped.
     grep:PATTERN:PATH:LIMIT    Search with custom result limit. LIMIT 0 is
                                 refused — it is not "unlimited" here. Omit
                                 LIMIT for the default.
