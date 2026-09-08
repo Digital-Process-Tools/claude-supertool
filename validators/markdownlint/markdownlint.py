@@ -203,7 +203,7 @@ def main() -> None:
 
     try:
         result = subprocess.run(
-            ["markdownlint", file],
+            ["markdownlint", "--", file],
             capture_output=True,
             text=True,
             timeout=TIMEOUT_S, encoding="utf-8", errors="replace",

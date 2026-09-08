@@ -54,6 +54,7 @@ Usage:  eslint.py <file>
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -66,6 +67,24 @@ from refusal import guard_main, required, required_but_absent, skipped, tool_fau
 from npx_absent import is_npx_absent
 
 TOOL = "eslint"
+
+
+def contained_target(file: str) -> str:
+    """`file`, spelled so eslint cannot read it as an option (#2412).
+
+    eslint's own CLI parsing was not measured against a real binary in
+    this pass (none was installed to test against) -- so rather than
+    assume `--` is honoured, this uses the same containment
+    `validators/pyright/pyright.py` (#2379) and
+    `validators/tsc-check/tsc-check.py` (#1519) already use for the
+    identical problem: a relative target starting with `-` is prefixed
+    with `os.curdir`, so eslint's argv parser sees a string that cannot
+    start with `-` regardless of what its own option grammar does with
+    `--`. An absolute path is already unambiguous and is left alone.
+    """
+    if not file or os.path.isabs(file) or not file.startswith("-"):
+        return file
+    return os.path.join(os.curdir, file)
 
 TIMEOUT_S = 60
 
@@ -176,7 +195,7 @@ def main() -> None:
     via_npx = base[0] != TOOL
 
     try:
-        r = subprocess.run(base + ["-f", "json", file], capture_output=True,
+        r = subprocess.run(base + ["-f", "json", contained_target(file)], capture_output=True,
                            text=True, timeout=TIMEOUT_S, encoding="utf-8",
                            errors="replace")
     except FileNotFoundError:

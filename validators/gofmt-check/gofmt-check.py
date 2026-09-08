@@ -114,7 +114,7 @@ def main() -> None:
         return
 
     try:
-        r = subprocess.run(["gofmt", "-l", file],
+        r = subprocess.run(["gofmt", "-l", "--", file],
                            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace")
     except FileNotFoundError:
         # `which` said yes and exec said no — a PATH entry that vanished

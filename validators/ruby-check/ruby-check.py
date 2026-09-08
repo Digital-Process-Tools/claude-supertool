@@ -117,7 +117,7 @@ def main() -> None:
 
     try:
         result = subprocess.run(
-            ["ruby", "-c", file],
+            ["ruby", "-c", "--", file],
             capture_output=True,
             text=True,
             timeout=TIMEOUT_S, encoding="utf-8", errors="replace",

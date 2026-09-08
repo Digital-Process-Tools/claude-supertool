@@ -26,6 +26,26 @@ from linebreaks import split_lines
 from refusal import absent, guard_main, tool_fault
 
 TOOL = "terraform-check"
+
+
+def contained_target(file: str) -> str:
+    """`file`, spelled so terraform cannot read it as an option (#2412).
+
+    terraform's own CLI parsing was not measured against a real binary in
+    this pass (none was installed to test against) -- so rather than
+    assume `--` is honoured, this uses the same containment
+    `validators/pyright/pyright.py` (#2379) and
+    `validators/tsc-check/tsc-check.py` (#1519) already use for the
+    identical problem: a relative target starting with `-` is prefixed
+    with `os.curdir`, so terraform's argv parser sees a string that
+    cannot start with `-` regardless of what its own option grammar does
+    with `--`. An absolute path is already unambiguous and is left alone.
+    """
+    if not file or os.path.isabs(file) or not file.startswith("-"):
+        return file
+    return os.path.join(os.curdir, file)
+
+
 INSTALL_HINT = ("terraform not found on PATH — this file was NOT "
                 "format-checked")
 
@@ -111,7 +131,7 @@ def main() -> None:
         return
 
     try:
-        r = subprocess.run(["terraform", "fmt", "-check", "-diff", file],
+        r = subprocess.run(["terraform", "fmt", "-check", "-diff", contained_target(file)],
                            capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace")
     except FileNotFoundError:
         # `which` said yes and exec said no — a PATH entry that vanished

@@ -12,6 +12,7 @@ Usage:  hadolint.py <file>
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -27,6 +28,26 @@ from path_anchor import (anchor as _anchor, safe_realpath as _safe_realpath,
                           anchor_miss_message as _anchor_miss_message)
 
 TOOL = "hadolint"
+
+
+def contained_target(file: str) -> str:
+    """`file`, spelled so hadolint cannot read it as an option (#2412).
+
+    hadolint's own CLI parsing was not measured against a real binary in
+    this pass (none was installed to test against) -- so rather than
+    assume `--` is honoured, this uses the same containment
+    `validators/pyright/pyright.py` (#2379) and
+    `validators/tsc-check/tsc-check.py` (#1519) already use for the
+    identical problem: a relative target starting with `-` is prefixed
+    with `os.curdir`, so hadolint's argv parser sees a string that cannot
+    start with `-` regardless of what its own option grammar does with
+    `--`. An absolute path is already unambiguous and is left alone.
+    """
+    if not file or os.path.isabs(file) or not file.startswith("-"):
+        return file
+    return os.path.join(os.curdir, file)
+
+
 INSTALL_HINT = ("hadolint not found on PATH — this Dockerfile was NOT linted "
                 "(`brew install hadolint`)")
 
@@ -124,7 +145,7 @@ def main() -> None:
 
     try:
         result = subprocess.run(
-            ["hadolint", "--format", "tty", file],
+            ["hadolint", "--format", "tty", contained_target(file)],
             capture_output=True,
             text=True,
             timeout=TIMEOUT_S, encoding="utf-8", errors="replace",
