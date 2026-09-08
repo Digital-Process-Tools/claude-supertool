@@ -5,6 +5,8 @@ match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+(proxy[[:space:]]+)?)?(python3?[[
 mode: block
 ---
 
+**This is a refusal, not a dead end: strip the pipe and resend the same call now — nothing else needs to change.**
+
 **Do not cut a supertool op's output.** The ops are already compressed and put
 the meaning at the **top** — header, then meta (`state`, `mergeable`, the summed
 check tally, `scanned N files`), then the body. `tail` selects against the header

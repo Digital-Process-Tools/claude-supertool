@@ -56,10 +56,27 @@ def envelope(stdout: str) -> Dict[str, Any]:
             "discards it and continues the ladder instead of answering "
             "(#1686), so what Claude Code sees depends on the next "
             "candidate, not on this stdout alone")
+    if verb == "note" and text == "":
+        # The same reason, one verb over (#2437). A bare, bodyless `note` is
+        # discarded by `attempt` exactly like `silent` - not because the
+        # word is unknown, but because it is bit-identical to what a rung
+        # that never touched `$BIN` can print for free. This mirror cannot
+        # know what the ladder's next candidate would have said either.
+        raise AssertionError(
+            "a bare note has no single-rung envelope any more: the wrapper "
+            "discards it and continues the ladder instead of answering "
+            "(#2437), so what Claude Code sees depends on the next "
+            "candidate, not on this stdout alone")
     if verb == "note":
         hook: Dict[str, Any] = {"additionalContext": text}
     elif verb == "deny":
         hook = {"permissionDecision": "deny", "permissionDecisionReason": text}
+    elif verb == "clean":
+        # `relay` hardcodes an empty `_note` for this verb (#2437) - no text
+        # a rung appends after it ever reaches `additionalContext`, forged
+        # or genuine, so the mirror ignores `text` here on purpose rather
+        # than by omission.
+        hook = {"additionalContext": ""}
     else:
         raise AssertionError("verb the wrapper cannot write: " + repr(verb))
     hook["hookEventName"] = "PreToolUse"

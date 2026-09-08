@@ -166,9 +166,22 @@ CR=$'\r'
 # `attempt`'s own vocabulary below rather than from this one - a rung that
 # prints it now gets exactly the treatment a rung that prints nothing
 # recognisable gets: discarded, walk continues. This file no longer has a
-# function that a rung's own text can reach to produce this envelope; the
-# nearest neighbour is `note` with an empty body, which still carries a field
-# a forger cannot get for free by staying silent.
+# function that a rung's own text can reach to produce this envelope.
+#
+# **The nearest neighbour, `note` with an empty body, turned out to be the
+# same gap wearing a real verb's name** (#2437). `$(...)` strips a trailing
+# newline, so a genuine, bodyless `_note ""` and a forger printing
+# `supertool-guard-v1 note` with nothing after it and exiting 0 used to be
+# the same string once `attempt` read it back - a rung did not even have to
+# guess a word outside the vocabulary, only the shortest legitimate one
+# with no body. Two changes, not one: `attempt` below now discards a bare
+# `note` the same way it discards `silent`, *and*
+# `hooks/pre_bash_guard.py`'s own genuine "nothing to say" moved to a third
+# verb, `clean`, whose case in `relay` below hardcodes this exact envelope
+# regardless of any text a rung appends - so this file, not the rung, is
+# what decides a `clean` answer carries no body, the same way it already
+# decides `permissionDecision` is a literal `deny` and nothing else. A
+# `note` that actually carries text is unaffected by either change.
 _note() {
     _json_string "$1"
     printf '%s' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"'"$JSON_STRING"'"}}'
@@ -191,17 +204,26 @@ decline() {
 
 # relay ANSWER - the envelope this script writes for a rung's answer.
 #
-# **Never called with a `silent` verb** (#1686): `attempt` below filters that
-# word out before this function is reached at all, treating it the same as a
-# candidate whose output does not match the wire protocol - discarded, walk
-# continues. Everything this function does receive has already been judged
-# "an answer this wrapper will honour as terminal", so what is left to sort
-# is only ever `note`, `deny`, or a dialect this build does not know.
+# **Never called with a `silent` verb** (#1686), and never with a bare,
+# bodyless `note` (#2437): `attempt` below filters both out before this
+# function is reached at all, treating each the same as a candidate whose
+# output does not match the wire protocol - discarded, walk continues.
+# Everything this function does receive has already been judged "an answer
+# this wrapper will honour as terminal", so what is left to sort is only
+# ever `note` (with text), `deny`, `clean`, or a dialect this build does not
+# know.
 #
 # The answer is a verb line and then, from the second line to the end, the
 # text. `$(...)` has already stripped the trailing newline, so an answer with
 # no newline at all is a bare verb with nothing after it rather than a
 # truncation.
+#
+# **`clean` is the one case where `$_text` is computed and then thrown
+# away** (#2437). It is `hooks/pre_bash_guard.py`'s own genuine "nothing to
+# say", and its whole point is that no rung - forged or real - gets to put
+# anything into the transcript through it: `_note ""` is called with a
+# literal this file writes, not with whatever a rung appended after the
+# verb.
 #
 # **A verb this script does not know is declined, not dropped and not
 # forwarded.** It cannot be forwarded - that is the defect. It must not be
@@ -230,6 +252,7 @@ relay() {
     case "$_verb" in
         note) _note "$_text" ;;
         deny) _deny "$_text" ;;
+        clean) _note "" ;;
     esac
     decline "the interpreter answered '${_verb:0:60}', which is not a verdict this wrapper knows how to write, so its answer was refused rather than relayed"
 }
@@ -292,6 +315,25 @@ attempt() {
             # legitimate side of this wrapper ever produces it, and folding
             # it into `PARTIAL_TRIED` would send a reader looking for a
             # crashed interpreter instead of a rung that lied.
+            ;;
+        "$WIRE_PREFIX"note|"$WIRE_PREFIX"note"$CR")
+            # A bare `note` with no body at all is the same free win #1686
+            # closed for `silent`, wearing the vocabulary's own verb name
+            # (#2437). `$(...)` strips a trailing newline, so a genuine,
+            # bodyless `_note ""` and a forger printing this and exiting 0
+            # used to collapse to the same string - a rung did not even
+            # need a word outside the real vocabulary, only the shortest
+            # legitimate one with nothing after it.
+            # `hooks/pre_bash_guard.py`'s own "nothing to say" no longer
+            # asserts `note` at all - it moved to a dedicated verb, `clean`,
+            # below - so this pattern only ever matches a rung asserting a
+            # `note` it has not backed with any content, discarded exactly
+            # like `silent` above: neither `relay` is called nor
+            # `PARTIAL_TRIED` is set, so the walk continues to the next
+            # candidate. A `note` that actually carries text - the whole
+            # reason the verb exists, an uncovered note, an undecided
+            # reason, a shipped rule's own text - is untouched: that is the
+            # `"$WIRE_PREFIX"*` branch below, same as ever.
             ;;
         "$WIRE_PREFIX"*)
             # The prefix identifies a Python 3 that ran — but a *prefix* of an
