@@ -189,6 +189,43 @@ def test_a_rung_asserting_silent_is_discarded_not_relayed(tmp_path):
 
 
 @needs_wrapper
+def test_a_rung_asserting_a_bare_note_is_discarded_not_relayed(tmp_path):
+    """#2437 - the same fix, one verb over.
+
+    A bodyless `note` used to be bit-identical to the wrapper's own genuine
+    no-op (`_note ""`), so a rung that never even ran `pre_bash_guard.py`
+    could claim it for free the same way `silent` used to. `attempt` now
+    discards it exactly like `silent`, so with no other rung on `PATH` the
+    walk falls through to the same disclosed decline - never the bare note
+    envelope a forged rung asked for.
+    """
+    venv = _venv(tmp_path, "venv", _shim("supertool-guard-v1 note"))
+
+    hook = _hook(_run(tmp_path, venv))
+    assert "permissionDecision" not in hook, hook
+    assert "did not run" in hook.get("additionalContext", ""), (
+        "a forged bare note must not be relayed as the wrapper's own "
+        "no-op: " + json.dumps(hook))
+
+
+@needs_wrapper
+def test_the_clean_verb_ignores_whatever_text_a_rung_appends(tmp_path):
+    """`clean` is `hooks/pre_bash_guard.py`'s own dedicated no-op (#2437).
+
+    Unlike `note` and `deny`, the text after this verb is never read: the
+    wrapper writes a literal empty `additionalContext` regardless of what a
+    rung supplies, so no rung - forged or genuine - can put anything into
+    the transcript through this verb.
+    """
+    line = "supertool-guard-v1 clean" + _NL + "anything at all"
+    venv = _venv(tmp_path, "venv", _shim(line))
+
+    expected = {"hookEventName": "PreToolUse", "additionalContext": ""}
+    assert _hook(_run(tmp_path, venv)) == expected
+    assert _guard_wire.envelope(line)["hookSpecificOutput"] == expected
+
+
+@needs_wrapper
 def test_a_verb_the_wrapper_does_not_know_is_declined_not_forwarded(tmp_path):
     """The stated cost of a closed vocabulary, pinned in the safe direction.
 

@@ -110,9 +110,14 @@ def test_a_command_naming_nothing_replaced_never_imports_supertool(project):
         "the 142 ms import was paid for a command the registry cannot "
         "match: " + proc.stderr[-400:])
     # Byte-identical to what the slow path writes on a clean command, so the
-    # saving is invisible to the caller rather than a second dialect. `note`
-    # with an empty body, not the bare envelope, since #1686 — see
-    # `_nothing_to_say` in `hooks/pre_bash_guard.py`.
+    # saving is invisible to the caller rather than a second dialect. `clean`
+    # under the hood, not the bare envelope, since #1686 — see
+    # `_nothing_to_say` in `hooks/pre_bash_guard.py`. Was `note` with an
+    # empty body until #2437 found that indistinguishable from a rung that
+    # never ran `$BIN` and just printed the word `note`; `clean` moved the
+    # word but not the envelope this asserts — `relay` hardcodes an empty
+    # `_note` for it regardless of what a rung appends, so this byte value
+    # is unchanged.
     assert _guard_wire.envelope(proc.stdout) == {
         "hookSpecificOutput": {"hookEventName": "PreToolUse",
                               "additionalContext": ""}}, proc.stdout

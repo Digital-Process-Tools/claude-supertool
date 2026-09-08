@@ -364,8 +364,9 @@ def test_a_powershell_command_naming_nothing_mapped_stays_silent(tmp_path):
         json.dumps({"ops": _preset("git")}), encoding="utf-8")
     hook = _run_hook("Get-ChildItem -Recurse", tmp_path,
                      tool="PowerShell")["hookSpecificOutput"]
-    # Falsy rather than absent (#1686): `_nothing_to_say` now writes `note`
-    # with an empty body rather than the bare envelope, so the key can be
+    # Falsy rather than absent (#1686): `_nothing_to_say` now writes `clean`
+    # rather than the bare envelope (#2437 moved it off `note` with an
+    # empty body, the same free win one verb later), so the key can be
     # present with nothing in it. Either shape discloses nothing to read.
     assert not hook.get("additionalContext"), hook
     assert "permissionDecision" not in hook, hook

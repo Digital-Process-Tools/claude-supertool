@@ -262,9 +262,9 @@ def _may_be_replaced(command: str, words) -> bool:
 #: document the wrapper can forward.
 WIRE_PREFIX = "supertool-guard-v1 "
 
-#: The whole vocabulary a rung may assert. Two words, not three (#1686):
-#: `silent` used to be here, and it was the one verb whose assertion by a
-#: rung is bit-identical to the wrapper's own genuine no-op --
+#: The whole vocabulary a rung may assert. `silent` used to be here, and it
+#: was the one verb whose assertion by a rung is bit-identical to the
+#: wrapper's own genuine no-op --
 #: `{"hookSpecificOutput":{"hookEventName":"PreToolUse"}}`, nothing else in
 #: the document, nothing in the transcript. `$VIRTUAL_ENV/bin/python3` is
 #: tried before every versioned interpreter (`hooks/python-ladder.sh`), so a
@@ -280,11 +280,27 @@ WIRE_PREFIX = "supertool-guard-v1 "
 #: this wire protocol, so the walk continues to the next rung instead of
 #: stopping. That closes the gap the same way #1625 closed it for `allow`:
 #: not by trusting the verb less, but by removing it from what a rung can
-#: assert. This file's own "nothing to say" therefore has to cross as
-#: something the wrapper still honours as terminal -- `note` with an empty
-#: body, in `_nothing_to_say` below -- rather than as the word that is no
-#: longer in the vocabulary.
-WIRE_VERBS = ("note", "deny")
+#: assert.
+#:
+#: **`note` with a truly empty body was the same gap wearing a real verb's
+#: name** (#1686 fixed `silent` and reintroduced this one in the same
+#: patch; found in #2437). `$(...)` strips a trailing newline, so a
+#: bodyless `_note ""` and a forger printing `supertool-guard-v1 note` with
+#: nothing after it and exiting 0 are the same string once `attempt` in
+#: `hooks/pre-bash-guard.sh` reads it back -- a rung did not even need a
+#: word outside the vocabulary, only the shortest legitimate one with no
+#: body. `attempt` now discards a bare `note` the same way it discards
+#: `silent`, so this file's own "nothing to say" has to cross as `clean`
+#: instead -- a third word, below, whose text `hooks/pre-bash-guard.sh`
+#: never reads at all: `relay` hardcodes an empty `_note` for it regardless
+#: of what a rung appends, so there is no body for a forger's own bytes to
+#: reach the transcript through. A rung asserting `clean` still gets the
+#: free win #1686 and #2437 could not close in general (a channel with no
+#: secret the rung cannot also read cannot be authenticated -- `_say`'s own
+#: docstring below says why) -- what changed is that the vocabulary a
+#: forger has to already know now excludes the two most obvious guesses,
+#: `silent` and a bare `note`.
+WIRE_VERBS = ("note", "deny", "clean")
 
 
 def _say(verb: str, text: str = "") -> None:
@@ -334,16 +350,33 @@ def _say(verb: str, text: str = "") -> None:
 def _nothing_to_say() -> None:
     """An answer that decides nothing — not the same bytes as no answer.
 
-    Was `_say("silent")` (#1686). `silent` is no longer a word this file may
-    write: it is the one verb a forger gets for free, since asserting it
-    costs nothing more than printing seven bytes and exiting 0, and the
-    result is indistinguishable from this file having run, checked, and
-    found nothing. `note` with an empty body is still terminal — the wrapper
-    still stops the ladder walk here and writes no decision — but it is a
-    word this file shares with every other real answer it gives, so a rung
-    that has not actually run this file has nothing free left to claim.
+    Was `_say("silent")` (#1686), then `_say("note", "")` — and that turned
+    out to be the same free win, wearing the vocabulary's own verb name
+    (#2437). `$(...)` strips a trailing newline, so
+    `WIRE_PREFIX + "note" + chr(10) + ""` and a forged rung that prints
+    `WIRE_PREFIX + "note"` and exits 0 — never touching `$BIN` at all —
+    collapse to the identical string once `hooks/pre-bash-guard.sh` reads
+    it back. A positive-control repro in #2437 proved it: forging `note`
+    with nothing after it reached the exact same envelope as a command the
+    guard genuinely had nothing to say about, disproving what this
+    docstring used to claim here — "a rung that has not actually run this
+    file has nothing free left to claim".
+
+    `WIRE_VERBS` now carries a third word, `clean`, reserved for exactly
+    this case. `hooks/pre-bash-guard.sh`'s `relay` hardcodes an empty
+    `_note` for it — no rung-supplied text ever reaches
+    `additionalContext` through this verb, forged or genuine — so the
+    envelope stays byte-identical to what it always was (falsy,
+    next to no bytes, one interpreter spawn: the fast path #1377 cut the
+    wrapper down to is unchanged), while `attempt` still discards a bare
+    `note` the same way it discards `silent`. This does not authenticate
+    the channel — `_say`'s own docstring above already says why that is
+    impossible on a channel with no secret the rung cannot also read, and
+    a forger who reads this file can print `clean` too — it only removes
+    the zero-knowledge guess, the same bound #1686's fix for `silent`
+    accepted.
     """
-    _say("note", "")
+    _say("clean")
 
 
 def _undecided(reason: str) -> None:
