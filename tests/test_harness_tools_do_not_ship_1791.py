@@ -219,10 +219,12 @@ def test_a_harness_file_tool_is_allowed_where_supertool_was_never_installed(
     project = _foreign_project(tmp_path)
     hook = _hook(tool, tool_input, project, tmp_path)
     assert "permissionDecision" not in hook, hook
-    # Falsy rather than absent (#1686): `_nothing_to_say` writes `note` with
-    # an empty body rather than the bare envelope, so the key can be present
-    # with nothing in it. `silent` used to be reachable by any rung, forged
-    # or real, for free - it no longer is, and this is the visible cost of
+    # Falsy rather than absent (#1686). `_nothing_to_say` writes `clean`
+    # rather than the bare envelope (#2437: `note` with an empty body was
+    # the same free win one verb later, so this moved off `note` too), so
+    # the key can be present with nothing in it. `silent` used to be
+    # reachable by any rung, forged or real, for free - it no longer is,
+    # and this is the visible cost of
     # that on the one case that carries no `command` at all to disclose
     # about.
     assert not hook.get("additionalContext"), hook

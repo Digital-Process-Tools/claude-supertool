@@ -19,7 +19,12 @@ of history and regex mechanics only the rule's own maintainers need.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
+
+from test_guard_interpreter_ladder_1390 import _OPS, _run_wrapper, needs_wrapper
 
 REPO = Path(__file__).resolve().parents[1]
 RULE = REPO / ".claude" / "jit-context" / "tools" / "00-manual" / "supertool-no-cut.md"
@@ -77,3 +82,48 @@ def test_the_addition_still_fits_the_per_match_budget():
     assert len(raw) <= 3200, (
         "the retry instruction pushed this rule over its per-match "
         "budget: " + str(len(raw)) + " bytes")
+
+
+@pytest.fixture
+def project(tmp_path: Path) -> Path:
+    (tmp_path / ".supertool.json").write_text(json.dumps(_OPS),
+                                                encoding="utf-8")
+    return tmp_path
+
+
+@needs_wrapper
+def test_the_retry_instruction_reaches_a_real_hook_envelope(project):
+    """The end-to-end half of the fix, not just the file on disk.
+
+    Reading the rule file directly (the two tests above) proves the prose
+    exists; it does not prove the wedged agent's own transcript ever
+    receives it. `shipped_rules.match` reads the same file, strips only
+    the frontmatter and appends a trailer (`hooks/shipped_rules.py`'s
+    `_body`), and `hooks/pre_bash_guard.py` writes that whole string into
+    `permissionDecisionReason` via `_say("deny", ...)`. This drives the
+    actual wrapper against a real piped supertool call - the shape #2421
+    reports - and reads the retry instruction back out of the JSON
+    document a caller's next turn would actually see, through the
+    frontmatter strip and the shell's own `_json_string` escaper, not
+    through a direct file read.
+    """
+    # `CLAUDE_PROJECT_DIR` decides which tree `owned_by_project` checks for a
+    # local copy of this rule (`hooks/shipped_rules.py`), and it is inherited
+    # from the *outer* environment by `subprocess.run` unless overridden -
+    # this test's own caller may well be running inside a checkout that owns
+    # its own copy, which would make the shipped rule silently stand down
+    # and this test pass for the wrong reason (`test_shipped_guard_rules_1698.py`
+    # pins the same override for the same reason).
+    proc = _run_wrapper("supertool 'read:a' | head", project,
+                        {"CLAUDE_PROJECT_DIR": str(project)})
+    assert proc.returncode == 0, proc.stderr
+    hook = json.loads(proc.stdout)["hookSpecificOutput"]
+    reason = hook.get("permissionDecisionReason", "")
+    assert hook.get("permissionDecision") == "deny", (
+        "the no-cut rule did not fire on a piped supertool call at all, "
+        "so this test proves nothing about what a wedged caller reads: "
+        + proc.stdout)
+    lowered = reason.lower()
+    assert "resend" in lowered or "retry" in lowered, (
+        "the retry instruction never reached the live refusal a caller "
+        "actually receives: " + reason[:400])
