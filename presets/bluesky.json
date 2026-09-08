@@ -57,7 +57,7 @@
       "cmd": "{python} {path}bluesky/repost.py {args}",
       "timeout": 15,
       "description": "Repost (boost) a Bluesky post — surfaces it to your followers.",
-      "syntax": "bluesky_repost:AT_URI_OR_WEB_URL",
+      "syntax": "bluesky_repost:AT_URI_OR_WEB_URL[|force]",
       "example": "bluesky_repost:https://bsky.app/profile/simonw.bsky.social/post/3kabc"
     },
     "bluesky_status_since": {

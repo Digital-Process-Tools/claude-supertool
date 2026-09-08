@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
 from _auth import get_publication_id, get_token
 from _graphql import gql, gql_safe
-from _publish_safety import safe_resolve_body_path  # noqa: E402
+from _publish_safety import safe_resolve_body_path, require_confirm  # noqa: E402
 
 QUERY = """
 mutation PublishPost($input: PublishPostInput!) {
@@ -123,6 +123,8 @@ def build_input(parsed: dict[str, object], publication_id: str) -> dict[str, obj
 
 def main(arg: str) -> None:
     parsed = parse_args(arg)
+    preview = f"{parsed['title']} ({len(str(parsed['markdown']))} chars md)"
+    require_confirm("hashnode_publish", preview, force=bool(parsed["force"]))
     token = get_token()
     if not parsed["force"]:
         already, url, slug = preflight_publish(str(parsed["canonical"]), token)

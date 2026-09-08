@@ -30,9 +30,11 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))  # for _publish_safety
 from _auth import env_truthy, get_token
 from _graphql import gql
 from _resolve import resolve_post_id
+from _publish_safety import require_confirm  # noqa: E402
 
 LIKE = """
 mutation LikePost($input: LikePostInput!) {
@@ -73,6 +75,7 @@ def preflight_react(post_id: str, token: str) -> tuple[bool | None, int]:
 
 def main(arg: str) -> None:
     raw, force = parse_args(arg)
+    require_confirm("hashnode_react", f"react to {raw}", force=force)
     token = get_token()
     post_id = resolve_post_id(token, raw)
     if not force:

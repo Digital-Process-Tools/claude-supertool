@@ -50,7 +50,7 @@ from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -
 from _outbound import append as track_append
 from _resolve import resolve_article_id
 from _session import fetch_csrf_token, get_session_cookie, web_post_json
-from _publish_safety import safe_resolve_body_path, apply_disclosure  # noqa: E402
+from _publish_safety import safe_resolve_body_path, apply_disclosure, require_confirm  # noqa: E402
 from _http import RedirectRefused, ResponseTooLarge, read_capped, urlopen  # noqa: E402
 
 WEB_BASE = "https://dev.to"
@@ -145,6 +145,7 @@ def preflight_comment(aid: int, me: str) -> tuple[bool | None, list[str], str]:
 def main(arg: str) -> None:
     use_utf8_stdout()
     raw, message, parent, force = parse_args(arg)
+    require_confirm("devto_comment", f"comment on {raw}: {message}", force=force)
     aid = resolve_article_id(raw)
     cookie = get_session_cookie()
     if not cookie:
