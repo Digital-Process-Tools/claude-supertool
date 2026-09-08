@@ -40,30 +40,93 @@ from __future__ import annotations
 
 import json
 import os
+import stat
+import sys
 from pathlib import Path
 from typing import NamedTuple, Optional
 
 
-def load_project_config() -> dict:
-    """The nearest tracked `.supertool.json`'s `slack` block, walking up from cwd.
+def _config_trust_violation(candidate: Path) -> Optional[str]:
+    """POSIX ownership/permission guard, mirroring `_supertool._load_config`'s
+    own #695 hardening (and `presets/worktree/_common.py`'s #2370 /
+    `presets/gitlab/_maintenance.py`'s #2365 copies of it -- presets cannot
+    import the core module, so each walk-up loader in this codebase
+    re-implements the same check rather than sharing it).
 
-    Same walk-and-stop-at-first-file shape as `_remote_default.config_default`
-    -- the first `.supertool.json` found is authoritative, and a malformed one
-    yields `{}` rather than continuing the search or raising. `{}` reads as
-    "no project narrowing configured", never as a widening: `resolve_channel`
-    only ever narrows on what this returns.
+    `load_project_config`'s result can NARROW a Slack channel's authorization
+    level (property 2 above), so a group/world-writable `.supertool.json`,
+    or one owned by a different local user, is exactly the file another
+    local account could rewrite between the moment it was reviewed and the
+    moment this module reads it -- the same TOCTOU shape #695 closed for
+    the core loader every other op goes through.
+
+    POSIX-only: `st_uid` and the write bits are meaningless on Windows, so
+    this returns `None` (trusted) unconditionally there. Root is treated as
+    trusted, matching `_supertool._config_trust_violation`.
     """
-    cwd = Path.cwd()
-    for directory in [cwd, *cwd.parents]:
-        candidate = directory / ".supertool.json"
-        if not candidate.is_file():
-            continue
-        try:
-            data = json.loads(candidate.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+    if os.name != "posix":
+        return None
+    try:
+        st = candidate.stat()
+    except OSError as exc:
+        return f"cannot stat: {exc}"
+    caller_uid = os.getuid()
+    if st.st_uid not in (caller_uid, 0) and caller_uid != 0:
+        return (
+            f"not owned by the current user (owner uid {st.st_uid}, "
+            f"running as uid {caller_uid})"
+        )
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return f"group/world-writable (mode {stat.S_IMODE(st.st_mode):o})"
+    return None
+
+
+def load_project_config() -> dict:
+    """The nearest tracked, TRUSTED `.supertool.json`'s `slack` block,
+    walking up from cwd and stopping at the nearest `.git` ancestor (#2416).
+
+    Same two limits `_supertool._load_config` (#695), `worktree._common
+    .load_config` (#2370) and `gitlab._maintenance.load_config` (#2365)
+    already carry -- a config is exactly as trusted as the project that
+    owns it, and this walk must not reach OUTSIDE that project, nor accept
+    a config another local account could have rewritten:
+
+    * the walk stops once it reaches a directory containing `.git` -- the
+      repo root -- rather than continuing to `/`; a cwd not inside a git
+      repo at all keeps walking to `/`, since there is no repo boundary;
+    * each candidate is checked with `_config_trust_violation` before it
+      is opened -- a file that is group/world-writable, or not owned by
+      the caller (or root), is skipped with a warning on stderr, exactly
+      like an absent one, so the walk can still find a further, trusted
+      config higher up (until the repo-root boundary above stops it).
+
+    A found-and-trusted-but-malformed file still yields `{}` rather than
+    continuing the search or raising. `{}` reads as "no project narrowing
+    configured", never as a widening: `resolve_channel` only ever narrows
+    on what this returns.
+    """
+    d = Path.cwd()
+    while True:
+        candidate = d / ".supertool.json"
+        if candidate.is_file():
+            violation = _config_trust_violation(candidate)
+            if violation is not None:
+                sys.stderr.write(
+                    f"WARNING: skipped {candidate} ({violation}) -- "
+                    f"ignoring it for slack authorization.\n"
+                )
+            else:
+                try:
+                    data = json.loads(candidate.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    return {}
+                return data if isinstance(data, dict) else {}
+        if (d / ".git").exists():
             return {}
-        return data if isinstance(data, dict) else {}
-    return {}
+        parent = d.parent
+        if parent == d:
+            return {}
+        d = parent
 
 
 class Decision(NamedTuple):
