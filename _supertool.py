@@ -1625,8 +1625,34 @@ def _mixed_tree_decline(op: str, pair: Tuple[str, str]) -> str:
     *validators, formatters and hooks* would have run instead). `op` and
     `pair` say which call and which two trees either way; nothing below
     names which caller it was, on purpose, since the remedy is identical.
+
+    The remedy branches on `op`'s own safety class (#2432). `cwd:{core}` is
+    genuinely safe advice for a read-only op -- it only needs `core`'s
+    presets/config to answer correctly, and nothing in `core` is touched. It
+    is dangerous advice for anything else: `cwd:PATH` really does
+    `os.chdir(PATH)` for the rest of the call (mirrors `cd PATH && ...`), so
+    a write that follows `cwd:{core}` runs against `core`'s own checked-out
+    branch -- not `other`'s -- with no further decline, because the mismatch
+    that triggered THIS decline is exactly what `cwd:` just erased. A caller
+    who wanted to push a worktree's branch and instead pushed the main
+    clone's currently-checked-out branch is that bug, observed (#2432).
     """
     core, other = pair
+    if _op_safety_class(op) == "read-only":
+        fix = (
+            f"Fix: run from {core}, or make the first op 'cwd:{core}'. To mix on "
+            f"purpose, set {_MIXED_TREE_ENV}=1 — the receipt then carries the "
+            f"pairing instead of a bare PASS.\n"
+        )
+    else:
+        fix = (
+            f"Fix: '{op}' is not read-only -- run it from INSIDE {other} with "
+            f"'python3 supertool.py {op}...' instead. Do NOT use 'cwd:{core}' "
+            f"here: that would silently retarget the write at {core}'s own "
+            f"checked-out branch, not {other}'s (#2432). To mix on purpose "
+            f"anyway, set {_MIXED_TREE_ENV}=1 — the receipt then carries the "
+            f"pairing instead of a bare PASS.\n"
+        )
     return (
         f"SKIPPED: '{op}' comes from a different supertool tree than the core "
         f"that is running.\n"
@@ -1636,9 +1662,7 @@ def _mixed_tree_decline(op: str, pair: Tuple[str, str]) -> str:
         f"Declined rather than PASSing for a build the tool cannot name: the "
         f"code you meant to exercise would not have run, and the answer would "
         f"have looked exactly like a correct one (#678).\n"
-        f"Fix: run from {core}, or make the first op 'cwd:{core}'. To mix on "
-        f"purpose, set {_MIXED_TREE_ENV}=1 — the receipt then carries the "
-        f"pairing instead of a bare PASS.\n"
+        + fix
     )
 
 
