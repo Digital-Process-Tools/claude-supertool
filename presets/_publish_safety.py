@@ -109,6 +109,22 @@ def _supertool_config() -> dict:
         if candidate.is_file():
             violation = _config_trust_violation(candidate)
             if violation is not None:
+                # Skipped exactly like an absent file (this function's own
+                # docstring) -- must NOT stop the walk here. The first cut
+                # of this fix unconditionally `break`-ed after this whole
+                # `if candidate.is_file():` block regardless of `violation`,
+                # so a stray world-writable file anywhere on the walk
+                # silently hid every config above it, including a
+                # legitimately-owned one inside the SAME repo (caught in
+                # self-review, oss:auditor spawn, with a reproduction:
+                # `tests/test_publish_safety_config_trust_2366`'s
+                # `test_an_untrusted_config_does_not_block_a_further_trusted_one_above_it`).
+                # Falling through to the `.git`/parent walk below, matching
+                # every sibling implementation
+                # (`_supertool._load_config`, `presets/gitlab/_maintenance.py`,
+                # `presets/worktree/_common.py`,
+                # `presets/slack/_authorization.py`), none of which stop on
+                # a violation either.
                 sys.stderr.write(
                     f"WARNING: skipped {candidate} ({violation}) -- "
                     f"ignoring it for publish safety.\n"
@@ -147,7 +163,11 @@ def _supertool_config() -> dict:
                         f"default, exactly as if this file set nothing at "
                         f"all.\n"
                     )
-            break
+                # A found-and-TRUSTED file stops the walk here, whether it
+                # parsed cleanly or not -- unlike the violation branch
+                # above, a trusted-but-malformed file is not "absent",
+                # matching every sibling implementation's own choice.
+                break
         if (d / ".git").exists():
             break
         if d.parent == d:

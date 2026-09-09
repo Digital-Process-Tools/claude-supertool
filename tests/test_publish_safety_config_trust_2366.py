@@ -100,3 +100,41 @@ def test_a_config_owned_by_this_user_and_not_writable_by_others_still_works(
     cfg = _publish_safety._supertool_config()
 
     assert cfg == {"no_publish_confirm": True}
+
+
+def test_an_untrusted_config_does_not_block_a_further_trusted_one_above_it(
+        fresh_config_cache, tmp_path) -> None:
+    """The walk must SKIP an untrusted candidate and keep going up, not
+    stop there -- an untrusted file is "exactly like an absent one" per
+    this function's own docstring, and every sibling implementation
+    (`_supertool._load_config`, `presets/gitlab/_maintenance.py`,
+    `presets/worktree/_common.py`, `presets/slack/_authorization.py`)
+    falls through to the `.git`-boundary check rather than stopping the
+    walk on a violation. Caught in self-review (oss:auditor spawn):
+    the first cut of this fix unconditionally `break`-ed after handling
+    a `.supertool.json`, whether or not it was trusted, so a stray
+    world-writable file anywhere on the walk silently hid every config
+    above it, all the way up to (and including) a legitimately-owned one
+    inside the SAME repo."""
+    if os.name != "posix":
+        pytest.skip("st_uid/write bits are POSIX-only")
+    if os.getuid() == 0:
+        pytest.skip("root bypasses the ownership check by design")
+    outer = tmp_path / ".supertool.json"
+    outer.write_text(json.dumps({"no_publish_confirm": True}), encoding="utf-8")
+    outer.chmod(0o644)
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    untrusted = sub / ".supertool.json"
+    untrusted.write_text(json.dumps({"no_publish_confirm": False}),
+                          encoding="utf-8")
+    untrusted.chmod(0o666)  # world-writable -- must be skipped
+    work = sub / "work"
+    work.mkdir()
+    os.chdir(work)
+
+    cfg = _publish_safety._supertool_config()
+
+    assert cfg == {"no_publish_confirm": True}, (
+        f"the untrusted nearer config must be skipped and the trusted "
+        f"outer one found instead -- got {cfg!r}")
