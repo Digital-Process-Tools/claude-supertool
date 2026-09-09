@@ -23,17 +23,21 @@ path that must *not* trigger a validator. All four are `labels.lane_coupling_all
 `presets/{github/prs,gitlab/mrs}.py`. That seam is what radar *is*, and those tests are the correct
 response to it.
 
-**Allowlist what you read, not what is noisy.** This paragraph named
-`test_git_no_optional_locks_other_sites_1945.py` as the one span deliberately left unacknowledged,
-because `dashboard.py` and `pr_merge.py` each carried a private `_git()` instead of the shared
-chokepoint. #2447 merged on 2026-09-09 and both now route through `presets/_git_run.py`, so the
-coupling the WARN pointed at is gone and what is left is a whole-repo guard spanning lanes on
-purpose -- allowlisted that day. **No span is unacknowledged now**; a new one is a new finding, not
-this one recurring.
+**Allowlist what you read, not what is noisy.** For a year the one span left unacknowledged here
+was `test_git_no_optional_locks_other_sites_1945.py`, because `dashboard.py` and `pr_merge.py` each
+carried a private `_git()` instead of the shared chokepoint. That is fixed: #2447 moved the
+invocation to `presets/_git_run.py` and both files import it.
 
-The rest of the paragraph still holds, and it is the part worth keeping: a `WARN` naming one real
-thing is worth more than a clean run, and an allowlist entry added to quiet a check that was right
-is how a board stops being read.
+**And the span count went UP, from 1 to 2, which is the part worth keeping.** A test whose job is to
+assert that two files in different lanes route through one shared chokepoint has to name both files.
+So the two guards that do it -- `test_git_invocation_chokepoint_2447.py` and the rewritten
+`test_git_no_optional_locks_other_sites_1945.py` -- are allowlisted, on the same ground as the ten
+radar-tier spans above: an architectural fact, and the test is the correct response to it. Chasing
+the number to zero here would have meant deleting the guard that keeps a fourth private wrapper from
+appearing.
+
+A `WARN` naming one real thing is still worth more than a clean run. What changed is which of the
+two this particular span was.
 
 Run either by hand while editing, with the plugin's `scripts/` on `PYTHONPATH`:
 `lane_pattern_coverage.lane_pattern_report(repo, patterns)` and
