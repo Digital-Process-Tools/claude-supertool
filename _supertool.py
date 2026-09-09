@@ -2672,7 +2672,7 @@ _BUILTIN_OPS = {"read", "grep", "grep_around", "glob", "ls", "tail", "head", "wc
 _DISPATCH_ONLY_OPS = {
     "between", "vim", "batch", "gc", "help", "version",
     "ops", "ops-compact", "introduction", "output-format", "registry",
-    "guard", "doctor", "init",
+    "guard", "doctor", "init", "json-set",
 }
 
 # Valid from the CLI but never reaching dispatch(): main() honours and strips
@@ -3248,7 +3248,7 @@ _OP_SAFETY_BUILTIN: Dict[str, str] = {
     # writes — changes files in this tree
     "append": "writes", "batch": "writes", "edit": "writes",
     "format": "writes", "format_staged": "writes", "gc": "writes",
-    "init": "writes",
+    "init": "writes", "json-set": "writes",
     "paste": "writes", "rename": "writes", "replace": "writes",
     "replace_lines": "writes", "vim": "writes",
 }
@@ -13285,6 +13285,108 @@ def op_edit(old: str, new: str, path: str) -> str:
     for ln in range(ctx_start, ctx_end + 1):
         marker = "→" if start_line <= ln <= end_line else " "
         out.append(f"  {ln:>5} {marker} {new_lines[ln - 1]}\n")
+    return "".join(out)
+
+
+def op_json_set(path: str, fields: Dict[str, Any]) -> str:
+    """Set one or more fields in a JSON file by dotted key path, in one write
+    (#1822).
+
+    Closes the gap between `paste` (whole file) and `edit` (exact-string,
+    single occurrence): a JSON report with ~100 fields where 8 changed had
+    no proportional route — every re-send was the full 22 KB. This op takes
+    a small `fields` mapping (`{"tests.green.result": "..."}`) and does the
+    whole-file work internally: parse, set each leaf on the in-memory
+    document, re-serialize.
+
+    Never guesses at structure. Three refusals, none of them silent:
+      - the file does not parse as JSON at all — this is not a text patch,
+        it needs a real document to walk;
+      - a dotted path's leading segment does not resolve to an existing
+        object — `json-set` sets fields, it does not fabricate the objects
+        that would contain them (use `paste` for a new structure);
+      - a value TOML can produce that JSON cannot represent (a date/time
+        literal) — refused before anything is written, not coerced.
+
+    Because the write is always a full valid re-serialization of a
+    document this function itself parsed, a well-formed call cannot land
+    syntactically invalid JSON on disk — unlike `edit`/`vim`'s raw text
+    patches, which is why `edit` needs the same-shape rollback guarantee
+    and this op inherits it structurally. It is still routed through
+    `_run_with_validators`/`jsonlint` (`rollback_on_fail: true`) like every
+    other write op, so a validator this repo has not yet configured — a
+    schema check, say — gets the identical safety net for free.
+    """
+    if not path:
+        return "ERROR: empty path\n"
+    if not fields:
+        return "ERROR: empty set — nothing to change\n"
+    if not os.path.isfile(path):
+        return _path_not_found(path, label="file", op="json-set")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = f.read()
+    except OSError as e:
+        return f"ERROR: failed to read {path}: {e}\n"
+    try:
+        doc = json.loads(raw)
+    except json.JSONDecodeError as e:
+        return (f"ERROR: {path} does not parse as JSON — json-set refuses to "
+                f"guess at a document it cannot read: {e}\n")
+    if not isinstance(doc, dict):
+        return (f"ERROR: {path}'s top level is a {type(doc).__name__}, not a "
+                f"JSON object — json-set only sets fields inside an object\n")
+
+    changes: List[Tuple[str, bool, Any, Any]] = []
+    for dotted_key, new_value in fields.items():
+        if not isinstance(dotted_key, str) or not dotted_key:
+            return (f"ERROR: json-set field name must be a non-empty string, "
+                     f"got {dotted_key!r}\n")
+        segs = dotted_key.split(".")
+        if any(not s for s in segs):
+            return (f"ERROR: {dotted_key!r} is not a valid dotted field path "
+                     f"(empty segment)\n")
+        cur: Any = doc
+        walked: List[str] = []
+        for seg in segs[:-1]:
+            if not isinstance(cur, dict) or seg not in cur:
+                return (
+                    f"ERROR: {dotted_key!r} — "
+                    f"{'.'.join(walked + [seg])} does not exist in {path}; "
+                    f"json-set will not create missing intermediate objects. "
+                    f"Use paste for a new structure.\n"
+                )
+            cur = cur[seg]
+            walked.append(seg)
+        leaf = segs[-1]
+        if not isinstance(cur, dict):
+            return (
+                f"ERROR: {dotted_key!r} — {'.'.join(walked) or '(top level)'} "
+                f"in {path} is a {type(cur).__name__}, not an object; cannot "
+                f"set a field inside it\n"
+            )
+        existed = leaf in cur
+        old_value = cur.get(leaf)
+        cur[leaf] = new_value
+        changes.append((dotted_key, existed, old_value, new_value))
+
+    try:
+        new_content = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+    except (TypeError, ValueError) as e:
+        return f"ERROR: a value for json-set is not JSON-serializable: {e}\n"
+
+    try:
+        _atomic_write(path, new_content)
+    except OSError as e:
+        return f"ERROR: failed to write {path}: {e}\n"
+
+    out = [f"set {len(changes)} field(s) in "
+           f"{_flat_field(path, disclose_newline=True)}\n"]
+    for dotted_key, existed, old_value, new_value in changes:
+        verb = "changed" if existed else "added"
+        old_disp = json.dumps(old_value) if existed else "(absent)"
+        new_disp = json.dumps(new_value)
+        out.append(f"  {dotted_key}: {old_disp} -> {new_disp} ({verb})\n")
     return "".join(out)
 
 
@@ -23528,6 +23630,12 @@ _OP_TARGETS: Dict[str, Any] = {
     "paste":         lambda parts: parts[1] if len(parts) > 1 else "",
     "append":        lambda parts: parts[1] if len(parts) > 1 else "",
     "vim":           lambda parts: parts[1] if len(parts) > 1 else "",
+    # json-set never reaches the flat @file field-mapping route (#1822): its
+    # payload's `set` field is a table, not a scalar, so dispatch builds
+    # `parts = ["json-set", path]` itself after loading the payload -- see
+    # the "json-set" branch below. This extractor only has to agree with that
+    # shape.
+    "json-set":      lambda parts: parts[1] if len(parts) > 1 else "",
 }
 
 
@@ -26254,7 +26362,7 @@ def _formatters_run_batch(
     return [_formatter_run_one(name, spec, path) for name, spec in applicable.items()]
 
 
-_ADVICE_DEFAULT_OPS = ("edit", "paste", "append", "replace", "replace_lines", "vim")
+_ADVICE_DEFAULT_OPS = ("edit", "paste", "append", "replace", "replace_lines", "vim", "json-set")
 
 
 def _advice_added_text(path: str, pre_content: Optional[bytes]) -> str:
@@ -31869,6 +31977,66 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
             vim_path = parts[1] if len(parts) > 1 else ""
             vim_script = ":".join(parts[2:]) if len(parts) > 2 else ""
             body = _run_with_validators(op, parts, lambda: op_vim(vim_path, vim_script))
+        elif op == "json-set":
+            # json-set:@file / json-set:@- only (#1822) -- its 'set' field
+            # is a table (dotted-key -> value), not a scalar, so it cannot
+            # go through the flat @file field-mapping route every other
+            # write op uses (_at_file_to_parts / _AT_FILE_BUILTIN_DEFAULTS).
+            # Same shape as "batch" just above: read the raw payload dict
+            # here, validate it by hand, then build the two-element `parts`
+            # _OP_TARGETS["json-set"] already expects.
+            js_ref = parts[1] if len(parts) > 1 else ""
+            if not js_ref.startswith("@"):
+                body = (
+                    f"ERROR: json-set takes an @file/@- payload, not colon "
+                    f"arguments (got {js_ref!r}) -- write json-set:@- with "
+                    f"'path' and 'set' fields in the payload.\n"
+                )
+            else:
+                try:
+                    js_payload = _load_at_file(js_ref)
+                except ValueError as _je:
+                    body = f"ERROR: {_je}\n"
+                else:
+                    if not isinstance(js_payload, dict):
+                        body = (
+                            f"ERROR: @file payload for op 'json-set' must be "
+                            f"a JSON/TOML object with 'path' and 'set' "
+                            f"fields, got {type(js_payload).__name__}\n"
+                        )
+                    else:
+                        js_lower = {str(k).lower(): v for k, v in js_payload.items()}
+                        js_unknown = sorted(set(js_lower) - {"path", "set"})
+                        if js_unknown:
+                            body = (
+                                f"ERROR: @file payload for op 'json-set' has "
+                                f"unknown field(s) {_flat_keys(js_unknown)} "
+                                f"-- accepted: path, set\n"
+                            )
+                        elif "path" not in js_lower:
+                            body = (
+                                "ERROR: @file payload for op 'json-set' "
+                                "missing required field 'path'\n"
+                            )
+                        elif "set" not in js_lower:
+                            body = (
+                                "ERROR: @file payload for op 'json-set' "
+                                "missing required field 'set'\n"
+                            )
+                        elif not isinstance(js_lower["set"], dict):
+                            body = (
+                                f"ERROR: @file payload field 'set' for op "
+                                f"'json-set' must be a table mapping dotted "
+                                f"field paths to values, got "
+                                f"{type(js_lower['set']).__name__}\n"
+                            )
+                        else:
+                            js_path = str(js_lower["path"])
+                            js_fields = js_lower["set"]
+                            js_parts = ["json-set", js_path]
+                            body = _run_with_validators(
+                                "json-set", js_parts,
+                                lambda: op_json_set(js_path, js_fields))
         elif op == "batch":
             # batch:@file — run multiple ops from a JSON file.
             # Payload: bare array of {"op":"X",...} objects, OR wrapper object
