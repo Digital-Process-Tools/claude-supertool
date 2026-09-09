@@ -157,6 +157,22 @@ def test_new_text_existing_elsewhere_is_not_a_re_application(tmp_path: Path) -> 
 # share the same bug and must be covered too
 # ---------------------------------------------------------------------------
 
+def test_multiline_non_global_caps_the_reapplied_count_at_one(tmp_path: Path) -> None:
+    """A multiline PAT (one containing a literal newline) with no `g` flag
+    only substitutes the FIRST match in the whole buffer -- `_run_sub`'s
+    own multiline branch calls `rx.subn(..., count=n_max)` with `n_max=1`.
+    The reapply count must be capped the same way: reporting more
+    re-applied occurrences than substitutions actually made is an
+    internally contradictory receipt (#2358 self-review)."""
+    f = tmp_path / "x.txt"
+    f.write_text("foo\nbar-X\nfoo\nbar-X\nfoo\nbar\n", encoding="utf-8")
+
+    out = supertool.op_vim(str(f), ":s/foo\\nbar/foo\\nbar-X/")
+    assert "1 subs" in out, out
+    assert "[2 re-applied]" not in out, out
+    assert "[1 re-applied]" in out, out
+
+
 def test_literal_fallback_after_regex_parse_error_is_covered(tmp_path: Path) -> None:
     """`(` with no closing paren is an invalid regex; the handler falls back
     to a literal match. That path built its own replacement string by hand
