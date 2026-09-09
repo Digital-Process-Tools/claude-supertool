@@ -1230,7 +1230,13 @@ def unpushed_for(branch: str, remote_ref: str, how: str = "") -> Sync:
 
 def _pr_detail(pr: dict) -> str:
     number = pr.get("number", "?")
-    base = pr.get("baseRefName") or "?"
+    # `baseRefName` is one of `_untrusted`'s six refname keys. This value
+    # becomes a `Tracker.detail`, and `flat(tracker.detail)` is applied at
+    # the eventual print site -- but that flattening happens one function
+    # away from this read, which the AST guard cannot see across (#976).
+    # Flattened here at the source instead of relying on that: one of the
+    # two live instances #976 named as needing a direct fix.
+    base = _untrusted.flat(pr.get("baseRefName") or "?")
     tally = _checks.summarize_github(pr.get("statusCheckRollup"))
     bits = [f"PR #{number} → {base}", tally]
     mergeable = pr.get("mergeable")

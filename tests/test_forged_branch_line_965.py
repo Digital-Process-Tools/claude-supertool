@@ -374,38 +374,96 @@ def _call_names(node: ast.AST) -> set[str]:
     return names
 
 
-def _refnames_in(node: ast.AST) -> set[str]:
-    """Both read shapes, because the dict does not care which you use.
+def _is_marker_call(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    fn = node.func
+    name = fn.attr if isinstance(fn, ast.Attribute) else (
+        fn.id if isinstance(fn, ast.Name) else None)
+    return name in MARKERS
 
+
+def _iter_unmarked(node: ast.AST):
+    """Every sub-node of `node` that is not an ARGUMENT of a marker call.
+
+    #976's "dangerous" shape (H): `MARKERS & _call_names(sub.value)` used to
+    be an any-marker-ANYWHERE test over the whole sub-expression, so
+    `flat(t) + d.get('headRefName')` cleared the entire expression because
+    `flat` appeared somewhere in it — laundering the unflattened `d.get(...)`
+    sitting right beside it. This walks the tree carrying one bit of state,
+    "am I currently inside a marker call's arguments", and only a node
+    reached with that bit False is yielded. A marker call's own arguments
+    flip the bit to True for everything under them; nothing else does. `G`
+    (two separate marker/non-marker reads in the same f-string, each its own
+    sub-expression) still passes: the non-marker read is never nested inside
+    the marker call, so it is reached with the bit still False.
+    """
+    stack = [(node, False)]
+    while stack:
+        n, safe = stack.pop()
+        if _is_marker_call(n):
+            if not safe:
+                yield n
+            for child in ast.iter_child_nodes(n):
+                stack.append((child, True))
+            continue
+        if not safe:
+            yield n
+        for child in ast.iter_child_nodes(n):
+            stack.append((child, safe))
+
+
+def _refname_key(node: ast.AST) -> "str | None":
+    """The REFNAME_KEYS member `node` reads, or None.
+
+    Both read shapes, because the dict does not care which you use.
     `d.get("target")` and `d["target"]` are the same read. The first draft
     matched only `.get`, so `push.py`'s `mr['target']` was invisible to it —
     a second way the same value walked past the same scan (#1038).
     """
-    keys = set()
-    for sub in ast.walk(node):
-        name = None
-        if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
-                and sub.func.attr == "get" and sub.args):
-            first = sub.args[0]
-            if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                name = first.value
-        elif (isinstance(sub, ast.Subscript)
-              and isinstance(sub.slice, ast.Constant)
-              and isinstance(sub.slice.value, str)):
-            name = sub.slice.value
-        if name in REFNAME_KEYS:
-            keys.add(name)
-    return keys
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get" and node.args):
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            return first.value if first.value in REFNAME_KEYS else None
+        return None
+    if (isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)):
+        return node.slice.value if node.slice.value in REFNAME_KEYS else None
+    return None
 
 
 def _unmarked_refnames(node: ast.AST) -> set[str]:
-    keys = _refnames_in(node)
-    return set() if MARKERS & _call_names(node) else keys
+    """Direct `.get()`/subscript reads of a REFNAME_KEYS member, anywhere in
+    `node` that is not inside a marker call's own arguments (#976).
+
+    Deliberately broad about the *shape wrapping* the read — a `BinOp`, a
+    `.format()` call, a second `print()` argument, `sys.stdout.write(...)`
+    are all just nodes `_iter_unmarked` walks through — because the read
+    itself, `X.get("headRefName")` or `X["baseRefName"]` naming one of six
+    known literal strings, is a narrow, low-false-positive signature
+    regardless of what expression happens to contain it. That is NOT true of
+    following an already-tainted *variable* through further computation
+    (a regex match, `.group()`, a container built and later `.join()`-ed) --
+    see `_scan_scope`'s own note on why that is deliberately NOT chased here.
+    """
+    return {key for sub in _iter_unmarked(node)
+            if (key := _refname_key(sub)) is not None}
 
 
 def _is_sink(node: ast.AST) -> bool:
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-        return node.func.id == "print"
+    if isinstance(node, ast.Call):
+        fn = node.func
+        if isinstance(fn, ast.Name):
+            return fn.id == "print"
+        # `sys.stdout.write(...)` (#976: N_sys_stdout_write) -- specifically
+        # that chain, not every `.write(...)` call, so a preset's own file
+        # or socket writes are not swept in as an unrelated new sink class.
+        return (isinstance(fn, ast.Attribute) and fn.attr == "write"
+                and isinstance(fn.value, ast.Attribute)
+                and fn.value.attr == "stdout"
+                and isinstance(fn.value.value, ast.Name)
+                and fn.value.value.id == "sys")
     return isinstance(node, ast.Return) and node.value is not None
 
 
@@ -437,6 +495,36 @@ def _scopes(tree: ast.AST) -> list:
     return [(s, inner if s is tree else set()) for s in out]
 
 
+def _assign_targets(node: ast.AST) -> "list | None":
+    """`[(target_name_node, value_node), ...]` this statement taints, or
+    `None` if it is not an assignment shape this scanner tracks at all.
+
+    Positional tuple/list unpacking (#976: `a, b = 1, d.get('headRefName')`)
+    is handled here rather than falling through the old `isinstance(target,
+    ast.Name)` check, which silently skipped a tuple target completely --
+    not narrowing what it caught, just never looking. `AugAssign` (`x +=
+    ...`) joins the same table: its target is always singular and a `Name`
+    or nothing tracked.
+    """
+    if isinstance(node, ast.AugAssign):
+        return [(node.target, node.value)] if node.value is not None else []
+    if isinstance(node, ast.AnnAssign):
+        if node.value is None:
+            return []
+        return [(node.target, node.value)]
+    if not isinstance(node, ast.Assign) or node.value is None:
+        return []
+    pairs = []
+    for target in node.targets:
+        if (isinstance(target, (ast.Tuple, ast.List))
+                and isinstance(node.value, (ast.Tuple, ast.List))
+                and len(target.elts) == len(node.value.elts)):
+            pairs.extend(zip(target.elts, node.value.elts))
+        else:
+            pairs.append((target, node.value))
+    return pairs
+
+
 def _scan_scope(path: Path, scope: ast.AST, skip: set) -> list[str]:
     # Source order, not `ast.walk` order: a name is tainted or cleaned by the
     # last assignment *above* the print, and walking breadth-first reads those
@@ -448,23 +536,43 @@ def _scan_scope(path: Path, scope: ast.AST, skip: set) -> list[str]:
     tainted: dict[str, str] = {}
     found: list[str] = []
     for node in nodes:
-        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
-            targets = (node.targets if isinstance(node, ast.Assign)
-                       else [node.target])
-            keys = _unmarked_refnames(node.value)
-            for target in targets:
-                if not isinstance(target, ast.Name):
-                    continue
-                if keys:
-                    tainted[target.id] = sorted(keys)[0]
-                else:
-                    tainted.pop(target.id, None)
+        for target, value in _assign_targets(node):
+            if not isinstance(target, ast.Name):
+                continue
+            # Deliberately `_unmarked_refnames` alone, NOT "does this value
+            # reference an already-tainted name" -- that second rule was
+            # tried and reverted (#976): `mr_iid = mr_match.group(1)` after
+            # `mr_match = re.match(pattern, ref)` chained taint through two
+            # unrelated derived values (a regex match object, its captured
+            # group) onto locals that never carry the raw refname text,
+            # which is exactly "a scanner with false findings is one
+            # somebody adds an allowlist to" from this function's own
+            # docstring, arriving from the propagation side instead of the
+            # coverage side. A `.get()`/subscript read of one of the six
+            # literal keys is a narrow signature wherever it sits; a bare
+            # variable reference is not, once it has passed through a call.
+            keys = _unmarked_refnames(value)
+            if keys:
+                tainted[target.id] = sorted(keys)[0]
+            else:
+                tainted.pop(target.id, None)
         # `print(...)` is not the only sink. `push._open_mr_line` *returns*
         # the f-string its caller prints, so keying on print() alone certified
         # a line that reaches a terminal one frame up (#1038). A returned
         # f-string in a preset is rendered text by construction.
         if not _is_sink(node):
             continue
+        # A CALL sink (print/sys.stdout.write) is the terminal render. A
+        # RETURN is not necessarily one -- `presets/github/prs.py::_branches`
+        # returns `_board.branch_pair(p.get("headRefName"), p.get(...))`
+        # for its caller to hand to `_board.render_row`, which flattens
+        # EVERY cell (`_untrusted.py`'s own docstring). Scanning a `return`
+        # as broadly as a `print()` call turned that load-bearing pattern
+        # into a false positive (#976); restrict the whole-argument scan
+        # below to call sinks and keep `return` on the narrower
+        # FormattedValue-scoped check two paragraphs down, which is what
+        # #1038 was actually written to catch.
+        is_call_sink = isinstance(node, ast.Call)
         for arg in _sink_args(node):
             # `return line`, where `line` was built from a refname two lines
             # up. No FormattedValue of its own, so the loop below never sees
@@ -472,12 +580,25 @@ def _scan_scope(path: Path, scope: ast.AST, skip: set) -> list[str]:
             if isinstance(arg, ast.Name) and arg.id in tainted:
                 found.append(f"{path.name}:{node.lineno} "
                              f"{tainted[arg.id]} (via {arg.id})")
+            if is_call_sink:
+                # One pass over the WHOLE argument for a direct refname read
+                # OUTSIDE any f-string wrapper -- `+`/`%` concatenation, a
+                # `.format()` call, a second `print()` argument
+                # (#976's C/D/E/F). The old code only walked
+                # `ast.FormattedValue` nodes for this, which is why an
+                # f-string was covered and every other shape was not.
+                for key in sorted(_unmarked_refnames(arg)):
+                    found.append(f"{path.name}:{node.lineno} {key}")
             for sub in ast.walk(arg):
                 if not isinstance(sub, ast.FormattedValue):
                     continue
-                marked = bool(MARKERS & _call_names(sub.value))
+                # A direct read inside an f-string (#976's H, via the
+                # precise `_unmarked_refnames`/`_iter_unmarked` marker
+                # scoping above) -- applies to `return` too, matching
+                # #1038's own case.
                 for key in sorted(_unmarked_refnames(sub.value)):
                     found.append(f"{path.name}:{node.lineno} {key}")
+                marked = bool(MARKERS & _call_names(sub.value))
                 if marked:
                     continue
                 for name in ast.walk(sub.value):
@@ -486,7 +607,6 @@ def _scan_scope(path: Path, scope: ast.AST, skip: set) -> list[str]:
                             f"{path.name}:{node.lineno} "
                             f"{tainted[name.id]} (via {name.id})")
     return found
-
 
 def _raw_refname_prints(path: Path) -> list[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"))

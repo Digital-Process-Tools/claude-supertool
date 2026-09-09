@@ -25,8 +25,61 @@ from pathlib import Path
 from typing import Optional
 
 
+def _config_trust_violation(candidate: Path) -> Optional[str]:
+    """POSIX ownership/permission guard, mirroring `_supertool._load_config`'s
+    own #695 hardening (and `presets/gitlab/_maintenance.py`'s #2365 /
+    `presets/worktree/_common.py`'s #2370 / `presets/slack/_authorization.py`'s
+    #2416 copies of it -- presets cannot import the core module, so each
+    walk-up loader in this codebase re-implements the same check rather than
+    sharing it).
+
+    `_supertool_config`'s result feeds `require_confirm`, `_body_allowlist`
+    and `_disclosure_config` -- publish-credential-adjacent decisions for
+    `bluesky`/`devto`/`hashnode`. A group/world-writable `.supertool.json`,
+    or one owned by a different local user, is exactly the file another
+    local account could rewrite between the moment it was reviewed and the
+    moment this module reads it -- the same TOCTOU shape #695 closed for the
+    core loader every other op goes through (#2366).
+
+    POSIX-only: `st_uid` and the write bits are meaningless on Windows, so
+    this returns `None` (trusted) unconditionally there. Root is treated as
+    trusted, matching `_supertool._config_trust_violation`.
+    """
+    if os.name != "posix":
+        return None
+    try:
+        st = candidate.stat()
+    except OSError as exc:
+        return f"cannot stat: {exc}"
+    caller_uid = os.getuid()
+    if st.st_uid not in (caller_uid, 0) and caller_uid != 0:
+        return (
+            f"not owned by the current user (owner uid {st.st_uid}, "
+            f"running as uid {caller_uid})"
+        )
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return f"group/world-writable (mode {stat.S_IMODE(st.st_mode):o})"
+    return None
+
+
 def _supertool_config() -> dict:
-    """Walk up from cwd to find `.supertool.json`. Cached per process.
+    """Walk up from cwd to find `.supertool.json`, stopping at the nearest
+    `.git` ancestor and skipping a config this process does not own
+    (#2366). Cached per process.
+
+    Two limits, matching `_supertool._load_config`'s own #695 hardening --
+    a config is exactly as trusted as the project that owns it, and this
+    walk must not reach OUTSIDE that project, nor accept a config another
+    local account could have rewritten:
+
+    * the walk stops once it reaches a directory containing `.git` -- the
+      repo root -- rather than continuing to `/`; a cwd not inside a git
+      repo at all keeps walking to `/`, since there is no repo boundary;
+    * each candidate is checked with `_config_trust_violation` before it
+      is opened -- a file that is group/world-writable, or not owned by
+      the caller (or root), is skipped with a warning on stderr, exactly
+      like an absent one, so the walk can still find a further, trusted
+      config higher up (until the repo-root boundary above stops it).
 
     An unreadable or malformed file used to fall back to `cfg = {}` with
     nothing said anywhere -- indistinguishable from a config file that
@@ -54,37 +107,48 @@ def _supertool_config() -> dict:
     while True:
         candidate = d / ".supertool.json"
         if candidate.is_file():
-            try:
-                parsed = json.loads(candidate.read_text(encoding="utf-8"))
-                if isinstance(parsed, dict):
-                    cfg = parsed
-                else:
+            violation = _config_trust_violation(candidate)
+            if violation is not None:
+                sys.stderr.write(
+                    f"WARNING: skipped {candidate} ({violation}) -- "
+                    f"ignoring it for publish safety.\n"
+                )
+            else:
+                try:
+                    parsed = json.loads(candidate.read_text(encoding="utf-8"))
+                    if isinstance(parsed, dict):
+                        cfg = parsed
+                    else:
+                        sys.stderr.write(
+                            f"WARNING: {candidate} does not hold a JSON object "
+                            f"(got {type(parsed).__name__}) -- ignoring it. "
+                            f"Every publish safety setting (disclosure, body "
+                            f"allowlist, confirmation) falls back to its "
+                            f"default, exactly as if this file set nothing at "
+                            f"all.\n"
+                        )
+                except (OSError, json.JSONDecodeError,
+                        UnicodeDecodeError) as exc:
+                    # UnicodeDecodeError is a ValueError, not an OSError, so
+                    # it is caught by name rather than folded into the tuple
+                    # above by inheritance -- the same gap
+                    # `_supertool.py::_load_config` already closed for the
+                    # sibling loader (#418): a `.supertool.json` that is not
+                    # valid UTF-8 used to escape this clause entirely and
+                    # crash the whole publish op, which is the opposite of
+                    # the "warn and fall back, never refuse" policy this
+                    # function's own docstring states (self-review finding
+                    # on #2306, confirmed by the oss:auditor spawn).
                     sys.stderr.write(
-                        f"WARNING: {candidate} does not hold a JSON object "
-                        f"(got {type(parsed).__name__}) -- ignoring it. "
+                        f"WARNING: could not read {candidate} "
+                        f"({exc.__class__.__name__}: {exc}) -- ignoring it. "
                         f"Every publish safety setting (disclosure, body "
                         f"allowlist, confirmation) falls back to its "
                         f"default, exactly as if this file set nothing at "
                         f"all.\n"
                     )
-            except (OSError, json.JSONDecodeError,
-                    UnicodeDecodeError) as exc:
-                # UnicodeDecodeError is a ValueError, not an OSError, so it
-                # is caught by name rather than folded into the tuple above
-                # by inheritance -- the same gap `_supertool.py::_load_config`
-                # already closed for the sibling loader (#418): a
-                # `.supertool.json` that is not valid UTF-8 used to escape
-                # this clause entirely and crash the whole publish op, which
-                # is the opposite of the "warn and fall back, never refuse"
-                # policy this function's own docstring states (self-review
-                # finding on #2306, confirmed by the oss:auditor spawn).
-                sys.stderr.write(
-                    f"WARNING: could not read {candidate} "
-                    f"({exc.__class__.__name__}: {exc}) -- ignoring it. "
-                    f"Every publish safety setting (disclosure, body "
-                    f"allowlist, confirmation) falls back to its default, "
-                    f"exactly as if this file set nothing at all.\n"
-                )
+            break
+        if (d / ".git").exists():
             break
         if d.parent == d:
             break

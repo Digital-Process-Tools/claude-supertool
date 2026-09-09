@@ -3690,6 +3690,23 @@ def _containment_error(candidates: Iterable[str], *,
     was not the property wanted; the routes agreed on the wrong rule. Deleted
     rather than moved back or made a parameter: a skip that guards nothing and
     opens something is only the hole.
+
+    Accepted risk, documented rather than closed (#896 F3): this realpaths
+    each candidate ONCE, here, and the op that runs afterwards re-resolves
+    the same string independently -- `open()`, `os.path.realpath()` inside
+    the op body, whatever that op already does. A symlink swapped between
+    this check's resolution and the op's own is the classic TOCTOU window:
+    the containment gate validates one target, the op reads another. This is
+    not a defect #892 (or any single PR) introduced -- it is the shape of
+    "check, then act" wherever the check and the act are two separate
+    syscalls, which is every route through this gate. Closing it for real
+    means opening the file through an `O_NOFOLLOW`-style handle at check
+    time and using THAT handle for the op, rather than a path string handed
+    off to be resolved a second time -- a change to every op's own open
+    path, not to this function, and out of proportion to a low-severity,
+    narrow-window race that needs a second local account (or process)
+    racing the exact candidate path between two syscalls. Named here so the
+    gap is on the record rather than pretended closed.
     """
     for candidate in candidates:
         if not candidate or candidate == ".":
@@ -28400,7 +28417,25 @@ def _at_root() -> str:
 
 
 def _resolve_at_path(rel: str) -> str:
-    """Absolute path for a relative `@payload` reference. No existence check."""
+    """Absolute path for a relative `@payload` reference. No existence check.
+
+    Accepted risk, documented rather than gated (#896 F2): the reference
+    ITSELF -- the string after `@` -- is never passed through
+    `_containment_error`/`_safe_path`. `grep:@/tmp/outside.toml` loads and
+    parses a file outside the project root. Verified NOT a content-disclosure
+    channel, so this is intentionally a documentation fix rather than a code
+    fix: every field read out of that file is either re-gated on its own (a
+    `path`/`paths` field goes back through `_containment_error` like any
+    other op argument) or, if it is not path-shaped, never leaves this
+    process as content -- `_load_at_file_raw`'s TOML/JSON parse errors report
+    only a line/column position, never the text that failed to parse. What
+    an attacker-chosen `@` reference outside the root actually buys is an
+    existence-and-parseability oracle for paths outside cwd (does a file
+    exist there, is it valid TOML/JSON) -- low value, and gating it would
+    mean containment-checking the CLI argument that NAMES a payload before
+    the payload's own fields are even read, a second boundary next to the
+    one `_containment_error` already owns for op arguments.
+    """
     if os.path.isabs(rel):
         return rel
     return os.path.join(_at_root(), rel)

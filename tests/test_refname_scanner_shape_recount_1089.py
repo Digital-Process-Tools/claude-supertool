@@ -17,16 +17,32 @@ Measured method: each shape is written to its own scratch file under
 `_raw_refname_prints`, and classified caught/missed by whether it produced
 any finding at all.
 
-Recounted 2026-09-07: 4 of 14 (A, B, G, K), not 1 of 14. `B_subscript` is the
-one #1038 actually fixed since #976 was filed. `H_marker_in_same_expr` is
-still a real gap and is the one #976 itself flagged as "the dangerous one":
-`_unmarked_refnames` treats ANY marker call anywhere in the same expression
-as clearing the whole expression, so `flat(t) + d.get('headRefName')` inside
-one f-string still launders the raw access beside it. `C`, `D`, `E`, `F`,
-`I`, `J`, `L`, `M`, `N` are unchanged misses, each already named in #1089's
-own "Not covered" table (concatenation/percent/`.format`, two-arg `print`,
-tuple-unpack, an inter-procedural helper, a variable-keyed `.get`,
-`AugAssign`, `sys.stdout.write`).
+Recounted 2026-09-07: 4 of 14 (A, B, G, K), not 1 of 14.
+
+Recounted again for #976's own widening: 12 of 14 (A, B, C, D, E, F, G, H,
+I, K, M, N). `H_marker_in_same_expr` -- #976's own "the dangerous one" --
+is fixed: the marker check no longer clears an entire expression just
+because a marker call appears somewhere in it, only the marker call's own
+arguments (`_iter_unmarked` in the scanner). `C`/`D`/`E`/`F`/`N` are caught
+by scanning a whole CALL-sink argument for a direct refname read instead of
+only the inside of an f-string; `I`/`M` by tracking a direct `.get()`/
+subscript read through tuple-unpack and `AugAssign` the same way a plain
+`Assign` already was.
+
+Two of the original fourteen remain misses, and #976 draws the line there
+deliberately rather than chasing them: `J_via_helper` needs following a
+value across a call into a DIFFERENT function's own locals (inter-procedural
+taint tracking); `L_dict_get_var_key` needs constant-propagating a string
+literal into a dict lookup keyed by a variable rather than a literal. Both
+are one step past "which syntactic shapes carry a value that was read
+directly, in this same function" into "trace what a value becomes" -- the
+general taint tracker this scanner has never tried to be. A third shape
+that LOOKS similar to a widening but is not one: chasing an already-tainted
+NAME through further computation (not just re-display) was tried and
+reverted, because it chained taint through `presets/gitlab/job.py`'s
+`mr_match = re.match(pattern, ref)` / `mr_iid = mr_match.group(1)` onto
+locals that never carry the raw refname text -- see `_scan_scope`'s own
+comment in the scanner for the mechanism.
 """
 from __future__ import annotations
 
@@ -112,8 +128,16 @@ CLEAN_SHAPE = (
 CAUGHT_NOW = frozenset({
     "A_baseline_get_fstring",
     "B_subscript",
+    "C_concat",
+    "D_print_two_args",
+    "E_percent_format",
+    "F_str_format",
     "G_marker_elsewhere_in_same_fstring",
+    "H_marker_in_same_expr",
+    "I_tuple_assign",
     "K_walrus",
+    "M_augassign",
+    "N_sys_stdout_write",
 })
 
 
@@ -136,7 +160,7 @@ def test_the_recount_is_4_of_14_not_1_of_14(tmp_path: Path) -> None:
         f"the whole point of #1089's ask is that this number gets re-derived, "
         f"not re-typed."
     )
-    assert len(CAUGHT_NOW) == 4
+    assert len(CAUGHT_NOW) == 12
     assert len(SHAPES) == 14
 
 
@@ -148,8 +172,17 @@ def test_the_clean_baseline_is_never_flagged(tmp_path: Path) -> None:
     assert not _caught(scanner, tmp_path, "O_clean_flat", CLEAN_SHAPE)
 
 
-def test_h_marker_in_same_expr_is_the_named_live_gap() -> None:
+def test_h_marker_in_same_expr_is_no_longer_the_live_gap() -> None:
     """#976 called this shape out by name as "the dangerous one": a marker
-    call ANYWHERE in the same expression clears the whole expression, so a
-    flattened value and a raw one sharing one f-string both read as safe."""
-    assert "H_marker_in_same_expr" not in CAUGHT_NOW
+    call ANYWHERE in the same expression used to clear the whole expression,
+    so a flattened value and a raw one sharing one f-string both read as
+    safe. #976 fixed the marker check to be scoped to the marker call's own
+    arguments; this is now caught."""
+    assert "H_marker_in_same_expr" in CAUGHT_NOW
+
+
+def test_j_and_l_are_the_remaining_documented_boundary() -> None:
+    """The only two of the original fourteen still missed, and named as a
+    deliberate boundary rather than an oversight (see this module's own
+    docstring, and `tests/test_refname_scanner_widened_976.py`)."""
+    assert set(SHAPES) - CAUGHT_NOW == {"J_via_helper", "L_dict_get_var_key"}
