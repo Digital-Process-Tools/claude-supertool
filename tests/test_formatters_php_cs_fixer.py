@@ -266,5 +266,9 @@ def test_noop_reports_no_touched_line_range(tmp_path: Path) -> None:
     assert_ok(data)
     assert data["metrics"]["lines_added"] == 0
     assert data["metrics"]["lines_removed"] == 0
-    assert data["metrics"].get("first_changed_line") is None
-    assert data["metrics"].get("last_changed_line") is None
+    # Bracket access, not .get(): a .get() default of None cannot tell
+    # "computed None" from "the key was never added" -- the exact gap that
+    # would make this control pass unchanged against the pre-#2458 code,
+    # which never populated these keys at all.
+    assert data["metrics"]["first_changed_line"] is None
+    assert data["metrics"]["last_changed_line"] is None
