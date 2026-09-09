@@ -177,12 +177,15 @@ def _call(url: str, headers: dict[str, str], body: dict | None,
     except http.client.HTTPException as e:
         return None, f"ERROR: incomplete response: {type(e).__name__}: {e}"
     except ValueError as e:
-        # http.client.InvalidURL and UnicodeDecodeError both subclass
-        # ValueError -- the first reached if a URL component ever carries a
-        # control character (mirrors presets/bluesky/_atproto.py), the
-        # second if a gateway ever answers with a non-UTF-8 body (found in
-        # review; #526). Either way this stays "never raises" rather than
-        # trading a crash-on-bad-input bug for a silent one.
+        # UnicodeDecodeError subclasses ValueError, reached if a gateway
+        # ever answers with a non-UTF-8 body. `http.client.InvalidURL` does
+        # NOT reach this arm -- it subclasses `http.client.HTTPException`
+        # (verified: `InvalidURL.__mro__`), so a URL component carrying a
+        # control character is already caught by the `HTTPException` arm
+        # above, just under its "incomplete response" wording rather than
+        # this one -- found while auditing the sibling `devto-engagement`
+        # source's identical comment against the real MRO (#526 second-pass
+        # review).
         return None, f"ERROR: bad response: {e}"
     try:
         return json.loads(text), ""

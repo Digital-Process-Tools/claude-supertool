@@ -116,6 +116,20 @@ def test_a_baseline_comment_fetch_failure_does_not_lock_in_a_false_empty_set(mon
     assert sorted(state["known"]["100"]["comment_ids"]) == ["c1", "c2"]
 
 
+def test_a_credential_file_that_cannot_be_read_falls_through_rather_than_raising(monkeypatch, tmp_path):
+    """A TOCTOU deletion, a permission error, or a non-UTF-8 byte in a
+    hand-edited token file must not raise past `_resolve_api_key` -- a
+    poller that crashes here is a watcher that silently stops covering
+    anything (found in second-pass review; #526)."""
+    monkeypatch.delenv("DEVTO_API_KEY", raising=False)
+    bad = tmp_path / "token"
+    bad.write_bytes(b"\xff\xfe not valid utf-8")
+    monkeypatch.setattr(feed.os.path, "expanduser",
+                        lambda p: str(bad) if p == "~/.config/devto/token" else p)
+    monkeypatch.chdir(tmp_path)
+    assert feed._resolve_api_key() is None
+
+
 def test_the_max_articles_knob_matches_status_since(monkeypatch):
     """The same env var `devto_status_since` reads (`SUPERTOOL_STATUS_POSTS`)
     decides how many articles this source covers too, so the two agree
