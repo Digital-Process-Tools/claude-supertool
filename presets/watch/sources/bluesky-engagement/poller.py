@@ -116,23 +116,36 @@ EVENT_KEYS = (
 
 def _resolve_handle_and_password() -> tuple[str, str] | None:
     """Mirrors `presets/bluesky/_auth.py`'s resolution order, but returns
-    `None` instead of exiting — see the module docstring for why."""
+    `None` instead of exiting — see the module docstring for why. That
+    includes a credential *file* that cannot be read: a TOCTOU deletion, a
+    permission error, or a non-UTF-8 byte in a hand-edited file must fall
+    through to the next candidate rather than raise past this function into
+    the dispatcher's generic failure counter, which reports nothing on the
+    wire until it gives up on the whole watcher -- far short of the
+    immediate, edge-triggered `engagement_unreachable` a credential problem
+    deserves (found in review; #526)."""
     handle = os.environ.get("BLUESKY_HANDLE", "").strip()
     if not handle:
         for p in ("~/.config/bluesky/handle", ".bluesky-handle"):
             path = Path(os.path.expanduser(p))
-            if path.is_file():
-                handle = path.read_text(encoding="utf-8").strip()
-                if handle:
-                    break
+            try:
+                if path.is_file():
+                    handle = path.read_text(encoding="utf-8").strip()
+                    if handle:
+                        break
+            except (OSError, UnicodeDecodeError):
+                continue
     password = os.environ.get("BLUESKY_APP_PASSWORD", "").strip()
     if not password:
         for p in ("~/.config/bluesky/app_password", ".bluesky-app-password"):
             path = Path(os.path.expanduser(p))
-            if path.is_file():
-                password = path.read_text(encoding="utf-8").strip()
-                if password:
-                    break
+            try:
+                if path.is_file():
+                    password = path.read_text(encoding="utf-8").strip()
+                    if password:
+                        break
+            except (OSError, UnicodeDecodeError):
+                continue
     if not handle or not password:
         return None
     return handle, password
@@ -163,6 +176,14 @@ def _call(url: str, headers: dict[str, str], body: dict | None,
         return None, f"ERROR: network: {e.reason}"
     except http.client.HTTPException as e:
         return None, f"ERROR: incomplete response: {type(e).__name__}: {e}"
+    except ValueError as e:
+        # http.client.InvalidURL and UnicodeDecodeError both subclass
+        # ValueError -- the first reached if a URL component ever carries a
+        # control character (mirrors presets/bluesky/_atproto.py), the
+        # second if a gateway ever answers with a non-UTF-8 body (found in
+        # review; #526). Either way this stays "never raises" rather than
+        # trading a crash-on-bad-input bug for a silent one.
+        return None, f"ERROR: bad response: {e}"
     try:
         return json.loads(text), ""
     except json.JSONDecodeError:

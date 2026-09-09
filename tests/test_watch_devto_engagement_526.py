@@ -93,6 +93,47 @@ def test_a_reply_to_my_own_comment_fires_reply_received_instead(monkeypatch):
     assert events[0]["payload"]["parent"] == "c1"
 
 
+def test_a_baseline_comment_fetch_failure_does_not_lock_in_a_false_empty_set(monkeypatch):
+    """A first-seen article whose /comments call fails on that very tick must
+    not record an empty comment_ids baseline -- otherwise the next
+    successful fetch diffs the article's whole pre-existing comment set
+    against that false empty set and announces every one of them as new
+    (found in review; #526)."""
+    _rig(monkeypatch)
+    _population(monkeypatch, _article("100"))
+
+    def _fail(aid, api_key):
+        return None, "ERROR: dev.to timed out"
+
+    monkeypatch.setattr(feed, "fetch_comment_ids", _fail)
+    events, state = feed.poll({}, CTX)
+    assert events == []
+    assert "100" not in state["known"]
+
+    _comments(monkeypatch, {"100": [{"id": "c1", "parent": ""}, {"id": "c2", "parent": ""}]})
+    events, state = feed.poll(state, CTX)
+    assert events == []
+    assert sorted(state["known"]["100"]["comment_ids"]) == ["c1", "c2"]
+
+
+def test_the_max_articles_knob_matches_status_since(monkeypatch):
+    """The same env var `devto_status_since` reads (`SUPERTOOL_STATUS_POSTS`)
+    decides how many articles this source covers too, so the two agree
+    about what "recent" means for one account instead of guessing
+    separately (found in review; #526's docs claimed this before the code
+    did it)."""
+    monkeypatch.setenv("SUPERTOOL_STATUS_POSTS", "3")
+    seen = {}
+
+    def _fake_get(path, api_key, query=None, timeout=20):
+        seen["query"] = query
+        return [], ""
+
+    monkeypatch.setattr(feed, "_get", _fake_get)
+    feed.fetch_population("@me", "key")
+    assert seen["query"]["per_page"] == 3
+
+
 def test_a_reaction_crossing_a_threshold_fires_once(monkeypatch):
     _rig(monkeypatch)
     _population(monkeypatch, _article("100", reactions=9))

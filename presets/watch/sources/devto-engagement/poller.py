@@ -72,6 +72,7 @@ _DEVTO_DIR = _PRESETS_DIR / "devto"
 sys.path.insert(0, str(_PRESETS_DIR))
 sys.path.insert(0, str(_DEVTO_DIR))
 
+from _env import env_int  # noqa: E402  (the one numeric-knob reader, #654)
 from _http import (  # noqa: E402
     DeadlineExceeded,
     RedirectRefused,
@@ -92,8 +93,10 @@ BASE = "https://dev.to/api"
 DEFAULT_SCOPE = "@me"
 
 # Bounded on purpose: one extra /comments call per article per tick, so this
-# is also the ceiling on API traffic per poll.
-MAX_ARTICLES = 10
+# is also the ceiling on API traffic per poll. Same knob `devto_status_since`
+# already reads (`SUPERTOOL_STATUS_POSTS`), so the two agree about what
+# "recent" means for one account rather than each guessing its own number.
+DEFAULT_MAX_ARTICLES = 10
 
 REACTION_THRESHOLDS = (10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000)
 
@@ -114,16 +117,27 @@ EVENT_KEYS = (
 def _resolve_api_key() -> str | None:
     """Mirrors `presets/devto/_auth.py::get_api_key`'s resolution order, but
     returns `None` instead of exiting -- see the module docstring for why a
-    poller cannot afford `sys.exit` on a missing credential."""
+    poller cannot afford `sys.exit` on a missing credential. That includes a
+    credential *file* that cannot be read: a TOCTOU deletion between
+    `is_file()` and `read_text()`, a permission error, or a non-UTF-8 byte in
+    a hand-edited token file must fall through to the next candidate and
+    finally to `None`, not raise past this function into the dispatcher's
+    generic failure counter -- which reports nothing on the wire at all
+    until it gives up on the whole watcher, far short of the immediate,
+    edge-triggered `engagement_unreachable` a credential problem deserves
+    (found in review; #526)."""
     val = os.environ.get("DEVTO_API_KEY", "").strip()
     if val:
         return val
     for p in ("~/.config/devto/token", ".devto-token"):
         path = Path(os.path.expanduser(p))
-        if path.is_file():
-            text = path.read_text(encoding="utf-8").strip()
-            if text:
-                return text
+        try:
+            if path.is_file():
+                text = path.read_text(encoding="utf-8").strip()
+                if text:
+                    return text
+        except (OSError, UnicodeDecodeError):
+            continue
     return None
 
 
@@ -157,6 +171,14 @@ def _get(path: str, api_key: str, query: dict[str, Any] | None = None,
         return None, f"ERROR: network: {e.reason}"
     except http.client.HTTPException as e:
         return None, f"ERROR: incomplete response: {type(e).__name__}: {e}"
+    except ValueError as e:
+        # http.client.InvalidURL and UnicodeDecodeError both subclass
+        # ValueError -- the first reached if a query value ever carries a
+        # control character (mirrors presets/devto/_rest.py::request), the
+        # second if a gateway ever answers with a non-UTF-8 body (found in
+        # review; #526). Either way this stays "never raises" rather than
+        # trading a crash-on-bad-input bug for a silent one.
+        return None, f"ERROR: bad response: {e}"
     if not text:
         return {}, ""
     try:
@@ -174,8 +196,9 @@ def fetch_population(scope: str, api_key: str) -> tuple[dict[str, dict[str, Any]
     if scope != DEFAULT_SCOPE:
         return None, (f"ERROR: scope {scope!r} is not supported — only "
                       f"{DEFAULT_SCOPE!r} (your own published articles)")
+    max_articles = env_int("SUPERTOOL_STATUS_POSTS", DEFAULT_MAX_ARTICLES, minimum=1)
     data, error = _get("/articles/me/published", api_key,
-                       query={"per_page": MAX_ARTICLES})
+                       query={"per_page": max_articles})
     if error:
         return None, error
     if not isinstance(data, list):
@@ -266,10 +289,21 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
 
         comment_rows, _c_error = fetch_comment_ids(aid, api_key)
         if comment_rows is None:
-            # Could not read this article's comments this tick -- carry the
-            # previous ids forward unchanged rather than guessing, so a
-            # transient failure never manufactures a false arrival on the
-            # next successful tick.
+            if baseline:
+                # Never seen this article before, and could not read its
+                # comments on this very tick either -- there is no known
+                # comment set to carry forward. Recording `comment_ids: []`
+                # here would lock in an empty baseline: the next successful
+                # fetch would then diff the article's whole pre-existing
+                # comment set against that false empty set and announce
+                # every one of them as new, which is the exact false-arrival
+                # a transient failure must never cause. Leaving the article
+                # out of `new_known` keeps it baseline (silent) until a poll
+                # actually establishes what was already there.
+                continue
+            # Already established once -- carry the previous ids forward
+            # unchanged rather than guessing, so a transient failure never
+            # manufactures a false arrival on the next successful tick.
             current_ids = prev_ids
             by_parent: dict[str, str] = {}
         else:
