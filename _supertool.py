@@ -26128,6 +26128,19 @@ def _formatter_render_row(result: Dict[str, Any]) -> Optional[str]:
 
     if ok:
         line = f"{name:8s}: ok         ({dur}ms) +{added} -{removed}"
+        # #2405: a same-session `around_line` read taken before this write
+        # can be stale the moment the formatter touches lines the caller
+        # never asked it to -- unrelated to the edit that triggered the
+        # write. Naming the before-file span here (present only on the
+        # four SCHEMA adapters that compute it) is the cheapest place a
+        # caller (or the harness) can learn to re-read before reusing that
+        # earlier read as a later `edit`'s `old` string.
+        first = metrics.get("first_changed_line")
+        last = metrics.get("last_changed_line")
+        if first is not None and last is not None:
+            span = f"line {first}" if first == last else f"lines {first}-{last}"
+            line += (f"  ({span} touched -- an earlier read of that region "
+                     f"is now stale, re-read before reusing it)")
     else:
         errors = result.get("errors") or []
         msg = result.get("msg") or (errors[0].get("msg") if errors else "") or "failed"
