@@ -996,6 +996,109 @@ class TestGithubIssueCreate:
         assert "labels" in out
 
 
+
+class TestGithubIssueCreateDryRun:
+    """#2415: gh-issue-create has no dry-run, so verifying it costs a real
+    issue every time -- #2407, #2410, #2413 were each filed and immediately
+    closed in one session just to find out whether the op worked at all.
+    `dry_run = true` must run parse, key/alias resolution, repo resolution
+    and field validation exactly as a real call would, then stop BEFORE the
+    `gh` subprocess (either the GraphQL create or the REST fallback) is
+    ever invoked."""
+
+    def test_dry_run_makes_no_transport_call(self, monkeypatch, capsys, tmp_path):
+        payload = dict(GH_FULL)
+        payload["dry_run"] = True
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        gh_calls: list[list[str]] = []
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: gh_calls.append(args) or _ok(GH_URL))
+
+        def _no_json_calls(*a, **kw):
+            raise AssertionError("dry_run must not reach the REST fallback transport either")
+        monkeypatch.setattr(gh, "_gh_json", _no_json_calls)
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+
+        assert rc == 0, out
+        assert gh_calls == [], "dry_run made a real gh call"
+        assert "DRY-RUN" in out
+        assert "gh-issue-create" in out
+        # the preview must actually show what would have been sent
+        assert "Full issue" in out
+        assert "bug" in out and "enhancement" in out
+        assert "fdavid" in out
+        assert "v1.0" in out
+
+    def test_dry_run_still_runs_field_validation(self, monkeypatch, capsys, tmp_path):
+        """A dry_run payload missing a required field must still be refused
+        -- dry-run previews a valid call, it does not skip validation."""
+        payload = {"repo": "Digital-Process-Tools/claude-supertool", "dry_run": True}
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        called: list[list[str]] = []
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: called.append(args) or _ok(GH_URL))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert not called
+        assert "title" in out
+
+    def test_dry_run_rejects_non_boolean(self, monkeypatch, capsys, tmp_path):
+        payload = dict(GH_MINIMAL)
+        payload["dry_run"] = "yes"
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        called: list[list[str]] = []
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: called.append(args) or _ok(GH_URL))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+        assert rc != 0
+        assert not called
+        assert "dry_run" in out
+        assert "boolean" in out.lower()
+
+    def test_ordinary_payload_without_dry_run_key_still_makes_real_call(self, monkeypatch, capsys, tmp_path):
+        """The absence of `dry_run` must still behave exactly as before --
+        the new key cannot become an accidental default."""
+        payload_file = _write_payload(tmp_path, GH_MINIMAL)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        gh_calls: list[list[str]] = []
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: gh_calls.append(args) or _ok(GH_URL))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+
+        assert rc == 0, out
+        assert len(gh_calls) == 1
+        assert "DRY-RUN" not in out
+        assert "gh-issue-create OK" in out
+
+    def test_dry_run_false_makes_real_call(self, monkeypatch, capsys, tmp_path):
+        payload = dict(GH_MINIMAL)
+        payload["dry_run"] = False
+        payload_file = _write_payload(tmp_path, payload)
+        monkeypatch.setattr(sys, "argv", ["issue_create.py", payload_file])
+
+        gh_calls: list[list[str]] = []
+        monkeypatch.setattr(gh, "_gh", lambda args, timeout=20: gh_calls.append(args) or _ok(GH_URL))
+
+        rc = gh.main()
+        out = capsys.readouterr().out
+
+        assert rc == 0, out
+        assert len(gh_calls) == 1
+        assert "DRY-RUN" not in out
+
+
+
 class TestGithubIssueCreateTransportFallback:
     """`gh issue create` goes through GraphQL. Observed 2026-08-17: that path
     can 503 while REST is healthy (#1790), and the fix is not "retry the same
