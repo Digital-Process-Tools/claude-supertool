@@ -207,20 +207,24 @@ def _age(iso: str) -> str:
     return f"{secs // 86400}d"
 
 
-#: How long a write waits for the manifest lock before deciding it is stale
-#: and breaking it, and how often it polls while waiting. Module-level so
-#: tests can shrink both without a real multi-second sleep (#1955 self-review).
+#: How long a write waits for the manifest lock before giving up, and how
+#: often it polls while waiting. Module-level so tests can shrink both
+#: without a real multi-second sleep (#1955 self-review).
 _LOCK_TIMEOUT = 10.0
 _LOCK_POLL = 0.05
+
+
+class _LockTimeout(Exception):
+    """The manifest lock could not be acquired within `_LOCK_TIMEOUT`."""
 
 
 @contextlib.contextmanager
 def _manifest_lock(root: str) -> Iterator[None]:
     """Exclusive lock spanning one manifest read-modify-write.
 
-    Self-review finding (#1955, Explore spawn): without this, two
-    concurrent `gh-issue` reads for two DIFFERENT issue numbers could each
-    read the manifest before the other wrote it back, so whichever
+    Self-review finding (#1955, Explore spawn, first pass): without this,
+    two concurrent `gh-issue` reads for two DIFFERENT issue numbers could
+    each read the manifest before the other wrote it back, so whichever
     `os.replace` landed second silently dropped the other's newly-added key
     -- exactly the multi-agent scenario this module's own docstring names
     as a live concern ("two agents claiming the same issue"). `write_issue`
@@ -230,10 +234,24 @@ def _manifest_lock(root: str) -> Iterator[None]:
 
     `os.open(..., O_CREAT | O_EXCL)` is the lock primitive because it is
     atomic on both POSIX and Windows, unlike `fcntl`/`msvcrt`, so this
-    needs no platform branch. A lock held past `_LOCK_TIMEOUT` is treated
-    as stale (the process that created it crashed without releasing it)
-    and broken rather than hung on forever -- a write-through cache is not
-    worth blocking a caller's read indefinitely over.
+    needs no platform branch.
+
+    **Never steals a lock it cannot prove is dead.** The first cut of this
+    function unlinked a lock purely on elapsed wait time and looped back to
+    recreate it -- caught independently by both self-review spawns on their
+    second pass over #1955: elapsed time cannot distinguish a crashed
+    holder from one that is merely slow (heavy contention, a large
+    manifest, a slow disk -- exactly the multi-agent load this feature
+    exists for), so an impatient waiter could delete a still-alive holder's
+    lock file and enter concurrently with it, reintroducing the very
+    lost-update race this lock exists to close -- and worse, cascading:
+    the stolen lock's real owner then deletes whoever stole it, once its
+    own `finally` runs. Raising `_LockTimeout` instead, and never deleting
+    a lock this call did not itself create, is the only version of
+    self-healing that cannot steal a live lock. The cost, stated rather
+    than hidden: a genuinely crashed writer leaves a lock file that every
+    future write blocks on for the full timeout and then fails against,
+    until an operator deletes it by hand.
     """
     issues_dir = _issues_dir(root)
     issues_dir.mkdir(parents=True, exist_ok=True)
@@ -245,11 +263,10 @@ def _manifest_lock(root: str) -> Iterator[None]:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
             if time.monotonic() >= deadline:
-                try:
-                    lock_path.unlink()
-                except OSError:
-                    pass
-                continue
+                raise _LockTimeout(
+                    f"could not acquire {lock_path} within {_LOCK_TIMEOUT}s "
+                    f"-- if the process holding it has crashed, delete it by hand"
+                ) from None
             time.sleep(_LOCK_POLL)
     try:
         yield
@@ -312,6 +329,8 @@ def write_issue(root: str, number: str, payload: dict) -> Optional[str]:
             )
             os.replace(tmp_manifest, manifest_path)
         return None
+    except _LockTimeout as exc:
+        return str(exc)
     except OSError as exc:
         return f"{exc.__class__.__name__}: {exc}"
 

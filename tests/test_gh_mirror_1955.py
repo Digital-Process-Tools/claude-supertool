@@ -228,14 +228,14 @@ def test_two_different_issues_do_not_collide(tmp_path) -> None:
 
 
 def test_a_held_manifest_lock_blocks_a_concurrent_write_until_released(tmp_path, monkeypatch) -> None:
-    """Self-review finding (#1955, Explore spawn): two concurrent `gh-issue`
-    reads for two DIFFERENT numbers could each read the manifest before the
-    other wrote it back, so whichever `os.replace` landed second silently
-    dropped the other's newly-added key -- exactly the multi-agent scenario
-    `_mirror.py`'s own module docstring names as a live concern ("two agents
-    claiming the same issue"). This proves the fix's mutual exclusion
-    directly: a write that finds the lock already held must wait for it,
-    not proceed past it."""
+    """The lock PRIMITIVE's own blocking mechanics: a write that finds the
+    lock file already held must wait for it, not proceed past it. This does
+    NOT by itself prove two real concurrent `write_issue` calls both survive
+    in the manifest -- second-pass self-review (Explore) correctly noted
+    this test alone would pass even if `write_issue`'s `with _manifest_lock`
+    were scoped wrongly, as long as the acquire/wait loop itself worked. See
+    `test_two_concurrent_writers_for_different_issues_both_survive_in_the_manifest`
+    below for the actual race this lock exists to close."""
     monkeypatch.setattr(_mirror, "_LOCK_TIMEOUT", 5.0)
     monkeypatch.setattr(_mirror, "_LOCK_POLL", 0.02)
     root = str(tmp_path / "mirror")
@@ -263,6 +263,61 @@ def test_a_held_manifest_lock_blocks_a_concurrent_write_until_released(tmp_path,
     assert finished_after_release, "write_issue never completed once the lock was released"
     manifest = json.loads((issues_dir / "manifest.json").read_text(encoding="utf-8"))
     assert "1" in manifest
+
+
+def test_a_lock_held_past_the_timeout_times_out_without_stealing_it(tmp_path, monkeypatch) -> None:
+    """Second self-review pass on #1955 (Explore + oss:auditor, independently):
+    the first cut of `_manifest_lock` unlinked a lock purely on elapsed time,
+    with no way to tell a crashed holder from one that is merely slow (heavy
+    contention, a large manifest, a slow disk -- exactly the multi-agent load
+    this feature exists for). An impatient waiter could delete a still-alive
+    holder's lock and enter concurrently with it, reintroducing the very
+    lost-update race the lock exists to close -- and cascading, since the
+    stolen lock's real owner later deletes whoever stole it. Failing loudly
+    on timeout, and never deleting a lock this process did not create, is
+    the only version of self-healing that cannot steal a live lock."""
+    monkeypatch.setattr(_mirror, "_LOCK_TIMEOUT", 0.2)
+    monkeypatch.setattr(_mirror, "_LOCK_POLL", 0.02)
+    root = str(tmp_path / "mirror")
+    issues_dir = Path(root) / "issues"
+    issues_dir.mkdir(parents=True)
+    lock_path = issues_dir / (_mirror.MANIFEST_NAME + ".lock")
+    lock_path.write_text("held forever", encoding="utf-8")
+
+    err = _mirror.write_issue(root, "1", {"number": 1})
+
+    assert err is not None, "a write past the lock timeout must report failure, not silent success"
+    assert "lock" in err.lower(), err
+    assert lock_path.is_file(), "a timed-out waiter must never delete a lock it does not own"
+    assert not (issues_dir / "manifest.json").exists(), "a timed-out write must not touch the manifest"
+
+
+def test_two_concurrent_writers_for_different_issues_both_survive_in_the_manifest(tmp_path) -> None:
+    """The actual race this whole lock exists to close, exercised directly
+    with real thread concurrency rather than simulated -- second-pass
+    self-review (Explore) correctly noted the single-lock-mechanics test
+    above proves only that the primitive blocks-and-waits, not that two
+    genuinely concurrent `write_issue` calls for two DIFFERENT numbers both
+    survive in the manifest. Positive control for the timeout test above:
+    ordinary contention that resolves quickly must not report any error at
+    all, for either writer."""
+    root = str(tmp_path / "mirror")
+    barrier = threading.Barrier(2)
+    results: dict = {}
+
+    def run(n: int) -> None:
+        barrier.wait(timeout=2)
+        results[n] = _mirror.write_issue(root, str(n), {"number": n})
+
+    threads = [threading.Thread(target=run, args=(n,)) for n in (1, 2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert results == {1: None, 2: None}, results
+    manifest = json.loads((Path(root) / "issues" / "manifest.json").read_text(encoding="utf-8"))
+    assert "1" in manifest and "2" in manifest, manifest
 
 
 def test_rewriting_an_issue_updates_its_manifest_timestamp(tmp_path, monkeypatch) -> None:
