@@ -129,6 +129,7 @@ def ndjson_call(sock_path: str, test_file: str) -> dict:
     `ndjson_scan.call_with_retry` for what that does and does not cover.
     """
     box = {"sock": sock_path}
+    pid_path = _shared_socket_pid_paths(WORKING_DIR, DAEMON_NAME)[1]
 
     def attempt() -> dict:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
@@ -136,9 +137,22 @@ def ndjson_call(sock_path: str, test_file: str) -> dict:
             s.connect(box["sock"])
             # #1935: an unpredictable per-call id, not the fixed literal `2` --
             # see ndjson_scan.py's module docstring for what that closes.
-            req_id = random.randrange(2, 2**32)  # exclude 0/1 -- 1 is the initialize frame's id
+            # #2449 (review round 2): the `initialize` frame's own id is now
+            # ALSO drawn at random rather than the literal `1` every client
+            # used to share -- a hardcoded id every caller sends cannot tell
+            # "my own initialize reply" from a foreign client's leftover one,
+            # which defeats desync detection in exactly that interleaving.
+            # req_id is drawn first so a test pinning `random.randrange` to
+            # one fixed value still gets it on the *call* frame, matching
+            # every fixture built around that value; init_id is nudged by one
+            # on the rare (or, under such a pinned mock, guaranteed) collision
+            # so the two ids are never equal.
+            req_id = random.randrange(2, 2**32)  # exclude 0/1 -- 1 was the old shared initialize id
+            init_id = random.randrange(2, 2**32)
+            if init_id == req_id:
+                init_id = init_id + 1 if init_id < 2**32 - 1 else init_id - 1
             msgs = [
-                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                {"jsonrpc": "2.0", "id": init_id, "method": "initialize",
                  "params": {"protocolVersion": "2024-11-05", "capabilities": {},
                             "clientInfo": {"name": "phpunit-mcp-adapter", "version": "1.0.0"}}},
                 {"jsonrpc": "2.0", "method": "notifications/initialized"},
@@ -154,14 +168,22 @@ def ndjson_call(sock_path: str, test_file: str) -> dict:
             # silence rather than waiting out the whole call budget, and names
             # what was received (or the daemon's own log) on a timeout instead
             # of only that one happened.
-            return _ndjson_scan.receive_until(s, req_id, CALL_TIMEOUT_SEC, box["sock"])
+            return _ndjson_scan.receive_until(s, req_id, CALL_TIMEOUT_SEC, box["sock"],
+                                               own_ids=frozenset((init_id,)))
 
     def respawn() -> None:
         box["sock"] = _spawn.force_respawn(
             WORKING_DIR, DAEMON_NAME, preflight=lambda: resolve_bin(WORKING_DIR),
             spawn_timeout=SPAWN_TIMEOUT_SEC)
 
-    return _ndjson_scan.call_with_retry(attempt, respawn)
+    def pid_probe():
+        # #2449 (review round 2): a plain RuntimeError whose daemon pid
+        # changed underneath this call is very likely collateral damage from
+        # a DIFFERENT caller's force_respawn() on this same shared daemon --
+        # see ndjson_scan.call_with_retry's own docstring for the mechanism.
+        return _spawn.daemon_pid(pid_path)
+
+    return _ndjson_scan.call_with_retry(attempt, respawn, pid_probe=pid_probe)
 
 
 def parse_json_output(file_path: str, output_json: str, dur_ms: int) -> dict:

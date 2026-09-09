@@ -276,3 +276,215 @@ def test_ndjson_call_still_reports_the_failure_when_the_retry_is_exhausted(name,
         mod.ndjson_call("/fake/sock", "/fake/target.php")
 
     assert calls["n"] == 1, "exactly one retry is spent, not an unbounded loop"
+
+
+# ---------------------------------------------------------------------------
+# Review round 2, finding 1: force_respawn kills the ONE shared daemon
+# unconditionally, with no way to tell a genuinely healthy, currently
+# in-flight OTHER exchange from a desynchronised one -- so THAT caller pays
+# for a stranger's disconnect all over again, in a brand new instance of the
+# exact class #2449 exists to close. call_with_retry's pid_probe closes it:
+# a plain RuntimeError whose daemon pid changed underneath the call is
+# treated as collateral damage and gets the same one retry, without calling
+# respawn() again (a fresh daemon already exists).
+# ---------------------------------------------------------------------------
+
+def test_call_with_retry_retries_a_collateral_runtime_error_when_pid_changed():
+    """Unit-level: the daemon this caller was talking to no longer exists by
+    the time it fails -- pid_probe says so -- and the caller was never the
+    one that broke it, so no second respawn() is warranted or expected."""
+    ns = common("ndjson_scan")
+    pids = iter([111, 222])
+    calls = {"n": 0}
+
+    def do_call():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("connection reset by peer")
+        return {"ok": True}
+
+    def respawn():
+        raise AssertionError("must not respawn again -- someone else already did")
+
+    result = ns.call_with_retry(do_call, respawn, pid_probe=lambda: next(pids))
+    assert result == {"ok": True}
+    assert calls["n"] == 2
+
+
+def test_call_with_retry_does_not_retry_a_runtime_error_when_pid_unchanged():
+    """Negative control: nothing changed underneath this caller (the same
+    pid answers before and after the failure), so this is the ordinary
+    unreachable-daemon case -- retrying it would be exactly the
+    double-timeout call_with_retry exists to avoid."""
+    ns = common("ndjson_scan")
+    calls = {"n": 0}
+
+    def do_call():
+        calls["n"] += 1
+        raise RuntimeError("no bytes received")
+
+    def respawn():
+        raise AssertionError("must not respawn on plain silence")
+
+    with pytest.raises(RuntimeError):
+        ns.call_with_retry(do_call, respawn, pid_probe=lambda: 111)
+    assert calls["n"] == 1
+
+
+def test_call_with_retry_without_a_pid_probe_behaves_as_before():
+    """Omitting pid_probe entirely (the pre-review-round-2 shape) must never
+    retry a plain RuntimeError -- the branch is additive, not a change to
+    the default."""
+    ns = common("ndjson_scan")
+    calls = {"n": 0}
+
+    def do_call():
+        calls["n"] += 1
+        raise RuntimeError("no bytes received")
+
+    def respawn():
+        raise AssertionError("must not respawn -- no pid_probe was given")
+
+    with pytest.raises(RuntimeError):
+        ns.call_with_retry(do_call, respawn)
+    assert calls["n"] == 1
+
+
+@pytest.mark.parametrize("name", ADAPTERS)
+def test_ndjson_call_retries_a_collateral_failure_without_calling_force_respawn(name, monkeypatch):
+    """Adapter-level wiring for the same fix: a connection that dies with
+    nothing at all (as a SIGKILL mid-exchange from someone else's
+    force_respawn would look, from the victim's side) is retried once when
+    the daemon's pid changed underneath this call -- and does NOT call
+    force_respawn a second time, because whoever replaced the daemon
+    already did."""
+    mod = adapter(name)
+    monkeypatch.setattr(mod.random, "randrange", lambda *a, **k: 2)
+
+    real_answer = json.dumps(
+        {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": {"errors": []}}}
+    ).encode() + b"\n"
+    sockets = iter([_QueueSocket([]), _QueueSocket([real_answer])])
+    monkeypatch.setattr(mod.socket, "socket", lambda *a, **k: next(sockets))
+
+    pids = iter([111, 222])
+    monkeypatch.setattr(mod._spawn, "daemon_pid", lambda *a, **k: next(pids))
+
+    def fail_respawn(*a, **k):
+        raise AssertionError(
+            "must not force_respawn for a collateral failure -- a fresh "
+            "daemon already exists at the same socket path")
+
+    monkeypatch.setattr(mod._spawn, "force_respawn", fail_respawn)
+
+    resp = mod.ndjson_call("/fake/sock", "/fake/target.php")
+    assert resp["id"] == 2
+
+
+@pytest.mark.parametrize("name", ADAPTERS)
+def test_ndjson_call_does_not_retry_plain_silence_when_pid_unchanged(name, monkeypatch):
+    """Positive control, paired with the test above: when the daemon's pid
+    is unchanged (the real, unmocked `_spawn.daemon_pid` reading a
+    nonexistent pidfile returns 0 both times), plain silence still reports
+    NOT CHECKED unretried -- the collateral-damage branch must not turn
+    into a general "always retry a RuntimeError" rule."""
+    mod = adapter(name)
+    monkeypatch.setattr(mod.random, "randrange", lambda *a, **k: 2)
+    monkeypatch.setattr(mod.socket, "socket", lambda *a, **k: _QueueSocket([]))
+
+    def fail_respawn(*a, **k):
+        raise AssertionError("must not respawn -- nothing indicates collateral damage")
+
+    monkeypatch.setattr(mod._spawn, "force_respawn", fail_respawn)
+
+    with pytest.raises(RuntimeError):
+        mod.ndjson_call("/fake/sock", "/fake/target.php")
+
+
+# ---------------------------------------------------------------------------
+# Review round 2, finding 2: the `initialize` id used to be the shared,
+# hardcoded literal `1` on every call, so a foreign client's own leftover
+# `initialize` reply (also `id: 1`) was indistinguishable from this
+# exchange's own -- masking exactly the interleaving where a disconnect
+# happens between sending `initialize` and reading its reply. Each adapter
+# now draws a random `initialize` id per exchange and passes it as its own
+# `own_ids`, so a foreign client's `initialize` reply (drawn independently,
+# essentially never colliding) reads as foreign like any other stray frame.
+# ---------------------------------------------------------------------------
+
+def test_scan_does_not_confuse_a_foreign_clients_initialize_reply_with_our_own():
+    """The exact #2449-review-round-2 scenario: two callers, each with their
+    own randomly-drawn initialize id. A leftover reply to the OTHER
+    caller's initialize frame is real desync evidence for this one -- it is
+    shaped exactly like an initialize response, and the only thing that
+    tells it apart from our own is the id, which is why the id has to be
+    unique per caller in the first place."""
+    ns = common("ndjson_scan")
+    my_init_id = 555555
+    stranger_init_id = 999999  # some OTHER client's own initialize id
+    buf = json.dumps(
+        {"jsonrpc": "2.0", "id": stranger_init_id,
+         "result": {"protocolVersion": "2024-11-05", "capabilities": {}}}
+    ).encode()
+    obj, saw_foreign = ns._scan(buf, want_id=123, own_ids=frozenset((my_init_id,)))
+    assert obj is None
+    assert saw_foreign is True, (
+        "a foreign client's own initialize reply must not be exempted just "
+        "because it LOOKS like an initialize response")
+
+
+def test_scan_still_exempts_this_callers_own_randomly_drawn_initialize_reply():
+    """Positive control for the test above: OUR OWN initialize reply (the id
+    we actually generated and sent) must still be exempt, whatever value it
+    happens to be -- own_ids is caller-supplied precisely so this is not
+    tied to the old shared literal 1 any more."""
+    ns = common("ndjson_scan")
+    my_init_id = 555555
+    buf = json.dumps(
+        {"jsonrpc": "2.0", "id": my_init_id,
+         "result": {"protocolVersion": "2024-11-05", "capabilities": {}}}
+    ).encode()
+    obj, saw_foreign = ns._scan(buf, want_id=123, own_ids=frozenset((my_init_id,)))
+    assert obj is None
+    assert saw_foreign is False
+
+
+@pytest.mark.parametrize("name", ADAPTERS)
+def test_ndjson_call_passes_its_own_random_initialize_id_as_own_ids(name, monkeypatch):
+    """Wiring-level regression guard for finding 2: assert the adapter no
+    longer sends the literal `1` for `initialize` at all, and that whatever
+    id it DOES send is exactly what protects it -- a stray reply to some
+    OTHER id (simulating a foreign client's leftover initialize reply) is
+    still detected as desync even though it is shaped like an initialize
+    response."""
+    mod = adapter(name)
+    monkeypatch.setattr(mod.random, "randrange", lambda *a, **k: 2)
+
+    sent = {}
+
+    class _RecordingSocket(_QueueSocket):
+        def sendall(self, data):
+            msgs = [json.loads(line) for line in data.decode().splitlines() if line]
+            sent["init_id"] = next(
+                m["id"] for m in msgs if m.get("method") == "initialize")
+
+    # A leftover reply to some id that is neither the pinned req_id (2) nor
+    # whatever init_id this exchange drew -- a foreign client's own
+    # initialize reply, shaped just like a real one.
+    stranger_reply = json.dumps(
+        {"jsonrpc": "2.0", "id": 987654,
+         "result": {"protocolVersion": "2024-11-05", "capabilities": {}}}
+    ).encode() + b"\n"
+    monkeypatch.setattr(mod.socket, "socket", lambda *a, **k: _RecordingSocket([stranger_reply]))
+
+    calls = {"n": 0}
+    monkeypatch.setattr(mod._spawn, "force_respawn",
+                         lambda *a, **k: calls.__setitem__("n", calls["n"] + 1) or "/fake/sock")
+
+    with pytest.raises(RuntimeError):
+        mod.ndjson_call("/fake/sock", "/fake/target.php")
+
+    assert sent.get("init_id") not in (1, None), (
+        "the initialize frame must no longer carry the shared literal 1"
+    )
+    assert calls["n"] == 1, "the foreign initialize-shaped reply must still trigger one respawn+retry"

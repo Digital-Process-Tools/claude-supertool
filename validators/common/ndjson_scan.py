@@ -253,7 +253,8 @@ def describe_timeout(buf: bytes, want_id, elapsed_s: float, sock_path: str) -> s
 
 
 def receive_until(s: socket.socket, want_id, call_timeout: float, sock_path: str,
-                   idle_timeout: float = DEFAULT_IDLE_TIMEOUT_S) -> dict:
+                   idle_timeout: float = DEFAULT_IDLE_TIMEOUT_S,
+                   own_ids: frozenset = frozenset((INITIALIZE_ID,))) -> dict:
     """Read from `s` until a JSON-RPC frame with id == `want_id` arrives, or
     give up -- shared by all four warm adapters' `ndjson_call`.
 
@@ -269,12 +270,20 @@ def receive_until(s: socket.socket, want_id, call_timeout: float, sock_path: str
     Raises on either deadline, naming what was received, how long was spent,
     and the daemon's own log tail (via `describe_timeout`). `DesyncDetected`
     -- a `RuntimeError` subclass -- if the buffer held a well-formed response
-    to a *foreign* id along the way: one that is neither `want_id` nor
-    `INITIALIZE_ID` (#2449: evidence of a live but desynchronised pipe,
-    worth a caller retrying against a fresh daemon -- the ordinary
-    `initialize` response every exchange gets for itself does not count,
-    see `_scan`). Plain `RuntimeError` otherwise (silence, or noise that
-    never parsed as a JSON-RPC response at all).
+    to a *foreign* id along the way: one that is in neither `own_ids` nor
+    `want_id` (#2449: evidence of a live but desynchronised pipe, worth a
+    caller retrying against a fresh daemon -- the ordinary `initialize`
+    response every exchange gets for itself does not count, see `_scan`).
+    Plain `RuntimeError` otherwise (silence, or noise that never parsed as a
+    JSON-RPC response at all).
+
+    `own_ids` defaults to `{INITIALIZE_ID}`, the shared literal every
+    adapter's own `initialize` frame used to carry -- **a caller that also
+    randomises its own `initialize` id (as all four adapters now do, #2449)
+    must pass its own value here instead of relying on the default**: a
+    single hardcoded id shared by every client cannot tell "my own
+    initialize reply" from "a foreign client's leftover initialize reply",
+    since both would carry the identical id. See `_scan`'s own docstring.
     """
     start = time.monotonic()
     deadline = start + call_timeout
@@ -299,7 +308,7 @@ def receive_until(s: socket.socket, want_id, call_timeout: float, sock_path: str
             break
         buf += chunk
         last_byte_at = time.monotonic()
-        obj, other = _scan(buf, want_id)
+        obj, other = _scan(buf, want_id, own_ids)
         if other:
             saw_other_id = True
         if obj is not None:
@@ -314,7 +323,7 @@ def receive_until(s: socket.socket, want_id, call_timeout: float, sock_path: str
     raise RuntimeError(msg)
 
 
-def call_with_retry(do_call, respawn):
+def call_with_retry(do_call, respawn, pid_probe=None):
     """Run `do_call()` once more, against a freshly-respawned daemon, if it
     raises `DesyncDetected` -- and propagate everything else unchanged (#2449).
 
@@ -326,19 +335,48 @@ def call_with_retry(do_call, respawn):
     daemon has no memory of it, so replaying the same exchange against one is
     the cheapest thing that can plausibly recover.
 
-    Deliberately not "keep trying": exactly one retry, and only on the one
-    signal (`DesyncDetected`) that says a retry has a reason to help. Plain
-    silence or noise that never parsed as a response at all raises
-    `RuntimeError` from `receive_until`, not `DesyncDetected`, and is not
-    retried here -- respawning and waiting out a second full `call_timeout`
-    for a daemon (or an analysis) that is just genuinely slow or genuinely
-    gone would turn every such call into a silent double-timeout for no
-    corresponding chance of success. A second `DesyncDetected`, or any
-    failure out of `respawn()` itself (`_spawn` raises its own exceptions --
-    `AutospawnSuppressed`, a plain `RuntimeError` on a spawn that never
-    published a socket), propagates from the second `do_call()` exactly as
-    the first would have: the caller's existing handling for "nothing could
-    be checked" already covers it.
+    Deliberately not "keep trying": at most one retry, and only on a signal
+    that says a retry has a reason to help. Plain silence or noise that never
+    parsed as a response at all raises `RuntimeError` from `receive_until`,
+    not `DesyncDetected`, and is not retried by the first branch below --
+    respawning and waiting out a second full `call_timeout` for a daemon (or
+    an analysis) that is just genuinely slow or genuinely gone would turn
+    every such call into a silent double-timeout for no corresponding chance
+    of success. A second `DesyncDetected`, or any failure out of `respawn()`
+    itself (`_spawn` raises its own exceptions -- `AutospawnSuppressed`, a
+    plain `RuntimeError` on a spawn that never published a socket),
+    propagates from the second `do_call()` exactly as the first would have:
+    the caller's existing handling for "nothing could be checked" already
+    covers it.
+
+    **The second branch closes a gap this function's own first fix opened**
+    (#2449, review round 2). The daemon behind these adapters is one shared
+    process per `(cwd, name)`, serving every caller's exchange serially --
+    so a *different*, perfectly healthy, currently in-flight exchange can be
+    running against that same daemon at the exact moment another caller's
+    `respawn()` (triggered by *its own*, unrelated `DesyncDetected`) reaps
+    the process out from under it. That collateral caller sees a broken
+    connection -- plain `RuntimeError`, not `DesyncDetected`, since nothing
+    about a severed pipe looks like a foreign id -- and without this branch
+    it would report `NOT CHECKED` unretried for a file with nothing wrong
+    with it: a brand new instance of the exact "an innocent caller pays for
+    someone else's disconnect" class #2449 was filed to close.
+
+    `pid_probe`, when given, is a zero-argument callable returning the daemon's
+    current pid (or a falsy value if none is running) -- read once before the
+    first `do_call()` and again after a plain `RuntimeError`. A pid that
+    changed between the two reads means the daemon `do_call()` was actually
+    talking to no longer exists: something else replaced it mid-exchange, and
+    the most likely something is exactly the collateral case above. That
+    earns the same single retry a self-detected desync gets, without calling
+    `respawn()` again -- a fresh, usable daemon already exists at the same
+    socket path (whoever replaced it already published one), so there is
+    nothing left to force. A pid that did *not* change is the ordinary case
+    this function has always declined to retry: nothing changed underneath
+    this caller, so the failure is whatever `receive_until` already
+    determined it to be, and retrying it would be the double-timeout this
+    function exists to avoid. Omitted entirely, this branch never fires and
+    behaviour is identical to before it existed.
 
     `do_call` is a zero-argument callable that performs one whole exchange
     (connect, send, `receive_until`) and returns the parsed response;
@@ -348,8 +386,15 @@ def call_with_retry(do_call, respawn):
     they need, so this function stays a shared *retry*, not a shared
     *protocol*.
     """
+    pid_before = pid_probe() if pid_probe is not None else None
     try:
         return do_call()
     except DesyncDetected:
         respawn()
         return do_call()
+    except RuntimeError:
+        if pid_probe is not None:
+            pid_after = pid_probe()
+            if pid_before and pid_after and pid_before != pid_after:
+                return do_call()
+        raise
