@@ -42,7 +42,11 @@ def test_claude_channel_uses_plugin_root_not_cwd_relative() -> None:
         f"claude-channel script path must be plugin-root-relative, got: {script!r}"
     )
     assert not script.startswith("./"), "path must not be cwd-relative"
-    assert script.endswith("notifiers/claude-channel/channel.ts")
+    # start.mjs since #2486, not channel.ts: the consumer imports the SDK at
+    # module load, so on a fresh plugin install -- where node_modules is
+    # gitignored and nothing runs install.sh -- naming channel.ts here meant
+    # the declared server died before any of its own code ran.
+    assert script.endswith("notifiers/claude-channel/start.mjs")
 
 
 # ---------------------------------------------------------------------------
