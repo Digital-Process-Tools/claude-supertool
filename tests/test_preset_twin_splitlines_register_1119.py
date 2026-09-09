@@ -67,6 +67,14 @@ REGISTER: dict[str, str] = {
         "username that 404s visibly rather than a forged record.",
     "presets/github/batch_star.py::main":
         "a local file the caller passed in. Same as above.",
+    "presets/github/issue_create.py::main":
+        "#2415's dry_run preview: the caller's own body (from the body "
+        "field or a local body_file they named), the same text that would "
+        "reach the real gh issue create / REST POST verbatim if dry_run "
+        "were false -- never a remote response. Every emitted line is "
+        "prefixed with a four-space indent before printing, so a stray "
+        "exotic separator inside the body cannot land at column 0 and "
+        "forge a receipt line the way an unindented server response could.",
 
     # -- presets/gitlab, audited by #1119 -----------------------------------
     # Three entries stood here on the argument #1648 retired above, left alone
