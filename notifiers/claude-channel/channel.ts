@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env -S node --experimental-strip-types
 /**
  * claude-channel — MCP channel server bridging watch-preset events to Claude Code.
  *

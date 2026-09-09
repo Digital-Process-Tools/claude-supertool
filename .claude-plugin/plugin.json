@@ -14,5 +14,10 @@
     "autonomous",
     "kevin",
     "file-ops"
+  ],
+  "channels": [
+    {
+      "server": "claude-channel"
+    }
   ]
 }
