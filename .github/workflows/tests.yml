@@ -695,13 +695,15 @@ jobs:
         # instead of a skip, so this step cannot pass by skipping — which is the
         # only way it is worth adding. See tests/_toolchain_gate.py.
         #
-        # Every test_notifiers_claude_channel_*.py file must be named here.
-        # This list is the only place any of them actually runs: the 12-leg
-        # matrix installs no bun, so on every other leg they skip via
-        # `require_or_skip`, silently and by design. #605 and #609 landed
-        # without being added here and their own tests had therefore never
-        # executed in CI since — a green board that meant nothing, caught
-        # while wiring #612's test in (which would have inherited the same
+        # Every test_notifiers_claude_channel_*.py file that is meant to run
+        # under bun must be named here -- since #2469, this is no longer the
+        # only place any of them run at all: the node step below runs its own
+        # file under `node --experimental-strip-types`. On every other leg
+        # (the 12-leg matrix installs no bun) they skip via `require_or_skip`,
+        # silently and by design. #605 and #609 landed without being added
+        # here and their own tests had therefore never executed in CI since —
+        # a green board that meant nothing, caught while wiring #612's test in
+        # (which would have inherited the same
         # gap). Add the file the moment it exists, not when someone notices.
         #
         # -n0 because eleven tests that each spawn a server gain nothing from

@@ -12,8 +12,11 @@ The scope decided, and the reason for the split:
 
 * **TypeScript** needs a toolchain, so it gets its own job — one that installs
   bun, type-checks under the channel's own strict `tsconfig.json`, and runs the
-  two channel test files with `SUPERTOOL_REQUIRE_JS=1`, which converts a missing
+  channel test files with `SUPERTOOL_REQUIRE_JS=1`, which converts a missing
   prerequisite into a collection error. A job that can only pass proves nothing.
+  Since #2469, a second step installs node 22 and re-runs a subset of that
+  suite under `node --experimental-strip-types` too, the runtime the shipped
+  config actually launches.
 * **Shell syntax** needs nothing, so it is checked here, in the suite, on all
   twelve legs, for no extra wall-clock and no new job. `bash -n` answers a
   platform-independent question, so running it wherever `bash` is present is
@@ -496,8 +499,9 @@ def test_the_step_parser_reads_block_scalars_and_env() -> None:
 #: the next unexecuted TypeScript file cannot arrive silently — which is the
 #: only durable half of #557's option (3).
 TYPESCRIPT_INVENTORY = {
-    # Type-checked by `bunx tsc --noEmit` and executed by the two channel test
-    # files, on ubuntu and macOS.
+    # Type-checked by `bunx tsc --noEmit` and executed by the channel test
+    # files, on ubuntu and macOS -- under bun, and since #2469 a subset of the
+    # same suite under node too.
     "notifiers/claude-channel/channel.ts": "executed",
     # NOT executed and NOT type-checked. It is a VS Code extension: compiling it
     # needs `npm install` of the `vscode` type packages, and exercising it needs
