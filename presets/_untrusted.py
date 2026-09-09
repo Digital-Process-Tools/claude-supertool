@@ -49,9 +49,27 @@ to be remembered is the refname: `gh-pr:N:status` printed a fork PR's head
 branch raw, so a U+2028 in it forged a green check tally above the real red one
 (#965), and `tests/test_forged_branch_line_965.py` now walks the AST of
 `presets/github`, `presets/gitlab` and `presets/git` and fails when a refname
-field reaches `print()` without passing through here. That scanner answers for
-the six refname keys only — the paragraph above is still the rule for
-everything else. Everything else known is routed: the read ops
+field reaches `print()`, `sys.stdout.write()`, or a `return` of an f-string
+or a name already tainted the same way, without passing through here. That
+scanner answers for the six refname keys only, and it draws its widest net
+around `print`/`sys.stdout.write` deliberately narrower around `return`:
+concatenation, `%`-formatting and `.format()` are scanned for a direct read
+wherever they sit inside a print/write argument, but NOT inside a `return`
+value, because a function can legitimately `return` an unflattened
+structured value for its OWN caller to flatten
+(`presets/github/prs.py::_branches` returns `_board.branch_pair(...)` raw
+for `_board.render_row` to flatten every cell of, one call away) -- scanning
+`return` as broadly as a print sink turned that pattern into a false
+positive (#976, caught in review). A `return` built the same three shapes
+(concat/`%`/`.format`) is consequently still outside this scanner too,
+alongside the two `#976` names explicitly: a value passed to a different
+function that prints it (`J_via_helper`) and a dict key read out of a
+variable rather than typed as a literal (`L_dict_get_var_key`). All three
+are the same shape of gap -- tracking a value's identity past what this
+function can see happen in one direct step -- which is the general taint
+tracker this scanner has deliberately never tried to be. The paragraph
+above is still the rule for everything
+else. Everything else known is routed: the read ops
 fence bodies and comments; `_board.render_row` flattens every cell it is
 handed, so no board row can become two; `transport.emit_event` flattens every
 string leaving a poller, so no `<channel>` attribute and no desktop
@@ -122,8 +140,13 @@ Those two are Zl/Zp, not controls — no `ord() < 0x20` and no C1 range reaches
 them. Eight of ten is not a guarantee; it is a guarantee about the inputs
 somebody thought of, and a worktree file named with U+2028 still wrote three
 `validate:` headers for two files after #881 was fixed. So the predicate below
-covers exactly the set the consumer splits on. Exactly, in both directions: the
-two additions are code points no path, title, login, label or milestone
+covers every one of the ten the consumer splits on — never a false negative,
+which is the direction that mattered here — but it is not exactly that set:
+`_is_control` is a strict superset, by the rest of C0 and all of C1 and DEL
+(57 more code points a splitlines-based reader never breaks a line on;
+verified against a full 0x0-0x10FFFF sweep, #896 F4). That is the safe
+direction and no ordinary path is affected: the two additions this predicate
+exists for are code points no path, title, login, label or milestone
 contains, so every ordinary field still passes through byte-identical, and the
 `[U+2028]` spelling they take is the one C1 has used since #863 — there is no
 Control Picture for a character outside C0.
