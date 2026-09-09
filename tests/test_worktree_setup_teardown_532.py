@@ -302,6 +302,11 @@ class WorktreeSetupTeardownTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(wt, "conf", "dev.ini")))
         # must NOT fire: the hand-made file survives untouched
         self.assertTrue(os.path.isfile(handmade))
+        with open(handmade, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "notes I wrote myself")
+        # and the source in the primary checkout is obviously untouched
+        self.assertTrue(os.path.isfile(os.path.join(self.primary, "vendor", "libs", "a.so")))
+        self.assertTrue(os.path.isfile(os.path.join(self.primary, "conf", "dev.ini")))
 
     # -- copy: a MODIFIED copy is left alone, never deleted unconditionally
     #    (#2429) ---------------------------------------------------------
