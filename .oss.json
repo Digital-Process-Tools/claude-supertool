@@ -23,6 +23,7 @@
       "priority-low"
     ],
     "filed_by_loop": "filed-by-loop",
+    "lane_other": "lane-other",
     "lanes": [
       "lane-watch",
       "lane-tracker-ops",
