@@ -22700,6 +22700,48 @@ def _guard_flag_values(argv: Sequence[str], flag: str) -> List[str]:
     return out
 
 
+def _guard_repo_hint(op: str, argv: Sequence[str]) -> str:
+    """`repo:OWNER/NAME ` to prepend to *op*'s `use` hint, or "" (#2404).
+
+    `gh pr diff N -R owner/repo` and `gh issue view N -R owner/repo` match
+    the same shipped `replaces` entry as the plain form, so the un-prefixed
+    `use` that entry declares (`gh-pr:NUMBER:diff`) is what the refusal
+    shows -- and that form resolves against the CALLER'S OWN repo, silently
+    dropping the `-R`/`--repo` target the caller wrote. A route that already
+    reaches the named repo exists (`repo:OWNER/NAME` chained ahead of the
+    same op -- `presets/_repo_target.py`'s leading-op convention, already
+    honoured by every op `_repo_target_ops()` names) and the refusal simply
+    never pointed at it.
+
+    Only for an op that actually reads `SUPERTOOL_REPO` -- an op absent from
+    `_repo_target_ops()` has no cross-repo route to offer, whatever flag the
+    caller wrote. And only when the flag's value survives the same shape
+    check the `repo:` op's own dispatch applies (`_repo_shape_error`): a
+    malformed or GitLab-shaped `-R` value must not be echoed back as though
+    it were a working alternative, so it is silently omitted rather than
+    guessed at -- the same "decline rather than guess" the rest of this
+    file follows.
+    """
+    if op not in _repo_target_ops():
+        return ""
+    values = (_guard_flag_values(argv, "-R")
+              + _guard_flag_values(argv, "--repo"))
+    if not values:
+        return ""
+    value = values[0]
+    # `gh`'s own `-R`/`--repo` takes an optional `HOST/` prefix
+    # (`-R github.com/OWNER/NAME`); the `repo:` op takes bare `OWNER/NAME`,
+    # so a leading `github.com` segment is dropped rather than passed
+    # through -- anything else past the first two segments is left for the
+    # shape check below to refuse.
+    segments = value.split("/")
+    if len(segments) == 3 and segments[0].lower() == "github.com":
+        value = "/".join(segments[1:])
+    if _repo_shape_error(value, "github"):
+        return ""
+    return f"repo:{value} "
+
+
 def _guard_replacements(config: Optional[Dict[str, Any]] = None
                         ) -> Tuple[List[_Replacement], List[str]]:
     """Every `replaces` entry in the effective registry, plus why it may be short.
@@ -23209,7 +23251,7 @@ def guard_command(command: str, config: Optional[Dict[str, Any]] = None
             origin_index = origins[head_index]
             matches.append(GuardMatch(
                 op=replacement.op,
-                use=replacement.use,
+                use=_guard_repo_hint(replacement.op, argv) + replacement.use,
                 description=replacement.description,
                 argv=" ".join(replacement.argv),
                 command=origin_texts[origin_index],

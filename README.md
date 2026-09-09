@@ -135,6 +135,8 @@ A caller that is read-only by design -- a review or audit agent whose whole remi
 
 Installed with the plugin, on by default: a `PreToolUse` hook refuses any `Bash` command an op declares it replaces, quoting the op's own description (`gh pr view` → `gh-pr`, `git push` → `git-push`, …). **It governs one route** — the hook matches `Bash|PowerShell` only, so Claude Code's own `Edit`, `Write`, `MultiEdit` and `NotebookEdit` write to disk without passing it, with no op, no validator and no rollback ([#1671](https://github.com/Digital-Process-Tools/claude-supertool/issues/1671)). Full mechanism, the shipped rule layer beneath the registry, and what a command that could not be read does (declines and allows, never blocks blind): [docs/configuration.md](docs/configuration.md#raw_command_guard--the-shipped-raw-command-block).
 
+A `-R`/`--repo`-qualified `gh pr diff`/`gh issue view` (and the other repo-scoped `gh-pr`/`gh-issue` forms) is refused the same as the same-repo spelling, and the refusal's own `Use:` line names the cross-repo route rather than the same-repo op it just blocked: `repo:OWNER/NAME` chained ahead of the op (`repo:Digital-Process-Tools/claude-remember gh-pr:623:diff`) reads the named repository instead of the cwd's own ([#2404](https://github.com/Digital-Process-Tools/claude-supertool/issues/2404)).
+
 ### Hard-block native tools (optional)
 
 Closing the `Edit`/`Write` route is an operator decision the plugin cannot make for you. If you want to force the model to batch via supertool — typical for autonomous / Kevin-style runs — block the competing tools at the Claude Code layer.
