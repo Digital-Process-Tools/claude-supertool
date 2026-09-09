@@ -332,3 +332,75 @@ def test_rewriting_an_issue_updates_its_manifest_timestamp(tmp_path, monkeypatch
     stored = json.loads((Path(root) / "issues" / "1955.json").read_text(encoding="utf-8"))
     assert stored["issue"]["body"] == "v2", "the mirror must hold the latest read, not the first"
     assert second >= first
+
+
+def test_a_contended_lock_that_raises_permissionerror_is_still_waited_for(
+        tmp_path, monkeypatch) -> None:
+    """Windows reports a contended `O_CREAT | O_EXCL` as EACCES, not EEXIST (#2482).
+
+    `_manifest_lock` caught `FileExistsError` alone, which is the POSIX
+    spelling. On Windows, opening a path another process holds open raises
+    `PermissionError` (errno 13), so the second writer never entered the wait
+    loop at all -- it escaped, and `write_issue` returned an error. That is the
+    lost update this lock exists to prevent, minus the update.
+
+    Observed on master de25091, `pytest (windows-latest, 3.12)`, job
+    #102540129404, as a red on the concurrent-writers test above. It cannot be
+    reproduced on POSIX by contending the lock for real, because CPython raises
+    the other exception here -- so the platform's errno is what is injected,
+    and nothing else about the call is faked.
+    """
+    monkeypatch.setattr(_mirror, "_LOCK_TIMEOUT", 5.0)
+    monkeypatch.setattr(_mirror, "_LOCK_POLL", 0.01)
+    root = str(tmp_path / "mirror")
+    real_open = os.open
+    refusals = {"left": 3}
+
+    def windows_shaped_open(path, flags, *args, **kwargs):
+        if str(path).endswith(".lock") and refusals["left"] > 0:
+            refusals["left"] -= 1
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(_mirror.os, "open", windows_shaped_open)
+
+    err = _mirror.write_issue(root, "2482", {"number": 2482})
+
+    assert err is None, err
+    assert refusals["left"] == 0, "the waiter did not retry past every refusal"
+    manifest = json.loads(
+        (Path(root) / "issues" / "manifest.json").read_text(encoding="utf-8"))
+    assert "2482" in manifest, manifest
+
+
+def test_control_a_permission_error_that_never_clears_still_fails_and_says_what_it_saw(
+        tmp_path, monkeypatch) -> None:
+    """Positive control on the identical injection: retrying forever is not the
+    fix either.
+
+    A read-only directory, or a file owned by another user, raises the same
+    `PermissionError` and is not contention at all. It must still fail -- and
+    the message must carry the exception it actually last saw, rather than
+    asserting a crashed lock holder it never measured. Today's text ("if the
+    process holding it has crashed, delete it by hand") is misleading advice
+    for an EACCES with no holder behind it.
+    """
+    monkeypatch.setattr(_mirror, "_LOCK_TIMEOUT", 0.2)
+    monkeypatch.setattr(_mirror, "_LOCK_POLL", 0.02)
+    root = str(tmp_path / "mirror")
+    real_open = os.open
+
+    def always_denied(path, flags, *args, **kwargs):
+        if str(path).endswith(".lock"):
+            raise PermissionError(13, "Permission denied")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(_mirror.os, "open", always_denied)
+
+    err = _mirror.write_issue(root, "2482", {"number": 2482})
+
+    assert err is not None, "a write that never acquired the lock must report failure"
+    assert "Permission denied" in err, (
+        "the timeout must carry the error it last saw, not a cause it did not "
+        "measure: " + err)
+    assert not (Path(root) / "issues" / "manifest.json").exists(), err

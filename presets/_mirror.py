@@ -258,14 +258,33 @@ def _manifest_lock(root: str) -> Iterator[None]:
     lock_path = issues_dir / (MANIFEST_NAME + ".lock")
     deadline = time.monotonic() + _LOCK_TIMEOUT
     fd = None
+    # What the last refusal actually was, so the timeout below reports a cause
+    # it measured rather than one it assumed (#2482).
+    last_refusal = ""
     while fd is None:
         try:
             fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
+        except (FileExistsError, PermissionError) as exc:
+            # `FileExistsError` is the POSIX spelling of a contended
+            # `O_CREAT | O_EXCL`. Windows raises `PermissionError` (EACCES)
+            # instead when another process holds the path open, so catching
+            # only the first meant the second writer never waited at all --
+            # it escaped, and its update was dropped, which is the lost update
+            # this lock exists to close. Observed on master de25091,
+            # `pytest (windows-latest, 3.12)`, job #102540129404.
+            #
+            # A genuine permission failure -- a read-only directory, another
+            # user's file -- raises the identical exception and is not
+            # contention. It is not distinguishable here, so it is not
+            # guessed at: both wait, and the timeout below names what it saw.
+            last_refusal = f"{type(exc).__name__}: {exc}"
             if time.monotonic() >= deadline:
                 raise _LockTimeout(
                     f"could not acquire {lock_path} within {_LOCK_TIMEOUT}s "
-                    f"-- if the process holding it has crashed, delete it by hand"
+                    f"-- last refusal was {last_refusal}. If a process holding "
+                    f"it has crashed, delete it by hand; a permission error "
+                    f"with no lock file beside it is a different fault and "
+                    f"deleting nothing will fix it"
                 ) from None
             time.sleep(_LOCK_POLL)
     try:
