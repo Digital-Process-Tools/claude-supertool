@@ -380,6 +380,45 @@ def spawn_lock(path: str, timeout: float = LOCK_WAIT_SEC):
         os.close(fd)
 
 
+def force_respawn(
+    cwd: str,
+    name: str,
+    *,
+    preflight: Optional[Callable[[], None]] = None,
+    spawn_timeout: float = SPAWN_TIMEOUT_SEC,
+    lock_timeout: float = LOCK_WAIT_SEC,
+    python: str = sys.executable,
+) -> str:
+    """Kill whatever is answering for `(cwd, name)` and start a fresh daemon,
+    even though its fingerprint still matches (#2449).
+
+    `ensure_daemon`'s fast path -- and the reap inside its locked section --
+    both trust a fingerprint match on a live pid as proof the daemon is
+    usable. That is the right call when nothing has gone wrong, and it is
+    exactly the case that misses a desynchronised pipe: the daemon is alive,
+    its config still matches disk, and it is still answering *something*, so
+    nothing about `ensure_daemon`'s own discovery would ever retire it. A
+    caller that has independent evidence of desync (a response addressed to
+    someone else's id) has to force the reap explicitly instead.
+
+    Same lock as `ensure_daemon`, so this cannot race a concurrent spawn: the
+    kill and the respawn that follows both happen under one hold of it, and
+    a second caller doing the same thing at the same time waits its turn
+    rather than reaping a daemon the first caller just started.
+    """
+    cwd = os.path.abspath(cwd)
+    sock_path, pid_path = socket_pid_paths(cwd, name)
+    with spawn_lock(lock_path(sock_path), timeout=lock_timeout):
+        existing = daemon_pid(pid_path)
+        if existing:
+            reap(existing, sock_path, pid_path)
+        else:
+            cleanup(sock_path, pid_path)
+    return ensure_daemon(
+        cwd, name, preflight=preflight, spawn_timeout=spawn_timeout,
+        lock_timeout=lock_timeout, python=python)
+
+
 # --------------------------------------------------------------------------
 # The one spawn path
 # --------------------------------------------------------------------------

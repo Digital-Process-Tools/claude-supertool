@@ -124,30 +124,44 @@ def ensure_daemon(cwd: str) -> str:
 
 
 def ndjson_call(sock_path: str, test_file: str) -> dict:
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.settimeout(CALL_TIMEOUT_SEC)
-        s.connect(sock_path)
-        # #1935: an unpredictable per-call id, not the fixed literal `2` --
-        # see ndjson_scan.py's module docstring for what that closes.
-        req_id = random.randrange(2, 2**32)  # exclude 0/1 -- 1 is the initialize frame's id
-        msgs = [
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-             "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                        "clientInfo": {"name": "phpunit-mcp-adapter", "version": "1.0.0"}}},
-            {"jsonrpc": "2.0", "method": "notifications/initialized"},
-            {"jsonrpc": "2.0", "id": req_id, "method": "tools/call",
-             "params": {"name": "phpunit_run",
-                        "arguments": {"testFile": test_file}}},
-        ]
-        s.sendall(("\n".join(json.dumps(m) for m in msgs) + "\n").encode())
-        # #1924: scans the whole buffer, not one LF-delimited line at a
-        # time — a fatal test's HTML error page can glue the real response
-        # to the end of the last HTML line with no separator, and a
-        # line-anchored parser never sees it. #1927: gives up on idle
-        # silence rather than waiting out the whole call budget, and names
-        # what was received (or the daemon's own log) on a timeout instead
-        # of only that one happened.
-        return _ndjson_scan.receive_until(s, req_id, CALL_TIMEOUT_SEC, sock_path)
+    """One `phpunit_run` exchange, with one retry against a fresh daemon if
+    the pipe turns out to be desynchronised (#2449) -- see
+    `ndjson_scan.call_with_retry` for what that does and does not cover.
+    """
+    box = {"sock": sock_path}
+
+    def attempt() -> dict:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(CALL_TIMEOUT_SEC)
+            s.connect(box["sock"])
+            # #1935: an unpredictable per-call id, not the fixed literal `2` --
+            # see ndjson_scan.py's module docstring for what that closes.
+            req_id = random.randrange(2, 2**32)  # exclude 0/1 -- 1 is the initialize frame's id
+            msgs = [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                            "clientInfo": {"name": "phpunit-mcp-adapter", "version": "1.0.0"}}},
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": req_id, "method": "tools/call",
+                 "params": {"name": "phpunit_run",
+                            "arguments": {"testFile": test_file}}},
+            ]
+            s.sendall(("\n".join(json.dumps(m) for m in msgs) + "\n").encode())
+            # #1924: scans the whole buffer, not one LF-delimited line at a
+            # time — a fatal test's HTML error page can glue the real response
+            # to the end of the last HTML line with no separator, and a
+            # line-anchored parser never sees it. #1927: gives up on idle
+            # silence rather than waiting out the whole call budget, and names
+            # what was received (or the daemon's own log) on a timeout instead
+            # of only that one happened.
+            return _ndjson_scan.receive_until(s, req_id, CALL_TIMEOUT_SEC, box["sock"])
+
+    def respawn() -> None:
+        box["sock"] = _spawn.force_respawn(
+            WORKING_DIR, DAEMON_NAME, preflight=lambda: resolve_bin(WORKING_DIR),
+            spawn_timeout=SPAWN_TIMEOUT_SEC)
+
+    return _ndjson_scan.call_with_retry(attempt, respawn)
 
 
 def parse_json_output(file_path: str, output_json: str, dur_ms: int) -> dict:

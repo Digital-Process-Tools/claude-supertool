@@ -80,8 +80,41 @@ def _enclosing_brace(text: str, marker: int) -> int | None:
     return None
 
 
-def find_response(buf: bytes, want_id) -> dict | None:
-    """The JSON-RPC object in `buf` whose `id` == `want_id`, or `None`.
+class DesyncDetected(RuntimeError):
+    """`receive_until` gave up, but the buffer held a well-formed JSON-RPC
+    *response* (a decodable object with an `id` key) that carried an id other
+    than the one awaited (#2449).
+
+    That is different evidence from silence or undecodable noise: it means a
+    real frame was in the pipe and it was not ours -- the shape a daemon
+    serving one client at a time leaves behind when a prior client
+    disconnected mid-exchange and the next one inherited its tail end. A
+    caller that sees this, rather than a plain `RuntimeError`, has a reason to
+    believe a fresh connection to a freshly-spawned daemon might actually
+    recover, which a caller retrying on pure silence (nothing ever arrived, or
+    arrived but never parsed as JSON-RPC at all) does not have -- see
+    `receive_until` for where the two are told apart.
+
+    Subclasses `RuntimeError` so any existing `except RuntimeError` still
+    catches it unchanged; only a caller that added `except DesyncDetected`
+    sees the distinction at all.
+    """
+
+
+#: The `id` every one of the four warm adapters hardcodes for its own
+#: `initialize` frame -- see each adapter's `ndjson_call`, `"id": 1`. A
+#: response addressed to it is an expected part of *this* exchange, not
+#: evidence of anything gone wrong, so `_scan` never treats it as a foreign
+#: id (#2449): a slow tool call that has only had time to answer `initialize`
+#: so far looks identical, on the wire, to nothing having happened yet.
+INITIALIZE_ID = 1
+
+
+def _scan(buf: bytes, want_id, own_ids: frozenset = frozenset((INITIALIZE_ID,))) -> tuple:
+    """`(obj, saw_foreign_id)`: `obj` is the frame matching `want_id`, or
+    `None`; `saw_foreign_id` is `True` iff some *other* well-formed JSON-RPC
+    response was seen carrying an id that belongs to neither `want_id` nor
+    `own_ids` (#2449).
 
     Scans for every `"jsonrpc"` occurrence rather than requiring one to start a
     line. For each, backs up to its enclosing `{` and attempts
@@ -92,6 +125,17 @@ def find_response(buf: bytes, want_id) -> dict | None:
     the next occurrence rather than rejected outright, since more than one
     JSON-RPC frame legitimately shares the buffer.
 
+    `own_ids` exists because "some id other than the one I'm waiting for" is
+    not, by itself, evidence of a desynchronised pipe: every one of these
+    exchanges sends its own `initialize` frame first and gets its own
+    response to it, and that response's id (`INITIALIZE_ID`) shows up in
+    every buffer this scans, glued to nothing. Only an id belonging to
+    *neither* this call nor its own preceding frames is a frame this
+    exchange did not send for -- which is the actual signal a client that
+    inherited another client's tail end would produce. A notification (no
+    `id` key at all, e.g. `notifications/initialized`) is not evidence of
+    anything either way.
+
     `buf` is decoded permissively (`errors="replace"`): a response glued to
     truncated multi-byte HTML is exactly the shape this exists for, and a
     `UnicodeDecodeError` here would trade the bug this fixes for a new one.
@@ -99,10 +143,11 @@ def find_response(buf: bytes, want_id) -> dict | None:
     text = buf.decode("utf-8", errors="replace")
     decoder = json.JSONDecoder()
     search_from = 0
+    saw_foreign_id = False
     while True:
         marker = text.find('"jsonrpc"', search_from)
         if marker == -1:
-            return None
+            return None, saw_foreign_id
         brace = _enclosing_brace(text, marker)
         if brace is None:
             search_from = marker + 1
@@ -112,9 +157,23 @@ def find_response(buf: bytes, want_id) -> dict | None:
         except json.JSONDecodeError:
             search_from = marker + 1
             continue
-        if isinstance(obj, dict) and obj.get("id") == want_id:
-            return obj
+        if isinstance(obj, dict):
+            oid = obj.get("id")
+            if oid == want_id:
+                return obj, saw_foreign_id
+            if "id" in obj and oid not in own_ids:
+                saw_foreign_id = True
         search_from = marker + 1
+
+
+def find_response(buf: bytes, want_id) -> dict | None:
+    """The JSON-RPC object in `buf` whose `id` == `want_id`, or `None`.
+
+    Thin wrapper over `_scan` that drops the desync signal, for the callers
+    (and tests) that only ever wanted the object.
+    """
+    obj, _saw_foreign_id = _scan(buf, want_id)
+    return obj
 
 
 def describe_buffer(buf: bytes, want_id) -> str:
@@ -207,13 +266,21 @@ def receive_until(s: socket.socket, want_id, call_timeout: float, sock_path: str
     received is unaffected: that is still "genuinely still working" until
     `call_timeout`, because there is no last byte to measure idleness from.
 
-    Raises `RuntimeError(describe_timeout(...))` on either deadline, naming
-    what was received, how long was spent, and the daemon's own log tail.
+    Raises on either deadline, naming what was received, how long was spent,
+    and the daemon's own log tail (via `describe_timeout`). `DesyncDetected`
+    -- a `RuntimeError` subclass -- if the buffer held a well-formed response
+    to a *foreign* id along the way: one that is neither `want_id` nor
+    `INITIALIZE_ID` (#2449: evidence of a live but desynchronised pipe,
+    worth a caller retrying against a fresh daemon -- the ordinary
+    `initialize` response every exchange gets for itself does not count,
+    see `_scan`). Plain `RuntimeError` otherwise (silence, or noise that
+    never parsed as a JSON-RPC response at all).
     """
     start = time.monotonic()
     deadline = start + call_timeout
     buf = b""
     last_byte_at = None
+    saw_other_id = False
     while True:
         now = time.monotonic()
         remaining = deadline - now
@@ -232,7 +299,57 @@ def receive_until(s: socket.socket, want_id, call_timeout: float, sock_path: str
             break
         buf += chunk
         last_byte_at = time.monotonic()
-        obj = find_response(buf, want_id)
+        obj, other = _scan(buf, want_id)
+        if other:
+            saw_other_id = True
         if obj is not None:
             return obj
-    raise RuntimeError(describe_timeout(buf, want_id, time.monotonic() - start, sock_path))
+    msg = describe_timeout(buf, want_id, time.monotonic() - start, sock_path)
+    if saw_other_id:
+        # #2449: at least one well-formed response addressed to a different
+        # id was seen -- a live but desynchronised pipe, not silence -- so
+        # the caller gets a type it can choose to retry on, rather than an
+        # indistinguishable plain timeout.
+        raise DesyncDetected(msg)
+    raise RuntimeError(msg)
+
+
+def call_with_retry(do_call, respawn):
+    """Run `do_call()` once more, against a freshly-respawned daemon, if it
+    raises `DesyncDetected` -- and propagate everything else unchanged (#2449).
+
+    This is the fix for the class the issue asks for, not a narrower one keyed
+    to any particular root cause: whatever produced the desync (a client that
+    disconnected mid-exchange and left its tail end for the next one to
+    inherit is the reading the daemon's own contract supports, but nothing
+    here depends on that being the only way to reach this state), a fresh
+    daemon has no memory of it, so replaying the same exchange against one is
+    the cheapest thing that can plausibly recover.
+
+    Deliberately not "keep trying": exactly one retry, and only on the one
+    signal (`DesyncDetected`) that says a retry has a reason to help. Plain
+    silence or noise that never parsed as a response at all raises
+    `RuntimeError` from `receive_until`, not `DesyncDetected`, and is not
+    retried here -- respawning and waiting out a second full `call_timeout`
+    for a daemon (or an analysis) that is just genuinely slow or genuinely
+    gone would turn every such call into a silent double-timeout for no
+    corresponding chance of success. A second `DesyncDetected`, or any
+    failure out of `respawn()` itself (`_spawn` raises its own exceptions --
+    `AutospawnSuppressed`, a plain `RuntimeError` on a spawn that never
+    published a socket), propagates from the second `do_call()` exactly as
+    the first would have: the caller's existing handling for "nothing could
+    be checked" already covers it.
+
+    `do_call` is a zero-argument callable that performs one whole exchange
+    (connect, send, `receive_until`) and returns the parsed response;
+    `respawn` is a zero-argument callable that forces a fresh daemon into
+    existence and returns nothing this function reads -- both close over
+    whatever adapter-specific state (the current socket path, in particular)
+    they need, so this function stays a shared *retry*, not a shared
+    *protocol*.
+    """
+    try:
+        return do_call()
+    except DesyncDetected:
+        respawn()
+        return do_call()
