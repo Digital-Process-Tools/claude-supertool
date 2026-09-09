@@ -30112,6 +30112,68 @@ def _generic_preset_payload_hint(op: str) -> str:
     return chr(10) + chr(10).join(lines)
 
 
+_PRESET_NAMED_PAYLOAD_FIELDS: Dict[str, Tuple[str, ...]] = {
+    # None of these four take the generic args-list preset route --
+    # `repo_target: "payload"` in presets/github.json marks all four as ops
+    # that parse their OWN named-field payload, but `_at_file_payload_hint`
+    # had no branch for that population and fell through to
+    # `_generic_preset_payload_hint`, printing an `args = [...]` example the
+    # op's own loader refuses outright (#2444: `help:gh-issue-comment` told a
+    # caller to send `args`; the same symptom was confirmed live, in this
+    # same self-review round, against the other three -- `help:gh-issue-create`
+    # and `help:gh-pr-edit` still printed the wrong hint after #2444's first
+    # pass fixed only `gh-issue-comment`, which is what a fix scoped to the
+    # filed op alone always risks when the root cause is shared).
+    #
+    # Every tuple here is pinned by `tests/test_gh_issue_comment_help_text_2444.py`
+    # against the op's own `ACCEPTED_KEYS`, read by importing the preset
+    # module directly -- a TEST-enforced agreement, not a structural one:
+    # nothing stops this dict and that module-level set from being edited
+    # independently, the same way #2444 itself happened.
+    "gh-issue-comment": ("body", "body_file", "repo"),
+    "gh-issue-create": (
+        "repo", "title", "body", "body_file", "labels", "assignees",
+        "milestone",
+    ),
+    "gh-pr-create": (
+        "repo", "title", "base", "head", "body", "body_file", "draft",
+        "labels", "assignees", "reviewers", "milestone",
+        "literal_backslashes", "no_close",
+    ),
+    "gh-pr-edit": (
+        "repo", "title", "body", "body_file", "literal_backslashes",
+        "no_close", "base", "head", "draft", "labels", "assignees",
+        "reviewers", "milestone",
+    ),
+}
+
+
+def _preset_named_payload_hint(op: str, fields: Tuple[str, ...]) -> str:
+    """Hint text for a preset op that parses its OWN named-field payload
+    (`_PRESET_NAMED_PAYLOAD_FIELDS`), never the generic `args` list.
+
+    The worked example picks `body` (or `title` where there is no `body`)
+    over `fields[0]` -- `repo` is first in most of these tuples because it
+    is shared/optional across the family, and a caller copying the example
+    verbatim wants to see the field they are most likely to actually set.
+    """
+    quote = "'" * 3
+    if "body" in fields:
+        example_field = "body"
+    elif "title" in fields:
+        example_field = "title"
+    else:
+        example_field = fields[0]
+    lines = [
+        f"  {op}:@... reads its fields from the payload. Keys: "
+        f"{', '.join(fields)}",
+        f"    ./supertool '{op}:@-' <<'EOF'",
+        f"    {example_field} = {quote}...{quote}",
+        "    EOF",
+    ]
+    return chr(10) + chr(10).join(lines)
+
+
 def _at_file_payload_hint(op: str) -> str:
     """Name the payload keys *op* wants, and show a call that would work.
 
@@ -30121,17 +30183,31 @@ def _at_file_payload_hint(op: str) -> str:
     key names from scratch; one mangled its own commit message to get past the
     shell instead, which is permanent in that history (#1003).
 
-    The keys come from the same registry that drives the route, so this can
-    never drift into describing a payload shape the loader would reject.
+    For the `:::`-derived registry (`_AT_FILE_REGISTRY`), the keys come from
+    the same source that drives the route itself, so those two can never
+    drift apart. `_PRESET_NAMED_PAYLOAD_FIELDS` below is NOT that -- it is a
+    hand-maintained dict describing a payload shape each op's own preset
+    script parses independently, kept honest only by a test
+    (`tests/test_gh_issue_comment_help_text_2444.py`) that imports each
+    module and compares its `ACCEPTED_KEYS` against this dict, not by any
+    structural guarantee. #2444 itself is what a silent drift there looks
+    like; treat that pin as the thing standing between this docstring's
+    claim and reality for that branch.
     Returns "" for an op with no @file route, leaving its error untouched.
 
     A preset op with no registered fields (#1165) falls to
     `_generic_preset_payload_hint` instead of "" -- it DOES have a route,
     the generic `args`-list one, and an op that has a route but no hint text
-    is indistinguishable from one that has none at all.
+    is indistinguishable from one that has none at all. A preset op that
+    parses its OWN named-field payload (`_PRESET_NAMED_PAYLOAD_FIELDS`) is
+    checked before that fallback, so it is never described as an args-list
+    op (#2444).
     """
     specs = _at_file_specs(op)
     if not specs:
+        named = _PRESET_NAMED_PAYLOAD_FIELDS.get(op)
+        if named:
+            return _preset_named_payload_hint(op, named)
         if _op_is_preset_op(op):
             return _generic_preset_payload_hint(op)
         return ""

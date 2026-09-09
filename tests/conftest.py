@@ -1405,6 +1405,11 @@ RESET_EXEMPT_GLOBALS = (
     "_SHIM_CORE",
     "_AT_FILE_BUILTIN_DEFAULTS",
     "_READ_OP_AT_FIELDS",
+    # A fixed dict literal, same lifetime and same shape as _READ_OP_AT_FIELDS
+    # right above it -- both name the payload fields a family of ops takes,
+    # written once at module load and only ever read by _at_file_payload_hint
+    # (#2444). No caller mutates it.
+    "_PRESET_NAMED_PAYLOAD_FIELDS",
     "_BATCH_POSITIONAL_FIELDS",
     "_BUILTIN_OPS",
     "_BUILTIN_SYNTAX_VALIDATORS",

@@ -24,7 +24,26 @@ substituting `{args}`, so alternation reaches the preset intact and always did.
 """
 from __future__ import annotations
 
+import re
+
 import _digits  # (the one ASCII-digit test, shared since #1727)
+
+# #521 -- pytest own short-summary marker, in either separator it ships:
+# FAILED tests/test_x.py::test_name (native) or
+# FAILED tests.test_x.test_name (the dotted form
+# .github/scripts/junit_summary.py re-emits from junit.xml). Anchored at
+# line start so a job-table row this op itself renders elsewhere --
+# - pytest (ubuntu-latest, 3.12) (job #123) -- failure -- or a step name
+# containing the bare word failure never matches: neither begins a line
+# with the literal token FAILED followed by whitespace and a node id.
+#
+# Only captures the token right after FAILED -- self-review caught that an
+# earlier version of this pattern (`\S+(::|\.)\S+` matched inline) fired on
+# ANY dotted token, so "FAILED build.sh exited with code 1" and "FAILED
+# main.py compile step" both read as MANUAL, which defeats the whole point
+# of a rule meant to tell a unit-test failure apart from other kinds. The
+# token itself is graded separately below.
+_PYTEST_FAILED_LINE_RE = re.compile(r"^FAILED\s+(\S+)", re.MULTILINE)
 
 # `raw` is here too, though its own START/END parsing lives in each preset.
 # `artifacts`/`artifact` (#1796): list a job's artifacts, or fetch one file
@@ -158,3 +177,46 @@ def artifact_path(op: str, tokens: list[str]) -> tuple[str, str]:
         f"path in this op, so that is the only reading that keeps it whole; "
         f"check that it says what you meant."
     )
+
+
+def classify_unit_test_failure(text: str) -> "str | None":
+    """The ONE row #521's own issue text calls a rule rather than a
+    heuristic: "unit test failure -> MANUAL, always. A bot deciding is the
+    test wrong or the code wrong produces green pipelines and broken
+    production." Returns "MANUAL" when a pytest short-summary failure line
+    is present anywhere in *text*, `None` otherwise.
+
+    `None` is not "not a unit test failure" -- it is "this rule did not
+    fire", never collapsed into a false negative the way this codebase's
+    own defect class (CLAUDE.md) warns against. Every other row in the
+    issue's table (rector/prettier hunks, PHPStan, infra flakes) is
+    deliberately NOT attempted here: the issue says a classifier needs a
+    corpus first, and the corpus this rule was measured against
+    (`docs/ci-failure-classification.md`, six real failed runs on this
+    repository, 2026-09-09) contained no instance of any of them -- this
+    repository has no PHP/rector/PHPStan CI leg at all, so that half of the
+    original table may not even apply here.
+
+    A `FAILED` line alone is not enough: self-review found that grading on
+    the presence of ANY dot or `::` right after the token matched
+    non-pytest lines too (`FAILED build.sh exited with code 1`, `FAILED
+    main.py compile step`), which defeats the rule's whole purpose. The
+    token right after `FAILED` must ALSO look like a real pytest node id --
+    pytest's native `path::test_name` form (any `::` at all -- pytest node
+    ids are the only thing in ordinary CI text that uses a double colon),
+    or the dotted `module.test_name` form `.github/scripts/junit_summary.py`
+    re-emits from junit.xml, gated on at least one dot-separated segment
+    starting with `test` (case-insensitive) -- a signal `build.sh` and
+    `main.py` do not carry, and every dotted node id in the observed
+    corpus does (`tests.test_go_warmup_lock_2331.test_two_racing...`).
+    """
+    for match in _PYTEST_FAILED_LINE_RE.finditer(text):
+        token = match.group(1)
+        if "::" in token:
+            return "MANUAL"
+        segments = token.split(".")
+        if len(segments) >= 2 and any(
+            seg.lower().startswith("test") for seg in segments
+        ):
+            return "MANUAL"
+    return None
