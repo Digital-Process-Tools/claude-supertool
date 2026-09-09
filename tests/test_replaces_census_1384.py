@@ -149,6 +149,10 @@ _ABSENT = {
                            "own out-of-repo config, which no Slack CLI could "
                            "name",
 
+    # --- presets/github.json (#1955) ----------------------------------------
+    "gh-mirror": "it reads supertool's write-through mirror cache on disk with "
+                 "no network call at all; " + _SUPERTOOL_OWN,
+
     # --- presets/watch.json ------------------------------------------------
     "watch": "`gh pr checks --watch` and `gh run watch` are FOREGROUND "
              "pollers on one id; this registers a background watcher with "
