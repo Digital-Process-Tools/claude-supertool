@@ -822,8 +822,73 @@ With nothing configured the last line reads `SUPERTOOL_WATCH_SOURCES_PATH is not
 | `gh-run` | `gh run view <id> --json status,conclusion,workflowName,url,...` | `run_succeeded`, `run_failed`, `run_cancelled`, `run_action_required`, `run_started`, `run_inconclusive`, `run_unreachable` |
 | `gh-branch` | the same composition `gh-branch:<ref>` and `radar`'s default-branch member row already use — `gh api commits/<ref>` then `gh run list --branch <ref>` | `went_green`, `went_not_green`, `went_failed`, `no_run`, `unknown`, `branch_unreachable` |
 | `slack` | `conversations.history` for a bare channel id, `conversations.replies` for `<channel>~<thread-ts>` | `slack_message`, `slack_unreachable` |
+| `devto-engagement` | `GET /articles/me/published` then `GET /comments?a_id=<id>` for each ([#526](https://github.com/Digital-Process-Tools/claude-supertool/issues/526)) | `comment_received`, `reply_received`, `reaction_received`, `engagement_unreachable` |
+| `bluesky-engagement` | `app.bsky.notification.listNotifications` ([#526](https://github.com/Digital-Process-Tools/claude-supertool/issues/526)) | `comment_received`, `reply_received`, `reaction_received`, `engagement_unreachable` |
 
 Each source declares its event vocabulary in `presets/watch/sources/<NAME>/events.json` for introspection.
+
+### `devto-engagement` / `bluesky-engagement` — a scope, not one article ([#526](https://github.com/Digital-Process-Tools/claude-supertool/issues/526))
+
+`devto_status_since` and `bluesky_status_since` already answer "what happened
+since I last looked" — they exist precisely because both platforms give no
+push channel of their own. That is a watcher written as a command you
+remember to re-run. These two sources are the same fetch taught to run
+itself, spawned as `watch:devto-engagement:@me` /
+`watch:bluesky-engagement:@me` (`@me` is the only scope either understands
+today, and is also the default when `id` is omitted).
+
+Like `gitlab-mr-feed`/`github-issue-feed`, both poll a **population**, not
+one id: the interesting engagement is usually on whichever post is
+trending, not on the one article or thread somebody happened to spawn a
+watcher for. `devto-engagement` covers your `SUPERTOOL_STATUS_POSTS`-worth
+of most recently published articles (capped at 10 per tick to bound API
+traffic); `bluesky-engagement` covers your whole notification feed, which
+Bluesky already scopes to you.
+
+Credentials are read the same way the `devto`/`bluesky` presets already
+read them (`DEVTO_API_KEY` / `~/.config/devto/token`,
+`BLUESKY_HANDLE`+`BLUESKY_APP_PASSWORD` / `~/.config/bluesky/`) — but never
+through `_auth.py::get_api_key` or `_atproto.py`'s session helpers
+directly, because both `sys.exit` on failure. That is correct for a
+one-shot CLI command and wrong for a poller a dispatcher expects to keep
+running: a poller that exits on a missing key or a network blip is a
+watcher that silently stops covering anything, this repository's own
+absence-read-as-the-world's defect. A missing credential or a failed fetch
+is reported as `engagement_unreachable` instead, edge-triggered like every
+other source's `*_unreachable`.
+
+**Why reactions are a threshold crossing on one source and a direct event on
+the other.** #526 is explicit that a reaction total with no nameable
+before/after must either become a threshold-crossing event or be left out
+entirely — never a bare running-count event. The two platforms answer that
+call differently because their APIs are shaped differently:
+
+- dev.to exposes reactions as one running integer per article, with no
+  per-reaction feed. "12 more reactions since last tick" names a metric
+  that moved, not a thing that happened, so `devto-engagement` reports the
+  crossing: `reaction_received` fires the tick an article's
+  `public_reactions_count` passes one of `REACTION_THRESHOLDS` (10, 25, 50,
+  100, 250, 500, 1000, 2500, 5000, 10000). A count already past a threshold
+  when the poller first sees the article is not reported, for the same
+  reason a feed's first poll never announces the population it opens on.
+- Bluesky's notification endpoint gives every like and repost its own
+  notification, with its own author, subject and timestamp — as nameable a
+  before/after as a reply. `bluesky-engagement` reports each one directly,
+  the tick it is new, with no threshold logic at all; reducing it to a
+  count first and re-deriving a crossing from that would throw away
+  identity the API already gives for free.
+
+`comment_received` vs `reply_received` is drawn differently per platform
+too, because "was this addressed to me" is answered differently by each
+API. `devto-engagement` has no such signal from dev.to itself — there is no
+"comments by me" endpoint — so it reads the local outbound ledger
+(`presets/devto/_outbound.py`, the one `devto_status_since` already reads):
+a new comment is `reply_received` only when its parent is a comment this
+tool itself posted, and `comment_received` otherwise. `bluesky-engagement`
+reads it straight off the notification `reason`: `reply` is
+`reply_received`, `mention`/`quote` is `comment_received`. Bluesky's
+`follow` notifications map to neither — a follow is not engagement with a
+post, and forcing it into `reaction_received` would misdescribe it.
 
 ### `slack` — the first source whose whole payload is a stranger's prose (#2031)
 

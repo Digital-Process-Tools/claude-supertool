@@ -1,0 +1,9 @@
+{
+  "source": "bluesky-engagement",
+  "events": [
+    {"key": "comment_received",      "label": "A mention or quote of your post — someone engaged without directly replying"},
+    {"key": "reply_received",        "label": "A reply to one of your posts"},
+    {"key": "reaction_received",     "label": "A like or repost of one of your posts"},
+    {"key": "engagement_unreachable","label": "The notification feed could not be read — a fetch that failed or missing credentials, not Bluesky going quiet. Fires once per outage, not once per poll"}
+  ]
+}
