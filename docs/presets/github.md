@@ -366,7 +366,7 @@ Unset (the default) means the mirror is off: `gh-issue` renders exactly as it al
 
 | Render | Meaning |
 |---|---|
-| `not configured` | `.supertool.json` sets no `gh_mirror_dir` at all. Not a finding — most repos will never turn this on. |
+| `not configured` | `.supertool.json` sets no `gh_mirror_dir` at all — **or** the nearest one is untrusted (wrong owner, group/world-writable) and was skipped exactly like an absent file, matching every sibling walk-up loader in this codebase. Not a finding — most repos will never turn this on, and the two causes render identically on purpose (see `presets/_mirror.py`'s `MirrorConfig` docstring). |
 | `#N: cached (AGE)` | `gh-issue` fetched this number and the mirror is intact. `AGE` is `Nm`/`Nh`/`Nd`. |
 | `#N: not-cached` | The mirror is on and intact, but this number was never read via `gh-issue` (see the scope note above). |
 | `#N: mirror-unreadable — REASON` | The mirror is configured but broken: bad file ownership/permissions, a corrupted manifest, or a manifest entry whose body file is missing or unparsable. |

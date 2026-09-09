@@ -35,13 +35,15 @@ no-op for the writer, or answers `not-configured` for the reader.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import stat
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import Iterator, NamedTuple, Optional
 
 CONFIG_KEY = "gh_mirror_dir"
 CONFIG_FILENAME = ".supertool.json"
@@ -60,11 +62,27 @@ class MirrorConfig(NamedTuple):
     Three states, matching every other walk-up loader in this codebase
     (`presets/_remote_default.py`'s `config_default`, `presets/worktree/_common.py`'s
     `load_config`): `path` set means configured and trusted; both `None`
-    means genuinely unset (nobody asked for a mirror); `path` `None` with
-    `error` set means a `.supertool.json` was found but could not be used
-    (untrusted ownership/permissions, malformed JSON, wrong-typed value) --
-    which must render as `mirror-unreadable`, never silently as "not
-    configured".
+    means genuinely unset (nobody asked for a mirror, OR the nearest
+    `.supertool.json` was untrusted -- see below); `path` `None` with
+    `error` set means a `.supertool.json` was found, trusted, and STILL
+    could not be used (malformed JSON, a `gh_mirror_dir` of the wrong
+    type) -- which must render as `mirror-unreadable`, never silently as
+    "not configured".
+
+    **Untrusted ownership/permissions is deliberately the FIRST case, not
+    the third**, matching every sibling walk-up loader
+    (`presets/_publish_safety.py`, `presets/gitlab/_maintenance.py`,
+    `presets/worktree/_common.py`, `presets/slack/_authorization.py`): a
+    trust violation is skipped exactly like an absent file, with a stderr
+    warning, and the walk continues upward for a further, trusted config --
+    it never sets `.error`. Self-review finding (#1955): an earlier draft
+    of this docstring claimed the opposite, which
+    `tests/test_gh_mirror_1955.py::test_group_writable_config_is_skipped_like_an_absent_one`
+    already disproved (it asserts `cfg.error is None`). The practical
+    consequence, named rather than hidden: a `not configured` render from
+    `gh-mirror` cannot currently distinguish "nobody set `gh_mirror_dir`"
+    from "somebody did, but this process does not trust that file" -- the
+    same ambiguity every sibling loader already accepts.
     """
     path: Optional[str] = None
     error: Optional[str] = None
@@ -189,6 +207,60 @@ def _age(iso: str) -> str:
     return f"{secs // 86400}d"
 
 
+#: How long a write waits for the manifest lock before deciding it is stale
+#: and breaking it, and how often it polls while waiting. Module-level so
+#: tests can shrink both without a real multi-second sleep (#1955 self-review).
+_LOCK_TIMEOUT = 10.0
+_LOCK_POLL = 0.05
+
+
+@contextlib.contextmanager
+def _manifest_lock(root: str) -> Iterator[None]:
+    """Exclusive lock spanning one manifest read-modify-write.
+
+    Self-review finding (#1955, Explore spawn): without this, two
+    concurrent `gh-issue` reads for two DIFFERENT issue numbers could each
+    read the manifest before the other wrote it back, so whichever
+    `os.replace` landed second silently dropped the other's newly-added key
+    -- exactly the multi-agent scenario this module's own docstring names
+    as a live concern ("two agents claiming the same issue"). `write_issue`
+    holds this for its whole read-modify-write, not just the final
+    `os.replace` (which is atomic on its own but does not make the READ
+    that preceded it atomic with it).
+
+    `os.open(..., O_CREAT | O_EXCL)` is the lock primitive because it is
+    atomic on both POSIX and Windows, unlike `fcntl`/`msvcrt`, so this
+    needs no platform branch. A lock held past `_LOCK_TIMEOUT` is treated
+    as stale (the process that created it crashed without releasing it)
+    and broken rather than hung on forever -- a write-through cache is not
+    worth blocking a caller's read indefinitely over.
+    """
+    issues_dir = _issues_dir(root)
+    issues_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = issues_dir / (MANIFEST_NAME + ".lock")
+    deadline = time.monotonic() + _LOCK_TIMEOUT
+    fd = None
+    while fd is None:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                try:
+                    lock_path.unlink()
+                except OSError:
+                    pass
+                continue
+            time.sleep(_LOCK_POLL)
+    try:
+        yield
+    finally:
+        os.close(fd)
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+
+
 def write_issue(root: str, number: str, payload: dict) -> Optional[str]:
     """Write PAYLOAD (the full, untruncated `gh issue view --json` reply)
     plus a read timestamp, and update the manifest. Never raises.
@@ -216,25 +288,29 @@ def write_issue(root: str, number: str, payload: dict) -> Optional[str]:
         )
         os.replace(tmp_body, body_path)
 
-        manifest_path = _manifest_path(root)
-        manifest: dict = {}
-        if manifest_path.is_file():
-            try:
-                parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
-                if isinstance(parsed, dict):
-                    manifest = parsed
-            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-                # A corrupted manifest on the way IN is replaced by this
-                # write rather than propagated -- the write is what repairs
-                # it. A reader hitting the same corruption before this runs
-                # gets `mirror-unreadable`, never a silent `not-cached`.
-                manifest = {}
-        manifest[str(number)] = read_at
-        tmp_manifest = manifest_path.with_name(manifest_path.name + ".tmp")
-        tmp_manifest.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
-        )
-        os.replace(tmp_manifest, manifest_path)
+        # The manifest's read-modify-write is the part `os.replace` alone
+        # does not make atomic: it makes the FINAL write atomic, not the
+        # read that decided what to write. Locked for exactly that span.
+        with _manifest_lock(root):
+            manifest_path = _manifest_path(root)
+            manifest: dict = {}
+            if manifest_path.is_file():
+                try:
+                    parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    if isinstance(parsed, dict):
+                        manifest = parsed
+                except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                    # A corrupted manifest on the way IN is replaced by this
+                    # write rather than propagated -- the write is what repairs
+                    # it. A reader hitting the same corruption before this runs
+                    # gets `mirror-unreadable`, never a silent `not-cached`.
+                    manifest = {}
+            manifest[str(number)] = read_at
+            tmp_manifest = manifest_path.with_name(manifest_path.name + ".tmp")
+            tmp_manifest.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+            )
+            os.replace(tmp_manifest, manifest_path)
         return None
     except OSError as exc:
         return f"{exc.__class__.__name__}: {exc}"
@@ -284,6 +360,15 @@ def read_issue(root: str, number: str) -> MirrorHit:
         return MirrorHit(NOT_CACHED)
     if not isinstance(read_at, str) or not read_at:
         return MirrorHit(UNREADABLE, detail=f"{manifest_path}: entry for #{number} is not a timestamp string")
+    if _age(read_at) == "":
+        # `_age` returns "" for both an empty input (already excluded above)
+        # and a non-empty string that does not parse as an ISO timestamp --
+        # a hand-corrupted or truncated manifest value. Self-review finding
+        # (#1955): this used to be checked only for emptiness, so a
+        # corrupted-but-non-blank value passed straight through to CACHED
+        # with a blank age once the body file parsed clean -- the exact
+        # inversion this module exists to prevent.
+        return MirrorHit(UNREADABLE, detail=f"{manifest_path}: entry for #{number} is not a parseable timestamp ({read_at!r})")
 
     body_path = _body_path(root, number)
     try:

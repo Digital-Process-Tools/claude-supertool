@@ -112,6 +112,39 @@ def test_no_mirror_configured_is_a_silent_no_op_never_an_error(monkeypatch, caps
     assert "note: gh mirror" not in out, "an unconfigured mirror must not print anything about itself"
 
 
+def test_a_non_numeric_api_reply_number_is_never_written_to_the_mirror(monkeypatch, capsys, tmp_path) -> None:
+    """Self-review finding (#1955, oss:auditor spawn): the write side had
+    no equivalent to `gh-mirror`'s own `.isdigit()` gate on its NUMBER
+    argument before this fix, relying entirely on the API's `number` field
+    being a JSON integer. Defense in depth: a reply carrying a non-numeric
+    number must never reach `_mirror.write_issue`, whatever produced it."""
+    mirror_dir = _configure_mirror(tmp_path)
+    issue_payload = json.dumps({
+        "number": "not-a-number", "title": "weird reply", "state": "OPEN", "labels": [],
+        "milestone": None, "assignees": [], "author": {"login": "florian"},
+        "url": "", "body": "body", "comments": [],
+    })
+
+    def fake_gh(args, timeout=10):
+        if args and args[0] == "pr":
+            return _fake_gh_result(json.dumps([]))
+        return _fake_gh_result(issue_payload)
+
+    monkeypatch.setattr(issue, "_gh", fake_gh)
+    monkeypatch.setattr(issue, "_download_images", lambda urls, n: [])
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["issue.py", "1955"])
+
+    rc = issue.main()
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "not written" in out
+    assert not (mirror_dir / "issues").exists() or list((mirror_dir / "issues").glob("*.json")) == [], (
+        "a non-numeric API number must never produce a mirror body file"
+    )
+
+
 def test_a_mirror_write_failure_does_not_take_the_read_down_with_it(monkeypatch, capsys, tmp_path) -> None:
     """A side effect must not be able to fail the primary read it rides on."""
     _configure_mirror(tmp_path)

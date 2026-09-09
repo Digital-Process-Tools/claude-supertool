@@ -35,6 +35,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _console import use_utf8_stdout  # noqa: E402  (self-review, #1955: hit.detail/cfg.error can embed an arbitrary path or exception message, and every sibling gh-* op makes this call before printing one)
 import _mirror  # noqa: E402
 
 
@@ -44,6 +45,7 @@ def _usage() -> int:
 
 
 def main() -> int:
+    use_utf8_stdout()
     if len(sys.argv) != 3 or sys.argv[1] != "issue":
         return _usage()
     number = sys.argv[2].strip()

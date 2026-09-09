@@ -19,7 +19,10 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "presets"))
 import _mirror  # noqa: E402
@@ -72,7 +75,7 @@ def test_group_writable_config_is_skipped_like_an_absent_one(tmp_path) -> None:
     an untrusted candidate is skipped, not surfaced as `.error` -- the walk
     keeps going for a further, trusted config higher up."""
     if os.name != "posix":
-        return
+        pytest.skip("st_uid/write bits are POSIX-only")
     candidate = tmp_path / ".supertool.json"
     candidate.write_text(json.dumps({"gh_mirror_dir": ".max/gh-mirror"}), encoding="utf-8")
     candidate.chmod(0o666)
@@ -167,8 +170,10 @@ def test_permission_denied_on_the_issues_directory_is_mirror_unreadable_never_no
     silently swallows `PermissionError` and returns False, which reads
     identically to 'never fetched'. This is the fixture that would pass on
     a `.is_file()`-based implementation and must fail on it."""
-    if os.name != "posix" or os.getuid() == 0:
-        return  # root bypasses permission bits entirely
+    if os.name != "posix":
+        pytest.skip("st_uid/write bits are POSIX-only")
+    if os.getuid() == 0:
+        pytest.skip("root bypasses permission bits by design")
     root = tmp_path / "mirror"
     issues_dir = root / "issues"
     issues_dir.mkdir(parents=True)
@@ -180,6 +185,30 @@ def test_permission_denied_on_the_issues_directory_is_mirror_unreadable_never_no
         assert hit.state != _mirror.NOT_CACHED
     finally:
         issues_dir.chmod(0o755)
+
+
+def test_a_manifest_entry_with_an_unparseable_timestamp_is_mirror_unreadable_not_cached(tmp_path) -> None:
+    """A non-empty string that is not a valid ISO timestamp passed both the
+    'is it None' and 'is it a non-empty string' checks on an earlier cut of
+    this code, and once the body file parsed clean, fell all the way through
+    to CACHED with a blank age (self-review finding: Explore + oss:auditor
+    both caught this independently on #1955's own review). A corrupted
+    manifest record must render as `mirror-unreadable`, never as a
+    trustworthy cache hit with a blank age."""
+    root = tmp_path / "mirror"
+    (root / "issues").mkdir(parents=True)
+    (root / "issues" / "manifest.json").write_text(
+        json.dumps({"1955": "not-a-timestamp"}), encoding="utf-8"
+    )
+    (root / "issues" / "1955.json").write_text(
+        json.dumps({"read_at": "not-a-timestamp", "issue": {"number": 1955}}),
+        encoding="utf-8",
+    )
+
+    hit = _mirror.read_issue(str(root), "1955")
+
+    assert hit.state == _mirror.UNREADABLE, hit
+    assert hit.age == "", "must not report a blank age as though it were a real cache hit"
 
 
 def test_two_different_issues_do_not_collide(tmp_path) -> None:
@@ -196,6 +225,44 @@ def test_two_different_issues_do_not_collide(tmp_path) -> None:
     body2 = json.loads((Path(root) / "issues" / "2.json").read_text(encoding="utf-8"))
     assert body1["issue"]["body"] == "one"
     assert body2["issue"]["body"] == "two"
+
+
+def test_a_held_manifest_lock_blocks_a_concurrent_write_until_released(tmp_path, monkeypatch) -> None:
+    """Self-review finding (#1955, Explore spawn): two concurrent `gh-issue`
+    reads for two DIFFERENT numbers could each read the manifest before the
+    other wrote it back, so whichever `os.replace` landed second silently
+    dropped the other's newly-added key -- exactly the multi-agent scenario
+    `_mirror.py`'s own module docstring names as a live concern ("two agents
+    claiming the same issue"). This proves the fix's mutual exclusion
+    directly: a write that finds the lock already held must wait for it,
+    not proceed past it."""
+    monkeypatch.setattr(_mirror, "_LOCK_TIMEOUT", 5.0)
+    monkeypatch.setattr(_mirror, "_LOCK_POLL", 0.02)
+    root = str(tmp_path / "mirror")
+    issues_dir = Path(root) / "issues"
+    issues_dir.mkdir(parents=True)
+    lock_path = issues_dir / (_mirror.MANIFEST_NAME + ".lock")
+    lock_path.write_text("held by another process", encoding="utf-8")
+
+    done = threading.Event()
+
+    def run() -> None:
+        _mirror.write_issue(root, "1", {"number": 1})
+        done.set()
+
+    t = threading.Thread(target=run)
+    t.start()
+    try:
+        blocked_while_locked = not done.wait(timeout=0.3)
+        lock_path.unlink()
+        finished_after_release = done.wait(timeout=2.0)
+    finally:
+        t.join(timeout=2)
+
+    assert blocked_while_locked, "write_issue proceeded while the manifest lock was held"
+    assert finished_after_release, "write_issue never completed once the lock was released"
+    manifest = json.loads((issues_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert "1" in manifest
 
 
 def test_rewriting_an_issue_updates_its_manifest_timestamp(tmp_path, monkeypatch) -> None:

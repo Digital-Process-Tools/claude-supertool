@@ -653,9 +653,24 @@ def main() -> int:
     if mirror_cfg.error is not None:
         print(f"note: gh mirror not written -- {mirror_cfg.error}")
     elif mirror_cfg.path is not None:
-        mirror_err = _mirror.write_issue(mirror_cfg.path, str(d.get("number", number)), d)
-        if mirror_err is not None:
-            print(f"note: gh mirror not written -- {mirror_err}")
+        # Self-review (#1955, oss:auditor spawn): `gh-mirror`'s own read
+        # gates its NUMBER argument with `.isdigit()` before it ever
+        # touches a path; this write side had no equivalent gate, relying
+        # entirely on the GitHub API's own `number` field being a JSON
+        # integer. Defense in depth rather than a demonstrated exploit --
+        # `gh issue view` almost certainly refuses a non-numeric reference
+        # before returning success at all -- but a mirror write must not be
+        # the one place in this file that trusts remote text into a path.
+        mirror_number = str(d.get("number", number))
+        if mirror_number.isdigit():
+            mirror_err = _mirror.write_issue(mirror_cfg.path, mirror_number, d)
+            if mirror_err is not None:
+                print(f"note: gh mirror not written -- {mirror_err}")
+        else:
+            print(
+                f"note: gh mirror not written -- the API reply's issue "
+                f"number ({mirror_number!r}) is not a plain integer"
+            )
 
     # One-line fields are flattened rather than fenced (#694): two marker lines
     # around a six-word title is the noise that gets a convention abandoned,
