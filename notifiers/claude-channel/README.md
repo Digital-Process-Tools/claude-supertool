@@ -25,6 +25,15 @@ declares this server via `${CLAUDE_PLUGIN_ROOT}`, and `plugin.json` declares it
 as a channel. The install script and the manual wiring below are only for a
 git clone you are running outside the plugin.
 
+That sentence was true of the wiring and false of the dependency until #2486.
+`node_modules/` is gitignored, nothing in a plugin install ran `install.sh`, and
+`package.json` declares no `postinstall` -- so the server the plugin declared
+for every user died on `ERR_MODULE_NOT_FOUND` before a line of its own code ran.
+The declared entry point is now `start.mjs`, which resolves the SDK, installs it
+once if it is absent, and refuses with a sentence naming the remedy if it cannot.
+Every byte of that goes to stderr: stdout is the JSON-RPC stream, and one line of
+install progress on it corrupts the handshake.
+
 ```bash
 bash notifiers/claude-channel/install.sh
 ```
@@ -43,7 +52,7 @@ Add to your project-level `.mcp.json` (or user-level `~/.claude.json`):
   "mcpServers": {
     "claude-channel": {
       "command": "node",
-      "args": ["--experimental-strip-types", "/abs/path/to/claude-supertool/notifiers/claude-channel/channel.ts"]
+      "args": ["--experimental-strip-types", "/abs/path/to/claude-supertool/notifiers/claude-channel/start.mjs"]
     }
   }
 }
