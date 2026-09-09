@@ -89,11 +89,18 @@ def test_a_missing_dependency_that_cannot_be_installed_says_so_by_name(
             (CHANNEL_DIR / name).read_text(encoding="utf-8"), encoding="utf-8")
     (sandbox / "channel.ts").write_text("export {};\n", encoding="utf-8")
 
+    # A stand-in npm that always fails. Windows resolves an extensionless
+    # `npm` through PATHEXT and will not run a /bin/sh script, so the .cmd
+    # spelling is written beside it -- without it the launcher finds no npm
+    # at all, which is a different arm of the same failure and would pass
+    # this test for the wrong reason.
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     npm = fake_bin / "npm"
     npm.write_text("#!/bin/sh\nexit 127\n", encoding="utf-8")
     npm.chmod(0o755)
+    (fake_bin / "npm.cmd").write_text("@echo off\r\nexit /b 127\r\n",
+                                      encoding="utf-8")
 
     node = shutil.which("node")
     if node is None:
@@ -102,10 +109,18 @@ def test_a_missing_dependency_that_cannot_be_installed_says_so_by_name(
     # follows so the interpreter is still findable: stripping PATH entirely
     # made this test fail on a missing `node` rather than on the message.
     path = os.pathsep.join([str(fake_bin), str(Path(node).parent)])
+    # Inherit the real environment and override only PATH. A hand-built env of
+    # PATH and HOME alone killed node on Windows before it ran a line -- it
+    # needs SystemRoot and COMSPEC, and their absence surfaced as a native
+    # crash dump (`node::SetCppgcReference+21127`) that this test then read as
+    # "the failure names no remedy". The env was the fault, not the launcher.
+    env = dict(os.environ)
+    env["PATH"] = path
+    env["HOME"] = str(tmp_path)
     proc = subprocess.run(
         [node, "--experimental-strip-types", str(sandbox / "start.mjs")],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=120, env={"PATH": path, "HOME": str(tmp_path)},
+        timeout=120, env=env,
     )
 
     assert proc.returncode != 0, "a launcher that could not install must fail"
