@@ -183,3 +183,76 @@ def test_prettier_bin_shlex_quoted_stub_still_works(tmp_path: Path) -> None:
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert_ok(data)
+
+
+def test_reformat_touches_unrelated_lines_reports_range_via_stub(tmp_path: Path) -> None:
+    """#2458: prettier-write shares ruff-format's pre-#2405 gap -- a stub that
+    rewrites the whole file (collapsing a multi-line condition) must report
+    the before-file span it actually touched, the same as ruff-format does.
+    """
+    f = tmp_path / "x.js"
+    before_text = (
+        "function f(x) {\n"
+        "  if (\n"
+        "    typeof x === 'number' &&\n"
+        "    x > 0\n"
+        "  ) {\n"
+        "    return x;\n"
+        "  }\n"
+        "  return null;\n"
+        "}\n"
+    )
+    after_text = (
+        "function f(x) {\n"
+        "  if (typeof x === \"number\" && x > 0) {\n"
+        "    return x;\n"
+        "  }\n"
+        "  return null;\n"
+        "}\n"
+    )
+    f.write_text(before_text)
+
+    body = (
+        "import sys, pathlib\n"
+        f"pathlib.Path(r'{f.as_posix()}').write_text({after_text!r})\n"
+        "sys.exit(0)\n"
+    )
+    bin_cmd = _python_stub(tmp_path, "stub_collapse_condition", body)
+    env = {**os.environ, "PRETTIER_BIN": bin_cmd}
+    r = subprocess.run(
+        [sys.executable, str(ADAPTER), str(f)],
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 0
+    data = json.loads(r.stdout.strip())
+    assert_ok(data)
+    metrics = data["metrics"]
+    assert metrics["lines_added"] > 0 and metrics["lines_removed"] > 0
+    # Before-file lines 2-5 are the "if (...)" block collapsed to one line.
+    assert metrics["first_changed_line"] == 2, metrics
+    assert metrics["last_changed_line"] == 5, metrics
+
+
+def test_noop_reports_no_touched_line_range(tmp_path: Path) -> None:
+    """MUST FIRE control for the test above: when nothing changed, the new
+    fields must be absent/None, never a stale or fabricated range.
+    """
+    f = tmp_path / "clean.js"
+    f.write_text("const x = 1;\n")
+    bin_cmd = _python_stub(tmp_path, "stub_exit0", "import sys; sys.exit(0)\n")
+    env = {**os.environ, "PRETTIER_BIN": bin_cmd}
+    r = subprocess.run(
+        [sys.executable, str(ADAPTER), str(f)],
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 0
+    data = json.loads(r.stdout.strip())
+    assert_ok(data)
+    assert data["metrics"]["lines_added"] == 0
+    assert data["metrics"]["lines_removed"] == 0
+    # Bracket access, not .get(): a .get() default of None cannot tell
+    # "computed None" from "the key was never added" -- the exact gap that
+    # would make this control pass unchanged against the pre-#2458 code,
+    # which never populated these keys at all.
+    assert data["metrics"]["first_changed_line"] is None
+    assert data["metrics"]["last_changed_line"] is None

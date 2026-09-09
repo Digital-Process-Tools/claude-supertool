@@ -19,31 +19,16 @@ import shutil
 import subprocess
 import sys
 import time
-from difflib import unified_diff
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
                        / "validators" / "common"))
 from refusal import guard_main  # noqa: E402
 from bin_resolve import describe_unresolved, resolve_bin_cmd  # noqa: E402
+from line_diff import line_diff as _line_diff  # noqa: E402
 
 
 def emit(obj: dict) -> None:
     print(json.dumps(obj))
-
-
-def _line_diff(before: str, after: str) -> tuple[int, int]:
-    """Return (lines_added, lines_removed) between two file contents."""
-    added = removed = 0
-    for line in unified_diff(
-        before.splitlines(keepends=True),
-        after.splitlines(keepends=True),
-        n=0,
-    ):
-        if line.startswith("+") and not line.startswith("+++"):
-            added += 1
-        elif line.startswith("-") and not line.startswith("---"):
-            removed += 1
-    return added, removed
 
 
 def main() -> None:
@@ -53,7 +38,8 @@ def main() -> None:
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": "no file arg"}],
             "duration_ms": 0,
-            "metrics": {"lines_added": 0, "lines_removed": 0},
+            "metrics": {"lines_added": 0, "lines_removed": 0,
+                        "first_changed_line": None, "last_changed_line": None},
         })
         return
 
@@ -81,7 +67,8 @@ def main() -> None:
                         "code": "adapter",
                         "msg": f"PHPCSFIXER_BIN not found: {describe_unresolved(phpcsfixer_bin_cmd_str, phpcsfixer_bin)}"}],
             "duration_ms": 0,
-            "metrics": {"lines_added": 0, "lines_removed": 0},
+            "metrics": {"lines_added": 0, "lines_removed": 0,
+                        "first_changed_line": None, "last_changed_line": None},
         })
         return
 
@@ -93,7 +80,8 @@ def main() -> None:
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": f"cannot read file: {e}"}],
             "duration_ms": int((time.time() - start) * 1000),
-            "metrics": {"lines_added": 0, "lines_removed": 0},
+            "metrics": {"lines_added": 0, "lines_removed": 0,
+                        "first_changed_line": None, "last_changed_line": None},
         })
         return
 
@@ -113,7 +101,8 @@ def main() -> None:
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": "timeout after 60s"}],
             "duration_ms": int((time.time() - start) * 1000),
-            "metrics": {"lines_added": 0, "lines_removed": 0},
+            "metrics": {"lines_added": 0, "lines_removed": 0,
+                        "first_changed_line": None, "last_changed_line": None},
         })
         return
     except (FileNotFoundError, OSError) as e:
@@ -123,7 +112,8 @@ def main() -> None:
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "adapter", "msg": str(e)}],
             "duration_ms": dur,
-            "metrics": {"lines_added": 0, "lines_removed": 0},
+            "metrics": {"lines_added": 0, "lines_removed": 0,
+                        "first_changed_line": None, "last_changed_line": None},
         })
         return
 
@@ -137,7 +127,8 @@ def main() -> None:
             "errors": [{"line": None, "col": None, "severity": "error",
                         "code": "php-cs-fixer", "msg": msg}],
             "duration_ms": dur,
-            "metrics": {"lines_added": 0, "lines_removed": 0},
+            "metrics": {"lines_added": 0, "lines_removed": 0,
+                        "first_changed_line": None, "last_changed_line": None},
         })
         return
 
@@ -153,7 +144,7 @@ def main() -> None:
         after = before
         verify_failed = f"could not re-read file to verify changes: {e}"
 
-    added, removed = _line_diff(before, after)
+    added, removed, (first, last) = _line_diff(before, after)
 
     payload = {
         "tool": "php-cs-fixer",
@@ -162,7 +153,8 @@ def main() -> None:
         "count": 0,
         "errors": [],
         "duration_ms": dur,
-        "metrics": {"lines_added": added, "lines_removed": removed},
+        "metrics": {"lines_added": added, "lines_removed": removed,
+                    "first_changed_line": first, "last_changed_line": last},
     }
     if verify_failed:
         payload["verify_failed"] = verify_failed
