@@ -15,7 +15,6 @@ and "the lookup did not happen".
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 import shlex
@@ -24,19 +23,20 @@ import subprocess
 import sys
 from typing import NamedTuple, Optional
 
-# Sibling import: `_env` lives one directory up. Arranged here rather than at
-# each call site, so that importing this module is enough to get the knob —
-# `presets/git/checkout.py` and five others had no `SUPERTOOL_GIT_TIMEOUT`
-# override at all, purely because each would have had to set up its own path.
+# Sibling import: the shared helpers live one directory up. Arranged here
+# rather than at each call site, so that importing this module is enough to
+# reach them — `presets/git/checkout.py` and five others had no
+# `SUPERTOOL_GIT_TIMEOUT` override at all, purely because each would have had
+# to set up its own path. The knob itself now reads from `_git_run`, the one
+# git invocation chokepoint (#2447); this module no longer re-exports it, and
+# every caller of `env_int`/`env_float` imports them from `_env` directly.
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 if os.path.dirname(_HERE) not in sys.path:
     sys.path.insert(0, os.path.dirname(_HERE))
 
-from _env import env_int, env_float  # noqa: E402  (the one numeric-knob reader)
 import _untrusted  # noqa: E402  (a child stream, and a path off disk, are somebody else's text — #1475, #1557)
-import time  # noqa: E402  (the lock-wait retry below, #2034)
 
 
 def use_utf8_stdout() -> None:
