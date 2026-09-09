@@ -631,6 +631,10 @@ REGISTER = {
     'tests/test_mcp_daemon_dedup_451.py::runtime': OWNED,
     'tests/test_notifiers_claude_channel_550.py::sock_dir': OWNED,
     'tests/test_notifiers_claude_channel_554.py::Channel.close': OWNED,
+    # #2469's own harness: `sock_path` makes its own tempfile.mkdtemp() dir
+    # and removes only that dir, the same mkdtemp-then-rmtree-its-own-dir
+    # shape as the 550 sock_dir fixture two lines up.
+    'tests/test_notifiers_claude_channel_node_2469.py::sock_path': OWNED,
     'tests/test_vim_kevin_fixes.py::_cleanup_persist': OWNED,
     'tests/test_vim_kevin_fixes.py::test_undo_cross_call': OWNED,
     'validators/gitleaks/gitleaks.py::main': OWNED,
