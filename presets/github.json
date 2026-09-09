@@ -7,7 +7,7 @@
       "cmd": "{python} {path}github/issue.py {args}",
       "timeout": 330,
       "classify": "full",
-      "description": "GitHub issue: desc, comments, images, linked PRs. :full = no truncation, all comments. Targets another repo with a leading repo:OWNER/NAME op. Each body/comment prints a `classify:` verdict beside its fence (#2049) — a labeller, never a filter: verify the bug yourself regardless of what it says. `classify` config key (full/scanner/off, default full) narrows it per-op.",
+      "description": "GitHub issue: desc, comments, images, linked PRs. :full = no truncation, all comments. Targets another repo with a leading repo:OWNER/NAME op. Each body/comment prints a `classify:` verdict beside its fence (#2049) — a labeller, never a filter: verify the bug yourself regardless of what it says. `classify` config key (full/scanner/off, default full) narrows it per-op. Also writes through to the opt-in mirror (#1955): with a top-level `gh_mirror_dir` set in .supertool.json, every read stores the full untruncated reply plus its read time; see `gh-mirror`.",
       "syntax": "gh-issue:NUMBER[:full]",
       "replaces": [
         { "argv": "gh issue view", "unless_flag": ["--web", "-w"], "use": "gh-issue:NUMBER" },
@@ -15,6 +15,13 @@
         { "argv": "gh issue view", "flag": "-c", "unless_flag": ["--web", "-w"], "use": "gh-issue:NUMBER:full" }
       ],
       "repo_target": true
+    },
+    "gh-mirror": {
+      "safety": "read-only",
+      "cmd": "{python} {path}github/mirror.py {args}",
+      "timeout": 15,
+      "description": "What the write-through `gh-issue` mirror (#1955) currently holds for one issue, with NO network call. Three states -- `cached (AGE)`, `not-cached`, `mirror-unreadable` -- plus a fourth line, `not configured`, when `.supertool.json` sets no `gh_mirror_dir` at all. `mirror-unreadable` never renders as either of the other two: a permission-denied directory or a corrupted manifest is a finding about the mirror, not evidence the issue was never fetched. Scope: only `gh-issue` writes through so far, so `not-cached` means 'never read via gh-issue', not 'does not exist' -- gh-pr/gh-issues/gh-prs are not wired to this mirror yet. Never an authority for open/closed state, assignee, labels or linked-PR state -- those stay live `gh-issue`/`gh-pr` reads.",
+      "syntax": "gh-mirror:issue:NUMBER"
     },
     "gh-issues": {
       "safety": "read-only",
