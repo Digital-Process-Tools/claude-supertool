@@ -23,10 +23,17 @@ path that must *not* trigger a validator. All four are `labels.lane_coupling_all
 `presets/{github/prs,gitlab/mrs}.py`. That seam is what radar *is*, and those tests are the correct
 response to it.
 
-**Allowlist what you read, not what is noisy.** The one span left unacknowledged here is
-`test_git_no_optional_locks_other_sites_1945.py` -- `dashboard.py` and `pr_merge.py` each carry a
-private `_git()` instead of the shared chokepoint (#2447). A `WARN` naming one real thing is worth
-more than a clean run.
+**Allowlist what you read, not what is noisy.** This paragraph named
+`test_git_no_optional_locks_other_sites_1945.py` as the one span deliberately left unacknowledged,
+because `dashboard.py` and `pr_merge.py` each carried a private `_git()` instead of the shared
+chokepoint. #2447 merged on 2026-09-09 and both now route through `presets/_git_run.py`, so the
+coupling the WARN pointed at is gone and what is left is a whole-repo guard spanning lanes on
+purpose -- allowlisted that day. **No span is unacknowledged now**; a new one is a new finding, not
+this one recurring.
+
+The rest of the paragraph still holds, and it is the part worth keeping: a `WARN` naming one real
+thing is worth more than a clean run, and an allowlist entry added to quiet a check that was right
+is how a board stops being read.
 
 Run either by hand while editing, with the plugin's `scripts/` on `PYTHONPATH`:
 `lane_pattern_coverage.lane_pattern_report(repo, patterns)` and

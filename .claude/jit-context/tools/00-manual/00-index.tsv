@@ -1,3 +1,4 @@
+Bash	~channel\.ts	channel-consumers-not-stale.md	once,remind			
 Bash	~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+(proxy[[:space:]]+)?)?(command[[:space:]]+)?git[[:space:]]+-c[[:space:]]+[^=[:space:]]*/[^[:space:]]*[[:space:]]+(diff|log|status[^;&|\n]*[[:space:]]-)	git-C-has-cwd.md	block	git -c		
 Edit|Write|Read|Grep|Glob|MultiEdit|NotebookEdit	~.	harness-tools-blocked.md	block			
 Bash	~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+(proxy[[:space:]]+)?)?git[[:space:]]+(branch|for-each-ref)[^;&|\n]*--merged($|[^[:alnum:]-])	merged-is-not-ancestry.md	block			
