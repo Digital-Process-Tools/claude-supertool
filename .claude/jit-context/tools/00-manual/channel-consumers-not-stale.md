@@ -1,7 +1,7 @@
 ---
 title: "One `channel.ts` per session — several is normal, not stale"
 tool: Bash
-match: ~channel\.ts
+match: ~(^|[;&|\n])[[:space:]]*(rtk[[:space:]]+(proxy[[:space:]]+)?)?(ps|pgrep|pkill|kill|killall|lsof|grep)[^;&|\n]*channel\.ts
 mode: once,remind
 ---
 
