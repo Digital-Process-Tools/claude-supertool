@@ -11,17 +11,27 @@ react immediately.
 ## Requirements
 
 - Claude Code v2.1.80 or later (Channels research preview)
-- [Bun](https://bun.sh) (`curl -fsSL https://bun.sh/install | bash`)
+- Node 22.6.0 or later (`--experimental-strip-types` — a no-op flag on a node
+  new enough to strip TypeScript types by default, and the documented way to
+  get the same behavior further back; #520 dropped the Bun requirement, since
+  `channel.ts` makes zero `Bun.*` calls)
 - During the research preview: the `--dangerously-load-development-channels`
-  flag (custom channels aren't on the Anthropic allowlist yet)
+  flag, on every launch, regardless of how the channel is declared — see below
 
 ## Install
+
+A plugin install needs none of this: the plugin's own `.mcp.json` already
+declares this server via `${CLAUDE_PLUGIN_ROOT}`, and `plugin.json` declares it
+as a channel. The install script and the manual wiring below are only for a
+git clone you are running outside the plugin.
 
 ```bash
 bash notifiers/claude-channel/install.sh
 ```
 
-Installs `@modelcontextprotocol/sdk` and `@types/bun`. Prints next-step
+Installs `@modelcontextprotocol/sdk` (runtime-only — no dev dependencies) via
+`npm`. Refuses loudly if `node` is missing or older than 22.6.0, rather than
+installing something that will fail to run later. Prints next-step
 instructions for `.mcp.json` and launch flags.
 
 ## Wire it
@@ -32,8 +42,8 @@ Add to your project-level `.mcp.json` (or user-level `~/.claude.json`):
 {
   "mcpServers": {
     "claude-channel": {
-      "command": "bun",
-      "args": ["/abs/path/to/claude-supertool/notifiers/claude-channel/channel.ts"]
+      "command": "node",
+      "args": ["--experimental-strip-types", "/abs/path/to/claude-supertool/notifiers/claude-channel/channel.ts"]
     }
   }
 }
@@ -44,6 +54,17 @@ Then launch Claude Code with the channel enabled:
 ```bash
 claude --dangerously-load-development-channels server:claude-channel
 ```
+
+**The flag is still required even for a plugin-declared channel.** Whether
+`--dangerously-load-development-channels` is needed is decided solely by
+allowlist membership (Anthropic's `claude-plugins-official`, or an org's own
+`allowedChannelPlugins`) — not by whether `plugin.json` declares a `channels`
+key. Declaring the channel that way makes this plugin *structurally* a channel
+provider; it does not exempt it from the flag on its own. Checked against
+`https://code.claude.com/docs/en/channels` and `channels-reference` on
+2026-09-09, both explicit that the development flag "bypasses the allowlist for
+specific entries after a confirmation prompt" and that this bypass does not
+extend past the entries it names.
 
 ## How an event reaches Claude
 

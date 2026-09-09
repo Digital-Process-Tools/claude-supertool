@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "bun channel.ts"
+    "start": "node --experimental-strip-types channel.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"

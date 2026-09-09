@@ -207,8 +207,8 @@ SUPERTOOL_WATCH_NAME=oss claude ...   # inherited by the servers the harness spa
 
 ```json
 { "mcpServers": { "claude-channel": {
-    "command": "bun",
-    "args": ["${CLAUDE_PLUGIN_ROOT}/notifiers/claude-channel/channel.ts"],
+    "command": "node",
+    "args": ["--experimental-strip-types", "${CLAUDE_PLUGIN_ROOT}/notifiers/claude-channel/channel.ts"],
     "env": { "SUPERTOOL_WATCH_NAME": "oss" } } } }
 ```
 
