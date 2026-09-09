@@ -28,11 +28,21 @@ MODES = {"setup": setup_op, "teardown": teardown_op}
 def main(argv: list) -> int:
     use_utf8_stdout()
     if len(argv) < 2 or argv[1] not in MODES:
-        print("ERROR: usage: worktree:setup[:PATH] | worktree:teardown[:PATH]")
+        print("ERROR: usage: worktree:setup[:PATH] | worktree:teardown[:PATH][:force]")
         return 1
 
     mode = argv[1]
     path_arg = argv[2] if len(argv) > 2 else None
+    flag = argv[3] if len(argv) > 3 else None
+    force = False
+    if flag:
+        if flag != "force":
+            print(f"ERROR: unrecognised flag {flag!r} — only 'force' is accepted")
+            return 1
+        if mode != "teardown":
+            print("ERROR: 'force' only applies to worktree:teardown (a stale `copy` entry, #2429)")
+            return 1
+        force = True
     invocation_cwd = os.getcwd()
 
     try:
@@ -59,7 +69,10 @@ def main(argv: list) -> int:
                   f"than the one this was called from ({this_repo}) — refusing to touch it")
             return 1
 
-    code, output = MODES[mode].run(target)
+    if mode == "teardown":
+        code, output = teardown_op.run(target, force=force)
+    else:
+        code, output = setup_op.run(target)
     print(output)
     return code
 
