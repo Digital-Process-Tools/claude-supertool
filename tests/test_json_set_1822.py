@@ -27,11 +27,6 @@ from pathlib import Path
 import supertool
 
 NL = chr(10)
-Q3 = chr(39) * 3
-
-
-def _toml_str(value: str) -> str:
-    return chr(34) + value.replace(chr(92), chr(92) * 2).replace(chr(34), chr(92) + chr(34)) + chr(34)
 
 
 def _payload_file(tmp_path: Path, name: str, body: str) -> str:
@@ -40,17 +35,19 @@ def _payload_file(tmp_path: Path, name: str, body: str) -> str:
     return "@" + str(p)
 
 
-def _json_set(tmp_path: Path, target: Path, fields: dict, *, payload_name: str = "p.toml") -> str:
-    set_lines = NL.join(
-        f"{_toml_str(k)} = {_toml_str(v) if isinstance(v, str) else json.dumps(v)}"
-        for k, v in fields.items()
-    )
-    body = (
-        "path = " + _toml_str(str(target)) + NL
-        + NL + "[set]" + NL + set_lines + NL
-    )
+def _json_set(tmp_path: Path, target: Path, fields: dict, *, payload_name: str = "p.json") -> str:
+    # JSON, not TOML: `set` is a nested object, and the only TOML shape for
+    # that is a `[set]` table header -- unsupported by `_mini_toml_loads`,
+    # the fallback parser this repo runs on Python <3.11 (no stdlib
+    # `tomllib`; #1595's own docstring names it: "No single [table]"). A
+    # TOML payload here parsed fine under this dev session's 3.11+
+    # `tomllib` and failed on every <3.11 CI leg (#1822 follow-up). JSON
+    # sidesteps the fallback parser entirely -- `_load_at_file_raw` detects
+    # format from the first non-whitespace character and routes `{`/`[` to
+    # `json.loads`, never to TOML.
+    payload = json.dumps({"path": str(target), "set": fields})
     return supertool.dispatch(
-        "json-set:" + _payload_file(tmp_path, payload_name, body))
+        "json-set:" + _payload_file(tmp_path, payload_name, payload))
 
 
 def _write_json(target: Path, obj) -> None:
