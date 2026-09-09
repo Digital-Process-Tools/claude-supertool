@@ -1817,12 +1817,24 @@ def subscription(pid: Any, pid_note: str = "", path: str | None = None,
                          "unreadable marker would be",
                          "the same defect this state exists to remove, one call "
                          "site over"))
-            census = ((f"the harness has no {CONSUMER_SERVER} server "
-                       f"configured, so a `.mcp.json`",
-                       "declaring one was not loaded and any refusal marker "
-                       "beside this socket",
-                       "was left by a short-lived `claude mcp get` probe, not "
-                       "by a session (#2182)")
+            # A DIFFERENT server than the tag above, and the line says so
+            # rather than leaving the reader to notice (#2479). This branch is
+            # only reachable when `name != CONSUMER_SERVER` (the `standing`
+            # gate above), so the two names differ by construction and the
+            # wording needs no gate of its own. Without it the block renders
+            # "the harness has a server configured under that name" and "the
+            # harness has no claude-channel server configured" two lines apart,
+            # which reads as one server declared configured and unconfigured at
+            # once -- reported as a defect on 2026-09-09 by a session that had
+            # this file open.
+            census = ((f"separately, no server named {CONSUMER_SERVER} is "
+                       f"configured -- a different name",
+                       "from the tag above, asked because every copy of this "
+                       "plugin ships a `.mcp.json`",
+                       "declaring it. So that declaration was not loaded, and "
+                       "any refusal marker beside",
+                       "this socket was left by a short-lived `claude mcp get` "
+                       "probe, not by a session (#2182)")
                       if standing is False else ())
             return _sub(SUB_SUBSCRIBED,
                         f"subscribed — session pid {ppid} carries "
