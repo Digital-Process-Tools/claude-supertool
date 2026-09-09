@@ -78,6 +78,8 @@
       "tests/test_gh_branch_missing_trigger_filter_1959.py",
       "tests/test_gh_branch_undispatched_workflow_846.py",
       "tests/test_gh_pr_thread_index_1445.py",
+      "tests/test_git_invocation_chokepoint_2447.py",
+      "tests/test_git_no_optional_locks_other_sites_1945.py",
       "tests/test_git_status_display_config_gates_1295.py",
       "tests/test_git_timeout_defaults_agree_1903.py",
       "tests/test_no_bare_python3_spawn.py",

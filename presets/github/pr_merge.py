@@ -56,6 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 import _checks  # noqa: E402
 import _declared_legs  # noqa: E402
+import _git_run  # noqa: E402  (the one git invocation chokepoint -- #2447)
 import _publish_safety  # noqa: E402
 import _refname  # noqa: E402
 import _repo_target  # noqa: E402
@@ -655,16 +656,41 @@ _DIRT_SHOWN = 5
 _WORKTREES_PY = Path(__file__).resolve().parent.parent / "git" / "worktrees.py"
 
 
-def _git(args: List[str], timeout: int = 30):
-    # --no-optional-locks precedes the subcommand -- a git global flag
-    # (#1945, same mechanism as #1944). This chokepoint runs both reads
-    # (rev-parse, worktree list, status, ls-files) and writes (branch -d,
-    # worktree remove) -- the flag suppresses OPTIONAL locks only, verified
-    # harmless against real git 2.46.2 for both `branch -d` and `worktree
-    # remove`, so a blanket edit here is a no-op on the writes and closes the
-    # index.lock hole on every read without having to enumerate call sites.
-    return subprocess.run(["git", "--no-optional-locks"] + args, capture_output=True, text=True,
-                          timeout=timeout, encoding="utf-8", errors="replace")
+#: This op's own budget for one git call, when `SUPERTOOL_GIT_TIMEOUT` does not
+#: name another. Kept at the 30 this file has always used rather than dropped
+#: to `_git_run`'s module default of 10: `worktree remove` on a large tree is
+#: the slowest call here and nothing measured 10 as enough for it.
+_GIT_TIMEOUT_DEFAULT = 30
+
+
+def _git(args: List[str], timeout: int | None = None):
+    """Run one git command through the shared chokepoint (#2447).
+
+    This runs both reads (`rev-parse`, `worktree list`, `status`, `ls-files`)
+    and writes (`branch -d`, `worktree remove`), and it is the cleanup arm of
+    every merge the maintainer loop performs -- against a repository that may
+    have several worktrees live. Which is exactly the situation
+    `_with_lock_retry` was written for, and exactly what this function did not
+    have while it was a private wrapper over a bare `subprocess.run`: it
+    carried `--no-optional-locks` (#1944/#1945) and none of the `_stop()`
+    SIGTERM grace (#2033), the lock retry and its diagnosis (#2034), or
+    `SUPERTOOL_GIT_TIMEOUT` (#650).
+
+    **A named behaviour change, not only a refactor.** A call that fails on
+    lock contention is now retried within `_git_run.LOCK_WAIT_DEFAULT` rather
+    than failing on the first attempt. On this write path that is the point of
+    adopting it and it is still a change in timing, so it is said here rather
+    than left to be discovered.
+
+    `TimeoutExpired` no longer escapes either: `_git_run` folds it to
+    `TIMEOUT_RC` (124) with `timed out after Ns` on stderr. Every caller here
+    already branches on `returncode != 0`, and `_git_rc` below reports it as a
+    reason rather than a raise -- so the stall is still named, with a code that
+    tells it apart from a git that failed. Callers keep their `except` for the
+    one thing that still raises: `git` missing from PATH, from `Popen`.
+    """
+    budget = _git_run.git_timeout(_GIT_TIMEOUT_DEFAULT) if timeout is None else timeout
+    return _git_run._git(args, timeout=budget)
 
 
 def _git_rc(args: List[str], timeout: int = 30) -> tuple[int, str]:
