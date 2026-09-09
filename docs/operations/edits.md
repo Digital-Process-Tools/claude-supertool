@@ -140,6 +140,65 @@ That third state exists because a confidently wrong line number costs more than 
 | `replace_lines` | `replace_lines:::PATH:::START:::END:::CONTENT` | Swap lines `[START, END]` (1-indexed, inclusive) with CONTENT. `END < START` = pure insert before line START. Empty CONTENT = delete. Receipt shows new line numbers + ±2 context. |
 | `paste` | `paste:::PATH:::CONTENT` | **NARROW USE:** replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — `vim` is the default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars (`:`, quotes, braces, newlines). Overwriting an existing file copies its outgoing bytes to `~/.cache/supertool/paste-backup/` first and the receipt names the copy and its mode, which is the overwritten file's own; a *created* file lands at `0666 & ~umask` and the receipt states the mode — both below. |
 | `append` | `append:::PATH:::CONTENT` | Append CONTENT to the end of a file, creating it if missing — a file it creates lands at `0666 & ~umask` and the receipt states the mode, same as `paste` below. No `wc` round-trip, no inverted-range `replace_lines` trick. Adds a missing trailing newline first so the block starts on its own line. |
+| `json-set` | `json-set:@FILE` or `json-set:@-` | Set one or more fields in a JSON file by dotted key path, in one write ([#1822](https://github.com/Digital-Process-Tools/claude-supertool/issues/1822)). Payload only — `path` plus a `set` table (`"tests.green.result" = "..."`), never colon-args, because the value is a table rather than a scalar. See [below](#json-set--a-structured-field-set-for-json). |
+
+### `json-set` — a structured field-set for JSON
+
+`paste` is whole-file; `edit` needs an exact, unique `old` string. Neither is
+proportional to a small change buried in a large JSON document — updating a
+22 KB report after a rebase changed 8 fields out of ~100, and the only route
+available was a full re-send of the file. `json-set` closes that: it takes
+the fields that actually changed and does the whole-file work internally —
+parse the document, set each leaf, re-serialize.
+
+```
+./supertool 'json-set:@-' <<'EOF'
+path = "report.json"
+
+[set]
+"head" = "7cd0237"
+"tests.green.result" = "passed"
+EOF
+```
+
+`set` keys are **dotted-path strings, quoted** — `"tests.green.result"` is
+one key naming a path three levels deep, not TOML's own unquoted dotted-key
+sugar (`tests.green.result = 1`, which builds *nested TOML tables* and is a
+different, unsupported payload shape here). Quote every key.
+
+Three refusals, none of them a guess:
+
+- **the file does not parse as JSON at all.** This is not a text patch that
+  tolerates a broken document around the edges — it needs a real object to
+  walk. `edit`'s "old string not found" has a text analogue; this does not,
+  because there is no text-level fallback.
+- **a dotted path's leading segment does not already exist as an object.**
+  `json-set` sets fields, it does not fabricate the containers that would
+  hold them. `"a.b.c"` against `{"a": {}}` is refused, naming the segment
+  (`a.b`) that was missing — use `paste` to write a new structure.
+- **a value TOML can express that JSON cannot** (a bare date/time literal).
+  Refused before anything is written, not silently stringified.
+
+Because every write is a full, valid re-serialization of a document this op
+itself parsed, a well-formed call cannot land syntactically invalid JSON on
+disk — unlike `edit`/`vim`'s raw text patches. It is still routed through
+the same validator/rollback machinery as every other write op (`jsonlint`,
+`rollback_on_fail: true`), so a validator this repo has not configured yet —
+a JSON Schema check, say — gets the identical safety net for free, and the
+receipt shape (`[rolled back]`, `[result] … rolled back`) is the one this
+page already documents above.
+
+The receipt names each field and its prior value, so a caller checking
+their own change back does not need a second `read`:
+
+```
+set 2 field(s) in report.json
+  head: "abc1234" -> "7cd0237" (changed)
+  tests.green.result: "old" -> "passed" (changed)
+```
+
+A field absent before the call prints `(absent) -> "value" (added)` rather
+than a fabricated prior value.
 
 ### A `paste` over an existing file keeps the bytes it displaces
 

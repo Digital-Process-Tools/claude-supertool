@@ -211,6 +211,13 @@
       "status": 1,
       "hint": true
     },
+    "json-set": {
+      "syntax": "json-set:@FILE | json-set:@-",
+      "description": "Set one or more fields in a JSON file by dotted key path, in one write (#1822) -- the gap between paste (whole file) and edit (exact-string, single occurrence): a JSON report with ~100 fields where 8 changed had no proportional route. Payload: 'path' plus a 'set' table mapping dotted field paths to values, e.g. { \"tests.green.result\" = \"...\" }. Refuses -- never guesses -- on a file that is not valid JSON, on a dotted path through a segment that does not exist (it will not fabricate intermediate objects; use paste for a new structure), and on a value JSON cannot represent. Routed through the same validator/rollback path as edit/paste; jsonlint (rollback_on_fail) is wired into it here.",
+      "example": "json-set:@- with path = \"report.json\" and [set] \"head\" = \"7cd0237\"",
+      "status": 1,
+      "hint": true
+    },
     "batch": {
       "syntax": "batch:@FILE | batch:@-",
       "description": "N ops from ONE payload — TOML [[ops]] array or JSON array of {\"op\":...}, each entry taking that op's own @payload fields. The only way to put several mutations in one call, since a call carries just one '@-' (#341). Reads/greps mix in freely. Per-op validators, per-op rollback. A NESTED batch entry takes its inner payload as path = \"@inner.toml\" — the field is 'path' and the leading '@' is required (#1407).",
@@ -406,7 +413,8 @@
         "replace_lines",
         "paste",
         "append",
-        "vim"
+        "vim",
+        "json-set"
       ],
       "rollback_on_fail": true,
       "timeout": 10

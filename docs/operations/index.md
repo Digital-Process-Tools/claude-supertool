@@ -1,6 +1,6 @@
 # Operations Reference
 
-47 ops across seven categories. Use this page for a quick "all ops at a glance" lookup, then follow the per-category links for patterns and recipes.
+48 ops across seven categories. Use this page for a quick "all ops at a glance" lookup, then follow the per-category links for patterns and recipes.
 
 Both listings below are hand-written prose over a machine-readable fact, so `tests/test_ops_index_complete_1371.py` holds them to it: every name the dispatcher accepts must appear in the Categories table *and* in the full op table, and the count above must be the real one. `registry` shipped in #1363 and reached neither list; enumerating from the product rather than from the bug report found six more in the same state.
 
@@ -24,7 +24,7 @@ Both say `path escapes cwd` and carry the same opt-out as every other refusal. *
 | **Reads** | `read`, `head`, `tail`, `wc`, `stat`, `ls`, `glob`, `tree`, `diff` | [reads.md](reads.md) |
 | **Search** | `grep`, `grep_around`, `around`, `around_line`, `between` | [search.md](search.md) |
 | **Symbol map** | `map`, `workspace`, `resolve` | [map.md](map.md) |
-| **Edits** | `edit`, `replace`, `replace_dry`, `replace_lines`, `paste`, `append`, `vim`, `batch` | [edits.md](edits.md) |
+| **Edits** | `edit`, `replace`, `replace_dry`, `replace_lines`, `paste`, `append`, `vim`, `batch`, `json-set` | [edits.md](edits.md) |
 | **Validate / Format** | `validate`, `format`, `validate_staged`, `format_staged`, `check`, `payload-lint` | — |
 | **LSP-backed** | `diag`, `hover`, `rename` | [mcp-integration.md](../mcp-integration.md) |
 | **Meta** | `cwd`, `repo`, `introduction`, `output-format`, `ops`, `ops:roster`, `ops-compact`, `registry`, `guard`, `help`, `version`, `doctor`, `init`, `gc` | [meta.md](meta.md) |
@@ -68,6 +68,7 @@ Both say `path escapes cwd` and carry the same opt-out as every other refusal. *
 | `replace_lines` | `replace_lines:::PATH:::START:::END:::CONTENT` | Swap lines `[START, END]` (1-indexed, inclusive) with CONTENT. `END < START` = pure insert before line START. Empty CONTENT = delete. Receipt shows new line numbers + ±2 context. |
 | `paste` | `paste:::PATH:::CONTENT` | **NARROW USE:** replace ENTIRE file. Only for creating a new file or fully rewriting one. NOT for partial edits — `vim` is the default for those. Atomic, creates file + parent dirs if missing. CONTENT via triple-colon → holds any chars (`:`, quotes, braces, newlines). |
 | `append` | `append:::PATH:::CONTENT` | Append CONTENT to the end of a file, creating it if missing. No `wc` round-trip, no inverted-range `replace_lines` trick. Adds a missing trailing newline first so the block starts on its own line. |
+| `json-set` | `json-set:@FILE` or `json-set:@-` | Set one or more fields in a JSON file by dotted key path, in one write ([#1822](https://github.com/Digital-Process-Tools/claude-supertool/issues/1822)) -- the gap between `paste` (whole file) and `edit` (exact-string, single occurrence): a JSON report with ~100 fields where 8 changed had no proportional route. Payload: `path` plus a `set` table mapping dotted field paths (`"tests.green.result"`) to values. Refuses -- never guesses -- on a file that does not parse as JSON, and on a dotted path through a segment that does not already exist (it will not fabricate intermediate objects). No colon-CLI form: `set` is a table, not a scalar, so `@FILE`/`@-` is the only route. |
 | `vim` | `vim:::PATH:::SCRIPT` | vim-flavored cursor-based multi-action edit. SCRIPT is parsed like a real vim macro. **DEFAULT EDIT OP** for any pattern-based edit. See [edits.md](edits.md) for full syntax reference. |
 | `replace` / `replace_dry` | `replace:::OLD:::NEW:::PATH` | Recursive find/replace across PATH (`replace_dry` = preview). Use `:::` separator when content has `:`. |
 | `batch` | `batch:@FILE` or `batch:@-` | Run N ops from one payload — a TOML `[[ops]]` array or a JSON array of `{"op": …}` objects, each entry taking that op's own `@payload` fields. The only way to put several mutations in one call, since a call carries just one `@-` (#341). Reads and greps mix in freely. A nested `batch` entry takes its inner payload as `path` = `"@inner.toml"` — the `@` is required there too, and any other key is refused by name. Per-op validators, per-op rollback; **not** atomic by default — see [edits.md](edits.md#batchfile--mixed-ops-in-one-round-trip). |

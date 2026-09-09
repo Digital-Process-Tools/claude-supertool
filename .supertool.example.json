@@ -210,6 +210,11 @@
       "description": "Replace entire file with CONTENT. Atomic, creates file (+ parent dirs) if missing. Use for full-file rewrites.",
       "example": "paste:::src/app/new_file.py:::print('hello')\\n"
     },
+    "json-set": {
+      "syntax": "json-set:@FILE | json-set:@-",
+      "description": "Set one or more fields in a JSON file by dotted key path, in one write -- the gap between paste (whole file) and edit (exact-string, single occurrence). Payload: 'path' plus a 'set' table mapping dotted field paths to values. Refuses on a file that is not valid JSON and on a dotted path through a missing segment (never fabricates structure); routed through the same validator/rollback path as edit/paste.",
+      "example": "json-set:@- with path = \"report.json\" and [set] \"head\" = \"7cd0237\""
+    },
     "vim": {
       "syntax": "vim:::PATH:::SCRIPT  |  vim:@payload",
       "description": "Cursor-based multi-action edit parsed like a vim macro — the DEFAULT op for pattern-based edits (find+change, insert relative to a pattern, multi-step chains). NORMAL verbs read char-by-char; insert/search/ex verbs enter greedy modes until \\e (ESC, U+001B). Fall back to paste (full file) / edit (unique literal swap) / replace_lines (known range) when vim doesn't fit. Full reference: ./supertool help vim.",
@@ -581,7 +586,7 @@
         "replace",
         "replace_lines",
         "paste", "append",
-        "vim"
+        "vim", "json-set"
       ],
       "rollback_on_fail": true,
       "timeout": 10
