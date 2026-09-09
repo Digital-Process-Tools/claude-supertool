@@ -18,7 +18,6 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -105,8 +104,8 @@ def test_a_missing_dependency_that_cannot_be_installed_says_so_by_name(
     path = os.pathsep.join([str(fake_bin), str(Path(node).parent)])
     proc = subprocess.run(
         [node, "--experimental-strip-types", str(sandbox / "start.mjs")],
-        capture_output=True, text=True, timeout=120,
-        env={"PATH": path, "HOME": str(tmp_path)},
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=120, env={"PATH": path, "HOME": str(tmp_path)},
     )
 
     assert proc.returncode != 0, "a launcher that could not install must fail"
@@ -128,7 +127,8 @@ def test_bun_lock_is_gone_now_that_bun_is_not_the_runtime() -> None:
     tracked. Noted by the same audit round."""
     tracked = subprocess.run(
         ["git", "ls-files", "notifiers/claude-channel/bun.lock"],
-        cwd=REPO, capture_output=True, text=True, timeout=30).stdout.strip()
+        cwd=REPO, capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=30).stdout.strip()
     assert not tracked, (
         "notifiers/claude-channel/bun.lock is still tracked after the Bun "
         "runtime was dropped (#520) -- a lockfile for a runtime nothing uses"
