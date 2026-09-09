@@ -808,7 +808,20 @@ def _trap_count(root):
 
     Counts `*.md` files not starting with `.`, matching `trap_curate.waiting`'s own
     filter -- `.gitkeep` (and any other dotfile) is excluded by the leading-dot
-    check alone, with no separate name check needed.
+    check alone, with no separate name check needed -- **and excluding the one
+    file `scaffold.py` owns inside that directory**, its README (#1348/#1372).
+
+    That exclusion is a duplicated literal and it is duplicated knowingly, for
+    the reason the paragraph above gives: this module is vendored standalone and
+    cannot import `trap_curate`. So the parity this docstring claims is not
+    enforced by construction, and #1372 is what happens when it is left to the
+    claim alone -- #1348 excluded the README from `trap_curate.waiting` and not
+    from here, and the two counters read 16 and 17 on this repository until a
+    release audit reproduced it. What a maintainer saw: `trap 1` on a fully
+    drained `trap.d/`, with no fragment left to delete that would clear it,
+    while doctor's own trap-queue check said `none waiting` in the same run.
+    `tests/test_gate3_round1_findings_1372.py` compares the two counters
+    directly rather than trusting either docstring.
     """
     path = Path(root) / "trap.d"
     try:
@@ -817,7 +830,11 @@ def _trap_count(root):
         return 0
     except OSError:
         return None
-    return sum(1 for name in names if name.endswith(".md") and not name.startswith("."))
+    return sum(
+        1
+        for name in names
+        if name.endswith(".md") and not name.startswith(".") and name != "README.md"
+    )
 
 
 def _render_stamp(now):
@@ -2284,11 +2301,29 @@ def _channel_reading(root, config):
         attribution = "derivation"
     else:
         declared, problem = _declared_watch_names(root)
+        only = next(iter(declared)) if len(declared) == 1 else None
         if problem:
             attribution = "declaration-unreadable"
-        elif (
-            actual is not None and len(declared) == 1 and next(iter(declared)) == actual
-        ):
+        elif only is not None and only in (actual, expected):
+            # Two ways one declared name attributes, and #1365 added the second.
+            #
+            # `only == actual` is #754's own case: a repository whose declared
+            # name differs from what it would derive, matching what this
+            # process was handed.
+            #
+            # `only == expected` is ownership stated in the repository's own
+            # tracked `.supertool.json` and agreeing with what the repository
+            # derives -- which is a fact about the repository, not about
+            # whether THIS process happens to carry SUPERTOOL_WATCH_NAME. It
+            # did not attribute before, so every session not started by
+            # `bin/oss-workspace` read its own channel as possibly another
+            # project's fleet, and the marker flapped between `derivation` and
+            # `not-attributable` for one unchanged repository depending on
+            # which kind of session took the reading. The WARN doctor printed
+            # asked the maintainer to declare `ops.<name>.watch_name`, which
+            # was already declared -- no manual op and no scaffold run could
+            # clear it, which by this repository's own rule makes it a bug in
+            # the check rather than work.
             attribution = "declaration"
         else:
             attribution = "not-attributable"
@@ -2931,6 +2966,22 @@ def _ascii_only(stream):
     return False
 
 
+def _arg_value(argv, flag, default):
+    """The token following ``flag`` in ``argv``, or ``default``.
+
+    ``flag`` as the last token on the command line used to raise
+    ``IndexError`` at both of this file's two call sites (#1346) -- each
+    hand-rolled the same broken ``argv[argv.index(flag) + 1]`` independently.
+    One helper, used by both, so a trailing flag with nothing after it falls
+    back to ``default`` instead of crashing.
+    """
+    if flag in argv:
+        i = argv.index(flag)
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return default
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if "--mark-stale" in argv:
@@ -2941,17 +2992,44 @@ def main(argv=None):
         # single call an orchestrating session makes once, at the pass's own end
         # (#1313), rather than relying only on `board_touch.py`'s per-command
         # `PostToolUse` hook to catch every labelling route.
-        root = "."
-        if "--root" in argv:
-            root = argv[argv.index("--root") + 1]
+        #
+        # #1346: the caller reads only the exit code, and this always exited 0
+        # whether the board was actually marked stale or `repo` failed to
+        # resolve -- the same absence-vs-clean-pass shape this whole plugin is
+        # named after. Print a one-line receipt naming which happened, and read
+        # `mark_board_stale`'s own return rather than assuming success just
+        # because a repo resolved -- it is silent-on-failure by design (a
+        # cache write can lose a race or hit a read-only filesystem), and this
+        # receipt exists precisely so that silence stops being invisible here.
+        #
+        # `reconfigure` first: the receipt interpolates a repo slug or a
+        # `--root` path into a plain `print()`, and on Windows the console
+        # encodes stdout with its own codepage (typically cp1252) rather than
+        # the source encoding -- a non-ASCII path component would otherwise
+        # raise `UnicodeEncodeError` at the print, after the work it reports
+        # already happened. Same idiom `lane_setup.py`'s CLI entry point uses.
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(errors="backslashreplace")
+            except (AttributeError, ValueError):  # pragma: no cover - very old Python
+                pass
+        root = _arg_value(argv, "--root", ".")
         repo = repo_config(root).get("repo")
-        if repo:
-            mark_board_stale(repo)
+        if repo and mark_board_stale(repo):
+            print("mark-stale: marked {} stale".format(repo))
+        elif repo:
+            print(
+                "mark-stale: not marked -- writing the stale marker for {} failed".format(
+                    repo
+                )
+            )
+        else:
+            print(
+                "mark-stale: not marked -- no repo resolved for root {!r}".format(root)
+            )
         return 0
     if "--refresh" in argv:
-        root = "."
-        if "--root" in argv:
-            root = argv[argv.index("--root") + 1]
+        root = _arg_value(argv, "--root", ".")
         refresh(root)
         try:
             _lock_path(repo_config(root).get("repo")).unlink()
