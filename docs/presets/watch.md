@@ -940,9 +940,20 @@ list that did not come back, or
 a sha this poller already confirmed runs on that came back with zero runs on
 a later poll — runs on a concluded commit do not disappear, so that reading
 is treated as a fetch that did not answer rather than a fact about the world;
-one such reading is absorbed this way, a second consecutive one on the same
-sha is trusted and surfaces as the real `no_run` —
-[#2333](https://github.com/Digital-Process-Tools/claude-supertool/issues/2333)). A
+[#2333](https://github.com/Digital-Process-Tools/claude-supertool/issues/2333)
+absorbed one such reading before surfacing `unknown`, and
+[#2436](https://github.com/Digital-Process-Tools/claude-supertool/issues/2436)
+raised that to two consecutive empty reads on the same sha, because a
+single-shot guard re-arms itself the instant one blip recovers: an upstream
+endpoint that flakes in short, isolated, self-recovering bursts — six of
+them in 32 minutes on one unchanged, already-green commit in the incident
+that opened #2436, every one gone by the very next 30s poll — got announced
+and un-announced once per burst even though nothing about the branch had
+actually changed. Fewer than two consecutive empty reads is now discarded as
+if the poll never happened; reaching two still surfaces `unknown`, never a
+clean green and never permanent silence, and a THIRD consecutive empty read
+on the same sha is trusted and surfaces as the real `no_run` — the same
+persistence promise #2333 made, shifted by the one-poll grace window). A
 lookup failure that could not resolve the ref, list runs, or identify the
 repository itself is `branch_unreachable`, edge-triggered like every other
 source's `*_unreachable` event — a `gh` that could not answer at all is never
