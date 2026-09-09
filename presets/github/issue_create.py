@@ -89,6 +89,7 @@ TRANSPORT_REST_FALLBACK = "rest (fallback -- mutation transport unavailable)"
 # than silently dropped.
 ACCEPTED_KEYS = {
     "repo", "title", "body", "body_file", "labels", "assignees", "milestone",
+    "dry_run",
 }
 
 # `description`/`description_file` -- what `gl-issue-create` and the GitLab
@@ -308,6 +309,14 @@ def _validate(payload: dict) -> str | None:
             "not accept a TOML [[body]] table-array. Pass body as a "
             "single string, or use body_file to read one from a file."
         )
+    # #2415: `dry_run` gates whether the transport call below ever runs, so
+    # a non-boolean here would silently decide it via truthiness (a string
+    # "false" is truthy) rather than refusing the ambiguity up front.
+    if "dry_run" in payload and not isinstance(payload.get("dry_run"), bool):
+        return (
+            "ERROR: dry_run must be a boolean (true/false), got "
+            f"{type(payload['dry_run']).__name__} {payload['dry_run']!r}"
+        )
     return None
 
 
@@ -428,6 +437,31 @@ def main() -> int:
     # #2100: applied once, before either write path (GraphQL create, or the
     # REST fallback below) -- both send `content`, so both send the marker.
     content, disclosure_state = _publish_safety.apply_forge_disclosure(content)
+
+    if payload.get("dry_run"):
+        # #2415: stop here -- parse, key/alias resolution, repo resolution,
+        # field validation and the disclosure marker have all run exactly
+        # as a real call would, but neither the GraphQL `gh` subprocess nor
+        # the REST fallback (`_gh_json`) is ever invoked below this point.
+        # `gh-issue-create` had no way to verify a payload short of filing
+        # a real issue and closing it (#2407, #2410, #2413 -- three of them,
+        # one session).
+        lines = [
+            f"gh-issue-create DRY-RUN repo={repo} title={title!r}",
+            f"  labels: {', '.join(labels) if labels else '(none)'}",
+            f"  assignees: {', '.join(assignees) if assignees else '(none)'}",
+            f"  milestone: {milestone or '(none)'}",
+            f"  disclosure: {disclosure_state}",
+            "  body:",
+        ]
+        for body_line in (content.splitlines() or [""]):
+            lines.append(f"    {body_line}")
+        lines.append(
+            "  (no gh call made -- remove dry_run, or set it to false, to "
+            "actually create the issue)"
+        )
+        print("\n".join(lines))
+        return 0
 
     tmp_body: str | None = None
     try:

@@ -30133,7 +30133,7 @@ _PRESET_NAMED_PAYLOAD_FIELDS: Dict[str, Tuple[str, ...]] = {
     "gh-issue-comment": ("body", "body_file", "repo"),
     "gh-issue-create": (
         "repo", "title", "body", "body_file", "labels", "assignees",
-        "milestone",
+        "milestone", "dry_run",
     ),
     "gh-pr-create": (
         "repo", "title", "base", "head", "body", "body_file", "draft",
