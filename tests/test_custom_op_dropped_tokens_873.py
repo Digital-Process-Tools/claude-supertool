@@ -281,7 +281,9 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # `CHANNEL_ID[:USER_ID]`, so it is `{args}` too -- one colon-split
         # token per field, and both are optional, the same shape as
         # `gl-job-trace`'s comma-joined id list one entry up.
-        assert len(rows) == 93, len(rows)
+        # 93 → 94 in #1955: `gh-mirror` takes `issue:NUMBER`, two colon-split
+        # tokens with no optional part, so its cmd is `{args}` too.
+        assert len(rows) == 94, len(rows)
         multi = [n for n, _f, _e, c in rows
                  if "{args}" in c or "{argjoin}" in c]
         one = [n for n, _f, _e, c in rows
@@ -303,7 +305,9 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # (see the population count's own comment above).
         # 67 → 68 in #2035: `slack_authorization` is `{args}` from the first
         # line too (see the population count's own comment above).
-        assert (len(multi), len(one), len(none)) == (68, 21, 4), (
+        # 68 → 69 in #1955: `gh-mirror` is `{args}` from the first line too
+        # (see the population count's own comment above).
+        assert (len(multi), len(one), len(none)) == (69, 21, 4), (
             len(multi), len(one), len(none))
         # The 4 placeholder-free ops are outside this gate on purpose — see
         # `_unconsumed_arg_tokens`. Named so the exclusion is a list, not a
