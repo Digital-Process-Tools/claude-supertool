@@ -13020,6 +13020,65 @@ def _count_already_applied(content: str, old: str, new: str) -> int:
     return count
 
 
+def _vim_sub_reapplied_count(
+    body: str, rx: "re.Pattern", srepl_safe: str, is_global: bool,
+    pattern_is_multiline: bool,
+) -> int:
+    """How many of a `:s` run's substitutions are already sitting in the
+    buffer as an earlier run's output (#2358) -- `vim`'s own version of
+    #938's `_count_already_applied`.
+
+    #938's test is `old in new`, and both are FIXED strings there -- `edit`
+    and `replace` never see a pattern. `:s`'s `old` is a regex, and asking
+    whether a regex SOURCE string ("is `(foo)-(bar)` contained in `\\2-\\1`")
+    has no meaning once the pattern holds groups, backreferences, anchors or
+    classes -- which is the reason #2358 was filed as its own decision rather
+    than a mechanical port.
+
+    The reduction: per MATCH rather than per pattern. `m.group(0)` is the
+    literal text this run is about to replace and `m.expand(srepl_safe)` is
+    the literal text it is about to write in its place -- `.expand` resolves
+    any backreference using THAT match, so it is exact even when `srepl`
+    holds `\\1`, `\\2`, ... Both are now fixed strings for this one
+    occurrence, which is exactly the positional-containment test #938
+    already proved: is `m.group(0)` at this position already sitting inside
+    a copy of `m.expand(srepl_safe)` a previous run wrote. Detection is
+    therefore NOT limited to a backreference-free subset -- it only needs
+    the match, never the pattern's own source text.
+
+    Walks the SAME matches `_run_sub` is about to substitute (whole-buffer
+    for a pattern that explicitly wants newlines, per-line and
+    first-per-line-vs-every-match otherwise), so the count lines up with
+    what that call actually changes rather than a re-derived quantity.
+    """
+    reapplied = 0
+    if pattern_is_multiline:
+        for m in rx.finditer(body):
+            if _edit_already_applied(body, m.group(0), m.expand(srepl_safe), m.start()):
+                reapplied += 1
+        return reapplied
+    has_trailing_nl = body.endswith("\n")
+    body_lines = body.split("\n")
+    if has_trailing_nl:
+        body_lines = body_lines[:-1]
+    # A per-line MATCH is checked against the FULL body, not the one line it
+    # matched in -- a replacement is free to write a newline of its own (a
+    # `:s/PAT/line1\nline2/` appends a whole new line), and that written
+    # text is no longer confined to the line the match came from. Checking
+    # containment against `ln` alone can never see a `new` that spans a line
+    # boundary, so the offset is translated to a body-level index instead.
+    line_start = 0
+    for ln in body_lines:
+        for m in rx.finditer(ln):
+            abs_idx = line_start + m.start()
+            if _edit_already_applied(body, m.group(0), m.expand(srepl_safe), abs_idx):
+                reapplied += 1
+            if not is_global:
+                break
+        line_start += len(ln) + 1
+    return reapplied
+
+
 def _newline_census(text: str) -> Tuple[int, int, int]:
     """`(crlf, lf, cr)` — how many of each line ending the text actually has.
 
@@ -14884,6 +14943,20 @@ def _op_vim_impl(path: str, script: str) -> str:
     No visual mode (V / v):
         Use line-range ex instead — `Ndd`, `:N,Md`, `Ncc`, `:%s/PAT/REPL/`.
         For block inserts use `o`/`O` (single-line) or `:r FILE` (multi-line).
+
+    Re-running `:s` (#2358):
+        A `:s/PAT/REPL/` that writes text REPL already produced is disclosed
+        the same way `edit`/`replace` disclose it (#938) — `K re-applied` in
+        the `[result]` footer, `[N re-applied]` on the action's own log
+        line — never refused. Detection compares, per match, the literal
+        text a match consumed against the literal text it is about to
+        become (any backreference resolved for that match), so it is not
+        limited to a literal PAT: `:s/(a)-(b)/\\1-\\2-X/` run twice is caught
+        the same way `:s/foo/foo-bar/` run twice is. BEST-EFFORT, not
+        exhaustive: a quantified group that re-matches its own PRIOR output
+        as one larger capture (`:s/(\\w+)/\\1\\1/` re-applied to
+        already-doubled text) is not caught, because that match's own text
+        no longer equals what any one run wrote.
 
     Join:
         J / nJ      — join next n lines with cursor's line (single space sep)
@@ -16952,6 +17025,22 @@ def _op_vim_impl(path: str, script: str) -> str:
                     body = content[sub_start:sub_end]
                     occurrences = body.count(literal_pat)
                     if occurrences > 0 and not is_dry:
+                        # #2358: same positional-containment test #938 proved
+                        # for `edit`/`replace`, against the PRE-write body --
+                        # this branch's `old`/`new` are already fixed literal
+                        # strings, so no per-match reduction is needed.
+                        if is_global:
+                            _n_reapplied = _count_already_applied(
+                                body, literal_pat, srepl_dec_early)
+                        else:
+                            _idx0 = body.find(literal_pat)
+                            _n_reapplied = (
+                                1 if _idx0 != -1 and _edit_already_applied(
+                                    body, literal_pat, srepl_dec_early, _idx0)
+                                else 0
+                            )
+                        if _n_reapplied:
+                            _bump_counter(_REAPPLY_COUNT, "cnt_reapply", _n_reapplied)
                         new_body = body.replace(
                             literal_pat,
                             srepl_dec_early,
@@ -16960,14 +17049,24 @@ def _op_vim_impl(path: str, script: str) -> str:
                         content = content[:sub_start] + new_body + content[sub_end:]
                         cursor = min(cursor, len(content))
                         n_done = occurrences if is_global else 1
+                        _reapplied_note = (
+                            f" [{_n_reapplied} re-applied]" if _n_reapplied else ""
+                        )
                         log.append(
                             f"  {i}. :s/{spat!r}/{srepl_dec_early!r}/{sflags} ({n_done} subs)"
                             f" [autocorrect: regex parse failed ({e}); literal mode → {literal_pat!r}]"
+                            + _reapplied_note
                         )
                         continue
                 return f"ERROR: action {i} '{action}': :s regex: {e}\n"
             is_dry = "d" in sflags
             n_max = 0 if "g" in sflags else 1
+            # Set once, here, for the #2358 reapply check below -- the two
+            # branches further down that also set `is_global` (the early
+            # parse-error literal fallback, and this path's own literal
+            # fallback) either `continue` first or agree with this value, so
+            # neither can leave it unset for a direct regex match.
+            is_global = "g" in sflags
             srepl_dec = _decode_escapes(srepl)
             # Escape literal backslashes for re.sub: \X (X non-digit) must be
             # passed as \\X or re.sub raises "bad escape" on \B, \R, etc.
@@ -16979,6 +17078,11 @@ def _op_vim_impl(path: str, script: str) -> str:
             # user wants cross-line matching — fall back to whole-buffer.
             spat_decoded = _decode_escapes(spat)
             pattern_is_multiline = "\n" in spat_decoded
+            # #2358: which comparison the reapply check below uses -- regex
+            # per-match (the general case) or a fixed literal pair (the
+            # literal-fallback recovery just below, where `rx` no longer
+            # describes what actually matched).
+            _used_literal_repl = False
             def _run_sub(_rx):
                 if pattern_is_multiline:
                     # Whole-buffer: pattern needs to see newlines.
@@ -17055,6 +17159,14 @@ def _op_vim_impl(path: str, script: str) -> str:
                         autocorrect_hint = (
                             f" [autocorrect: literal mode → {literal_pat!r}]"
                         )
+                        # #2358: `rx` never matched here -- this recovery used
+                        # a plain string replace -- so the reapply check below
+                        # has to compare the same fixed literal pair rather
+                        # than trying to walk `rx` against text it did not
+                        # produce.
+                        _used_literal_repl = True
+                        _literal_repl_pat = literal_pat
+                        _literal_repl_new = srepl_dec
             if n == 0:
                 near = _vim_nearest_literal_hint(content, spat, original=_before_content)
                 return f"ERROR: action {i} '{action}': :s no match for {spat!r}{near}\n"
@@ -17082,11 +17194,37 @@ def _op_vim_impl(path: str, script: str) -> str:
                     + more
                 )
             else:
+                # #2358: computed against the PRE-write body, exactly like
+                # #938's `_count_already_applied` -- a later occurrence's
+                # index would otherwise be read against text this same
+                # write already shifted.
+                _body_before = content[sub_start:sub_end]
+                if _used_literal_repl:
+                    if is_global:
+                        _n_reapplied = _count_already_applied(
+                            _body_before, _literal_repl_pat, _literal_repl_new)
+                    else:
+                        _idx0 = _body_before.find(_literal_repl_pat)
+                        _n_reapplied = (
+                            1 if _idx0 != -1 and _edit_already_applied(
+                                _body_before, _literal_repl_pat,
+                                _literal_repl_new, _idx0)
+                            else 0
+                        )
+                else:
+                    _n_reapplied = _vim_sub_reapplied_count(
+                        _body_before, rx, srepl_safe, is_global,
+                        pattern_is_multiline)
+                if _n_reapplied:
+                    _bump_counter(_REAPPLY_COUNT, "cnt_reapply", _n_reapplied)
                 content = new_content
                 cursor = min(cursor, len(content))
+                _reapplied_note = (
+                    f" [{_n_reapplied} re-applied]" if _n_reapplied else ""
+                )
                 log.append(
                     f"  {i}. :s/{spat!r}/{srepl_dec!r}/{sflags} ({n} subs)"
-                    + autocorrect_hint
+                    + autocorrect_hint + _reapplied_note
                 )
 
         # --- ex line goto: bare `:N`, `:$`, `:.` (no command after range) ---

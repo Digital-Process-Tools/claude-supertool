@@ -1971,6 +1971,47 @@ turns it red, it is not a guard.
 [#730]: https://github.com/Digital-Process-Tools/claude-supertool/issues/730
 [#731]: https://github.com/Digital-Process-Tools/claude-supertool/issues/731
 
+## Editing the payload safety net itself is self-hosting, and that is accepted, not fixed (#1906)
+
+`_load_at_file_raw` runs the doubled-backslash scanner (`_payload_double_backslash_refusal`,
+`_payload_literal_backslashes_scope`, and everything else reached from its `note=True` path)
+**unconditionally, on the payload bytes of every `edit:@-`/`paste:@-`/`batch:@-` call**, before
+dispatch ever sees which op or which target path the payload names. That is deliberate -- the
+scanner exists to catch a doubled backslash before it lands on disk, so it has to run on every
+write, not just ones that touch itself.
+
+The consequence: if you are mid-edit on one of those functions and leave the module in a state
+where calling them raises -- the ordinary state between the two halves of a rename, where the old
+name is still referenced at a call site -- **every subsequent `edit:@-` call crashes the same way,
+including the one that would fix the call site.** The tool that would repair the file is the one
+the broken file just disabled. Reproduced in #1839's own lane: one blocked `edit:@-` plus a
+diagnostic round-trip, for exactly this mid-rename shape.
+
+**This is a documented trap, not a bypass mode.** #1906 asked for a decision between the two, and
+the reasoning against a bypass: any bypass narrow enough not to become a general escape hatch for
+ordinary payloads would have to detect "this payload is repairing the scanner itself" -- which
+means inspecting the payload's own target and content, using the same machinery that is currently
+broken, to decide whether to skip it. That is not a narrowing, it is the same surface with an
+extra conditional, and it adds permanent maintenance cost for a recovery path that only fires
+during a rename of two specific functions. A working escape hatch already exists and needs no new
+code:
+
+**If `edit:@-` is refusing every payload with a traceback out of the doubled-backslash scanner
+itself** (not a refusal *about* a doubled backslash -- an actual Python exception, `NameError` or
+similar, raised from inside `_payload_double_backslash_refusal` or `_payload_literal_backslashes_scope`):
+
+1. Do not retry `edit:@-` -- it runs the same broken scanner on the retry.
+2. Write the fix directly, outside the payload route -- open a plain editor, or use a Python
+   script invoked without going through supertool at all, that reads `_supertool.py`, replaces
+   the stale name at its call site with the correct one, and writes the file back. This runs no
+   validator and rolls nothing back on a mistake, so keep the edit as small as the one call site
+   that is actually broken.
+3. Verify before resuming normal calls: `python3 -c "import _supertool"` (catches a syntax or
+   name error at import time) and then a read-only op, e.g. `read:_supertool.py:1-1`, to confirm
+   the payload route itself has recovered.
+4. Once `edit:@-` works again, use it for everything else in the same fix -- the direct write is
+   for the one call site that locked the route out, not a general substitute.
+
 ## Submitting upstream
 
 Want to add a preset, op, or validator to the shipped supertool?
