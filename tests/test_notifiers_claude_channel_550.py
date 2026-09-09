@@ -81,12 +81,18 @@ class Channel:
     must be pointed at the *same* path to reproduce the theft) and can be told
     not to expect a successful start, since half these tests are about a server
     that is supposed to refuse.
+
+    `cmd` defaults to the bun invocation every test here has always used; #2469
+    passes the shipped node command instead, to run this same harness against
+    the runtime real users now launch (`.mcp.json` / `start.mjs`, since #520
+    and #2486) rather than duplicating it.
     """
 
-    def __init__(self, sock_path: str, *, expect_start: bool = True) -> None:
+    def __init__(self, sock_path: str, *, expect_start: bool = True,
+                cmd: list[str] | None = None) -> None:
         self.sock_path = sock_path
         self.proc = subprocess.Popen(
-            ["bun", str(CHANNEL_TS)],
+            cmd or ["bun", str(CHANNEL_TS)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
