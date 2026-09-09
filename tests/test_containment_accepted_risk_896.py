@@ -20,6 +20,7 @@ here as a documented, accepted, narrow-window race rather than a closed gap.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -68,3 +69,48 @@ def test_containment_error_resolves_a_candidate_exactly_once(monkeypatch) -> Non
     err = supertool._containment_error(["some_file.txt"])
     assert err is None
     assert calls == ["some_file.txt"]
+
+
+@pytest.fixture
+def no_tomllib(monkeypatch) -> None:
+    """Force the <3.11 fallback (`_mini_toml_loads`), matching
+    `test_payload_literal_backslash_834.py`'s own fixture -- `tomllib` is
+    3.11+ only, so on THIS interpreter (whatever it is) the fallback would
+    otherwise go entirely unexercised by this test file."""
+    monkeypatch.setitem(sys.modules, "tomllib", None)
+
+
+def test_the_toml_parse_error_leaks_no_content_on_the_fallback_parser_too(
+        tmp_path, monkeypatch, no_tomllib) -> None:
+    """CI found this one, not this file: `test_an_outside_root_at_reference_
+    parse_error_leaks_no_content` above only ever ran against `tomllib`
+    (present on every interpreter this repo's own tests run under, 3.11+),
+    and never against `_mini_toml_loads`, the parser Python 3.9/3.10 actually
+    use -- so a real gap on exactly those two legs went undetected here. A
+    bare TOML key is any run of `[A-Za-z0-9_-]` characters, so ordinary file
+    content commonly IS one, and `_mini_toml_loads`'s old error messages
+    echoed the key text verbatim (`expected '=' after key '<the whole file>'`
+    for a file with no `=` in it at all) -- a real content-disclosure gap in
+    F2's "not a content-disclosure channel" claim, confined to the two
+    supported Python versions with no stdlib `tomllib`. Fixed by threading an
+    integer offset through the fallback parser's error messages instead of
+    the key/value text (see `_toml_decode_escape`'s own docstring)."""
+    outside = tmp_path / "outside.toml"
+    secret_line = "this-is-not-toml-and-must-not-be-echoed-back"
+    outside.write_text(secret_line, encoding="utf-8")
+    monkeypatch.chdir(tmp_path.parent)
+    with pytest.raises(ValueError) as excinfo:
+        supertool._load_at_file("@" + str(outside))
+    assert secret_line not in str(excinfo.value)
+
+
+def test_the_fallback_parser_error_is_a_positive_control_for_the_above(
+        no_tomllib) -> None:
+    """A "must not leak" assertion passes if the parser is simply broken and
+    raises nothing recognisable -- pair it with a "must actually parse and
+    fail in the expected place" case. Confirms the fallback path really did
+    run (not silently short-circuited) and really does still name a useful
+    offset."""
+    with pytest.raises(ValueError) as excinfo:
+        supertool._mini_toml_loads("this-is-not-toml-and-must-not-be-echoed-back")
+    assert "offset 0" in str(excinfo.value)

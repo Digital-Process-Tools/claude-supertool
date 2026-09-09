@@ -28006,7 +28006,7 @@ _TOML_ESCAPE_ADVICE = (
 )
 
 
-def _toml_decode_escape(s: str, i: int, key: str, multiline: bool) -> Tuple[str, int]:
+def _toml_decode_escape(s: str, i: int, key_offset: int, multiline: bool) -> Tuple[str, int]:
     r"""Decode the escape starting at s[i] (a backslash); return (text, offset).
 
     Raises on everything TOML calls invalid, because stdlib `tomllib` raises
@@ -28019,6 +28019,22 @@ def _toml_decode_escape(s: str, i: int, key: str, multiline: bool) -> Tuple[str,
     `\u` / `\U` are decoded rather than rejected. tomllib accepts them, so
     refusing them would trade a silent divergence for a loud one. Agreement
     with tomllib is what matters here, not severity.
+
+    `key_offset` (an int, the key's own start offset in `raw` -- never the key
+    TEXT) is diagnostic only: it used to be the key string itself, echoed
+    verbatim into every error message below. On Python <3.11, where this
+    parser is the ONLY TOML reader (stdlib `tomllib` needs 3.11+), that meant
+    a malformed `@file` reference outside the containment boundary (#896 F2 --
+    documented as "not a content-disclosure channel" because `tomllib`'s own
+    parse errors report only position) could have its own content echoed back
+    through THIS parser's error message instead, on exactly the two Python
+    versions where `tomllib` is unavailable and this code path is the one
+    that runs. A bare TOML key is any run of `[A-Za-z0-9_-]` characters, so
+    ordinary file content -- a hostname, a path, a hyphenated word -- reads as
+    a "key" whenever it appears before the point parsing fails, and the old
+    messages echoed that run in full. Position-only, matching what `tomllib`
+    already does, closes the gap without losing anything a human debugging
+    their own payload actually uses this message for.
     """
     c = s[i + 1] if i + 1 < len(s) else ""
     if c in _TOML_ESCAPES:
@@ -28031,8 +28047,9 @@ def _toml_decode_escape(s: str, i: int, key: str, multiline: bool) -> Tuple[str,
             if code < 0x110000 and not 0xD800 <= code <= 0xDFFF:
                 return chr(code), i + 2 + width
         raise ValueError(
-            f"invalid escape: \\{c} for '{key}' wants {width} hex digits naming "
-            f"a Unicode scalar — {_TOML_ESCAPE_ADVICE}"
+            f"invalid escape: \\{c} at offset {i} (key starting at offset "
+            f"{key_offset}) wants {width} hex digits naming a Unicode scalar "
+            f"— {_TOML_ESCAPE_ADVICE}"
         )
     if multiline:
         j = i + 1
@@ -28042,15 +28059,18 @@ def _toml_decode_escape(s: str, i: int, key: str, multiline: bool) -> Tuple[str,
             while j < len(s) and s[j] in " \t\r\n":
                 j += 1
             return "", j
-    raise ValueError(f"invalid escape '\\{c}' for '{key}' — {_TOML_ESCAPE_ADVICE}")
+    raise ValueError(
+        f"invalid escape '\\{c}' at offset {i} (key starting at offset "
+        f"{key_offset}) — {_TOML_ESCAPE_ADVICE}"
+    )
 
 
-def _toml_basic_unescape(s: str, key: str = "value", multiline: bool = True) -> str:
+def _toml_basic_unescape(s: str, key_offset: int = -1, multiline: bool = True) -> str:
     out = []
     i = 0
     while i < len(s):
         if s[i] == "\\":
-            text, i = _toml_decode_escape(s, i, key, multiline)
+            text, i = _toml_decode_escape(s, i, key_offset, multiline)
             out.append(text)
         else:
             out.append(s[i])
@@ -28076,7 +28096,7 @@ def _toml_skip_ws_comments(raw: str, i: int) -> int:
     return i
 
 
-def _toml_parse_array(raw: str, i: int, key: str) -> Tuple[List[Any], int]:
+def _toml_parse_array(raw: str, i: int, key_offset: int) -> Tuple[List[Any], int]:
     """Parse an inline array at *i* (on its '['); return (items, next offset).
 
     Elements are whatever `_toml_parse_value` accepts, so arrays nest. A
@@ -28090,10 +28110,12 @@ def _toml_parse_array(raw: str, i: int, key: str) -> Tuple[List[Any], int]:
     while True:
         i = _toml_skip_ws_comments(raw, i)
         if i >= n:
-            raise ValueError(f"unterminated array for '{key}'")
+            raise ValueError(
+                f"unterminated array for the key at offset {key_offset}"
+            )
         if raw[i] == "]":
             return items, i + 1
-        val, i = _toml_parse_value(raw, i, key)
+        val, i = _toml_parse_value(raw, i, key_offset)
         items.append(val)
         i = _toml_skip_ws_comments(raw, i)
         if i < n and raw[i] == ",":
@@ -28102,7 +28124,8 @@ def _toml_parse_array(raw: str, i: int, key: str) -> Tuple[List[Any], int]:
         if i < n and raw[i] == "]":
             return items, i + 1
         raise ValueError(
-            f"expected ',' or ']' in array for '{key}' at offset {i}"
+            f"expected ',' or ']' in array for the key at offset "
+            f"{key_offset}, at offset {i}"
         )
 
 
@@ -28149,19 +28172,24 @@ def _toml_multiline_close(
     return -1, -1, -1
 
 
-def _toml_parse_value(raw: str, i: int, key: str) -> Tuple[Any, int]:
+def _toml_parse_value(raw: str, i: int, key_offset: int) -> Tuple[Any, int]:
     """Parse one TOML value at *i*; return (value, offset just past it).
 
     Split out of `_mini_toml_loads` so inline arrays can recurse into it
-    rather than reimplementing every scalar form.
+    rather than reimplementing every scalar form. `key_offset` is the start
+    offset of the key this value belongs to, for error messages ONLY -- see
+    `_toml_decode_escape`'s docstring for why this is an int and not the key
+    text (#896 F2, content-disclosure on Python <3.11).
     """
     n = len(raw)
     if raw[i:i + 3] == '"""':
         i += 3
         end, _run, nxt = _toml_multiline_close(raw, i, '"', True)
         if end < 0:
-            raise ValueError(f"unterminated \"\"\" for '{key}'")
-        val: Any = _toml_basic_unescape(raw[i:end], key, True)
+            raise ValueError(
+                f'unterminated """ for the key at offset {key_offset}'
+            )
+        val: Any = _toml_basic_unescape(raw[i:end], key_offset, True)
         if val.startswith("\r\n"):
             val = val[2:]
         elif val.startswith("\n"):
@@ -28171,7 +28199,9 @@ def _toml_parse_value(raw: str, i: int, key: str) -> Tuple[Any, int]:
         i += 3
         end, _run, nxt = _toml_multiline_close(raw, i, "'", False)
         if end < 0:
-            raise ValueError(f"unterminated ''' for '{key}'")
+            raise ValueError(
+                f"unterminated ''' for the key at offset {key_offset}"
+            )
         val = raw[i:end]
         if val.startswith("\r\n"):
             val = val[2:]
@@ -28183,28 +28213,35 @@ def _toml_parse_value(raw: str, i: int, key: str) -> Tuple[Any, int]:
         buf = []
         while i < n and raw[i] != '"':
             if raw[i] == "\\":
-                text, i = _toml_decode_escape(raw, i, key, False)
+                text, i = _toml_decode_escape(raw, i, key_offset, False)
                 buf.append(text)
             elif raw[i] == "\n":
-                raise ValueError(f"newline in single-line string for '{key}'")
+                raise ValueError(
+                    f"newline in single-line string for the key at offset "
+                    f"{key_offset}"
+                )
             else:
                 buf.append(raw[i])
                 i += 1
         if i >= n:
-            raise ValueError(f"unterminated string for '{key}'")
+            raise ValueError(
+                f"unterminated string for the key at offset {key_offset}"
+            )
         return "".join(buf), i + 1
     if raw[i] == "'":
         i += 1
         end = raw.find("'", i)
         if end < 0 or raw.find("\n", i, end) >= 0:
-            raise ValueError(f"unterminated literal for '{key}'")
+            raise ValueError(
+                f"unterminated literal for the key at offset {key_offset}"
+            )
         return raw[i:end], end + 1
     if raw[i:i + 4] == "true" and (i + 4 == n or not raw[i + 4].isalnum()):
         return True, i + 4
     if raw[i:i + 5] == "false" and (i + 5 == n or not raw[i + 5].isalnum()):
         return False, i + 5
     if raw[i] == "[":
-        return _toml_parse_array(raw, i, key)
+        return _toml_parse_array(raw, i, key_offset)
     if raw[i] == "-" or _is_ascii_int(raw[i]):
         ns = i
         if raw[i] == "-":
@@ -28214,8 +28251,12 @@ def _toml_parse_value(raw: str, i: int, key: str) -> Tuple[Any, int]:
         try:
             return int(raw[ns:i]), i
         except ValueError as _e:
-            raise ValueError(f"bad number for '{key}': {_e}") from _e
-    raise ValueError(f"unknown value type for '{key}' at offset {i}")
+            raise ValueError(
+                f"bad number for the key at offset {key_offset}: {_e}"
+            ) from _e
+    raise ValueError(
+        f"unknown value type for the key at offset {key_offset}, at offset {i}"
+    )
 
 
 def _mini_toml_loads(raw: str) -> Dict[str, Any]:
@@ -28232,14 +28273,22 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
     Inline arrays matter specifically: a variadic payload field is written as
     a list, and `git-commit:@-` with `paths = ["a", "b"]` is the documented
     form. Without them that payload parsed on 3.11+ (stdlib `tomllib`) and
-    died below it with `unknown value type for 'paths'` — the op's own
-    documented syntax failing on a third of the supported matrix.
+    died below it with `unknown value type for the key at offset N` — the
+    op's own documented syntax failing on a third of the supported matrix.
 
     `[[ops]]` matters specifically: it is the shape a `batch:@-` payload takes,
     and this parser is what runs on Python <3.11, where stdlib `tomllib` is
     absent. Without it a batch payload parses on 3.11+ and dies below it.
 
     Used as fallback when stdlib `tomllib` is unavailable (Python <3.11).
+
+    Every error message below names an OFFSET into `raw`, never the key or
+    value text itself (#896 F2). This parser is the only TOML reader on
+    Python <3.11 -- there is no `tomllib` to fall back to -- so it is also
+    what runs when an `@file` reference outside the containment boundary is
+    malformed, and the fix for #896's TOML-parse-error content-disclosure gap
+    had to land here rather than only in `_load_at_file_raw`'s own except
+    clause, which never sees the raw text either way.
     """
     result: Dict[str, Any] = {}
     # Key/value pairs land here: the top-level dict, or the most recent
@@ -28264,12 +28313,18 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
             end = raw.find("]]", i + 2)
             if end < 0:
                 raise ValueError(f"unterminated [[table]] header at offset {i}")
-            name = raw[i + 2:end].strip()
+            name_offset = i + 2
+            name = raw[name_offset:end].strip()
             if not name or not all(c.isalnum() or c in "_-" for c in name):
-                raise ValueError(f"bad [[table]] name {name!r} at offset {i}")
+                raise ValueError(
+                    f"bad [[table]] name at offset {name_offset}"
+                )
             bucket = result.setdefault(name, [])
             if not isinstance(bucket, list):
-                raise ValueError(f"{name!r} is both a value and a [[table]]")
+                raise ValueError(
+                    f"the [[table]] name at offset {name_offset} is both a "
+                    f"value and a [[table]]"
+                )
             current = {}
             bucket.append(current)
             i = end + 2
@@ -28288,13 +28343,13 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
         while i < n and raw[i] in " \t":
             i += 1
         if i >= n or raw[i] != "=":
-            raise ValueError(f"expected '=' after key '{key}'")
+            raise ValueError(f"expected '=' after the key at offset {ks}")
         i += 1
         while i < n and raw[i] in " \t":
             i += 1
         if i >= n:
-            raise ValueError(f"missing value for '{key}'")
-        val, i = _toml_parse_value(raw, i, key)
+            raise ValueError(f"missing value for the key at offset {ks}")
+        val, i = _toml_parse_value(raw, i, ks)
         current[key] = val
         while i < n and raw[i] in " \t":
             i += 1
@@ -28302,7 +28357,6 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
             while i < n and raw[i] != "\n":
                 i += 1
     return result
-
 
 _TOML_LITERAL_OPENER = re.compile(r"=[ \t]*'''")
 
@@ -28323,8 +28377,9 @@ def _toml_delimiter_early_close(raw: str) -> int:
     re-reading their own draft — the same argument as `_dbs_occurrences`.
 
     An unterminated block is deliberately NOT reported here. It is a different
-    failure with its own message (`unterminated ''' for 'key'`), and the parity
-    trigger kept below still covers the shape #394 shipped for.
+    failure with its own message (`unterminated ''' for the key at offset N`,
+    #896 -- no longer echoing the key text itself), and the parity trigger
+    kept below still covers the shape #394 shipped for.
     """
     at = 0
     while True:
@@ -28435,6 +28490,16 @@ def _resolve_at_path(rel: str) -> str:
     mean containment-checking the CLI argument that NAMES a payload before
     the payload's own fields are even read, a second boundary next to the
     one `_containment_error` already owns for op arguments.
+
+    That "position only, never text" claim was FALSE on Python <3.11 until a
+    CI run on exactly those two legs (3.9, 3.10) caught it: `_mini_toml_loads`
+    (the only TOML reader when stdlib `tomllib` is absent) echoed the parsed
+    key -- often the whole malformed file, since a bare TOML key is any run
+    of `[A-Za-z0-9_-]` characters -- straight into its own error messages.
+    Fixed in `_toml_decode_escape`/`_toml_parse_value`/`_mini_toml_loads`
+    themselves (position-only there too now); this paragraph is left in
+    place, corrected, as the record that the claim was verified against the
+    wrong parser the first time.
     """
     if os.path.isabs(rel):
         return rel
