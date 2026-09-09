@@ -13,6 +13,8 @@ from __future__ import annotations
 from difflib import SequenceMatcher
 from typing import Optional, Tuple
 
+from linebreaks import split_lines
+
 
 def line_diff(before: str, after: str) -> Tuple[int, int, Tuple[Optional[int], Optional[int]]]:
     """Return (lines_added, lines_removed, (first_changed_line, last_changed_line)).
@@ -37,8 +39,17 @@ def line_diff(before: str, after: str) -> Tuple[int, int, Tuple[Optional[int], O
     the whole span will not miss a touched line), and is the documented
     behaviour, not a bug: see `test_disjoint_hunks_report_one_merged_span_documented_over_approximation`.
     """
-    before_lines = before.splitlines(keepends=True)
-    after_lines = after.splitlines(keepends=True)
+    # split_lines() (validators/common/linebreaks.py, #1486), not raw
+    # .splitlines(): the latter also breaks on U+2028/U+2029/U+0085/VT/FF,
+    # none of which a caller's own line-numbered read (or `around_line`)
+    # would treat as a line boundary -- one of those five characters inside
+    # a source string literal would silently shift the reported
+    # first_changed_line/last_changed_line the same way #1507 documents for
+    # V8's own line counter. keepends is not needed here: the diff only
+    # cares which line INDEX changed, never a line's own trailing content,
+    # so endings-stripped elements compare identically for that purpose.
+    before_lines = split_lines(before)
+    after_lines = split_lines(after)
     matcher = SequenceMatcher(a=before_lines, b=after_lines, autojunk=False)
     added = removed = 0
     first = last = None
