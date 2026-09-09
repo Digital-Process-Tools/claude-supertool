@@ -5,6 +5,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -23,6 +24,7 @@ import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 import _classify_render  # noqa: E402  (the verdict beside the fence — #2049)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
 import _status_probe  # noqa: E402  (does this stderr *state* the target is missing or access denied? - #1864)
+import _mirror  # noqa: E402  (write-through cache of the raw API reply — #1955)
 
 DESCRIPTION_MAX = 3000
 COMMENT_MAX = 1000
@@ -637,6 +639,38 @@ def main() -> int:
         print(_untrusted.banner())
         print(_untrusted.fence(result.stdout[:500]))
         return 1
+
+    # Write-through mirror (#1955): the RAW reply, before any truncation
+    # below touches it -- a mirror of a display-capped body would lie by
+    # omission, which is the issue's own point 1. Opt-in and best-effort: an
+    # unconfigured mirror is a silent no-op (`cfg.path is None, cfg.error is
+    # None`), and a configured-but-failing one must never take this read down
+    # with it -- see `_mirror.write_issue`'s own docstring for why it never
+    # raises. `gh-issue` is the only op wired to this so far; `gh-pr`,
+    # `gh-issues` and `gh-prs` are tracked separately (see this repo's #1955
+    # comment sizing the full four-file lane).
+    mirror_cfg = _mirror.load_config(pathlib.Path.cwd().resolve())
+    if mirror_cfg.error is not None:
+        print(f"note: gh mirror not written -- {mirror_cfg.error}")
+    elif mirror_cfg.path is not None:
+        # Self-review (#1955, oss:auditor spawn): `gh-mirror`'s own read
+        # gates its NUMBER argument with `.isdigit()` before it ever
+        # touches a path; this write side had no equivalent gate, relying
+        # entirely on the GitHub API's own `number` field being a JSON
+        # integer. Defense in depth rather than a demonstrated exploit --
+        # `gh issue view` almost certainly refuses a non-numeric reference
+        # before returning success at all -- but a mirror write must not be
+        # the one place in this file that trusts remote text into a path.
+        mirror_number = str(d.get("number", number))
+        if mirror_number.isdigit():
+            mirror_err = _mirror.write_issue(mirror_cfg.path, mirror_number, d)
+            if mirror_err is not None:
+                print(f"note: gh mirror not written -- {mirror_err}")
+        else:
+            print(
+                f"note: gh mirror not written -- the API reply's issue "
+                f"number ({mirror_number!r}) is not a plain integer"
+            )
 
     # One-line fields are flattened rather than fenced (#694): two marker lines
     # around a six-word title is the noise that gets a convention abandoned,
