@@ -121,6 +121,51 @@ UNOWNED = "UNOWNED"
 SPAWNERS = ("run", "Popen", "call", "check_call", "check_output", "system")
 
 
+#: One parse per chokepoint module per process. Keyed by module stem.
+_CROSS_MODULE_RUNNERS: dict = {}
+
+#: The repo's python files indexed by module stem, walked once per process.
+_BY_STEM: dict = {}
+
+
+def _imported_module_runners(stem):
+    """The runner set of a repo module imported by the file being read.
+
+    #2447 routed every git invocation in this tree through one chokepoint
+    (`presets/_git_run.py`), which means the word `subprocess` left every file
+    that used to spawn. `_runners` derives its answer from ONE module's AST, so
+    the chain it follows stopped at `_git_run._git(...)` and the executed
+    `git worktree remove` in `presets/github/pr_merge.py::_cleanup_worktree`
+    vanished from the population -- reported by CI as a stale REGISTER entry,
+    which is this repo's own defect class wearing the register's clothes: the
+    detector went blind and the report read as a finding about the code.
+
+    Resolved by stem rather than by a hardcoded module name, for the reason
+    `_runners`' own docstring gives: a list of helper names was measurably
+    wrong once already. An ambiguous stem (two files, same name) answers
+    nothing rather than picking one.
+    """
+    if stem in _CROSS_MODULE_RUNNERS:
+        return _CROSS_MODULE_RUNNERS[stem]
+    _CROSS_MODULE_RUNNERS[stem] = set()  # recursion guard, and the miss answer
+    if not _BY_STEM:
+        # One tree walk for every lookup this process makes, not one each.
+        # Re-walking per imported name took this file from 16s to 33s locally
+        # -- on a guard that is in `lane-ci-cost`'s own lane.
+        for path in repo_python_files():
+            _BY_STEM.setdefault(path.stem, []).append(path)
+    matches = _BY_STEM.get(stem, [])
+    if len(matches) != 1:
+        return _CROSS_MODULE_RUNNERS[stem]
+    try:
+        source = matches[0].read_text(encoding="utf-8")
+        found = _runners(ast.parse(source))
+    except (OSError, UnicodeDecodeError, SyntaxError):
+        return _CROSS_MODULE_RUNNERS[stem]
+    _CROSS_MODULE_RUNNERS[stem] = found
+    return found
+
+
 def _runners(module):
     """Names in this file that reach a subprocess, derived rather than listed.
 
@@ -135,7 +180,16 @@ def _runners(module):
     # One walk builds the call graph; the fixed point then runs over names
     # only. Re-walking every def on every round instead cost 4.5s a sweep on
     # this tree, on a file filed under `lane-ci-cost`.
+    imported = set()
+    for node in ast.walk(module):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                imported.add(alias.asname or alias.name)
     calls = {}
+    seeds = set()
     for node in ast.walk(module):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -149,9 +203,17 @@ def _runners(module):
                 # neither does a `.run()` on something we cannot see.
                 if func.attr in SPAWNERS and "subprocess" in ast.unparse(func.value):
                     names.add(func.attr)
+                # `_git_run._git(...)` spawns too, and says so in another
+                # file (#2447). The receiver has to be a bare name -- a
+                # module -- so `self._git(...)` and `obj.attr._git(...)`
+                # are not read as one.
+                elif (isinstance(func.value, ast.Name)
+                        and func.value.id in imported
+                        and func.attr in _imported_module_runners(func.value.id)):
+                    seeds.add(node.name)
             elif isinstance(func, ast.Name):
                 names.add(func.id)
-    runners = set(SPAWNERS)
+    runners = set(SPAWNERS) | seeds
     for _round in range(len(calls) + 1):
         grown = set(name for name, called in calls.items()
                     if name not in runners and called & runners)
@@ -760,6 +822,24 @@ def test_the_classifier_refuses_a_path_it_cannot_prove_ownership_of() -> None:
         "a `cleanup` taking arguments is another object's method -- "
         "`presets/mcp/daemon.py` unlinks two files with one -- and counting "
         "it would put a non-removal in the population")
+
+    chokepoint = ("import _git_run",
+                  "def _git(*args):",
+                  "    return _git_run._git(args)",
+                  "def t(tmp_path):",
+                  "    _git('worktree', 'remove', str(tmp_path))")
+    assert _sites_in_source("tests/synthetic.py", nl.join(chokepoint) + nl), (
+        "the spawn left this file when #2447 routed every git invocation "
+        "through the `_git_run` chokepoint, so a helper whose body ends at "
+        "`_git_run._git(...)` reaches a subprocess without the word "
+        "`subprocess` appearing anywhere in its module -- and reading only "
+        "the in-module chain dropped the executed `git worktree remove` in "
+        "`presets/github/pr_merge.py::_cleanup_worktree`, which then read as "
+        "a stale REGISTER entry rather than as a detector that had gone "
+        "blind (#2447)")
+    assert mech(*chokepoint) == OWNED, (
+        "and the target is still the path the caller composed, so the "
+        "mechanism is the ordinary owned one and not the `GIT` exemption")
 
     assert mech("import subprocess",
                 "def _sh(*args, cwd):",

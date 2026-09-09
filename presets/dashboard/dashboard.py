@@ -71,6 +71,7 @@ sys.path.insert(0, _PRESETS)
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 
 import _checks  # noqa: E402  (the one check tally — #454, shared with every board)
+import _git_run  # noqa: E402  (the one git invocation chokepoint — #2447)
 import _pr_board  # noqa: E402  (the board/default-branch fetch, shared with radar's GitHub tier — #958)
 import _untrusted  # noqa: E402  (branch names and paths are not ours — #694/#876)
 
@@ -606,18 +607,39 @@ def _json_cmd(argv: list, timeout: int = 30):
         return None, f"{' '.join(argv[:3])} returned unparseable JSON"
 
 
-def _git(args: list, timeout: int = 15):
+#: This board's own budget for one git call, when `SUPERTOOL_GIT_TIMEOUT` does
+#: not name another. Kept at the 15 this file has always used rather than
+#: dropped to `_git_run`'s module default of 10: every call here is a courtesy
+#: read on the render path and nothing measured 10 as enough for `ls-remote`,
+#: which reaches the network.
+_GIT_TIMEOUT_DEFAULT = 15
+
+
+def _git(args: list, timeout: int | None = None):
     """`(stdout, error)` for a read-only git command.
 
-    `--no-optional-locks` precedes the subcommand -- a git global flag (#1945,
-    the same mechanism as #1944). This function's own contract already says
-    "read-only", so the flag matches what it claims: git skips the index
-    writeback rather than taking `.git/index.lock`, and a call killed by its
-    own timeout below leaves nothing behind.
+    The invocation itself is `_git_run._git` (#2447) -- the one chokepoint --
+    so this file no longer builds a git argv, no longer chooses a spawn shape,
+    and gets `--no-optional-locks` (#1944/#1945), the `_stop()` SIGTERM grace
+    (#2033), `_with_lock_retry` (#2034) and `SUPERTOOL_GIT_TIMEOUT` (#650)
+    without having to carry any of them. It carried the flag alone and none of
+    the other three until then, because it was a private wrapper over a bare
+    `subprocess.run`.
+
+    What is left here is the rendering: this board wants `(stdout, error)`,
+    with `error` non-empty for anything that did not answer, because a section
+    that could not be fetched must not print like an empty one. That is this
+    file's own contract and not the chokepoint's.
+
+    `TimeoutExpired` no longer reaches this function -- `_git_run` folds it to
+    `TIMEOUT_RC` with `timed out after Ns` on stderr, which the `returncode`
+    branch below already renders as an error. The `except` is kept for the one
+    thing that still escapes: `git` missing from PATH raises from `Popen`.
     """
+    budget = _git_run.git_timeout(_GIT_TIMEOUT_DEFAULT) if timeout is None else timeout
     try:
-        res = _run(["git", "--no-optional-locks"] + args, timeout=timeout)
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+        res = _git_run._git(args, timeout=budget)
+    except (FileNotFoundError, OSError) as exc:
         return "", f"git {' '.join(args[:2])}: {exc}"
     if res.returncode != 0:
         return "", (f"git {' '.join(args[:2])} exited {res.returncode}: "

@@ -8,7 +8,7 @@ so a U+2028 survives *inside* a relayed line and everything the reader anchors
 at column 0 becomes the writer's to choose.
 
 **The fix is at the seam, not at the sites.** Seven sites were named and the
-sweep below finds 144 sites in 31 files, which is what a per-site fix earns:
+sweep below finds 144 sites in 32 files, which is what a per-site fix earns:
 the same defect re-filed once per call. So
 
 * `_git_common._first_error_line` flattens what it returns. Every caller —
@@ -205,8 +205,10 @@ def test_a_tab_survives_the_commit_relay() -> None:
 # grows quietly — which is the failure mode of the thing it would be guarding".
 #
 # **So this is not a zero-assertion, and pretending otherwise is what would
-# make it useless.** Measured on this branch: 144 candidate sites in 31 files
-# across `presets/git`, `presets/github` and `presets/gitlab`. Not all are
+# make it useless.** Measured on this branch: 144 candidate sites in 32 files
+# across `presets/git`, `presets/github`, `presets/gitlab` and the one file
+# named on its own, `presets/_git_run.py` (#2447 -- the site count did not
+# move, two of them just live one directory up now). Not all are
 # defects — `push._local_head` returns `r.stdout.strip()`, and that is a SHA —
 # and closing them is four lanes of work this PR is not.
 #
@@ -458,7 +460,39 @@ NOT_TEXT = frozenset({"loads", "int", "float", "len", "bool",
                       "says_not_found", "says_forbidden",
                       "_is_graphql_transport_failure", "_known_to_git"})
 
-_SCANNED = ("presets/github", "presets/gitlab", "presets/git")
+#: What the sweep walks. Three preset directories, plus one FILE.
+#:
+#: `presets/_git_run.py` is named on its own because #2447 moved the git
+#: invocation chokepoint out of `presets/git/_git_common.py` to the `presets/`
+#: root, where `presets/dashboard/` and `presets/github/` can reach it without
+#: reaching into another preset's directory. Two of the seven sites this census
+#: counted in `_git_common.py` -- `_git_verbatim`'s two `done.std*.decode(...)`,
+#: the transport sites the comment on that entry below argues at length for
+#: keeping visible -- went with it.
+#:
+#: They were still there, doing exactly what they did before, and this sweep
+#: stopped being able to see them. The ratchet duly reported 142 measured
+#: against 144 published and told the reader that "sites were fixed" -- an
+#: absence produced by the tool, read as an absence in the world, which is this
+#: repository's most-filed defect and would have been recorded here as progress.
+#:
+#: Adding the file rather than adding `"presets"` as a fourth directory: the
+#: latter would re-walk the three below it and double every count.
+_SCANNED = ("presets/github", "presets/gitlab", "presets/git",
+            "presets/_git_run.py")
+
+
+def _scanned_paths() -> list:
+    """Every `.py` file `_SCANNED` names, whether the entry is a directory or a
+    file. One function so the two sweeps below cannot drift on scope."""
+    paths = []
+    for entry in _SCANNED:
+        target = _ROOT / entry
+        if target.is_dir():
+            paths.extend(sorted(target.rglob("*.py")))
+        else:
+            paths.append(target)
+    return paths
 
 #: file -> how many child-stream relays reach a sink unmarked. May only shrink.
 CENSUS = {
@@ -482,7 +516,20 @@ CENSUS = {
     # calls read `.stdout`/`.stderr` off a NAME, the syntactic shape this
     # scanner recognises regardless of taint -- same two sites, same seven,
     # nothing reconciled down.
-    "presets/git/_git_common.py": 7,
+    #
+    # 7 -> 5, #2447: the two sites the paragraph above argues for keeping
+    # visible MOVED, with the whole git invocation chokepoint, to
+    # `presets/_git_run.py` (entry below). Not fixed, not fewer -- the same two
+    # `done.std*.decode(...)` calls, the same reason for existing, five lines
+    # further into a different file. The ratchet is allowed to shrink and this
+    # is the one shape where a shrink would have been a lie, so the split is
+    # written down rather than the smaller number: 5 + 2 is the 144 this file
+    # published before the move and publishes after it.
+    "presets/git/_git_common.py": 5,
+    # +2, #2447: `_git_verbatim_attempt`'s two transport decodes, arriving from
+    # `_git_common.py` above. See the paragraph on that entry for why they are
+    # counted rather than closed -- nothing about them changed here.
+    "presets/_git_run.py": 2,
     "presets/git/blame.py": 2,
     # 13 -> 10, #1918: not a MARKS site at all — the per-value rewrite of
     # `_unmarked` replaced `_streams_in`'s blind whole-subtree walk with one
@@ -925,11 +972,10 @@ def unresolved_escapes(path: Path) -> int:
 
 def _measure() -> dict:
     counts = {}
-    for directory in _SCANNED:
-        for path in sorted((_ROOT / directory).rglob("*.py")):
-            n = len(raw_child_stream_sinks(path))
-            if n:
-                counts[f"{directory}/{path.name}"] = n
+    for path in _scanned_paths():
+        n = len(raw_child_stream_sinks(path))
+        if n:
+            counts[path.relative_to(_ROOT).as_posix()] = n
     return counts
 
 
@@ -1135,9 +1181,7 @@ def test_a_tuple_target_does_not_launder_the_escape(tmp_path: Path) -> None:
 
 def test_the_disclosed_escape_count_is_the_measured_one() -> None:
     """Exact in both directions: narrowing the scan lowers it and fails."""
-    got = sum(unresolved_escapes(p)
-              for d in _SCANNED
-              for p in sorted((_ROOT / d).rglob("*.py")))
+    got = sum(unresolved_escapes(p) for p in _scanned_paths())
     assert got == UNRESOLVED, (
         "the number of child-stream values that flow into a call this scan "
         "does not model has changed. It is not a defect count - it is the "
