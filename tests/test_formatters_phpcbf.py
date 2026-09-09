@@ -223,3 +223,72 @@ def test_phpcbf_bin_shlex_quoted_stub_still_works(tmp_path: Path) -> None:
     assert r.returncode == 0
     data = json.loads(r.stdout.strip())
     assert_ok(data)
+
+
+def test_reformat_touches_unrelated_lines_reports_range_via_stub(tmp_path: Path) -> None:
+    """#2458: phpcbf shares ruff-format's pre-#2405 gap -- a stub that
+    rewrites the whole file (re-indenting a block) must report the
+    before-file span it actually touched, the same as ruff-format does.
+    """
+    f = tmp_path / "x.php"
+    before_text = (
+        "<?php\n"
+        "function f($x) {\n"
+        "  if ($x > 0) {\n"
+        "      return $x;\n"
+        "  }\n"
+        "  return null;\n"
+        "}\n"
+    )
+    after_text = (
+        "<?php\n"
+        "function f($x)\n"
+        "{\n"
+        "    if ($x > 0) {\n"
+        "        return $x;\n"
+        "    }\n"
+        "    return null;\n"
+        "}\n"
+    )
+    f.write_text(before_text)
+
+    body = (
+        "import sys, pathlib\n"
+        f"pathlib.Path(r'{f.as_posix()}').write_text({after_text!r})\n"
+        "sys.exit(1)\n"
+    )
+    bin_cmd = _python_stub(tmp_path, "stub_reindent", body)
+    env = {**os.environ, "PHPCBF_BIN": bin_cmd}
+    r = subprocess.run(
+        [sys.executable, str(ADAPTER), str(f)],
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 0
+    data = json.loads(r.stdout.strip())
+    assert_ok(data)
+    metrics = data["metrics"]
+    assert metrics["lines_added"] > 0 and metrics["lines_removed"] > 0
+    # Before-file lines 2-6 are all re-indented/rewritten.
+    assert metrics["first_changed_line"] == 2, metrics
+    assert metrics["last_changed_line"] == 6, metrics
+
+
+def test_noop_reports_no_touched_line_range(tmp_path: Path) -> None:
+    """MUST FIRE control for the test above: when nothing changed, the new
+    fields must be absent/None, never a stale or fabricated range.
+    """
+    f = tmp_path / "clean.php"
+    f.write_text("<?php\n$x = 1;\n")
+    bin_cmd = _python_stub(tmp_path, "stub_exit0", "import sys; sys.exit(0)\n")
+    env = {**os.environ, "PHPCBF_BIN": bin_cmd}
+    r = subprocess.run(
+        [sys.executable, str(ADAPTER), str(f)],
+        capture_output=True, text=True, timeout=10, env=env, encoding="utf-8", errors="replace",
+    )
+    assert r.returncode == 0
+    data = json.loads(r.stdout.strip())
+    assert_ok(data)
+    assert data["metrics"]["lines_added"] == 0
+    assert data["metrics"]["lines_removed"] == 0
+    assert data["metrics"].get("first_changed_line") is None
+    assert data["metrics"].get("last_changed_line") is None

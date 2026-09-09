@@ -320,6 +320,25 @@ consumes, not TOML's — and for `.md`, `.txt`, `.rst`, `.adoc` targets it point
 other way, because prose rarely wants the pair as written. Mixed extensions, or one
 this repo has no opinion about, get no hint at all rather than a guess.
 
+**One concrete `.py` shape earns its own callout: a doubled `\\n` that is
+correct precisely because the file being written is itself generating
+another file's source** ([#2459](https://github.com/Digital-Process-Tools/claude-supertool/issues/2459)).
+A test fixture that builds a stub script as a string, then has that stub
+write a THIRD file, needs one level of backslash per file boundary crossed
+— `'<?php\\n$x = 1;\\n'` in the outer `.py` source is not a single escaped
+newline, it is instructions for a Python parser to produce the two literal
+characters `\` and `n`, so that when the resulting string is itself written
+out as another script's source, *that* script's own parser sees an ordinary
+single-backslash `\n` and turns it into a real newline one file later.
+Existing test files already carry this pattern legitimately (stub-generating
+fixtures across `tests/test_formatters_*.py`), so **rewriting or repasting
+one of them whole, not just adding to it, reruns the scan over content that
+was already correct and already committed**, and it refuses every one of
+those pre-existing occurrences the same as a genuine mistake — there is
+nothing to "fix" in the source before resending. `literal_backslashes = true`
+at the top of the payload is correct on the first try for this shape, not
+something to reach for only after the refusal lists them.
+
 **The odd-run exemption above ("Odd runs — one, three, five — still write unrefused") is what a fixture-writing test hits, in
 practice.** Building JSONL fixture content one record at a time as a Python string
 literal, `'{"type": "x"}\n' * 51`, say, is exactly that case: one un-doubled `\n`
