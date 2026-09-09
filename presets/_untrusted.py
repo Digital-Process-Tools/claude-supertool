@@ -49,15 +49,26 @@ to be remembered is the refname: `gh-pr:N:status` printed a fork PR's head
 branch raw, so a U+2028 in it forged a green check tally above the real red one
 (#965), and `tests/test_forged_branch_line_965.py` now walks the AST of
 `presets/github`, `presets/gitlab` and `presets/git` and fails when a refname
-field reaches `print()`, `sys.stdout.write()`, or a `return` built the same
-way, without passing through here. That scanner answers for the six refname
-keys only, and only for reads it can see happen and be displayed inside the
-same function -- a value passed to a different function that prints it
-(#976: `J_via_helper`) or a dict key read out of a variable rather than typed
-as a literal (#976: `L_dict_get_var_key`) are still outside it, by design:
-either would need tracking a value's identity past this function's own local
-names, which is the general taint tracker this scanner has deliberately
-never tried to be. The paragraph above is still the rule for everything
+field reaches `print()`, `sys.stdout.write()`, or a `return` of an f-string
+or a name already tainted the same way, without passing through here. That
+scanner answers for the six refname keys only, and it draws its widest net
+around `print`/`sys.stdout.write` deliberately narrower around `return`:
+concatenation, `%`-formatting and `.format()` are scanned for a direct read
+wherever they sit inside a print/write argument, but NOT inside a `return`
+value, because a function can legitimately `return` an unflattened
+structured value for its OWN caller to flatten
+(`presets/github/prs.py::_branches` returns `_board.branch_pair(...)` raw
+for `_board.render_row` to flatten every cell of, one call away) -- scanning
+`return` as broadly as a print sink turned that pattern into a false
+positive (#976, caught in review). A `return` built the same three shapes
+(concat/`%`/`.format`) is consequently still outside this scanner too,
+alongside the two `#976` names explicitly: a value passed to a different
+function that prints it (`J_via_helper`) and a dict key read out of a
+variable rather than typed as a literal (`L_dict_get_var_key`). All three
+are the same shape of gap -- tracking a value's identity past what this
+function can see happen in one direct step -- which is the general taint
+tracker this scanner has deliberately never tried to be. The paragraph
+above is still the rule for everything
 else. Everything else known is routed: the read ops
 fence bodies and comments; `_board.render_row` flattens every cell it is
 handed, so no board row can become two; `transport.emit_event` flattens every

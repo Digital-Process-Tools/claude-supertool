@@ -176,3 +176,47 @@ def test_j_and_l_remain_documented_boundaries(tmp_path: Path) -> None:
             f"constant-propagation territory; update this test AND the "
             f"scanner's own boundary docs deliberately, do not just widen "
             f"this assertion")
+
+
+# ---------------------------------------------------------------------------
+# A third boundary the review pass found: the same C/D/E/F shapes, but
+# through `return` instead of a call sink -- not counted in NOW_CAUGHT
+# above (whose fixtures are all print()-based, matching #976's own table),
+# and not named until this review pass pointed out it reads as an
+# oversight rather than a decision.
+# ---------------------------------------------------------------------------
+
+RETURN_SHAPES_STILL_MISSED = {
+    "C_concat_via_return": (
+        "def f(d):\n"
+        "    return 'branch: ' + d.get('headRefName')\n"),
+    "E_percent_format_via_return": (
+        "def f(d):\n"
+        "    return 'branch: %s' % d.get('headRefName')\n"),
+    "F_str_format_via_return": (
+        "def f(d):\n"
+        "    return 'branch: {}'.format(d.get('headRefName'))\n"),
+}
+
+
+def test_return_of_a_concat_or_format_is_a_documented_boundary_too(
+        tmp_path: Path) -> None:
+    """`_scan_scope` deliberately restricts the whole-argument blanket scan
+    (the mechanism that catches C/D/E/F for print()) to CALL sinks, and
+    keeps `return` on the narrower FormattedValue-scoped check -- because a
+    function can legitimately `return` an unflattened structured value for
+    its OWN caller to flatten (`presets/github/prs.py::_branches` returns
+    `_board.branch_pair(...)` raw for `_board.render_row` to flatten one
+    call away; scanning `return` as broadly as `print()` turned that
+    pattern into a false positive). One consequence of that restriction:
+    the SAME three non-f-string shapes that are caught through print() are
+    still missed through return. Found in review (oss:auditor spawn) as an
+    undocumented gap rather than a decision -- pinned here, alongside J/L,
+    so it reads as the latter from now on."""
+    scanner = _load_scanner()
+    for name, source in RETURN_SHAPES_STILL_MISSED.items():
+        assert not _caught(scanner, tmp_path, name, source), (
+            f"{name} is now caught through `return` -- if this is deliberate, "
+            f"update this test, `presets/_untrusted.py`'s boundary paragraph, "
+            f"and `_scan_scope`'s own comment on why `return` is scanned "
+            f"narrower than a call sink")
