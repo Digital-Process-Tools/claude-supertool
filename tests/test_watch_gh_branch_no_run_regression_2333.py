@@ -37,14 +37,20 @@ def _ctx(ref="main"):
 
 def test_no_run_on_a_sha_that_already_went_green_is_read_as_unknown() -> None:
     """The must-not-fire half: same SHA, confirmed green, then a listing
-    claiming zero runs -- must not render as `no_run`."""
+    claiming zero runs -- must not render as `no_run`. #2436 raised the
+    guard's own grace window from 1 to 2 consecutive empty reads (an
+    isolated, self-recovering blip must not reach the channel at all), so
+    reaching `unknown` here now takes a second consecutive empty read, not
+    the first -- the first is asserted separately by #2436's own test file
+    to fire nothing."""
     state = {"branch_state": poller.GREEN, "sha": "e1a6a4ac", "ref": "main",
              "lookup": poller.LOOKUP_OK}
-    with mock.patch.object(
-            poller, "_snapshot",
-            return_value=_snap(poller.NO_RUN,
-                               "NO RUN — zero workflow runs on e1a6a4a",
-                               sha="e1a6a4ac")):
+    empty = _snap(poller.NO_RUN, "NO RUN — zero workflow runs on e1a6a4a",
+                  sha="e1a6a4ac")
+    with mock.patch.object(poller, "_snapshot", return_value=empty):
+        events, state = poller.poll(state, _ctx())
+    assert events == [], events
+    with mock.patch.object(poller, "_snapshot", return_value=empty):
         events, new_state = poller.poll(state, _ctx())
     assert len(events) == 1, events
     assert events[0]["event"] == "unknown", events[0]["event"]
@@ -54,14 +60,16 @@ def test_no_run_on_a_sha_that_already_went_green_is_read_as_unknown() -> None:
 
 def test_no_run_on_a_sha_that_already_went_not_green_is_also_read_as_unknown() -> None:
     """The same guard applies coming from NOT_GREEN, not only from GREEN --
-    either one means runs were confirmed to exist on this SHA."""
+    either one means runs were confirmed to exist on this SHA. #2436: two
+    consecutive empty reads, not one, per the grace window above."""
     state = {"branch_state": poller.NOT_GREEN, "sha": "bbbb", "ref": "main",
              "lookup": poller.LOOKUP_OK}
-    with mock.patch.object(
-            poller, "_snapshot",
-            return_value=_snap(poller.NO_RUN,
-                               "NO RUN — zero workflow runs on bbbbbbb",
-                               sha="bbbb")):
+    empty = _snap(poller.NO_RUN, "NO RUN — zero workflow runs on bbbbbbb",
+                  sha="bbbb")
+    with mock.patch.object(poller, "_snapshot", return_value=empty):
+        events, state = poller.poll(state, _ctx())
+    assert events == [], events
+    with mock.patch.object(poller, "_snapshot", return_value=empty):
         events, new_state = poller.poll(state, _ctx())
     assert len(events) == 1, events
     assert events[0]["event"] == "unknown", events[0]["event"]
@@ -134,32 +142,36 @@ def test_the_uncertain_state_survives_a_second_no_run_poll_without_reflaring() -
     assert events == [], events
 
 
-def test_a_second_consecutive_no_run_on_the_same_sha_surfaces_for_real() -> None:
-    """The guard's suppression is single-shot, not permanent (review finding,
-    #2333): a real, sustained emptiness on a SHA that once had confirmed runs
-    -- e.g. GitHub's own run-retention purging history off a long-quiet
-    branch -- must not be masked as `unknown` forever just because the first
-    empty reading was. One suppressed reading is a plausible transient; a
-    second one right behind it, still on the same SHA, is trusted and fires
-    the real `no_run`."""
-    # First poll: guard fires, downgrading to UNKNOWN and recording the
-    # streak so the *next* same-sha empty reading is not swallowed too.
+def test_a_third_consecutive_no_run_on_the_same_sha_surfaces_for_real() -> None:
+    """The guard's suppression is bounded, not permanent (review finding,
+    #2333; grace window widened by #2436): a real, sustained emptiness on a
+    SHA that once had confirmed runs -- e.g. GitHub's own run-retention
+    purging history off a long-quiet branch -- must not be masked as
+    `unknown` forever just because the reads at the start of the run were.
+    #2436 raised the grace window in front of the first `unknown` from 1 to
+    2 (an isolated, self-recovering blip must not reach the channel at
+    all), which pushes this promotion out by the same one poll: the FIRST
+    empty read is now silent, the SECOND surfaces `unknown`, and only a
+    THIRD consecutive empty read on the same SHA is trusted as real and
+    fires `no_run`."""
     state = {"branch_state": poller.GREEN, "sha": "e1a6a4ac", "ref": "main",
              "lookup": poller.LOOKUP_OK}
-    with mock.patch.object(
-            poller, "_snapshot",
-            return_value=_snap(poller.NO_RUN,
-                               "NO RUN — zero workflow runs on e1a6a4a",
-                               sha="e1a6a4ac")):
+    empty = _snap(poller.NO_RUN, "NO RUN — zero workflow runs on e1a6a4a",
+                  sha="e1a6a4ac")
+
+    # First poll: absorbed silently (#2436's grace window).
+    with mock.patch.object(poller, "_snapshot", return_value=empty):
+        events, state = poller.poll(state, _ctx())
+    assert events == [], events
+
+    # Second consecutive poll, same SHA, still empty: the grace window is
+    # exhausted, so this one surfaces `unknown` for the first time.
+    with mock.patch.object(poller, "_snapshot", return_value=empty):
         events, state = poller.poll(state, _ctx())
     assert events[0]["event"] == "unknown", events
 
-    # Second consecutive poll, same SHA, still empty: this one is real.
-    with mock.patch.object(
-            poller, "_snapshot",
-            return_value=_snap(poller.NO_RUN,
-                               "NO RUN — zero workflow runs on e1a6a4a",
-                               sha="e1a6a4ac")):
+    # Third consecutive poll, same SHA, still empty: this one is real.
+    with mock.patch.object(poller, "_snapshot", return_value=empty):
         events, state = poller.poll(state, _ctx())
     assert len(events) == 1, events
     assert events[0]["event"] == "no_run", events[0]["event"]
