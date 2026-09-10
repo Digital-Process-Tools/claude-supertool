@@ -2368,6 +2368,21 @@ path for someone who never runs `oss-workspace`, so removing it would drop
 channel support for them entirely rather than resolving a collision specific
 to this checkout's own development workflow.
 
+**The disable above stops the collision, but not a separate, static warning
+about the same declaration** ([#2475](https://github.com/Digital-Process-Tools/claude-supertool/issues/2475)).
+`disabledMcpjsonServers` keeps the entry from ever *starting* at project
+scope; it does not stop `claude mcp list` from validating the declared
+substitution and reporting `Missing environment variables:
+CLAUDE_PLUGIN_ROOT` for every contributor who opens a session in this
+checkout, since `${CLAUDE_PLUGIN_ROOT}` is only ever set by the plugin
+harness. The script path now reads `${CLAUDE_PLUGIN_ROOT:-.}/notifiers/
+claude-channel/start.mjs`, using Claude Code's own `${VAR:-default}`
+expansion. The fallback is not just cosmetic: a project-scope MCP server is
+spawned with cwd set to the active project, which at project scope *is* this
+repo's own root, so `.` resolves to the right file if the entry were ever
+allowed to start — it just never is, because the #2221 disable above is
+still in force.
+
 **Every `consumer config` line now names whose file it read
 ([#2184](https://github.com/Digital-Process-Tools/claude-supertool/issues/2184)).**
 `_mcp_roots()` checks two locations for a `.mcp.json` declaring the consumer:
