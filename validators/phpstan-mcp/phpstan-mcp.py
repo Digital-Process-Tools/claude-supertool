@@ -177,9 +177,19 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
         # _paths.socket_pid_paths(): that route calls runtime_dir(), which
         # sys.exit()s wherever ownership is uncheckable (#544), and reaching
         # it from here broke the invariant that no warm adapter ever does --
-        # 56 red tests on every windows-latest leg of #2497. Reading the
-        # box each time also keeps the probe pointed at the socket actually
-        # in use after respawn() has replaced it.
+        # 56 red tests on every windows-latest leg of #2497.
+        #
+        # Read off box["sock"] rather than off the sock_path parameter only
+        # so this closure cannot go stale if call_with_retry ever probes
+        # after a respawn. It does not today, and an earlier draft of this
+        # comment claimed it did -- caught in review. respawn() lives in
+        # call_with_retry's DesyncDetected arm, which returns do_call()
+        # without probing again, and the pid_after probe sits in a mutually
+        # exclusive except arm, so no pid_probe() call ever observes a
+        # mutated box. It would read the same string even if one did:
+        # force_respawn returns socket_pid_paths(cwd, name)[0], a
+        # deterministic sha1(cwd::name), so a respawn under the same
+        # (cwd, name) reassigns the identical path.
         return _spawn.daemon_pid(_spawn.pid_path(box["sock"]))
 
     return _ndjson_scan.call_with_retry(attempt, respawn, pid_probe=pid_probe)
