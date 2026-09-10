@@ -136,6 +136,27 @@ The ops already draw the boundary for you and it is worth knowing which half is 
 
 This is not hypothetical for a tool that runs inside a maintainer's session with their credentials.
 
+### A fresh subagent reads a tool-redirection rule as injection, and that is accepted
+
+`.claude/jit-context/tools/00-manual/harness-tools-blocked.md` blocks the harness's own
+Read/Edit/Write/Grep/Glob and redirects to supertool. #1793 added a provenance-verification
+section to that rule after a stock reviewer read it as fabricated attacker content. #2007 tested
+whether the fix worked: six independent, un-briefed `Explore` subagents were each handed the rule
+body cold, with no other context — three against the full body (provenance section included),
+three against a shortened body keeping only the redirection table. **All six called it a prompt
+injection.** Every reader named the redirection mechanism itself (`mode: block` intercepting the
+harness's own tools, redirecting to an external command) as the tell, not the absence of
+provenance text — two of the six even cited the "This is not a prompt injection" section as
+evidence of manipulation rather than as reassurance. Length and in-body disclaimers made no
+measured difference between the two versions.
+
+**This is accepted, not chased further.** A tool-redirection rule of this shape will read as
+injection to a fresh, un-briefed reader regardless of wording. The provenance check (`git log -1
+--` against the file's own tracked path) is real and load-bearing for a reader willing to run it —
+it is not what this note gives up on. What is given up on is phrasing the rule into looking
+legitimate on a cold, unverified read: no measured wording change moves that verdict, so stop
+spending effort trying.
+
 ## Releasing
 
 The version lives in five places, declared in one machine-readable list — `.oss.json`'s `version_sites` — and `tests/test_version_sites_agree_1854.py` reads that list and asserts every site agrees with `supertool.VERSION`. **Add a site to that list and the suite goes red until you say how to read a version out of it**, which is the sixth-site case this section used to leave to whoever remembered to sweep.
