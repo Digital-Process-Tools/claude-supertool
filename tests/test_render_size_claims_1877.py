@@ -727,3 +727,43 @@ def test_the_ops_pattern_for_meta_md_does_not_catch_the_dated_or_borrowed_figure
     assert len(set(narrow)) == 1, (
         "the anchored pattern for meta.md's `ops` claim now finds more than "
         "one figure: %r" % narrow)
+
+
+def test_a_changed_op_description_moves_the_derived_size_without_touching_this_file(
+        shipped_config) -> None:
+    """#2465's own regression: any op's description text moving anywhere in
+    the tool changes `ops:full`/`ops-compact`'s rendered size, and neither
+    this module nor `test_meta_doc_figures_1783.py` needs an edit to notice
+    -- `SITES`, `RENDERS` and `_grade` all read the live render through
+    `supertool.op_ops`, never a value baked into the test.
+
+    #2465 catalogued four CI-only breaks (#2415, #1822, #1955, and a fourth
+    on `test_preset_twin_splitlines_register_1119.py`) where a lane changed
+    one op's description and broke this file's sibling doc-figure guards.
+    In every one of them the guard was already correct -- it is what caught
+    the drift -- what had gone stale was the documentation *prose*
+    (`docs/operations/index.md`, `docs/contributing.md`,
+    `hooks/session-start.sh`), never this test's arithmetic. This test
+    manufactures that exact scenario on a private copy of the config
+    (`shipped_config` deep-copies before installing it) and shows the
+    failure is the honest one: the derived size actually moves by exactly
+    what was added, and `_grade` reports the new, correct figure against a
+    stale doc -- no edit to `SITES`, `RENDERS` or `TOLERANCE_KB` needed to
+    see either half. If a future refactor ever bakes one of these renders
+    back into a cached or literal value, this goes red on its own, with the
+    real docs left untouched.
+    """
+    marker = "Q" * 500
+    before = graded_bytes(RENDERS["ops:full"]())
+    shipped_config["ops"]["gh-issue-create"]["description"] = (
+        shipped_config["ops"]["gh-issue-create"].get("description", "") + marker)
+
+    after = graded_bytes(RENDERS["ops:full"]())
+    assert after - before == len(marker), (
+        "changing one op's description did not move ops:full's derived "
+        "size by the expected amount: %s -> %s" % (before, after))
+
+    claim = next(c for c in SITES
+                 if c.path == "docs/contributing.md" and c.subject == "ops:full")
+    with pytest.raises(AssertionError, match="renders"):
+        _grade(claim, _read(claim.path))
