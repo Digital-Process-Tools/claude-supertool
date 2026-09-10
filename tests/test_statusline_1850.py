@@ -261,6 +261,22 @@ def test_int_env_accepts_a_float_shaped_json_number(monkeypatch):
     assert statusline._int_env("SUPERTOOL_STALE_SECS", 999) == 300
 
 
+def test_int_env_falls_back_rather_than_crashing_on_an_infinite_value(monkeypatch):
+    """Second-review finding: `int(float("inf"))` raises `OverflowError`, not
+    `ValueError` -- the exception the float-tolerance fix above catches. Left
+    uncaught this propagates straight out of `main()`, which sits ABOVE
+    `render()`'s own per-segment isolation, so a single malformed config
+    value would take the whole bar down instead of falling back to the
+    default -- exactly the failure mode #1850's per-segment isolation design
+    exists to prevent, one call site earlier than that isolation reaches."""
+    monkeypatch.setenv("SUPERTOOL_STALE_SECS", "inf")
+    assert statusline._int_env("SUPERTOOL_STALE_SECS", 999) == 999
+    monkeypatch.setenv("SUPERTOOL_STALE_SECS", "-inf")
+    assert statusline._int_env("SUPERTOOL_STALE_SECS", 999) == 999
+    monkeypatch.setenv("SUPERTOOL_STALE_SECS", "nan")
+    assert statusline._int_env("SUPERTOOL_STALE_SECS", 999) == 999
+
+
 def test_read_stdin_json_never_blocks_on_a_tty(monkeypatch):
     class FakeTty:
         def isatty(self):

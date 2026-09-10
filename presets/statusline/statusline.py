@@ -275,13 +275,21 @@ def _int_env(name: str, default: int) -> int:
     -- `"stale_secs": 300.0` is legal JSON and exports the literal string
     `"300.0"`, which a bare `int(...)` raises on and silently drops to the
     default with no warning anywhere. `int(float(raw))` accepts both shapes;
-    a genuinely non-numeric value still falls back to `default`."""
+    a genuinely non-numeric value still falls back to `default`.
+
+    `OverflowError` is caught alongside `ValueError`/`TypeError` (second
+    self-review finding, #1850): `int(float("inf"))` raises that, not
+    `ValueError`, and this call sits in `main()` ABOVE `render()`'s own
+    per-segment isolation -- an exception here would abort the whole render
+    instead of falling back, which is strictly worse than the bug this
+    function exists to fix.
+    """
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
     try:
         return int(float(raw))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
