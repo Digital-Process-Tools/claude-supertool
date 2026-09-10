@@ -254,8 +254,10 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # (`verdict()` routes to `no_run_verdict` before this module ever sees
     # a state at all when it is empty) -- so GREEN, either NOT_GREEN
     # sub-state and UNKNOWN all mean "some earlier poll saw at least one run
-    # on this sha", and only NO_RUN/`""` mean it did not (or nothing has
-    # polled yet). Reading this off `prev_state` rather than a separate
+    # on this sha", and only NO_RUN/NO_RUN_STALE/`""` mean it did not (or
+    # nothing has polled yet) -- NO_RUN_STALE (#2362) is still the same
+    # zero-runs reading, only escalated by age, so it belongs on this side
+    # of the split too. Reading this off `prev_state` rather than a separate
     # stored flag means an UNKNOWN produced by the guard below keeps the
     # confirmation live for the next poll for free -- there is nothing extra
     # to carry forward. The bare `NOT_GREEN` stays in this tuple too: a state

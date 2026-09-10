@@ -820,7 +820,7 @@ With nothing configured the last line reads `SUPERTOOL_WATCH_SOURCES_PATH is not
 | `github-issue-feed` | `gh api repos/{owner}/{repo}/issues` for a whole scope | `issue_opened`, `issue_reopened`, `issue_entered_feed`, `issue_labeled`, `issue_unlabeled`, `issue_assigned`, `issue_unassigned`, `issue_comment_added`, `issue_closed`, `issue_left_feed`, `issues_unreachable` |
 | `gl-runners` | `glab api projects/:id/runners` + the pending/running job queue | `runner_silent`, `runner_liveness_unknown`, `runner_recovered`, `runner_starved`, `queue_liveness_unknown`, `queue_cleared`, `runner_paused`, `runner_added`, `runner_vanished`, `runner_failing_systemically`, `runner_recovered_systemically` |
 | `gh-run` | `gh run view <id> --json status,conclusion,workflowName,url,...` | `run_succeeded`, `run_failed`, `run_cancelled`, `run_action_required`, `run_started`, `run_inconclusive`, `run_unreachable` |
-| `gh-branch` | the same composition `gh-branch:<ref>` and `radar`'s default-branch member row already use — `gh api commits/<ref>` then `gh run list --branch <ref>` | `went_green`, `went_not_green`, `went_failed`, `no_run`, `unknown`, `branch_unreachable` |
+| `gh-branch` | the same composition `gh-branch:<ref>` and `radar`'s default-branch member row already use — `gh api commits/<ref>` then `gh run list --branch <ref>` | `went_green`, `went_not_green`, `went_failed`, `no_run`, `no_run_stale`, `unknown`, `branch_unreachable` |
 | `slack` | `conversations.history` for a bare channel id, `conversations.replies` for `<channel>~<thread-ts>` | `slack_message`, `slack_unreachable` |
 | `devto-engagement` | `GET /articles/me/published` then `GET /comments?a_id=<id>` for each ([#526](https://github.com/Digital-Process-Tools/claude-supertool/issues/526)) | `comment_received`, `reply_received`, `reaction_received`, `engagement_unreachable` |
 | `bluesky-engagement` | `app.bsky.notification.listNotifications` ([#526](https://github.com/Digital-Process-Tools/claude-supertool/issues/526)) | `comment_received`, `reply_received`, `reaction_received`, `engagement_unreachable` |
@@ -931,7 +931,7 @@ today" the way `radar`'s member row does, so naming it explicitly means it
 keeps watching the ref you meant even if the repository's default branch is
 renamed later.
 
-The event vocabulary is `gh-branch`'s own four states, unfolded rather than
+The event vocabulary is `gh-branch`'s own states, unfolded rather than
 collapsed into a green/red pair: `went_green`, `went_not_green` (nothing has
 concluded yet on the head commit -- not a failure, just not cleared), `no_run`
 (zero workflow runs on the head commit — never folded into red, because it is
@@ -984,6 +984,18 @@ compares `sha`, not just the coarse state, so a branch moving to a brand-new
 commit while remaining in the same category (e.g. still pending) emits too —
 a deliberate widening of emission volume, since a consumer holding the
 previous sentence had no way to learn the subject changed under it.
+
+**A sixth event, `no_run_stale`, escalates out of `no_run` by age alone**
+([#2362](https://github.com/Digital-Process-Tools/claude-supertool/issues/2362)),
+never through the streak logic above -- it fires the moment
+`branch.no_run_verdict` itself reads the head commit as older than
+`NO_RUN_STALE_SECS` (~45min), on a sha that never had confirmed runs at all,
+not on one recovering from an empty read. A raw `no_run_stale` reading still
+feeds the same #2436 direction guard as a raw `no_run` reading before it is
+trusted (`raw_is_no_run` covers both), so a sha this poller *did* confirm
+runs on that later reads old-and-empty is still absorbed/escalated through
+`unknown` first, exactly as a plain `no_run` reading would be -- age past the
+stale threshold does not bypass that guard.
 
 `is_terminal` is always `False`: a branch has no merged/closed state to stop
 watching for, unlike a PR or an MR.
