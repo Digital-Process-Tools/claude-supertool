@@ -123,7 +123,6 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
     `ndjson_scan.call_with_retry` for what that does and does not cover.
     """
     box = {"sock": sock_path}
-    pid_path = _shared_socket_pid_paths(WORKING_DIR, DAEMON_NAME)[1]
 
     def attempt() -> dict:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
@@ -177,7 +176,15 @@ def ndjson_call(sock_path: str, file_path: str) -> dict:
         # changed underneath this call is very likely collateral damage from
         # a DIFFERENT caller's force_respawn() on this same shared daemon --
         # see ndjson_scan.call_with_retry's own docstring for the mechanism.
-        return _spawn.daemon_pid(pid_path)
+        #
+        # Derived from the socket path in hand, never re-resolved through
+        # _paths.socket_pid_paths(): that route calls runtime_dir(), which
+        # sys.exit()s wherever ownership is uncheckable (#544), and reaching
+        # it from here broke the invariant that no warm adapter ever does --
+        # 56 red tests on every windows-latest leg of #2497. Reading the
+        # box each time also keeps the probe pointed at the socket actually
+        # in use after respawn() has replaced it.
+        return _spawn.daemon_pid(_spawn.pid_path(box["sock"]))
 
     return _ndjson_scan.call_with_retry(attempt, respawn, pid_probe=pid_probe)
 

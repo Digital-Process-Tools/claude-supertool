@@ -132,6 +132,50 @@ def lock_path(sock_path: str) -> str:
     return _base(sock_path) + ".lock"
 
 
+def pid_path(sock_path: str) -> str:
+    """The pidfile beside an already-resolved socket path (#2449 follow-up).
+
+    Same derivation `lock_path` has always used, for the same reason: the
+    three files are siblings sharing one `supertool-mcp-<hash>` stem inside
+    one 0700 directory, so a caller holding the socket path already holds
+    every fact needed to name the pidfile.
+
+    The point is what it does *not* do. `_paths.socket_pid_paths(cwd, name)`
+    computes the same string, but reaches it through `runtime_dir()`, which
+    creates and validates the directory and **refuses on any platform where
+    ownership cannot be checked** -- `sys.exit`, not a return value (#544).
+    `_paths` states the invariant that keeps that refusal off the warm
+    adapters: they decline for want of `AF_UNIX` first, so no warm validator
+    ever reaches it. A `pid_probe` that called `socket_pid_paths` to name a
+    file it only ever *reads* broke that invariant, and turned `ndjson_call`
+    into a `SystemExit` on Windows -- 56 failures on all four `pytest
+    (windows-latest, *)` legs of #2497, green everywhere `os.geteuid` exists.
+
+    Scope of that, stated exactly rather than dramatically: a real Windows
+    *run* never got there, because `ensure_daemon` raises `DaemonUnavailable`
+    for want of `AF_UNIX` before any socket path exists to call `ndjson_call`
+    with. What reached it were the tests, which call `ndjson_call` directly
+    against a mocked socket -- which is what a test of this function is
+    supposed to do, and the reason the #544 tripwire
+    (`test_an_adapter_without_a_transport_never_resolves_a_runtime_dir`)
+    could not see this: that one asserts about the pre-daemon path, where
+    the decline still works correctly.
+
+    The resolution was worth removing on every platform regardless. It ran
+    on **every** `ndjson_call`, since `call_with_retry` probes the pid before
+    the first attempt, and `runtime_dir()` is not a lookup: it creates the
+    directory, opens it, and validates ownership and mode. That is a syscall
+    burst per call, on the hot path of a validator whose entire purpose is
+    not paying per-call costs, to produce a string that is only ever used to
+    read a pidfile that usually does not need reading.
+
+    So: derive, do not re-resolve. Naming a sibling of a path already in
+    hand asks the filesystem nothing, which is exactly right for a probe
+    whose whole job is to read a pidfile that may not even exist.
+    """
+    return _base(sock_path) + ".pid"
+
+
 def fingerprint_path(sock_path: str) -> str:
     """Where the running daemon records the config it booted with."""
     return _base(sock_path) + ".fp"

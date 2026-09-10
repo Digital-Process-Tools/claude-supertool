@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import socket
 import sys
 from pathlib import Path
@@ -488,3 +489,97 @@ def test_ndjson_call_passes_its_own_random_initialize_id_as_own_ids(name, monkey
         "the initialize frame must no longer carry the shared literal 1"
     )
     assert calls["n"] == 1, "the foreign initialize-shaped reply must still trigger one respawn+retry"
+
+
+# ---------------------------------------------------------------------------
+# Windows regression: pid_probe must NAME the pidfile, not RESOLVE it.
+#
+# The first cut of pid_probe read `_paths.socket_pid_paths(WORKING_DIR,
+# DAEMON_NAME)[1]` eagerly at the top of `ndjson_call`. That helper reaches
+# the path through `runtime_dir()`, which creates and validates the runtime
+# directory and `sys.exit`s wherever ownership cannot be checked (#544) --
+# i.e. anywhere `os.geteuid` is absent, which is every Windows runner.
+# `_paths` states the invariant that keeps that refusal away from the warm
+# adapters (they decline for want of AF_UNIX first); resolving a path here
+# broke it, and `ndjson_call` became a SystemExit on Windows for every one
+# of these tests, including the ones that predate #2449 entirely.
+#
+# Observed, not reasoned: 56 failed / 21 passed locally with `os.geteuid`
+# deleted, matching the 56 reported on all four `pytest (windows-latest, *)`
+# legs of PR #2497 while every macOS and Linux leg was green.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _no_geteuid(monkeypatch):
+    """Windows, as far as `_paths` is concerned: `os.geteuid` does not exist.
+
+    That single attribute is what `_open_runtime_dir` branches on, so
+    deleting it reproduces the real refusal through the real code, rather
+    than asserting against a stubbed-out copy of it.
+    """
+    monkeypatch.delattr(os, "geteuid", raising=False)
+
+
+def test_the_no_geteuid_fixture_actually_disables_ownership_checking(_no_geteuid):
+    """Positive control, and the whole reason the guard below means anything.
+
+    The guard is of the form "this does NOT blow up", which also passes when
+    the fixture silently did nothing -- if some future refactor stops
+    `runtime_dir()` consulting `os.geteuid`, or the `delattr` stops taking
+    effect, the guard would go on passing while testing nothing at all. So
+    pin the loud half in the same fixture: under this exact fixture,
+    resolving a runtime dir MUST still refuse.
+    """
+    sys.path.insert(0, str(REPO / "presets" / "mcp"))
+    import _paths
+
+    with pytest.raises(SystemExit) as excinfo:
+        _paths.runtime_dir()
+    assert "cannot verify ownership" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("name", ADAPTERS)
+def test_ndjson_call_never_resolves_the_runtime_dir(name, _no_geteuid, monkeypatch):
+    """The guard: a whole `ndjson_call` exchange completes on a platform
+    where `runtime_dir()` refuses.
+
+    Paired with the positive control above, which proves the fixture is
+    live. The socket path handed in is synthetic (`/fake/sock`) exactly as
+    a real caller's is already-resolved by `ensure_daemon` upstream, so
+    nothing on this path has any business asking the filesystem where the
+    runtime directory is.
+    """
+    mod = adapter(name)
+    monkeypatch.setattr(mod.random, "randrange", lambda *a, **k: 2)
+
+    answer = json.dumps(
+        {"jsonrpc": "2.0", "id": 2, "result": {"structuredContent": {"errors": []}}}
+    ).encode() + b"\n"
+    monkeypatch.setattr(mod.socket, "socket", lambda *a, **k: _QueueSocket([answer]))
+    monkeypatch.setattr(mod._spawn, "force_respawn",
+                         lambda *a, **k: pytest.fail("no desync here -- must not respawn"))
+
+    assert mod.ndjson_call("/fake/sock", "/fake/target.php")["id"] == 2
+
+
+def test_pid_path_derivation_agrees_with_socket_pid_paths(tmp_path, monkeypatch):
+    """The derivation must not drift from the resolver it replaced.
+
+    `_spawn.pid_path` names the pidfile by string surgery on the socket
+    path; `_paths.socket_pid_paths` computes both from `(cwd, name)`. They
+    have to agree, or the probe reads a file the daemon never writes -- and
+    `daemon_pid` on a missing pidfile returns 0, so the disagreement would
+    render as "no daemon running" rather than as an error. Exactly the
+    absence-produced-by-the-tool shape this repo keeps filing.
+
+    Run where ownership IS checkable, since it needs the real resolver.
+    """
+    if not hasattr(os, "geteuid"):
+        pytest.skip("needs a platform where runtime_dir() resolves at all")
+    sys.path.insert(0, str(REPO / "presets" / "mcp"))
+    import _paths
+    import _spawn
+
+    monkeypatch.setenv("SUPERTOOL_RUNTIME_DIR", str(tmp_path / "rt"))
+    sock, pid = _paths.socket_pid_paths("/some/project", "phpstan-warm")
+    assert _spawn.pid_path(sock) == pid
