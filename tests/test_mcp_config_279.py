@@ -37,11 +37,20 @@ def test_claude_channel_uses_plugin_root_not_cwd_relative() -> None:
     script = args[-1]
     # Claude Code spawns plugin MCP servers with cwd = the active project, so a
     # "./…"-relative path resolves against the wrong dir. Must use the expanded
-    # plugin-root variable instead.
-    assert script.startswith("${CLAUDE_PLUGIN_ROOT}/"), (
+    # plugin-root variable instead. Since #2475 the variable carries a
+    # `:-.` fallback for the project-scope read of this same file, where
+    # ${CLAUDE_PLUGIN_ROOT} is undefined -- see
+    # test_mcp_json_project_scope_fallback_2475.py for why "." is the right
+    # fallback rather than a plain removal of the entry.
+    # A bare `startswith("${CLAUDE_PLUGIN_ROOT")` would also accept a mistyped
+    # name (`${CLAUDE_PLUGIN_ROOTX}`) or a missing closing brace
+    # (`${CLAUDE_PLUGIN_ROOT/notifiers/...`) -- self-review finding on #2475's
+    # own diff. Anchor the variable's closing `}` explicitly instead, with an
+    # optional `:-default` between the name and the brace.
+    assert re.match(r"^\$\{CLAUDE_PLUGIN_ROOT(:-[^}]*)?\}/", script), (
         f"claude-channel script path must be plugin-root-relative, got: {script!r}"
     )
-    assert not script.startswith("./"), "path must not be cwd-relative"
+    assert not script.startswith("./"), "path must not be bare cwd-relative"
     # start.mjs since #2486, not channel.ts: the consumer imports the SDK at
     # module load, so on a fresh plugin install -- where node_modules is
     # gitignored and nothing runs install.sh -- naming channel.ts here meant
