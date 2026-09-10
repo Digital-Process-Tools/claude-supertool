@@ -113,15 +113,21 @@ def test_request_id_is_not_the_fixed_literal_2(name, monkeypatch):
 
 
 @pytest.mark.parametrize("name", ADAPTERS)
-def test_request_id_range_excludes_the_initialize_frame_id(name, monkeypatch):
-    """`ndjson_call`'s first frame on the connection is always `id: 1`
-    (`initialize`). If the random `tools/call` id ever landed on `1` too,
-    both requests would share an id, both replies would carry `id: 1`, and
-    `find_response` -- which returns the *first* matching frame -- would
-    hand back the `initialize` result instead of the real one, silently
-    (no error, just a wrong/empty answer). Pin that the range `randrange`
-    is drawn from cannot produce `1` (or `0`) at all, rather than trusting
-    the ~1-in-4-billion odds to never land there."""
+def test_request_and_initialize_ids_are_both_random_and_never_collide(name, monkeypatch):
+    """`ndjson_call`'s first frame on the connection used to always carry the
+    shared, hardcoded `id: 1` (`initialize`) -- and #2449 (review round 2)
+    replaced that literal with a random draw too: a hardcoded id every
+    caller sends cannot tell "my own initialize reply" from a foreign
+    client's leftover one (the exact gap that let one narrow interleaving of
+    #2449's own desync go undetected). So this exchange now draws the range
+    `randrange` TWICE, not once, and both draws matter: if the `tools/call`
+    id ever landed on the `initialize` id (or vice versa), both requests
+    would share an id, both replies would carry it, and `find_response` --
+    which returns the *first* matching frame -- would hand back the
+    `initialize` result instead of the real one, silently (no error, just a
+    wrong/empty answer). Pin that the range excludes `0`/`1` on both draws,
+    and that the two resulting ids can never collide with each other,
+    rather than trusting the odds."""
     mod = adapter(name)
     calls = []
     real_randrange = mod.random.randrange
@@ -133,14 +139,15 @@ def test_request_id_range_excludes_the_initialize_frame_id(name, monkeypatch):
     monkeypatch.setattr(mod.random, "randrange", recording_randrange)
     monkeypatch.setattr(mod.socket, "socket", lambda *a, **k: CapturingSocket())
 
-    mod.ndjson_call("/fake/sock", "/fake/test.php")
+    resp = mod.ndjson_call("/fake/sock", "/fake/test.php")
 
-    assert len(calls) == 1
-    args = calls[0]
-    low = args[0] if len(args) > 1 else 0
-    assert low >= 2, (
-        f"randrange{args} can produce 0 or 1, colliding with the "
-        "initialize frame's fixed id")
+    assert resp["result"] == {"ok": True}
+    assert len(calls) == 2, "both the initialize id and the call id are drawn at random now"
+    for args in calls:
+        low = args[0] if len(args) > 1 else 0
+        assert low >= 2, (
+            f"randrange{args} can produce 0 or 1, colliding with a fixed "
+            "protocol value")
 
 
 @pytest.mark.parametrize("name", ADAPTERS)

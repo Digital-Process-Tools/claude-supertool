@@ -40,11 +40,21 @@ That puts `mcp-rector-warm` on `$PATH`.
       "cmd": "MCP_RECTOR_WORKING_DIR=/abs/path/to/project MCP_RECTOR_CONFIG=/abs/path/to/project/rector.php python3 {supertool_dir}/validators/rector-mcp/rector-mcp.py {file}",
       "match": "*.php",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
-      "timeout": 120
+      "timeout": 400
     }
   }
 }
 ```
+
+`400` (not the earlier `120`) since #2449: a desynchronised pipe now costs one retry against a
+freshly-respawned daemon before this adapter gives up, which can add a full second
+`CALL_TIMEOUT_SEC` (120s) plus the respawn's own lock-wait and spawn-wait on top of the first
+attempt's own budget -- see `.supertool.example.json`'s own `rector-mcp` entry and
+`docs/validators.md`'s #2449 section for the arithmetic. A `timeout` at or under `rector-mcp.py`'s
+own `CALL_TIMEOUT_SEC` (120) means the core's own budget wins the race before the adapter ever gets
+to retry, which is `NOT CHECKED` with no cause named -- the exact failure mode
+`test_a_catalogue_timeout_leaves_the_adapter_room_to_answer` guards against for the shipped
+catalogue.
 
 ## Env vars
 

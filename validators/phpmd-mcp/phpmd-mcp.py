@@ -118,33 +118,85 @@ def ensure_daemon(cwd: str) -> str:
 
 
 def ndjson_call(sock_path: str, file_path: str) -> dict:
-    """Initialize + tools/call(phpmd_analyse). Returns parsed MCP response dict."""
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.settimeout(CALL_TIMEOUT_SEC)
-        s.connect(sock_path)
+    """Initialize + tools/call(phpmd_analyse), with one retry against a fresh
+    daemon if the pipe turns out to be desynchronised (#2449) -- see
+    `ndjson_scan.call_with_retry` for what that does and does not cover.
+    """
+    box = {"sock": sock_path}
 
-        # #1935: an unpredictable per-call id, not the fixed literal `2` --
-        # see ndjson_scan.py's module docstring for what that closes.
-        req_id = random.randrange(2, 2**32)  # exclude 0/1 -- 1 is the initialize frame's id
-        msgs = [
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-             "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                        "clientInfo": {"name": "phpmd-mcp-adapter", "version": "1.0.0"}}},
-            {"jsonrpc": "2.0", "method": "notifications/initialized"},
-            {"jsonrpc": "2.0", "id": req_id, "method": "tools/call",
-             "params": {"name": "phpmd_analyse",
-                        "arguments": {"path": file_path}}},
-        ]
-        s.sendall(("\n".join(json.dumps(m) for m in msgs) + "\n").encode())
+    def attempt() -> dict:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(CALL_TIMEOUT_SEC)
+            s.connect(box["sock"])
 
-        # #1924: scans the whole buffer, not one LF-delimited line at a
-        # time — a fatal analysis run's HTML error page can glue the real
-        # response to the end of the last HTML line with no separator, and a
-        # line-anchored parser never sees it. #1927: gives up on idle
-        # silence rather than waiting out the whole call budget, and names
-        # what was received (or the daemon's own log) on a timeout instead
-        # of only that one happened.
-        return _ndjson_scan.receive_until(s, req_id, CALL_TIMEOUT_SEC, sock_path)
+            # #1935: an unpredictable per-call id, not the fixed literal `2` --
+            # see ndjson_scan.py's module docstring for what that closes.
+            # #2449 (review round 2): the `initialize` frame's own id is now
+            # ALSO drawn at random rather than the literal `1` every client
+            # used to share -- a hardcoded id every caller sends cannot tell
+            # "my own initialize reply" from a foreign client's leftover one,
+            # which defeats desync detection in exactly that interleaving.
+            # req_id is drawn first so a test pinning `random.randrange` to
+            # one fixed value still gets it on the *call* frame, matching
+            # every fixture built around that value; init_id is nudged by one
+            # on the rare (or, under such a pinned mock, guaranteed) collision
+            # so the two ids are never equal.
+            req_id = random.randrange(2, 2**32)  # exclude 0/1 -- 1 was the old shared initialize id
+            init_id = random.randrange(2, 2**32)
+            if init_id == req_id:
+                init_id = init_id + 1 if init_id < 2**32 - 1 else init_id - 1
+            msgs = [
+                {"jsonrpc": "2.0", "id": init_id, "method": "initialize",
+                 "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                            "clientInfo": {"name": "phpmd-mcp-adapter", "version": "1.0.0"}}},
+                {"jsonrpc": "2.0", "method": "notifications/initialized"},
+                {"jsonrpc": "2.0", "id": req_id, "method": "tools/call",
+                 "params": {"name": "phpmd_analyse",
+                            "arguments": {"path": file_path}}},
+            ]
+            s.sendall(("\n".join(json.dumps(m) for m in msgs) + "\n").encode())
+
+            # #1924: scans the whole buffer, not one LF-delimited line at a
+            # time — a fatal analysis run's HTML error page can glue the real
+            # response to the end of the last HTML line with no separator, and a
+            # line-anchored parser never sees it. #1927: gives up on idle
+            # silence rather than waiting out the whole call budget, and names
+            # what was received (or the daemon's own log) on a timeout instead
+            # of only that one happened.
+            return _ndjson_scan.receive_until(s, req_id, CALL_TIMEOUT_SEC, box["sock"],
+                                               own_ids=frozenset((init_id,)))
+
+    def respawn() -> None:
+        box["sock"] = _spawn.force_respawn(
+            WORKING_DIR, DAEMON_NAME, preflight=lambda: resolve_bin(WORKING_DIR),
+            spawn_timeout=SPAWN_TIMEOUT_SEC)
+
+    def pid_probe():
+        # #2449 (review round 2): a plain RuntimeError whose daemon pid
+        # changed underneath this call is very likely collateral damage from
+        # a DIFFERENT caller's force_respawn() on this same shared daemon --
+        # see ndjson_scan.call_with_retry's own docstring for the mechanism.
+        #
+        # Derived from the socket path in hand, never re-resolved through
+        # _paths.socket_pid_paths(): that route calls runtime_dir(), which
+        # sys.exit()s wherever ownership is uncheckable (#544), and reaching
+        # it from here broke the invariant that no warm adapter ever does --
+        # 56 red tests on every windows-latest leg of #2497.
+        #
+        # Read off box["sock"] rather than off the sock_path parameter only
+        # so this closure cannot go stale if call_with_retry ever probes
+        # after a respawn. It does not today, and an earlier draft of this
+        # comment claimed it did -- caught in review. respawn() lives in
+        # call_with_retry's DesyncDetected arm, which returns do_call()
+        # without probing again, and the pid_after probe sits in a mutually
+        # exclusive except arm, so no pid_probe() call ever observes a
+        # mutated box. It would read the same string even if one did:
+        # force_respawn returns socket_pid_paths(cwd, name)[0], a
+        # deterministic sha1(cwd::name), so a respawn under the same
+        # (cwd, name) reassigns the identical path.
+        return _spawn.daemon_pid(_spawn.pid_path(box["sock"]))
+
+    return _ndjson_scan.call_with_retry(attempt, respawn, pid_probe=pid_probe)
 
 
 def format_response(file_path: str, mcp_resp: dict, duration_ms: int) -> dict:
