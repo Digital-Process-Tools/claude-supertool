@@ -1003,7 +1003,7 @@ def main() -> int:
         # self-review): a mirror write must not be the one place in this
         # file that trusts remote text into a path.
         mirror_number = str(d.get("number", arg))
-        if mirror_number.isdigit():
+        if _digits.is_ascii_int(mirror_number):
             mirror_err = _mirror.write_pr(mirror_cfg.path, mirror_number, d)
             if mirror_err is not None:
                 print(f"note: gh mirror not written -- {mirror_err}")
