@@ -32,6 +32,18 @@ deleted the symlink and dropped in real content of their own has, by
 definition, nothing of ours left to remove — teardown leaves it alone and
 says so, rather than deleting content it never created.
 
+`copy` entries get an analogous second check (#2429), built differently
+because `copy` has no single fact like a link target to compare against:
+`setup` records a `fingerprint_copy` of the copy right after creating it,
+and teardown recomputes it before deleting. `copy` is declared (per
+`worktree.json`) for "anything machine-specific or the worktree might
+mutate" — exactly the kind of entry whose content is EXPECTED to diverge
+from what `setup` wrote, so deleting it unconditionally, as this used to,
+could destroy real work the moment it was ever legitimately edited. A
+mismatched, missing, or unreadable fingerprint is all treated the same —
+left alone, named, and pointed at `:force` — per this repo's own rule that
+an unknown must never collapse into "unchanged".
+
 Every actual filesystem removal is wrapped so an `OSError` (a locked file, a
 permission error) reports a WARNING and moves on to the next entry, rather
 than crashing the whole run and leaving every entry after it untouched with
@@ -67,10 +79,47 @@ def _remove_link(entry: str, source: Path, dest: Path, lines: list) -> None:
     lines.append(f"  removed link: {entry}")
 
 
-def _remove_copy(entry: str, dest: Path, lines: list) -> None:
+def _copy_is_stale(dest: Path, recorded: "str | None") -> "str | None":
+    """None if DEST still matches what `setup` recorded creating; otherwise
+    the reason it is treated as modified and left alone (#2429).
+
+    `copy` (per `worktree.json`) is declared for "anything machine-specific
+    or the worktree might mutate" -- exactly the kind whose content is
+    EXPECTED to diverge from what `setup` wrote, unlike a `link` entry
+    (`_same_target`, above), which is meant to stay untouched for its
+    whole life. Deleting a `copy` entry unconditionally, the way this used
+    to work, could destroy real work the moment the entry was ever legitimately
+    edited -- and this preset has no analogous single fact (a link target)
+    to compare against, so the check has to be built rather than reused.
+
+    Both "the recording is missing" and "the recording exists but no
+    longer matches" are treated identically, as staleness, per this
+    repo's own "three states, not two, and err toward refusing when you
+    cannot tell" rule (CLAUDE.md) -- a `None` here must never be read as
+    "confirmed unchanged".
+    """
+    if recorded is None:
+        return "no fingerprint recorded for this entry (manifest predates this check, or `setup` itself could not compute one) -- cannot confirm nothing has changed since"
+    current = _common.fingerprint_copy(dest)
+    if current is None:
+        return "could not compute a current fingerprint to compare (permission error?) -- cannot confirm nothing has changed since"
+    if current != recorded:
+        return "content differs from what setup created -- modified since provisioning?"
+    return None
+
+
+def _remove_copy(entry: str, dest: Path, lines: list, recorded_fingerprint: "str | None", force: bool) -> None:
     if not dest.exists() and not dest.is_symlink():
         lines.append(f"  already gone: {entry}")
         return
+    if not force:
+        stale_reason = _copy_is_stale(dest, recorded_fingerprint)
+        if stale_reason:
+            lines.append(
+                f"  left alone ({stale_reason}): {entry} "
+                "-- rerun `worktree:teardown:PATH:force` to remove anyway"
+            )
+            return
     try:
         if dest.is_symlink() or dest.is_file():
             dest.unlink()
@@ -112,7 +161,7 @@ def _worktreeconfig_state_line(target: Path) -> str:
     )
 
 
-def run(target: Path) -> "tuple[int, str]":
+def run(target: Path, force: bool = False) -> "tuple[int, str]":
     lines = []
     try:
         primary = _common.resolve_primary(target)
@@ -135,6 +184,7 @@ def run(target: Path) -> "tuple[int, str]":
     linked = manifest.get("linked", [])
     copied = manifest.get("copied", [])
     excluded = manifest.get("excluded", [])
+    copy_fingerprints = manifest.get("copy_fingerprints", {})
 
     if not linked and not copied and not excluded:
         return 0, "no provisioning manifest for this worktree — nothing recorded as setup's own, nothing removed"
@@ -156,7 +206,7 @@ def run(target: Path) -> "tuple[int, str]":
             if reason:
                 lines.append(f"  WARNING left alone (manifest entry no longer valid — {reason}): {entry!r}")
                 continue
-            _remove_copy(entry, dest, lines)
+            _remove_copy(entry, dest, lines, copy_fingerprints.get(entry), force)
 
     # The exclude file is trimmed to exactly the entries THIS MANIFEST
     # recorded creating -- never to whatever the config says right now (see

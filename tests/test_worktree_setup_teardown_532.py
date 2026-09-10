@@ -46,10 +46,12 @@ def _git(args, cwd):
     )
 
 
-def _run_op(mode, cwd, path_arg=None):
+def _run_op(mode, cwd, path_arg=None, flag=None):
     argv = [sys.executable, str(DISPATCHER), mode]
-    if path_arg is not None:
-        argv.append(path_arg)
+    if path_arg is not None or flag is not None:
+        argv.append(path_arg if path_arg is not None else "")
+    if flag is not None:
+        argv.append(flag)
     return subprocess.run(
         argv, cwd=cwd, env=_HERMETIC_ENV,
         capture_output=True, text=True, timeout=30, encoding="utf-8", errors="replace",
@@ -305,6 +307,117 @@ class WorktreeSetupTeardownTest(unittest.TestCase):
         # and the source in the primary checkout is obviously untouched
         self.assertTrue(os.path.isfile(os.path.join(self.primary, "vendor", "libs", "a.so")))
         self.assertTrue(os.path.isfile(os.path.join(self.primary, "conf", "dev.ini")))
+
+    # -- copy: a MODIFIED copy is left alone, never deleted unconditionally
+    #    (#2429) ---------------------------------------------------------
+
+    def test_teardown_leaves_a_modified_copy_alone_without_force(self):
+        """A `copy` entry the worktree has since edited is exactly the kind
+        `copy` is declared for ("anything machine-specific or the worktree
+        might mutate") -- unlike `link`, whose content is meant to stay
+        untouched for its whole life. Deleting it unconditionally, the way
+        `_remove_copy` used to, destroys real work with no test protecting
+        against it. Must NOT fire: the modified copy survives.
+        """
+        self._write_config({"copy": ["conf/dev.ini"]})
+        self._commit_all()
+        os.makedirs(os.path.join(self.primary, "conf"))
+        with open(os.path.join(self.primary, "conf", "dev.ini"), "w") as fh:
+            fh.write("dev config")
+        wt = self._add_worktree()
+
+        setup_result = _run_op("setup", wt)
+        self.assertEqual(setup_result.returncode, 0, setup_result.stdout)
+
+        dest = os.path.join(wt, "conf", "dev.ini")
+        # Bump both size and mtime so the (size, mtime_ns) fingerprint this
+        # preset uses cannot mistake this for an untouched copy.
+        with open(dest, "w") as fh:
+            fh.write("dev config -- edited by hand after provisioning")
+        os.utime(dest, None)
+
+        teardown_result = _run_op("teardown", wt)
+        self.assertEqual(teardown_result.returncode, 0, teardown_result.stdout + teardown_result.stderr)
+        self.assertIn("left alone", teardown_result.stdout)
+        self.assertIn("conf/dev.ini", teardown_result.stdout)
+        self.assertTrue(os.path.isfile(dest), "a modified copy must not be deleted without :force")
+        with open(dest, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "dev config -- edited by hand after provisioning")
+
+    def test_teardown_force_removes_a_modified_copy_anyway(self):
+        """The escape hatch: `:force` removes a `copy` entry even when its
+        fingerprint no longer matches what `setup` recorded. Must fire.
+        """
+        self._write_config({"copy": ["conf/dev.ini"]})
+        self._commit_all()
+        os.makedirs(os.path.join(self.primary, "conf"))
+        with open(os.path.join(self.primary, "conf", "dev.ini"), "w") as fh:
+            fh.write("dev config")
+        wt = self._add_worktree()
+
+        setup_result = _run_op("setup", wt)
+        self.assertEqual(setup_result.returncode, 0, setup_result.stdout)
+
+        dest = os.path.join(wt, "conf", "dev.ini")
+        with open(dest, "w") as fh:
+            fh.write("dev config -- edited by hand after provisioning")
+        os.utime(dest, None)
+
+        teardown_result = _run_op("teardown", wt, flag="force")
+        self.assertEqual(teardown_result.returncode, 0, teardown_result.stdout + teardown_result.stderr)
+        self.assertIn("removed copy: conf/dev.ini", teardown_result.stdout)
+        self.assertFalse(os.path.exists(dest))
+
+    def test_teardown_removes_an_unmodified_copy_by_default(self):
+        """Positive control for the two tests above: an UNMODIFIED `copy`
+        entry is still torn down cleanly with no `:force` needed -- the
+        staleness check must not turn every ordinary teardown into a
+        manual `:force` chore. Must fire.
+        """
+        self._write_config({"copy": ["conf/dev.ini"]})
+        self._commit_all()
+        os.makedirs(os.path.join(self.primary, "conf"))
+        with open(os.path.join(self.primary, "conf", "dev.ini"), "w") as fh:
+            fh.write("dev config")
+        wt = self._add_worktree()
+
+        setup_result = _run_op("setup", wt)
+        self.assertEqual(setup_result.returncode, 0, setup_result.stdout)
+
+        teardown_result = _run_op("teardown", wt)
+        self.assertEqual(teardown_result.returncode, 0, teardown_result.stdout + teardown_result.stderr)
+        self.assertIn("removed copy: conf/dev.ini", teardown_result.stdout)
+        self.assertFalse(os.path.exists(os.path.join(wt, "conf", "dev.ini")))
+
+    def test_teardown_leaves_a_copy_alone_when_manifest_predates_fingerprints(self):
+        """A manifest written before #2429 has no `copy_fingerprints` key at
+        all -- that is a real "never recorded", not the same claim as
+        "recorded and confirmed unchanged", and must be refused the same
+        way an outright mismatch is (erring toward refusing when the tool
+        cannot tell, per CLAUDE.md), never silently trusted because the old
+        shape happens to still parse.
+        """
+        self._write_config({"copy": ["conf/dev.ini"]})
+        self._commit_all()
+        os.makedirs(os.path.join(self.primary, "conf"))
+        with open(os.path.join(self.primary, "conf", "dev.ini"), "w") as fh:
+            fh.write("dev config")
+        wt = self._add_worktree()
+
+        setup_result = _run_op("setup", wt)
+        self.assertEqual(setup_result.returncode, 0, setup_result.stdout)
+
+        manifest_path = _git(["rev-parse", "--git-path", "worktree-setup/manifest.json"], wt).stdout.strip()
+        with open(manifest_path, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        manifest.pop("copy_fingerprints", None)
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh)
+
+        teardown_result = _run_op("teardown", wt)
+        self.assertEqual(teardown_result.returncode, 0, teardown_result.stdout + teardown_result.stderr)
+        self.assertIn("left alone", teardown_result.stdout)
+        self.assertTrue(os.path.isfile(os.path.join(wt, "conf", "dev.ini")))
 
     def test_teardown_leaves_a_link_the_user_replaced_with_real_content(self):
         self._write_config({"link": ["vendor/libs", "vendor/other"]})
