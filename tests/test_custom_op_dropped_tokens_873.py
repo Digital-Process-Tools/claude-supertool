@@ -283,7 +283,11 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # `gl-job-trace`'s comma-joined id list one entry up.
         # 93 → 94 in #1955: `gh-mirror` takes `issue:NUMBER`, two colon-split
         # tokens with no optional part, so its cmd is `{args}` too.
-        assert len(rows) == 94, len(rows)
+        # 94 → 95 in #1850: `statusline` is a new op, no positional args at
+        # all -- `cmd` is `{args}` from the first line, same shape as an
+        # optional-only op, because it always resolves empty and is never a
+        # single-slot `{file}/{dir}/{arg}` case.
+        assert len(rows) == 95, len(rows)
         multi = [n for n, _f, _e, c in rows
                  if "{args}" in c or "{argjoin}" in c]
         one = [n for n, _f, _e, c in rows
@@ -307,7 +311,9 @@ class TestEveryShippedOpCanReachItsDocumentedTokens:
         # line too (see the population count's own comment above).
         # 68 → 69 in #1955: `gh-mirror` is `{args}` from the first line too
         # (see the population count's own comment above).
-        assert (len(multi), len(one), len(none)) == (69, 21, 4), (
+        # 69 → 70 in #1850: `statusline` is `{args}` from the first line too
+        # (see the population count's own comment above).
+        assert (len(multi), len(one), len(none)) == (70, 21, 4), (
             len(multi), len(one), len(none))
         # The 4 placeholder-free ops are outside this gate on purpose — see
         # `_unconsumed_arg_tokens`. Named so the exclusion is a list, not a

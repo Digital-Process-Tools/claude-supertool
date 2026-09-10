@@ -52,6 +52,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import _statusline_fragments as _fragments  # noqa: E402
+from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
 
 
 def _dig(obj: Any, *keys: str) -> Any:
@@ -311,6 +312,7 @@ def render(groups: List[List[str]], ctx: _Ctx, item_sep: str, group_sep: str) ->
 
 
 def main() -> int:
+    use_utf8_stdout()
     groups, err = _load_groups_config()
     if err:
         print(err)
