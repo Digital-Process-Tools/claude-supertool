@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -29,9 +30,18 @@ def _proc(returncode=0, stdout=""):
 
 def _fake_gh(argv, timeout=20):
     if argv[:2] == ["gh", "api"] and "commits/" in argv[2]:
+        # 25 minutes ago, computed off the real clock (`branch._age_secs`
+        # reads `datetime.now`, not `time.time`, so the `time.time` patch
+        # below does not move it): past `_GRACE` (15min) so this is not
+        # "still expected", but well under the #2362 `NO_RUN_STALE_SECS`
+        # (45min) threshold this file predates -- a fixed past date used to
+        # mean "long past grace" forever, until that second threshold
+        # existed.
+        stale_free_date = (datetime.now(timezone.utc) - timedelta(seconds=1500)
+                            ).strftime("%Y-%m-%dT%H:%M:%SZ")
         return _proc(0, json.dumps({
             "sha": "c391c1333b6793f4fc2e5a2cc830024fd834ffe1",
-            "commit": {"committer": {"date": "2026-08-25T12:00:00Z"}},
+            "commit": {"committer": {"date": stale_free_date}},
         }))
     if argv[:3] == ["gh", "run", "list"]:
         return _proc(0, "[]")

@@ -65,6 +65,14 @@ NOT_GREEN = branch.NOT_GREEN
 NO_RUN = branch.NO_RUN
 UNKNOWN = branch.UNKNOWN
 
+# The escalated NO_RUN reading (#2362) -- a genuinely never-ran commit past
+# `branch.NO_RUN_STALE_SECS`, distinct from the ordinary "still within the
+# creation window" NO_RUN. A separate token from `NO_RUN` itself (never a
+# suffixed variant of it), for the same reason #2355's PENDING/FAILED split
+# is: a consumer watching for this specific, harder finding needs its own
+# event key, not a substring search over `NO_RUN`'s sentence.
+NO_RUN_STALE = branch.NO_RUN_STALE
+
 # NOT_GREEN split in two, poller-side only (#2355). `branch.verdict()` keeps
 # its own four-state vocabulary unchanged -- `dashboard.py` and
 # `default_branch_report` both render it as-is and neither needed this -- but
@@ -90,6 +98,7 @@ _EVENT_FOR_STATE = {
     NOT_GREEN_PENDING: "went_not_green",
     NOT_GREEN_FAILED: "went_failed",
     NO_RUN: "no_run",
+    NO_RUN_STALE: "no_run_stale",
     UNKNOWN: "unknown",
 }
 
@@ -245,8 +254,10 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # (`verdict()` routes to `no_run_verdict` before this module ever sees
     # a state at all when it is empty) -- so GREEN, either NOT_GREEN
     # sub-state and UNKNOWN all mean "some earlier poll saw at least one run
-    # on this sha", and only NO_RUN/`""` mean it did not (or nothing has
-    # polled yet). Reading this off `prev_state` rather than a separate
+    # on this sha", and only NO_RUN/NO_RUN_STALE/`""` mean it did not (or
+    # nothing has polled yet) -- NO_RUN_STALE (#2362) is still the same
+    # zero-runs reading, only escalated by age, so it belongs on this side
+    # of the split too. Reading this off `prev_state` rather than a separate
     # stored flag means an UNKNOWN produced by the guard below keeps the
     # confirmation live for the next poll for free -- there is nothing extra
     # to carry forward. The bare `NOT_GREEN` stays in this tuple too: a state
@@ -257,7 +268,11 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # How many consecutive polls of THIS sha have read raw-empty already --
     # reset the moment the sha changes, so it never leaks across commits.
     prev_no_run_streak = int(state.get("no_run_streak") or 0) if sha_repeated else 0
-    raw_is_no_run = branch_state == NO_RUN
+    # NO_RUN_STALE (#2362) is still a raw-empty listing -- it is the SAME
+    # zero-runs read as NO_RUN, only older, so it must feed the same
+    # direction-guard and streak bookkeeping below rather than falling
+    # outside both.
+    raw_is_no_run = branch_state in (NO_RUN, NO_RUN_STALE)
 
     # Direction guard (#2333, cadence fixed by #2436): runs on a concluded
     # commit do not disappear -- only the read of them can fail. Observed
