@@ -86,7 +86,15 @@ def render() -> str:
 def main() -> int:
     out_path = os.path.join(REPO_ROOT, "_shipped_reference.py")
     content = render()
-    with open(out_path, "w", encoding="utf-8") as fh:
+    # `newline="\n"` (#1783 review, oss:auditor): without it, text-mode write
+    # translates every newline in `content` to `os.linesep`, so this same
+    # generator run on Windows writes CRLF -- invisible on macOS/Linux where
+    # `os.linesep` already is a bare newline, and not caught by
+    # `test_generated_reference_is_not_stale` either, since that test reads
+    # the file back with `Path.read_text()`, which undoes the translation
+    # before comparing. Pinning it here makes the file's bytes the same on
+    # every platform this generator is ever run from.
+    with open(out_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(content)
     print(f"wrote {out_path} ({len(content)} bytes)")
     return 0

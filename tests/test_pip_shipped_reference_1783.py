@@ -121,6 +121,51 @@ def test_generated_reference_is_not_stale() -> None:
     )
 
 
+def test_generator_writes_with_explicit_lf_newline(tmp_path: Path,
+                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    """`main()`'s `open(out_path, "w", encoding="utf-8")` has no `newline=`,
+    so on a Windows contributor's machine text-mode write translates every
+    newline in the rendered string to `os.linesep` (CRLF) -- invisible on
+    macOS/Linux where `os.linesep` already is a bare newline, and not caught
+    by `test_generated_reference_is_not_stale` either: that test reads the
+    written file back with `Path.read_text()`, which applies universal-
+    newline translation and silently converts the CRLF back before the
+    comparison, so the test passes even though the bytes just written to
+    disk differ from what a non-Windows run produces from the same source
+    data (#1783 review, oss:auditor). #1783's own comment thread already
+    established this repo has no `.gitattributes` pinning this file to LF."""
+    import importlib.util
+    import unittest.mock
+
+    spec = importlib.util.spec_from_file_location(
+        "_generate_shipped_reference_1783_newline",
+        REPO_ROOT / ".github" / "scripts" / "generate_shipped_reference.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+
+    monkeypatch.setattr(gen, "REPO_ROOT", str(REPO_ROOT))
+    real_open = open
+    captured = {}
+
+    def spy_open(path, *args, **kwargs):
+        if str(path) == os.path.join(str(REPO_ROOT), "_shipped_reference.py"):
+            captured["newline"] = kwargs.get("newline", "sentinel-not-passed")
+            return real_open(os.devnull, "w", encoding="utf-8")
+        return real_open(path, *args, **kwargs)
+
+    with unittest.mock.patch("builtins.open", side_effect=spy_open):
+        gen.main()
+
+    assert captured, "main() never opened _shipped_reference.py for writing"
+    assert captured["newline"] == "\n", (
+        f"main() wrote _shipped_reference.py without pinning newline to a "
+        f"bare newline (got {captured['newline']!r}) -- on Windows this "
+        f"writes CRLF via the platform default os.linesep, a line-ending-"
+        f"only diff on a file meant to be byte-reproducible across the "
+        f"whole matrix"
+    )
+
+
 def test_generated_reference_carries_builtin_ops_only_not_the_whole_file() -> None:
     """The `ops` section (preset config overrides) must never be folded in --
     it documents presets/ the pip route does not ship (#1783's own comment)."""
@@ -178,6 +223,30 @@ def test_shipped_config_falls_back_to_the_module_when_the_json_is_absent(
     assert supertool._SHIPPED_CONFIG_STATE == "read", (
         f"expected the fallback to count as a real read, got "
         f"{supertool._SHIPPED_CONFIG_STATE!r}"
+    )
+
+
+def test_shipped_config_reports_unreadable_when_the_fallback_module_is_broken(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A `_shipped_reference.py` that exists but fails to load -- unreadable
+    permissions, or a syntax error in a hand-damaged install -- must not
+    silently collapse back to `absent`. #1783 review (Explore/oss:auditor):
+    the fallback's `except (OSError, ImportError, SyntaxError, ValueError):
+    pass` left `_SHIPPED_CONFIG_STATE` unchanged at `absent` for a reference
+    that is present but broken, reintroducing the exact defect item 2 of
+    this same issue closed for `.supertool.json` -- one file over."""
+    (tmp_path / "_shipped_reference.py").write_text(
+        "this is not valid python syntax :::", encoding="utf-8")
+    monkeypatch.setattr(supertool, "_SHIPPED_CONFIG", None)
+    monkeypatch.setattr(supertool, "_SHIPPED_CONFIG_STATE", None)
+    monkeypatch.setattr(supertool, "_SHIPPED_CONFIG_DIR", str(tmp_path))
+
+    config = supertool._shipped_config()
+    assert config == {} or not config.get("builtin-ops")
+    assert supertool._SHIPPED_CONFIG_STATE == "unreadable", (
+        f"a present-but-broken fallback module was reported as "
+        f"{supertool._SHIPPED_CONFIG_STATE!r}, indistinguishable from a "
+        f"genuinely absent install"
     )
 
 

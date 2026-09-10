@@ -20381,8 +20381,27 @@ def _shipped_config() -> Dict[str, Any]:
                     if isinstance(fallback, dict):
                         data = {"builtin-ops": fallback}
                         _SHIPPED_CONFIG_STATE = "read"
-            except (OSError, ImportError, SyntaxError, ValueError):
+                    else:
+                        # The module loaded but does not carry the shape
+                        # this fallback expects — present, but not a
+                        # reference. Same "cannot tell" bucket as a file
+                        # that failed to load at all (#1783 review).
+                        _SHIPPED_CONFIG_STATE = "unreadable"
+            except FileNotFoundError:
+                # Neither `.supertool.json` nor `_shipped_reference.py`
+                # exists here — genuinely absent, the state already set
+                # above stays correct.
                 pass
+            except (OSError, ImportError, SyntaxError, ValueError):
+                # The module IS there and failed to load — permission
+                # denied, a syntax error in a hand-damaged install, or any
+                # other reason `exec_module` could raise. Collapsing this
+                # back to "absent" would reintroduce, one file over, the
+                # exact defect item 2 of this same issue closed for
+                # `.supertool.json`: a present-but-broken reference
+                # reporting as though nothing shipped at all (#1783 review,
+                # Explore/oss:auditor).
+                _SHIPPED_CONFIG_STATE = "unreadable"
         _SHIPPED_CONFIG = data if isinstance(data, dict) else {}
         _fold_shipped_preset_docs(_SHIPPED_CONFIG, directory)
     return _SHIPPED_CONFIG
