@@ -20317,24 +20317,90 @@ def _shipped_config() -> Dict[str, Any]:
             os.path.abspath(__file__))
         path = os.path.join(directory, ".supertool.json")
         data: Any = None
-        if not os.path.exists(path):
+        # No `os.path.exists()` pre-check (#1783): it swallows `EACCES` and
+        # returns `False` for a directory the process cannot traverse, so a
+        # reference sitting inside an unreadable directory reported as
+        # "not there" — the exact false sentence #1781 removed one file
+        # down, reappearing one level up. `open()` unconditionally instead,
+        # and let the exception itself say which of the two happened. This
+        # also closes the TOCTOU between the check and the open, and the
+        # race was already benign in the safer direction: a file deleted
+        # between the two calls used to land in `unreadable` (honest), not
+        # in a false "read" (it never does now either).
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except FileNotFoundError:
             # The install genuinely shipped no reference. Separable from the
             # two below, and the only one of the three where "it does not
             # document this op" is a sentence anybody could act on.
             _SHIPPED_CONFIG_STATE = "absent"
+        except (OSError, ValueError):
+            # Every other reason `open()` or `json.load()` could fail:
+            # permission denied on the file OR the directory containing it,
+            # a directory named `.supertool.json`, a symlink loop, malformed
+            # JSON. A JSON scalar or list parses without raising and
+            # documents nothing, which is not the same fact as a file that
+            # documents nothing — one is a reference, the other is not one —
+            # so that shape lands here too, in the `else` below.
+            data = None
+            _SHIPPED_CONFIG_STATE = "unreadable"
         else:
+            _SHIPPED_CONFIG_STATE = "read" if isinstance(data, dict) else "unreadable"
+        if _SHIPPED_CONFIG_STATE == "absent":
+            # The clone and plugin routes ship `.supertool.json` itself and
+            # never reach here. The pip route ships neither that file nor
+            # `presets/` — every declarative packaging route that could
+            # carry a data file there was tried and rejected (#1783's own
+            # comment thread: `package-data` globs over declared *packages*
+            # and a flat `py-modules` layout has none; `MANIFEST.in` +
+            # `include-package-data` reaches the sdist, not the wheel;
+            # `data-files` lands in the venv prefix, not site-packages). So
+            # that route ships `_shipped_reference.py` instead, a plain
+            # module in `py-modules` that survives every route because it
+            # IS a module, carrying only the `builtin-ops` block generated
+            # from this repo's own `.supertool.json` by
+            # `.github/scripts/generate_shipped_reference.py` — never the
+            # `ops` section, which documents preset-config overrides for
+            # `presets/` this route does not ship either.
+            # Loaded from `directory` by path, never a bare `import
+            # _shipped_reference` — this call runs from inside this
+            # repository's own checkout too, where a bare import would find
+            # THIS tree's `_shipped_reference.py` on `sys.path` regardless
+            # of `directory`, which is exactly wrong for an install that
+            # `_SHIPPED_CONFIG_DIR` is simulating as not having one.
+            reference_path = os.path.join(directory, "_shipped_reference.py")
             try:
-                with open(path, encoding="utf-8") as fh:
-                    data = json.load(fh)
-            except (OSError, ValueError):
-                data = None
-            # A JSON scalar or list parses without raising and documents
-            # nothing, which is not the same fact as a file that documents
-            # nothing: one is a reference, the other is not one. Both land in
-            # `unreadable` because in neither case was the question answered.
-            if isinstance(data, dict):
-                _SHIPPED_CONFIG_STATE = "read"
-            else:
+                import importlib.util
+                spec = importlib.util.spec_from_file_location(
+                    "_shipped_reference", reference_path)
+                if spec is not None and spec.loader is not None:
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    fallback = getattr(module, "BUILTIN_OPS", None)
+                    if isinstance(fallback, dict):
+                        data = {"builtin-ops": fallback}
+                        _SHIPPED_CONFIG_STATE = "read"
+                    else:
+                        # The module loaded but does not carry the shape
+                        # this fallback expects — present, but not a
+                        # reference. Same "cannot tell" bucket as a file
+                        # that failed to load at all (#1783 review).
+                        _SHIPPED_CONFIG_STATE = "unreadable"
+            except FileNotFoundError:
+                # Neither `.supertool.json` nor `_shipped_reference.py`
+                # exists here — genuinely absent, the state already set
+                # above stays correct.
+                pass
+            except (OSError, ImportError, SyntaxError, ValueError):
+                # The module IS there and failed to load — permission
+                # denied, a syntax error in a hand-damaged install, or any
+                # other reason `exec_module` could raise. Collapsing this
+                # back to "absent" would reintroduce, one file over, the
+                # exact defect item 2 of this same issue closed for
+                # `.supertool.json`: a present-but-broken reference
+                # reporting as though nothing shipped at all (#1783 review,
+                # Explore/oss:auditor).
                 _SHIPPED_CONFIG_STATE = "unreadable"
         _SHIPPED_CONFIG = data if isinstance(data, dict) else {}
         _fold_shipped_preset_docs(_SHIPPED_CONFIG, directory)
@@ -20484,9 +20550,22 @@ def op_help(op_name: str) -> str:
             shipped = (f"  No reference shipped beside this binary — "
                        f"{_shipped_reference_path()} is not there, which is an "
                        f"incomplete install rather than an undocumented op.\n")
-        else:
+        elif _SHIPPED_CONFIG_STATE == "read":
             shipped = ("  The reference shipped beside this binary was read "
                        "and does not document it either.\n")
+        else:
+            # Not one of the three states this lookup is meant to produce —
+            # `_SHIPPED_CONFIG_STATE` is `None` (checked before the first
+            # lookup ever ran) or some future fourth value. Neither prior
+            # sentence is known to be true of it, so this arm must not
+            # assert either one (#1783): a catch-all `else` that repeats
+            # the "read and does not document" sentence would claim a
+            # specific, false thing about a state nobody has produced yet.
+            shipped = (f"  Whether a reference ships beside this binary is "
+                       f"UNKNOWN — the internal lookup returned "
+                       f"{_SHIPPED_CONFIG_STATE!r}, not one of the states "
+                       f"this code expects, so nothing can be asserted about "
+                       f"'{op_name}'.\n")
         return (f"ERROR: op '{op_name}' has no documented help in this "
                 f"project's config.\n"
                 + shipped
