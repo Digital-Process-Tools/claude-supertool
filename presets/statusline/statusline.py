@@ -269,12 +269,19 @@ def _float_env(name: str, default: float) -> float:
 
 
 def _int_env(name: str, default: int) -> int:
+    """`int(env)`, tolerating a float-shaped JSON number (self-review finding,
+    #1850): `ops.<op>.<key>` reaches this subprocess through the core's
+    generic env passthrough, which JSON-encodes a non-string value verbatim
+    -- `"stale_secs": 300.0` is legal JSON and exports the literal string
+    `"300.0"`, which a bare `int(...)` raises on and silently drops to the
+    default with no warning anywhere. `int(float(raw))` accepts both shapes;
+    a genuinely non-numeric value still falls back to `default`."""
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
     try:
-        return int(raw)
-    except ValueError:
+        return int(float(raw))
+    except (TypeError, ValueError):
         return default
 
 

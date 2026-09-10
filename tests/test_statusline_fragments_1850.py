@@ -104,6 +104,45 @@ def test_publish_never_raises_when_the_cache_dir_cannot_be_made(monkeypatch, tmp
     assert result is None
 
 
+def test_publish_from_a_subdirectory_is_readable_from_the_worktree_root(monkeypatch, tmp_path):
+    """Self-review finding (Explore reviewer, #1850): `gh-pr` publishes under
+    whatever `os.getcwd()` happens to be, while `statusline` reads under
+    Claude Code's reported `workspace.current_dir` -- typically the project
+    root. Those two must resolve to the SAME slot when both point somewhere
+    inside one git worktree, even when the exact subdirectory differs (a
+    monorepo subpackage, a wrapper script that `cd`s before invoking
+    supertool), or a fragment that genuinely exists reads as `not-published`.
+    """
+    monkeypatch.setenv("SUPERTOOL_STATUSLINE_CACHE_DIR", str(tmp_path / "cache"))
+    repo = tmp_path / "repo"
+    sub = repo / "packages" / "sub"
+    sub.mkdir(parents=True)
+    (repo / ".git").mkdir()  # enough to mark the worktree root -- no real git needed
+
+    frag.publish("gh-pr", str(sub), {"summary": "3 total: 3 passed, 0 failed, 0 pending"})
+
+    data, state = frag.read("gh-pr", str(repo))
+    assert state == "ok", (data, state)
+    assert data["summary"] == "3 total: 3 passed, 0 failed, 0 pending"
+
+
+def test_two_worktrees_with_no_git_marker_still_never_collide(monkeypatch, tmp_path):
+    """Positive control for the fix above: two plain directories with no
+    `.git` anywhere up their tree (the shape every OTHER existing test in
+    this file uses) must still key independently -- the worktree-root
+    resolution must never widen the key to something coarser than intended
+    when there is no repository to find."""
+    monkeypatch.setenv("SUPERTOOL_STATUSLINE_CACHE_DIR", str(tmp_path / "cache"))
+    wt_a = tmp_path / "a"
+    wt_b = tmp_path / "b"
+    wt_a.mkdir()
+    wt_b.mkdir()
+    frag.publish("gh-pr", str(wt_a), {"summary": "A's tally"})
+
+    data_b, state_b = frag.read("gh-pr", str(wt_b))
+    assert state_b == "not-published"
+
+
 def test_age_seconds_is_none_without_a_timestamp():
     assert frag.age_seconds({"summary": "ok"}) is None
 

@@ -49,13 +49,49 @@ def cache_dir() -> str:
     return os.path.join(base, "supertool", "statusline")
 
 
-def _key(worktree_dir: str) -> str:
-    """A stable, filesystem-safe slot name for one resolved directory.
+def _worktree_root(path: str) -> str:
+    """Walk up from `path` to the nearest directory holding a `.git` entry.
 
-    Resolved (`os.path.realpath`) so a symlinked worktree path and its target
-    share one slot rather than silently splitting the fragment in two.
+    Self-review finding (#1850): `gh-pr` publishes under whatever
+    `os.getcwd()` happens to be when it is invoked, while `statusline` reads
+    under Claude Code's reported `workspace.current_dir` -- typically the
+    project root. A monorepo subpackage, or any wrapper script that `cd`s
+    before invoking supertool, makes those two different strings for the
+    SAME worktree, and keying on the raw string silently split one worktree
+    into two cache slots that could never find each other.
+
+    `.git` is present both in an ordinary clone (a directory) and in a
+    linked worktree (a file pointing at the shared gitdir), so a plain
+    `os.path.exists` check covers both without a `git` subprocess -- kept
+    off this path deliberately, since `read()` sits on the statusline op's
+    render budget and a subprocess per read would eat into it for no benefit
+    a filesystem walk does not already give.
+
+    A directory with no `.git` anywhere above it (every other test fixture
+    in this module, and any caller outside a git repository) resolves to its
+    own realpath, unchanged -- this must never WIDEN the key for two
+    genuinely unrelated directories that happen to share a distant ancestor.
     """
-    real = os.path.realpath(worktree_dir or os.getcwd())
+    real = os.path.realpath(path or os.getcwd())
+    cur = real
+    while True:
+        if os.path.exists(os.path.join(cur, ".git")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return real
+        cur = parent
+
+
+def _key(worktree_dir: str) -> str:
+    """A stable, filesystem-safe slot name for one worktree.
+
+    Resolved to the enclosing git worktree root (see `_worktree_root`) so a
+    fragment published from a subdirectory and one read from the project
+    root land in the same slot, and resolved with `os.path.realpath` first so
+    a symlinked path and its target do too.
+    """
+    real = _worktree_root(worktree_dir or os.getcwd())
     return hashlib.sha256(real.encode("utf-8", "surrogateescape")).hexdigest()[:20]
 
 

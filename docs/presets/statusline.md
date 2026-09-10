@@ -53,7 +53,14 @@ Consequences that are by design, not bugs:
   an old value as current.
 - **Fragments are atomic and worktree-keyed** (`presets/_statusline_fragments.py`)
   — temp file + rename, never read-modify-write, keyed by a hash of the
-  resolved `workspace.current_dir` so sibling worktrees never share a slot.
+  enclosing git worktree root (found by walking up for a `.git` entry, never
+  a `git` subprocess) so a fragment `gh-pr` publishes from a monorepo
+  subdirectory is still found when `statusline` reads it from
+  `workspace.current_dir`, and sibling worktrees never share a slot.
+- **Fragments are swept by `gc`**, not left to accumulate forever: `statusline`
+  is a registered `gc` kind (`_GC_DEFAULT_RETENTION_DAYS["statusline"]`, 7
+  days by default, configurable the same way every other kind is) — see
+  docs/configuration.md's `gc` section (or `help:gc`) for the mechanism.
 
 A local segment gets a **budget**, not a cache: `git-status`'s statusline
 segment times out in well under a second (`ops.statusline.git_budget_secs`,

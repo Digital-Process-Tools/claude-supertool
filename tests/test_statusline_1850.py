@@ -251,6 +251,16 @@ def test_read_stdin_json_never_raises_on_garbage(monkeypatch):
     assert statusline._read_stdin_json() == {}
 
 
+def test_int_env_accepts_a_float_shaped_json_number(monkeypatch):
+    """Self-review finding: `ops.<op>.<key>` reaches this subprocess through
+    the core's generic env passthrough, which JSON-encodes a non-string
+    value verbatim -- a config author writing `"stale_secs": 300.0` (legal
+    JSON) exports the literal string "300.0", and a bare `int("300.0")`
+    raises and silently falls back to the default with no warning."""
+    monkeypatch.setenv("SUPERTOOL_STALE_SECS", "300.0")
+    assert statusline._int_env("SUPERTOOL_STALE_SECS", 999) == 300
+
+
 def test_read_stdin_json_never_blocks_on_a_tty(monkeypatch):
     class FakeTty:
         def isatty(self):

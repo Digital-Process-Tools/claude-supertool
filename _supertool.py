@@ -24342,6 +24342,15 @@ _GC_DEFAULT_RETENTION_DAYS: Dict[str, float] = {
     "vim-undo": 7,
     "vi-cursor": 7,
     "validators": 30,
+    # `presets/_statusline_fragments.py` (#1850) writes one tiny JSON file
+    # per worktree `gh-pr` has ever run in and never deletes any of its own
+    # -- self-review finding, wired into the existing kind table rather than
+    # a second reaper, since this sweep is already generic over
+    # `_cache_root() / kind`. 7 days matches vim-cursor/vim-undo's window; a
+    # fragment's own staleness is rendered explicitly by `statusline` well
+    # inside that (default 300s), so this window only bounds unattributed
+    # growth across abandoned worktrees, not staleness during active use.
+    "statusline": 7,
 }
 
 _GC_DEFAULT_INTERVAL_SECONDS = 3600.0
