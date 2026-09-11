@@ -6,8 +6,8 @@ Ops for self-documentation and version introspection. Used primarily in session-
 
 | Op | Syntax | What it does |
 |----|--------|--------------|
-| `introduction` | `introduction` | Output the project introduction text from `.supertool.json`. No `---` dispatch header — clean markdown. |
-| `output-format` | `output-format` | Output format examples from `.supertool.json`. Shows what responses look like. |
+| `introduction` | `introduction` | Output the project introduction text: `.supertool.json`'s `introduction` key, an `SUPERTOOL_INTRODUCTION` env override, or a shipped default of mechanical facts true of every install if neither is set (#2342). No `---` dispatch header — clean markdown. |
+| `output-format` | `output-format` | Output format examples: `.supertool.json`'s `output-format` key, an `SUPERTOOL_OUTPUT_FORMAT` env override, or a shipped default measured against a live batched call if neither is set (#2342). Also no `---` dispatch header — same meta-op treatment as `introduction`, not the dispatch header every ordinary op gets. |
 | `ops` | `ops` | Every op's **signature** — built-in ops, custom ops and aliases, one row each, no descriptions and no examples (~4.67KB here). Its footer says what the **whole `ops:full` render** costs, not what the descriptions cost: that is the footer's number minus this listing, 82,200 bytes here (#1850 added the `statusline` op on top of #2472's `gh-mirror`/`gh-pr` descriptions, #2429's `worktree` `:force` flag, #1955's `gh-mirror` and #1822's `json-set`, moving this figure again). It also names the two ops that fetch them (#1774). |
 | `ops:full` | `ops:full` | The same rows carrying their descriptions and examples — what `ops` was before #1774, ~86.89KB here (moved from ~85.05KB by #1850's `statusline` op). This is the full reference; nothing was deleted when the default changed. |
 | `ops-compact` | `ops-compact` | The descriptive listing with per-op detail trimmed except where an entry declares `hint` (~18.46KB). Still over the 10,000-byte SessionStart hook cap; it says so in its first line rather than letting the tail be cut silently. |

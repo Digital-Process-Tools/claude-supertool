@@ -19278,19 +19278,140 @@ def _op_vim_impl(path: str, script: str) -> str:
     return "".join(out)
 
 
-def op_introduction() -> str:
-    """Output the project-specific introduction text from .supertool.json."""
+# Shipped fallback text for the two onboarding ops below, reached only when
+# .supertool.json sets neither key (#2342). Every neighbouring onboarding
+# surface already falls back to shipped content -- `help:OP`/`ops` fall back
+# to the built-in op reference, `git-commit`'s coauthor trailer falls back to
+# `_DEFAULT_COAUTHOR` (presets/git/commit.py) -- and these two were the only
+# ones that printed a permanent "No ... configured" non-answer instead.
+#
+# Same convention as `_DEFAULT_COAUTHOR`: env var over .supertool.json over
+# this built-in default, and any of `_ONBOARDING_DISABLE_VALUES` at whichever
+# layer wins renders as the old "not configured" line -- so a project that
+# deliberately wants its session preamble bare still can.
+_ONBOARDING_DISABLE_VALUES = {"", "none", "off", "false", "no", "0"}
+
+# Mechanical, universal facts only -- true of every install, not of any one
+# project's ops. Deliberately carries NO batching exhortation ("pack 6-7 ops
+# per call"): a downstream A/B test on the nearest equivalent (claude-oss
+# scripts/batch_hint.py, #490) found that prose counterproductive when it is
+# resent every turn rather than read once -- the treatment arm came out 6%
+# MORE expensive in single-op rate, not less. A project that wants the
+# exhortation sets its own `introduction`, as this repo's own .supertool.json
+# does.
+_DEFAULT_INTRODUCTION = (
+    "supertool batches operations into one Bash call:\n"
+    "    ./supertool 'op1:args' 'op2:args' 'op3:args'\n"
+    "\n"
+    "Mechanical facts, true of every install:\n"
+    "- Paths resolve from the project root, not the shell's cwd.\n"
+    "- One op per single-quoted argument -- quote each op separately.\n"
+    "- Mutating ops (edit, replace, replace_lines, append, paste, vim; also\n"
+    "  read/grep/around/between/validate) take an @-payload route instead of\n"
+    "  inline args: 'edit:@-' with the payload on stdin, or 'edit:@path.toml'\n"
+    "  for one already on disk. Only one '@-' per call -- for several\n"
+    "  mutations in one call use 'batch:@-' with an [[ops]] array.\n"
+    "- Payload format auto-detects: starts with '{' or '[' -> JSON, else\n"
+    "  TOML. A triple-single-quoted TOML string is literal -- backslashes,\n"
+    "  quotes and newlines survive byte-for-byte, which is what a code\n"
+    "  block needs. A triple-double-quoted one processes escapes instead.\n"
+    "- Field names are the syntax tokens lowercased:\n"
+    "  edit:::OLD:::NEW:::PATH -> old, new, path.\n"
+    "\n"
+    "Run 'ops' for what this project's supertool can do.\n"
+)
+
+# Measured against a real batched call (a `read` on a small file, a `read`
+# on a path that does not exist, `version`) rather than written from memory
+# -- #2342's acceptance criteria requires this, and
+# tests/test_output_format.py asserts the shapes named below against a live
+# call so a future rendering change cannot leave this default stale in
+# silence.
+_DEFAULT_OUTPUT_FORMAT = (
+    "Each op prints its own header, a meta line carrying the verdict, then\n"
+    "its body. A batch runs every op named on the command line and reports\n"
+    "each one under its own header, in call order.\n"
+    "\n"
+    "Measured from a real batched call, one deliberate miss included:\n"
+    "\n"
+    "$ supertool 'read:README.md:1:3' 'read:no-such-file.md' 'version'\n"
+    "--- read:README.md:1:3 ---\n"
+    "(184 lines, 18973 bytes)\n"
+    "window: offset 1 + limit 3 ... nothing was cut ...\n"
+    "     2→\n"
+    "     3→...\n"
+    "... (180 more lines -- lines 2-4 are the whole window asked for,\n"
+    "nothing was cut)\n"
+    "--- read:no-such-file.md ---\n"
+    "ERROR: file not found: no-such-file.md\n"
+    "supertool 0.59.0\n"
+    "[batch] 3 ops ran -- 2 ok, 1 refused. Exit 1 flags the refusal; the\n"
+    "other 2 answers above are complete.\n"
+    "EXIT=1\n"
+    "\n"
+    "Six things this teaches that a happy-path result does not:\n"
+    "1. '--- op:args ---' echoes the op verbatim, one per op, in call\n"
+    "   order -- the only segment boundary. Piping a call through\n"
+    "   head/tail/sed/cut selects against the answer: the header and the\n"
+    "   batch footer are exactly what those cut.\n"
+    "2. A meta line sits directly under the header and carries the\n"
+    "   verdict ('(184 lines, 18973 bytes)', 'PASS (1.33s)', '(2 results,\n"
+    "   limit 5)').\n"
+    "3. Truncation is announced -- a short body is not a short file. Reads\n"
+    "   cap at 300 lines / 20KB and say which window they returned.\n"
+    "4. A failing op reports under its own header; the other ops still\n"
+    "   ran.\n"
+    "5. The exit code is about the batch, not the op: EXIT=1 above does\n"
+    "   NOT mean no answers came back. Discarding a batch on a non-zero\n"
+    "   exit throws away work already paid for. Exit 0 means no op\n"
+    "   refused.\n"
+    "6. Many ops append a '↳ to modify:' affordance line that is not\n"
+    "   part of the payload -- it names the next call, not an answer.\n"
+    "\n"
+    "A project's own ops can print bodies this default cannot show (a\n"
+    "custom 'qa' composite, a project-specific check) -- set\n"
+    "'output-format' in .supertool.json to demonstrate those; this default\n"
+    "only covers the envelope every op shares.\n"
+)
+
+
+def _onboarding_text(config_key: str, env_var: str, default: str) -> str:
+    """env var, else .supertool.json[config_key], else `default`.
+
+    Same env-over-config-over-built-in convention as `_DEFAULT_COAUTHOR`
+    (presets/git/commit.py). Whichever layer wins, a value in
+    `_ONBOARDING_DISABLE_VALUES` (case-insensitive, stripped) renders as ""
+    so the caller can still print the old "not configured" line -- a
+    default that cannot be turned off is worse than none for a project that
+    has deliberately kept its session preamble bare (#2342).
+    """
     config = _load_config()
-    intro = config.get("introduction", "")
+    raw = os.environ.get(env_var)
+    if raw is None:
+        raw = config.get(config_key)
+    if raw is None:
+        return default
+    val = str(raw).strip()
+    if val.lower() in _ONBOARDING_DISABLE_VALUES:
+        return ""
+    return str(raw)
+
+
+def op_introduction() -> str:
+    """Project introduction text: env override, else .supertool.json's
+    `introduction` key, else a shipped default (#2342)."""
+    intro = _onboarding_text(
+        "introduction", "SUPERTOOL_INTRODUCTION", _DEFAULT_INTRODUCTION)
     if not intro:
         return "No introduction configured in .supertool.json\n"
     return str(intro) + "\n\n"
 
 
 def op_output_format() -> str:
-    """Output the output format examples from .supertool.json."""
-    config = _load_config()
-    fmt = config.get("output-format", "")
+    """Output format examples: env override, else .supertool.json's
+    `output-format` key, else a shipped default (#2342)."""
+    fmt = _onboarding_text(
+        "output-format", "SUPERTOOL_OUTPUT_FORMAT", _DEFAULT_OUTPUT_FORMAT)
     if not fmt:
         return "No output-format configured in .supertool.json\n"
     return str(fmt) + "\n\n"
