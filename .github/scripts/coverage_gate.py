@@ -266,6 +266,15 @@ NOT_MEASURED_PY: "dict[str, str]" = {
         "author and cannot fix. A fix reaches it by being rewritten upstream, "
         "in the oss plugin, not by a test added here"
     ),
+    ".oss/assemble_changelog.py": (
+        "same reasoning as .oss/statusline.py just above (#2489): the oss "
+        "plugin's own owned changelog assembler, replaced wholesale by every "
+        "/oss:scaffold run. It is exercised end to end by "
+        "tests/test_changelog_fragment_write_receipt_1132.py and the other "
+        "changelog.d/ suites, which import it fresh per test and assert on "
+        "its behaviour rather than its line coverage -- a floor here would "
+        "measure a file this repository does not author and cannot fix"
+    ),
 }
 
 #: Not Python at all. Listed so the gap is recorded rather than merely

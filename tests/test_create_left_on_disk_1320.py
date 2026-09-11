@@ -200,7 +200,7 @@ def _fragment_target(tmp_path: Path) -> Path:
     frag_dir.mkdir(parents=True, exist_ok=True)
     scripts = tmp_path / ".github" / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(REPO / ".github" / "scripts" / "assemble_changelog.py",
+    shutil.copy2(REPO / ".oss" / "assemble_changelog.py",
                  scripts / "assemble_changelog.py")
     subprocess.run(["git", "init", "-q"], cwd=str(tmp_path), check=True)
     return frag_dir / "9999.fixed.md"
