@@ -46,6 +46,17 @@ def _payload(tmp_path: Path, name: str, body: str) -> str:
     return str(p)
 
 
+def _toml_path(target: Path) -> str:
+    r"""A payload `path =` as a basic string, with separators escaped.
+
+    On Windows `tmp_path` is `C:\Users\...`, and an unescaped backslash in a
+    basic TOML string starts an escape sequence -- the payload never parses.
+    Same fixture trap and same fix as `test_payload_shell_quote_escape_
+    refusal_2243.py`'s own `_toml_path`; not reused directly because that
+    file's helper is private to it, but the shape is identical on purpose."""
+    return Q + str(target).replace(BS, BS * 2) + Q
+
+
 # ---------------------------------------------------------------------------
 # Unit level -- the two new helpers directly
 # ---------------------------------------------------------------------------
@@ -151,7 +162,7 @@ def test_end_to_end_paste_carries_the_advisory_after_validators(tmp_path: Path) 
     ref = _payload(
         tmp_path, "p.toml",
         "literal_backslashes = true" + NL
-        + "path = " + Q + str(tmp_path / "out.py") + Q + NL
+        + "path = " + _toml_path(tmp_path / "out.py") + NL
         + "content = " + Q3 + "x = " + Q + "a" + BS * 2 + "nb" + Q + Q3 + NL,
     )
     out = supertool.dispatch(f"paste:@{ref}")
@@ -180,7 +191,7 @@ def test_end_to_end_paste_without_exemption_is_refused_not_advised(tmp_path: Pat
     fire, because nothing reached disk."""
     ref = _payload(
         tmp_path, "p.toml",
-        "path = " + Q + str(tmp_path / "out.py") + Q + NL
+        "path = " + _toml_path(tmp_path / "out.py") + NL
         + "content = " + Q3 + "x = " + Q + "a" + BS * 2 + "nb" + Q + Q3 + NL,
     )
     out = supertool.dispatch(f"paste:@{ref}")
@@ -197,7 +208,7 @@ def test_end_to_end_escaped_string_route_is_never_advised(tmp_path: Path) -> Non
     target = tmp_path / "out.py"
     spec = tmp_path / "e.toml"
     spec.write_text(
-        "path = " + Q + str(target) + Q + NL
+        "path = " + _toml_path(target) + NL
         + "content = " + Q + "x = " + BS + Q + "a" + BS * 4 + "nb"
         + BS + Q + Q + NL,
         encoding="utf-8",
