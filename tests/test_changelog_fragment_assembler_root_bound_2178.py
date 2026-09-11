@@ -114,7 +114,7 @@ def test_an_assembler_inside_the_repo_still_resolves(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     target = _write_fragment(repo)
 
-    real_assembler = REPO / ".github" / "scripts" / "assemble_changelog.py"
+    real_assembler = REPO / ".oss" / "assemble_changelog.py"
     scripts = repo / "scripts"
     scripts.mkdir()
     shutil.copy2(real_assembler, scripts / "assemble_changelog.py")
@@ -175,7 +175,7 @@ def test_git_unavailable_does_not_claim_locations_were_tried(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     target = _write_fragment(repo)
 
-    real_assembler = REPO / ".github" / "scripts" / "assemble_changelog.py"
+    real_assembler = REPO / ".oss" / "assemble_changelog.py"
     scripts = repo / ".github" / "scripts"
     scripts.mkdir(parents=True)
     shutil.copy2(real_assembler, scripts / "assemble_changelog.py")

@@ -40,7 +40,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 ADAPTER = REPO / "validators" / "changelog-fragment" / "changelog-fragment.py"
-ASSEMBLER = REPO / ".github" / "scripts" / "assemble_changelog.py"
+ASSEMBLER = REPO / ".oss" / "assemble_changelog.py"
 SUPERTOOL = REPO / "supertool.py"
 
 #: `changelog.d/1109.fixed.md` as PR #1115 shipped it: the entry, correct in

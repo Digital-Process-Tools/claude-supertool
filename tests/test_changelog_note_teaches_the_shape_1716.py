@@ -35,7 +35,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-SCRIPT = REPO / ".github" / "scripts" / "assemble_changelog.py"
+SCRIPT = REPO / ".oss" / "assemble_changelog.py"
 NOTE = REPO / ".claude" / "jit-context" / "paths" / "00-manual" / "changelog-d.md"
 
 _spec = importlib.util.spec_from_file_location("assemble_changelog_1716", SCRIPT)

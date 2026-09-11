@@ -52,7 +52,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-SCRIPT = REPO / ".github" / "scripts" / "assemble_changelog.py"
+SCRIPT = REPO / ".oss" / "assemble_changelog.py"
 
 _spec = importlib.util.spec_from_file_location("assemble_changelog_934", SCRIPT)
 assert _spec is not None and _spec.loader is not None

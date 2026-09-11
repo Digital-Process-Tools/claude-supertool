@@ -25,7 +25,7 @@ from typing import List
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-SCRIPT = REPO / ".github" / "scripts" / "assemble_changelog.py"
+SCRIPT = REPO / ".oss" / "assemble_changelog.py"
 
 _spec = importlib.util.spec_from_file_location("assemble_changelog", SCRIPT)
 assert _spec is not None and _spec.loader is not None
@@ -572,7 +572,7 @@ def test_parse_fragment_name_refuses(name) -> None:
 # The CI guard, read structurally (#731: never grep a workflow for its meaning)
 # ---------------------------------------------------------------------------
 
-WORKFLOW = REPO / ".github" / "workflows" / "changelog.yml"
+WORKFLOW = REPO / ".github" / "workflows" / "oss-changelog.yml"
 
 
 def _changelog_workflow_jobs() -> dict[str, str]:

@@ -160,7 +160,7 @@ def test_the_real_repo_workflows_name_changelog_and_slow_tests_only():
     real_dir = Path(__file__).parent.parent / ".github" / "workflows"
     excluded, note = gate.not_gated_by_push_workflows(str(real_dir))
     names = sorted(w["name"] for w in excluded)
-    assert names == ["changelog", "slow tests"], names
+    assert names == ["oss changelog", "slow tests"], names
     assert note == ""
 
 
