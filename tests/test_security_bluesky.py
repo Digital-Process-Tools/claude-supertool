@@ -440,18 +440,21 @@ class TestSessionFileNeverWideOpen:
 
     def _assert_never_wide(self, save_session, session_file):
         """Drive save_session under a permissive umask, recording the mode
-        of every os.open call that creates the file and the mode observed
-        immediately before every os.chmod call on it -- the two points a
-        write-then-chmod window is observable from Python. Either list
-        being non-empty and wide is a finding; os.open never firing at all
-        is also a finding (the write never went through an atomic,
+        of every os.open call that creates the file, and the mode observed
+        immediately before every narrowing call on it -- os.fchmod on
+        POSIX (the branch this suite always exercises, since the class is
+        skipped on win32), os.chmod as its own Windows-only fallback in
+        the implementation. Either open_modes or pre_narrow_modes being
+        non-empty and wide is a finding; os.open never firing at all is
+        also a finding (the write never went through an atomic,
         mode-scoped creation, so nothing here proves the window is closed).
         """
         old_umask = os.umask(0)  # nothing masked away -- worst case
         real_open = os.open
+        real_fchmod = getattr(os, "fchmod", None)
         real_chmod = os.chmod
         open_modes = []
-        pre_chmod_modes = []
+        pre_narrow_modes = []
 
         def spying_open(path, flags, mode=0o777, *a, **kw):
             fd = real_open(path, flags, mode, *a, **kw)
@@ -459,26 +462,42 @@ class TestSessionFileNeverWideOpen:
                 open_modes.append(mode & 0o777)
             return fd
 
+        def spying_fchmod(fd, mode, *a, **kw):
+            pre_narrow_modes.append(stat.S_IMODE(os.fstat(fd).st_mode))
+            return real_fchmod(fd, mode, *a, **kw)
+
         def spying_chmod(path, mode, *a, **kw):
             if os.fspath(path) == os.fspath(session_file) and os.path.exists(path):
-                pre_chmod_modes.append(stat.S_IMODE(os.stat(path).st_mode))
+                pre_narrow_modes.append(stat.S_IMODE(os.stat(path).st_mode))
             return real_chmod(path, mode, *a, **kw)
 
         os.open = spying_open
+        if real_fchmod is not None:
+            os.fchmod = spying_fchmod
         os.chmod = spying_chmod
         try:
             save_session()
         finally:
             os.umask(old_umask)
             os.open = real_open
+            if real_fchmod is not None:
+                os.fchmod = real_fchmod
             os.chmod = real_chmod
 
         assert open_modes, (
             "os.open was never used to create the session file atomically -- "
             "nothing here proves the write-then-chmod window is closed"
         )
+        assert real_fchmod is not None, (
+            "os.fchmod is unavailable on this platform -- this test only "
+            "runs where it should be exercised (skipif win32 above)"
+        )
+        assert pre_narrow_modes, (
+            "os.fchmod was never called to narrow the file -- the "
+            "TOCTOU-safe fd-based narrowing path went unexercised"
+        )
         assert all(m == 0o600 for m in open_modes), [oct(m) for m in open_modes]
-        assert all(m == 0o600 for m in pre_chmod_modes), [oct(m) for m in pre_chmod_modes]
+        assert all(m == 0o600 for m in pre_narrow_modes), [oct(m) for m in pre_narrow_modes]
         assert stat.S_IMODE(session_file.stat().st_mode) == 0o600
 
     def test_atproto_save_session_never_world_or_group_readable(self, tmp_path, monkeypatch):

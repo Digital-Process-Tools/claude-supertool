@@ -208,20 +208,29 @@ def _save_session(session: dict[str, Any]) -> None:
     this module deliberately never imports that one (see the module
     docstring), so the fix is duplicated rather than shared.
 
-    `os.chmod()`, not `os.fchmod()`, on purpose: `fchmod` does not exist
-    on Windows at all (an `AttributeError` `except OSError` never catches),
-    where this repo's own CI matrix runs; `os.chmod(path, ...)` is present
-    everywhere and, unlike its POSIX behaviour, just toggles the read-only
-    attribute there rather than crashing. It stays a *separate*, own
-    try/except from the write -- best-effort, narrows a pre-existing file
-    left wide by #2484 -- so a narrowing failure never blocks or swallows
-    the write itself, matching `write_text()`'s original, unguarded
-    propagation of a write failure.
+    Prefers `os.fchmod(fd, ...)` over `os.chmod(path, ...)` where available:
+    a path-based chmod re-resolves the path and follows a symlink, so a
+    swap of SESSION_FILE for a symlink between `os.open()` and the chmod
+    call would narrow whatever the link now points at instead of the file
+    this process actually opened -- `fchmod` operates on the fd itself and
+    cannot be redirected that way (mirrors `presets/mcp/_paths.py`'s own
+    "fchmod rather than chmod" comment for the identical reason). `fchmod`
+    does not exist on Windows at all (an `AttributeError` `except OSError`
+    never catches), where this repo's own CI matrix runs, so `os.chmod`
+    is the fallback there -- weaker (just toggles the read-only attribute)
+    but does not crash. Either way it stays a *separate*, own try/except
+    from the write -- best-effort, narrows a pre-existing file left wide
+    by #2484 -- so a narrowing failure never blocks or swallows the write
+    itself, matching `write_text()`'s original, unguarded propagation of
+    a write failure.
     """
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(SESSION_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.chmod(SESSION_FILE, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o600)
+        else:
+            os.chmod(SESSION_FILE, 0o600)
     except OSError:
         pass
     with os.fdopen(fd, "w", encoding="utf-8") as f:
