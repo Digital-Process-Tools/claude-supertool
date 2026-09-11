@@ -56,6 +56,22 @@ def _load(name: str, filename: str):
 _gh = _load("github_pr_op", "pr.py")._gh  # type: ignore[attr-defined]
 _format_error = _load("github_run_op", "run.py")._format_error  # type: ignore[attr-defined]
 
+_WATCH_DIR = Path(__file__).parents[2]
+
+
+def _load_watch(name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(name, _WATCH_DIR / filename)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# `ratelimit` (#2509): tells a rate-limit-shaped `error` string apart from any
+# other unreachable reading, and reads the reset time to attach as
+# `retry_after` -- shared with every other gh-backed source.
+ratelimit = _load_watch("watch_github_pr_ratelimit", "ratelimit.py")
+
 LOOKUP_OK = "ok"
 LOOKUP_UNAVAILABLE = "unavailable"
 
@@ -216,22 +232,30 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         # `None` only on a genuine first poll, and resetting it here would make
         # the next successful poll re-baseline and drop every comment left
         # during the outage.
-        new_state = {**state, "lookup": LOOKUP_UNAVAILABLE, "error": error}
+        # #2509: a rate-limit-shaped failure carries `retry_after` so the
+        # dispatcher's poll loop can sleep until the token actually resets
+        # instead of hitting the same wall on the ordinary INTERVAL. `{}` for
+        # anything that is not a rate limit -- a network outage never gets one.
+        extra = ratelimit.unreachable_extra(error)
+        new_state = {**state, "lookup": LOOKUP_UNAVAILABLE, "error": error, **extra}
         if state.get("lookup") == LOOKUP_UNAVAILABLE:
             return [], new_state
+        payload = {
+            "number": str(number),
+            "error": error,
+            # `last_known_`, not the bare field name: what we could see the
+            # last time we could see, not what the PR is doing now. The two
+            # having become the same word is the whole bug.
+            "last_known_state": str(state.get("pr_state") or ""),
+            "last_known_checks": str(state.get("checks_state") or ""),
+            "title": str(state.get("title") or ""),
+            "url": str(state.get("url") or ""),
+        }
+        if "retry_after" in extra:
+            payload["retry_after"] = extra["retry_after"]
         return [{
             "event": "pr_unreachable",
-            "payload": {
-                "number": str(number),
-                "error": error,
-                # `last_known_`, not the bare field name: what we could see the
-                # last time we could see, not what the PR is doing now. The two
-                # having become the same word is the whole bug.
-                "last_known_state": str(state.get("pr_state") or ""),
-                "last_known_checks": str(state.get("checks_state") or ""),
-                "title": str(state.get("title") or ""),
-                "url": str(state.get("url") or ""),
-            },
+            "payload": payload,
             "notify_title": f"#{number} — cannot tell",
             "notify_message": error,
         }], new_state

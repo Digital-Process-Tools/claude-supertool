@@ -2141,6 +2141,106 @@ change to any one source's `poller.py` reads every *other* source as freshly
 stale too, until they are restarted. That is the safe direction; a false
 `STALE` costs a look, a false `current` costs nothing at all.
 
+## The fleet shares one GitHub API budget, and `watches` now says so ([#2509](https://github.com/Digital-Process-Tools/claude-supertool/issues/2509))
+
+Every `gh`-backed poller on a machine — `gh-branch`, `gh-run`, `github-pr`,
+`github-pr-feed`, `github-issue-feed`, whatever channel or repository each one
+watches — authenticates as the same keyring token. The 5000 req/h core budget
+`gh api rate_limit` reports is a fact about that token, not about any one
+poller: 18 legitimate pollers at the shipped 30s interval, 2-3 `gh` calls
+each, project to 4300-6500 req/h on their own, before an interactive session
+or a developer lane spends a single call. When the bucket empties, every
+watcher on the machine goes `*_unreachable` at once with `GitHub API rate
+limit exceeded`, and until #2509 nothing told a reading session that this
+specific unreachable event was the shared budget rather than a real outage,
+or how close the fleet was running to the edge in the first place.
+
+**`watches` now prints the budget**, built from the same cross-channel
+process scan the foreign-poller disclosure above already pays for — never a
+second scan:
+
+```
+watches: GitHub API budget: 4 gh-branch, 1 github-pr, 4 github-pr-feed — projected 2040 req/h across every channel this scan saw.
+watches:   core: 4998/5000 remaining, resets 2026-09-11T20:25:49Z
+watches:   graphql: 5000/5000 remaining, resets 2026-09-11T20:25:49Z
+```
+
+The projection is `pollers x calls-per-tick x 3600/interval`, summed per
+source across `mine`, every channel in `other`, and `unknown` — the same
+three buckets `presets/watch/transport.poller_census` already returns —
+counting only `presets/watch/ratelimit.GH_SOURCES` (the five sources above).
+A GitLab, Slack, Bluesky or dev.to poller draws on a different budget, or
+none, and is not counted. `calls-per-tick` is a hand-kept estimate in
+`ratelimit.CALLS_PER_TICK`, not an instrumented count — `gh-branch` alone
+makes three calls (`_head_commit`, `_run_list`, `_repo_identity`) plus one
+more per concurrently-selected workflow run, undercounted here rather than
+overcounted. When the projection exceeds the core limit `gh api rate_limit`
+actually reports, the line carries a `WARN`:
+
+```
+watches:   WARN: projected 6000 req/h exceeds the core limit of 5000 — this machine's own pollers can empty the budget on their own, before any interactive session spends a call. Use a fleet-wide interval override (SUPERTOOL_WATCH_INTERVAL) or unwatch some of the 18 gh-backed pollers listed above.
+```
+
+A `gh api rate_limit` read that itself fails (no `gh`, no credentials, a
+timeout) says so rather than omitting the section or rendering as though the
+projection had been checked — the third state this whole preset keeps to.
+
+### Back-off: `retry_after` on a rate-limit-shaped `*_unreachable`
+
+`presets/watch/tiers/gh_prs.py` already special-cases the rate-limit stderr
+marker as a transport failure rather than a product one — correct, and
+unchanged by this issue. What it did not do, and what every one of the five
+`GH_SOURCES` pollers' own `*_unreachable` events now do, is carry the reset
+time forward: `ratelimit.unreachable_extra(error)` recognises the marker in
+the poller's own already-classified `error` string (`"rate limit"` / `"429"`,
+matching both `presets/github/run.py`'s and `presets/github/branch.py`'s own
+`_format_error`), reads `gh api rate_limit`'s core reset once, and attaches
+`retry_after=<ISO8601 UTC>` to the event's payload and to the state the
+dispatcher's poll loop reads next. A network outage, an auth failure or any
+other `*_unreachable` never gets the field — it is present only for a
+rate-limit-shaped failure whose reset could actually be read, never guessed.
+
+The poll loop (`presets/watch/dispatcher._run_poll_loop`) sleeps until that
+reset instead of its ordinary `INTERVAL` on the very next tick:
+
+```
+sleep_for = interval
+retry_seconds = _retry_after_seconds(new_state.get("retry_after"))
+if retry_seconds is not None:
+    sleep_for = retry_seconds
+```
+
+capped at `MAX_RETRY_AFTER_SECONDS` (3600) so a malformed or implausibly
+far value cannot park a poller silently past GitHub's own rate-limit window.
+A poll that recovers drops `retry_after` from its fresh `new_state`
+(`_snapshot`/`_fetch`'s success paths never set it), so the very next tick
+after recovery falls straight back to the ordinary interval.
+
+### `SUPERTOOL_WATCH_INTERVAL`: a fleet-wide interval override
+
+Every `GH_SOURCES` poller ships `INTERVAL = 30` as a module constant, so a
+machine running several repositories' channels is implicitly committed to
+however many of them happen to be watched, at 30s each, with no single knob
+to widen it. `SUPERTOOL_WATCH_INTERVAL` overrides every source's own
+`INTERVAL`, read at the same two points `interval` already is — fork and
+`reload` — so a `watch:SOURCE:ID:reload` also picks up a changed value:
+
+```bash
+export SUPERTOOL_WATCH_INTERVAL=90   # every poller this session spawns polls at 90s, not its own default
+```
+
+Unset, non-numeric, zero or negative all mean "use the source's own
+`INTERVAL`" — never "poll every 0 seconds". It is a config key rather than a
+new `--interval` flag: the least invasive route to a value read at exactly
+the two places `interval` already is, without a new argv shape threaded
+through `_parse_args` and the exec that labels every poller. The same
+override feeds `watches`' own projection above, so raising it lowers the
+projected rate the board reports, not only the pollers' real behaviour.
+
+**Not asked for by #2509, and not done here:** killing pollers on inference,
+or merging channels — [#749](https://github.com/Digital-Process-Tools/claude-supertool/issues/749)'s
+closing comment already argues why not.
+
 ## A session's own receipt — `channel:received:N` ([#2150](https://github.com/Digital-Process-Tools/claude-supertool/issues/2150))
 
 Every counter this bridge publishes — `forwarded`, `dropped`, `lines_read` —

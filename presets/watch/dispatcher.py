@@ -25,6 +25,7 @@ notify_message?: str}. The dispatcher passes them to transport.emit_event.
 """
 from __future__ import annotations
 
+import calendar
 import importlib.util
 import json
 import os
@@ -41,6 +42,7 @@ from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -
 import _st_hint  # noqa: E402  (a runnable invocation, not a relative path that may not exist -- #905)
 import _untrusted  # noqa: E402  (the state files are somebody else's text, #1197)
 import naming  # noqa: E402  (which knob put the state directory where it is, #1477)
+import ratelimit  # noqa: E402  (fleet-wide GitHub API budget projection, #2509)
 import sourcepath  # noqa: E402  (a source may live outside the plugin, #2135)
 import transport  # noqa: E402
 
@@ -630,6 +632,26 @@ def cmd_list() -> int:
     foreign = _foreign_poller_lines(census)
     for line in foreign:
         print(f"watches: {line}")
+    # #2509: the fleet's own projected GitHub API request rate, against the
+    # real budget one `gh api rate_limit` read reports -- built from the
+    # SAME census/scan this function already paid for above (`census`),
+    # never a second scan. Printed whether or not there are watcher rows:
+    # this is a fact about the *token*, which is shared by every channel on
+    # this machine and not scoped to this one's own watched rows.
+    if census.get("scan_ok"):
+        # `interval_override()` (this module, #2509) wins over each source's
+        # own shipped default for every GH_SOURCES member -- the same value
+        # `_run_poll_loop` itself uses, so a fleet-wide override changes the
+        # projection this prints and not only the pollers' real behaviour.
+        fleet_interval = interval_override()
+        interval_by_source = ({source: fleet_interval for source in ratelimit.GH_SOURCES}
+                              if fleet_interval else None)
+        projected, gh_counts = ratelimit.fleet_projected_requests_per_hour(
+            census, interval_by_source=interval_by_source)
+        rate_limit, rate_limit_why = ratelimit.read_rate_limit()
+        for line in ratelimit.render_budget_lines(rate_limit, rate_limit_why,
+                                                   projected, gh_counts):
+            print(f"watches: {line}")
     dir_state, dir_why = transport.state_dir_status()
     if dir_state == transport.STATE_DIR_UNREADABLE:
         # Printed whether or not there are rows: the pid files are the primary
@@ -1174,6 +1196,62 @@ def _reload_poller(source: str, watcher_id: str, current: Any) -> Any:
     return reloaded
 
 
+#: Overrides every source's own `INTERVAL`, so a machine running several
+#: repos' channels is not implicitly committed to whatever each source's own
+#: module constant says (#2509). Unset, non-numeric or <= 0 all mean "use
+#: the source's own INTERVAL" -- a config key rather than a CLI flag, because
+#: the least invasive route to a value read at exactly the two places
+#: `interval` already is (fork and reload) is an environment variable read
+#: at those same two points, not a new argv shape threaded through
+#: `_parse_args` and the exec that labels every poller.
+SUPERTOOL_WATCH_INTERVAL_ENV = "SUPERTOOL_WATCH_INTERVAL"
+
+#: A `retry_after` this loop trusts is capped here rather than slept
+#: verbatim -- a malformed or far-future value must not park a poller
+#: silently for longer than GitHub's own rate-limit window ever runs.
+MAX_RETRY_AFTER_SECONDS = 3600
+
+
+def interval_override() -> int | None:
+    """The fleet-wide interval override, or `None` to use the source's own.
+
+    Read fresh at every call site rather than cached once: `_run_poll_loop`
+    reads it at fork and again on every `reload`, so a changed export is
+    picked up the same way a poller picks up a changed `INTERVAL` today.
+    """
+    raw = os.environ.get(SUPERTOOL_WATCH_INTERVAL_ENV)
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _retry_after_seconds(retry_after: Any) -> int | None:
+    """Seconds from now until a poller's own `retry_after` (#2509), or
+    `None` when it cannot be trusted -- absent, unparseable, already past,
+    or implausibly far out.
+
+    `new_state["retry_after"]` is a plain ISO8601 UTC string
+    (`ratelimit.reset_iso`'s own format) written by a poller's error arm,
+    never re-derived here: this loop only turns that string into a sleep
+    duration, the same separation of "what happened" from "how long to
+    wait" the rest of this file keeps between `poll()` and its caller.
+    """
+    if not retry_after or not isinstance(retry_after, str):
+        return None
+    try:
+        struct = time.strptime(retry_after, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return None
+    remaining = calendar.timegm(struct) - time.time()
+    if remaining <= 0:
+        return None
+    return min(int(remaining) + 1, MAX_RETRY_AFTER_SECONDS)
+
+
 def _wait_interruptible(seconds: int, stop_flag: dict[str, bool]) -> None:
     """Wait `seconds`, in one-second steps, giving up early on a stop.
 
@@ -1273,7 +1351,7 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
     # process age: a poller restarted with its state intact is not bootstrapping.
     first_tick = _is_bootstrap_state(state)
     ctx = {"source": source, "id": watcher_id, "only": only}
-    interval = int(getattr(poller, "INTERVAL", 30))
+    interval = interval_override() or int(getattr(poller, "INTERVAL", 30))
     stop_flag = {"stop": False}
     reached_terminal = False
     # The error branch's own bound (#1852). A failed poll produces no new state,
@@ -1306,7 +1384,7 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
                 # on purpose (#2212): only which module object `poller` names
                 # changes here, never what the loop already knows.
                 poller = _reload_poller(source, watcher_id, poller)
-                interval = int(getattr(poller, "INTERVAL", 30))
+                interval = interval_override() or int(getattr(poller, "INTERVAL", 30))
                 max_failures = int(getattr(poller, "MAX_CONSECUTIVE_FAILURES",
                                            MAX_CONSECUTIVE_POLL_FAILURES))
             try:
@@ -1370,7 +1448,19 @@ def _run_poll_loop(source: str, watcher_id: str, only: list[str]) -> None:
                 reached_terminal = True
                 break
 
-            _wait_interruptible(interval, stop_flag)
+            # #2509: a rate-limit-marked poller wrote its own reset time into
+            # `retry_after` rather than sleeping the ordinary INTERVAL and
+            # hitting the same wall on the next tick. `new_state` -- not the
+            # `state` this loop already holds -- is what a poller wrote on
+            # *this* poll, so a poll that recovered (no `retry_after` in its
+            # fresh new_state) falls straight back to `interval` even though
+            # `retry_after` was present on the read before it.
+            sleep_for = interval
+            retry_seconds = _retry_after_seconds(
+                new_state.get("retry_after") if isinstance(new_state, dict) else None)
+            if retry_seconds is not None:
+                sleep_for = retry_seconds
+            _wait_interruptible(sleep_for, stop_flag)
     finally:
         # Only if this process still owns the slot. A poller shutting down
         # slowly, whose slot was meanwhile reclaimed, must not unlink its

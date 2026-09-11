@@ -97,6 +97,10 @@ _format_error = _load("feed_github_run", _GITHUB_DIR / "run.py")._format_error
 _repo_target = _load("feed_github_repo_target", _PRESETS_DIR / "_repo_target.py")
 _filter_tokens = _load("feed_filter_tokens", _PRESETS_DIR / "_filter_tokens.py")
 transport = _load("feed_watch_transport", _WATCH_DIR / "transport.py")
+# `ratelimit` (#2509): tells a rate-limit-shaped `error` string apart from any
+# other unreachable reading, and reads the reset time to attach as
+# `retry_after` -- shared with every other gh-backed source.
+ratelimit = _load("feed_watch_ratelimit", _WATCH_DIR / "ratelimit.py")
 
 # The two transitions the per-PR source announces under its own event keys.
 # The strings double as PR states, which is why one tuple serves both readings.
@@ -366,19 +370,26 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         # re-announces every open PR as a `pr_opened` -- one notification
         # storm per network blip, which is the failure the baseline rule at
         # the top of this file exists to prevent.
-        new_state = {**state, "lookup": LOOKUP_UNAVAILABLE, "error": error}
+        # #2509: a rate-limit-shaped failure carries `retry_after` so the
+        # dispatcher's poll loop can sleep until the token actually resets
+        # instead of hitting the same wall on the ordinary INTERVAL.
+        extra = ratelimit.unreachable_extra(error)
+        new_state = {**state, "lookup": LOOKUP_UNAVAILABLE, "error": error, **extra}
         if state.get("lookup") == LOOKUP_UNAVAILABLE:
             return [], new_state
+        payload = {
+            "scope": scope,
+            "error": error,
+            # `last_known_`, not a bare count: this tick read nothing, so
+            # the number describes the last poll that could see rather
+            # than what GitHub holds now.
+            "last_known_count": len(known),
+        }
+        if "retry_after" in extra:
+            payload["retry_after"] = extra["retry_after"]
         return [{
             "event": "prs_unreachable",
-            "payload": {
-                "scope": scope,
-                "error": error,
-                # `last_known_`, not a bare count: this tick read nothing, so
-                # the number describes the last poll that could see rather
-                # than what GitHub holds now.
-                "last_known_count": len(known),
-            },
+            "payload": payload,
             "notify_title": f"PR feed {scope} -- cannot tell",
             "notify_message": error,
         }], new_state
