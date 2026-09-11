@@ -2308,7 +2308,7 @@ def stranded_report(path: str) -> tuple[int, str]:
     if len(rows) > _ROW_CAP:
         lines.append(f">   ... and {len(rows) - _ROW_CAP} more")
     lines.append(
-        "> `channel:health` says which of its six states this is; "
+        "> `channel:health` says which of its five states this is; "
         "`channel:probe` writes one synthetic event and reports what took it. "
         "Nothing here is queued for replay -- an event emitted with no listener "
         "is gone (#2478).")

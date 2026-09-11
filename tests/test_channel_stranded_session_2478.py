@@ -149,6 +149,33 @@ def test_an_unknown_sub_op_names_stranded_too() -> None:
     assert "stranded" in result.stderr, result.stderr
 
 
+def test_an_unreadable_state_file_with_no_other_watcher_stays_silent(tmp_path: Path) -> None:
+    """MUST FIRE -- pins a deliberate design choice, not an oversight.
+
+    `stranded_watchers` returns a `Stranded` row carrying `refusal` (not `""`)
+    for a state file it could not read (#1191's own shape one layer over:
+    corrupt JSON, a symlink, a non-UTF-8 name). `stranded_report` filters
+    those rows out before deciding whether it has anything to say -- so a
+    channel with only a tampered/corrupt state file on disk renders exactly
+    as silent as a genuinely healthy one.
+
+    That fold is intentional, argued in `stranded_report`'s own docstring:
+    `channel:health` is where "I could not look" belongs, and shouting about
+    an unreadable /tmp entry at every session start would train the reader to
+    skip the block that matters. This test exists so that argument is pinned
+    by a run rather than resting on the docstring's word alone -- #2478 self
+    review, class A.
+    """
+    state_dir, sock = tmp_path / "slots", tmp_path / "watch.sock"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "supertool-watch-github-pr__2477.state.json").write_text(
+        "{not valid json", encoding="utf-8")
+
+    result = _run(["stranded"], state_dir, sock)
+    assert result.returncode == 0, (result.stdout, result.stderr)
+    assert result.stdout.strip() == "", repr(result.stdout)
+
+
 def test_the_session_start_hook_asks_for_it() -> None:
     """MUST FIRE. The op existing and the hook calling it are two claims, and
     the first is worth nothing alone -- that is the whole defect this closes."""

@@ -2661,7 +2661,7 @@ consumer is bound, so events are being LOST, not queued.
 > Each watcher below recorded that its own last send found nobody listening.
 These are the pollers' own words, not a probe:
 >   github-pr 2477 -- last emit 2026-09-09T14:51:41Z
-> `channel:health` says which of its six states this is; `channel:probe`
+> `channel:health` says which of its five states this is; `channel:probe`
 writes one synthetic event and reports what took it. Nothing here is queued
 for replay -- an event emitted with no listener is gone (#2478).
 ```
