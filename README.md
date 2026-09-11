@@ -46,6 +46,7 @@ Claude Code's default toolbelt is 1995 unix: `cat` one file, `grep` one pattern,
 - **`claims:PATH`** — does a doc's own references — op names, paths, line numbers, cited issues — still hold? [Details](docs/presets/claims.md).
 - **`plugin-marketplace`** — did a release actually reach anyone installed through the catalogue, or is the pinned commit stale? [Details](docs/presets/plugin-marketplace.md).
 - **`classify:TEXT`** — is this untrusted text trying to steer an agent? [Details](docs/presets/classify.md).
+- **`statusline`** — a one-line render for Claude Code's own `statusLine` hook, joining locally computed segments with fragments a network-backed op (`gh-pr` today) publishes as a side effect of running normally — the render path itself never calls the network. [Details](docs/presets/statusline.md).
 
 That's a sample — supertool ships ~40 ops out of the box (built-ins plus the `git` / `github` / `gitlab` / `claude-log` presets); add your own and you're past 60 fast. The full pitch, the receipt behind "50%", and why the tool exists at all: [docs/philosophy.md](docs/philosophy.md).
 

@@ -24,6 +24,7 @@ import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run /
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
+import _statusline_fragments  # noqa: E402  (the statusline op's read side — #1850)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
@@ -986,6 +987,19 @@ def main() -> int:
         print(_untrusted.banner())
         print(_untrusted.fence(result.stdout[:500]))
         return 1
+
+    # `statusline` (#1850) publishes here rather than re-deriving its own
+    # tally: this is the reconciliation `presets/_checks.py` already did for
+    # THIS run, so there is no second verdict path that could ever disagree
+    # with it. Best-effort and silent -- see `_statusline_fragments.publish`'s
+    # docstring for why a cache-write failure must never turn a working
+    # `gh-pr` call into a failing one.
+    _statusline_fragments.publish("gh-pr", os.getcwd(), {
+        "summary": _checks.summarize_github(d.get("statusCheckRollup")),
+        "number": d.get("number"),
+        "branch": d.get("headRefName"),
+        "mergeable": d.get("mergeable"),
+    })
 
     # Write-through mirror (#1955, #2472): the RAW reply, before any
     # truncation below touches it, exactly like `gh-issue`'s own wiring in
