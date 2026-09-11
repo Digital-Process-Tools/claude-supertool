@@ -100,6 +100,45 @@ def test_a_walk_exhausted_after_a_trust_violation_is_not_a_clean_absence(
     )
 
 
+def test_a_further_trusted_candidate_above_a_violation_is_still_found(
+    monkeypatch, tmp_path,
+) -> None:
+    """Second-pass review finding: the walk must still PREFER a further,
+    trusted config higher up over reporting the lower violation as an
+    error -- #2416's walk-continuation design, which this diff's `skipped`
+    accumulator must not defeat. A world-writable `.supertool.json` sits
+    at `repo/sub`; a normal, owner-only, trusted one narrowing the SAME
+    channel sits at `repo` (the `.git` root) above it. The trusted one
+    must win, with `.error is None` -- not the accumulated violation."""
+    if os.name != "posix":
+        import pytest
+        pytest.skip("group/world-writable mode bits are POSIX-only")
+
+    repo_root = tmp_path / "repo"
+    (repo_root / ".git").mkdir(parents=True)
+    trusted_cfg = repo_root / ".supertool.json"
+    trusted_cfg.write_text(
+        json.dumps({"slack": {"channels": {"C0123": "context"}}}),
+        encoding="utf-8")
+
+    sub = repo_root / "sub"
+    sub.mkdir()
+    violated_cfg = sub / ".supertool.json"
+    violated_cfg.write_text(
+        json.dumps({"slack": {"channels": {"C0123": "off"}}}),
+        encoding="utf-8")
+    violated_cfg.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IWOTH)
+
+    result = _walk_from(sub)
+
+    assert result.error is None, (
+        f"a trust-violated candidate below a further, genuinely trusted "
+        f"candidate must not surface as an error -- the trusted one "
+        f"should have been found and used instead: {result.error!r}"
+    )
+    assert result.data == {"slack": {"channels": {"C0123": "context"}}}
+
+
 def test_no_trust_violation_anywhere_stays_the_clean_absence(
     monkeypatch, tmp_path,
 ) -> None:
