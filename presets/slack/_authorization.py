@@ -81,9 +81,39 @@ def _config_trust_violation(candidate: Path) -> Optional[str]:
     return None
 
 
-def load_project_config() -> dict:
-    """The nearest tracked, TRUSTED `.supertool.json`'s `slack` block,
-    walking up from cwd and stopping at the nearest `.git` ancestor (#2416).
+class ProjectConfigResult(NamedTuple):
+    """Three states, not two (docs/validators.md) -- the same discipline
+    `presets/worktree/_common.py::ConfigResult` already applies to its own
+    walk-up loader (#2427 follows that sibling's shape rather than
+    inventing a new one).
+
+    `data` is `None` when no TRUSTED `.supertool.json` was found at all
+    (the repo-root boundary was reached, or the walk left the git repo,
+    with nothing found or every candidate skipped for trust reasons) --
+    the genuine "this project never configured Slack" case. `error` is set
+    only when a FOUND, TRUSTED config could not be parsed as a JSON object
+    -- a malformed write (merge marker, truncated save) -- and `data` is
+    then `None` too, because a malformed file's intended content, narrow or
+    wide, cannot be recovered. These two `data is None` cases are NOT the
+    same fact and `resolve_channel` must not render them alike: only the
+    first means "no project narrowing was ever declared"; the second means
+    "a narrowing WAS declared here and is now unreadable", which must fail
+    closed rather than silently fall back to the machine-owner's (possibly
+    wider) base level (#2427).
+    """
+    data: Optional[dict]
+    error: Optional[str]
+
+
+def load_project_config_result() -> ProjectConfigResult:
+    """The real walk-up loader -- see `load_project_config` below for the
+    trust/boundary rules, unchanged here. Returns the three-state result;
+    `load_project_config` is a thin, back-compat wrapper over this that
+    only ever returns a dict (collapsing `error` into `{}`, since every
+    pre-#2427 caller of that function already treats `{}` as fail-closed).
+    A caller that must distinguish "not configured" from "malformed" --
+    `resolve_channel`, via `presets/slack/auth.py` -- calls this function
+    instead.
 
     Same two limits `_supertool._load_config` (#695), `worktree._common
     .load_config` (#2370) and `gitlab._maintenance.load_config` (#2365)
@@ -99,15 +129,6 @@ def load_project_config() -> dict:
       the caller (or root), is skipped with a warning on stderr, exactly
       like an absent one, so the walk can still find a further, trusted
       config higher up (until the repo-root boundary above stops it).
-
-    A found-and-trusted-but-malformed file (unparseable JSON, or JSON that
-    is not an object at its top level) still yields `{}` rather than
-    continuing the search or raising, exactly like the absent-config case
-    -- fail-closed is unchanged (#2433). Unlike the absent case, though, a
-    malformed one writes a `WARNING: ...` diagnostic to stderr, matching
-    the trust-violation branch above: silently dropping every Slack
-    channel to `off` because of a typo'd config used to look identical to
-    a project that simply never configured Slack at all.
     """
     d = Path.cwd()
     while True:
@@ -123,25 +144,39 @@ def load_project_config() -> dict:
                 try:
                     data = json.loads(candidate.read_text(encoding="utf-8"))
                 except (json.JSONDecodeError, OSError) as exc:
+                    err = f"{candidate} is not valid JSON ({exc})"
                     sys.stderr.write(
-                        f"WARNING: {candidate} is not valid JSON ({exc}) -- "
-                        f"ignoring it for slack authorization.\n"
-                    )
-                    return {}
-                if not isinstance(data, dict):
-                    sys.stderr.write(
-                        f"WARNING: {candidate} does not contain a JSON "
-                        f"object at its top level -- ignoring it for slack "
+                        f"WARNING: {err} -- ignoring it for slack "
                         f"authorization.\n"
                     )
-                    return {}
-                return data
+                    return ProjectConfigResult(data=None, error=err)
+                if not isinstance(data, dict):
+                    err = (f"{candidate} does not contain a JSON object at "
+                           f"its top level")
+                    sys.stderr.write(
+                        f"WARNING: {err} -- ignoring it for slack "
+                        f"authorization.\n"
+                    )
+                    return ProjectConfigResult(data=None, error=err)
+                return ProjectConfigResult(data=data, error=None)
         if (d / ".git").exists():
-            return {}
+            return ProjectConfigResult(data=None, error=None)
         parent = d.parent
         if parent == d:
-            return {}
+            return ProjectConfigResult(data=None, error=None)
         d = parent
+
+
+def load_project_config() -> dict:
+    """Back-compat wrapper over `load_project_config_result` -- returns
+    `{}` for BOTH "not configured" and "malformed", exactly the pre-#2427
+    behaviour every pre-existing caller of this function already treats as
+    fail-closed (#2433's stderr diagnostic still fires either way).
+    `resolve_channel`'s caller uses `load_project_config_result()` instead
+    so it can pass the distinction through and avoid the silent-widen bug
+    this function's own collapse used to cause (#2427).
+    """
+    return load_project_config_result().data or {}
 
 
 class Decision(NamedTuple):
@@ -212,7 +247,8 @@ def _project_level(project_config: Optional[dict], channel_id: str) -> Optional[
 
 
 def resolve_channel(channel_id: str, user_id: Optional[str] = None, *,
-                    project_config: Optional[dict] = None) -> Decision:
+                    project_config: Optional[dict] = None,
+                    project_config_error: Optional[str] = None) -> Decision:
     """The authorization decision for one channel (and, under `allowlist`,
     one user).
 
@@ -220,6 +256,17 @@ def resolve_channel(channel_id: str, user_id: Optional[str] = None, *,
     author -- Slack's `U...` ID -- never a value read out of the message
     body. This function does not fetch or verify identity; that is the
     caller's job, same division as `author_is_viewer` in the poller.
+
+    `project_config_error` is set when the caller found a TRACKED, TRUSTED
+    `.supertool.json` that could not be parsed (`load_project_config_result
+    ().error`) -- a different fact from `project_config` being empty or
+    `None`, which means no such file was ever found at all. A malformed
+    file's intended narrowing cannot be recovered, so this FAILS THE
+    CHANNEL CLOSED (`off`) rather than falling back to `project_config`'s
+    absence-shaped default of "no project override" -- which would
+    silently widen to the machine-owner's base level and render
+    byte-identical to a repo that never configured Slack in the first
+    place (#2427).
     """
     data, state = _load_raw()
     path = config_path()
@@ -261,25 +308,34 @@ def resolve_channel(channel_id: str, user_id: Optional[str] = None, *,
                 base_level = level
                 base_detail = f"{path}: channel {channel_id!r} is {level!r}"
 
-    proj_level = _project_level(project_config, channel_id)
-    effective_level = base_level
-    detail = base_detail
-    if proj_level is not None:
-        if proj_level not in LEVELS:
-            detail += (f"; the project's .supertool.json names an unrecognised "
-                       f"level {proj_level!r} for this channel — ignored")
-        elif _RANK[proj_level] < _RANK[base_level]:
-            effective_level = proj_level
-            detail += f"; narrowed to {proj_level!r} by .supertool.json"
-        elif _RANK[proj_level] == _RANK[base_level]:
-            effective_level = proj_level
-            detail += (f"; .supertool.json also names {proj_level!r} for "
-                       f"this channel — same level, unchanged")
-        else:
-            detail += (f"; .supertool.json asked for {proj_level!r}, which "
-                       f"is WIDER than {base_level!r} — a project may narrow "
-                       f"a channel, never widen it, so this was ignored "
-                       f"(property 2)")
+    if project_config_error is not None:
+        effective_level = "off"
+        detail = (base_detail +
+                  f"; this project's .supertool.json could not be read "
+                  f"({project_config_error}) — a narrowing may have been "
+                  f"declared here and is now unrecoverable, so this fails "
+                  f"closed to 'off' rather than falling back to "
+                  f"{base_level!r} (property 2, #2427)")
+    else:
+        proj_level = _project_level(project_config, channel_id)
+        effective_level = base_level
+        detail = base_detail
+        if proj_level is not None:
+            if proj_level not in LEVELS:
+                detail += (f"; the project's .supertool.json names an unrecognised "
+                           f"level {proj_level!r} for this channel — ignored")
+            elif _RANK[proj_level] < _RANK[base_level]:
+                effective_level = proj_level
+                detail += f"; narrowed to {proj_level!r} by .supertool.json"
+            elif _RANK[proj_level] == _RANK[base_level]:
+                effective_level = proj_level
+                detail += (f"; .supertool.json also names {proj_level!r} for "
+                           f"this channel — same level, unchanged")
+            else:
+                detail += (f"; .supertool.json asked for {proj_level!r}, which "
+                           f"is WIDER than {base_level!r} — a project may narrow "
+                           f"a channel, never widen it, so this was ignored "
+                           f"(property 2)")
 
     if effective_level == "open":
         return Decision(level="refused", heard=False, may_instruct=False,

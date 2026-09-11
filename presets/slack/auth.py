@@ -28,7 +28,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent))  # for _console (#415/#1388)
 from _authorization import (  # noqa: E402
-    LEVELS, config_path, load_project_config, resolve_channel, _load_raw,
+    LEVELS, config_path, load_project_config_result, resolve_channel,
+    _load_raw,
 )
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #415/#1388)
 
@@ -43,22 +44,25 @@ def _list_all() -> int:
         return 0
     channels = data.get("channels") if isinstance(data, dict) else None
     channel_ids = sorted(channels) if isinstance(channels, dict) else []
-    project = load_project_config()
+    project_result = load_project_config_result()
     print(f"# Slack channel authorization — {path}")
     if not channel_ids:
         print("no channels declared -- every channel is `off` by default "
               "(property 1: absent means refuse).")
         return 0
     for channel_id in channel_ids:
-        d = resolve_channel(channel_id, project_config=project)
+        d = resolve_channel(channel_id, project_config=project_result.data,
+                            project_config_error=project_result.error)
         print(f"{channel_id}: {d.level} (heard={d.heard}, "
               f"may_instruct={d.may_instruct}) — {d.detail}")
     return 0
 
 
 def _one(channel_id: str, user_id: str | None) -> int:
-    project = load_project_config()
-    d = resolve_channel(channel_id, user_id=user_id, project_config=project)
+    project_result = load_project_config_result()
+    d = resolve_channel(channel_id, user_id=user_id,
+                        project_config=project_result.data,
+                        project_config_error=project_result.error)
     print(f"# Slack channel authorization — {channel_id}")
     print(f"level: {d.level}")
     print(f"heard: {d.heard}")
