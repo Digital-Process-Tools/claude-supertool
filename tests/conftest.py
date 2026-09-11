@@ -1351,6 +1351,7 @@ RESET_GLOBALS = (
     "_WRITE_COUNT",
     "_WRITE_WARNINGS",
     "_PAYLOAD_WARNINGS",
+    "_PAYLOAD_PY_ESCAPE_ADVISORY",
     # Derived from `_CONFIG`, and therefore scratch for the same reason the
     # fixture below hands every test `_CONFIG = {}` (#1030). `_load_config()`
     # writes the `mcp` block into this dict *in place* and never clears it, so

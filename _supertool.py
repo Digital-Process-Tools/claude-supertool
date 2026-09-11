@@ -11650,6 +11650,13 @@ def _atomic_write(path: str, content: str) -> None:
     _drop_write_warnings(path)
     if _warn:
         _WRITE_WARNINGS.append((_key, _warn))
+    # A `.py`-only advisory seeded at payload-parse time (#2493), for a
+    # doubled-backslash escape sequence the payload's own author already
+    # exempted from the write refusal via `literal_backslashes` -- popped
+    # (not read) so it cannot outlive the one write it describes.
+    _py_advice = _PAYLOAD_PY_ESCAPE_ADVISORY.pop(_key, "")
+    if _py_advice:
+        _WRITE_WARNINGS.append((_key, _py_advice))
 
 
 _BRANCH_CACHE: List[Optional[Tuple[str, str]]] = [None]
@@ -12427,6 +12434,19 @@ _TRAILING_BACKSLASH_RUN = re.compile(r"(\\+)([ \t]*)\r?\n")
 # content it just reverted — the bytes complained about are no longer on
 # disk, and a warning about them would be worse than none.
 _WRITE_WARNINGS: List[Tuple[str, str]] = []
+
+# One `.py` write-chokepoint advisory per target path, seeded at PAYLOAD
+# PARSE time (#2493) and consumed by `_atomic_write` the moment that exact
+# path is next written. Not `_WRITE_WARNINGS` itself: that queue is DROPPED
+# and re-populated by `_atomic_write` on every write to a path (see
+# `_drop_write_warnings` there), which would silently discard an entry
+# seeded before dispatch ever reaches the op. A separate dict, popped rather
+# than read, means a write that never happens (the op errors before
+# `_atomic_write`, or targets a different path than the payload named)
+# leaves nothing stuck here for a later, unrelated write to inherit — the
+# depth<=1 sweep in `dispatch` clears any leftover the same way
+# `_PAYLOAD_WARNINGS` is drained, as a backstop against exactly that.
+_PAYLOAD_PY_ESCAPE_ADVISORY: Dict[str, str] = {}
 
 # Bumped when a mutating op RUNS, before its outcome is known — the branch
 # footer's signal. A write counter cannot serve that role: `_retract_write`
@@ -29863,6 +29883,110 @@ def _payload_extension_bs_hint(parsed: Any) -> str:
     return ""
 
 
+_PAYLOAD_ADVISORY_OPS_LABEL = re.compile(r"^ops\[(\d+)\]\.")
+
+
+def _payload_target_path_for_label(parsed: Any, label: str) -> str:
+    """The `path` this payload writes TO, for one field's own label (#2493).
+
+    `label` is what `_toml_literal_double_backslashes` already names each
+    finding with -- the bare key outside a batch, `ops[N].key` inside one.
+    Reused rather than re-derived: a second reading of the same raw source
+    could disagree with the first about which `[[ops]]` entry a field
+    belongs to, and that disagreement would misattribute the advisory to
+    the wrong file.
+    """
+    if not isinstance(parsed, dict):
+        return ""
+    m = _PAYLOAD_ADVISORY_OPS_LABEL.match(label)
+    if not m:
+        top = parsed.get("path")
+        return top if isinstance(top, str) else ""
+    ops = parsed.get("ops")
+    if not isinstance(ops, list):
+        return ""
+    idx = int(m.group(1))
+    if idx >= len(ops) or not isinstance(ops[idx], dict):
+        return ""
+    entry_path = ops[idx].get("path")
+    return entry_path if isinstance(entry_path, str) else ""
+
+
+def _payload_py_doubled_backslash_advisory(parsed: Any, raw: str) -> Dict[str, str]:
+    r"""A `.py`-only, non-blocking advisory for a doubled-backslash escape
+    sequence that `literal_backslashes` already exempted from the write
+    refusal (#2493).
+
+    `_payload_double_backslash_refusal` blocks this shape unconditionally for
+    every write-bound field UNLESS the payload's own author exempted it -- so
+    by the time a doubled run reaches `_atomic_write`, the author already
+    said "this is intentional". The residual risk `literal_backslashes`
+    cannot close: the exemption is FIELD-scoped, not occurrence-scoped, so
+    one legitimate `\\d` regex or `\\\\` Windows path in a `content` field
+    exempts every OTHER doubled run in that same field too, including a
+    genuine `\\n`-for-`\n` typo sitting a few lines away in the same block.
+    `py-syntax` structurally cannot see this: `"a\\nb"` and `"a\nb"` are both
+    syntactically valid Python with different runtime values, and it only
+    ever answers "does this parse" (#2493's own report).
+
+    Scoped exactly as narrowly as the residual risk: only `.py` targets
+    (where the ambiguity is a string-literal escape, not prose), and only
+    occurrences the payload already exempted -- an occurrence the refusal is
+    STILL blocking never reaches disk at all, so there is nothing here to
+    advise about. Reuses `_toml_literal_double_backslashes`, the SAME scan
+    the refusal itself runs, so this can never disagree with it about what
+    counts as a doubled run or where a literal block starts and ends.
+
+    Never a finding, never a rewrite: a decline-to-guess note appended to the
+    RECEIPT (via `_PAYLOAD_PY_ESCAPE_ADVISORY`, consumed by `_atomic_write`),
+    not to `py-syntax`'s own verdict, which stays `ok` because it is
+    correctly answering a different question.
+    """
+    scope = _payload_literal_backslashes_scope(parsed)
+    if not scope:
+        return {}
+    by_path: Dict[str, List[Tuple[str, int, int, str, int]]] = {}
+    for key, label, _line, _total, occs in _toml_literal_double_backslashes(raw):
+        lk = key.lower()
+        if lk not in _PAYLOAD_DBS_WRITE_KEYS:
+            continue
+        if not (scope is True or lk in scope):
+            continue  # still refused -- never reaches disk
+        target = _payload_target_path_for_label(parsed, label)
+        if not target or os.path.splitext(target)[1].lower() != ".py":
+            continue
+        by_path.setdefault(os.path.abspath(target), []).extend(
+            (label, line_no, col, excerpt, run)
+            for line_no, col, excerpt, caret, run in occs)
+    if not by_path:
+        return {}
+    arrow = mark(chr(8627))
+    out: Dict[str, str] = {}
+    for abs_path, items in by_path.items():
+        lines = [
+            mark("ℹ") + " " + str(len(items)) + " doubled-backslash "
+            "escape sequence" + ("" if len(items) == 1 else "s") + " in this "
+            "write " + ("was" if len(items) == 1 else "were") + " exempted "
+            "from the payload refusal via `" + _PAYLOAD_LITERAL_BS_KEY
+            + "` -- the exemption covers the WHOLE field, so a genuine "
+            "doubling mistake sitting among legitimate ones would look "
+            "identical to this. This may be a doubled escape rather than an "
+            "intended literal backslash; not corrected automatically. "
+            "(#2493)" + chr(10)
+        ]
+        for label, line_no, col, excerpt, run in items[:_PAYLOAD_DBS_MAX_OCCURRENCES]:
+            lines.append(
+                "  " + arrow + " `" + label + "` at payload line "
+                + str(line_no) + ", column " + str(col) + " (run of "
+                + str(run) + "): " + excerpt + chr(10)
+            )
+        rest = len(items) - _PAYLOAD_DBS_MAX_OCCURRENCES
+        if rest > 0:
+            lines.append("  " + arrow + " and " + str(rest) + " more" + chr(10))
+        out[abs_path] = "".join(lines)
+    return out
+
+
 def _payload_double_backslash_refusal(parsed: Any, raw: str) -> str:
     """Refuse a payload that would WRITE a doubled backslash (#1087).
 
@@ -30171,6 +30295,8 @@ def _load_at_file_raw(ref: str, note: bool = True) -> "Tuple[Any, str, str]":
         text = _payload_double_backslash_note(raw)
         if text:
             _PAYLOAD_WARNINGS.append(text)
+        for _abs_path, _advice in _payload_py_doubled_backslash_advisory(parsed, raw).items():
+            _PAYLOAD_PY_ESCAPE_ADVISORY[_abs_path] = _advice
         refusal = _payload_shell_quote_escape_refusal(parsed, raw)
         if refusal:
             raise ValueError(f"@file payload refused ({source}): {refusal}")
@@ -32912,6 +33038,17 @@ def _dispatch_impl(arg: str, pre_parsed: "Optional[Tuple[List[str], bool]]" = No
     # payload once, in this frame, before any sub-op runs.
     if _PAYLOAD_WARNINGS and getattr(_DISPATCH_STATE, "depth", 1) <= 1:
         body = _take_payload_warnings() + body
+
+    # Backstop for `_PAYLOAD_PY_ESCAPE_ADVISORY` (#2493): `_atomic_write`
+    # pops its own entry the moment the matching path is written, but a
+    # write that never happens -- the op errors before reaching
+    # `_atomic_write`, or targets a different path than the one the payload
+    # named -- would otherwise leave a stale entry for a LATER, unrelated
+    # write in the same warm-daemon process to inherit. Same depth gate as
+    # `_PAYLOAD_WARNINGS` above, for the same reason: a batch parses its
+    # payload once, in the outer frame.
+    if _PAYLOAD_PY_ESCAPE_ADVISORY and getattr(_DISPATCH_STATE, "depth", 1) <= 1:
+        _PAYLOAD_PY_ESCAPE_ADVISORY.clear()
 
     if _WRITE_WARNINGS:
         body += "".join(w[1] for w in _WRITE_WARNINGS)
