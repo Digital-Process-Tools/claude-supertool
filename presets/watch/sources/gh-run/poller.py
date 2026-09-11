@@ -58,6 +58,22 @@ def _load(name: str, filename: str):
 _gh = _load("github_pr_op", "pr.py")._gh  # type: ignore[attr-defined]
 _format_error = _load("github_run_op", "run.py")._format_error  # type: ignore[attr-defined]
 
+_WATCH_DIR = Path(__file__).parents[2]
+
+
+def _load_watch(name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(name, _WATCH_DIR / filename)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# `ratelimit` (#2509): tells a rate-limit-shaped `error` string apart from any
+# other unreachable reading, and reads the reset time to attach as
+# `retry_after` -- shared with every other gh-backed source.
+ratelimit = _load_watch("watch_gh_run_ratelimit", "ratelimit.py")
+
 # Fields asked of gh on each poll — one API call, covers every event.
 _VIEW_FIELDS = "databaseId,status,conclusion,workflowName,url,headBranch,event"
 
@@ -151,18 +167,25 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         # the loud failure for a quiet one by a longer route. Last-known status
         # is preserved so the watcher stays alive and non-terminal; a network
         # blip must not retire a run nobody is now watching.
-        new_state = {**state, "lookup": LOOKUP_UNAVAILABLE, "error": error}
+        # #2509: a rate-limit-shaped failure carries `retry_after` so the
+        # dispatcher's poll loop can sleep until the token actually resets
+        # instead of hitting the same wall on the ordinary INTERVAL.
+        extra = ratelimit.unreachable_extra(error)
+        new_state = {**state, "lookup": LOOKUP_UNAVAILABLE, "error": error, **extra}
         if state.get("lookup") == LOOKUP_UNAVAILABLE:
             return [], new_state
         label = f"run #{run_id}"
+        payload = {
+            "run_id": run_id,
+            "error": error,
+            "last_known_status": str(state.get("status") or ""),
+            "url": str(state.get("url") or ""),
+        }
+        if "retry_after" in extra:
+            payload["retry_after"] = extra["retry_after"]
         return [{
             "event": "run_unreachable",
-            "payload": {
-                "run_id": run_id,
-                "error": error,
-                "last_known_status": str(state.get("status") or ""),
-                "url": str(state.get("url") or ""),
-            },
+            "payload": payload,
             "notify_title": f"{label} — cannot tell",
             "notify_message": error,
         }], new_state

@@ -41,6 +41,7 @@ from pathlib import Path
 INTERVAL = 30
 
 _GITHUB_DIR = Path(__file__).parents[3] / "github"
+_WATCH_DIR = Path(__file__).parents[2]
 
 
 def _load(name: str, filename: str):
@@ -52,6 +53,21 @@ def _load(name: str, filename: str):
 
 
 branch = _load("watch_gh_branch_op", "branch.py")
+
+
+def _load_watch(name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(name, _WATCH_DIR / filename)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# `ratelimit` (#2509): tells a rate-limit-shaped `error` string apart from
+# any other unreachable reading, and reads the reset time to attach as
+# `retry_after` -- shared with every other gh-backed source rather than a
+# second copy of the same marker check and `gh api rate_limit` call.
+ratelimit = _load_watch("watch_gh_branch_ratelimit", "ratelimit.py")
 
 # The four states this source can report, unchanged from `gh-branch`'s own
 # vocabulary. #1953's own requirement is that the not-yet-concluded case must
@@ -217,17 +233,29 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         # flag), not once per poll: an alert that repeats every 30s is one
         # people mute, and a muted alert is the original silence by a longer
         # route.
+        # #2509: a rate-limit-shaped failure carries `retry_after` so the
+        # dispatcher's poll loop can sleep until the token actually resets
+        # instead of hitting the same wall on the very next ordinary
+        # INTERVAL. Computed on every poll while unreachable, not only the
+        # first (state.get("lookup") below only suppresses the *event*, and
+        # the dispatcher still needs a fresh reset time on every tick it
+        # stays throttled) -- `unreachable_extra` returns {} for anything
+        # that is not a rate limit, so a network outage never gets one.
+        extra = ratelimit.unreachable_extra(error)
         new_state = {**state, "lookup": LOOKUP_UNAVAILABLE, "error": error,
-                     "ref": ref}
+                     "ref": ref, **extra}
         if state.get("lookup") == LOOKUP_UNAVAILABLE:
             return [], new_state
+        payload = {
+            "ref": ref,
+            "error": error,
+            "last_known_state": str(state.get("branch_state") or ""),
+        }
+        if "retry_after" in extra:
+            payload["retry_after"] = extra["retry_after"]
         return [{
             "event": "branch_unreachable",
-            "payload": {
-                "ref": ref,
-                "error": error,
-                "last_known_state": str(state.get("branch_state") or ""),
-            },
+            "payload": payload,
             "notify_title": f"{ref} — cannot tell",
             "notify_message": error,
         }], new_state

@@ -129,6 +129,11 @@ def _load(name: str, path: Path):
 _gh = _load("gh_issue_feed_pr_op", _GITHUB_DIR / "pr.py")._gh
 _format_error = _load("gh_issue_feed_run_op", _GITHUB_DIR / "run.py")._format_error
 _repo_target = _load("gh_issue_feed_repo_target", _PRESETS_DIR / "_repo_target.py")
+_WATCH_DIR = Path(__file__).parents[2]
+# `ratelimit` (#2509): tells a rate-limit-shaped `error` string apart from any
+# other unreachable reading, and reads the reset time to attach as
+# `retry_after` -- shared with every other gh-backed source.
+ratelimit = _load("gh_issue_feed_ratelimit", _WATCH_DIR / "ratelimit.py")
 
 
 def resolve_filters(scope: str) -> dict[str, str] | None:
@@ -511,19 +516,26 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
         # `{**state, ...}` is the recovery guarantee: `known`, `observed_at`
         # and `closed_recent` all have to survive untouched, or the first
         # successful poll after the outage re-announces the whole population.
-        new_state = {**state, "lookup": LOOKUP_UNAVAILABLE, "error": error}
+        # #2509: a rate-limit-shaped failure carries `retry_after` so the
+        # dispatcher's poll loop can sleep until the token actually resets
+        # instead of hitting the same wall on the ordinary INTERVAL.
+        extra = ratelimit.unreachable_extra(error)
+        new_state = {**state, "lookup": LOOKUP_UNAVAILABLE, "error": error, **extra}
         if state.get("lookup") == LOOKUP_UNAVAILABLE:
             return [], new_state
+        payload = {
+            "scope": scope,
+            "error": error,
+            # `last_known_`, not the bare name: what we could see the last
+            # time we could see, not what the tracker holds now.
+            "last_known_count": len(known),
+            "last_known_at": str(state.get("observed_at") or ""),
+        }
+        if "retry_after" in extra:
+            payload["retry_after"] = extra["retry_after"]
         return [{
             "event": "issues_unreachable",
-            "payload": {
-                "scope": scope,
-                "error": error,
-                # `last_known_`, not the bare name: what we could see the last
-                # time we could see, not what the tracker holds now.
-                "last_known_count": len(known),
-                "last_known_at": str(state.get("observed_at") or ""),
-            },
+            "payload": payload,
             "notify_title": f"issue feed {scope} — cannot tell",
             "notify_message": error,
         }], new_state
