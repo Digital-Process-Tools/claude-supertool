@@ -217,14 +217,29 @@ def test_adapter_does_not_hang_and_does_not_fabricate_when_id_never_arrives(
     received with no matching frame — not the "no bytes received" shape a
     buffer that never got that far would also raise with."""
     mod = adapter(name)
+    # #2449 (review round 2): id=1 used to be the shared, hardcoded
+    # `initialize` id every adapter sent, and this fixture relied on that --
+    # a real answer never arrives, so `id: 1` alone (never the fixed literal
+    # `2` `find_response` awaited pre-#1935, and never the caller's own
+    # random `initialize` id post-#2449) was "noise, not a match" either
+    # way. It is now genuinely foreign (the adapter's own `initialize` id is
+    # random, not 1), so this exchange is detected as desynchronised and
+    # retried once -- a fresh `FakeSocket` per `socket.socket()` call and a
+    # stubbed `force_respawn` (never touching the real filesystem/lock/
+    # subprocess machinery) keep that retry from reaching outside the test,
+    # and the retried attempt sees the identical noise, so the assertions
+    # below hold for either attempt's exception.
     noise = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode() + b"\n"
-    fake = FakeSocket([noise, b""])
-    monkeypatch.setattr(mod.socket, "socket", lambda *a, **k: fake)
+    monkeypatch.setattr(mod.socket, "socket", lambda *a, **k: FakeSocket([noise, b""]))
+    monkeypatch.setattr(mod._spawn, "force_respawn", lambda *a, **k: "/fake/sock")
 
     # [0]: deadline = monotonic() + CALL_TIMEOUT_SEC. [1]: first `remaining`
     # check — still 0.0, so the loop is entered and `noise` is read. [2]:
     # second `remaining` check, now past the deadline, so the loop exits
-    # with `buf` holding `noise` rather than empty.
+    # with `buf` holding `noise` rather than empty. The iterator's fallback
+    # (`mod.CALL_TIMEOUT_SEC + 2`, always past the deadline once exhausted)
+    # covers a retried second exchange the same way, without needing more
+    # values queued for it.
     times = iter([0.0, 0.0, mod.CALL_TIMEOUT_SEC + 1])
     monkeypatch.setattr(mod.time, "monotonic",
                          lambda: next(times, mod.CALL_TIMEOUT_SEC + 2))

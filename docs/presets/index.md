@@ -29,6 +29,7 @@ Supertool merges preset ops at startup — project-level ops always override on 
 | `vim` | Documentation for the built-in `vim` op — the macro grammar for the default pattern-based edit | [vim.md](vim.md) | doc-only; the op is built in |
 | `lsp` | Documentation for five built-in ops that reach a language server: `workspace`, `resolve`, `diag`, `hover`, `rename` | [lsp.md](lsp.md) | doc-only; the ops need an `mcp` block |
 | `plugin-marketplace` | Did this release reach anyone? Per catalogue: listed / not listed / skipped-with-reason, the pinned sha, the version at it, the distance to local HEAD, and the catalogue's bump PRs | [plugin-marketplace.md](plugin-marketplace.md) | `gh`; `claude` only for the validation gate |
+| `statusline` | A one-line render for Claude Code's `statusLine` hook. Never makes a network call — a network-backed op (`gh-pr` today) publishes its own tally as a side effect of running normally, and this op only ever reads that fragment | [statusline.md](statusline.md) | none |
 
 ## Remote text is fenced
 

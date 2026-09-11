@@ -112,7 +112,8 @@ fi
 # reader looks for the right absence.
 #
 # 'ops:session' — signatures, with the names-only roster as a measured fallback
-# (#2028). Not 'ops-compact': `ops-compact` is ~18.46KB and `ops:full` ~84.74KB
+# (#2028). Not 'ops-compact': `ops-compact` is ~18.46KB and `ops:full` ~86.89KB
+# (moved from ~85.05KB by #1850's `statusline` op)
 # against a 10,000-byte cap, so the compact listing was truncated every session
 # everything alphabetically after `grep` was hidden — the whole gh-*/git-*
 # families, radar, watch, read, paste, tree. It disclosed the truncation
@@ -120,14 +121,19 @@ fi
 # reader cannot miss what they never learned about.
 #
 # Not the roster either, which is what this line said for fifteen releases.
-# `ops:roster` is ~2.0KB of names plus a safety class, and it answers "does
-# this op exist" (#614) but not "is this op the answer" — an error teaches a
+# `ops:roster` is ~2.1KB (moved from ~2.0KB by #1850's `statusline` op) of
+# names plus a safety class, and it answers "does this op exist" (#614) but
+# not "is this op the answer" — an error teaches a
 # signature only after the decision to call has been made, and a name a reader
 # cannot interpret is a capability never reached for. Nothing fails when that
 # happens, so the cost was invisible.
 #
-# Bare `ops` is signatures-only since #1774 and fits at ~4.68KB.
-# Whole hook: ~5.62KB against 10,000. That was true all along and this comment
+# Bare `ops` is signatures-only since #1774 and fits at ~4.70KB (moved from
+# ~4.58KB by #1850's `statusline` op and #2478's `channel:stranded` addition
+# to `channel`'s `syntax` field -- the two land within this test's own
+# rounding tolerance of each other).
+# Whole hook: ~5.64KB (moved from ~5.52KB by the same two changes) against
+# 10,000. That was true all along and this comment
 # said so in passing while choosing the roster anyway: the numbers it reasoned
 # from were wrong — `ops` was stated at 47,254 (it is 4,126) and the cap at
 # 7,168 (it is 10,000, read out of the harness in #2029). #1877 corrected the

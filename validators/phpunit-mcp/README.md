@@ -43,11 +43,21 @@ That puts `mcp-phpunit-warm` on `$PATH` (or `vendor/bin/`).
       "match": "*.php",
       "hooks_into": ["edit", "replace", "replace_lines", "paste", "vim"],
       "resolve": "bash .claude/scripts/validators/resolve_test.sh {file}",
-      "timeout": 300
+      "timeout": 780
     }
   }
 }
 ```
+
+`780` (not the earlier `300`) since #2449: a desynchronised pipe now costs one retry against a
+freshly-respawned daemon before this adapter gives up, which can add a full second
+`CALL_TIMEOUT_SEC` (300s) plus the respawn's own lock-wait and spawn-wait on top of the first
+attempt's own budget -- see `.supertool.example.json`'s own `phpunit-mcp` entry and
+`docs/validators.md`'s #2449 section for the arithmetic. A `timeout` at or under `phpunit-mcp.py`'s
+own `CALL_TIMEOUT_SEC` (300) means the core's own budget wins the race before the adapter ever gets
+to retry, which is `NOT CHECKED` with no cause named -- the exact failure mode
+`test_a_catalogue_timeout_leaves_the_adapter_room_to_answer` guards against for the shipped
+catalogue.
 
 ## Env vars
 

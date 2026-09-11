@@ -319,10 +319,16 @@ def test_no_run_on_the_head_sha_inside_the_grace_window_says_still_expected(
 
 def test_no_run_past_the_grace_window_declines_rather_than_concluding(
         monkeypatch, capsys) -> None:
+    # Inside the second, longer #2362 threshold (`NO_RUN_STALE_SECS`) on
+    # purpose -- 48h used to stand in for "long past grace" before that
+    # threshold existed, but 48h is now stale enough to escalate to
+    # `NO_RUN_STALE` and change the state token this test pins. This test's
+    # own claim is about the grace window alone, so it stays just past
+    # `_GRACE` and well under `NO_RUN_STALE_SECS`.
     out = _render(monkeypatch, capsys,
                   runs=[_run("tests", _PREV, "completed", "success", 7001)],
                   jobs={7001: [_job("pytest", "completed", "success")]},
-                  head_age=48 * 3600)
+                  head_age=branch._GRACE + 300)
 
     assert _state(out) == branch.NO_RUN
     assert "UNKNOWN" in out, (
@@ -341,8 +347,12 @@ def test_the_two_no_run_readings_do_not_render_alike(
 
 
 def test_a_branch_with_no_runs_at_all_is_not_green(monkeypatch, capsys) -> None:
+    # 48h with zero runs at all is genuinely stale (#2362) -- the state
+    # token this test pins moved from `NO_RUN` to `NO_RUN_STALE`, but the
+    # claim the test name makes ("not green") still holds for either.
     out = _render(monkeypatch, capsys, runs=[], jobs={}, head_age=48 * 3600)
-    assert _state(out) == branch.NO_RUN
+    assert _state(out) == branch.NO_RUN_STALE
+    assert _state(out) != branch.GREEN
 
 
 # ---------------------------------------------------------------------------

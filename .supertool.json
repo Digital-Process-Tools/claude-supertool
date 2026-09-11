@@ -19,7 +19,8 @@
     "classify",
     "lsp",
     "vim",
-    "worktree"
+    "worktree",
+    "statusline"
   ],
   "mcp": {
     "py-lsp": {

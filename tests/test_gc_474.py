@@ -192,6 +192,22 @@ def test_validators_default_window_is_wider_than_vim_undo() -> None:
     )
 
 
+def test_statusline_is_a_registered_gc_kind() -> None:
+    """#1850 self-review finding: `presets/_statusline_fragments.py` writes
+    tiny, never-swept JSON files to `<cache_root>/statusline/` for every
+    worktree `gh-pr` has ever run in, with no eviction of its own. Wiring it
+    into the existing kind table -- rather than inventing a second reaper --
+    is the fix: `gc`'s sweep is already generic over `_cache_root() / kind`.
+    7 days matches `vim-cursor`/`vim-undo`'s window; a fragment's own
+    staleness is already rendered explicitly by `statusline` well inside
+    that (default 300s), so this window only bounds unattributed growth
+    across abandoned worktrees, not staleness during active use.
+    """
+    d = supertool._GC_DEFAULT_RETENTION_DAYS
+    assert "statusline" in d
+    assert d["statusline"] == 7
+
+
 def test_default_sweep_spares_a_ten_day_old_validator_entry(cache: Path) -> None:
     now = time.time()
     validator = _entry(cache / "validators" / "k.json", age=10 * DAY, now=now)

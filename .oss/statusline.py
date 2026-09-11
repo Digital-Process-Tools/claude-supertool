@@ -387,17 +387,33 @@ def parse_channel_report(text):
 
 
 def channel_status(
-    raw_state, attribution, fetched_at, now, interval=CHANNEL_REFRESH_AFTER
+    raw_state,
+    attribution,
+    fetched_at,
+    now,
+    interval=CHANNEL_REFRESH_AFTER,
+    session=None,
+    current_session=None,
 ):
-    """Fold a raw `channel:health` reading, its own age and its attribution into
-    the state `render` actually shows (#613, widened by #754).
+    """Fold a raw `channel:health` reading, its own age, its attribution and
+    (#1362) the session that took it into the state `render` actually shows
+    (#613, widened by #754, widened again by #1362).
 
-    Four ways this becomes `cannot_determine` before a caller ever sees one of
+    Five ways this becomes `cannot_determine` before a caller ever sees one of
     the five real states, and each is a distinct reason a reader might act on
     differently -- collapsing them into one `?` would be this module's own
     defect class, the same reason `board_from_cache` keeps its counts separate:
 
     * ``not-asked``    -- nobody has taken a reading yet (`fetched_at` is None).
+    * ``other-session`` -- the reading is real and fresh, but it was taken by a
+      DIFFERENT session on this same repository (#1362): `raw_state`'s
+      `forwarding` vs `not_subscribed` distinction comes from whether *the
+      session that took the reading* is subscribed to the socket, and two
+      sessions on one repo -- one armed via `bin/oss-workspace`, one a bare
+      `claude` -- can hold genuinely different, simultaneously correct
+      answers. Checked right after `not-asked`, before attribution or
+      staleness: a reading that is not this session's own cannot be trusted
+      regardless of how sound it otherwise looks.
     * ``stale``        -- the reading is older than its own refresh interval
       (#550/#551's lesson, applied a third time: never let an old reading
       render as though it were fresh).
@@ -419,6 +435,14 @@ def channel_status(
     decides which; this function only asks whether it is one of the first two
     (real attribution) or not.
 
+    `session`/`current_session` are compared only when BOTH are truthy: a
+    cache written before #1362 carries no `session` key at all, and a caller
+    with no session identity of its own (`doctor.py`'s re-derivation, which
+    has none to compare against) passes `current_session=None` -- neither
+    should manufacture a mismatch that was never actually observed. That
+    window self-heals at the next full refresh, the same convention #754's
+    own migration comment above uses for the old `attributable` boolean.
+
     Deliberately NOT handled here, and this is #551's own gap restated for a
     third instrument: a reading that is fresh BY THIS RULE and simply wrong --
     the consumer died one second after the reading was taken -- renders exactly
@@ -436,6 +460,8 @@ def channel_status(
     """
     if not isinstance(fetched_at, (int, float)):
         return {"state": "cannot_determine", "reason": "not-asked"}
+    if session and current_session and session != current_session:
+        return {"state": "cannot_determine", "reason": "other-session"}
     if attribution == "declaration-unreadable":
         return {"state": "cannot_determine", "reason": "declaration-unreadable"}
     if attribution not in ("derivation", "declaration"):
@@ -475,6 +501,7 @@ def board_from_cache(cache, now=None):
             "issues_external": None,
             "issues_no_priority": None,
             "issues_no_lane": None,
+            "inbound": None,
             "age": None,
         }
     prs = cache.get("prs")
@@ -500,6 +527,8 @@ def board_from_cache(cache, now=None):
         # A cache written before this field existed, or by a refresh whose rollup call did
         # not answer. Neither is "every pull request is green".
         checks = None
+    inbound = cache.get("inbound")
+    inbound = inbound if isinstance(inbound, dict) else None
     fetched = cache.get("fetched_at")
     age = None
     if isinstance(fetched, (int, float)):
@@ -511,6 +540,7 @@ def board_from_cache(cache, now=None):
         "issues_no_priority": issues_no_priority,
         "issues_no_lane": issues_no_lane,
         "checks": checks,
+        "inbound": inbound,
         "age": age,
     }
 
@@ -808,7 +838,20 @@ def _trap_count(root):
 
     Counts `*.md` files not starting with `.`, matching `trap_curate.waiting`'s own
     filter -- `.gitkeep` (and any other dotfile) is excluded by the leading-dot
-    check alone, with no separate name check needed.
+    check alone, with no separate name check needed -- **and excluding the one
+    file `scaffold.py` owns inside that directory**, its README (#1348/#1372).
+
+    That exclusion is a duplicated literal and it is duplicated knowingly, for
+    the reason the paragraph above gives: this module is vendored standalone and
+    cannot import `trap_curate`. So the parity this docstring claims is not
+    enforced by construction, and #1372 is what happens when it is left to the
+    claim alone -- #1348 excluded the README from `trap_curate.waiting` and not
+    from here, and the two counters read 16 and 17 on this repository until a
+    release audit reproduced it. What a maintainer saw: `trap 1` on a fully
+    drained `trap.d/`, with no fragment left to delete that would clear it,
+    while doctor's own trap-queue check said `none waiting` in the same run.
+    `tests/test_gate3_round1_findings_1372.py` compares the two counters
+    directly rather than trusting either docstring.
     """
     path = Path(root) / "trap.d"
     try:
@@ -817,7 +860,11 @@ def _trap_count(root):
         return 0
     except OSError:
         return None
-    return sum(1 for name in names if name.endswith(".md") and not name.startswith("."))
+    return sum(
+        1
+        for name in names
+        if name.endswith(".md") and not name.startswith(".") and name != "README.md"
+    )
 
 
 def _render_stamp(now):
@@ -928,6 +975,33 @@ def _trap_field(traps):
     that is read straight off the filesystem rather than off a cache.
     """
     return "trap " + ("?" if not isinstance(traps, int) else str(traps))
+
+
+def _inbound_field(inbound):
+    """`inb 2is 1pr` / `inb ?is ?pr` -- outside issues unruled and outside
+    pull requests unreviewed, beside the `trap.d/` backlog above (#1406).
+
+    `inbound` is `board.get("inbound")` -- the cached `inbound_reading()`
+    document, or `None` for a cache written before this field existed. Each
+    count renders `?`, never `0`, exactly the rule `_trap_field` and
+    `_board_field`'s own `eis` group already follow: a zero from a read that
+    never happened and a zero from one that happened and found nothing must
+    not be the same pixels, which is the whole reason #1406 exists.
+
+    `unanswered_comments` is deliberately not a third number here.
+    `inbound_reading` always reports it as `None` (see that function's own
+    docstring for why the walk is not built yet) -- a field that always
+    renders `?` teaches the eye to stop reading it, which is worse than not
+    showing it at all, so it stays off this line rather than being padded
+    in as a permanent unknown.
+    """
+    inbound = inbound if isinstance(inbound, dict) else {}
+    unruled = inbound.get("unruled_issues")
+    unreviewed = inbound.get("unreviewed_prs")
+    return "inb {}is {}pr".format(
+        "?" if not isinstance(unruled, int) else unruled,
+        "?" if not isinstance(unreviewed, int) else unreviewed,
+    )
 
 
 def _last_field(stamp):
@@ -1329,6 +1403,7 @@ def render(facts, ascii_only=False, color=False):
     blocks.append(_unlabelled_field(board))
     blocks.append(_release_field(facts.get("release")))
     blocks.append(_trap_field(facts.get("traps")))
+    blocks.append(_inbound_field(board.get("inbound")))
     blocks.append(_last_field(facts.get("last")))
 
     blocks.append(_plugins_field(facts.get("plugins") or [], symbols, color))
@@ -1740,6 +1815,102 @@ def _gh_external_issue_count(repo, total):
         if assoc.upper() not in _INSIDE_ASSOCIATIONS:
             external += 1
     return external
+
+
+def _gh_external_pr_count(repo, total):
+    """Mirrors `_gh_external_issue_count` exactly, against the pull-request
+    listing instead of the issue one (#1406).
+
+    `repos/{owner}/{repo}/pulls` never mixes issues in the way
+    `repos/{owner}/{repo}/issues` does, so there is no `pull_request == null`
+    filter to apply here -- every row already is a pull request. Same
+    row-count cross-check against `total` (`_gh_count`'s own answer, "is:pr"),
+    same `None`-on-any-doubt rule: a count smaller than the truth must never
+    render as a real one.
+    """
+    if not isinstance(total, int):
+        return None
+    if _malformed_repo(repo):
+        return None
+    out = _run(
+        [
+            "gh",
+            "api",
+            "--paginate",
+            "-X",
+            "GET",
+            "repos/{}/pulls".format(repo),
+            "-f",
+            "state=open",
+            "-f",
+            "per_page=100",
+            "--jq",
+            ".[] | .author_association",
+        ],
+        timeout=25,
+    )
+    if out is None:
+        return None
+    lines = out.split("\n") if out else []
+    if len(lines) != total:
+        return None
+    external = 0
+    for line in lines:
+        assoc = line.strip()
+        if not assoc or assoc.upper() == "NULL":
+            return None
+        if assoc.upper() not in _INSIDE_ASSOCIATIONS:
+            external += 1
+    return external
+
+
+def inbound_reading(repo, issues_total, prs_total):
+    """How much of what arrived from outside is still waiting -- #1405/#1406.
+
+    **One module, two consumers**, per the design note on #1405: `refresh()`
+    below calls this on the board's own clock and caches the result, because
+    the statusline must never block a prompt on a fresh forge round trip.
+    `scripts/next_action.py`'s own `_fresh_inbound_reading` calls this
+    function directly, with totals it took a moment ago, because the loop is
+    about to act on the answer and can afford the two calls. Neither is a
+    second opinion about the other; both call this.
+
+    `unruled_issues` -- open issues authored by someone outside repository
+    membership (`_gh_external_issue_count`'s own reading against `issues_
+    total`). The loop rules on an issue by closing it with a reason
+    (`inbound_triage.REFUSAL_REASONS`), so any still-open one is, by
+    construction, not yet ruled on -- no second read needed to establish
+    that. `unreviewed_prs` -- the identical reading for open pull requests
+    (`_gh_external_pr_count` against `prs_total`): the loop's own review has
+    not landed a merge or a close on it yet.
+
+    `unanswered_comments` is always `None` here. Counting it for real means
+    walking every open issue and pull request's own comment thread -- one
+    forge call each -- which is a materially larger cost than the two reads
+    above (#1406's own "which fields, and what that costs" question). #1406
+    asked for the field to fail honestly rather than render a guessed zero;
+    it did not ask for that walk to be built in the same change that decides
+    the shape, so this is a deliberate scope line, not an oversight, and it
+    is on record as a follow-up rather than guessed at here.
+
+    `state` is `"measured"` only when both counts actually resolved;
+    `"could-not-tell"` the moment either one comes back `None` -- never
+    quietly reads as `0`, the same discipline `_gh_external_issue_count`
+    already applies to its own row-count cross-check.
+    """
+    unruled = _gh_external_issue_count(repo, issues_total)
+    unreviewed = _gh_external_pr_count(repo, prs_total)
+    state = (
+        "measured"
+        if unruled is not None and unreviewed is not None
+        else "could-not-tell"
+    )
+    return {
+        "state": state,
+        "unruled_issues": unruled,
+        "unreviewed_prs": unreviewed,
+        "unanswered_comments": None,
+    }
 
 
 def _effective_lane_labels(labels_config):
@@ -2284,11 +2455,29 @@ def _channel_reading(root, config):
         attribution = "derivation"
     else:
         declared, problem = _declared_watch_names(root)
+        only = next(iter(declared)) if len(declared) == 1 else None
         if problem:
             attribution = "declaration-unreadable"
-        elif (
-            actual is not None and len(declared) == 1 and next(iter(declared)) == actual
-        ):
+        elif only is not None and only in (actual, expected):
+            # Two ways one declared name attributes, and #1365 added the second.
+            #
+            # `only == actual` is #754's own case: a repository whose declared
+            # name differs from what it would derive, matching what this
+            # process was handed.
+            #
+            # `only == expected` is ownership stated in the repository's own
+            # tracked `.supertool.json` and agreeing with what the repository
+            # derives -- which is a fact about the repository, not about
+            # whether THIS process happens to carry SUPERTOOL_WATCH_NAME. It
+            # did not attribute before, so every session not started by
+            # `bin/oss-workspace` read its own channel as possibly another
+            # project's fleet, and the marker flapped between `derivation` and
+            # `not-attributable` for one unchanged repository depending on
+            # which kind of session took the reading. The WARN doctor printed
+            # asked the maintainer to declare `ops.<name>.watch_name`, which
+            # was already declared -- no manual op and no scaffold run could
+            # clear it, which by this repository's own rule makes it a bug in
+            # the check rather than work.
             attribution = "declaration"
         else:
             attribution = "not-attributable"
@@ -2503,8 +2692,18 @@ def _doctor_reading(root):
     return None
 
 
-def refresh(root, now=None):
+def refresh(root, now=None, session_id=None):
     """Fill the cache for one managed repository. Runs detached, never on the render path.
+
+    `session_id` (#1362) -- the session that requested this refresh, threaded
+    from `_fork_refresh`'s own `--session-id` argv all the way from `gather()`'s
+    `payload.get("session_id")` -- is recorded alongside a freshly-taken
+    channel reading so a LATER render, possibly from a different session on
+    this same repository, can tell whether the reading in the cache is its
+    own. `None` when nobody named one (a manual `--refresh`, or a caller that
+    predates this field): the reading is then unattributed to any session,
+    which `channel_status` treats as "unknown, not necessarily someone
+    else's" rather than as evidence of a mismatch.
 
     Two clocks (#515), soon three (#613). The board -- open pull requests, open issues,
     who filed each, their check rollups, the unlabelled-issue counts (#1079) -- is
@@ -2548,6 +2747,13 @@ def refresh(root, now=None):
         document["issues_no_priority"] = (unlabelled or {}).get("no_priority")
         document["issues_no_lane"] = (unlabelled or {}).get("no_lane")
         document["pr_checks"] = check_rollup_counts(_gh_rollups(repo), document["prs"])
+        # Same board clock as everything above (#1406): two more calls of the
+        # identical shape `issues_external` already makes, so folding this
+        # into the existing REFRESH_AFTER cadence rather than inventing a
+        # separate clock is a deliberate choice, not an oversight -- see
+        # `inbound_reading`'s own docstring for the "one module, two
+        # consumers" design this composes into.
+        document["inbound"] = inbound_reading(repo, document["issues"], document["prs"])
         # Same call group, same `fetched_at`, same `stale_after` (#856): the default
         # branch's own CI state is exactly as time-sensitive as the pull-request board
         # it sits beside, and it shares the moment (a merge or an issue close in this
@@ -2605,7 +2811,14 @@ def refresh(root, now=None):
         )
         if channel_due:
             raw_state, attribution = _channel_reading(root, config)
-            document["channel"] = {"raw_state": raw_state, "attribution": attribution}
+            document["channel"] = {
+                "raw_state": raw_state,
+                "attribution": attribution,
+                # #1362 -- which session took this reading, so a later render
+                # (possibly a different session on this same repository) can
+                # tell whether it is entitled to adopt it.
+                "session": session_id,
+            }
             document["channel_fetched_at"] = now
         else:
             # Carried forward under its OWN old stamp, same shape as `latest`
@@ -2779,11 +2992,31 @@ def _lock_path(repo):
     return cache_path(repo).with_suffix(".lock")
 
 
-def _fork_refresh(root, repo):
+def _fork_refresh(root, repo, session_id=None):
     """Start a detached refresh, at most one at a time.
 
     The lock carries a timestamp rather than being a directory: a refresher killed
     mid-run must not freeze the counts forever, so a stale lock is simply overwritten.
+
+    `session_id` (#1362) is forwarded as `--session-id` so the detached process --
+    which inherits this one's environment but none of its argv -- can record
+    whose render triggered the refresh, and omitted entirely when there is none
+    to name (the caller's own session id was itself unknown), rather than
+    passing a literal `"None"` string that would attribute the reading to a
+    session that does not exist.
+
+    Self-review finding: `payload.get("session_id")` is read from a JSON
+    document this module does not control the shape of, and a non-string
+    value (an int, a dict, anything `Popen`'s own argv marshalling does not
+    accept) reaching `subprocess.Popen` here raises `TypeError`, which is
+    NOT one of the two exceptions this function already catches -- and
+    unlike every other malformed-input case in this module, that one is not
+    scoped to this field: it kills `gather()`'s whole caller, so a bad
+    `session_id` would take down the ENTIRE status line rather than costing
+    only the channel reading its answer. Checked with `isinstance` here for
+    the same reason `_watch_preset_declared` guards a malformed
+    `.supertool.json`: a value this module cannot trust is treated as
+    absent, never as a crash.
     """
     lock = _lock_path(repo)
     try:
@@ -2793,15 +3026,18 @@ def _fork_refresh(root, repo):
         lock.write_text(str(time.time()), encoding="utf-8")
     except OSError:
         return
+    argv = [
+        sys.executable,
+        os.path.abspath(__file__),
+        "--refresh",
+        "--root",
+        str(root),
+    ]
+    if isinstance(session_id, str) and session_id:
+        argv.extend(["--session-id", session_id])
     try:
         subprocess.Popen(
-            [
-                sys.executable,
-                os.path.abspath(__file__),
-                "--refresh",
-                "--root",
-                str(root),
-            ],
+            argv,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
@@ -2816,12 +3052,26 @@ def _fork_refresh(root, repo):
 
 def gather(payload, root, now=None):
     now = time.time() if now is None else now
+    # #1362 -- the session id Claude Code's own statusline payload carries,
+    # threaded through both to the detached refresh this call may fork (so a
+    # freshly-taken channel reading is stamped with the session that asked
+    # for it) and to `channel_status` below (so a reading stamped with a
+    # DIFFERENT session's id is never rendered as this session's own).
+    # Self-review finding: a malformed payload could carry a non-string
+    # value here, and `_fork_refresh` would otherwise pass it straight into
+    # `subprocess.Popen`'s argv -- a `TypeError` that function does not
+    # catch and that would crash this whole render, not only the channel
+    # field. Coerced to "absent" at the source, the same treatment this
+    # module already gives any input it cannot trust.
+    current_session = (payload or {}).get("session_id")
+    if not isinstance(current_session, str):
+        current_session = None
     config = repo_config(root)
     cache = read_cache(cache_path(config.get("repo")))
     board = board_from_cache(cache, now=now)
     board_stale = board_is_due(cache, now)
     if board_stale:
-        _fork_refresh(root, config.get("repo"))
+        _fork_refresh(root, config.get("repo"), current_session)
     # Same fold `plugin_facts`/`version_status` already do for `latest` (#550), on
     # the same board clock `board_is_due` already computes above -- `default_branch`
     # itself present-but-unconfigured stays `None` (never asked, #613's own
@@ -2868,6 +3118,8 @@ def gather(payload, root, now=None):
             raw_channel.get("attribution", "not-attributable"),
             (cache or {}).get("channel_fetched_at"),
             now,
+            session=raw_channel.get("session"),
+            current_session=current_session,
         )
 
     # Its own clock (`DOCTOR_REFRESH_AFTER`), independent of the board clock above --
@@ -2931,6 +3183,22 @@ def _ascii_only(stream):
     return False
 
 
+def _arg_value(argv, flag, default):
+    """The token following ``flag`` in ``argv``, or ``default``.
+
+    ``flag`` as the last token on the command line used to raise
+    ``IndexError`` at both of this file's two call sites (#1346) -- each
+    hand-rolled the same broken ``argv[argv.index(flag) + 1]`` independently.
+    One helper, used by both, so a trailing flag with nothing after it falls
+    back to ``default`` instead of crashing.
+    """
+    if flag in argv:
+        i = argv.index(flag)
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return default
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if "--mark-stale" in argv:
@@ -2941,18 +3209,48 @@ def main(argv=None):
         # single call an orchestrating session makes once, at the pass's own end
         # (#1313), rather than relying only on `board_touch.py`'s per-command
         # `PostToolUse` hook to catch every labelling route.
-        root = "."
-        if "--root" in argv:
-            root = argv[argv.index("--root") + 1]
+        #
+        # #1346: the caller reads only the exit code, and this always exited 0
+        # whether the board was actually marked stale or `repo` failed to
+        # resolve -- the same absence-vs-clean-pass shape this whole plugin is
+        # named after. Print a one-line receipt naming which happened, and read
+        # `mark_board_stale`'s own return rather than assuming success just
+        # because a repo resolved -- it is silent-on-failure by design (a
+        # cache write can lose a race or hit a read-only filesystem), and this
+        # receipt exists precisely so that silence stops being invisible here.
+        #
+        # `reconfigure` first: the receipt interpolates a repo slug or a
+        # `--root` path into a plain `print()`, and on Windows the console
+        # encodes stdout with its own codepage (typically cp1252) rather than
+        # the source encoding -- a non-ASCII path component would otherwise
+        # raise `UnicodeEncodeError` at the print, after the work it reports
+        # already happened. Same idiom `lane_setup.py`'s CLI entry point uses.
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(errors="backslashreplace")
+            except (AttributeError, ValueError):  # pragma: no cover - very old Python
+                pass
+        root = _arg_value(argv, "--root", ".")
         repo = repo_config(root).get("repo")
-        if repo:
-            mark_board_stale(repo)
+        if repo and mark_board_stale(repo):
+            print("mark-stale: marked {} stale".format(repo))
+        elif repo:
+            print(
+                "mark-stale: not marked -- writing the stale marker for {} failed".format(
+                    repo
+                )
+            )
+        else:
+            print(
+                "mark-stale: not marked -- no repo resolved for root {!r}".format(root)
+            )
         return 0
     if "--refresh" in argv:
-        root = "."
-        if "--root" in argv:
-            root = argv[argv.index("--root") + 1]
-        refresh(root)
+        root = _arg_value(argv, "--root", ".")
+        # #1362 -- forwarded by `_fork_refresh` so the detached process can
+        # record whose render triggered it; absent for a manual `--refresh`.
+        session_id = _arg_value(argv, "--session-id", None)
+        refresh(root, session_id=session_id)
         try:
             _lock_path(repo_config(root).get("repo")).unlink()
         except OSError:

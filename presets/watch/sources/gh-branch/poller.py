@@ -65,6 +65,14 @@ NOT_GREEN = branch.NOT_GREEN
 NO_RUN = branch.NO_RUN
 UNKNOWN = branch.UNKNOWN
 
+# The escalated NO_RUN reading (#2362) -- a genuinely never-ran commit past
+# `branch.NO_RUN_STALE_SECS`, distinct from the ordinary "still within the
+# creation window" NO_RUN. A separate token from `NO_RUN` itself (never a
+# suffixed variant of it), for the same reason #2355's PENDING/FAILED split
+# is: a consumer watching for this specific, harder finding needs its own
+# event key, not a substring search over `NO_RUN`'s sentence.
+NO_RUN_STALE = branch.NO_RUN_STALE
+
 # NOT_GREEN split in two, poller-side only (#2355). `branch.verdict()` keeps
 # its own four-state vocabulary unchanged -- `dashboard.py` and
 # `default_branch_report` both render it as-is and neither needed this -- but
@@ -90,8 +98,25 @@ _EVENT_FOR_STATE = {
     NOT_GREEN_PENDING: "went_not_green",
     NOT_GREEN_FAILED: "went_failed",
     NO_RUN: "no_run",
+    NO_RUN_STALE: "no_run_stale",
     UNKNOWN: "unknown",
 }
+
+# #2436: consecutive raw-empty run-list fetches, on the SAME sha, required
+# before the direction guard below even reports an anomaly. #2333 shipped
+# this at 1 -- the first empty read after confirmed runs was immediately
+# downgraded to `unknown` -- and #2436 found that upstream flakiness on the
+# run-list endpoint recurs as independent, isolated single-poll blips: six
+# of them in 32 minutes on one unchanged, already-green commit, every one
+# recovering on the very next 30s poll (~39s later). A single-shot guard
+# re-arms itself the instant a blip recovers, so it announced (and
+# un-announced) the identical anomaly six separate times. Raising this to 2
+# absorbs an isolated blip -- discarded as if the poll never happened,
+# since none of the six ever repeated on a second consecutive poll -- while
+# a genuine, non-recovering absence still surfaces, just one poll later
+# than before (see the guard's own comment for how the persistence promise
+# is kept).
+UNKNOWN_CONFIRM_STREAK = 2
 
 
 def _snapshot(ref: str) -> tuple[str, str, str, str, str, bool]:
@@ -229,8 +254,10 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # (`verdict()` routes to `no_run_verdict` before this module ever sees
     # a state at all when it is empty) -- so GREEN, either NOT_GREEN
     # sub-state and UNKNOWN all mean "some earlier poll saw at least one run
-    # on this sha", and only NO_RUN/`""` mean it did not (or nothing has
-    # polled yet). Reading this off `prev_state` rather than a separate
+    # on this sha", and only NO_RUN/NO_RUN_STALE/`""` mean it did not (or
+    # nothing has polled yet) -- NO_RUN_STALE (#2362) is still the same
+    # zero-runs reading, only escalated by age, so it belongs on this side
+    # of the split too. Reading this off `prev_state` rather than a separate
     # stored flag means an UNKNOWN produced by the guard below keeps the
     # confirmation live for the next poll for free -- there is nothing extra
     # to carry forward. The bare `NOT_GREEN` stays in this tuple too: a state
@@ -241,46 +268,72 @@ def poll(state: dict, ctx: dict) -> tuple[list[dict], dict]:
     # How many consecutive polls of THIS sha have read raw-empty already --
     # reset the moment the sha changes, so it never leaks across commits.
     prev_no_run_streak = int(state.get("no_run_streak") or 0) if sha_repeated else 0
-    raw_is_no_run = branch_state == NO_RUN
+    # NO_RUN_STALE (#2362) is still a raw-empty listing -- it is the SAME
+    # zero-runs read as NO_RUN, only older, so it must feed the same
+    # direction-guard and streak bookkeeping below rather than falling
+    # outside both.
+    raw_is_no_run = branch_state in (NO_RUN, NO_RUN_STALE)
 
-    # Direction guard (#2333): runs on a concluded commit do not disappear
-    # -- only the read of them can fail. Observed live: `went_green` ->
-    # `no_run` -> `went_green`, same SHA, 36 seconds apart, while `gh-branch`
-    # run cold seconds after the middle event showed four concluded,
-    # all-passing runs on that exact commit. A later poll of the SAME sha
-    # claiming zero runs, after this poller already confirmed runs exist on
-    # it, is read as UNKNOWN rather than trusted at face value -- the fetch
-    # did not answer, not the commit losing its history.
+    # Direction guard (#2333, cadence fixed by #2436): runs on a concluded
+    # commit do not disappear -- only the read of them can fail. Observed
+    # live: `went_green` -> `no_run` -> `went_green`, same SHA, 36 seconds
+    # apart, while `gh-branch` run cold seconds after the middle event
+    # showed four concluded, all-passing runs on that exact commit. A later
+    # poll of the SAME sha claiming zero runs, after this poller already
+    # confirmed runs exist on it, is read as UNKNOWN rather than trusted at
+    # face value -- the fetch did not answer, not the commit losing its
+    # history.
     #
     # Keyed on the sha matching, not on suppressing NO_RUN altogether: a
     # fresh sha that legitimately has zero runs (nothing to regress from)
     # still fires `no_run` for real, which is this repository's own named
     # positive-control requirement (CLAUDE.md) applied to this exact fix.
     # A retry-inside-the-fetch alternative was also on the table (issue
-    # #2333) and is not taken here: retrying moves the same ambiguity one
-    # call earlier without resolving it -- a second empty answer would still
-    # need this same judgment call -- while the direction guard is a fact
-    # this poller already has for free, having polled before.
+    # #2333, raised again by #2436) and is not taken here: retrying moves
+    # the same ambiguity one call earlier without resolving it -- a second
+    # empty answer would still need this same judgment call -- while the
+    # direction guard is a fact this poller already has for free, having
+    # polled before.
     #
-    # `prev_no_run_streak == 0` makes the suppression single-shot rather
-    # than permanent (review finding on this issue): "runs do not disappear"
-    # is not quite true forever -- GitHub's own run-retention window (as
-    # low as 1 day, operator-configured) genuinely purges history off a
-    # SHA that once had confirmed runs, and a branch that goes quiet for
-    # that long would otherwise read as UNKNOWN on every poll from then on,
-    # never again as the true NO_RUN. One suppressed reading absorbs the
-    # kind of transient this issue was filed over (recovered 36s later); a
-    # SECOND consecutive empty reading on the same sha is trusted and
-    # surfaces as the real `no_run`.
-    if (raw_is_no_run and sha_repeated and prev_confirmed_runs
-            and prev_no_run_streak == 0):
-        branch_state = UNKNOWN
-        sentence = (
-            f"{UNKNOWN} — a previous poll confirmed runs on {sha[:7]}; this "
-            f"poll's run list came back empty for the same commit. Runs on "
-            f"a concluded commit do not disappear, so this is read as a "
-            f"fetch that did not answer rather than the commit losing its "
-            f"run history. Original reading: {sentence}")
+    # `confirmed_streak < UNKNOWN_CONFIRM_STREAK` makes the suppression a
+    # grace window rather than a single shot (#2436, review finding on the
+    # original #2333 fix): a single-shot guard re-arms itself the instant a
+    # blip recovers, so an upstream endpoint that flakes in short, isolated,
+    # self-recovering bursts -- six of them in 32 minutes, observed live,
+    # every one gone by the very next poll -- gets announced and
+    # un-announced once per burst. Fewer than `UNKNOWN_CONFIRM_STREAK`
+    # consecutive empty reads on the same sha is now discarded as if the
+    # poll never happened: `branch_state`/`sentence` are reset to what this
+    # poller already reported, so no transition fires and no event reaches
+    # the channel.
+    #
+    # "Runs do not disappear" is still not quite true forever -- GitHub's
+    # own run-retention window (as low as 1 day, operator-configured)
+    # genuinely purges history off a SHA that once had confirmed runs, and
+    # a branch that goes quiet for that long must not read as UNKNOWN on
+    # every poll from then on, never again as the true NO_RUN. So the
+    # persistence promise from #2333 is kept, just shifted by the grace
+    # window: reaching the threshold surfaces `unknown` for the first time;
+    # ONE MORE consecutive empty read past that -- `confirmed_streak >
+    # UNKNOWN_CONFIRM_STREAK` -- is trusted and surfaces as the real
+    # `no_run`, exactly as a second consecutive read did before this fix,
+    # only one poll later.
+    if raw_is_no_run and sha_repeated and prev_confirmed_runs:
+        confirmed_streak = prev_no_run_streak + 1
+        if confirmed_streak < UNKNOWN_CONFIRM_STREAK:
+            branch_state = prev_state
+            sentence = ""
+        elif confirmed_streak == UNKNOWN_CONFIRM_STREAK:
+            branch_state = UNKNOWN
+            sentence = (
+                f"{UNKNOWN} — a previous poll confirmed runs on {sha[:7]}; "
+                f"the last {UNKNOWN_CONFIRM_STREAK} fetches for the same "
+                f"commit came back empty. Runs on a concluded commit do not "
+                f"disappear, so this is read as a fetch that did not answer "
+                f"rather than the commit losing its run history. Original "
+                f"reading: {sentence}")
+        # else: confirmed_streak > UNKNOWN_CONFIRM_STREAK -- trust the raw
+        # NO_RUN read straight through, surfacing the real `no_run`.
 
     no_run_streak = (prev_no_run_streak + 1) if (raw_is_no_run and sha_repeated) else 0
 

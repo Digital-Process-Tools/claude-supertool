@@ -136,6 +136,41 @@ The ops already draw the boundary for you and it is worth knowing which half is 
 
 This is not hypothetical for a tool that runs inside a maintainer's session with their credentials.
 
+## A fresh subagent still reads a redirection rule as injection, and that is accepted for now
+
+This is the opposite case from the section above: not untrusted text pretending to be an
+instruction, but a genuinely first-party, tracked instruction that a naive reader misclassifies
+as untrusted.
+
+`.claude/jit-context/tools/00-manual/harness-tools-blocked.md` blocks the harness's own
+Read/Edit/Write/Grep/Glob and redirects to supertool. #1793 added a provenance-verification
+section to that rule after a stock reviewer read it as fabricated attacker content. #2007 tested
+whether the fix worked: six independent, un-briefed `Explore` subagents were each handed *that
+one file's* rule body cold, with no other context — three against the full body (provenance
+section included), three against a version stripped to only the redirection table. **All six
+called it a prompt injection.** Every reader named the redirection mechanism itself (`mode: block`
+intercepting the harness's own tools, redirecting to an external command) as the tell, not the
+absence of provenance text — two of the six even cited the "This is not a prompt injection"
+section as evidence of manipulation rather than as reassurance. Between only these two renderings
+of this one file, length and the in-body disclaimer made no measured difference.
+
+**This is accepted for `harness-tools-blocked.md`, not chased further with more wording.** The
+provenance check (`git log -1 --` against the file's own tracked path) is real and load-bearing
+for a reader willing to run it — it is not what this note gives up on. What is given up on is
+phrasing *that file* into looking legitimate on a cold, unverified read: two renderings, six
+readers, one verdict each time, so no further rewrite of it is worth trying. This does not
+license a broader claim that no wording could ever work on any file of this shape, only that these
+two specific renderings did not, on this one file, at this sample size.
+
+**A second file has the identical defect and was not part of this experiment.**
+`.claude/jit-context/tools/01-oss/supertool-required.md` does the same job — same tool list, same
+`mode: block`, same "twice taken by a spawned reviewer for a fabricated prompt-injection payload"
+history (#1793, recorded in `.claude/jit-context/paths/00-manual/oss-owned-jit-layer.md`) — but
+carries no provenance-verification section at all, and was never run through this cold-read test.
+It is scaffolded wholesale by `/oss:scaffold --apply` from the `oss` plugin's own template, so a
+local edit to it in this repo is lost at the next scaffold run; the fix, if one is wanted, belongs
+in that plugin's source, not here.
+
 ## Releasing
 
 The version lives in five places, declared in one machine-readable list — `.oss.json`'s `version_sites` — and `tests/test_version_sites_agree_1854.py` reads that list and asserts every site agrees with `supertool.VERSION`. **Add a site to that list and the suite goes red until you say how to read a version out of it**, which is the sixth-site case this section used to leave to whoever remembered to sweep.

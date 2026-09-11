@@ -821,7 +821,7 @@ With nothing configured the last line reads `SUPERTOOL_WATCH_SOURCES_PATH is not
 | `github-issue-feed` | `gh api repos/{owner}/{repo}/issues` for a whole scope | `issue_opened`, `issue_reopened`, `issue_entered_feed`, `issue_labeled`, `issue_unlabeled`, `issue_assigned`, `issue_unassigned`, `issue_comment_added`, `issue_closed`, `issue_left_feed`, `issues_unreachable` |
 | `gl-runners` | `glab api projects/:id/runners` + the pending/running job queue | `runner_silent`, `runner_liveness_unknown`, `runner_recovered`, `runner_starved`, `queue_liveness_unknown`, `queue_cleared`, `runner_paused`, `runner_added`, `runner_vanished`, `runner_failing_systemically`, `runner_recovered_systemically` |
 | `gh-run` | `gh run view <id> --json status,conclusion,workflowName,url,...` | `run_succeeded`, `run_failed`, `run_cancelled`, `run_action_required`, `run_started`, `run_inconclusive`, `run_unreachable` |
-| `gh-branch` | the same composition `gh-branch:<ref>` and `radar`'s default-branch member row already use — `gh api commits/<ref>` then `gh run list --branch <ref>` | `went_green`, `went_not_green`, `went_failed`, `no_run`, `unknown`, `branch_unreachable` |
+| `gh-branch` | the same composition `gh-branch:<ref>` and `radar`'s default-branch member row already use — `gh api commits/<ref>` then `gh run list --branch <ref>` | `went_green`, `went_not_green`, `went_failed`, `no_run`, `no_run_stale`, `unknown`, `branch_unreachable` |
 | `slack` | `conversations.history` for a bare channel id, `conversations.replies` for `<channel>~<thread-ts>` | `slack_message`, `slack_unreachable` |
 | `devto-engagement` | `GET /articles/me/published` then `GET /comments?a_id=<id>` for each ([#526](https://github.com/Digital-Process-Tools/claude-supertool/issues/526)) | `comment_received`, `reply_received`, `reaction_received`, `engagement_unreachable` |
 | `bluesky-engagement` | `app.bsky.notification.listNotifications` ([#526](https://github.com/Digital-Process-Tools/claude-supertool/issues/526)) | `comment_received`, `reply_received`, `reaction_received`, `engagement_unreachable` |
@@ -932,7 +932,7 @@ today" the way `radar`'s member row does, so naming it explicitly means it
 keeps watching the ref you meant even if the repository's default branch is
 renamed later.
 
-The event vocabulary is `gh-branch`'s own four states, unfolded rather than
+The event vocabulary is `gh-branch`'s own states, unfolded rather than
 collapsed into a green/red pair: `went_green`, `went_not_green` (nothing has
 concluded yet on the head commit -- not a failure, just not cleared), `no_run`
 (zero workflow runs on the head commit — never folded into red, because it is
@@ -941,9 +941,20 @@ list that did not come back, or
 a sha this poller already confirmed runs on that came back with zero runs on
 a later poll — runs on a concluded commit do not disappear, so that reading
 is treated as a fetch that did not answer rather than a fact about the world;
-one such reading is absorbed this way, a second consecutive one on the same
-sha is trusted and surfaces as the real `no_run` —
-[#2333](https://github.com/Digital-Process-Tools/claude-supertool/issues/2333)). A
+[#2333](https://github.com/Digital-Process-Tools/claude-supertool/issues/2333)
+absorbed one such reading before surfacing `unknown`, and
+[#2436](https://github.com/Digital-Process-Tools/claude-supertool/issues/2436)
+raised that to two consecutive empty reads on the same sha, because a
+single-shot guard re-arms itself the instant one blip recovers: an upstream
+endpoint that flakes in short, isolated, self-recovering bursts — six of
+them in 32 minutes on one unchanged, already-green commit in the incident
+that opened #2436, every one gone by the very next 30s poll — got announced
+and un-announced once per burst even though nothing about the branch had
+actually changed. Fewer than two consecutive empty reads is now discarded as
+if the poll never happened; reaching two still surfaces `unknown`, never a
+clean green and never permanent silence, and a THIRD consecutive empty read
+on the same sha is trusted and surfaces as the real `no_run` — the same
+persistence promise #2333 made, shifted by the one-poll grace window). A
 lookup failure that could not resolve the ref, list runs, or identify the
 repository itself is `branch_unreachable`, edge-triggered like every other
 source's `*_unreachable` event — a `gh` that could not answer at all is never
@@ -974,6 +985,18 @@ compares `sha`, not just the coarse state, so a branch moving to a brand-new
 commit while remaining in the same category (e.g. still pending) emits too —
 a deliberate widening of emission volume, since a consumer holding the
 previous sentence had no way to learn the subject changed under it.
+
+**A sixth event, `no_run_stale`, escalates out of `no_run` by age alone**
+([#2362](https://github.com/Digital-Process-Tools/claude-supertool/issues/2362)),
+never through the streak logic above -- it fires the moment
+`branch.no_run_verdict` itself reads the head commit as older than
+`NO_RUN_STALE_SECS` (~45min), on a sha that never had confirmed runs at all,
+not on one recovering from an empty read. A raw `no_run_stale` reading still
+feeds the same #2436 direction guard as a raw `no_run` reading before it is
+trusted (`raw_is_no_run` covers both), so a sha this poller *did* confirm
+runs on that later reads old-and-empty is still absorbed/escalated through
+`unknown` first, exactly as a plain `no_run` reading would be -- age past the
+stale threshold does not bypass that guard.
 
 `is_terminal` is always `False`: a branch has no merged/closed state to stop
 watching for, unlike a PR or an MR.
@@ -2357,6 +2380,21 @@ declined: that file also ships with the plugin, and is the *only* registration
 path for someone who never runs `oss-workspace`, so removing it would drop
 channel support for them entirely rather than resolving a collision specific
 to this checkout's own development workflow.
+
+**The disable above stops the collision, but not a separate, static warning
+about the same declaration** ([#2475](https://github.com/Digital-Process-Tools/claude-supertool/issues/2475)).
+`disabledMcpjsonServers` keeps the entry from ever *starting* at project
+scope; it does not stop `claude mcp list` from validating the declared
+substitution and reporting `Missing environment variables:
+CLAUDE_PLUGIN_ROOT` for every contributor who opens a session in this
+checkout, since `${CLAUDE_PLUGIN_ROOT}` is only ever set by the plugin
+harness. The script path now reads `${CLAUDE_PLUGIN_ROOT:-.}/notifiers/
+claude-channel/start.mjs`, using Claude Code's own `${VAR:-default}`
+expansion. The fallback is not just cosmetic: a project-scope MCP server is
+spawned with cwd set to the active project, which at project scope *is* this
+repo's own root, so `.` resolves to the right file if the entry were ever
+allowed to start — it just never is, because the #2221 disable above is
+still in force.
 
 **Every `consumer config` line now names whose file it read
 ([#2184](https://github.com/Digital-Process-Tools/claude-supertool/issues/2184)).**

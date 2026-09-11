@@ -137,6 +137,15 @@ def _do_copy(entry: str, source: Path, dest: Path, lines: list, manifest: dict) 
         lines.append(f"  WARNING could not copy, skipped: {entry} ({exc})")
         return
     manifest["copied"].append(entry)
+    # Recorded now, right after the copy landed, so `teardown` has a real
+    # baseline to compare against later rather than reconstructing one from
+    # whatever is on disk at teardown time -- which would be the very thing
+    # it is trying to detect changes AGAINST (#2429). `fingerprint_copy` can
+    # itself return `None` (a permission error mid-walk, say) -- stored as
+    # `null` rather than skipped, so `teardown` sees "recorded, but setup
+    # itself could not compute one" as a real, distinguishable state from
+    # "never recorded at all" (an older manifest, pre-#2429).
+    manifest["copy_fingerprints"][entry] = _common.fingerprint_copy(dest)
     lines.append(f"  copied: {entry}")
 
 
@@ -254,11 +263,12 @@ def run(target: Path) -> "tuple[int, str]":
             "but leaving the on-disk manifest untouched rather than "
             "overwriting it with an incomplete record"
         )
-        manifest = {"linked": [], "copied": [], "excluded": []}
+        manifest = {"linked": [], "copied": [], "excluded": [], "copy_fingerprints": {}}
     else:
         manifest = manifest_result.config
     for key in ("linked", "copied", "excluded"):
         manifest.setdefault(key, [])
+    manifest.setdefault("copy_fingerprints", {})
 
     if link_entries:
         lines.append("link:")

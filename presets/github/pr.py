@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -13,6 +14,7 @@ from typing import Sequence
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import _body  # noqa: E402  (the one body cap + disclosure — #698)
+import _mirror  # noqa: E402  (write-through cache of the raw API reply — #1955, #2472)
 import _untrusted  # noqa: E402  (the fence around tracker text — #694)
 import _classify_render  # noqa: E402  (the verdict beside the fence — #2049)
 import _auth_probe  # noqa: E402  (does this stderr *state* that the credential is unusable? - #1846)
@@ -22,6 +24,7 @@ import _declared_legs  # noqa: E402  (the second leg count, shared with gh-run /
 import _repo_target  # noqa: E402  (the repo this call is about, when not the cwd's)
 import _branch_locale  # noqa: E402  (where the branch is checked out — shared by all five #850)
 import _digits  # noqa: E402  (the one ASCII-digit test — #1727)
+import _statusline_fragments  # noqa: E402  (the statusline op's read side — #1850)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _console import use_utf8_stdout  # noqa: E402  (glyphs on a cp437 console -- #1388)
@@ -984,6 +987,45 @@ def main() -> int:
         print(_untrusted.banner())
         print(_untrusted.fence(result.stdout[:500]))
         return 1
+
+    # `statusline` (#1850) publishes here rather than re-deriving its own
+    # tally: this is the reconciliation `presets/_checks.py` already did for
+    # THIS run, so there is no second verdict path that could ever disagree
+    # with it. Best-effort and silent -- see `_statusline_fragments.publish`'s
+    # docstring for why a cache-write failure must never turn a working
+    # `gh-pr` call into a failing one.
+    _statusline_fragments.publish("gh-pr", os.getcwd(), {
+        "summary": _checks.summarize_github(d.get("statusCheckRollup")),
+        "number": d.get("number"),
+        "branch": d.get("headRefName"),
+        "mergeable": d.get("mergeable"),
+    })
+
+    # Write-through mirror (#1955, #2472): the RAW reply, before any
+    # truncation below touches it, exactly like `gh-issue`'s own wiring in
+    # `presets/github/issue.py` -- see that file's comment for the full
+    # reasoning, and `presets/_mirror.py`'s module docstring for why PRs get
+    # their own SUBDIR (`write_pr`/`read_pr`) rather than sharing the issue
+    # manifest. Opt-in and best-effort: an unconfigured mirror is a silent
+    # no-op, and a configured-but-failing one must never take this read down
+    # with it.
+    mirror_cfg = _mirror.load_config(pathlib.Path.cwd().resolve())
+    if mirror_cfg.error is not None:
+        print(f"note: gh mirror not written -- {mirror_cfg.error}")
+    elif mirror_cfg.path is not None:
+        # Same defense-in-depth as `gh-issue`'s write side (#1955
+        # self-review): a mirror write must not be the one place in this
+        # file that trusts remote text into a path.
+        mirror_number = str(d.get("number", arg))
+        if _digits.is_ascii_int(mirror_number):
+            mirror_err = _mirror.write_pr(mirror_cfg.path, mirror_number, d)
+            if mirror_err is not None:
+                print(f"note: gh mirror not written -- {mirror_err}")
+        else:
+            print(
+                f"note: gh mirror not written -- the API reply's PR "
+                f"number ({mirror_number!r}) is not a plain integer"
+            )
 
     if slim:
         iid = d.get("number", arg)

@@ -116,7 +116,10 @@ class ReadManifestTransientGitFailureTest(unittest.TestCase):
         subprocess.run(["git", "-C", str(self.target), "config", "user.name", "T"], env=full_env, check=True, timeout=30)
         result = self._common.read_manifest(self.target)
         self.assertIsNone(result.error)
-        self.assertEqual(result.config, {"linked": [], "copied": [], "excluded": []})
+        self.assertEqual(
+            result.config,
+            {"linked": [], "copied": [], "excluded": [], "copy_fingerprints": {}},
+        )
         self.addCleanup(shutil.rmtree, str(self.target), ignore_errors=True)
 
 

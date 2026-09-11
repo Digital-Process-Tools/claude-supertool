@@ -211,6 +211,13 @@ _ABSENT = {
                 "single raw command is the same call, and the project-"
                 "specific list of what to link/copy/exclude has no raw "
                 "spelling at all",
+
+    # --- presets/statusline.json (#1850) ------------------------------------
+    "statusline": "reads Claude Code's own statusLine hook stdin JSON plus "
+                  "supertool's own fragment cache on disk (no network call "
+                  "at all); " + _SUPERTOOL_OWN + " -- there is no raw shell "
+                  "invocation a status line hook would otherwise run, since "
+                  "the whole point is that one did not exist before this op",
 }
 
 

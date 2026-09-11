@@ -42,6 +42,25 @@ defect (`docs/validators.md` §"Declining instead of guessing"):
 * ``UNKNOWN`` — something could not be read. An unread job list is never
   counted as zero passing legs.
 
+A fifth, sharpened reading of the third state: ``NO_RUN_STALE`` (#2362). A
+squash merge into `master` was observed with **zero workflow runs of any
+status, ever** — not pending, not cancelled — confirmed ~20 minutes after
+the merge, with path filters, the cancel-in-progress trade-off and rate
+limiting all ruled out. Past `_GRACE` (#585's ~15min creation window)
+`no_run_verdict` already declines rather than guesses — but it declined the
+same way at 20 minutes and would decline the same way at 20 hours, so a
+commit that will never see a run read identically to one still plausibly
+waiting on a slow listing. `NO_RUN_STALE_SECS` is the second, longer
+threshold past which that ambiguity has had long enough to resolve itself
+were it going to, so what is left standing is escalated into its own state
+— a distinct token, not a reworded sentence under the same one, so a caller
+comparing states rather than scanning prose still sees the difference. The
+clock starts at the commit's own age (`age_secs`, the same clock `_GRACE`
+already uses), not at the moment any particular caller happened to check —
+`gh-pr-merge`'s post-merge report reads it via `_default_branch_report`'s
+existing `Branch <ref>: <STATE>` line, unchanged, so the escalation reaches
+it for free.
+
 The leg arithmetic is `presets/_checks.summarize`, the same module `gh-pr` and
 `gh-run` render through — deliberately, because #615's own argument for the op
 existing is that reusing one renderer keeps one place where a `CANCELLED` can be
@@ -81,6 +100,15 @@ NOT_GREEN = "NOT GREEN"
 NO_RUN = "NO RUN"
 UNKNOWN = "UNKNOWN"
 
+# The escalated reading of NO_RUN (#2362) -- a distinct token, never a
+# suffix appended to NO_RUN's own string, so `state == NO_RUN` stays false
+# for it exactly as it would for any other state. Everything that renders
+# `Branch <ref>: <STATE>` (this module's own `main`, `gh-pr-merge`'s
+# `_default_branch_report`) prints whichever token `no_run_verdict` hands
+# back, unchanged -- there is no second place that has to learn this state
+# exists for it to show up in a post-merge report.
+NO_RUN_STALE = "NO RUN — STALE"
+
 # A run's lifecycle phase, in this module's own words. #615 comment 1 is a
 # worked case of a bare column (`[time]`) being read as a possible `TIMED_OUT`
 # and costing a second call to disambiguate, so every row states its phase in a
@@ -110,6 +138,16 @@ RUN_LIST_LIMIT = 60
 JOB_WORKERS = 4
 
 _GRACE = _checks.CHECK_CREATION_GRACE_SECS
+
+# The second, longer threshold (#2362). 45 minutes -- three times `_GRACE` --
+# chosen from a single, unreproduced observation (the issue's own author
+# declined to force a second merge to test it further), so it is set wide
+# enough that ordinary listing lag or a slow-to-dispatch push event has every
+# realistic chance to have already resolved itself by the time this fires.
+# Past it, "still expected" is no longer a plausible reading and the finding
+# is escalated to `NO_RUN_STALE` rather than repeating the same declined
+# `NO_RUN` sentence a second, third and hundredth time.
+NO_RUN_STALE_SECS = 2700
 
 
 # ---------------------------------------------------------------------------
@@ -592,14 +630,24 @@ def _window(grace: int) -> str:
     return f"~{max(1, grace // 60)}min"
 
 
-def no_run_verdict(sha: str, age_secs: object, grace: int = _GRACE) -> tuple:
+def no_run_verdict(sha: str, age_secs: object, grace: int = _GRACE,
+                    stale_grace: int = NO_RUN_STALE_SECS) -> tuple:
     """Zero runs on this SHA, rendered as *why* rather than as a zero.
 
-    Three readings, and none of them is green. The window is the one measured
-    in #585 for GitHub's own run-creation latency; past it the cause is
-    declined, because a workflow can legitimately not fire for a ref (path
-    filters) and inferring that from `.github/workflows/*` would be inferring
-    it from files that need not be the ones on this ref.
+    Four readings, and none of them is green. The first window is the one
+    measured in #585 for GitHub's own run-creation latency; past it the cause
+    is declined rather than guessed, because a workflow can legitimately not
+    fire for a ref (path filters) and inferring that from
+    `.github/workflows/*` would be inferring it from files that need not be
+    the ones on this ref.
+
+    Declining does not mean declining forever (#2362): past `stale_grace` --
+    a second, longer threshold -- the same zero-runs reading is escalated
+    to `NO_RUN_STALE` rather than repeating the identical "could be a path
+    filter" sentence at 20 minutes and at 20 hours alike. `age_secs` is the
+    one clock this function has (the commit's own age, not the moment any
+    particular caller happened to check), so that is the clock both
+    thresholds share.
     """
     short = sha[:7] if sha else "an unestablished commit"
     if age_secs is None:
@@ -613,12 +661,23 @@ def no_run_verdict(sha: str, age_secs: object, grace: int = _GRACE) -> tuple:
                         f"{_window(grace)} window in which a first run has "
                         "always appeared, so a run is still expected. Nothing "
                         "has passed and nothing has failed.")
-    return (NO_RUN, f"{NO_RUN} — zero workflow runs on {short}, head commit "
-                    f"{_duration(age_secs)} old and past the {_window(grace)} "
-                    "window in which a first run normally appears. Whether any "
-                    "workflow covers this ref is UNKNOWN — a path filter and a "
-                    "workflow that never fired look identical from here. "
-                    "Check the repo's Actions tab.")
+    if int(age_secs) <= stale_grace:
+        return (NO_RUN, f"{NO_RUN} — zero workflow runs on {short}, head commit "
+                        f"{_duration(age_secs)} old and past the {_window(grace)} "
+                        "window in which a first run normally appears. Whether any "
+                        "workflow covers this ref is UNKNOWN — a path filter and a "
+                        "workflow that never fired look identical from here. "
+                        "Check the repo's Actions tab.")
+    return (NO_RUN_STALE,
+            f"{NO_RUN_STALE} — zero workflow runs on {short}, head commit "
+            f"{_duration(age_secs)} old and past the {_window(stale_grace)} "
+            "window past which a commit with still nothing recorded is no "
+            "longer read as ordinary listing lag or a plausible path filter "
+            "— those explanations wear out with time and this one already "
+            "has (#2362). Something is wrong with how this commit was "
+            "expected to trigger CI, or a webhook delivery was dropped "
+            "outright. Check the repo's Actions tab and the merge mechanism "
+            "itself.")
 
 
 def listing_behind_secs(runs: object, age_secs: object):

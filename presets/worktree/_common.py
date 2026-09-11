@@ -24,6 +24,7 @@ assuming cwd is the directory in question.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -59,6 +60,59 @@ EXCLUDE_REL = "worktree-setup/exclude"
 
 class TargetError(Exception):
     """The target directory could not be resolved as a git worktree."""
+
+
+def fingerprint_copy(path: Path) -> Optional[str]:
+    """A stability marker for a `copy` manifest entry: `setup` records this
+    right after copying, `teardown` recomputes it before deleting, and a
+    mismatch means the entry has been touched since -- likely real work,
+    not `setup`'s own leftover (#2429).
+
+    Deliberately NOT a content hash. `copy` exists precisely for
+    machine-specific and worktree-mutated artefacts -- a build output, a
+    vendored binary, a generated cache -- exactly the kind that is large
+    and legitimately rewritten wholesale. Hashing the actual bytes of every
+    such entry on every `setup` and every `teardown` would be the most
+    expensive part of provisioning a worktree, paid on the common path,
+    for something (size, mtime_ns) already answers just as well: virtually
+    every real edit -- a rebuild, an editor save, `git checkout` rewriting
+    a tracked copy -- changes at least one of the two. The one gap this
+    accepts (a rewrite that reproduces byte-for-byte size and mtime,
+    ns-precision) is narrow enough that closing it is not worth doubling
+    the cost of every setup/teardown pair to do it.
+
+    A single file's fingerprint is its own `(size, mtime_ns)`; a directory's
+    is a hash over every contained file's `(relpath, size, mtime_ns)`,
+    sorted so the walk order never matters. Returns `None` -- an UNKNOWN,
+    never a stand-in for "unchanged" -- when PATH does not exist or a
+    filesystem error stops the walk partway through (a permission error,
+    a symlink loop): the caller must treat that the same as a genuine
+    mismatch, per this repo's own "three states, not two" rule, rather
+    than reading a fingerprint that could not be computed as one that
+    matched.
+    """
+    try:
+        if path.is_symlink() or path.is_file():
+            st = path.stat()
+            return f"{st.st_size}:{st.st_mtime_ns}"
+        if not path.is_dir():
+            return None
+        entries = []
+        for root, dirs, files in os.walk(path):
+            dirs.sort()
+            for name in sorted(files):
+                fp = Path(root) / name
+                try:
+                    st = fp.stat()
+                except OSError:
+                    return None
+                rel = fp.relative_to(path).as_posix()
+                entries.append(f"{rel}:{st.st_size}:{st.st_mtime_ns}")
+        entries.sort()
+        blob = "\n".join(entries).encode("utf-8", "surrogateescape")
+        return hashlib.sha256(blob).hexdigest()
+    except OSError:
+        return None
 
 
 def _run_git(args: list, cwd: Path, timeout: int = _GIT_TIMEOUT) -> subprocess.CompletedProcess:
@@ -398,16 +452,25 @@ def safe_join(root: Path, entry: str) -> "tuple[Optional[Path], Optional[str]]":
 
 
 def read_manifest(target: Path) -> ConfigResult:
-    """The `{"linked": [...], "copied": [...], "excluded": [...]}` manifest
-    `setup` wrote, as a `ConfigResult` — three states, not two (#532
-    self-review): a manifest that never existed (`setup` never ran) is
-    `ConfigResult({...empty lists...})`, exactly like before; a manifest that
-    EXISTS but could not be parsed is now `ConfigResult(None, error=...)`
-    rather than silently collapsing into the same empty shape — the two are
-    not the same claim, and `teardown_op.py` must not treat "I could not read
-    what setup did" as "setup did nothing," which used to leave a live
-    symlink into the primary checkout untouched with a receipt reading
-    exactly like a clean, empty teardown.
+    """The `{"linked": [...], "copied": [...], "excluded": [...],
+    "copy_fingerprints": {...}}` manifest `setup` wrote, as a `ConfigResult`
+    — three states, not two (#532 self-review): a manifest that never
+    existed (`setup` never ran) is `ConfigResult({...empty lists...})`,
+    exactly like before; a manifest that EXISTS but could not be parsed is
+    now `ConfigResult(None, error=...)` rather than silently collapsing
+    into the same empty shape — the two are not the same claim, and
+    `teardown_op.py` must not treat "I could not read what setup did" as
+    "setup did nothing," which used to leave a live symlink into the
+    primary checkout untouched with a receipt reading exactly like a
+    clean, empty teardown.
+
+    `copy_fingerprints` (#2429) maps each `copied` entry to the
+    `fingerprint_copy` value `setup` recorded right after creating it, so
+    `teardown` can tell a `copy` entry `setup` itself last touched from one
+    the worktree has since mutated. A manifest written before this key
+    existed simply omits it — read back as `{}`, an entry absent from that
+    dict is a real, distinguishable "nothing was ever recorded for this
+    one" rather than the same shape as "recorded and unchanged".
 
     Same three-state discipline applies to *resolving the manifest path
     itself* (#2371): `git rev-parse --git-path` does not look at whether the
@@ -425,7 +488,7 @@ def read_manifest(target: Path) -> ConfigResult:
     nonzero `_run_git` result into a single `TargetError` and throws away
     the distinction this needs.
     """
-    empty = {"linked": [], "copied": [], "excluded": []}
+    empty = {"linked": [], "copied": [], "excluded": [], "copy_fingerprints": {}}
     result = _run_git(["rev-parse", "--git-path", MANIFEST_REL], target)
     if result.returncode != 0:
         stderr = result.stderr.strip() or "git did not answer"
@@ -444,10 +507,16 @@ def read_manifest(target: Path) -> ConfigResult:
     if not isinstance(data, dict):
         return ConfigResult(None, f"{path}: top level is not a JSON object")
     manifest = dict(empty)
+    manifest["copy_fingerprints"] = {}
     for key in ("linked", "copied", "excluded"):
         raw = data.get(key)
         if isinstance(raw, list):
             manifest[key] = [str(p) for p in raw]
+    raw_fp = data.get("copy_fingerprints")
+    if isinstance(raw_fp, dict):
+        manifest["copy_fingerprints"] = {
+            str(k): (str(v) if v is not None else None) for k, v in raw_fp.items()
+        }
     return ConfigResult(manifest)
 
 

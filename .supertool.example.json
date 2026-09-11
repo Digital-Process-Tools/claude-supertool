@@ -959,7 +959,7 @@
       ],
       "tier": "slow",
       "rollback_on_fail": false,
-      "timeout": 300
+      "timeout": 540
     },
     "phpmd-mcp": {
       "cmd": "{python} {supertool_dir}/validators/phpmd-mcp/phpmd-mcp.py {file}",
@@ -973,7 +973,7 @@
       ],
       "tier": "slow",
       "rollback_on_fail": false,
-      "timeout": 180
+      "timeout": 400
     },
     "phpunit-mcp": {
       "cmd": "{python} {supertool_dir}/validators/phpunit-mcp/phpunit-mcp.py {file}",
@@ -987,7 +987,7 @@
       ],
       "tier": "slow",
       "rollback_on_fail": false,
-      "timeout": 360
+      "timeout": 780
     },
     "rector-mcp": {
       "cmd": "{python} {supertool_dir}/validators/rector-mcp/rector-mcp.py {file}",
@@ -1001,7 +1001,7 @@
       ],
       "tier": "slow",
       "rollback_on_fail": false,
-      "timeout": 180
+      "timeout": 400
     }
   },
   "formatters": {

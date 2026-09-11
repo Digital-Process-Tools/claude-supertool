@@ -30,7 +30,22 @@ from pathlib import Path
 
 import pytest
 
-PRESET = Path(__file__).parent.parent / "presets" / "git" / "_git_common.py"
+#: The chokepoint itself, not `presets/git/_git_common.py`, which re-exports it
+#: (#2447 moved the whole invocation layer to the `presets/` root so
+#: `presets/dashboard/` and `presets/github/` could reach it without reaching
+#: into another preset's directory).
+#:
+#: **This is not cosmetic and the test caught it.** A re-exported name is a
+#: second binding, not the one the function body resolves: with `PRESET`
+#: pointing at `_git_common.py`, `monkeypatch.setattr(mod, "_lock_fd_holder",
+#: ...)` rebound `_git_common`'s copy while `_diagnose_lock` went on reading
+#: `_git_run`'s. Two of the three assertions in
+#: `test_diagnose_lock_reports_live_stale_and_cannot_tell` then passed against
+#: the REAL scan rather than the stub -- and one of them passed on a substring,
+#: because the `stale` verdict's own prose contains the word "live". Only the
+#: third state failed, which is the one this repository would expect to be the
+#: one that does.
+PRESET = Path(__file__).parent.parent / "presets" / "_git_run.py"
 
 #: `_shim_dir` below writes a `#!/bin/sh` script to a file named `git` with no
 #: extension. `_git`/`_git_verbatim` invoke it via `subprocess.Popen(["git",
@@ -234,11 +249,17 @@ def test_diagnose_lock_reports_live_stale_and_cannot_tell(
     lock = tmp_path / "index.lock"
     lock.write_text("", encoding="utf-8")
 
+    # Anchored on `lock-diagnosis: <verdict>`, not on the bare word. A bare
+    # `"live" in ...` also passes on the STALE verdict, whose own prose reads
+    # "how a live write gets corrupted instead of a stale one cleared" -- so it
+    # went on passing through #2447 while the monkeypatch above was reaching a
+    # module the function under test does not read, and only the third state
+    # below noticed. Two of these three assertions were vacuous.
     monkeypatch.setattr(mod, "_lock_fd_holder", lambda path, **k: True)
-    assert "live" in mod._diagnose_lock(str(lock))
+    assert "lock-diagnosis: live" in mod._diagnose_lock(str(lock))
 
     monkeypatch.setattr(mod, "_lock_fd_holder", lambda path, **k: False)
-    assert "stale" in mod._diagnose_lock(str(lock))
+    assert "lock-diagnosis: stale" in mod._diagnose_lock(str(lock))
 
     monkeypatch.setattr(mod, "_lock_fd_holder", lambda path, **k: None)
     verdict = mod._diagnose_lock(str(lock))

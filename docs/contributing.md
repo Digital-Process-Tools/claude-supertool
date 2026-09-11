@@ -131,8 +131,7 @@ Measured across the 128 documented ops in the shipped tree:
 | max | 6,578 (`channel`) |
 | top 10 rows | 35,290 = **47% of the corpus, in 8% of the ops** |
 
-The assembled descriptive render, `ops:full`, is ~84.74KB against `_HOOK_OUTPUT_CAP_BYTES` = 7,168. That is why `hooks/session-start.sh` sends `ops:roster` instead: names plus safety class, no descriptions at all. Bare `ops` has been signatures-only since #1774/#1775/#1778 and fits the cap on its own at ~4.68KB without needing a fallback (issue [#1813](https://github.com/Digital-Process-Tools/claude-supertool/issues/1813) is where the earlier version of this paragraph is corrected). It is the *descriptions* — reachable only through `ops:full` and `help:OP` now — that have never fitted, and this section is about what they cost.
-
+The assembled descriptive render, `ops:full`, is ~86.89KB (moved from ~85.05KB by #1850's `statusline` op) against `_HOOK_OUTPUT_CAP_BYTES` = 7,168. That is why `hooks/session-start.sh` sends `ops:roster` instead: names plus safety class, no descriptions at all. Bare `ops` has been signatures-only since #1774/#1775/#1778 and fits the cap on its own at ~4.70KB (moved from ~4.58KB by the same op) without needing a fallback (issue [#1813](https://github.com/Digital-Process-Tools/claude-supertool/issues/1813) is where the earlier version of this paragraph is corrected). It is the *descriptions* — reachable only through `ops:full` and `help:OP` now — that have never fitted, and this section is about what they cost.
 **The line to draw.** A `description` says what the op does, what it will refuse, and what it declines to tell you — the three things a caller cannot get from the `syntax` field and cannot afford to learn from a failed call. What it is *not* is the record of how the op got here. These, from one entry, are all true and none of them belong on a line printed to every reader of the roster:
 
 - "It defaulted to `author=@me` until #1207 — disclosing that filter (#1072) was not enough, and three PRs nobody on the team wrote sat unseen for 5h to 1 day behind a footer read past every time."
@@ -917,7 +916,7 @@ The pytest matrix is {ubuntu, macos, windows} × py3.9–3.12. For a long time t
 | --- | --- | --- |
 | Python | all 12 pytest legs | the suite — and **no coverage floor**: every leg passes `--no-cov` |
 | Python | the `coverage` job, ubuntu + py3.12 | `.github/scripts/coverage_gate.py` — floors on `_supertool.py`, `presets/`, the gate script itself and the rest of `.github/scripts/`, plus the printed inventory of what it did *not* measure |
-| `notifiers/claude-channel/channel.ts` | `notifiers` job, ubuntu + macOS | `bunx tsc --noEmit` under the channel's own strict tsconfig, plus the two socket-level integration test files, run for real |
+| `notifiers/claude-channel/channel.ts` | `notifiers` job, ubuntu + macOS | `bunx tsc --noEmit` under the channel's own strict tsconfig, plus the full socket-level integration test suite under bun, run for real; a second, narrower step re-spawns two of those scenarios under `node --experimental-strip-types` -- the exact command `.mcp.json`/`start.mjs` ship -- since [#2469](https://github.com/Digital-Process-Tools/claude-supertool/issues/2469) found no leg had ever exercised that runtime |
 | Python, **only the files a PR touches** | the `lint-new` job, ubuntu + py3.12 | `.github/scripts/lint_new_files.py` — `ruff check` with `F401`/`F841`/`F541` re-enabled, whole-file over the paths the PR adds, copies or renames, and against the merge-base revision over the paths it modifies |
 | Shell (`*.sh`, `.githooks/*`) | all 12 pytest legs | `bash -n` — **syntax only**, via `tests/test_ci_non_python_coverage_557.py` |
 | `notifiers/cursor-witness/extension/src/extension.ts` | nowhere | **uncovered, knowingly** — a VS Code extension needs `npm install` of the editor's type packages to compile and an editor host to exercise |
@@ -1970,6 +1969,47 @@ turns it red, it is not a guard.
 
 [#730]: https://github.com/Digital-Process-Tools/claude-supertool/issues/730
 [#731]: https://github.com/Digital-Process-Tools/claude-supertool/issues/731
+
+## Editing the payload safety net itself is self-hosting, and that is accepted, not fixed (#1906)
+
+`_load_at_file_raw` runs the doubled-backslash scanner (`_payload_double_backslash_refusal`,
+`_payload_literal_backslashes_scope`, and everything else reached from its `note=True` path)
+**unconditionally, on the payload bytes of every `edit:@-`/`paste:@-`/`batch:@-` call**, before
+dispatch ever sees which op or which target path the payload names. That is deliberate -- the
+scanner exists to catch a doubled backslash before it lands on disk, so it has to run on every
+write, not just ones that touch itself.
+
+The consequence: if you are mid-edit on one of those functions and leave the module in a state
+where calling them raises -- the ordinary state between the two halves of a rename, where the old
+name is still referenced at a call site -- **every subsequent `edit:@-` call crashes the same way,
+including the one that would fix the call site.** The tool that would repair the file is the one
+the broken file just disabled. Reproduced in #1839's own lane: one blocked `edit:@-` plus a
+diagnostic round-trip, for exactly this mid-rename shape.
+
+**This is a documented trap, not a bypass mode.** #1906 asked for a decision between the two, and
+the reasoning against a bypass: any bypass narrow enough not to become a general escape hatch for
+ordinary payloads would have to detect "this payload is repairing the scanner itself" -- which
+means inspecting the payload's own target and content, using the same machinery that is currently
+broken, to decide whether to skip it. That is not a narrowing, it is the same surface with an
+extra conditional, and it adds permanent maintenance cost for a recovery path that only fires
+during a rename of two specific functions. A working escape hatch already exists and needs no new
+code:
+
+**If `edit:@-` is refusing every payload with a traceback out of the doubled-backslash scanner
+itself** (not a refusal *about* a doubled backslash -- an actual Python exception, `NameError` or
+similar, raised from inside `_payload_double_backslash_refusal` or `_payload_literal_backslashes_scope`):
+
+1. Do not retry `edit:@-` -- it runs the same broken scanner on the retry.
+2. Write the fix directly, outside the payload route -- open a plain editor, or use a Python
+   script invoked without going through supertool at all, that reads `_supertool.py`, replaces
+   the stale name at its call site with the correct one, and writes the file back. This runs no
+   validator and rolls nothing back on a mistake, so keep the edit as small as the one call site
+   that is actually broken.
+3. Verify before resuming normal calls: `python3 -c "import _supertool"` (catches a syntax or
+   name error at import time) and then a read-only op, e.g. `read:_supertool.py:1-1`, to confirm
+   the payload route itself has recovered.
+4. Once `edit:@-` works again, use it for everything else in the same fix -- the direct write is
+   for the one call site that locked the route out, not a general substitute.
 
 ## Submitting upstream
 

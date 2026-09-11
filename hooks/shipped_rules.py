@@ -79,6 +79,15 @@ NOT_SHIPPED = {
         "the caller does not have is a dead end, and the rule is already "
         "carved (#1438) around exactly which `-C` shapes the shipped registry "
         "claims in this checkout.",
+    "channel-consumers-not-stale.md":
+        "its mode is `once,remind`, and once-per-session needs state a "
+        "PreToolUse hook does not carry -- the same measurement "
+        "`op-defaults-that-narrow.md` records below. Shipped as a plain note "
+        "it would be re-injected on every command mentioning channel.ts, "
+        "including the ones that are reading the consumer rather than "
+        "counting it. The claim itself is about supertool's own consumer "
+        "processes and would be true in any repository; it is the delivery "
+        "mechanism that does not travel, not the content.",
     "op-defaults-that-narrow.md":
         "its mode is `once,remind`, and once-per-session needs state a "
         "PreToolUse hook does not carry. Shipped as a plain note it would be "

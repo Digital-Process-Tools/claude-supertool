@@ -11,7 +11,7 @@
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![OS](https://img.shields.io/badge/tested%20on-Linux%20%7C%20macOS%20%7C%20Windows-blue)](https://github.com/Digital-Process-Tools/claude-supertool/actions/workflows/tests.yml)
 [![License](https://img.shields.io/badge/license-Community-brightgreen)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.58.0-orange)](.claude-plugin/plugin.json)
+[![Version](https://img.shields.io/badge/version-0.59.0-orange)](.claude-plugin/plugin.json)
 
 Saves tokens. Saves money. Saves turns. Works the same in interactive sessions and autonomous runs — humans pair-programming with Claude Code use it every day, not just Kevin-style headless agents. Stdlib only, zero deps, Python 3.9+ — a thin launcher (`supertool.py`) delegating to one core module (`_supertool.py`) plus the presets, [validators](docs/validators.md), [formatters](docs/formatters.md) and [notifiers](docs/notifiers.md) you enable per repo.
 
@@ -46,6 +46,7 @@ Claude Code's default toolbelt is 1995 unix: `cat` one file, `grep` one pattern,
 - **`claims:PATH`** — does a doc's own references — op names, paths, line numbers, cited issues — still hold? [Details](docs/presets/claims.md).
 - **`plugin-marketplace`** — did a release actually reach anyone installed through the catalogue, or is the pinned commit stale? [Details](docs/presets/plugin-marketplace.md).
 - **`classify:TEXT`** — is this untrusted text trying to steer an agent? [Details](docs/presets/classify.md).
+- **`statusline`** — a one-line render for Claude Code's own `statusLine` hook, joining locally computed segments with fragments a network-backed op (`gh-pr` today) publishes as a side effect of running normally — the render path itself never calls the network. [Details](docs/presets/statusline.md).
 
 That's a sample — supertool ships ~40 ops out of the box (built-ins plus the `git` / `github` / `gitlab` / `claude-log` presets); add your own and you're past 60 fast. The full pitch, the receipt behind "50%", and why the tool exists at all: [docs/philosophy.md](docs/philosophy.md).
 
@@ -135,6 +136,8 @@ A caller that is read-only by design -- a review or audit agent whose whole remi
 
 Installed with the plugin, on by default: a `PreToolUse` hook refuses any `Bash` command an op declares it replaces, quoting the op's own description (`gh pr view` → `gh-pr`, `git push` → `git-push`, …). **It governs one route** — the hook matches `Bash|PowerShell` only, so Claude Code's own `Edit`, `Write`, `MultiEdit` and `NotebookEdit` write to disk without passing it, with no op, no validator and no rollback ([#1671](https://github.com/Digital-Process-Tools/claude-supertool/issues/1671)). Full mechanism, the shipped rule layer beneath the registry, and what a command that could not be read does (declines and allows, never blocks blind): [docs/configuration.md](docs/configuration.md#raw_command_guard--the-shipped-raw-command-block).
 
+A `-R`/`--repo`-qualified `gh pr diff`/`gh issue view` (and the other repo-scoped `gh-pr`/`gh-issue` forms) is refused the same as the same-repo spelling, and the refusal's own `Use:` line names the cross-repo route rather than the same-repo op it just blocked: `repo:OWNER/NAME` chained ahead of the op (`repo:Digital-Process-Tools/claude-remember gh-pr:623:diff`) reads the named repository instead of the cwd's own ([#2404](https://github.com/Digital-Process-Tools/claude-supertool/issues/2404)).
+
 ### Hard-block native tools (optional)
 
 Closing the `Edit`/`Write` route is an operator decision the plugin cannot make for you. If you want to force the model to batch via supertool — typical for autonomous / Kevin-style runs — block the competing tools at the Claude Code layer.
@@ -168,7 +171,7 @@ Ask what a command will do without running it: `supertool 'guard:COMMAND'`. Turn
 
 ## Design decisions
 
-- **Two files, one of them a shim.** `supertool.py` is the entry point everything invokes and is 171 lines; the tool itself is `_supertool.py` beside it. The split exists so CPython caches the bytecode: a script named on the command line is recompiled from source on every run, an imported module is not, and that recompile measured ~145ms per invocation on ubuntu and windows runners ([#931](https://github.com/Digital-Process-Tools/claude-supertool/issues/931)). Still no package layout, no required deps — clone or `pip install`, both work.
+- **Two files, one of them a shim.** `supertool.py` is the entry point everything invokes and is 171 lines; the tool itself is `_supertool.py` beside it. The split exists so CPython caches the bytecode: a script named on the command line is recompiled from source on every run, an imported module is not, and that recompile measured ~145ms per invocation on ubuntu and windows runners ([#931](https://github.com/Digital-Process-Tools/claude-supertool/issues/931)). Still no package layout, no required deps — clone or `pip install`, both work, and since [#1783](https://github.com/Digital-Process-Tools/claude-supertool/issues/1783) the pip route also ships a third module, `_shipped_reference.py` — generated, carrying only the `builtin-ops` half of `.supertool.json`, so `help:OP` still answers for a project that documents nothing of its own. The clone and plugin routes read `.supertool.json` itself and never touch it.
 
 More design calls (Python floor, why not an MCP server, trading Python work for LLM tokens): [docs/design-decisions.md](docs/design-decisions.md).
 

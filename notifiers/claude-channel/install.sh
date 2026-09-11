@@ -45,7 +45,9 @@ fi
 echo "==> Installing dependencies via npm (node $NODE_VERSION)"
 npm install --omit=dev --no-audit --no-fund
 
-CHANNEL_PATH="$SCRIPT_DIR/channel.ts"
+# start.mjs, not channel.ts (#2486): the consumer imports the SDK at module
+# load, so the entry point has to be the one that can guarantee it is there.
+CHANNEL_PATH="$SCRIPT_DIR/start.mjs"
 
 cat <<EOF
 
