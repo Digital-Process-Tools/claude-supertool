@@ -28820,10 +28820,13 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
     Supports: bare keys, integers, true/false, single-line strings
     ("..." with escapes, '...' literal), multi-line strings (\"\"\"...\"\"\"
     with escapes, '''...''' literal), inline arrays (nesting, trailing comma,
-    comments between elements), # comments, and `[[table]]` array-of-tables
-    headers. No single `[table]`, no dotted keys, no quoted keys, no dates —
-    only what payloads need. A quoted key (`"my key" = 1`) parses on stdlib
-    `tomllib` (3.11+) and is refused here, by name, on Python <3.11 (#1595).
+    comments between elements), # comments, `[[table]]` array-of-tables
+    headers, and a single `[table]` header (#2473) -- same bare-name grammar
+    as `[[table]]` (alnum, `_`, `-`; no dots, so this deliberately does not
+    add a second, dotted-header convention). No dotted table headers, no
+    inline tables (`{ ... }`), no quoted keys, no dates — only what
+    payloads need. A quoted key (`"my key" = 1`) parses on stdlib `tomllib`
+    (3.11+) and is refused here, by name, on Python <3.11 (#1595).
 
     Inline arrays matter specifically: a variadic payload field is written as
     a list, and `git-commit:@-` with `paths = ["a", "b"]` is the documented
@@ -28860,29 +28863,48 @@ def _mini_toml_loads(raw: str) -> Dict[str, Any]:
                 i += 1
             continue
         if raw[i] == "[":
-            if raw[i:i + 2] != "[[":
-                raise ValueError(
-                    f"single [table] header at offset {i} is not supported by the "
-                    "fallback TOML parser (Python <3.11); use [[table]] or JSON"
-                )
-            end = raw.find("]]", i + 2)
+            if raw[i:i + 2] == "[[":
+                end = raw.find("]]", i + 2)
+                if end < 0:
+                    raise ValueError(f"unterminated [[table]] header at offset {i}")
+                name_offset = i + 2
+                name = raw[name_offset:end].strip()
+                if not name or not all(c.isalnum() or c in "_-" for c in name):
+                    raise ValueError(
+                        f"bad [[table]] name at offset {name_offset}"
+                    )
+                bucket = result.setdefault(name, [])
+                if not isinstance(bucket, list):
+                    raise ValueError(
+                        f"the [[table]] name at offset {name_offset} is both a "
+                        f"value and a [[table]]"
+                    )
+                current = {}
+                bucket.append(current)
+                i = end + 2
+                continue
+            # Single [table] header (#2473). Same bare-name grammar as
+            # [[table]] above -- alnum, `_`, `-`, no dots -- so this does not
+            # invent a second dotted-header convention; a table opened this
+            # way is a dict at top level, reopened in place if seen twice,
+            # never a list.
+            end = raw.find("]", i + 1)
             if end < 0:
-                raise ValueError(f"unterminated [[table]] header at offset {i}")
-            name_offset = i + 2
+                raise ValueError(f"unterminated [table] header at offset {i}")
+            name_offset = i + 1
             name = raw[name_offset:end].strip()
             if not name or not all(c.isalnum() or c in "_-" for c in name):
                 raise ValueError(
-                    f"bad [[table]] name at offset {name_offset}"
+                    f"bad [table] name at offset {name_offset}"
                 )
-            bucket = result.setdefault(name, [])
-            if not isinstance(bucket, list):
+            table = result.setdefault(name, {})
+            if not isinstance(table, dict):
                 raise ValueError(
-                    f"the [[table]] name at offset {name_offset} is both a "
-                    f"value and a [[table]]"
+                    f"the [table] name at offset {name_offset} is both a "
+                    f"value and a [table]"
                 )
-            current = {}
-            bucket.append(current)
-            i = end + 2
+            current = table
+            i = end + 1
             continue
         if raw[i] in "\"'":
             raise ValueError(

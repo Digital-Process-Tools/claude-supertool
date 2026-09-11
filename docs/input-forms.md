@@ -501,11 +501,11 @@ backslashes and handed the op `C:Usersdevnotes.txt`, which then failed with
 `path not found` at an address nobody had typed. Both parsers now agree, and
 `\u` / `\U` escapes (`"\u00e9"`) work on every version.
 
-Other TOML primitives supported in payloads: integers (`start = 42`), booleans (`replace_all = true`), `# comments`. Arrays, tables, dotted keys, and dates aren't needed — payloads are flat key/value maps.
+Other TOML primitives supported in payloads: integers (`start = 42`), booleans (`replace_all = true`), `# comments`, inline arrays (`paths = ["a", "b"]`), and a single `[table]` header for a nested-object field, e.g. `[set]` for `json-set`'s `set` field (#2473) -- bare name only (alnum, `_`, `-`), matching `[[table]]`'s own grammar. Dotted table headers, inline tables (`{ ... }`), quoted keys and dates aren't supported.
 
 ### Implementation note
 
-TOML parsing uses stdlib `tomllib` on Python 3.11+; a minimal built-in parser handles 3.9 / 3.10 fallback (bare keys, strings, ints, bools, comments — nothing else).
+TOML parsing uses stdlib `tomllib` on Python 3.11+; a minimal built-in parser handles 3.9 / 3.10 fallback (bare keys, strings, ints, bools, comments, inline arrays, `[[table]]` array-of-tables and a single `[table]` header — nothing else).
 
 ## `batch:@file` — mixed ops in one round-trip
 

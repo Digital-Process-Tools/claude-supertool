@@ -69,15 +69,25 @@ def test_fallback_parser_still_reads_top_level_keys():
     assert result == {"path": "a.py", "old": "x", "new": "y"}
 
 
-def test_fallback_parser_rejects_single_table_header_clearly():
-    """`[table]` is unsupported — say so, rather than `bad key at offset 0`."""
+def test_fallback_parser_accepts_single_table_header():
+    """`[table]` is supported since #2473 -- it used to raise `single [table]
+    header ... not supported`; a bare header now nests into a dict, matching
+    the bare-name grammar [[table]] already used (alnum, `_`, `-`, no dots).
+    See tests/test_toml_single_table_header_2473.py for the fuller suite."""
+    result = supertool._mini_toml_loads("[single]\nk = 1\n")
+    assert result == {"single": {"k": 1}}
+
+
+def test_fallback_parser_rejects_dotted_single_table_header():
+    """A dotted single [table] header stays unsupported -- #2473 matched the
+    existing [[table]] convention (bare names only), not the wider TOML
+    grammar, so a dot is still a bad name rather than a nested table path."""
     try:
-        supertool._mini_toml_loads("[single]\nk = 1\n")
+        supertool._mini_toml_loads("[a.b]\nk = 1\n")
     except ValueError as exc:
-        assert "not supported" in str(exc)
-        assert "[[table]]" in str(exc) or "JSON" in str(exc)
+        assert "bad [table] name" in str(exc)
     else:
-        raise AssertionError("a single [table] header must raise")
+        raise AssertionError("a dotted [table] header must raise")
 
 
 def test_fallback_parser_rejects_unterminated_table_header():
