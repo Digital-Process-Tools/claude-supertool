@@ -510,6 +510,26 @@ class TestSessionFileNeverWideOpen:
             session_file,
         )
 
+    def test_atproto_save_session_narrows_a_pre_existing_wide_file(self, tmp_path, monkeypatch):
+        """The fresh-file case above is trivially narrow because os.open()'s
+        own mode argument only applies to a file *it* creates -- POSIX
+        ignores that argument for a file that already exists. The actual
+        job of the fchmod/chmod call this test targets only shows up
+        against a file that pre-exists wide (e.g. left over from before
+        #2484's fix, or from a umask that widened an earlier write): this
+        pins that _save_session narrows it rather than leaving it as-is.
+        """
+        session_file = tmp_path / "session.json"
+        session_file.write_text('{"stale": true}', encoding="utf-8")
+        os.chmod(session_file, 0o644)
+        assert stat.S_IMODE(session_file.stat().st_mode) == 0o644  # precondition
+
+        atproto = self._load_atproto()
+        monkeypatch.setattr(atproto, "SESSION_FILE", session_file)
+        atproto._save_session({"accessJwt": "x", "refreshJwt": "y"})
+
+        assert stat.S_IMODE(session_file.stat().st_mode) == 0o600
+
 
 # ===========================================================================
 # 5. 300-char post cap
