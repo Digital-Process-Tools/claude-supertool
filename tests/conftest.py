@@ -1376,6 +1376,12 @@ RESET_GLOBALS = (
 #    They are read, never written. Resetting them would be harmless but says
 #    something untrue about their lifetime.
 RESET_EXEMPT_GLOBALS = (
+    # The disable-sentinel vocabulary for the onboarding-op fallback (#2342),
+    # same shape as _DISABLE_VALUES in presets/git/commit.py (out of this
+    # sweep's reach, since it lives outside _supertool.py). Written once at
+    # import, only ever read via `val.lower() in _ONBOARDING_DISABLE_VALUES`
+    # -- same lifetime as _OP_CONFIG_RESERVED_KEYS just below.
+    "_ONBOARDING_DISABLE_VALUES",
     "_GC_DEFAULT_RETENTION_DAYS",
     # The jsonlint validator block `init` writes into a fresh .supertool.json
     # (#858). Written once at import, never mutated: op_init copies it with
