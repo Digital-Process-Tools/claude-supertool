@@ -129,8 +129,11 @@ fi
 # happens, so the cost was invisible.
 #
 # Bare `ops` is signatures-only since #1774 and fits at ~4.70KB (moved from
-# ~4.58KB by #1850's `statusline` op).
-# Whole hook: ~5.63KB (moved from ~5.52KB by the same op) against 10,000. That was true all along and this comment
+# ~4.58KB by #1850's `statusline` op and #2478's `channel:stranded` addition
+# to `channel`'s `syntax` field -- the two land within this test's own
+# rounding tolerance of each other).
+# Whole hook: ~5.64KB (moved from ~5.52KB by the same two changes) against
+# 10,000. That was true all along and this comment
 # said so in passing while choosing the roster anyway: the numbers it reasoned
 # from were wrong — `ops` was stated at 47,254 (it is 4,126) and the cap at
 # 7,168 (it is 10,000, read out of the harness in #2029). #1877 corrected the
@@ -160,6 +163,45 @@ onboard() {
     if ! "$@" "$BIN" 'introduction' 'output-format' 'ops:session'; then
         echo "> supertool's op listing is incomplete: the interpreter ran and supertool exited non-zero. The ./supertool wrapper still works; 'ops' prints the listing."
     fi
+    # 'channel:stranded' is a SEPARATE call, deliberately not folded into the
+    # batch above (#2478 self-review). channel.py's `stranded` sub-op returns
+    # RC_NOT_DELIVERING=1 -- not a failure, an answer -- whenever it has
+    # something to report, but presets/watch.json's `channel` op declares no
+    # `exitStatus`, so the supertool dispatcher cannot tell that apart from a
+    # real refusal (its own description field already says so: "the distinct
+    # codes ... survive only when presets/watch/channel.py is run directly,
+    # because the supertool wrapper collapses every non-zero to 1"). Batched
+    # with the listing call above, a stranded channel's nonzero exit made the
+    # WHOLE batch nonzero and triggered the "op listing is incomplete" line
+    # printed above -- false, since `ops:session` had rendered completely --
+    # at exactly the one moment #2478 exists to be noticed: a session with a
+    # stranded channel. Declaring `exitStatus` on the shared `channel` op
+    # was rejected: `channel:health`/`channel:probe` reuse the same manifest
+    # entry and their own non-zero codes (NOT DELIVERING, CANNOT DETERMINE,
+    # CONTRADICTED, ...) must stay real findings, never silently certified
+    # "clean" for a future caller that chains on the exit status. A second,
+    # unbatched call costs one extra interpreter start at session start and
+    # keeps the correctness the shared declaration would have given up.
+    #
+    # Silent on a clean channel or one nobody watches, so the ordinary session
+    # pays nothing for it beyond that one extra process. Read-only by
+    # construction: it opens no socket, makes no network call and spawns
+    # nothing, reading only what this channel's own pollers already wrote to
+    # their state files.
+    #
+    # 'channel:health' is deliberately NOT what runs here. Its bound path spawns
+    # `claude mcp get`, and a SessionStart hook that starts an MCP server to
+    # diagnose an MCP server is #1558's shape one layer worse. It also answers
+    # about the socket right now, and at session start the consumer may not have
+    # bound yet -- a missing socket at t=0 is a race, not a finding.
+    #
+    # Why this belongs at session start at all: measured 2026-09-09, a session
+    # armed with --dangerously-load-development-channels got no consumer, and
+    # four pollers emitted into a socket that did not exist for 32 minutes. One
+    # of the lost events was a failing check on an open pull request. Every
+    # instrument said so correctly and none of them was asked, because a session
+    # that does not know its channel is dead has no reason to ask one.
+    "$@" "$BIN" 'channel:stranded'
     exit 0
 }
 

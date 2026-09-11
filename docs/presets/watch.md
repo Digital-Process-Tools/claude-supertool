@@ -11,6 +11,7 @@ unwatch:SOURCE:ID                      kill the poller, remove PID file
 watches                                list active pollers, and any slot that lost one
 channel:health                         is the bridge to the session actually delivering?
 channel:probe                          put one synthetic event through the path, now, and say what moved
+channel:stranded                       silent unless a poller's own last send found nobody listening -- what session-start asks
 radar                                  reconcile registered tiers against live truth, then report
 radar:--state                          the same tiers, read-only — spawns nothing
 ```
@@ -2653,6 +2654,60 @@ read as covering the pid, and the forgeable thing was the verdict. On a platform
 with no peer credentials nothing narrowed at all, and the report says so on its
 own line rather than leaving a reader to infer which of the two it is looking
 at.
+
+## Told without asking — `channel:stranded` (#2478)
+
+Everything above this section is something a session has to think to run.
+`channel:health` and `channel:probe` both answer correctly, but a session
+that does not know its channel is dead has no reason to run either — and a
+dead channel means every event a poller emits right now is silently lost,
+with nothing that noticed.
+
+Measured 2026-09-09: a session started with
+`--dangerously-load-development-channels` got no consumer at all. Four
+pollers went on emitting into a socket nothing was bound to for 32 minutes;
+one of the lost events was `checks_failed` on an open pull request.
+
+`channel:stranded` is what `hooks/session-start.sh` asks on every session, so
+the report arrives unasked, at the one moment the session is already
+listening. It is deliberately not `channel:health`:
+
+- `health` is `acts`-classed because its bound path spawns `claude mcp get`
+  ([#1558](https://github.com/Digital-Process-Tools/claude-supertool/issues/1558))
+  — a SessionStart hook that starts an MCP server to diagnose an MCP server is
+  that issue's own shape, one layer worse.
+- `health` answers about the socket *right now*, and at session start the
+  consumer may not have bound yet — a missing socket at t=0 is a race, not a
+  finding.
+
+So `stranded` reads only what the *producers* already wrote down: a poller
+records `last_emit.state == "no-listener"` in its own state file when its
+most recent send found nobody there. That needs no socket, no network and no
+subprocess — the same `stranded_watchers()` helper `channel:health`'s own
+watcher listing already renders from, not a re-derivation.
+
+**Silent unless there is something to say**, and that is the load-bearing
+half: this runs on every session of every user of this plugin, most of whom
+watch nothing at all, so a line printed on a clean channel is a byte charged
+to every session forever. A channel that is delivering and a channel nobody
+watches both print nothing.
+
+```
+./supertool 'channel:stranded'
+> CHANNEL NOT DELIVERING -- this session is armed for a watch channel and no
+consumer is bound, so events are being LOST, not queued.
+> Each watcher below recorded that its own last send found nobody listening.
+These are the pollers' own words, not a probe:
+>   github-pr 2477 -- last emit 2026-09-09T14:51:41Z
+> `channel:health` says which of its five states this is; `channel:probe`
+writes one synthetic event and reports what took it. Nothing here is queued
+for replay -- an event emitted with no listener is gone (#2478).
+```
+
+Whatever it names is a stale symptom, not a live one — a state file a poller
+wrote at some point in the past, not a current probe. `channel:health` and
+`channel:probe` are still the ops that answer about right now; this is only
+the one that gets a session to think to run them at all.
 
 ## Does it work right now? — `channel:probe` ([#1593](https://github.com/Digital-Process-Tools/claude-supertool/issues/1593))
 
