@@ -243,6 +243,41 @@ jobs:
         shell: pwsh
         run: |
           echo "::warning::Windows Defender exclusion step failed (Add-MpPreference) -- continuing without it; this Windows run may be slower than usual, see #2259"
+      - name: Ensure awk is on PATH (Windows) (#2505)
+        # `tests/test_jit_no_cut_word_boundary_2257.py`,
+        # `tests/test_jit_no_cut_span_stops_at_a_separator_1565.py` and
+        # `tests/test_jit_no_cut_path_name_1221.py` shell out to a real `awk`
+        # to reproduce exactly what `pre-tool-hook.sh` compiles the
+        # `supertool-no-cut` jit-context rule with -- awk, not Python `re`;
+        # the two dialects disagree on some escapes (docs/validators.md).
+        # Losing `awk` does not fail a leg: `needs_awk` skips the whole file,
+        # positive controls included, and a green run then reads identical
+        # whether every regression ran or none of them did (#2505).
+        #
+        # `shell: bash` on "Run tests" below already runs under Git Bash,
+        # whose MSYS2 runtime is documented to prepend its own `usr/bin`
+        # (where `awk.exe` ships) to PATH independently of
+        # `--noprofile`/`--norc` -- but that could not be confirmed against a
+        # live `windows-latest` job while this step was written (GitHub API
+        # rate-limited during development; see #2505's PR body for what was
+        # and was not checked). So this step makes the guarantee explicit
+        # and checked rather than assumed: it fails the job loudly, with a
+        # named cause, rather than letting three files' worth of regression
+        # coverage silently not run. `tests/test_jit_no_cut_awk_present_2505.py`
+        # is the matching in-suite check, which reads this exact failure
+        # mode back out of `CI`/`PATH` on whichever leg runs it.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if ! command -v awk >/dev/null 2>&1; then
+            printf '%s\n' "C:\Program Files\Git\usr\bin" >> "$GITHUB_PATH"
+            export PATH="/c/Program Files/Git/usr/bin:$PATH"
+            if ! command -v awk >/dev/null 2>&1; then
+              echo "::error::awk not found on PATH even after adding Git's usr/bin -- tests/test_jit_no_cut_*.py will silently skip their positive controls on this leg (#2505)"
+              exit 1
+            fi
+          fi
+          echo "awk resolved to: $(command -v awk)"
       - name: Print xdist worker sizing (#2345)
         # `pyproject.toml`'s `addopts` carries `-n auto`, and the step below
         # runs on all twelve legs with a worker count nobody has read.
