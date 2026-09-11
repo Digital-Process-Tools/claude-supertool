@@ -1,6 +1,6 @@
 """The "carries a fragment" gate is satisfied by *deleting* one (#925).
 
-`.github/workflows/changelog.yml` reads the PR's fragment state out of
+`.github/workflows/oss-changelog.yml` reads the PR's fragment state out of
 `git diff --name-only`, and that lists a deletion identically to an addition.
 So a PR that changes the core and *removes* somebody else's pending fragment
 passed green, announced nothing, and dropped an approved entry from the next

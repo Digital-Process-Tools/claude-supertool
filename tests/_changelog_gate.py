@@ -1,4 +1,4 @@
-"""Run `.github/workflows/changelog.yml`'s fragment gate against a real repo.
+"""Run `.github/workflows/oss-changelog.yml`'s fragment gate against a real repo.
 
 The gate is a bash `run:` block. It is extracted **structurally** (#731) rather
 than grepped, so the two-thirds of that file which is comments cannot satisfy an

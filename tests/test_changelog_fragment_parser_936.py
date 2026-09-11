@@ -522,10 +522,11 @@ def test_without_the_parser_the_release_refuses_to_write(capsys, tmp_path, monke
 def test_the_ci_check_installs_the_parser_it_now_depends_on():
     """The maintainer's premise was that `--check` runs where dev deps are.
 
-    It does not: `.github/workflows/changelog.yml` is `actions/checkout` and a
-    bare `python3`, with no install step at all. Left alone, the new guard
-    would have reported `skipped` on every pull request — a red CI that pins
-    nothing, which is the failure mode one step better than a green one.
+    It does not: `.github/workflows/oss-changelog.yml` is `actions/checkout`
+    and a bare `python3`, with no install step at all. Left alone, the new
+    guard would have reported `skipped` on every pull request — a red CI
+    that pins nothing, which is the failure mode one step better than a
+    green one.
     """
     workflow = (REPO / ".github" / "workflows" / "oss-changelog.yml").read_text(encoding="utf-8")
     assert "markdown-it-py" in workflow, \
