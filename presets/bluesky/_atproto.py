@@ -77,18 +77,25 @@ def _save_session(session: dict[str, Any]) -> None:
     plain `open()`'s is, but 0o600 has no group/other bits to mask away,
     so the file is 0o600 under every umask, not just the permissive one
     this fix was found under.
+
+    `os.chmod()`, not `os.fchmod()`, on purpose: `fchmod` does not exist
+    on Windows at all (an `AttributeError` `except OSError` never catches),
+    where this repo's own CI matrix runs; `os.chmod(path, ...)` is present
+    everywhere and, unlike its POSIX behaviour, just toggles the read-only
+    attribute there rather than crashing. It stays a *separate*, own
+    try/except from the write -- best-effort, narrows a pre-existing file
+    left wide by #2484 -- so a narrowing failure never blocks or swallows
+    the write itself, matching `write_text()`'s original, unguarded
+    propagation of a write failure.
     """
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(SESSION_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.fchmod(fd, 0o600)  # narrows a pre-existing file left wide by #2484
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps(session))
+        os.chmod(SESSION_FILE, 0o600)
     except OSError:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+        pass
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(session))
 
 
 def _load_session() -> dict[str, Any] | None:

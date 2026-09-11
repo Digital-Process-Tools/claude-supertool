@@ -19,7 +19,10 @@ import importlib.util
 import json
 import os
 import stat
+import sys
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).parent.parent
 SOURCE_DIR = REPO / "presets" / "watch" / "sources" / "bluesky-engagement"
@@ -138,6 +141,10 @@ def test_the_modules_own_declaration_matches_what_it_emits():
     assert set(feed.EVENT_KEYS) == _emitted_event_keys()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX file modes; Windows os.chmod only toggles read-only",
+)
 def test_save_session_never_world_or_group_readable(tmp_path, monkeypatch):
     """#2484: same write-then-chmod window as `presets/bluesky/_atproto.py`
     -- `_save_session` here is its own separate copy (this module

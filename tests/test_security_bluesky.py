@@ -406,6 +406,14 @@ class TestSessionJsonTampering:
         assert atproto._load_session() is None
 
 
+# POSIX file modes only -- Windows has no real user/group/other permission
+# bits, and os.chmod there only toggles the read-only flag, so a writable
+# file reads back with wide-looking st_mode regardless (mirrors the
+# platform guard in tests/test_atomic_write_mode_259.py).
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX file modes; Windows os.chmod only toggles read-only",
+)
 class TestSessionFileNeverWideOpen:
     """#2484: the session cache must never be observable on disk at a mode
     wider than 0o600 -- not even for the instant between the file being
