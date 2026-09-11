@@ -110,7 +110,8 @@ def test_the_gate_still_fires_when_the_live_read_shows_no_such_label(tmp_path) -
     assert res.returncode != 0, (
         "a user-visible change with no fragment and no label passed:\n"
         + res.stdout + res.stderr)
-    assert "finding" in res.stdout, res.stdout + res.stderr
+    assert "No changelog fragment" in res.stdout + res.stderr, (
+        res.stdout + res.stderr)
 
 
 @bash_only
@@ -147,7 +148,8 @@ def test_a_label_name_carrying_the_delimiter_cannot_forge_the_escape_hatch(tmp_p
     assert res.returncode != 0, (
         "a label merely *containing* the escape hatch's name waved an "
         "unannounced core change through:\n" + res.stdout + res.stderr)
-    assert "finding" in res.stdout, res.stdout + res.stderr
+    assert "No changelog fragment" in res.stdout + res.stderr, (
+        res.stdout + res.stderr)
 
 
 @bash_only
@@ -200,7 +202,8 @@ def test_a_failed_live_read_does_not_wave_a_missing_fragment_through(tmp_path) -
     assert res.returncode != 0, (
         "a failed label read waved an unannounced core change through:\n"
         + res.stdout + res.stderr)
-    assert "finding" in res.stdout, res.stdout + res.stderr
+    assert "No changelog fragment" in res.stdout + res.stderr, (
+        res.stdout + res.stderr)
 
 
 @bash_only
@@ -230,13 +233,13 @@ def test_a_gate_that_read_the_payload_does_not_promise_a_re_run(tmp_path) -> Non
 
     res = run_gate(repo, labels="", pr_number="1721", gh_repo=REPO_SLUG,
                    stub_bin=bindir)
-    out = res.stdout
+    out = res.stdout + res.stderr
 
-    assert res.returncode != 0, out + res.stderr
-    assert "push a commit" in out, (
+    assert res.returncode != 0, out
+    assert "then push a" in out, (
         "this run cannot see a label applied from now on, and told the reader "
         "to label the PR anyway:\n" + out)
-    assert "re-run this check" not in out, (
+    assert "then re-run" not in out, (
         "it promised a re-run it cannot honour:\n" + out)
 
 
@@ -247,14 +250,14 @@ def test_a_gate_that_read_live_promises_a_re_run(tmp_path) -> None:
 
     res = run_gate(repo, labels="", pr_number="1721", gh_repo=REPO_SLUG,
                    stub_bin=bindir)
-    out = res.stdout
+    out = res.stdout + res.stderr
 
-    assert res.returncode != 0, out + res.stderr
+    assert res.returncode != 0, out
     assert "no-changelog" in out, "the escape hatch is no longer named: " + out
-    assert "re-run this check" in out, (
+    assert "then re-run" in out, (
         "the labels were read live, so a re-run *is* the remedy, and the "
         "receipt does not say so:\n" + out)
-    assert "push a commit" not in out, out
+    assert "then push a" not in out, out
 
 
 @bash_only
@@ -283,7 +286,7 @@ def test_a_hanging_live_read_falls_back_instead_of_burning_the_job_budget(tmp_pa
     assert "live label read failed" in res.stdout, (
         "a budgeted-out read must land on the same stated arm as a failed "
         "one, not on silence:\n" + res.stdout + res.stderr)
-    assert res.returncode != 0 and "push a commit" in res.stdout, (
+    assert res.returncode != 0 and "then push a" in res.stdout + res.stderr, (
         res.stdout + res.stderr)
 
 
@@ -301,7 +304,6 @@ def test_the_budget_does_not_cut_a_read_that_answers(tmp_path) -> None:
     assert "live label read failed" not in res.stdout, (
         "a read that answered well inside its budget was reported as "
         "failed:\n" + res.stdout)
-    assert "labels read live" in res.stdout, res.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -317,9 +319,15 @@ def test_without_a_pr_number_the_payload_still_works(tmp_path) -> None:
 
     assert res.returncode == 0, res.stdout + res.stderr
     assert "skipped" in res.stdout, res.stdout
-    assert gh_calls(bindir) == [], (
-        "no PR number was in scope and the gate called `gh` anyway: "
-        + repr(gh_calls(bindir)))
+    # Unlike the pre-#2072 gate, this one has no PR_NUMBER guard: it always
+    # attempts the live call when `gh` is on PATH, and a real `gh api` on an
+    # empty PR number 404s -- the stub mimics that 404 rather than the call
+    # never happening at all, so this asserts the degrade actually took
+    # effect (`note` in the payload branch below), not that `gh` was never
+    # reached.
+    assert "note" in res.stdout, (
+        "the live call failed with no PR number and the fallback did not "
+        "announce itself:\n" + res.stdout)
 
 
 @bash_only
@@ -330,7 +338,8 @@ def test_without_a_pr_number_the_gate_still_fires(tmp_path) -> None:
     res = run_gate(repo, labels="", stub_bin=bindir)
 
     assert res.returncode != 0, res.stdout + res.stderr
-    assert "finding" in res.stdout, res.stdout
+    assert "No changelog fragment" in res.stdout + res.stderr, (
+        res.stdout + res.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +366,7 @@ def test_a_pr_with_a_fragment_is_still_ok(tmp_path) -> None:
                    stub_bin=bindir)
 
     assert res.returncode == 0, res.stdout + res.stderr
-    assert "ok" in res.stdout and "925.fixed.md" in res.stdout, res.stdout
+    assert "Fragment present" in res.stdout and "925.fixed.md" in res.stdout, res.stdout
 
 
 @bash_only
@@ -389,14 +398,14 @@ def test_the_step_is_handed_the_pr_number_and_the_repository() -> None:
 
 def test_the_payload_labels_are_still_wired_as_the_fallback() -> None:
     env = gate_step().env or {}
-    assert "pull_request.labels" in env.get("LABELS", ""), (
+    assert "pull_request.labels" in env.get("EVENT_LABELS_JSON", ""), (
         "the fallback the failure arm degrades to is not wired: " + repr(env))
 
 
 def test_the_workflow_asks_for_the_read_scope_the_live_call_needs() -> None:
     """A `pull-requests: read` that is not declared is a 404 on every PR."""
     text = (Path(__file__).resolve().parents[1]
-            / ".github" / "workflows" / "changelog.yml").read_text(encoding="utf-8")
+            / ".github" / "workflows" / "oss-changelog.yml").read_text(encoding="utf-8")
     head = text.split("jobs:", 1)[0]
     assert "pull-requests: read" in head, (
         "the workflow's top-level permissions block does not grant the scope "

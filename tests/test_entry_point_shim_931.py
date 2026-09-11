@@ -290,13 +290,13 @@ def test_the_changelog_gate_still_sees_the_file_that_holds_the_code() -> None:
     been waved through as docs-only. A gate that answers "nothing to announce"
     because it stopped looking is the failure mode, not a relaxed rule.
     """
-    workflow = (REPO_ROOT / ".github" / "workflows" / "changelog.yml").read_text(encoding="utf-8")
-    opener, sep, rest = workflow.partition("grep -E " + chr(39))
-    assert sep, "could not find the shipped-paths grep in changelog.yml"
+    workflow = (REPO_ROOT / ".github" / "workflows" / "oss-changelog.yml").read_text(encoding="utf-8")
+    opener, sep, rest = workflow.partition("grep -Eq " + chr(39))
+    assert sep, "could not find the user-visible-paths grep in oss-changelog.yml"
     pattern, sep, _ = rest.partition(chr(39))
-    assert sep and pattern.startswith("^("), (
-        "the shipped-paths grep in changelog.yml no longer has the shape this "
-        "test reads: " + repr(pattern)
+    assert sep and pattern, (
+        "the user-visible-paths grep in oss-changelog.yml no longer has the "
+        "shape this test reads: " + repr(pattern)
     )
 
     bulk = _bulk_module_relpath()

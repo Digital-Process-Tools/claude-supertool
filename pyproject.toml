@@ -158,7 +158,7 @@ dev = [
     # Not the same reason as ruff any more. This was the CommonMark oracle for
     # `tests/test_changelog_fragment_whitelist_934.py`; since #936 it is also
     # the fragment guard itself, imported by
-    # `.github/scripts/assemble_changelog.py`. Three hand-written scanners in a
+    # `.oss/assemble_changelog.py`. Three hand-written scanners in a
     # row disagreed with CommonMark and all three were bypassed, so the guard
     # and the reader are one parser now. Without it that script can no longer
     # claim anything: it reports `skipped`, names what is missing and writes

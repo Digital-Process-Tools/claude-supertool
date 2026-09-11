@@ -28,7 +28,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 ADAPTER = REPO / "validators" / "changelog-fragment" / "changelog-fragment.py"
-ASSEMBLER = REPO / ".github" / "scripts" / "assemble_changelog.py"
+ASSEMBLER = REPO / ".oss" / "assemble_changelog.py"
 
 #: A hermetic fixture's own fragment name, deliberately NOT this PR's own
 #: issue number (#1293's own remedy): this PR's own pending changelog fragment

@@ -1,6 +1,6 @@
 """The "carries a fragment" gate is satisfied by *deleting* one (#925).
 
-`.github/workflows/changelog.yml` reads the PR's fragment state out of
+`.github/workflows/oss-changelog.yml` reads the PR's fragment state out of
 `git diff --name-only`, and that lists a deletion identically to an addition.
 So a PR that changes the core and *removes* somebody else's pending fragment
 passed green, announced nothing, and dropped an approved entry from the next
@@ -21,6 +21,7 @@ exactly that shape.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -31,7 +32,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 
 REPO = Path(__file__).resolve().parents[1]
-WORKFLOW = REPO / ".github" / "workflows" / "changelog.yml"
+WORKFLOW = REPO / ".github" / "workflows" / "oss-changelog.yml"
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -84,11 +85,18 @@ def base_repo(tmp_path: Path) -> Path:
 
 
 def run_gate(repo: Path, labels: str = "") -> "subprocess.CompletedProcess[str]":
+    """`labels` is a comma-joined string, translated into `EVENT_LABELS_JSON`
+    -- the event-payload fallback the oss-owned gate reads via `jq` when
+    `gh` is absent (as it is for every call in this file). `BASE_REF`
+    replaces the old `BASE`: the scaffolded step reads `$BASE_REF` under
+    `set -u`."""
+    label_list = [part for part in labels.split(",") if part]
     return subprocess.run(
         ["bash", "-c", gate_script()],
         cwd=repo, capture_output=True, text=True,
         encoding="utf-8", errors="replace",
-        env={"PATH": os.environ["PATH"], "BASE": "master", "LABELS": labels},
+        env={"PATH": os.environ["PATH"], "BASE_REF": "master",
+             "EVENT_LABELS_JSON": json.dumps(label_list)},
     )
 
 
@@ -112,7 +120,8 @@ def test_deleting_someone_elses_fragment_does_not_satisfy_the_gate(tmp_path) -> 
     assert res.returncode != 0, (
         "a user-visible change whose only fragment line is a DELETION passed "
         "the gate:\n" + res.stdout + res.stderr)
-    assert "finding" in res.stdout, res.stdout + res.stderr
+    assert "deleted without being assembled" in res.stdout + res.stderr, (
+        res.stdout + res.stderr)
 
 
 def test_the_receipt_names_the_deletion_rather_than_the_absence(tmp_path) -> None:
@@ -123,9 +132,9 @@ def test_the_receipt_names_the_deletion_rather_than_the_absence(tmp_path) -> Non
     git(repo, "commit", "-am", "core change, and drop a pending fragment")
 
     res = run_gate(repo)
-    out = res.stdout
+    out = res.stdout + res.stderr
 
-    assert res.returncode != 0, out + res.stderr
+    assert res.returncode != 0, out
     assert "delet" in out.lower(), (
         "the receipt calls a removal an absence: " + out)
     assert "906.added.md" in out, (
@@ -148,7 +157,7 @@ def test_a_pr_that_adds_one_and_deletes_another_is_still_a_finding(tmp_path) -> 
     assert res.returncode != 0, (
         "a PR carrying its own fragment silently removed another PR's:\n"
         + res.stdout + res.stderr)
-    assert "906.added.md" in res.stdout, res.stdout
+    assert "906.added.md" in res.stdout + res.stderr, res.stdout + res.stderr
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +184,7 @@ def test_a_release_cut_is_not_a_finding(tmp_path) -> None:
     assert res.returncode == 0, (
         "the release cut was blocked by the fragment gate:\n"
         + res.stdout + res.stderr)
-    assert "ok" in res.stdout, res.stdout
+    assert "Release cut" in res.stdout, res.stdout
 
 
 def test_adding_a_fragment_still_passes(tmp_path) -> None:
@@ -189,7 +198,7 @@ def test_adding_a_fragment_still_passes(tmp_path) -> None:
     res = run_gate(repo)
 
     assert res.returncode == 0, res.stdout + res.stderr
-    assert "ok" in res.stdout and "925.fixed.md" in res.stdout, res.stdout
+    assert "Fragment present" in res.stdout and "925.fixed.md" in res.stdout, res.stdout
 
 
 def test_a_docs_only_pr_is_still_skipped(tmp_path) -> None:
@@ -234,7 +243,7 @@ def test_a_fragment_only_deletion_is_a_finding_with_no_code_change(tmp_path) -> 
     assert res.returncode != 0, (
         "a PR whose entire content is the removal of somebody else's entry "
         "was waved through:\n" + res.stdout + res.stderr)
-    assert "906.added.md" in res.stdout, res.stdout
+    assert "906.added.md" in res.stdout + res.stderr, res.stdout + res.stderr
 
 
 def test_a_pr_that_adds_and_consumes_reports_both(tmp_path) -> None:

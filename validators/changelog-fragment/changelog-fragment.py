@@ -51,12 +51,15 @@ TOOL = "changelog-fragment"
 #: adapter is not asserting one repo's layout as a fact about every repo.
 ENV_ASSEMBLER = "SUPERTOOL_CHANGELOG_ASSEMBLER"
 
-#: Known conventions, tried in order. `.github/scripts/...` is this repo's own
-#: layout and the adapter's original (and only) guess. `.oss/...` and
-#: `scripts/...` are `claude-oss`'s own `ASSEMBLER_LOCATIONS`
-#: (`scripts/oss_rules.py:45`) -- what `/oss:scaffold` actually writes for every
-#: repository that plugin sets up (#2072). A project using a fourth location
-#: still has `SUPERTOOL_CHANGELOG_ASSEMBLER`.
+#: Known conventions, tried in order. `.github/scripts/...` was this repo's
+#: own layout and the adapter's original (and only) guess -- kept first so an
+#: unrelated project still using that convention keeps resolving. This repo
+#: itself moved to `.oss/...` in #2489, the same convention `claude-oss`'s
+#: own `ASSEMBLER_LOCATIONS` (`scripts/oss_rules.py:45`) writes for every
+#: repository that plugin sets up (#2072), which is where this repo's own
+#: assembler is actually found now, on the second try. `scripts/...` is the
+#: third convention. A project using a fourth location still has
+#: `SUPERTOOL_CHANGELOG_ASSEMBLER`.
 ASSEMBLER_LOCATIONS = (
     os.path.join(".github", "scripts", "assemble_changelog.py"),
     os.path.join(".oss", "assemble_changelog.py"),

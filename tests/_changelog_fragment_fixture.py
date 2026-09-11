@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-_SCRIPT = REPO_ROOT / ".github" / "scripts" / "assemble_changelog.py"
+_SCRIPT = REPO_ROOT / ".oss" / "assemble_changelog.py"
 
 _spec = importlib.util.spec_from_file_location("_st_fragment_fixture_asm", _SCRIPT)
 assert _spec is not None and _spec.loader is not None

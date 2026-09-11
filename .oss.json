@@ -12,6 +12,14 @@
     "README.md"
   ],
   "changelog_dir": "changelog.d",
+  "user_visible_paths": [
+    "^_?supertool\\.py$",
+    "^presets/",
+    "^validators/",
+    "^formatters/",
+    "^notifiers/",
+    "^\\.claude-plugin/"
+  ],
   "changelog_untagged": [
     "0.19.0",
     "0.18.0",

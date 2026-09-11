@@ -30,7 +30,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 ADAPTER = REPO / "validators" / "changelog-fragment" / "changelog-fragment.py"
-REAL_ASSEMBLER = REPO / ".github" / "scripts" / "assemble_changelog.py"
+REAL_ASSEMBLER = REPO / ".oss" / "assemble_changelog.py"
 
 FRAGMENT_BODY = (
     "- **A thing** ([#1](https://github.com/"

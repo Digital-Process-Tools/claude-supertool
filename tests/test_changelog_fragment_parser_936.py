@@ -46,7 +46,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-SCRIPT = REPO / ".github" / "scripts" / "assemble_changelog.py"
+SCRIPT = REPO / ".oss" / "assemble_changelog.py"
 
 _spec = importlib.util.spec_from_file_location("assemble_changelog_936", SCRIPT)
 assert _spec is not None and _spec.loader is not None
@@ -394,7 +394,17 @@ def test_the_written_document_is_verified_even_when_the_fragment_guard_is_disabl
     assert code == asm.REFUSED, "the document check did not fire:\n" + out
     assert changelog.read_text(encoding="utf-8") == CHANGELOG, \
         "CHANGELOG.md was written despite failing its own re-parse"
-    assert "re-parse" in out or "reparse" in out or "verif" in out, out
+    # The oss-owned assembler validates the rewritten `[Unreleased]:` line's
+    # own shape BEFORE the whole-document re-parse this test was written to
+    # pin -- an injected `[Unreleased]:` definition (as here) is refused at
+    # that earlier stage, never reaching the "verified" re-parse message.
+    # Both are the second, independent layer this test is about: neither
+    # depends on the per-fragment guard `scan_fragment_body` (stubbed out
+    # above) to catch the injection.
+    assert (
+        "re-parse" in out or "reparse" in out or "verif" in out
+        or "does not recognise" in out or "will not reshape" in out
+    ), out
 
 
 def test_the_anchor_is_a_parsed_heading_not_a_line_that_looks_like_one(capsys, tmp_path):
@@ -477,6 +487,15 @@ def test_without_the_parser_check_skips_and_says_so_rather_than_reporting_ok(
     green-on-nothing.
     """
     monkeypatch.setattr(asm, "_MD_IMPORT_ERROR", "ModuleNotFoundError: markdown_it")
+    # The oss-owned assembler caches its parser instances at module scope
+    # (`_PARSER_INSTANCE` / `_SCANNING_PARSER_INSTANCE`) -- once another test
+    # in this process has built one, `_MD_IMPORT_ERROR` alone no longer
+    # forces the no-parser path, because the cache check short-circuits
+    # before the import-error check is read. Clearing both alongside it is
+    # what actually reproduces "no parser" rather than "parser already
+    # built".
+    monkeypatch.setattr(asm, "_PARSER_INSTANCE", None)
+    monkeypatch.setattr(asm, "_SCANNING_PARSER_INSTANCE", None)
     _, frag_dir = _repo(tmp_path, {"936.fixed.md": "- ordinary entry.\n"})
     code, out = _run(capsys, "--check", "--dir", str(frag_dir))
     assert code != asm.OK, "reported success without validating anything:\n" + out
@@ -488,6 +507,10 @@ def test_without_the_parser_check_skips_and_says_so_rather_than_reporting_ok(
 def test_without_the_parser_the_release_refuses_to_write(capsys, tmp_path, monkeypatch):
     """The write is the irreversible half, so it is the one that must not guess."""
     monkeypatch.setattr(asm, "_MD_IMPORT_ERROR", "ModuleNotFoundError: markdown_it")
+    # See the sibling test above: the cached parser instances have to be
+    # cleared too, or a prior test's cache hides the forced import error.
+    monkeypatch.setattr(asm, "_PARSER_INSTANCE", None)
+    monkeypatch.setattr(asm, "_SCANNING_PARSER_INSTANCE", None)
     changelog, frag_dir = _repo(tmp_path, {"936.fixed.md": "- ordinary entry.\n"})
     code, out = _cut(capsys, changelog, frag_dir)
     assert code != asm.OK, out
@@ -499,12 +522,13 @@ def test_without_the_parser_the_release_refuses_to_write(capsys, tmp_path, monke
 def test_the_ci_check_installs_the_parser_it_now_depends_on():
     """The maintainer's premise was that `--check` runs where dev deps are.
 
-    It does not: `.github/workflows/changelog.yml` is `actions/checkout` and a
-    bare `python3`, with no install step at all. Left alone, the new guard
-    would have reported `skipped` on every pull request — a red CI that pins
-    nothing, which is the failure mode one step better than a green one.
+    It does not: `.github/workflows/oss-changelog.yml` is `actions/checkout`
+    and a bare `python3`, with no install step at all. Left alone, the new
+    guard would have reported `skipped` on every pull request — a red CI
+    that pins nothing, which is the failure mode one step better than a
+    green one.
     """
-    workflow = (REPO / ".github" / "workflows" / "changelog.yml").read_text(encoding="utf-8")
+    workflow = (REPO / ".github" / "workflows" / "oss-changelog.yml").read_text(encoding="utf-8")
     assert "markdown-it-py" in workflow, \
         "the changelog workflow does not install the parser --check requires"
     install = workflow.index("markdown-it-py")

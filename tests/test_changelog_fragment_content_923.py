@@ -43,7 +43,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-SCRIPT = REPO / ".github" / "scripts" / "assemble_changelog.py"
+SCRIPT = REPO / ".oss" / "assemble_changelog.py"
 
 _spec = importlib.util.spec_from_file_location("assemble_changelog_923", SCRIPT)
 assert _spec is not None and _spec.loader is not None
@@ -285,8 +285,16 @@ def test_a_document_whose_only_unreleased_ref_is_outside_the_block_is_left_alone
     code, out = _cut(capsys, changelog, frag_dir)
     text = changelog.read_text(encoding="utf-8")
 
-    assert code == asm.OK, out
-    assert "links     none" in out, out
+    # The oss-owned assembler refuses rather than silently leaving the
+    # release untagged: with no trailing link-reference block at all there
+    # is no repository URL to derive `[0.24.0]`'s own tag ref from, so it
+    # declines the write instead of quietly shipping a release with
+    # "links none" -- the same "decline rather than guess" rule this
+    # repository's own validators follow elsewhere.
+    assert code == asm.REFUSED, out
+    assert "no trailing link-reference block" in out, out
+    assert changelog.read_text(encoding="utf-8") == no_block, \
+        "CHANGELOG.md was written despite the refusal"
     assert EVIL + "/compare/v0.24.0...HEAD" not in text
     assert "[0.24.0]: " not in text
 

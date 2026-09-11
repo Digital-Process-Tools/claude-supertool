@@ -1,4 +1,4 @@
-"""Run `.github/workflows/changelog.yml`'s fragment gate against a real repo.
+"""Run `.github/workflows/oss-changelog.yml`'s fragment gate against a real repo.
 
 The gate is a bash `run:` block. It is extracted **structurally** (#731) rather
 than grepped, so the two-thirds of that file which is comments cannot satisfy an
@@ -12,6 +12,7 @@ one of them silently stops finding the step.
 """
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import subprocess
@@ -21,7 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 REPO = Path(__file__).resolve().parents[1]
-WORKFLOW = REPO / ".github" / "workflows" / "changelog.yml"
+WORKFLOW = REPO / ".github" / "workflows" / "oss-changelog.yml"
 
 
 def workflow_jobs() -> dict[str, str]:
@@ -96,6 +97,13 @@ def gh_stub(tmp_path: Path, *, labels=None, exit_code: int = 0,
     bindir = tmp_path / "stub-bin"
     bindir.mkdir(exist_ok=True)
     body = ["#!/bin/sh", 'echo "$*" >> "$(dirname "$0")/calls.txt"']
+    # A real `gh api repos/x/pulls/` with no PR number 404s -- the URL this
+    # stub is handed carries a trailing `pulls/` immediately before the next
+    # flag when PR_NUMBER was never set. Matching that here, rather than
+    # answering unconditionally, is what makes "no PR number" actually
+    # exercise the fallback instead of a live call that happens to succeed
+    # on an empty argument.
+    body.append('case " $* " in *"pulls/ "*) exit 1 ;; esac')
     if sleep_seconds:
         body.append("sleep %s" % sleep_seconds)
     for label in (labels or []):
@@ -116,18 +124,30 @@ def gh_calls(bindir: Path) -> list[str]:
 
 def run_gate(repo: Path, labels: str = "", *, pr_number: str = "",
              gh_repo: str = "", stub_bin: Path | None = None,
-             read_timeout: str = "") -> "subprocess.CompletedProcess[str]":
-    """Run the gate. `stub_bin` is prepended to PATH so `gh` resolves to it."""
+             read_timeout: str = "", author: str = "") -> "subprocess.CompletedProcess[str]":
+    """Run the gate. `stub_bin` is prepended to PATH so `gh` resolves to it.
+
+    `labels` is a comma-joined string -- the same shape Actions itself hands a
+    workflow -- and is translated into `EVENT_LABELS_JSON`, the event-payload
+    fallback the oss-owned gate reads via `jq` when the live `gh api` read
+    fails or is not attempted. `BASE_REF` replaces the old `BASE`: the
+    scaffolded step reads `$BASE_REF` under `set -u`, so an unset one is a
+    hard failure rather than an empty diff.
+    """
     path = os.environ["PATH"]
     if stub_bin is not None:
         path = str(stub_bin) + os.pathsep + path
-    env = {"PATH": path, "BASE": "master", "LABELS": labels}
+    label_list = [part for part in labels.split(",") if part]
+    env = {"PATH": path, "BASE_REF": "master",
+           "EVENT_LABELS_JSON": json.dumps(label_list)}
     if pr_number:
         env["PR_NUMBER"] = pr_number
     if gh_repo:
         env["GH_REPO"] = gh_repo
     if read_timeout:
         env["LABEL_READ_TIMEOUT"] = read_timeout
+    if author:
+        env["PR_AUTHOR"] = author
     return subprocess.run(
         ["bash", "-c", gate_script()],
         cwd=repo, capture_output=True, text=True,

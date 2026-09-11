@@ -34,7 +34,7 @@ from typing import List
 import supertool
 
 REPO = Path(__file__).resolve().parents[1]
-SCRIPT = REPO / ".github" / "scripts" / "assemble_changelog.py"
+SCRIPT = REPO / ".oss" / "assemble_changelog.py"
 
 _spec = importlib.util.spec_from_file_location("assemble_changelog", SCRIPT)
 assert _spec is not None and _spec.loader is not None
@@ -234,7 +234,15 @@ CHANGELOG = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
 
 
 def test_this_repositorys_changelog_audits_clean() -> None:
-    findings = asm.audit_link_refs(CHANGELOG)
+    # The declaration moved off `assemble_changelog.UNTAGGED_RELEASES` (an
+    # empty constant in the oss-owned copy) and into `.oss.json`'s
+    # `changelog_untagged`, passed on the command line as `--untagged` --
+    # see docs/contributing.md, "A version that was never tagged...".
+    import json
+
+    config = json.loads((REPO / ".oss.json").read_text(encoding="utf-8"))
+    untagged = frozenset(config.get("changelog_untagged") or ())
+    findings = asm.audit_link_refs(CHANGELOG, untagged)
     assert findings == [], "CHANGELOG.md link refs:\n" + "\n".join(findings)
 
 

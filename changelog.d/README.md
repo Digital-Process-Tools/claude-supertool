@@ -186,6 +186,6 @@ the top of the same 2,670-line file, so each merge re-conflicted every other
 open PR ([#906](https://github.com/Digital-Process-Tools/claude-supertool/issues/906)).
 Two PRs never touch the same path here.
 
-At release, `python3 .github/scripts/assemble_changelog.py --version x.y.z`
+At release, `python3 .oss/assemble_changelog.py --version x.y.z`
 folds these into a new section of `CHANGELOG.md` and deletes them. See
 `docs/contributing.md`, "Changelog fragments".
