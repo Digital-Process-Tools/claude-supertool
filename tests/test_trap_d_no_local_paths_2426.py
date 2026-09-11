@@ -29,53 +29,18 @@ writes.
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
+
+from _local_path_scan import _local_path_hits
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TRAP_D = REPO_ROOT / "trap.d"
 
-# `runneradmin` is the one Windows CI account name this repo's own fixtures
-# already use as a legitimate non-maintainer example (trap.d/1165's Windows
-# shlex note); everything else matching the shape below is a real local
-# username and is in scope.
-_ALLOWED_WINDOWS_USERS = {"runneradmin", "Public", "Default", "..."}
-
-# `...` is an ellipsis placeholder trap.d/1165's own Windows-shlex note uses
-# for "some intermediate path segment", not a username -- the same file's
-# `C:\\Users\\...\\argv.py` is a generic template, not a real account.
-
-# Terminates a captured username without requiring a further path segment
-# -- the original regex demanded a literal trailing separator, so
-# "/Users/<name>." or "/Users/<name> (parenthetical)" went unflagged
-# (#2426 self-review, Explore spawn: reproduced against both shapes).
-_BOUNDARY = r"[/\\ \t\r\n.,;:!?)`]|$"
-
-_LOCAL_PATH = re.compile(
-    r"/Users/(?P<posix_user>[A-Za-z0-9_.-]+)(?:" + _BOUNDARY + r")"
-    r"|/home/(?P<home_user>[A-Za-z0-9_.-]+)(?:" + _BOUNDARY + r")"
-    r"|C:\\Users\\(?P<win_user>[A-Za-z0-9_.-]+)(?:" + _BOUNDARY + r")"
-    # The dash-flattened shape this repo's own scratchpad directory naming
-    # produces (path separators replaced by "-"), e.g.
-    # "-Users-<name>-Documents-claude-supertool" -- seen verbatim,
-    # pre-redaction, in trap.d/2015.scratchpad-collision.md:22.
-    r"|-Users-(?P<dash_user>[A-Za-z0-9_.]+)-"
-)
-
-
-def _local_path_hits(text: str) -> list[str]:
-    hits = []
-    for match in _LOCAL_PATH.finditer(text):
-        user = (
-            match.group("posix_user")
-            or match.group("home_user")
-            or match.group("win_user")
-            or match.group("dash_user")
-        )
-        if user in _ALLOWED_WINDOWS_USERS:
-            continue
-        hits.append(match.group(0))
-    return hits
+# The regex and the placeholder allowlist (`runneradmin`, the Windows-shlex
+# `...` template segment, ...) now live in `_local_path_scan.py`, shared with
+# #2440's whole-artifact sweep so the same pattern is not maintained twice
+# (the drift `_repo_walk.py`'s own docstring warns about, for the identical
+# reason). Behaviour here is unchanged: every hit not in that allowlist.
 
 
 def test_no_local_home_paths_in_trap_d():
