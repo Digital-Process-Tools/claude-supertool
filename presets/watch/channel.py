@@ -2252,10 +2252,81 @@ def probe(path: str, *, wait: float = PROBE_WAIT_SECS) -> tuple[int, str]:
     )
 
 
+def stranded_report(path: str) -> tuple[int, str]:
+    """The unasked-for half: are this channel's own pollers emitting into
+    nothing, said where a session is already listening (#2478).
+
+    **Silent when there is nothing to say, and that is the load-bearing half.**
+    This runs from `hooks/session-start.sh` on every session of every user of
+    this plugin, most of whom watch nothing at all, so a line printed on a clean
+    channel is a byte charged to every session forever -- `CLAUDE.md`'s own rule
+    about bytes charged to everyone to serve someone. `("", 0)` on a clean
+    channel is exact silence, not a short line.
+
+    **Not `health`, and the two differences are both disqualifying.** `health`
+    is `acts`-classed because its bound path spawns `claude mcp get` (#1558) --
+    a SessionStart hook that starts an MCP server to diagnose an MCP server is
+    that issue's own shape, one layer worse. And `health` answers about the
+    socket *now*, while at session start the consumer may not have bound yet: a
+    missing socket at t=0 is a race, not a finding.
+
+    So this reads only what the PRODUCERS already wrote down. A poller records
+    `last_emit.state == "no-listener"` when its own send found nothing there --
+    a fact with a timestamp on it, needing no socket, no network and no
+    subprocess. `stranded_watchers` is the same function `health`'s own watcher
+    listing renders from; nothing is re-derived here.
+
+    Measured 2026-09-09 (#2478): a session started by `bin/oss-workspace`, armed
+    with `--dangerously-load-development-channels`, got no consumer at all --
+    the harness cached a connect failure and forked nothing. Four pollers emitted
+    into a socket that did not exist for 32 minutes, and one of the lost events
+    was `checks_failed` on an open pull request. Every instrument was right and
+    none was asked, because a session that does not know its channel is dead has
+    no reason to run one.
+    """
+    rows = [row for row in stranded_watchers(path) if not row.refusal]
+    if not rows:
+        # Three states, and this deliberately folds TWO of them into silence: a
+        # channel that is delivering, and a channel nobody watches, both have
+        # nothing to report to a session that did not ask. The third -- a state
+        # directory that could not be read -- is silent here on purpose too:
+        # `channel:health` is where "I could not look" is reported, and an
+        # unreadable /tmp entry shouted at every session start would train the
+        # reader to skip the block that matters.
+        return 0, ""
+    lines = [
+        "> CHANNEL NOT DELIVERING -- this session is armed for a watch channel "
+        "and no consumer is bound, so events are being LOST, not queued.",
+        "> Each watcher below recorded that its own last send found nobody "
+        "listening. These are the pollers' own words, not a probe:",
+    ]
+    for row in rows[:_ROW_CAP]:
+        source = _untrusted.flat(row.source)
+        watcher_id = _untrusted.flat(row.watcher_id)
+        ts = _untrusted.flat(str(row.last.get("ts", "?")))
+        lines.append(f">   {source} {watcher_id} -- last emit {ts}")
+    if len(rows) > _ROW_CAP:
+        lines.append(f">   ... and {len(rows) - _ROW_CAP} more")
+    lines.append(
+        "> `channel:health` says which of its six states this is; "
+        "`channel:probe` writes one synthetic event and reports what took it. "
+        "Nothing here is queued for replay -- an event emitted with no listener "
+        "is gone (#2478).")
+    return RC_NOT_DELIVERING, chr(10).join(lines)
+
+
 def main(argv: list[str]) -> int:
     sub = argv[1] if len(argv) > 1 else "health"
     if sub == "health":
         code, report = health(SOCK_PATH)
+    elif sub == "stranded":
+        code, report = stranded_report(SOCK_PATH)
+        # Printed only when it has something to say. `print("")` would put a
+        # blank line into every session-start injection of every user, which is
+        # the cost this whole sub-op is written to avoid paying.
+        if report:
+            print(report)
+        return code
     elif sub == "probe":
         code, report = probe(SOCK_PATH)
     elif sub == "received":
@@ -2276,16 +2347,19 @@ def main(argv: list[str]) -> int:
             return 2
         code, report = record_received(SOCK_PATH, count)
     else:
-        # Naming all three is the point. This message used to name only two,
+        # Naming all four is the point. This message used to name only two,
         # and left unchanged it would send a caller asking "how many of these
         # did I actually get" back to ops that cannot answer that -- both
         # describe the forwarder's own outbox, and neither can see the inbox.
         sys.stderr.write(
-            f"channel: unknown sub-op {sub!r} — the three are `channel:health` "
+            f"channel: unknown sub-op {sub!r} — the four are `channel:health` "
             "(read the consumer's published counters), `channel:probe` "
-            "(write one synthetic event and report which counter moved), and "
+            "(write one synthetic event and report which counter moved), "
             "`channel:received:N` (this session's own report of how many it "
-            "received, compared against `forwarded`'s advance)\n"
+            "received, compared against `forwarded`'s advance), and "
+            "`channel:stranded` (silent unless this channel's own pollers "
+            "recorded that their sends found nobody listening -- what "
+            "hooks/session-start.sh asks on every session)\n"
         )
         return 2
     print(report)

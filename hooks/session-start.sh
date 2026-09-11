@@ -126,8 +126,8 @@ fi
 # cannot interpret is a capability never reached for. Nothing fails when that
 # happens, so the cost was invisible.
 #
-# Bare `ops` is signatures-only since #1774 and fits at ~4.58KB.
-# Whole hook: ~5.52KB against 10,000. That was true all along and this comment
+# Bare `ops` is signatures-only since #1774 and fits at ~4.68KB.
+# Whole hook: ~5.62KB against 10,000. That was true all along and this comment
 # said so in passing while choosing the roster anyway: the numbers it reasoned
 # from were wrong — `ops` was stated at 47,254 (it is 4,126) and the cap at
 # 7,168 (it is 10,000, read out of the harness in #2029). #1877 corrected the
@@ -154,7 +154,25 @@ LADDER="$(cd "$(dirname "$0")" && pwd)/python-ladder.sh"
 # shellcheck disable=SC2329  # invoked indirectly, as supertool_python_each's callback
 onboard() {
     supertool_python_identifies "$@" || return 1
-    if ! "$@" "$BIN" 'introduction' 'output-format' 'ops:session'; then
+    # 'channel:stranded' rides along on the call already being made, and is
+    # silent on a clean channel or one nobody watches (#2478) -- so the ordinary
+    # session pays nothing for it. Read-only by construction: it opens no
+    # socket, makes no network call and spawns nothing, reading only what this
+    # channel's own pollers already wrote to their state files.
+    #
+    # 'channel:health' is deliberately NOT what runs here. Its bound path spawns
+    # `claude mcp get`, and a SessionStart hook that starts an MCP server to
+    # diagnose an MCP server is #1558's shape one layer worse. It also answers
+    # about the socket right now, and at session start the consumer may not have
+    # bound yet -- a missing socket at t=0 is a race, not a finding.
+    #
+    # Why this belongs at session start at all: measured 2026-09-09, a session
+    # armed with --dangerously-load-development-channels got no consumer, and
+    # four pollers emitted into a socket that did not exist for 32 minutes. One
+    # of the lost events was a failing check on an open pull request. Every
+    # instrument said so correctly and none of them was asked, because a session
+    # that does not know its channel is dead has no reason to ask one.
+    if ! "$@" "$BIN" 'introduction' 'output-format' 'ops:session' 'channel:stranded'; then
         echo "> supertool's op listing is incomplete: the interpreter ran and supertool exited non-zero. The ./supertool wrapper still works; 'ops' prints the listing."
     fi
     exit 0
