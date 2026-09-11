@@ -17,6 +17,8 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
+import stat
 from pathlib import Path
 
 REPO = Path(__file__).parent.parent
@@ -134,3 +136,50 @@ def test_events_json_lists_exactly_what_the_poller_emits():
 
 def test_the_modules_own_declaration_matches_what_it_emits():
     assert set(feed.EVENT_KEYS) == _emitted_event_keys()
+
+
+def test_save_session_never_world_or_group_readable(tmp_path, monkeypatch):
+    """#2484: same write-then-chmod window as `presets/bluesky/_atproto.py`
+    -- `_save_session` here is its own separate copy (this module
+    deliberately never imports `_atproto.py`, see the module docstring),
+    so the fix has to land here independently too. Mirrors
+    `tests/test_security_bluesky.py::TestSessionFileNeverWideOpen`: drive
+    the write under a permissive umask and catch the file existing at a
+    wider mode than 0o600 at any point, not just after the call returns.
+    """
+    session_file = tmp_path / "session.json"
+    monkeypatch.setattr(feed, "SESSION_FILE", session_file)
+
+    old_umask = os.umask(0)  # nothing masked away -- worst case
+    real_open = os.open
+    real_chmod = os.chmod
+    open_modes = []
+    pre_chmod_modes = []
+
+    def spying_open(path, flags, mode=0o777, *a, **kw):
+        fd = real_open(path, flags, mode, *a, **kw)
+        if os.fspath(path) == os.fspath(session_file) and (flags & os.O_CREAT):
+            open_modes.append(mode & 0o777)
+        return fd
+
+    def spying_chmod(path, mode, *a, **kw):
+        if os.fspath(path) == os.fspath(session_file) and os.path.exists(path):
+            pre_chmod_modes.append(stat.S_IMODE(os.stat(path).st_mode))
+        return real_chmod(path, mode, *a, **kw)
+
+    os.open = spying_open
+    os.chmod = spying_chmod
+    try:
+        feed._save_session({"accessJwt": "x", "refreshJwt": "y"})
+    finally:
+        os.umask(old_umask)
+        os.open = real_open
+        os.chmod = real_chmod
+
+    assert open_modes, (
+        "os.open was never used to create the session file atomically -- "
+        "nothing here proves the write-then-chmod window is closed"
+    )
+    assert all(m == 0o600 for m in open_modes), [oct(m) for m in open_modes]
+    assert all(m == 0o600 for m in pre_chmod_modes), [oct(m) for m in pre_chmod_modes]
+    assert stat.S_IMODE(session_file.stat().st_mode) == 0o600

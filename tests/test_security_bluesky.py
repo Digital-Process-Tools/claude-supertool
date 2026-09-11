@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -404,6 +406,84 @@ class TestSessionJsonTampering:
         assert atproto._load_session() is None
 
 
+class TestSessionFileNeverWideOpen:
+    """#2484: the session cache must never be observable on disk at a mode
+    wider than 0o600 -- not even for the instant between the file being
+    created/written and any narrowing chmod call.
+
+    A plain write_text() followed by a separate os.chmod(..., 0o600)
+    creates the file at 0o666 & ~umask first: under a permissive umask
+    (0, exercised here on purpose -- the reporting host's default of 0o022
+    would still narrow enough of the bits to hide the bug) that is world-
+    and group-readable, and stays that way for every instant between the
+    write and the chmod call. This suite catches that window directly
+    rather than only checking the mode after _save_session returns, which
+    the buggy write-then-chmod code already passes.
+    """
+
+    def _load_atproto(self):
+        spec = importlib.util.spec_from_file_location(
+            "bsky_sec__atproto_perm", PRESET_DIR / "_atproto.py"
+        )
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+        return mod
+
+    def _assert_never_wide(self, save_session, session_file):
+        """Drive save_session under a permissive umask, recording the mode
+        of every os.open call that creates the file and the mode observed
+        immediately before every os.chmod call on it -- the two points a
+        write-then-chmod window is observable from Python. Either list
+        being non-empty and wide is a finding; os.open never firing at all
+        is also a finding (the write never went through an atomic,
+        mode-scoped creation, so nothing here proves the window is closed).
+        """
+        old_umask = os.umask(0)  # nothing masked away -- worst case
+        real_open = os.open
+        real_chmod = os.chmod
+        open_modes = []
+        pre_chmod_modes = []
+
+        def spying_open(path, flags, mode=0o777, *a, **kw):
+            fd = real_open(path, flags, mode, *a, **kw)
+            if os.fspath(path) == os.fspath(session_file) and (flags & os.O_CREAT):
+                open_modes.append(mode & 0o777)
+            return fd
+
+        def spying_chmod(path, mode, *a, **kw):
+            if os.fspath(path) == os.fspath(session_file) and os.path.exists(path):
+                pre_chmod_modes.append(stat.S_IMODE(os.stat(path).st_mode))
+            return real_chmod(path, mode, *a, **kw)
+
+        os.open = spying_open
+        os.chmod = spying_chmod
+        try:
+            save_session()
+        finally:
+            os.umask(old_umask)
+            os.open = real_open
+            os.chmod = real_chmod
+
+        assert open_modes, (
+            "os.open was never used to create the session file atomically -- "
+            "nothing here proves the write-then-chmod window is closed"
+        )
+        assert all(m == 0o600 for m in open_modes), [oct(m) for m in open_modes]
+        assert all(m == 0o600 for m in pre_chmod_modes), [oct(m) for m in pre_chmod_modes]
+        assert stat.S_IMODE(session_file.stat().st_mode) == 0o600
+
+    def test_atproto_save_session_never_world_or_group_readable(self, tmp_path, monkeypatch):
+        session_file = tmp_path / "session.json"
+        atproto = self._load_atproto()
+        monkeypatch.setattr(atproto, "SESSION_FILE", session_file)
+
+        self._assert_never_wide(
+            lambda: atproto._save_session({"accessJwt": "x", "refreshJwt": "y"}),
+            session_file,
+        )
+
+
 # ===========================================================================
 # 5. 300-char post cap
 # ===========================================================================
@@ -746,7 +826,6 @@ class TestSearchQueryInjection:
 
     def test_query_with_pipe_non_digit_limit_ignored(self, monkeypatch):
         """'query|DROP TABLE' — 'DROP TABLE' is not a digit, treated as no limit."""
-        import os
         q, n = search_mod.parse_args("query|DROP TABLE")
         assert q == "query"
         # 'DROP TABLE' is not .isdigit() → default limit used

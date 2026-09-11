@@ -70,12 +70,25 @@ def _format_http_error(e: urllib.error.HTTPError, *secrets: str) -> str:
 
 
 def _save_session(session: dict[str, Any]) -> None:
+    """Write the session cache at mode 0o600 from the moment it exists on
+    disk -- never at the umask-determined mode `write_text()` + a later
+    `chmod()` would leave it at in between the two calls (#2484).
+    `os.open()`'s own mode argument is masked by umask the same way a
+    plain `open()`'s is, but 0o600 has no group/other bits to mask away,
+    so the file is 0o600 under every umask, not just the permissive one
+    this fix was found under.
+    """
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SESSION_FILE.write_text(json.dumps(session), encoding="utf-8")
+    fd = os.open(SESSION_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.chmod(SESSION_FILE, 0o600)
+        os.fchmod(fd, 0o600)  # narrows a pre-existing file left wide by #2484
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(session))
     except OSError:
-        pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def _load_session() -> dict[str, Any] | None:

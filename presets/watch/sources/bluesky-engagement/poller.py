@@ -201,12 +201,24 @@ def _load_session() -> dict[str, Any] | None:
 
 
 def _save_session(session: dict[str, Any]) -> None:
+    """Write the session cache at mode 0o600 from the moment it exists on
+    disk -- never at the umask-determined mode `write_text()` + a later
+    `chmod()` would leave it at in between the two calls (#2484). Mirrors
+    the identical fix in `presets/bluesky/_atproto.py::_save_session`;
+    this module deliberately never imports that one (see the module
+    docstring), so the fix is duplicated rather than shared.
+    """
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SESSION_FILE.write_text(json.dumps(session), encoding="utf-8")
+    fd = os.open(SESSION_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        os.chmod(SESSION_FILE, 0o600)
+        os.fchmod(fd, 0o600)  # narrows a pre-existing file left wide by #2484
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(session))
     except OSError:
-        pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def _create_session(handle: str, password: str) -> tuple[dict[str, Any] | None, str]:
