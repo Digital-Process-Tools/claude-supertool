@@ -110,3 +110,20 @@ def test_introduction_default_has_no_batching_exhortation() -> None:
     assert "6-7" not in supertool._DEFAULT_INTRODUCTION
     assert "wastes money" not in supertool._DEFAULT_INTRODUCTION
     assert "is normal" not in supertool._DEFAULT_INTRODUCTION
+
+
+def test_introduction_from_config_is_stripped_like_the_coauthor_convention(tmp_path: Path, monkeypatch) -> None:
+    """`_onboarding_text` claims the same convention as `_DEFAULT_COAUTHOR`
+    (presets/git/commit.py), which always returns the stripped value.
+    A hand-edited config value with a trailing newline must not stack with
+    the "\n\n" op_introduction already appends (self-review finding, #2342)."""
+    config = tmp_path / ".supertool.json"
+    config.write_text(json.dumps({
+        "introduction": "  from config with padding  \n"
+    }))
+    monkeypatch.delenv("SUPERTOOL_INTRODUCTION", raising=False)
+    monkeypatch.chdir(tmp_path)
+    supertool._CONFIG = None
+    supertool._CONFIG_CHECKED = False
+    out = supertool.op_introduction()
+    assert out == "from config with padding\n\n"

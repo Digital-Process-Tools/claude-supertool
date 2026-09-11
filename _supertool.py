@@ -19394,7 +19394,7 @@ def _onboarding_text(config_key: str, env_var: str, default: str) -> str:
     val = str(raw).strip()
     if val.lower() in _ONBOARDING_DISABLE_VALUES:
         return ""
-    return str(raw)
+    return val
 
 
 def op_introduction() -> str:
