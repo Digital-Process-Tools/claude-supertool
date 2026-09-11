@@ -154,11 +154,34 @@ LADDER="$(cd "$(dirname "$0")" && pwd)/python-ladder.sh"
 # shellcheck disable=SC2329  # invoked indirectly, as supertool_python_each's callback
 onboard() {
     supertool_python_identifies "$@" || return 1
-    # 'channel:stranded' rides along on the call already being made, and is
-    # silent on a clean channel or one nobody watches (#2478) -- so the ordinary
-    # session pays nothing for it. Read-only by construction: it opens no
-    # socket, makes no network call and spawns nothing, reading only what this
-    # channel's own pollers already wrote to their state files.
+    if ! "$@" "$BIN" 'introduction' 'output-format' 'ops:session'; then
+        echo "> supertool's op listing is incomplete: the interpreter ran and supertool exited non-zero. The ./supertool wrapper still works; 'ops' prints the listing."
+    fi
+    # 'channel:stranded' is a SEPARATE call, deliberately not folded into the
+    # batch above (#2478 self-review). channel.py's `stranded` sub-op returns
+    # RC_NOT_DELIVERING=1 -- not a failure, an answer -- whenever it has
+    # something to report, but presets/watch.json's `channel` op declares no
+    # `exitStatus`, so the supertool dispatcher cannot tell that apart from a
+    # real refusal (its own description field already says so: "the distinct
+    # codes ... survive only when presets/watch/channel.py is run directly,
+    # because the supertool wrapper collapses every non-zero to 1"). Batched
+    # with the listing call above, a stranded channel's nonzero exit made the
+    # WHOLE batch nonzero and triggered the "op listing is incomplete" line
+    # printed above -- false, since `ops:session` had rendered completely --
+    # at exactly the one moment #2478 exists to be noticed: a session with a
+    # stranded channel. Declaring `exitStatus` on the shared `channel` op
+    # was rejected: `channel:health`/`channel:probe` reuse the same manifest
+    # entry and their own non-zero codes (NOT DELIVERING, CANNOT DETERMINE,
+    # CONTRADICTED, ...) must stay real findings, never silently certified
+    # "clean" for a future caller that chains on the exit status. A second,
+    # unbatched call costs one extra interpreter start at session start and
+    # keeps the correctness the shared declaration would have given up.
+    #
+    # Silent on a clean channel or one nobody watches, so the ordinary session
+    # pays nothing for it beyond that one extra process. Read-only by
+    # construction: it opens no socket, makes no network call and spawns
+    # nothing, reading only what this channel's own pollers already wrote to
+    # their state files.
     #
     # 'channel:health' is deliberately NOT what runs here. Its bound path spawns
     # `claude mcp get`, and a SessionStart hook that starts an MCP server to
@@ -172,9 +195,7 @@ onboard() {
     # of the lost events was a failing check on an open pull request. Every
     # instrument said so correctly and none of them was asked, because a session
     # that does not know its channel is dead has no reason to ask one.
-    if ! "$@" "$BIN" 'introduction' 'output-format' 'ops:session' 'channel:stranded'; then
-        echo "> supertool's op listing is incomplete: the interpreter ran and supertool exited non-zero. The ./supertool wrapper still works; 'ops' prints the listing."
-    fi
+    "$@" "$BIN" 'channel:stranded'
     exit 0
 }
 

@@ -176,6 +176,66 @@ def test_an_unreadable_state_file_with_no_other_watcher_stays_silent(tmp_path: P
     assert result.stdout.strip() == "", repr(result.stdout)
 
 
+def test_a_stranded_channel_does_not_falsely_report_the_listing_incomplete(
+        tmp_path: Path) -> None:
+    """MUST FIRE -- self-review finding (Explore reviewer, #2478).
+
+    `channel:stranded` returns RC_NOT_DELIVERING=1 whenever it has something
+    to report -- an answer, not a failure -- but `presets/watch.json`'s shared
+    `channel` op declares no `exitStatus`, so the supertool dispatcher cannot
+    tell that apart from a real refusal (this is already disclosed in the
+    op's own description field). Batched into the same call as the
+    `ops:session` listing, a stranded channel's non-zero exit made the WHOLE
+    batch non-zero and printed the hook's "op listing is incomplete" line --
+    false, since the listing had rendered completely -- at exactly the one
+    moment #2478 exists to be noticed: a session with a stranded channel.
+
+    This drives the real hook script (not `channel.py` directly) against a
+    stub plugin binary that mimics the split behaviour: `introduction`/
+    `output-format`/`ops:session` succeed, and a separate `channel:stranded`
+    call reports something and exits 1. Both must be visible, and the false
+    "incomplete" line must not be.
+    """
+    import os
+    import subprocess
+
+    hook = REPO / "hooks" / "session-start.sh"
+    plugin_root = tmp_path / "plugin"
+    plugin_root.mkdir()
+    (plugin_root / "supertool.py").write_text(
+        "import sys\n"
+        "argv = sys.argv[1:]\n"
+        "if argv == ['introduction', 'output-format', 'ops:session']:\n"
+        "    print('ONBOARD-OK')\n"
+        "    sys.exit(0)\n"
+        "elif argv == ['channel:stranded']:\n"
+        "    print('CHANNEL NOT DELIVERING (stub)')\n"
+        "    sys.exit(1)\n"
+        "else:\n"
+        "    print('UNEXPECTED ARGV: %r' % (argv,))\n"
+        "    sys.exit(2)\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "project"
+    project.mkdir()
+
+    env = dict(os.environ)
+    env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
+    result = subprocess.run(
+        ["bash", str(hook)], cwd=str(project), env=env,
+        capture_output=True, text=True, timeout=30,
+        encoding="utf-8", errors="replace",
+    )
+
+    assert "ONBOARD-OK" in result.stdout, result.stdout
+    assert "CHANNEL NOT DELIVERING (stub)" in result.stdout, result.stdout
+    assert "op listing is incomplete" not in result.stdout, (
+        "the listing rendered completely (ONBOARD-OK) but the hook still "
+        "printed the incomplete-listing line, caused by channel:stranded's "
+        "own non-failure exit code -- " + result.stdout
+    )
+
+
 def test_the_session_start_hook_asks_for_it() -> None:
     """MUST FIRE. The op existing and the hook calling it are two claims, and
     the first is worth nothing alone -- that is the whole defect this closes."""
