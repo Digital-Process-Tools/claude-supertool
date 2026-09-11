@@ -131,14 +131,26 @@ def load_project_config_result() -> ProjectConfigResult:
       config higher up (until the repo-root boundary above stops it).
     """
     d = Path.cwd()
+    #: A skipped-for-trust-reasons candidate along the way must not make an
+    #: EXHAUSTED walk (no trusted config found by the boundary) look like a
+    #: clean "never configured" absence -- that is the same silent-widen
+    #: shape #2427 closed for malformed JSON, just triggered by a
+    #: permission/ownership change instead of a parse error (found in
+    #: self-review, #2427). The walk still keeps looking for a FURTHER
+    #: trusted candidate higher up when one is skipped (#2416's design,
+    #: unchanged) -- only the two "nothing trusted was ever found" returns
+    #: below now check whether anything was skipped along the way.
+    skipped: list[str] = []
     while True:
         candidate = d / ".supertool.json"
         if candidate.is_file():
             violation = _config_trust_violation(candidate)
             if violation is not None:
+                msg = f"skipped {candidate} ({violation})"
+                skipped.append(msg)
                 sys.stderr.write(
-                    f"WARNING: skipped {candidate} ({violation}) -- "
-                    f"ignoring it for slack authorization.\n"
+                    f"WARNING: {msg} -- ignoring it for slack "
+                    f"authorization.\n"
                 )
             else:
                 try:
@@ -160,9 +172,13 @@ def load_project_config_result() -> ProjectConfigResult:
                     return ProjectConfigResult(data=None, error=err)
                 return ProjectConfigResult(data=data, error=None)
         if (d / ".git").exists():
+            if skipped:
+                return ProjectConfigResult(data=None, error="; ".join(skipped))
             return ProjectConfigResult(data=None, error=None)
         parent = d.parent
         if parent == d:
+            if skipped:
+                return ProjectConfigResult(data=None, error="; ".join(skipped))
             return ProjectConfigResult(data=None, error=None)
         d = parent
 
@@ -310,12 +326,15 @@ def resolve_channel(channel_id: str, user_id: Optional[str] = None, *,
 
     if project_config_error is not None:
         effective_level = "off"
+        fallback_note = (
+            f" rather than falling back to {base_level!r}" if base_level != "off"
+            else ""
+        )
         detail = (base_detail +
-                  f"; this project's .supertool.json could not be read "
+                  f"; this project's .supertool.json could not be used "
                   f"({project_config_error}) — a narrowing may have been "
                   f"declared here and is now unrecoverable, so this fails "
-                  f"closed to 'off' rather than falling back to "
-                  f"{base_level!r} (property 2, #2427)")
+                  f"closed to 'off'{fallback_note} (property 2, #2427)")
     else:
         proj_level = _project_level(project_config, channel_id)
         effective_level = base_level

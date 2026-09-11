@@ -157,3 +157,60 @@ def test_malformed_detail_is_distinguishable_from_no_project_config_at_all(
     assert malformed.level == "off"
     assert none.level == "allowlist"
     assert malformed.detail != none.detail
+
+
+def test_malformed_config_detail_does_not_claim_the_file_could_not_be_read(
+    monkeypatch, tmp_path,
+) -> None:
+    """Self-review finding: the malformed-JSON case is a file that WAS
+    read successfully and then failed to *parse* -- 'could not be read' is
+    inaccurate and doubles up against the nested parse-error text."""
+    home = _write_home_config(tmp_path, {"channels": {
+        "C0123": {"level": "allowlist", "users": ["U024BE7LH"]}}})
+    _set_home(monkeypatch, str(home))
+
+    project_dir = tmp_path / "project"
+    (project_dir / ".git").mkdir(parents=True)
+    (project_dir / ".supertool.json").write_text(
+        '{"slack": {"channels": {"C0123": "off"}<<<<<<< HEAD', encoding="utf-8")
+
+    old_cwd = os.getcwd()
+    os.chdir(project_dir)
+    try:
+        project_result = auth.load_project_config_result()
+    finally:
+        os.chdir(old_cwd)
+
+    d = auth.resolve_channel("C0123", user_id="U024BE7LH",
+                             project_config=project_result.data,
+                             project_config_error=project_result.error)
+    assert "could not be read" not in d.detail, d.detail
+
+
+def test_fail_closed_detail_does_not_claim_a_fallback_when_base_was_already_off(
+    monkeypatch, tmp_path,
+) -> None:
+    """Self-review finding: when the machine-owner's own level is already
+    `off`, 'fails closed to off rather than falling back to off' is
+    self-contradictory -- there was no wider fallback to warn about."""
+    home = _write_home_config(tmp_path, {"channels": {
+        "C0123": {"level": "off"}}})
+    _set_home(monkeypatch, str(home))
+
+    project_dir = tmp_path / "project"
+    (project_dir / ".git").mkdir(parents=True)
+    (project_dir / ".supertool.json").write_text(
+        '{"slack": {"channels": {"C0123": "off"}<<<<<<< HEAD', encoding="utf-8")
+
+    old_cwd = os.getcwd()
+    os.chdir(project_dir)
+    try:
+        project_result = auth.load_project_config_result()
+    finally:
+        os.chdir(old_cwd)
+
+    d = auth.resolve_channel("C0123", user_id="U024BE7LH",
+                             project_config=project_result.data,
+                             project_config_error=project_result.error)
+    assert d.level == "off"
+    assert "rather than falling back to 'off'" not in d.detail, d.detail
