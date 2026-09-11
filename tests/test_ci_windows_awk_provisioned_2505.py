@@ -49,3 +49,28 @@ def test_the_step_runs_before_the_test_step():
     test_at = next(i for i, n in enumerate(names)
                    if n.startswith("Run tests"))
     assert provision_at < test_at
+
+
+def test_the_repair_body_names_the_real_git_for_windows_path():
+    """`command -v awk` and `exit 1` alone only pin that the step CHECKS for
+    awk and fails loudly if it is absent -- not that the repair path it tries
+    first (adding Git's own `usr/bin`, where `awk.exe` ships) is spelled
+    correctly. A typo in either literal would not turn `test_the_step_checks_
+    for_awk_and_fails_loudly_if_still_absent` red, because that test never
+    reads these two lines -- caught in self-review of #2505, not assumed
+    covered by the two checks above.
+
+    Would this pass if the windows-style path written to `GITHUB_PATH` no
+    longer matched the MSYS-style path exported into the current shell's own
+    `PATH`? No -- `GITHUB_PATH` receives Windows steps' PATH (backslash
+    form), the `export PATH=` line affects only the current `shell: bash`
+    process (MSYS `/c/...` form); the two are deliberately different
+    spellings of the same directory, pinned as a pair here rather than
+    separately, because the whole point of the fallback is that both take
+    effect."""
+    steps = _pytest_job_steps()
+    step = next(s for s in steps if s.name == STEP_NAME)
+    assert r"C:\Program Files\Git\usr\bin" in step.run, (
+        "the GITHUB_PATH line's Windows-style path is missing or misspelled")
+    assert "/c/Program Files/Git/usr/bin" in step.run, (
+        "the export PATH= line's MSYS-style path is missing or misspelled")
