@@ -52,8 +52,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import subprocess
+
 from _local_path_scan import _local_path_hits
-from _repo_walk import REPO_ROOT, git_ignored_dirs, is_machine_state
+from _repo_walk import REPO_ROOT
 
 # Independently confirmed real local usernames this repo's shipped tree has
 # actually leaked, per #2440's own investigation (`git log -S` on the string
@@ -69,24 +71,50 @@ KNOWN_REAL_USERNAMES = frozenset({"floriandavid"})
 # guard).
 _EXCLUDED_TOP_DIRS = {"tests", "trap.d"}
 
+# Tracked binary assets #2440's own self-review confirmed cannot decode as
+# UTF-8 and therefore cannot carry a text leak -- named rather than silently
+# swallowed by a bare except, so a third undecodable file shows up as a
+# ceiling breach instead of vanishing the same way the first two did before
+# this review caught it (auditor spawn, #2440 self-review).
+_KNOWN_BINARY_ASSETS = frozenset({
+    "notifiers/cursor-witness/extension/icon.png",
+    "supertool-banner.webp",
+})
+
 
 def _candidate_files() -> list[Path]:
-    ignored = git_ignored_dirs()
+    """Every git-*tracked* file outside `tests/` and `trap.d/`.
+
+    #2440's own self-review (Explore spawn) caught the first version of this
+    walking `REPO_ROOT.rglob("*")` filtered only by `is_machine_state` --
+    which answers "is this machine state", not "is this tracked" -- so an
+    untracked scratch file sitting anywhere ungitignored (this review's own
+    `tree_snapshot.py` output, reproduced live) was scanned and misreported
+    as a "shipped file" leak. `git ls-files` is the tracked answer directly,
+    the same property #2426's own regex allowlist assumes but never checked
+    for its own glob (`trap.d/*.md` files are, in practice, always tracked).
+    """
+    proc = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=str(REPO_ROOT),
+        capture_output=True, timeout=30,
+    )
+    assert proc.returncode == 0, (
+        f"git ls-files failed (exit {proc.returncode}): "
+        f"{proc.stderr.decode('utf-8', 'replace')}"
+    )
+    rels = [r for r in proc.stdout.decode("utf-8", "surrogateescape").split("\0") if r]
     files = []
-    for path in sorted(REPO_ROOT.rglob("*")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(REPO_ROOT).as_posix()
+    for rel in sorted(rels):
         if rel.split("/")[0] in _EXCLUDED_TOP_DIRS:
             continue
-        if is_machine_state(rel, ignored):
-            continue
-        files.append(path)
+        path = REPO_ROOT / rel
+        if path.is_file():
+            files.append(path)
     return files
 
 
 def test_no_known_real_username_leak_outside_trap_d():
-    """Sweeps the whole tracked tree (minus `tests/` and `trap.d/`, see
+    """Sweeps every git-tracked file (minus `tests/` and `trap.d/`, see
     module docstring) for the specific real usernames #2440 confirmed this
     repo has actually leaked before -- not a generic username scan, which
     would flag this repo's own many legitimate example paths (see module
@@ -100,18 +128,37 @@ def test_no_known_real_username_leak_outside_trap_d():
         "files, not that they are clean."
     )
     offenders = {}
+    undecodable = []
     for path in candidates:
+        rel = path.relative_to(REPO_ROOT).as_posix()
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
+            undecodable.append(rel)
             continue
         hits = _local_path_hits(text, restrict_users=KNOWN_REAL_USERNAMES)
         if hits:
-            offenders[path.relative_to(REPO_ROOT).as_posix()] = hits
+            offenders[rel] = hits
     assert not offenders, (
         "shipped file(s) outside trap.d/ carry a known-real local username "
         f"leak: {offenders}. Redact to a generic placeholder path, per "
         "#2279's own precedent."
+    )
+    # A silent `except: continue` here would be exactly this repo's own
+    # named defect class (CLAUDE.md's "an absence produced by the tool,
+    # read as an absence in the world") one file deep: "clean" and "N files
+    # never got a real read" must not render the same way. Every
+    # undecodable file must be an already-named binary asset -- an
+    # unnamed one is a third state (a new binary file, or a real text file
+    # gone corrupt) and must surface rather than silently drop the file
+    # from the sweep.
+    unnamed = sorted(set(undecodable) - _KNOWN_BINARY_ASSETS)
+    assert not unnamed, (
+        f"{len(unnamed)} tracked file(s) could not be decoded as UTF-8 and "
+        f"are not in `_KNOWN_BINARY_ASSETS`: {unnamed}. Confirm each is a "
+        "genuine binary asset (not a text file this guard should be "
+        "reading) and add it to that set, naming it rather than letting "
+        "it vanish from the sweep silently."
     )
 
 
