@@ -36,6 +36,8 @@ from pathlib import Path
 
 import pytest
 
+from _winenv import empty_path_env
+
 REPO = Path(__file__).resolve().parent.parent
 CHANNEL = REPO / "presets" / "watch" / "channel.py"
 
@@ -53,12 +55,18 @@ windows_has_no_usable_bash = pytest.mark.skipif(
 
 
 def _run(args, state_dir, sock):
-    """`channel.py` with its channel pointed at a temp directory."""
-    env = {
-        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-        "SUPERTOOL_WATCH_SOCK": str(sock),
-        "SUPERTOOL_WATCH_STATE_DIR": str(state_dir),
-    }
+    """`channel.py` with its channel pointed at a temp directory.
+
+    `PATH` is stripped rather than hand-rolled to a POSIX list (#1151): the
+    guarantee this test file needs -- no `claude` binary reachable via PATH,
+    so a claude-mcp-get probe could not silently succeed -- is `PATH=""`,
+    not a specific POSIX directory list, and the hand-rolled version wiped
+    SYSTEMROOT/WINDIR on Windows too, which stops the child python.exe from
+    starting at all rather than from finding `claude`.
+    """
+    env = empty_path_env()
+    env["SUPERTOOL_WATCH_SOCK"] = str(sock)
+    env["SUPERTOOL_WATCH_STATE_DIR"] = str(state_dir)
     return subprocess.run(
         [sys.executable, str(CHANNEL), *args],
         capture_output=True, text=True, timeout=30, env=env,
