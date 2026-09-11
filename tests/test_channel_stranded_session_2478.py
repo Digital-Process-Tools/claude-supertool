@@ -29,12 +29,27 @@ no subprocess.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parent.parent
 CHANNEL = REPO / "presets" / "watch" / "channel.py"
+
+# On this repo's own Windows CI leg, a bare `bash` resolves to the WSL
+# launcher stub rather than Git Bash, so a hook-invoking test never actually
+# executes the hook under test and its assertions are meaningless there.
+# `tests/test_session_hook_plugin_path.py` already documents and gates this;
+# the one test below that also spawns `bash hooks/session-start.sh` reuses
+# the identical gate rather than a second copy of the reasoning (#2478
+# self-review, second pass).
+windows_has_no_usable_bash = pytest.mark.skipif(
+    os.name == "nt",
+    reason="bare `bash` on Windows CI is the WSL stub; the hook never runs",
+)
 
 
 def _run(args, state_dir, sock):
@@ -176,6 +191,7 @@ def test_an_unreadable_state_file_with_no_other_watcher_stays_silent(tmp_path: P
     assert result.stdout.strip() == "", repr(result.stdout)
 
 
+@windows_has_no_usable_bash
 def test_a_stranded_channel_does_not_falsely_report_the_listing_incomplete(
         tmp_path: Path) -> None:
     """MUST FIRE -- self-review finding (Explore reviewer, #2478).
@@ -196,9 +212,6 @@ def test_a_stranded_channel_does_not_falsely_report_the_listing_incomplete(
     call reports something and exits 1. Both must be visible, and the false
     "incomplete" line must not be.
     """
-    import os
-    import subprocess
-
     hook = REPO / "hooks" / "session-start.sh"
     plugin_root = tmp_path / "plugin"
     plugin_root.mkdir()
