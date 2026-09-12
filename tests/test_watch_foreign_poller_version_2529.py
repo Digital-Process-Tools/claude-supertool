@@ -67,9 +67,13 @@ def test_extracts_the_version_from_a_plugin_cache_path() -> None:
 
 def test_a_windows_backslash_path_is_read_the_same_way() -> None:
     """Cross-platform: a poller forked on Windows carries backslashes, and
-    the same regex must not need a second code path (observed: this is the
-    same normalisation `_labelled` already applies to the dispatcher-tail
-    match itself, reasoned rather than run on a Windows host here)."""
+    the same regex must not need a second code path -- the same
+    normalisation `_labelled` already applies to the dispatcher-tail match
+    itself. This assertion is pure string/regex work with no OS-dependent
+    call in it, so `.github/workflows/tests.yml`'s own `windows-latest` legs
+    (self-review, #2528/#2529) run it for real on every PR; it is not
+    reasoned-only, only never independently confirmed against a `gh-job`
+    log for this specific PR at review time."""
     path = ("C:\\Users\\op\\plugins\\cache\\dpt-plugins\\supertool\\0.57.0\\"
             "presets\\watch\\dispatcher.py")
     assert transport._version_from_dispatcher_path(path) == "0.57.0"
