@@ -1262,9 +1262,17 @@ def _wait_interruptible(seconds: int, stop_flag: dict[str, bool]) -> None:
     returning early. So `unwatch` was honoured within a second by a poller that
     was working and ignored for up to a full interval by one that was not --
     which is exactly the poller an operator is most likely to be stopping.
+
+    Also gives up early on `_RELOAD_FLAG` (#2514): a #2509 rate-limit
+    back-off can sleep here for up to `MAX_RETRY_AFTER_SECONDS` (one hour),
+    and until this checked the flag too, a reload issued mid-back-off sat
+    unapplied for the whole hour -- this was the only place a long sleep
+    ran uninterrupted. The flag is only READ here, never cleared: the outer
+    loop clears it itself, at the top of its own `while`, the one moment it
+    is about to act on it, same as it always has.
     """
     for _ in range(max(0, int(seconds))):
-        if stop_flag["stop"]:
+        if stop_flag["stop"] or _RELOAD_FLAG["reload"]:
             return
         time.sleep(1)
 
