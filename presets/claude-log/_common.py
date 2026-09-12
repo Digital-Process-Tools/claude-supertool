@@ -80,7 +80,7 @@ def resolve_project_dir(cwd: str | None = None) -> ProjectDir:
     Upward only. Until #1317 the fallback picked the store whose encoded name
     shared the longest common PREFIX, which walks sideways: from
     `~/Documents/st-wt/1317` with no store of its own it returned
-    `-Users-floriandavid-Documents-st-wt-1024`, and every op in the family
+    `-Users-<maintainer>-Documents-st-wt-1024`, and every op in the family
     rendered a plausible board about another worktree's sessions with nothing
     in the output naming the substitution.
 
