@@ -440,6 +440,15 @@ def test_url_embedded_secret_is_scrubbed_from_the_redirect_note(hop, capsys) -> 
     itself when the credential rides in the URL, because the NOTE line is
     printed on the success path, inside `urlopen()`, before any caller-level
     `_scrub`-style exception handler ever gets a chance to run.
+
+    Rounds one through three of #2533 fixed this by redacting the query
+    string and printing the result -- CodeQL's
+    py/clear-text-logging-sensitive-data kept flagging the print regardless,
+    three times running, because a redaction pass is not a sanitizer to its
+    dataflow model. Round four (`_origin_and_path()`) does not redact: it
+    never reads `.query` at all, so this test now asserts the printed URLs
+    carry no query string whatsoever, not merely that the secret specifically
+    is absent from one that otherwise survives.
     """
     hop.front.redirect_to = hop.front_base + "/api/elsewhere"
     secret = "AIzaFAKESECRETKEY00000000000000000"
@@ -451,6 +460,39 @@ def test_url_embedded_secret_is_scrubbed_from_the_redirect_note(hop, capsys) -> 
     assert "redirected" in err, f"the redirect was not disclosed at all: {err!r}"
     assert secret not in err, (
         f"the URL-embedded secret leaked into the redirect NOTE: {err!r}"
+    )
+    assert "?" not in err, (
+        f"the redirect NOTE still carries a query string of some kind: {err!r}"
+    )
+    assert "/api/videos" in err, f"origin path not named: {err!r}"
+
+
+def test_non_secret_query_params_are_also_absent_from_the_redirect_note(
+    hop, capsys
+) -> None:
+    """The #2533 round-four fix (`_origin_and_path()`) drops the whole query
+    string from the redirect NOTE, not only credential-shaped parameters --
+    that is the accepted trade-off (see `_origin_and_path()`'s docstring), so
+    an ordinary, non-secret query parameter must be just as absent as a
+    secret one would be. No earlier round of this fix had this property:
+    `_scrub_query_secrets()` (still used for exception messages, just not
+    here) deliberately keeps a non-credential-shaped param like `q=hello`.
+    """
+    hop.front.redirect_to = hop.front_base + "/api/elsewhere"
+    url = f"{hop.front_base}/api/videos?q=hello&limit=10"
+    req = urllib.request.Request(url, method="GET")
+    with _http.urlopen(req, timeout=5) as resp:
+        resp.read()
+    err = capsys.readouterr().err
+    assert "redirected" in err, f"the redirect was not disclosed at all: {err!r}"
+    assert "q=hello" not in err, (
+        f"a non-secret query param survived into the redirect NOTE: {err!r}"
+    )
+    assert "limit=10" not in err, (
+        f"a non-secret query param survived into the redirect NOTE: {err!r}"
+    )
+    assert "?" not in err, (
+        f"the redirect NOTE still carries a query string of some kind: {err!r}"
     )
 
 
